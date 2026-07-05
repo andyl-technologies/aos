@@ -257,6 +257,27 @@ impl RuntimeNativeWrapperBlockers {
     pub const fn is_empty(self) -> bool {
         self.len() == 0
     }
+
+    /// Returns true when this blocker list still carries the final-export gate.
+    pub fn contains_final_exported_wrapper_blocker(self) -> bool {
+        match self {
+            Self::Allocation(blockers) => blockers
+                .contains(&RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper),
+            Self::CallControl(blockers) => {
+                blockers.contains(&RuntimeApplyNativeExportBlocker::MissingFinalExportedWrapper)
+            }
+            Self::AttrsetAccess(blockers) => blockers
+                .contains(&RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper),
+            Self::EnvironmentAccess(blockers) => {
+                blockers.contains(&RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper)
+            }
+            Self::Forcing(blockers) => {
+                blockers.contains(&RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper)
+            }
+            Self::WriteBarrier(blockers) => blockers
+                .contains(&RuntimeWriteBarrierNativeExportBlocker::MissingFinalExportedWrapper),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +335,9 @@ mod tests {
             binding.address().is_non_null()
                 && !binding.is_export_ready()
                 && !binding.remaining_export_blockers().is_empty()
+                && !binding
+                    .remaining_export_blockers()
+                    .contains_final_exported_wrapper_blocker()
         }));
         assert!(bindings.iter().copied().all(|binding| {
             core_helper_roles

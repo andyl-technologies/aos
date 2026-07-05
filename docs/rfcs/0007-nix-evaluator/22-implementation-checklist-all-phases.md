@@ -5401,7 +5401,7 @@ and helps the oracle directly.
       `aos_gc_write_barrier`, `aos_alloc_*`, `aos_has_attr`, `aos_select_ic`,
       and `aos_update`
       runtime-FFI address/provenance, prove the runtime-FFI provenance set
-      follows the unified native-wrapper manifest, prove allocation
+      follows the unified native-wrapper manifest, prove per-family
       trap-wrapper blockers no longer include the missing final exported wrapper
       blocker, feed
       only the allocation-filtered subset through JIT

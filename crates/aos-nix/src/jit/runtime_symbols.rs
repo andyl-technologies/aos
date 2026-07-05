@@ -761,7 +761,13 @@ fn runtime_native_wrappers_by_symbol()
 
 #[cfg(test)]
 mod provenance_tests {
-    use ratchet_oracle::runtime::alloc::RuntimeAllocationNativeExportBlocker;
+    use ratchet_oracle::runtime::{
+        alloc::RuntimeAllocationNativeExportBlocker, apply::RuntimeApplyNativeExportBlocker,
+        attr::RuntimeAttrAccessNativeExportBlocker,
+        barrier::RuntimeWriteBarrierNativeExportBlocker, env::RuntimeEnvAccessNativeExportBlocker,
+        forcing::RuntimeForcingNativeExportBlocker,
+        helpers::RuntimeSymbolNativeExportMissingBinding,
+    };
 
     use super::*;
 
@@ -843,6 +849,84 @@ mod provenance_tests {
                 .runtime_ffi_remaining_export_blockers()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn jit_runtime_symbol_address_provenance_preserves_family_export_gate_split() {
+        let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("JIT address candidate preflight builds");
+        let registration_preflight = nix_jit_runtime_symbol_registration_preflight()
+            .expect("Nix JIT registration preflight builds");
+        let native_wrappers =
+            runtime_native_wrapper_bindings().expect("runtime FFI wrapper manifest builds");
+
+        for binding in native_wrappers {
+            let provenance = candidate_preflight
+                .address_provenance_for_symbol(binding.symbol_name())
+                .expect("runtime FFI wrapper provenance exists");
+            let blockers = provenance
+                .runtime_ffi_remaining_export_blockers()
+                .expect("runtime FFI wrapper provenance carries blockers");
+
+            assert_eq!(provenance.kind(), RuntimeSymbolKind::Helper(binding.role()));
+            assert_eq!(blockers, binding.remaining_export_blockers());
+            assert!(!blockers.contains_final_exported_wrapper_blocker());
+            assert!(
+                registration_preflight
+                    .native_export_gap_for_symbol(binding.symbol_name())
+                    .is_some_and(
+                        |gap| native_export_gap_contains_final_exported_wrapper_blocker(
+                            gap, blockers
+                        )
+                    )
+            );
+        }
+    }
+
+    fn native_export_gap_contains_final_exported_wrapper_blocker(
+        gap: &RuntimeSymbolNativeExportMissingBinding,
+        provenance_blockers: RuntimeNativeWrapperBlockers,
+    ) -> bool {
+        match provenance_blockers {
+            RuntimeNativeWrapperBlockers::Allocation(_) => gap
+                .missing_exported_allocation_blockers()
+                .is_some_and(|blockers| {
+                    blockers.contains(
+                        &RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper,
+                    )
+                }),
+            RuntimeNativeWrapperBlockers::CallControl(_) => gap
+                .missing_exported_call_control_blockers()
+                .is_some_and(|blockers| {
+                    blockers.contains(&RuntimeApplyNativeExportBlocker::MissingFinalExportedWrapper)
+                }),
+            RuntimeNativeWrapperBlockers::AttrsetAccess(_) => gap
+                .missing_exported_attrset_access_blockers()
+                .is_some_and(|blockers| {
+                    blockers.contains(
+                        &RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper,
+                    )
+                }),
+            RuntimeNativeWrapperBlockers::EnvironmentAccess(_) => gap
+                .missing_exported_env_access_blockers()
+                .is_some_and(|blockers| {
+                    blockers
+                        .contains(&RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper)
+                }),
+            RuntimeNativeWrapperBlockers::Forcing(_) => gap
+                .missing_exported_forcing_blockers()
+                .is_some_and(|blockers| {
+                    blockers
+                        .contains(&RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper)
+                }),
+            RuntimeNativeWrapperBlockers::WriteBarrier(_) => gap
+                .missing_exported_write_barrier_blockers()
+                .is_some_and(|blockers| {
+                    blockers.contains(
+                        &RuntimeWriteBarrierNativeExportBlocker::MissingFinalExportedWrapper,
+                    )
+                }),
+        }
     }
 }
 

@@ -1474,7 +1474,7 @@ harness, never cut for scope.
       `aos_alloc_*`, `aos_env_get`, `aos_apply`, `aos_blackhole_check`, `aos_force`,
       `aos_force_deep`, `aos_gc_write_barrier`, `aos_has_attr`,
       `aos_select_ic`, and `aos_update` runtime-FFI address/provenance,
-      allocation trap-wrapper blockers without the missing final exported
+      per-family trap-wrapper blockers without the missing final exported
       wrapper blocker,
       feed only the allocation-filtered subset through the JIT registration preflight, and
       still cover the registered env-slot promotion path for `aos_env_get`.
