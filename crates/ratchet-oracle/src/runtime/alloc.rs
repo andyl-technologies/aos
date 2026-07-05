@@ -286,10 +286,11 @@ pub const fn runtime_allocation_abi_signatures() -> &'static [RuntimeAllocationA
 /// Builds native-export readiness metadata for frozen allocation helpers.
 ///
 /// The returned report is intentionally negative today: every `aos_alloc_*`
-/// symbol has frozen ABI metadata and a storage-only Rust callable, but no
-/// exported C ABI wrapper. The blocker list is precise so later unsafe wrapper
-/// work can clear individual obligations without treating Rust callables as
-/// native ABI exports.
+/// symbol has frozen ABI metadata, a storage-only Rust callable, and
+/// process-local trap-only runtime-FFI wrapper provenance, but no wrapper is
+/// admitted as a final native export. The blocker list is precise so later
+/// unsafe wrapper work can clear individual obligations without treating Rust
+/// callables as native ABI exports.
 pub fn runtime_allocation_native_export_preflight() -> RuntimeAllocationNativeExportPreflight {
     RuntimeAllocationNativeExportPreflight::new(
         runtime_allocation_entrypoints()
@@ -3126,26 +3127,38 @@ mod tests {
                 record.entrypoint().native_export_blockers()
             );
             assert!(!record.is_export_ready());
-            assert!(
-                record
-                    .blockers()
-                    .contains(&RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper)
-            );
-            assert!(
-                record.blockers().contains(
-                    &RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented
-                )
-            );
-            assert!(
-                record
-                    .blockers()
-                    .contains(&RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented)
-            );
-            assert!(
-                record.blockers().contains(
-                    &RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized
-                )
-            );
+            match record.entrypoint() {
+                RuntimeAllocationEntryPoint::AosAllocCons
+                | RuntimeAllocationEntryPoint::AosAllocLambda
+                | RuntimeAllocationEntryPoint::AosAllocThunk => {
+                    assert_eq!(
+                        record.blockers(),
+                        [
+                            RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper,
+                            RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented,
+                            RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented,
+                            RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized,
+                            RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented,
+                        ]
+                        .as_slice()
+                    );
+                }
+                RuntimeAllocationEntryPoint::AosAllocAttrs
+                | RuntimeAllocationEntryPoint::AosAllocList
+                | RuntimeAllocationEntryPoint::AosAllocRaw
+                | RuntimeAllocationEntryPoint::AosAllocString => {
+                    assert_eq!(
+                        record.blockers(),
+                        [
+                            RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper,
+                            RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented,
+                            RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented,
+                            RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized,
+                        ]
+                        .as_slice()
+                    );
+                }
+            }
             assert_eq!(
                 preflight.readiness_for_symbol(record.symbol_name()),
                 Some(record)

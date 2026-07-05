@@ -3328,6 +3328,18 @@ mod tests {
             attrs_export_gap.missing_exported_allocation_blockers(),
             Some(attrs_allocation_blockers)
         );
+        assert_eq!(
+            attrs_export_gap
+                .missing_exported_allocation_blockers()
+                .expect("attrs allocation blockers exist"),
+            [
+                RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented,
+                RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented,
+                RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized,
+            ]
+            .as_slice()
+        );
         assert!(
             !attrs_export_gap
                 .missing_exported_allocation_blockers()
@@ -3339,6 +3351,19 @@ mod tests {
         assert_eq!(
             thunk_export_gap.missing_exported_allocation_blockers(),
             Some(thunk_allocation_blockers)
+        );
+        assert_eq!(
+            thunk_export_gap
+                .missing_exported_allocation_blockers()
+                .expect("thunk allocation blockers exist"),
+            [
+                RuntimeAllocationNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented,
+                RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented,
+                RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized,
+                RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented,
+            ]
+            .as_slice()
         );
         assert!(
             thunk_export_gap
