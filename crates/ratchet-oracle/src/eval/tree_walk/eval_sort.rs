@@ -497,12 +497,7 @@ impl TreeWalk {
         };
 
         if start_items.is_empty() {
-            return self
-                .heap
-                .alloc_list(NixList::new(Vec::new()))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_tree_walk_list(id, span, NixList::new(Vec::new()));
         }
 
         let operator =
@@ -569,9 +564,7 @@ impl TreeWalk {
             )?;
         }
 
-        self.heap
-            .alloc_list(NixList::new(items))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(items))
     }
 
     pub(super) fn accept_generic_closure_item(

@@ -3488,6 +3488,180 @@ fn gc_stress_sort_result_skips_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+#[test]
+fn gc_stress_generic_closure_empty_result_routes_through_list_wrapper() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let start_set = evaluator
+        .heap
+        .alloc_list(NixList::new(Vec::new()))
+        .expect("startSet list allocates");
+    let start_set_symbol = evaluator
+        .symbols
+        .intern(START_SET_ATTR)
+        .expect("startSet interns");
+    let argument_attrs = FlatAttrs::new(
+        vec![AttrEntry::new(start_set_symbol, start_set)],
+        &evaluator.symbols,
+    )
+    .expect("genericClosure argument attrs build");
+    let argument = evaluator
+        .heap
+        .alloc_attrs(0, argument_attrs)
+        .expect("genericClosure argument attrs allocate");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.eval_generic_closure_primop(ir.root, span, ir.root, span, argument)
+        })
+        .expect("genericClosure empty result allocates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "genericClosure empty result did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root changed while routing genericClosure empty result"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("genericClosure empty result is heap-owned");
+    assert!(list.is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_generic_closure_result_routes_through_list_wrapper() {
+    let ir = lower("item: if item.key == 1 then [ { key = 2; } ] else []");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let operator = evaluator
+        .eval_node(ir.root)
+        .expect("genericClosure operator allocates");
+    assert_eq!(operator.tag(), ValueTag::Lambda);
+    let key_symbol = evaluator.symbols.intern(b"key").expect("key interns");
+    let item_attrs = FlatAttrs::new(
+        vec![AttrEntry::new(key_symbol, Value::int(1))],
+        &evaluator.symbols,
+    )
+    .expect("item attrs build");
+    let item = evaluator
+        .heap
+        .alloc_attrs(0, item_attrs)
+        .expect("item attrs allocate");
+    let start_set = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![item]))
+        .expect("startSet list allocates");
+    let start_set_symbol = evaluator
+        .symbols
+        .intern(START_SET_ATTR)
+        .expect("startSet interns");
+    let operator_symbol = evaluator
+        .symbols
+        .intern(OPERATOR_ATTR)
+        .expect("operator interns");
+    let argument_attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(start_set_symbol, start_set),
+            AttrEntry::new(operator_symbol, operator),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("genericClosure argument attrs build");
+    let argument = evaluator
+        .heap
+        .alloc_attrs(0, argument_attrs)
+        .expect("genericClosure argument attrs allocate");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.eval_generic_closure_primop(ir.root, span, ir.root, span, argument)
+        })
+        .expect("genericClosure result allocates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 3,
+        "genericClosure generated lists and final result did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root changed while routing genericClosure result"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let result_items = {
+        let result = evaluator
+            .heap()
+            .get_list(value)
+            .expect("genericClosure result is heap-owned");
+        assert_eq!(result.len(), 2);
+        [
+            result.get(0).expect("first result item exists"),
+            result.get(1).expect("second result item exists"),
+        ]
+    };
+    assert!(result_items[0].raw_eq(item));
+    let generated = evaluator
+        .heap()
+        .get_attrs(result_items[1])
+        .expect("generated item is heap-owned");
+    let generated_key = generated.get(key_symbol).expect("generated key exists");
+    assert_eq!(
+        evaluator
+            .force_value(ir.root, span, generated_key)
+            .expect("generated key forces")
+            .as_int(),
+        Ok(2)
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("genericClosure result safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
 fn zipped_apply2_second_argument(evaluator: &TreeWalk, value: Value) -> Value {
     let thunk = evaluator
         .heap()

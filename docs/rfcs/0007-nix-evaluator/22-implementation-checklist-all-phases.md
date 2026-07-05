@@ -7416,6 +7416,9 @@ and helps the oracle directly.
       roots while active primop argument roots block dispatch,
       direct `sort` result-list allocations preserving registered transient
       roots while active primop argument roots block dispatch,
+      direct `genericClosure` empty-result routing and non-empty result-list
+      allocation routing through the tree-walk list wrapper while preserving
+      registered transient roots,
       direct `zipAttrsWith` grouped value-list allocations preserving
       direct-root live locals and registered transient roots while active
       primop argument roots block dispatch,
