@@ -1222,7 +1222,9 @@ branch on the verdict without parsing output:
   artifacts through `LocalDagStore`, loads stored family hashes as strict
   scenario-family TOML from the configured DAG store, and reports deterministic
   `fuzz-run` output with generated-mutant, admission, retained-entry, store-put,
-  and replay-oracle validation counts. Missing/corrupt stored family objects and
+  and replay-oracle validation counts, and process-tests real-binary
+  local-double `search` and `fuzz` JSONL output with command-specific canonical
+  events plus `final_outcome`. Missing/corrupt stored family objects and
   unsupported backend targets fail explicitly until the remaining policy runners
   are wired. Full closure remains blocked on real-QEMU coverage that produces
   backend-retained evidence bundles beyond the local-double fixture path and
