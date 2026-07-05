@@ -868,12 +868,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       `EvalStats::thunks_elided`. During `let`, attrset, and formal-set default
       population, even strict facts keep thunks so forward references,
       dynamic-key errors, and duplicate-key validation cannot observe reordered
-      value evaluation. Scalar replacement is intentionally represented as eager
-      WHNF in the tree-walk oracle until the optimized tiers have stack/register
-      storage. Covered by tests proving conservative facts still allocate
-      suspended thunks, strict facts elide safe list-element thunks, inherited
-      select bindings stay lazy during attrset assembly, and frame-initialization
-      facts stay lazy.
+      value evaluation; lazy `SingleEntry` facts may still choose direct-force
+      storage there because allocation stays lazy and preserves frame shape.
+      Scalar replacement is intentionally represented as eager WHNF in the
+      tree-walk oracle until the optimized tiers have stack/register storage.
+      Covered by tests proving conservative facts still allocate suspended
+      thunks, strict facts elide safe list-element thunks, analyzer-produced
+      direct-body `let` proofs create single-entry storage, inherited select
+      bindings stay lazy during attrset assembly, and frame-initialization facts
+      stay lazy.
 
 ### Cardinality / usage analysis 0/1/many (§5)
 

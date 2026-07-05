@@ -289,6 +289,62 @@ fn single_entry_thunk_plan_uses_direct_force_storage_without_parallel_payload_or
 }
 
 #[test]
+fn analyzer_produced_direct_body_let_thunk_uses_single_entry_storage() {
+    let mut ir = lower("let x = 1 + 6; in x");
+    let thunk_alloc = first_thunk_alloc_id(&ir);
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+    let facts = ir
+        .facts
+        .get(thunk_alloc)
+        .expect("analyzed thunk fact exists");
+    assert_eq!(
+        facts.cardinality,
+        crate::compile::Cardinality::Once,
+        "direct body use proves single entry"
+    );
+    assert_eq!(
+        facts.escape,
+        crate::compile::Escape::NoEscape,
+        "direct body use proves frame locality"
+    );
+    assert_eq!(
+        facts.strictness,
+        crate::compile::Strictness::Unknown,
+        "order-sensitive frame assembly keeps the thunk lazy"
+    );
+
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+    );
+    let value = evaluator
+        .eval_root()
+        .expect("annotated direct-body let evaluates");
+
+    assert_eq!(value.as_int(), Ok(7));
+    assert_eq!(evaluator.stats().thunks_allocated(), 1);
+    assert_eq!(evaluator.stats().thunks_forced(), 1);
+    assert_eq!(evaluator.stats().thunk_cache_hits(), 0);
+    let thunk_values = evaluator
+        .heap()
+        .test_record_values()
+        .map(|value| value.expect("heap record value rebuilds"))
+        .filter(|value| value.tag() == ValueTag::Thunk)
+        .collect::<Vec<_>>();
+    assert_eq!(thunk_values.len(), 1);
+    let thunk = evaluator
+        .heap()
+        .get_thunk(thunk_values[0])
+        .expect("let binding thunk remains allocated");
+    assert_eq!(
+        thunk.force_storage_mode(),
+        EvalThunkForceStorageMode::SingleEntry
+    );
+    assert!(thunk.parallel_payload_cell().is_none());
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+}
+
+#[test]
 fn single_entry_thunk_force_errors_leave_compatibility_cell_suspended() {
     let mut ir = lower("[ (1 / 0) ]");
     let thunk_alloc = first_thunk_alloc_id(&ir);

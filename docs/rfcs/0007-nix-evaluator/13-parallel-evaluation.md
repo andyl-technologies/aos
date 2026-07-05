@@ -905,14 +905,16 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       `SingleEntry` allocation plans create thunks in that mode, and the serial
       force entry evaluates their captured node body directly under the normal
       active-force root without publishing a cached serial result or attaching a
-      parallel payload cell. Tests pin the planner-to-runtime storage mode,
-      parallel-payload admission bypass, force-count accounting, zero cache-hit
-      accounting, and the still-suspended compatibility `ThunkCell` after both
-      successful and throwing direct forces. This is a narrow tree-walk bridge
-      only: demanded `Omit` plans still allocate ordinary suspended thunks, the
-      compatibility cell remains present, single-entry storage is not wired into
-      the parallel thunk wait protocol, and the loom/Miri/TSan gate remains
-      open.
+      parallel payload cell. Order-sensitive frame assembly still blocks
+      eager/scalar elision and omission, but now admits lazy single-entry storage
+      when C-8 proves the thunk frame-local. Tests pin the planner-to-runtime
+      storage mode, analyzer-produced direct-body `let` storage, parallel-payload
+      admission bypass, force-count accounting, zero cache-hit accounting, and
+      the still-suspended compatibility `ThunkCell` after both successful and
+      throwing direct forces. This is a narrow tree-walk bridge only: demanded
+      `Omit` plans still allocate ordinary suspended thunks, the compatibility
+      cell remains present, single-entry storage is not wired into the parallel
+      thunk wait protocol, and the loom/Miri/TSan gate remains open.
 
 ### L1 — coarse top-level parallelism (§4)
 

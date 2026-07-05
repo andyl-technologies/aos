@@ -8591,17 +8591,18 @@ nurseries build on the bump arena.
       contract exists. Tests cover lazy frame-local single-entry admission,
       direct single-entry forcing without cache publication, parallel-payload
       admission bypass, throwing direct-force suspension preservation, strict
-      elision precedence, order-sensitive update fallback with present and
-      missing facts, escaping-thunk update fallback, absent omission,
-      absent-strict conflict rejection of elision, demanded-omit fallback
-      allocation, plus demand-position rejection for missing facts, missing
-      thunk nodes, non-thunk nodes, malformed thunk payloads, and missing thunk
-      bodies, while both planner contexts reject self-referential thunk bodies
-      before returning a plan. This is still a narrow storage bridge only: it
-      does not remove the compatibility `ThunkCell`, implement call-by-name
-      lowering, remove absent bindings from frame layout, improve analysis
-      precision, wire single-entry storage into the parallel thunk wait
-      protocol, or close the loom/Miri/TSan audit.
+      elision precedence, analyzer-produced direct-body `let` single-entry
+      storage during frame assembly, order-sensitive strict/absent update
+      fallback with present and missing facts, escaping-thunk update fallback,
+      absent omission, absent-strict conflict rejection of elision,
+      demanded-omit fallback allocation, plus demand-position rejection for
+      missing facts, missing thunk nodes, non-thunk nodes, malformed thunk
+      payloads, and missing thunk bodies, while both planner contexts reject
+      self-referential thunk bodies before returning a plan. This is still a
+      narrow storage bridge only: it does not remove the compatibility
+      `ThunkCell`, implement call-by-name lowering, remove absent bindings from
+      frame layout, improve analysis precision, wire single-entry storage into
+      the parallel thunk wait protocol, or close the loom/Miri/TSan audit.
 - [x] Current fallible L1 root execution precursor:
       `ratchet-oracle::eval::parallel_failure` adds a safe fallible top-level
       executor for independent roots. Root-local failures are stored as per-task
@@ -9167,17 +9168,19 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       `let`, attrset, or formal-set default bindings are being assembled. Those
       order-sensitive paths keep all binding thunks lazy to avoid reading
       uninitialized forward-reference slots or reordering value errors ahead of
-      dynamic-key and duplicate-key validation. The tree-walk oracle treats
-      `Scalar` as eager WHNF until optimized tiers add non-heap storage; current
-      `SingleEntry` plans allocate explicit direct-force thunk storage that
-      keeps the compatibility serial cell suspended after force, while demanded
-      `Omit` plans still allocate ordinary suspended thunks until a no-storage
-      demanded-value contract exists. Gate: `attrs_2` tests cover
-      conservative thunk preservation, safe strict/eager fact elision,
-      single-entry direct storage, direct-force error suspension, parallel
-      payload bypass, demanded-omit fallback allocation, inherited-select
-      assembly preservation, dynamic-key error ordering, and frame-initialization
-      preservation.
+      dynamic-key and duplicate-key validation, but lazy `SingleEntry` facts may
+      still choose direct-force storage because allocation stays lazy and keeps
+      frame shape intact. The tree-walk oracle treats `Scalar` as eager WHNF
+      until optimized tiers add non-heap storage; current `SingleEntry` plans
+      allocate explicit direct-force thunk storage that keeps the compatibility
+      serial cell suspended after force, while demanded `Omit` plans still
+      allocate ordinary suspended thunks until a no-storage demanded-value
+      contract exists. Gate: `attrs_2` tests cover conservative thunk
+      preservation, safe strict/eager fact elision, analyzer-produced
+      direct-body `let` single-entry storage, single-entry direct storage,
+      direct-force error suspension, parallel payload bypass, demanded-omit
+      fallback allocation, inherited-select assembly preservation, dynamic-key
+      error ordering, and frame-initialization preservation.
 - [ ] `--eval --json` differential check green (`C-4`) — required before the
       `eval_expr` flip.
 - [x] Current `--eval --json` command-gate precursor:

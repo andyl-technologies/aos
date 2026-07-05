@@ -11,16 +11,17 @@ use thiserror::Error;
 use crate::compile::{
     BindingLowering, FrameLocalSingleEntryThunk, FrameLocalThunkDowngrade,
     FrameLocalThunkDowngradeError, FrameLocalThunkUpdateReason, Ir, IrData, IrId, IrKind,
-    frame_local_single_entry_thunk_downgrade,
+    Strictness, frame_local_single_entry_thunk_downgrade,
 };
 
 /// Builds the tree-walk allocation plan for one lowered thunk allocation.
 ///
 /// Strict facts may elide the thunk entirely by evaluating the body to WHNF.
 /// When the thunk remains lazy, a single-entry plan is returned only if the
-/// C-8 frame-local predicate admits it. Order-sensitive binding assembly keeps a
-/// normal update slot regardless of facts so frame population cannot observe
-/// reordered evaluation.
+/// C-8 frame-local predicate admits it. Order-sensitive binding assembly blocks
+/// eager and omitted-storage rewrites so frame population cannot observe
+/// reordered evaluation, but lazy single-entry storage is still allowed when
+/// the sharing proof admits it.
 ///
 /// # Errors
 ///
@@ -34,13 +35,7 @@ pub fn tree_walk_thunk_allocation_plan(
 ) -> Result<TreeWalkThunkAllocationPlan, TreeWalkThunkAllocationError> {
     let body = thunk_alloc_body(ir, id)?;
     if context == TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly {
-        return Ok(TreeWalkThunkAllocationPlan::UpdateSlot(
-            TreeWalkThunkUpdateSlot::new(
-                id,
-                body,
-                TreeWalkThunkUpdateReason::OrderSensitiveBindingAssembly,
-            ),
-        ));
+        return order_sensitive_binding_assembly_plan(ir, id, body);
     }
 
     let downgrade = frame_local_single_entry_thunk_downgrade(ir, id)?;
@@ -78,6 +73,33 @@ pub fn tree_walk_thunk_allocation_plan(
         FrameLocalThunkDowngrade::Omit => {
             TreeWalkThunkAllocationPlan::Omit(TreeWalkOmittedThunk::new(id, body))
         }
+    })
+}
+
+fn order_sensitive_binding_assembly_plan(
+    ir: &Ir,
+    id: IrId,
+    body: IrId,
+) -> Result<TreeWalkThunkAllocationPlan, TreeWalkThunkAllocationError> {
+    let update_slot = || {
+        TreeWalkThunkAllocationPlan::UpdateSlot(TreeWalkThunkUpdateSlot::new(
+            id,
+            body,
+            TreeWalkThunkUpdateReason::OrderSensitiveBindingAssembly,
+        ))
+    };
+    let Some(facts) = ir.node_facts(id) else {
+        return Ok(update_slot());
+    };
+    if facts.strictness != Strictness::Unknown {
+        return Ok(update_slot());
+    }
+    let downgrade = frame_local_single_entry_thunk_downgrade(ir, id)?;
+    Ok(match downgrade {
+        FrameLocalThunkDowngrade::SingleEntry(single_entry) => {
+            TreeWalkThunkAllocationPlan::SingleEntry(single_entry)
+        }
+        FrameLocalThunkDowngrade::KeepUpdate(_) | FrameLocalThunkDowngrade::Omit => update_slot(),
     })
 }
 
@@ -350,10 +372,57 @@ mod tests {
     }
 
     #[test]
-    fn order_sensitive_binding_assembly_keeps_update_slot() {
+    fn order_sensitive_binding_assembly_admits_lazy_single_entry_storage() {
         let ir = thunk_ir(ExprFacts {
             strictness: Strictness::Unknown,
             cardinality: Cardinality::Once,
+            escape: Escape::NoEscape,
+        });
+
+        let plan = tree_walk_thunk_allocation_plan(
+            &ir,
+            THUNK,
+            TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly,
+        )
+        .expect("order-sensitive plan succeeds");
+
+        let TreeWalkThunkAllocationPlan::SingleEntry(single_entry) = plan else {
+            panic!("single-entry storage expected");
+        };
+        assert_eq!(single_entry.thunk(), THUNK);
+        assert_eq!(single_entry.body(), BODY);
+    }
+
+    #[test]
+    fn order_sensitive_binding_assembly_keeps_strict_facts_on_update_storage() {
+        let ir = thunk_ir(ExprFacts {
+            strictness: Strictness::Strict,
+            cardinality: Cardinality::Once,
+            escape: Escape::NoEscape,
+        });
+
+        let plan = tree_walk_thunk_allocation_plan(
+            &ir,
+            THUNK,
+            TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly,
+        )
+        .expect("order-sensitive plan succeeds");
+
+        assert_eq!(
+            plan,
+            TreeWalkThunkAllocationPlan::UpdateSlot(TreeWalkThunkUpdateSlot::new(
+                THUNK,
+                BODY,
+                TreeWalkThunkUpdateReason::OrderSensitiveBindingAssembly,
+            ))
+        );
+    }
+
+    #[test]
+    fn order_sensitive_binding_assembly_keeps_absent_facts_on_update_storage() {
+        let ir = thunk_ir(ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Absent,
             escape: Escape::NoEscape,
         });
 
