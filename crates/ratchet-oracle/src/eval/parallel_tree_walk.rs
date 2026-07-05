@@ -2,10 +2,12 @@
 //!
 //! This module bridges the safe Phase 3.5 L1 scheduler to real tree-walk
 //! evaluation of independent lowered roots. Each task owns a separate
-//! `TreeWalk` evaluator and heap, and receives the active parallel thunk worker
-//! id for the scheduler worker that actually executes it. This is still a
-//! coarse-root bridge: it does not share thunk graphs between roots, allocate
-//! from live per-worker nurseries, or replace the serial tree-walk force path.
+//! `TreeWalk` evaluator and heap, receives the active parallel thunk worker id
+//! for the scheduler worker that actually executes it, and opts into the
+//! current thread-local Tier-A worker arena backend. This is still a coarse-root
+//! bridge: it does not share thunk graphs between roots, keep a final
+//! never-free nursery alive for the whole CLI, or replace the serial tree-walk
+//! force path.
 
 use std::num::NonZeroUsize;
 
@@ -414,8 +416,10 @@ fn preflight_parallel_tree_walk_drv_differential_options(
 /// Evaluates independent expression-style lowered roots through the safe L1 scheduler.
 ///
 /// This convenience entry point treats every root as source-less expression
-/// evaluation, matching
-/// [`eval_raw_bytes_with_options`](crate::eval::tree_walk::eval_raw_bytes_with_options).
+/// evaluation with the same raw rendering semantics as
+/// [`eval_raw_bytes_with_options`](crate::eval::tree_walk::eval_raw_bytes_with_options),
+/// while scheduler workers still install their scheduler worker id and
+/// thread-local Tier-A worker storage before evaluation.
 /// Use
 /// [`eval_raw_bytes_parallel_top_level_roots`] when file-backed roots need
 /// source provenance for `__curPos` or `builtins.unsafeGetAttrPos`.
@@ -451,8 +455,10 @@ where
 /// Evaluates independent expression-style lowered roots through Chase-Lev worker deques.
 ///
 /// This convenience entry point treats every root as source-less expression
-/// evaluation, matching
-/// [`eval_raw_bytes_with_options`](crate::eval::tree_walk::eval_raw_bytes_with_options).
+/// evaluation with the same raw rendering semantics as
+/// [`eval_raw_bytes_with_options`](crate::eval::tree_walk::eval_raw_bytes_with_options),
+/// while scheduler workers still install their scheduler worker id and
+/// thread-local Tier-A worker storage before evaluation.
 /// Use
 /// [`eval_raw_bytes_parallel_chase_lev_top_level_roots`] when file-backed roots
 /// need source provenance for `__curPos` or `builtins.unsafeGetAttrPos`.
@@ -494,9 +500,9 @@ where
 /// [`eval_raw_bytes_with_options_source`](crate::eval::tree_walk::eval_raw_bytes_with_options_source)
 /// so position-sensitive builtins see the supplied source name and bytes. The
 /// supplied options are cloned for every task, then the active parallel thunk
-/// worker id is replaced with a
-/// non-zero id derived from the scheduler worker that actually executes the
-/// root.
+/// worker id is replaced with a non-zero id derived from the scheduler worker
+/// that actually executes the root and the cloned options opt into
+/// thread-local Tier-A worker storage.
 ///
 /// Root-local tree-walk failures are stored in the returned report as
 /// [`ParallelTreeWalkEvaluationError::TreeWalk`] outcomes. Scheduler
@@ -547,9 +553,9 @@ where
 /// [`eval_raw_bytes_with_options_source`](crate::eval::tree_walk::eval_raw_bytes_with_options_source)
 /// so position-sensitive builtins see the supplied source name and bytes. The
 /// supplied options are cloned for every task, then the active parallel thunk
-/// worker id is replaced with a
-/// non-zero id derived from the Chase-Lev scheduler worker that actually
-/// executes the root.
+/// worker id is replaced with a non-zero id derived from the Chase-Lev
+/// scheduler worker that actually executes the root and the cloned options opt
+/// into thread-local Tier-A worker storage.
 ///
 /// Root-local tree-walk failures are stored in the returned report as
 /// [`ParallelTreeWalkEvaluationError::TreeWalk`] outcomes. Scheduler
@@ -597,7 +603,8 @@ where
 /// absolute path and serialized ATerm bytes. The supplied options are cloned
 /// per task, then the active parallel thunk worker id is replaced with a
 /// non-zero id derived from the Chase-Lev scheduler worker that actually
-/// executes the root.
+/// executes the root and the cloned options opt into thread-local Tier-A worker
+/// storage.
 ///
 /// Root-local tree-walk or derivation-surface failures are stored in the
 /// returned report as [`ParallelTreeWalkDrvEvaluationError`] outcomes.
@@ -644,15 +651,13 @@ fn eval_raw_bytes_for_parallel_worker(
     base_options: &TreeWalkOptions,
     worker_ids: &[ParallelThunkWorkerId],
 ) -> Result<ParallelTreeWalkRawEvaluation, ParallelTreeWalkEvaluationError> {
-    let parallel_thunk_worker_id = worker_ids[context.worker_id()];
-    let mut options = base_options.clone();
-    options.set_parallel_thunk_worker_id(parallel_thunk_worker_id);
-    let (raw_bytes, parallel_thunk_worker_id) =
-        eval_raw_bytes_for_root_with_worker_id(root, options)?;
+    let options = tree_walk_options_for_parallel_worker(context, base_options, worker_ids);
+    let (raw_bytes, metadata) = eval_raw_bytes_for_root_with_metadata(root, options)?;
 
     Ok(ParallelTreeWalkRawEvaluation {
         raw_bytes,
-        parallel_thunk_worker_id,
+        parallel_thunk_worker_id: metadata.parallel_thunk_worker_id,
+        heap_uses_thread_local_tier_a: metadata.heap_uses_thread_local_tier_a,
     })
 }
 
@@ -662,30 +667,39 @@ fn eval_drv_outputs_for_parallel_worker(
     base_options: &TreeWalkOptions,
     worker_ids: &[ParallelThunkWorkerId],
 ) -> Result<ParallelTreeWalkDrvEvaluation, ParallelTreeWalkDrvEvaluationError> {
-    let parallel_thunk_worker_id = worker_ids[context.worker_id()];
-    let mut options = base_options.clone();
-    options.set_parallel_thunk_worker_id(parallel_thunk_worker_id);
-    let (output, parallel_thunk_worker_id) =
-        eval_drv_outputs_for_root_with_worker_id(root, options)?;
+    let options = tree_walk_options_for_parallel_worker(context, base_options, worker_ids);
+    let (output, metadata) = eval_drv_outputs_for_root_with_metadata(root, options)?;
 
     Ok(ParallelTreeWalkDrvEvaluation {
         output,
-        parallel_thunk_worker_id,
+        parallel_thunk_worker_id: metadata.parallel_thunk_worker_id,
+        heap_uses_thread_local_tier_a: metadata.heap_uses_thread_local_tier_a,
     })
+}
+
+fn tree_walk_options_for_parallel_worker(
+    context: ParallelFallibleTaskContext,
+    base_options: &TreeWalkOptions,
+    worker_ids: &[ParallelThunkWorkerId],
+) -> TreeWalkOptions {
+    let mut options = base_options.clone();
+    options.set_parallel_thunk_worker_id(worker_ids[context.worker_id()]);
+    options.set_heap_thread_local_tier_a_enabled(true);
+    options
 }
 
 fn eval_raw_bytes_for_root(
     root: ParallelTreeWalkRoot,
     options: TreeWalkOptions,
 ) -> Result<Vec<u8>, TreeWalkError> {
-    let (raw_bytes, _) = eval_raw_bytes_for_root_with_worker_id(root, options)?;
+    let (raw_bytes, _) = eval_raw_bytes_for_root_with_metadata(root, options)?;
     Ok(raw_bytes)
 }
 
-fn eval_raw_bytes_for_root_with_worker_id(
+fn eval_raw_bytes_for_root_with_metadata(
     root: ParallelTreeWalkRoot,
     options: TreeWalkOptions,
-) -> Result<(Vec<u8>, ParallelThunkWorkerId), TreeWalkError> {
+) -> Result<(Vec<u8>, ParallelTreeWalkWorkerMetadata), TreeWalkError> {
     let ParallelTreeWalkRoot { ir, source } = root;
     let evaluator = match source {
         Some(source) => {
@@ -693,23 +707,26 @@ fn eval_raw_bytes_for_root_with_worker_id(
         }
         None => TreeWalk::with_options(&ir, options),
     };
-    let parallel_thunk_worker_id = evaluator.parallel_thunk_worker_id();
+    let metadata = ParallelTreeWalkWorkerMetadata::from_evaluator(&evaluator);
     let raw_bytes = eval_raw_bytes_with_evaluator(&ir, evaluator)?;
-    Ok((raw_bytes, parallel_thunk_worker_id))
+    Ok((raw_bytes, metadata))
 }
 
 fn eval_drv_outputs_for_root(
     root: ParallelTreeWalkRoot,
     options: TreeWalkOptions,
 ) -> Result<ParallelOutputTaskResult, ParallelTreeWalkDrvEvaluationError> {
-    let (output, _) = eval_drv_outputs_for_root_with_worker_id(root, options)?;
+    let (output, _) = eval_drv_outputs_for_root_with_metadata(root, options)?;
     Ok(output)
 }
 
-fn eval_drv_outputs_for_root_with_worker_id(
+fn eval_drv_outputs_for_root_with_metadata(
     root: ParallelTreeWalkRoot,
     options: TreeWalkOptions,
-) -> Result<(ParallelOutputTaskResult, ParallelThunkWorkerId), ParallelTreeWalkDrvEvaluationError> {
+) -> Result<
+    (ParallelOutputTaskResult, ParallelTreeWalkWorkerMetadata),
+    ParallelTreeWalkDrvEvaluationError,
+> {
     let ParallelTreeWalkRoot { ir, source } = root;
     let mut evaluator = match source {
         Some(source) => {
@@ -717,15 +734,30 @@ fn eval_drv_outputs_for_root_with_worker_id(
         }
         None => TreeWalk::with_options(&ir, options),
     };
-    let parallel_thunk_worker_id = evaluator.parallel_thunk_worker_id();
+    let metadata = ParallelTreeWalkWorkerMetadata::from_evaluator(&evaluator);
     let value = evaluator.eval_root()?;
     let string_context = root_string_context(&evaluator, value)?;
     evaluator.force_root_derivation_surfaces(value)?;
     let derivations = evaluator.derivation_snapshot()?;
     Ok((
         ParallelOutputTaskResult::new(string_context, drv_outputs_from_derivations(derivations)?),
-        parallel_thunk_worker_id,
+        metadata,
     ))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ParallelTreeWalkWorkerMetadata {
+    parallel_thunk_worker_id: ParallelThunkWorkerId,
+    heap_uses_thread_local_tier_a: bool,
+}
+
+impl ParallelTreeWalkWorkerMetadata {
+    fn from_evaluator(evaluator: &TreeWalk) -> Self {
+        Self {
+            parallel_thunk_worker_id: evaluator.parallel_thunk_worker_id(),
+            heap_uses_thread_local_tier_a: evaluator.heap().uses_thread_local_tier_a(),
+        }
+    }
 }
 
 fn root_string_context(
@@ -1047,6 +1079,7 @@ impl ParallelTreeWalkRootSource {
 pub struct ParallelTreeWalkRawEvaluation {
     raw_bytes: Vec<u8>,
     parallel_thunk_worker_id: ParallelThunkWorkerId,
+    heap_uses_thread_local_tier_a: bool,
 }
 
 impl ParallelTreeWalkRawEvaluation {
@@ -1060,6 +1093,11 @@ impl ParallelTreeWalkRawEvaluation {
         self.parallel_thunk_worker_id
     }
 
+    /// Returns whether the task heap used thread-local Tier-A worker storage.
+    pub const fn heap_uses_thread_local_tier_a(&self) -> bool {
+        self.heap_uses_thread_local_tier_a
+    }
+
     /// Consumes the evaluation and returns the strict raw value bytes.
     pub fn into_raw_bytes(self) -> Vec<u8> {
         self.raw_bytes
@@ -1071,6 +1109,7 @@ impl ParallelTreeWalkRawEvaluation {
 pub struct ParallelTreeWalkDrvEvaluation {
     output: ParallelOutputTaskResult,
     parallel_thunk_worker_id: ParallelThunkWorkerId,
+    heap_uses_thread_local_tier_a: bool,
 }
 
 impl ParallelTreeWalkDrvEvaluation {
@@ -1082,6 +1121,11 @@ impl ParallelTreeWalkDrvEvaluation {
     /// Returns the parallel thunk worker id installed for this task.
     pub const fn parallel_thunk_worker_id(&self) -> ParallelThunkWorkerId {
         self.parallel_thunk_worker_id
+    }
+
+    /// Returns whether the task heap used thread-local Tier-A worker storage.
+    pub const fn heap_uses_thread_local_tier_a(&self) -> bool {
+        self.heap_uses_thread_local_tier_a
     }
 }
 
@@ -1594,6 +1638,7 @@ mod tests {
             let evaluation = outcome.outcome().as_ref().expect("root succeeded");
             evaluation.parallel_thunk_worker_id().get()
                 == u64::try_from(outcome.worker_id()).expect("test worker id fits") + 1
+                && evaluation.heap_uses_thread_local_tier_a()
         }));
     }
 
@@ -1652,6 +1697,7 @@ mod tests {
             let evaluation = outcome.outcome().as_ref().expect("root succeeded");
             evaluation.parallel_thunk_worker_id().get()
                 == u64::try_from(outcome.worker_id()).expect("test worker id fits") + 1
+                && evaluation.heap_uses_thread_local_tier_a()
         }));
     }
 
@@ -1681,6 +1727,7 @@ mod tests {
             ParallelThunkWorkerId::FIRST
         );
         assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
+        assert!(evaluation.heap_uses_thread_local_tier_a());
     }
 
     #[test]
@@ -1717,6 +1764,7 @@ mod tests {
                         ParallelThunkWorkerId::FIRST
                     );
                     assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
+                    assert!(evaluation.heap_uses_thread_local_tier_a());
                     evaluation.raw_bytes().to_vec()
                 })
                 .collect::<Vec<_>>(),
@@ -2001,6 +2049,7 @@ mod tests {
             ParallelThunkWorkerId::FIRST
         );
         assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
+        assert!(evaluation.heap_uses_thread_local_tier_a());
         assert_eq!(evaluation.output().drv_outputs().len(), 1);
         assert!(
             evaluation.output().drv_outputs()[0]
@@ -2037,6 +2086,7 @@ mod tests {
             outcome.worker_id() == 0
                 && evaluation.parallel_thunk_worker_id() == ParallelThunkWorkerId::FIRST
                 && evaluation.parallel_thunk_worker_id() != sentinel_worker_id
+                && evaluation.heap_uses_thread_local_tier_a()
                 && evaluation.output().drv_outputs().len() == 1
                 && evaluation.output().drv_outputs()[0]
                     .path()

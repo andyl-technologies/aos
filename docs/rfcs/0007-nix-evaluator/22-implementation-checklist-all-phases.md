@@ -4962,6 +4962,19 @@ and helps the oracle directly.
       tree-walk still defaults to its owned arena, trap-only runtime-FFI
       wrappers remain blocked from final native-export/JIT admission, and the
       CLI-wide byte-green Tier-A proof remains open.
+- [x] Current parallel tree-walk Tier-A worker-storage bridge:
+      `ratchet-oracle::eval::parallel_tree_walk` now constructs scheduler-backed
+      task evaluators through a shared worker-options helper that installs the
+      scheduler-derived parallel thunk worker id and enables the existing
+      thread-local Tier-A worker-storage backend before raw or `.drv`
+      evaluation. Successful raw and `.drv` task reports expose whether the
+      task heap used thread-local Tier-A storage, and tests pin the safe-queue
+      raw bridge, Chase-Lev raw bridge, direct raw worker bridge, direct `.drv`
+      worker bridge, and Chase-Lev `.drv` bridge. This is scheduler bridge
+      plumbing only: task-local tree-walk heaps still use the existing
+      evaluator-level thread-local backend lifecycle, no shared thunk graph or
+      final live per-worker nursery is installed, tree-walk's ordinary default
+      remains unchanged, and the CLI-wide byte-green Tier-A proof remains open.
 - [x] Current Tier-A strict-JSON stats precursor: `EvalStats` now mirrors worker
       and permanent-shared arena chunk counts, logical reserved bytes,
       page-rounded mapped bytes, and used bytes from the default tree-walk heap,
@@ -8514,6 +8527,18 @@ nurseries build on the bump arena.
       attach cancellation causes to missing ownership records, interrupt
       in-flight work, publish into hash-cons tables, or satisfy the
       loom/Miri/TSan gate.
+- [x] Current parallel tree-walk Tier-A worker-storage bridge:
+      scheduler-backed raw and `.drv` tree-walk worker tasks now enter
+      evaluation with cloned options that carry the scheduler-derived parallel
+      thunk worker id and opt into the current thread-local Tier-A worker
+      backend. The raw and `.drv` task result types expose a
+      `heap_uses_thread_local_tier_a` observation, and tests pin safe-queue raw
+      execution, Chase-Lev raw execution, direct raw worker execution, direct
+      `.drv` worker execution, and Chase-Lev `.drv` execution. This is still a
+      task-local evaluator bridge only: no live worker nursery is shared across
+      task heaps, no L2 shared thunk graph is installed, the final CLI-wide
+      never-free Tier-A default remains open, and the loom/Miri/TSan gate is not
+      closed.
 - [ ] Single-entry-thunk downgrade restricted to escape-analysis-proven
       *frame-local* thunks (C-8), so the blackhole-skip is sound under parallel
       schedules.

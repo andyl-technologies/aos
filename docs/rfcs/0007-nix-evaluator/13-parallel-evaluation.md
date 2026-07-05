@@ -1096,6 +1096,20 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
 ### Parallel GC × thunk mutation (§5)
 
 - [ ] Tier-A one-shot CLI: per-worker bump nurseries, never-free, drop the arena at exit — **no collection during eval, so no mutator/collector race**; L1 + L2 fully unconstrained (§5.2) — **P3.5**, `C-12`; this is the build-time bottleneck mode and the most important simplification.
+- [x] Current parallel tree-walk Tier-A worker-storage bridge:
+      scheduler-backed raw and `.drv` tree-walk workers now clone the caller's
+      options through a single worker-options helper that installs both the
+      scheduler-derived parallel thunk worker id and the existing thread-local
+      Tier-A worker-storage backend before constructing the task-local
+      evaluator. Successful raw and `.drv` task reports expose whether the task
+      heap used thread-local Tier-A storage, and tests pin the safe-queue raw
+      bridge, Chase-Lev raw bridge, direct raw worker bridge, direct `.drv`
+      worker bridge, and Chase-Lev `.drv` bridge. This is still the current
+      thread-local backend bridge only: each task owns a separate tree-walk heap,
+      the backend reset/lifetime remains the existing evaluator-construction
+      lifecycle, no shared thunk graph or live per-worker nursery is installed,
+      and the CLI-wide never-free Tier-A default plus loom/Miri/TSan gates
+      remain open.
 - [ ] Tier-B Stage B0 stop-the-world parallel collector for the daemon: safepoint all workers, collect (itself parallel), resume — no load barriers, no concurrent relocation (§5.3) — **P8** (daemon-only, downstream of `S-8` Tier B).
 - [ ] Region inference / escape analysis to confine non-escaping intermediates to the private nursery, shrinking the cross-region remembered set before GC runs (§5.4) — **P4** analyses ([07](07-laziness-and-whole-program-analyses.md), `S-9`); feeds the single-entry-thunk frame-local restriction (`C-8`).
 - [ ] **Research-grade, in scope:** Stage B1 concurrent low-pause moving GC (ZGC/Shenandoah-style colored pointers + load barriers), the load-barrier-before-CAS sequence, and the WHNF-tag vs colored-pointer-bit co-design (§5.3, open questions §8.1–§8.2) — **P8**, `R-1`/`R-2`/`R-3`/`R-4`; daemon-only, verified under loom/Miri before shipping, built (not dropped) under the unlimited-budget mandate.
