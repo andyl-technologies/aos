@@ -71,6 +71,32 @@ fn has_forwarding_destination(heap: &EvalHeap, destination: Value) -> bool {
     })
 }
 
+fn remembered_set_with_only_edge(source: &RememberedSet, edge: RememberedEdge) -> RememberedSet {
+    let mut remembered_set = RememberedSet::with_epoch(source.epoch());
+    remembered_set
+        .record(edge)
+        .expect("single remembered edge records");
+    remembered_set
+}
+
+fn retain_only_thunk_resolve_edge(outcome: &mut EvalOutcome, thunk_value: Value) -> RememberedEdge {
+    let retained_edge = RememberedEdge::new(gc_address(thunk_value), gc_address(outcome.value()));
+    assert!(
+        outcome
+            .thunk_resolve_remembered_set()
+            .edges()
+            .contains(&retained_edge)
+    );
+    outcome.thunk_resolve_remembered_set =
+        remembered_set_with_only_edge(outcome.thunk_resolve_remembered_set(), retained_edge);
+    outcome.thunk_resolve_card_table = GcCardTable::default();
+    outcome
+        .thunk_resolve_card_table
+        .mark_source(retained_edge.source())
+        .expect("retained edge source card marks");
+    retained_edge
+}
+
 fn next_dirty_card_source(card_table: &GcCardTable) -> GcHeapAddress {
     let next_index = card_table
         .dirty_cards()
@@ -1568,6 +1594,10 @@ fn collector_poll_minor_gc_reference_writeback_plan_reports_mixed_partitions() {
     let nursery_base = static_gc_address(0x1000_0000);
     let (evaluator, child, parent, poll, value_stack) =
         tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let source_epoch = evaluator.thunk_resolve_remembered_set().epoch();
+    let next_epoch = source_epoch
+        .checked_next()
+        .expect("remembered-set epoch advances");
     let plan = evaluator
         .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
             poll,
@@ -1593,7 +1623,7 @@ fn collector_poll_minor_gc_reference_writeback_plan_reports_mixed_partitions() {
     );
     assert_eq!(plan.old_reserved_bytes(), 0);
     assert_eq!(plan.total_reserved_bytes(), plan.nursery_reserved_bytes());
-    assert_eq!(plan.source_remembered_set().epoch().value(), 0);
+    assert_eq!(plan.source_remembered_set().epoch(), source_epoch);
     assert_eq!(plan.source_remembered_set_edges(), 1);
     assert_eq!(
         plan.source_remembered_set().edges(),
@@ -1606,7 +1636,7 @@ fn collector_poll_minor_gc_reference_writeback_plan_reports_mixed_partitions() {
             .covers_source(gc_address(parent))
     );
     assert_eq!(plan.remembered_set_refreshes(), 1);
-    assert_eq!(plan.next_remembered_set().epoch().value(), 1);
+    assert_eq!(plan.next_remembered_set().epoch(), next_epoch);
     assert_eq!(plan.next_remembered_set_edges(), 1);
     assert_eq!(
         plan.next_remembered_set().edges(),
@@ -9435,7 +9465,7 @@ fn owned_eval_reports_gc_stress_boundary_heap_field_writeback_slots() {
 fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
     let (mut outcome, thunk_value) = boundary_remembered_edge_outcome();
     assert_eq!(outcome.value().tag(), ValueTag::Lambda);
-    assert_eq!(outcome.thunk_resolve_remembered_set().len(), 1);
+    let _retained_edge = retain_only_thunk_resolve_edge(&mut outcome, thunk_value);
 
     let nursery_base = static_gc_address(0x1000_0000);
     let preflights = outcome
@@ -9573,7 +9603,9 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
     assert_eq!(live_card_table_dry_run.card_table_dirty_cards_cleared(), 2);
     assert!(outcome.thunk_resolve_card_table().is_empty());
 
-    let (mut forwarding_outcome, _) = boundary_remembered_edge_outcome();
+    let (mut forwarding_outcome, forwarding_thunk_value) = boundary_remembered_edge_outcome();
+    let _forwarding_edge =
+        retain_only_thunk_resolve_edge(&mut forwarding_outcome, forwarding_thunk_value);
     let live_forwarding_dry_run = forwarding_outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_forwarding_slots(
             MinorGcPromotionPolicy::new(2),
@@ -9625,7 +9657,9 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         );
     }
 
-    let (mut destination_outcome, _) = boundary_remembered_edge_outcome();
+    let (mut destination_outcome, destination_thunk_value) = boundary_remembered_edge_outcome();
+    let _destination_edge =
+        retain_only_thunk_resolve_edge(&mut destination_outcome, destination_thunk_value);
     let live_destination_dry_run = destination_outcome
         .gc_stress_boundary_minor_gc_commit_dry_run_with_live_destination_storage(
             MinorGcPromotionPolicy::new(2),
@@ -9686,7 +9720,8 @@ fn boundary_owned_commit_buffers_publish_retained_remembered_edges() {
         assert_eq!(installed.destination_bytes(), expected_bytes.as_slice());
     }
 
-    let (mut merge_outcome, _) = boundary_remembered_edge_outcome();
+    let (mut merge_outcome, merge_thunk_value) = boundary_remembered_edge_outcome();
+    let _merge_edge = retain_only_thunk_resolve_edge(&mut merge_outcome, merge_thunk_value);
     let extra_card_source = next_dirty_card_source(merge_outcome.thunk_resolve_card_table());
     merge_outcome
         .thunk_resolve_card_table
@@ -10262,7 +10297,12 @@ fn boundary_minor_gc_plans_reject_remembered_edge_without_dirty_card() {
         .expect("derivation snapshot succeeds");
     let stats = evaluator.stats_snapshot();
     let remembered_set = evaluator.thunk_resolve_remembered_set;
-    let edge = remembered_set.edges()[0];
+    let edge = RememberedEdge::new(gc_address(thunk_value), gc_address(forced));
+    assert!(
+        remembered_set.edges().contains(&edge),
+        "thunk-resolution write barrier records forced value edge"
+    );
+    let remembered_set = remembered_set_with_only_edge(&remembered_set, edge);
     let outcome = EvalOutcome {
         value: forced,
         heap: evaluator.heap,
@@ -10340,7 +10380,12 @@ fn boundary_live_card_table_clear_waits_for_successful_commit_dry_run() {
         .expect("derivation snapshot succeeds");
     let stats = evaluator.stats_snapshot();
     let remembered_set = evaluator.thunk_resolve_remembered_set;
-    let edge = remembered_set.edges()[0];
+    let edge = RememberedEdge::new(gc_address(thunk_value), gc_address(forced));
+    assert!(
+        remembered_set.edges().contains(&edge),
+        "thunk-resolution write barrier records forced value edge"
+    );
+    let remembered_set = remembered_set_with_only_edge(&remembered_set, edge);
     let wrong_card_source = static_gc_address(0x4000_0000);
     let mut wrong_card_table = GcCardTable::default();
     wrong_card_table
