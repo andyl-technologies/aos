@@ -369,11 +369,7 @@ impl TreeWalk {
                 for value in values {
                     elements.push(self.value_from_json(id, span, value)?);
                 }
-                self.heap
-                    .alloc_list(NixList::new(elements))
-                    .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                    })
+                self.alloc_tree_walk_list(id, span, NixList::new(elements))
             }
             JsonValue::Object(values) => {
                 let mut entries = Vec::new();
@@ -454,11 +450,7 @@ impl TreeWalk {
                 for value in values {
                     elements.push(self.value_from_toml(id, span, value)?);
                 }
-                self.heap
-                    .alloc_list(NixList::new(elements))
-                    .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                    })
+                self.alloc_tree_walk_list(id, span, NixList::new(elements))
             }
             TomlValue::Table(values) => {
                 let mut entries = Vec::new();

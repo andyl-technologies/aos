@@ -2158,6 +2158,163 @@ fn gc_stress_eval_root_serializer_scalar_results_dispatch_permanent_noop_bridge(
 }
 
 #[test]
+fn gc_stress_json_array_result_dispatches_permanent_noop_bridge() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_from_json(
+                ir.root,
+                span,
+                JsonValue::Array(vec![
+                    JsonValue::Number(JsonNumber::from(1)),
+                    JsonValue::Bool(true),
+                    JsonValue::Null,
+                ]),
+            )
+        })
+        .expect("JSON array list allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating JSON array list"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("JSON array list generation is known"),
+        HeapGeneration::Permanent
+    );
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("JSON array result is heap-owned");
+    assert_eq!(list.len(), 3);
+    assert_eq!(
+        list.get(0).expect("first JSON value exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        list.get(1).expect("second JSON value exists").as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        list.get(2).expect("third JSON value exists").as_null(),
+        Ok(())
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("JSON array list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_toml_array_result_dispatches_permanent_noop_bridge() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_from_toml(
+                ir.root,
+                span,
+                TomlValue::Array(vec![
+                    TomlValue::Integer(1),
+                    TomlValue::Boolean(true),
+                    TomlValue::Float(2.5),
+                ]),
+            )
+        })
+        .expect("TOML array list allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating TOML array list"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("TOML array list generation is known"),
+        HeapGeneration::Permanent
+    );
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("TOML array result is heap-owned");
+    assert_eq!(list.len(), 3);
+    assert_eq!(
+        list.get(0).expect("first TOML value exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        list.get(1).expect("second TOML value exists").as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        list.get(2)
+            .expect("third TOML value exists")
+            .as_float()
+            .map(f64::to_bits),
+        Ok(2.5f64.to_bits())
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("TOML array list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots() {
     let cases: &[(&str, &[u8])] = &[
         (r#"builtins.concatStringsSep "," [ "a" "b" ]"#, b"a,b"),

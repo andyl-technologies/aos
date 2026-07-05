@@ -7392,6 +7392,8 @@ and helps the oracle directly.
       while interned reflected-context attr roots block dispatch,
       root `concatStringsSep` and `replaceStrings` evaluations preserving
       registered transient roots while interned list roots block dispatch,
+      parsed JSON and TOML array-result helper allocations relocating
+      registered transient roots,
       direct `attrNames`, `attrValues`, and `tail` list-result helper
       allocations preserving registered transient roots while input composite
       roots block dispatch, direct list-wrapper allocation preserving
