@@ -425,6 +425,19 @@ mod tests {
     }
 
     #[test]
+    fn force_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+        for binding in runtime_forcing_native_wrapper_bindings() {
+            let oracle_blockers = binding.entrypoint().native_export_blockers();
+            assert_eq!(
+                binding.remaining_export_blockers(),
+                &oracle_blockers[1..],
+                "{} runtime-FFI blockers extend oracle gate after final admission",
+                binding.symbol_name()
+            );
+        }
+    }
+
+    #[test]
     fn aos_blackhole_check_native_wrapper_returns_for_non_thunks() {
         let rt = std::ptr::null_mut();
         let value = Value::int(42);

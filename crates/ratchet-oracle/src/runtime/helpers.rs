@@ -3551,12 +3551,52 @@ mod tests {
             Some(forcing_blockers)
         );
         assert_eq!(
+            force_export_gap
+                .missing_exported_forcing_blockers()
+                .expect("forcing blockers exist"),
+            [
+                RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented,
+                RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
+                RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented,
+                RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
+            ]
+            .as_slice()
+        );
+        assert_eq!(
             deep_force_export_gap.missing_exported_forcing_blockers(),
             Some(deep_forcing_blockers)
         );
         assert_eq!(
+            deep_force_export_gap
+                .missing_exported_forcing_blockers()
+                .expect("deep-forcing blockers exist"),
+            [
+                RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented,
+                RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
+                RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented,
+                RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
+            ]
+            .as_slice()
+        );
+        assert_eq!(
             blackhole_check_export_gap.missing_exported_forcing_blockers(),
             Some(blackhole_check_blockers)
+        );
+        assert_eq!(
+            blackhole_check_export_gap
+                .missing_exported_forcing_blockers()
+                .expect("blackhole-check blockers exist"),
+            [
+                RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
+                RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
+            ]
+            .as_slice()
         );
         assert!(
             force_export_gap
@@ -3577,6 +3617,12 @@ mod tests {
                 .missing_exported_forcing_blockers()
                 .expect("forcing blockers exist")
                 .contains(&RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented)
+        );
+        assert!(
+            !force_export_gap
+                .missing_exported_forcing_blockers()
+                .expect("forcing blockers exist")
+                .contains(&RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized)
         );
         assert_eq!(
             force_export_gap.missing_exported_allocation_blockers(),

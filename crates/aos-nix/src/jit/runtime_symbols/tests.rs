@@ -5,7 +5,7 @@ use ratchet_jit::{
 use ratchet_oracle::runtime::{
     alloc::RuntimeAllocationEntryPoint, apply::RuntimeApplyEntryPoint,
     attr::RuntimeAttrAccessEntryPoint, barrier::RuntimeWriteBarrierEntryPoint,
-    helpers::runtime_symbol_rust_callable_preflight,
+    forcing::RuntimeForcingEntryPoint, helpers::runtime_symbol_rust_callable_preflight,
 };
 use ratchet_runtime_ffi::wrappers::runtime_native_wrapper_bindings;
 
@@ -835,6 +835,8 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
         );
     }
     for symbol_name in EXPECTED_FORCE_SYMBOLS {
+        let entrypoint = RuntimeForcingEntryPoint::from_symbol_name(symbol_name)
+            .expect("expected forcing symbol maps to an entry point");
         assert!(
             registration
                 .native_export_gap_for_symbol(symbol_name)
@@ -843,7 +845,7 @@ fn nix_jit_runtime_symbol_registration_preflight_uses_runtime_candidates() {
                         == Some(RuntimeHelperRole::ForcingControl)
                         && gap
                             .missing_exported_forcing_blockers()
-                            .is_some_and(|blockers| !blockers.is_empty())
+                            .is_some_and(|blockers| blockers == entrypoint.native_export_blockers())
                 })
         );
     }

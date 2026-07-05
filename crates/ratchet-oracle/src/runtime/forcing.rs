@@ -125,10 +125,10 @@ pub fn runtime_forcing_rust_callable_bindings() -> Vec<RuntimeForcingRustCallabl
 /// Builds native-export readiness metadata for frozen forcing helpers.
 ///
 /// The returned report is intentionally negative today: forcing helpers have
-/// frozen ABI metadata and safe evaluator-callable wrappers, but no exported C ABI
-/// wrapper. The blocker list is precise so later unsafe wrapper work can clear
-/// individual obligations without treating the Rust callable as a native ABI
-/// export.
+/// frozen ABI metadata and safe evaluator-callable wrappers, but no wrapper is
+/// admitted as a final native export by this oracle gate. The blocker list is
+/// precise so later unsafe wrapper work can clear individual obligations without
+/// treating the Rust callable as a native ABI export.
 pub fn runtime_forcing_native_export_preflight() -> RuntimeForcingNativeExportPreflight {
     RuntimeForcingNativeExportPreflight::new(
         runtime_forcing_entrypoints()
@@ -189,8 +189,8 @@ impl RuntimeForcingEntryPoint {
     ///
     /// The callable's Rust shape is separate from the frozen native ABI
     /// signature because runtime-context decoding, active force-root binding,
-    /// evaluator trap transfer, and by-value return materialization are not
-    /// implemented yet.
+    /// evaluator trap transfer, and complete forcing dispatch are not implemented
+    /// yet.
     pub fn rust_callable_binding(self) -> RuntimeForcingRustCallableBinding {
         RuntimeForcingRustCallableBinding::new(
             self,
@@ -333,7 +333,7 @@ pub enum RuntimeForcingNativeExportBlocker {
     ForceCacheIntegrationUnimplemented,
     /// Helper failures cannot yet transfer into evaluator trap/error machinery.
     TrapTransferUnimplemented,
-    /// The by-value [`Value`] return is not yet materialized through the native ABI.
+    /// A candidate wrapper would not materialize the by-value [`Value`] native ABI return.
     NativeValueReturnUnmaterialized,
 }
 
@@ -351,7 +351,6 @@ const FORCE_VALUE_NATIVE_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] =
     RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
     RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented,
     RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
-    RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized,
 ];
 
 /// Native-export readiness for one frozen forcing helper.
@@ -809,6 +808,32 @@ mod tests {
             assert_eq!(record.entrypoint(), *entrypoint);
             assert_eq!(record.symbol_name(), entrypoint.symbol_name());
             assert_eq!(record.blockers(), entrypoint.native_export_blockers());
+            match entrypoint {
+                RuntimeForcingEntryPoint::AosBlackholeCheck => assert_eq!(
+                    record.blockers(),
+                    [
+                        RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper,
+                        RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                        RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
+                        RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
+                    ]
+                    .as_slice()
+                ),
+                RuntimeForcingEntryPoint::AosForce | RuntimeForcingEntryPoint::AosForceDeep => {
+                    assert_eq!(
+                        record.blockers(),
+                        [
+                            RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper,
+                            RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                            RuntimeForcingNativeExportBlocker::ActiveForceRootBindingUnimplemented,
+                            RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
+                            RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented,
+                            RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
+                        ]
+                        .as_slice()
+                    );
+                }
+            }
             assert!(!record.is_export_ready());
             assert!(
                 record
@@ -847,7 +872,7 @@ mod tests {
                     assert!(record.blockers().contains(
                         &RuntimeForcingNativeExportBlocker::ForceCacheIntegrationUnimplemented
                     ));
-                    assert!(record.blockers().contains(
+                    assert!(!record.blockers().contains(
                         &RuntimeForcingNativeExportBlocker::NativeValueReturnUnmaterialized
                     ));
                 }
