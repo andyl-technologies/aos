@@ -36,9 +36,7 @@ impl TreeWalk {
             )?);
         }
 
-        self.heap
-            .alloc_list(NixList::new(mapped))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(mapped))
     }
 
     pub(super) fn eval_gen_list_primop(
