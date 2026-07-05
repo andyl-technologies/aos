@@ -8988,6 +8988,20 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       malformed raw/imported IR cannot leave a partially-refined cardinality
       table. This is an analyzer-boundary check only; it does not add
       whole-program usage precision or single-entry-thunk lowering.
+- [x] Current branch-sensitive cardinality precursor:
+      `annotate_cardinality` now treats `If` branch bodies as mutually
+      exclusive while counting a simple `let` frame's local slot uses. The
+      condition is counted unconditionally, then the analyzer merges branch
+      deltas with a maximum rather than summing both branches, so a binding used
+      once in each branch can be marked `Once`. Uses in the condition still add
+      to branch uses, and any nested frame-producing branch keeps the enclosing
+      binding conservative at `Many`. This is local syntactic precision only; it
+      does not add path-sensitive demand facts, recursion/higher-order
+      cardinality, or the whole-program usage fixpoint. Gate:
+      `cardinality_counts_if_branches_as_mutually_exclusive`,
+      `cardinality_sums_if_condition_with_branch_uses`,
+      `cardinality_keeps_incomplete_if_branches_conservative`,
+      `cardinality_resets_stale_facts_when_if_branch_becomes_incomplete`.
 - [x] Current dead-binding elimination planning precursor:
       `ratchet-core::analysis::dead_binding` consumes cardinality facts and
       returns a conservative plan for `let` bindings whose value code can be

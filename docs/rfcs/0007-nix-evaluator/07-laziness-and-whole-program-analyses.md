@@ -974,6 +974,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       This only produces facts for later passes; it does not yet lower
       single-entry thunks, remove absent bindings, or run the whole-program
       usage fixpoint.
+- [x] Current branch-sensitive cardinality precursor:
+      local usage counting now treats `if` branches as mutually exclusive for
+      same-frame slots: the condition is counted unconditionally, then the
+      branch contribution is the maximum of the then/else branch counts rather
+      than their sum. This lets `let x = ...; in if c then x else x` prove
+      `Once`, while condition-plus-branch uses and nested frame-producing
+      branches still stay conservative at `Many`. This is still local syntactic
+      cardinality only; it does not add path-sensitive demand facts,
+      recursion/higher-order precision, or the whole-program usage fixpoint.
 - [ ] Single-entry thunks: drop the `Blackhole`/`Forced` update machinery (or downgrade to call-by-name) for used-at-most-once bindings (§5.1) — **P4**; the blackhole-skip restricted to escape-proven *frame-local* thunks so it is sound under parallel forcing (§10 item 4, `C-8`); ties to [13](13-parallel-evaluation.md) **P3.5**.
 - [x] Current frame-local single-entry preflight:
       `ratchet-core::analysis::thunk_sharing` names the safety predicate for

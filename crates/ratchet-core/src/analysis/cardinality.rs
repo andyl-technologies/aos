@@ -490,6 +490,14 @@ impl UsageCount {
             Self::One | Self::Many => Self::Many,
         }
     }
+
+    const fn max(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Many, _) | (_, Self::Many) => Self::Many,
+            (Self::One, _) | (_, Self::One) => Self::One,
+            (Self::Zero, Self::Zero) => Self::Zero,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -531,6 +539,22 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
             IrKind::Let | IrKind::Lambda | IrKind::FormalSet | IrKind::Formal => {
                 self.complete = false;
             }
+            IrKind::If => {
+                let IrData::Triple {
+                    first: condition,
+                    second: then_branch,
+                    third: else_branch,
+                } = node.data
+                else {
+                    return Err(CardinalityAnalyzer::invalid_payload(
+                        id,
+                        node.kind,
+                        "triple payload",
+                    ));
+                };
+                self.count_node(condition)?;
+                self.count_conditional_branches(then_branch, else_branch)?;
+            }
             IrKind::AttrSet => {
                 let IrData::AttrSet {
                     bindings,
@@ -559,6 +583,41 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
         Ok(())
     }
 
+    fn count_conditional_branches(
+        &mut self,
+        then_branch: IrId,
+        else_branch: IrId,
+    ) -> Result<(), CardinalityAnalysisError> {
+        // Branches are mutually exclusive, but both inherit the condition's
+        // already-counted slot uses. Measure each branch delta from that shared
+        // baseline, then apply the larger possible branch contribution.
+        let counts_before_branches = self.counts.clone();
+
+        self.count_node(then_branch)?;
+        if !self.complete {
+            return Ok(());
+        }
+        let then_counts = self.counts.clone();
+
+        self.counts = counts_before_branches.clone();
+        self.count_node(else_branch)?;
+        if !self.complete {
+            return Ok(());
+        }
+        let else_counts = self.counts.clone();
+
+        self.counts = counts_before_branches
+            .iter()
+            .zip(then_counts.iter().zip(else_counts.iter()))
+            .map(|(before, (then_count, else_count))| {
+                let then_delta = usage_delta(*before, *then_count);
+                let else_delta = usage_delta(*before, *else_count);
+                apply_usage_delta(*before, then_delta.max(else_delta))
+            })
+            .collect();
+        Ok(())
+    }
+
     fn count_bindings(
         &mut self,
         id: IrId,
@@ -571,5 +630,30 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
             self.count_node(binding.value)?;
         }
         Ok(())
+    }
+}
+
+fn usage_delta(before: UsageCount, after: UsageCount) -> UsageCount {
+    match (before, after) {
+        (UsageCount::Zero, UsageCount::Zero)
+        | (UsageCount::One, UsageCount::One)
+        | (UsageCount::Many, UsageCount::Many) => UsageCount::Zero,
+        (UsageCount::Zero, UsageCount::One) | (UsageCount::One, UsageCount::Many) => {
+            UsageCount::One
+        }
+        (UsageCount::Zero, UsageCount::Many) => UsageCount::Many,
+        // Backwards deltas are unreachable for normal counting; keep them
+        // conservative if malformed control flow ever produces one.
+        (UsageCount::One, UsageCount::Zero)
+        | (UsageCount::Many, UsageCount::Zero)
+        | (UsageCount::Many, UsageCount::One) => UsageCount::Many,
+    }
+}
+
+fn apply_usage_delta(before: UsageCount, delta: UsageCount) -> UsageCount {
+    match delta {
+        UsageCount::Zero => before,
+        UsageCount::One => before.increment(),
+        UsageCount::Many => UsageCount::Many,
     }
 }

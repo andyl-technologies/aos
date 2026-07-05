@@ -132,6 +132,44 @@ fn cardinality_keeps_multi_use_let_binding_many() {
 }
 
 #[test]
+fn cardinality_counts_if_branches_as_mutually_exclusive() {
+    let ir = annotate_usage("let x = 1 + 2; in if true then x else x");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+}
+
+#[test]
+fn cardinality_sums_if_condition_with_branch_uses() {
+    let ir = annotate_usage("let x = true; in if x then x else false");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_keeps_incomplete_if_branches_conservative() {
+    let ir = annotate_usage("let x = 1; in if true then (y: x + y) else x");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_resets_stale_facts_when_if_branch_becomes_incomplete() {
+    let mut ir = lowered("let x = 1; in if true then (y: x + y) else x");
+    let bindings = let_binding_values(&ir, ir.root);
+    ir.facts
+        .get_mut(bindings[0])
+        .expect("binding fact exists")
+        .cardinality = Cardinality::Once;
+
+    annotate_cardinality(&mut ir).expect("cardinality analysis succeeds");
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
 fn cardinality_counts_let_binding_value_uses() {
     let ir = annotate_usage("let x = 1; y = x; in y");
     let bindings = let_binding_values(&ir, ir.root);
