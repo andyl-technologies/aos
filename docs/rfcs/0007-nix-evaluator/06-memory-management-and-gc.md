@@ -1120,25 +1120,27 @@ GC must be observationally invisible (§8): every item is gated by the different
       candidate gaps and converting current address-free helper candidates into
       explicit missing exported-wrapper gaps. The strict
       `runtime_symbol_native_export_plan()` still rejects as incomplete. This is
-      safe readiness metadata only: no C ABI function is exported, no Rust
-      callable is treated as ABI-callable, no `JITBuilder::symbol` registration
-      occurs, and no native trap transfer or semantic object initialization is
-      implemented.
+      safe readiness metadata only: no final native-export registration is
+      admitted, no safe Rust callable is treated as the final ABI target, no
+      `JITBuilder::symbol` registration occurs, and no native trap transfer or
+      semantic object initialization is implemented.
 - [x] Current environment-access native-export readiness gate:
       `runtime::env::runtime_env_access_native_export_preflight()` records the
       exact blockers that keep `aos_env_get` from being an exported native ABI
-      symbol: missing `unsafe extern "C"` wrapper, native environment-pointer
-      and frame-layout binding, `EvalFrame` borrow-conflict preservation,
-      slot-index decoding, evaluator trap transfer, and by-value `Value` return
-      materialization. The aggregate
+      symbol: missing final exported wrapper admission and evaluator trap
+      transfer. The process-local runtime-FFI `aos_env_get` success path already
+      decodes the environment pointer, binds the `EvalFrame` layout and borrow
+      behavior through the safe frame API, validates slot indexes, and returns
+      `Value` by value, but that wrapper is still not accepted as the final
+      exported native ABI target by this oracle gate. The aggregate
       `runtime::helpers::runtime_symbol_native_export_preflight()` now preserves
       allocation-specific blockers for `aos_alloc_*`, environment-access-specific
       blockers for `aos_env_get`, forcing-specific blockers for `aos_blackhole_check` and `aos_force`/`aos_force_deep`,
       write-barrier-specific blockers for `aos_gc_write_barrier`, and earlier helper/builtin candidate gaps in full
-      runtime-symbol order. This remains safe readiness metadata only: no C ABI
-      function is exported, no Rust callable is treated as ABI-callable, no
-      `JITBuilder::symbol` registration occurs, and no native trap transfer,
-      frame-layout/borrow binding, or `Value` ABI return path is implemented.
+      runtime-symbol order. This remains safe readiness metadata only: no final
+      native-export registration is admitted, no safe Rust callable is treated
+      as the final ABI target, no `JITBuilder::symbol` registration occurs, and
+      no native trap transfer is implemented.
 - [x] Current write-barrier native-export readiness gate:
       `runtime::barrier::runtime_write_barrier_native_export_preflight()` records
       the exact blockers that keep `aos_gc_write_barrier` from being an exported

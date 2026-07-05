@@ -3352,14 +3352,44 @@ mod tests {
             env_export_gap.missing_exported_env_access_blockers(),
             Some(env_blockers)
         );
+        assert_eq!(
+            env_export_gap
+                .missing_exported_env_access_blockers()
+                .expect("env blockers exist"),
+            [
+                RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented,
+            ]
+            .as_slice()
+        );
         assert!(
             env_export_gap
+                .missing_exported_env_access_blockers()
+                .expect("env blockers exist")
+                .contains(&RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper)
+        );
+        assert!(
+            env_export_gap
+                .missing_exported_env_access_blockers()
+                .expect("env blockers exist")
+                .contains(&RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented)
+        );
+        assert!(
+            !env_export_gap
+                .missing_exported_env_access_blockers()
+                .expect("env blockers exist")
+                .contains(
+                    &RuntimeEnvAccessNativeExportBlocker::NativeEnvPointerDecodeUnimplemented
+                )
+        );
+        assert!(
+            !env_export_gap
                 .missing_exported_env_access_blockers()
                 .expect("env blockers exist")
                 .contains(&RuntimeEnvAccessNativeExportBlocker::NativeEnvFrameLayoutUnimplemented)
         );
         assert!(
-            env_export_gap
+            !env_export_gap
                 .missing_exported_env_access_blockers()
                 .expect("env blockers exist")
                 .contains(
@@ -3367,7 +3397,13 @@ mod tests {
                 )
         );
         assert!(
-            env_export_gap
+            !env_export_gap
+                .missing_exported_env_access_blockers()
+                .expect("env blockers exist")
+                .contains(&RuntimeEnvAccessNativeExportBlocker::NativeSlotIndexDecodeUnimplemented)
+        );
+        assert!(
+            !env_export_gap
                 .missing_exported_env_access_blockers()
                 .expect("env blockers exist")
                 .contains(&RuntimeEnvAccessNativeExportBlocker::NativeValueReturnUnmaterialized)

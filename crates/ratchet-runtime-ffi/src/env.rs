@@ -184,6 +184,22 @@ mod tests {
     }
 
     #[test]
+    fn env_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+        let binding = runtime_env_access_native_wrapper_bindings()
+            .into_iter()
+            .next()
+            .expect("env wrapper binding exists");
+        let oracle_blockers = RuntimeEnvAccessEntryPoint::AosEnvGet.native_export_blockers();
+        let expected_oracle_blockers = [
+            RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper,
+            RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented,
+        ];
+
+        assert_eq!(oracle_blockers, expected_oracle_blockers.as_slice());
+        assert_eq!(binding.remaining_export_blockers(), &oracle_blockers[1..]);
+    }
+
+    #[test]
     fn aos_env_get_native_wrapper_reads_frame_slots() {
         let frame = EvalFrame::new(2).expect("frame allocates");
         let expected = Value::int(42);

@@ -105,8 +105,8 @@ impl RuntimeEnvAccessEntryPoint {
     /// Returns the callable Rust storage-wrapper binding for this entry point.
     ///
     /// The callable's Rust shape is separate from the frozen native ABI
-    /// signature because environment-pointer decoding, frame-layout binding,
-    /// value-return materialization, and trap transfer are not implemented yet.
+    /// signature until final exported wrapper admission and native trap transfer
+    /// are accepted by the readiness gate.
     pub fn rust_callable_binding(self) -> RuntimeEnvAccessRustCallableBinding {
         RuntimeEnvAccessRustCallableBinding::new(
             self,
@@ -228,28 +228,23 @@ impl RuntimeEnvAccessRustCallableBinding {
 pub enum RuntimeEnvAccessNativeExportBlocker {
     /// No final exported C ABI wrapper is admitted for the frozen helper name.
     MissingFinalExportedWrapper,
-    /// Native wrappers cannot yet decode the captured environment pointer.
+    /// A candidate wrapper would not decode the captured environment pointer.
     NativeEnvPointerDecodeUnimplemented,
-    /// The native environment frame layout is not bound to [`EvalFrame`] yet.
+    /// A candidate wrapper would not bind the native environment frame layout to [`EvalFrame`].
     NativeEnvFrameLayoutUnimplemented,
-    /// Native wrappers cannot yet preserve [`EvalFrame`] borrow-conflict behavior.
+    /// A candidate wrapper would not preserve [`EvalFrame`] borrow-conflict behavior.
     NativeEnvBorrowDisciplineUnimplemented,
-    /// Native wrappers cannot yet decode and validate the slot index argument.
+    /// A candidate wrapper would not decode and validate the slot index argument.
     NativeSlotIndexDecodeUnimplemented,
     /// Helper failures cannot yet transfer into evaluator trap/error machinery.
     TrapTransferUnimplemented,
-    /// The by-value [`Value`] return is not yet materialized through the native ABI.
+    /// A candidate wrapper would not materialize the by-value [`Value`] native ABI return.
     NativeValueReturnUnmaterialized,
 }
 
 const ENV_ACCESS_NATIVE_EXPORT_BLOCKERS: &[RuntimeEnvAccessNativeExportBlocker] = &[
     RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper,
-    RuntimeEnvAccessNativeExportBlocker::NativeEnvPointerDecodeUnimplemented,
-    RuntimeEnvAccessNativeExportBlocker::NativeEnvFrameLayoutUnimplemented,
-    RuntimeEnvAccessNativeExportBlocker::NativeEnvBorrowDisciplineUnimplemented,
-    RuntimeEnvAccessNativeExportBlocker::NativeSlotIndexDecodeUnimplemented,
     RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented,
-    RuntimeEnvAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
 ];
 
 /// Native-export readiness for one frozen environment-access helper.
@@ -664,6 +659,14 @@ mod tests {
             record.blockers(),
             RuntimeEnvAccessEntryPoint::AosEnvGet.native_export_blockers()
         );
+        assert_eq!(
+            record.blockers(),
+            [
+                RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented,
+            ]
+            .as_slice()
+        );
         assert!(!record.is_export_ready());
         assert!(
             record
@@ -671,20 +674,20 @@ mod tests {
                 .contains(&RuntimeEnvAccessNativeExportBlocker::MissingFinalExportedWrapper)
         );
         assert!(
-            record.blockers().contains(
+            !record.blockers().contains(
                 &RuntimeEnvAccessNativeExportBlocker::NativeEnvPointerDecodeUnimplemented
             )
         );
         assert!(
-            record
+            !record
                 .blockers()
                 .contains(&RuntimeEnvAccessNativeExportBlocker::NativeEnvFrameLayoutUnimplemented)
         );
-        assert!(record.blockers().contains(
+        assert!(!record.blockers().contains(
             &RuntimeEnvAccessNativeExportBlocker::NativeEnvBorrowDisciplineUnimplemented
         ));
         assert!(
-            record
+            !record
                 .blockers()
                 .contains(&RuntimeEnvAccessNativeExportBlocker::NativeSlotIndexDecodeUnimplemented)
         );
@@ -694,7 +697,7 @@ mod tests {
                 .contains(&RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented)
         );
         assert!(
-            record
+            !record
                 .blockers()
                 .contains(&RuntimeEnvAccessNativeExportBlocker::NativeValueReturnUnmaterialized)
         );
