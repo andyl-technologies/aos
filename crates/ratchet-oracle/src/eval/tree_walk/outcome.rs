@@ -9,7 +9,8 @@ use crate::eval::heap::{
     AllocationCollectorPollObjectBodyAndGenerationWriteReport,
     AllocationCollectorPollObjectBodyWriteReport, AllocationCollectorPollObjectByteCopyPlan,
     AllocationCollectorPollObjectGenerationWritePlan,
-    AllocationCollectorPollObjectGenerationWriteReport, EvalRootSource,
+    AllocationCollectorPollObjectGenerationWriteReport, EvalHeapMemoryAdviceReport,
+    EvalHeapMemoryBudgetDecision, EvalRootSource,
 };
 use crate::heap::HeapGeneration;
 use crate::value::HeapObject;
@@ -80,6 +81,65 @@ const BOUNDARY_MINOR_GC_LIVE_ROOT_VALUE_WRITEBACK_SLOTS_TABLE: &str =
     "boundary minor-GC live root value writeback slots";
 const BOUNDARY_MINOR_GC_LIVE_HEAP_FIELD_WRITEBACK_SLOTS_TABLE: &str =
     "boundary minor-GC live heap-field writeback slots";
+
+/// Metadata for a requested Tier-B heap transition.
+///
+/// This report is derived from the final high-water memory-budget action. It
+/// records the exact would-be pre-flip arena accounting and cheap advice
+/// telemetry that caused the safety valve to ask for Tier B, but it does not
+/// install a collector or mutate the owning heap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalTierBTransitionRequest {
+    decision: EvalHeapMemoryBudgetDecision,
+    report: EvalHeapMemoryAdviceReport,
+}
+
+impl EvalTierBTransitionRequest {
+    const fn from_memory_budget_action(action: EvalHeapMemoryBudgetAction) -> Option<Self> {
+        match action {
+            EvalHeapMemoryBudgetAction::RequestTierB { decision, report } => {
+                Some(Self { decision, report })
+            }
+            EvalHeapMemoryBudgetAction::ContinueTierA { .. }
+            | EvalHeapMemoryBudgetAction::AdviseUnusedTails { .. } => None,
+        }
+    }
+
+    /// Returns the memory-budget action that requested Tier B.
+    pub const fn action(self) -> EvalHeapMemoryBudgetAction {
+        EvalHeapMemoryBudgetAction::RequestTierB {
+            decision: self.decision,
+            report: self.report,
+        }
+    }
+
+    /// Returns the whole-heap budget decision captured before transition.
+    pub const fn decision(self) -> EvalHeapMemoryBudgetDecision {
+        self.decision
+    }
+
+    /// Returns the unused-tail advice report run before requesting Tier B.
+    pub const fn advice_report(self) -> EvalHeapMemoryAdviceReport {
+        self.report
+    }
+
+    /// Returns worker-domain arena accounting captured before transition.
+    pub const fn worker_stats(self) -> crate::heap::ArenaStats {
+        self.decision().worker_stats()
+    }
+
+    /// Returns permanent-shared arena accounting captured before transition.
+    pub const fn permanent_stats(self) -> crate::heap::ArenaStats {
+        self.decision().permanent_stats()
+    }
+
+    /// Returns total mapped bytes in the would-be pre-flip heap domains.
+    pub const fn pre_flip_mapped_bytes(self) -> usize {
+        self.worker_stats()
+            .mapped_bytes
+            .saturating_add(self.permanent_stats().mapped_bytes)
+    }
+}
 
 /// GC-stress heap scans recorded at a successful tree-walk evaluation boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -10767,6 +10827,18 @@ impl EvalOutcome {
     /// Returns the final high-water heap budget action, if one was configured.
     pub const fn memory_budget_action(&self) -> Option<EvalHeapMemoryBudgetAction> {
         self.memory_budget_action
+    }
+
+    /// Returns the requested Tier-B transition metadata, if the budget asked for it.
+    ///
+    /// This is safety-valve telemetry only. It captures the would-be pre-flip
+    /// heap accounting and advice report but does not install Tier B or change
+    /// evaluation results.
+    pub const fn tier_b_transition_request(&self) -> Option<EvalTierBTransitionRequest> {
+        match self.memory_budget_action {
+            Some(action) => EvalTierBTransitionRequest::from_memory_budget_action(action),
+            None => None,
+        }
     }
 
     /// Returns the final cold-aware heap budget plan, if one was requested.

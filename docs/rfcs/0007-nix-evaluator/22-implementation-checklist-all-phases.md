@@ -6761,7 +6761,11 @@ and helps the oracle directly.
       and retain the latest action for tests and later daemon policy;
       `EvalOutcome` snapshots that final action through `memory_budget_action()`
       so root and attr-path callers can observe the safety-valve decision
-      without reaching into heap internals. When callers configure both a heap
+      without reaching into heap internals.
+      `EvalOutcome::tier_b_transition_request()` derives typed
+      safety-valve metadata from a final `RequestTierB` action, carrying the
+      would-be pre-flip worker/permanent arena snapshots and unused-tail advice
+      report without installing a collector. When callers configure both a heap
       budget and the post-evaluation cheap-advice idle threshold, `EvalOutcome`
       also snapshots the cold-aware planning telemetry through
       `cheap_memory_budget_plan()`. Hash-cons hits skip the poll because no heap

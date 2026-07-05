@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::eval::heap::EvalThunkForceStorageMode;
-use crate::eval::heap::{EvalHeap, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource};
+use crate::eval::heap::{
+    EvalHeap, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
+};
 use crate::eval::{
     ForceError, ParallelThunkTerminalStatus, ParallelThunkWorkerId, TreeWalkParallelThunkWait,
 };
@@ -602,7 +604,67 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
         EvalHeapResidentMemorySource::ProcessResidentSet(_) => {}
     }
     assert!(action.requests_tier_b());
+    let transition = outcome
+        .tier_b_transition_request()
+        .expect("over-budget outcome requests Tier B transition");
+    assert_eq!(transition.action(), action);
+    assert_eq!(transition.decision(), action.decision());
+    assert_eq!(transition.worker_stats(), outcome.heap().arena_stats());
+    assert_eq!(
+        transition.permanent_stats(),
+        outcome.heap().permanent_arena_stats()
+    );
+    assert_eq!(transition.advice_report(), action.advice_report().unwrap());
+    assert_eq!(
+        transition.pre_flip_mapped_bytes(),
+        transition
+            .worker_stats()
+            .mapped_bytes
+            .saturating_add(transition.permanent_stats().mapped_bytes)
+    );
     assert_eq!(outcome.cheap_memory_budget_plan(), None);
+}
+
+#[test]
+fn heap_memory_budget_continuation_has_no_tier_b_transition_request() {
+    let budget = HeapMemoryBudget::new(usize::MAX).expect("budget is non-zero");
+    let ir = lower("\"budgeted\"");
+    let outcome =
+        eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_heap_memory_budget(budget))
+            .expect("string evaluates");
+
+    let action = outcome
+        .memory_budget_action()
+        .expect("tree-walk outcome records configured budget action");
+    assert!(!action.requests_tier_b());
+    assert_eq!(outcome.tier_b_transition_request(), None);
+}
+
+#[test]
+fn heap_memory_budget_advice_has_no_tier_b_transition_request() {
+    let baseline = eval_whnf_owned(&lower("\"budgeted\"")).expect("string evaluates");
+    let resident_bytes = baseline
+        .heap()
+        .arena_stats()
+        .mapped_bytes
+        .saturating_add(baseline.heap().permanent_arena_stats().mapped_bytes);
+    let budget = HeapMemoryBudget::new(resident_bytes).expect("budget is non-zero");
+    let outcome = eval_owned_with_options_and_heap_resident_memory_mode(
+        "\"budgeted\"",
+        TreeWalkOptions::with_heap_memory_budget(budget),
+        EvalHeapResidentMemoryMode::ArenaMappedBytes,
+    );
+
+    let action = outcome
+        .memory_budget_action()
+        .expect("tree-walk outcome records configured budget action");
+    let EvalHeapMemoryBudgetAction::AdviseUnusedTails { decision, .. } = action else {
+        panic!("expected unused-tail advice action, got {action:?}");
+    };
+    assert_eq!(decision.budget(), budget);
+    assert!(decision.requires_runtime_action());
+    assert!(!action.requests_tier_b());
+    assert_eq!(outcome.tier_b_transition_request(), None);
 }
 
 #[test]
@@ -626,6 +688,12 @@ fn attr_path_eval_reports_final_heap_memory_budget_action() {
         action.decision().permanent_stats(),
         outcome.heap().permanent_arena_stats()
     );
+    assert!(action.requests_tier_b());
+    let transition = outcome
+        .tier_b_transition_request()
+        .expect("attr-path over-budget outcome requests Tier B transition");
+    assert_eq!(transition.action(), action);
+    assert_eq!(transition.decision(), action.decision());
     assert!(action.decision().requires_runtime_action());
     assert_eq!(outcome.cheap_memory_budget_plan(), None);
 }

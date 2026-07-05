@@ -70,6 +70,54 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
     }
 }
 
+pub(crate) fn eval_owned_with_options_and_heap_resident_memory_mode(
+    source: &str,
+    options: TreeWalkOptions,
+    resident_memory_mode: EvalHeapResidentMemoryMode,
+) -> EvalOutcome {
+    let ir = lower(source);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    evaluator
+        .heap
+        .set_resident_memory_mode(resident_memory_mode);
+    let value = evaluator.eval_root().expect("source evaluates");
+    let derivations = evaluator
+        .derivation_snapshot()
+        .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
+    let memory_budget_action = evaluator.heap.last_memory_budget_action();
+    EvalOutcome {
+        value,
+        heap: evaluator.heap,
+        stats,
+        attr_telemetry: evaluator.attr_telemetry,
+        trace_output: evaluator.trace_output,
+        warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
+        persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
+        derivations,
+        thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
+        thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
+        memory_budget_action,
+        cheap_memory_budget_plan: None,
+        cheap_memory_advice_report: None,
+        cold_hash_consed_value_materialization: None,
+        gc_stress_boundary_scans: EvalGcStressBoundaryScans::default(),
+        gc_stress_boundary_minor_gc_reference_writebacks:
+            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
+        gc_stress_boundary_minor_gc_forwarding_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
+        gc_stress_boundary_minor_gc_destination_storage:
+            EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
+        gc_stress_boundary_minor_gc_object_generations:
+            EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
+        gc_stress_boundary_minor_gc_writeback_destination_bindings:
+            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
+    }
+}
+
 pub(crate) fn eval_string_bytes_with_source(source_name: &[u8], source: &str) -> Vec<u8> {
     let outcome = eval_owned_with_source(source_name, source);
     let string = outcome

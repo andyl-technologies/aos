@@ -2101,9 +2101,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       retain the latest action for tests and later daemon policy; `EvalOutcome`
       snapshots that final action through `memory_budget_action()` so root and
       attr-path callers can observe the safety-valve decision without reaching
-      into heap internals. When callers configure both a heap budget and the
-      post-evaluation cheap-advice idle threshold, `EvalOutcome` also snapshots
-      the cold-aware planning telemetry through `cheap_memory_budget_plan()`.
+      into heap internals. `EvalOutcome::tier_b_transition_request()` now
+      derives typed safety-valve metadata from a final `RequestTierB` action,
+      carrying the would-be pre-flip worker/permanent arena snapshots and
+      unused-tail advice report without installing a collector. When callers
+      configure both a heap budget and the post-evaluation cheap-advice idle
+      threshold, `EvalOutcome` also snapshots the cold-aware planning telemetry
+      through `cheap_memory_budget_plan()`.
       Hash-cons hits skip the poll because no heap allocation occurred. Linux
       and Darwin budget polls now sample process RSS from `/proc/self/statm` or
       Mach `MACH_TASK_BASIC_INFO` through `ProcessResidentMemorySample`, falling
@@ -3079,6 +3083,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       accounting. Daemon lifetime, worker-arena reset/drop admission, and full
       Tier-B collector integration remain open in the broader heap/GC rows.
 - [ ] Cross-tier flip: Tier A safety valve installs Tier B mid-run, treating the pre-flip arena as one immortal old-generation region (§3.3 item 3, §10.5) — **P3**, research-grade transition cost (IN SCOPE), gated by harness + GC stress.
+- [x] Current Tier-B transition-request precursor:
+      `EvalOutcome::tier_b_transition_request()` derives typed metadata from a
+      final `EvalHeapMemoryBudgetAction::RequestTierB`, exposing the would-be
+      pre-flip worker/permanent arena accounting snapshots, resident-budget
+      decision, and unused-tail advice report that caused the safety valve to
+      request Tier B. This is metadata only: it does not install Tier B,
+      reclassify records as old generation, mutate heap handles, alter output
+      values, or run a collector.
 
 ### Region inference (§5)
 
