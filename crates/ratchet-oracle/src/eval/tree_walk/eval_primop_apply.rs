@@ -970,9 +970,7 @@ impl TreeWalk {
                 values.push(value);
             }
         }
-        self.heap
-            .alloc_list(NixList::new(values))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(values))
     }
 
     pub(super) fn eval_elem_primop_value(
