@@ -174,8 +174,10 @@ impl TreeWalk {
         let env = self.capture_env(id, node.span)?;
         let with_env = self.capture_with_env(id, node.span)?;
         let scoped_globals = self.capture_scoped_global_env(id, node.span)?;
-        self.heap
-            .alloc_lambda(EvalLambda::with_captures(
+        self.alloc_tree_walk_lambda(
+            id,
+            node.span,
+            EvalLambda::with_captures(
                 self.current_module,
                 pattern,
                 body,
@@ -183,8 +185,8 @@ impl TreeWalk {
                 env,
                 with_env,
                 scoped_globals,
-            ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+            ),
+        )
     }
 
     pub(super) fn eval_apply(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {

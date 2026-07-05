@@ -6,7 +6,7 @@ use crate::eval::heap::{EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource
 use crate::eval::{
     ForceError, ParallelThunkTerminalStatus, ParallelThunkWorkerId, TreeWalkParallelThunkWait,
 };
-use crate::heap::{HeapMemoryBudgetResponse, MemoryAdviceKind};
+use crate::heap::{HeapGeneration, HeapMemoryBudgetResponse, MemoryAdviceKind};
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
 #[test]
@@ -709,6 +709,87 @@ fn gc_stress_policy_option_marks_tree_walk_heap_allocation_safepoints() {
     );
     assert_eq!(
         permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+}
+
+#[test]
+fn gc_stress_eval_root_lambda_allocation_dispatches_reserved_writeback_bridge() {
+    let ir = lower("x: x");
+    let default_outcome = eval_whnf_owned(&ir).expect("default lambda evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress lambda evaluates");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Lambda);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("lambda generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(outcome.heap().len(), default_outcome.heap().len() + 1);
+    let source_value = outcome
+        .heap()
+        .test_record_value(0)
+        .expect("original lambda source record exists")
+        .expect("original lambda source value rebuilds");
+    let destination_value = outcome
+        .heap()
+        .test_record_value(1)
+        .expect("reserved lambda destination record exists")
+        .expect("reserved lambda destination value rebuilds");
+    assert!(!source_value.raw_eq(outcome.value()));
+    assert!(destination_value.raw_eq(outcome.value()));
+    assert_eq!(
+        outcome.heap().allocation_safepoints().count(),
+        default_outcome.heap().allocation_safepoints().count() + 1
+    );
+    let final_safepoint = outcome
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("final lambda reserved allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocLambda
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+}
+
+#[test]
+fn gc_stress_lambda_allocation_dispatch_skips_direct_eval_node_callers() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+
+    let value = evaluator
+        .eval_node(ir.root)
+        .expect("direct lambda node evaluation succeeds");
+
+    assert_eq!(value.tag(), ValueTag::Lambda);
+    assert_eq!(evaluator.heap().len(), 1);
+    assert_eq!(evaluator.heap().allocation_safepoints().count(), 1);
+    let final_safepoint = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("direct lambda allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocLambda
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
     );
 }

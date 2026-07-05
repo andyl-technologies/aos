@@ -358,6 +358,7 @@ impl TreeWalk {
             ifd_realizer: None,
             call_depth: 0,
             order_sensitive_binding_depth: 0,
+            active_root_eval_node: None,
             active_force_roots: Vec::new(),
             active_primop_arg_roots: Vec::new(),
             active_primop_arg_frames: Vec::new(),
@@ -462,7 +463,10 @@ impl TreeWalk {
     /// Returns [`TreeWalkError`] if evaluation of the root node fails.
     pub fn eval_root(&mut self) -> Result<Value, TreeWalkError> {
         let root = self.current_ir().root;
-        self.eval_node(root)
+        let previous_root_eval_node = self.active_root_eval_node.replace(root);
+        let result = self.eval_node(root);
+        self.active_root_eval_node = previous_root_eval_node;
+        result
     }
 
     /// Evaluates a node to weak head normal form.

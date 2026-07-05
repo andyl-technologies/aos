@@ -770,38 +770,103 @@ impl TreeWalk {
             .alloc_thunk(self.admit_parallel_thunk_payload_cell(id, span, thunk))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         self.increment_thunks_allocated();
-        self.apply_gc_stress_allocation_safepoint_to_just_allocated_thunk(
+        self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
             id,
             span,
             previous_poll,
             value,
+            true,
         )
     }
 
-    fn apply_gc_stress_allocation_safepoint_to_just_allocated_thunk(
+    pub(super) fn alloc_tree_walk_lambda(
+        &mut self,
+        id: IrId,
+        span: Span,
+        lambda: EvalLambda,
+    ) -> Result<Value, TreeWalkError> {
+        let dispatch_gc_stress_safepoint =
+            self.can_dispatch_gc_stress_lambda_allocation_safepoint(id, &lambda);
+        let previous_poll = self
+            .heap
+            .allocation_safepoints()
+            .last_safepoint_collector_poll();
+        let value = self
+            .heap
+            .alloc_lambda(lambda)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if dispatch_gc_stress_safepoint {
+            self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
+                id,
+                span,
+                previous_poll,
+                value,
+                false,
+            )
+        } else {
+            Ok(value)
+        }
+    }
+
+    fn can_dispatch_gc_stress_lambda_allocation_safepoint(
+        &self,
+        id: IrId,
+        lambda: &EvalLambda,
+    ) -> bool {
+        self.active_root_eval_node == Some(id)
+            && self.env.is_empty()
+            && self.with_scopes.is_empty()
+            && self.scoped_globals.is_empty()
+            && self.suspended_env_roots.is_empty()
+            && self.active_force_roots.is_empty()
+            && self.active_primop_arg_roots.is_empty()
+            && self.active_primop_arg_frames.is_empty()
+            && self.import_cache.is_empty()
+            && lambda.env().frames().is_empty()
+            && lambda.with_scope_env().scopes().is_empty()
+            && lambda.scoped_global_env().scopes().is_empty()
+            && matches!(self.heap.interned_root_set(), Ok(roots) if roots.is_empty())
+    }
+
+    fn apply_gc_stress_allocation_safepoint_to_just_allocated_value(
         &mut self,
         id: IrId,
         span: Span,
         previous_poll: Option<AllocationCollectorPoll>,
         value: Value,
+        install_forwarding_slots: bool,
     ) -> Result<Value, TreeWalkError> {
-        let current_poll = self
+        let Some(current_poll) = self
             .heap
             .allocation_safepoints()
-            .last_safepoint_collector_poll();
-        if current_poll.is_none() || current_poll == previous_poll {
+            .last_safepoint_collector_poll()
+        else {
+            return Ok(value);
+        };
+        if Some(current_poll) == previous_poll {
             return Ok(value);
         }
 
         let mut transient_roots = [value];
-        self.apply_current_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
-            RuntimeAllocatorTier::TierAOneShot,
-            MinorGcPromotionPolicy::new(
-                TREE_WALK_GC_STRESS_ALLOCATION_SITE_PROMOTE_AFTER_SURVIVALS,
-            ),
-            &mut transient_roots,
-        )
-        .map_err(|source| {
+        let promotion_policy = MinorGcPromotionPolicy::new(
+            TREE_WALK_GC_STRESS_ALLOCATION_SITE_PROMOTE_AFTER_SURVIVALS,
+        );
+        let writeback_result = if install_forwarding_slots {
+            self.apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+                current_poll,
+                promotion_policy,
+                &mut transient_roots,
+            )
+            .map(|_| ())
+        } else {
+            self.apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+                current_poll,
+                promotion_policy,
+                &mut transient_roots,
+            )
+            .map(|_| ())
+        };
+        writeback_result.map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::GcStressAllocationSafepoint { id, source },
                 span,

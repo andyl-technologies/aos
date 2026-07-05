@@ -860,10 +860,10 @@ pub enum TreeWalkErrorKind {
         /// The lower-level safepoint scanner failure.
         source: TreeWalkSafepointScanError,
     },
-    /// A GC-stress allocation safepoint failed while publishing a just-allocated thunk.
+    /// A GC-stress allocation safepoint failed while publishing a just-allocated value.
     #[error("GC-stress allocation safepoint failed at node {id:?}: {source}")]
     GcStressAllocationSafepoint {
-        /// The thunk-allocation node whose allocation triggered the safepoint.
+        /// The heap-allocation node whose allocation triggered the safepoint.
         id: IrId,
         /// The lower-level tree-walk writeback failure.
         source: TreeWalkSafepointRootWritebackError,

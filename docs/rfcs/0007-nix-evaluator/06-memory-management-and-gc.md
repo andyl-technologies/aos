@@ -2016,9 +2016,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       remembered-set snapshot and a caller-supplied promotion policy; tests cover
       worker young-survivor planning, permanent-root/no-survivor planning, and
       empty reports when stress is disabled. This is still poll/scan/planning
-      intent only outside the thunk-allocation precursor below: tree-walk does
-      not invoke collection for arbitrary allocation safepoints or perform full
-      mutating GC-stress collection yet.
+      intent only outside the current thunk/lambda allocation precursor below:
+      tree-walk does not invoke collection for arbitrary allocation safepoints
+      or perform full mutating GC-stress collection yet.
 
 ### Tier A — bump-pointer one-shot arena (§3)
 
@@ -2979,20 +2979,27 @@ GC must be observationally invisible (§8): every item is gated by the different
       without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those
       remain open in the full precise-root row above.
-- [x] Current tree-walk thunk allocation GC-stress dispatch precursor:
-      `TreeWalk::alloc_tree_walk_thunk` detects when a thunk allocation produced
-      a new worker-domain collector poll, runs the current-poll reserved
-      forwarding bridge with the just-allocated thunk as transient value-stack
-      root storage, and returns the rewritten `Value` to the caller. The
-      dispatch is limited to the thunk allocation funnel, uses the same
-      promotion threshold of 2 as the existing tree-walk GC-stress bridges, and
-      intentionally leaves non-thunk allocation sites, semispace ownership, ABI
-      object headers, interned/JIT roots, unsupported active frames, and Tier-B
-      allocation dispatch open. Tests cover a lazy list element thunk under
-      every-safepoint stress, including the extra reserved forwarding allocation
-      and the suspended thunk value that remains visible through the list; the
-      reserved bridge also covers the periodic policy case where the scratch
-      reservation safepoint does not poll.
+- [x] Current tree-walk thunk/lambda allocation GC-stress dispatch precursor:
+      `TreeWalk::alloc_tree_walk_thunk` and
+      `TreeWalk::alloc_tree_walk_lambda` detect when an admitted worker
+      allocation produced a new collector poll, reserve destination records,
+      publish the just-allocated value as transient value-stack root storage,
+      and return the rewritten `Value` to the caller. Thunks use the
+      current-poll reserved forwarding bridge from the previous slice. Lambda
+      dispatch is currently admitted only for an uncaptured source lambda that
+      is the active `eval_root` node, where the just-allocated closure is the
+      only transient root, and uses the non-forwarding reserved writeback bridge
+      to avoid publishing unnecessary forwarding side-table state. The dispatch
+      uses the same promotion threshold of 2 as the existing tree-walk GC-stress
+      bridges and intentionally leaves captured lambdas, nested/direct
+      `eval_node` lambda allocations, other allocation sites, semispace
+      ownership, ABI object headers, interned/JIT roots, unsupported active
+      frames, and Tier-B allocation dispatch open. Tests cover a lazy list
+      element thunk and an `eval_root` source lambda under every-safepoint
+      stress, including the extra reserved allocation and the returned young
+      destination value; a direct `eval_node` lambda caller is pinned outside
+      the dispatch gate. The reserved bridge also covers the periodic policy
+      case where the scratch reservation safepoint does not poll.
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` defines the generational decision table for the
@@ -3126,9 +3133,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       string result is rooted in the boundary scan, attr-path owned evaluation
       records a boundary scan, recorded boundary scans can be converted into
       minor-GC plans with a caller-supplied promotion policy, and a stale
-      same-domain poll is rejected. This is still a poll/scan/planning hook
-      only: no collector is invoked at those polls and no root/field relocation
-      is applied.
+      same-domain poll is rejected. The option and boundary-scan hook remains
+      poll/scan/planning only; automatic root/field relocation is limited to
+      the thunk/lambda allocation precursor above.
 
 ## References
 

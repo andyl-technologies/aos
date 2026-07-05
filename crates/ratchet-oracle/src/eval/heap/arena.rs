@@ -1162,6 +1162,11 @@ impl EvalHeap {
         self.records.is_empty()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_record_value(&self, index: usize) -> Option<Result<Value, EvalHeapError>> {
+        self.records.get(index).map(Self::value_for_record)
+    }
+
     /// Allocates a Nix string object and returns its opaque runtime value.
     ///
     /// The returned value is only meaningful while this [`EvalHeap`] remains

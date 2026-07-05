@@ -2291,7 +2291,7 @@ fn reference_writebacks_reserved_destination_rejects_stale_worker_poll_before_re
 
 #[test]
 fn reference_writebacks_apply_reserved_worker_poll_switch_and_promote_destination() {
-    let ir = lower("x: x");
+    let ir = lower("let keep = 1; in x: keep");
     let mut evaluator = TreeWalk::with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
@@ -2352,7 +2352,7 @@ fn reference_writebacks_apply_reserved_worker_poll_switch_and_promote_destinatio
 
 #[test]
 fn reference_writebacks_reserved_destination_plan_reports_promoted_placement_bytes() {
-    let ir = lower("x: x");
+    let ir = lower("let keep = 1; in x: keep");
     let mut evaluator = TreeWalk::with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),

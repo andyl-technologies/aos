@@ -2773,10 +2773,10 @@ impl TreeWalk {
     /// reservation, so callers do not have to preserve an
     /// [`AllocationCollectorPoll`] handle across intervening code.
     ///
-    /// This remains an explicit tree-walk bridge outside the thunk-allocation
-    /// precursor: it does not run for arbitrary allocation sites, write real ABI
-    /// object headers, reserve semispace storage, consume JIT stack maps, or
-    /// invoke Tier B.
+    /// This remains an explicit tree-walk bridge outside the current tree-walk
+    /// allocation precursors: it does not run for arbitrary allocation sites,
+    /// write real ABI object headers, reserve semispace storage, consume JIT
+    /// stack maps, or invoke Tier B.
     ///
     /// # Errors
     ///
