@@ -3133,6 +3133,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       request Tier B. This is metadata only: it does not install Tier B,
       reclassify records as old generation, mutate heap handles, alter output
       values, or run a collector.
+- [x] Current Tier-B transition preflight precursor:
+      `EvalTierBTransitionRequest::preflight` and
+      `EvalOutcome::tier_b_transition_preflight()` validate that the requested
+      transition still matches current worker/permanent-shared arena accounting
+      before admitting the metadata. The preflight records the worker domain as
+      the future old-generation region and permanent-shared storage as
+      permanent, and tests cover current-outcome admission, no preflight for
+      Continue/Advice actions, and stale worker/permanent-shared accounting
+      rejection. This is still read-only admission metadata: it does not install
+      a collector, switch allocators, mutate heap-record generations, rewrite
+      handles, or relocate values.
 
 ### Region inference (§5)
 

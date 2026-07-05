@@ -2,6 +2,8 @@
 
 use std::ptr::NonNull;
 
+use thiserror::Error;
+
 use super::*;
 use crate::cache::ImpureInputTraceSource;
 use crate::compile::EffectClass;
@@ -12,7 +14,7 @@ use crate::eval::heap::{
     AllocationCollectorPollObjectGenerationWriteReport, EvalHeapMemoryAdviceReport,
     EvalHeapMemoryBudgetDecision, EvalRootSource,
 };
-use crate::heap::HeapGeneration;
+use crate::heap::{ArenaStats, HeapGeneration};
 use crate::value::HeapObject;
 
 type IfdRealizerCallback =
@@ -139,6 +141,180 @@ impl EvalTierBTransitionRequest {
             .mapped_bytes
             .saturating_add(self.permanent_stats().mapped_bytes)
     }
+
+    /// Validates this request against current heap accounting.
+    ///
+    /// The returned preflight records the worker Tier-A arena as an immortal
+    /// old-generation input and preserves permanent-shared storage as
+    /// permanent. It is still read-only metadata; it does not install a
+    /// collector, mutate heap-record generations, rewrite values, or switch the
+    /// allocator tier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalTierBTransitionPreflightError`] if the heap's worker or
+    /// permanent-shared arena accounting no longer matches the request's
+    /// pre-flip snapshot.
+    pub fn preflight(
+        self,
+        heap: &EvalHeap,
+    ) -> Result<EvalTierBTransitionPreflight, EvalTierBTransitionPreflightError> {
+        let worker_stats = heap.arena_stats();
+        if worker_stats != self.worker_stats() {
+            return Err(EvalTierBTransitionPreflightError::WorkerStatsChanged {
+                expected: self.worker_stats(),
+                actual: worker_stats,
+            });
+        }
+
+        let permanent_stats = heap.permanent_arena_stats();
+        if permanent_stats != self.permanent_stats() {
+            return Err(
+                EvalTierBTransitionPreflightError::PermanentSharedStatsChanged {
+                    expected: self.permanent_stats(),
+                    actual: permanent_stats,
+                },
+            );
+        }
+
+        Ok(EvalTierBTransitionPreflight::new(
+            self,
+            EvalTierBTransitionDomainPreflight::new(
+                EvalTierBTransitionDomain::Worker,
+                worker_stats,
+                HeapGeneration::Old,
+            ),
+            EvalTierBTransitionDomainPreflight::new(
+                EvalTierBTransitionDomain::PermanentShared,
+                permanent_stats,
+                HeapGeneration::Permanent,
+            ),
+        ))
+    }
+}
+
+/// One pre-flip allocation domain considered for Tier-B admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalTierBTransitionDomain {
+    /// The per-worker Tier-A arena that becomes an immortal old-generation region.
+    Worker,
+    /// The permanent-shared arena that keeps permanent-generation semantics.
+    PermanentShared,
+}
+
+/// Validated pre-flip accounting for one Tier-B transition domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalTierBTransitionDomainPreflight {
+    domain: EvalTierBTransitionDomain,
+    stats: ArenaStats,
+    generation: HeapGeneration,
+}
+
+impl EvalTierBTransitionDomainPreflight {
+    const fn new(
+        domain: EvalTierBTransitionDomain,
+        stats: ArenaStats,
+        generation: HeapGeneration,
+    ) -> Self {
+        Self {
+            domain,
+            stats,
+            generation,
+        }
+    }
+
+    /// Returns the allocation domain described by this preflight row.
+    pub const fn domain(self) -> EvalTierBTransitionDomain {
+        self.domain
+    }
+
+    /// Returns the validated pre-flip arena accounting for this domain.
+    pub const fn stats(self) -> ArenaStats {
+        self.stats
+    }
+
+    /// Returns the generation assigned to this domain after Tier-B admission.
+    pub const fn generation(self) -> HeapGeneration {
+        self.generation
+    }
+}
+
+/// Read-only admission metadata for a requested Tier-B transition.
+///
+/// This validates that the request still matches the current heap's pre-flip
+/// arena accounting and names the generation each allocation domain would
+/// occupy after admission. It deliberately stops before collector
+/// installation, allocator switching, heap-record generation mutation, and
+/// value relocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalTierBTransitionPreflight {
+    request: EvalTierBTransitionRequest,
+    worker: EvalTierBTransitionDomainPreflight,
+    permanent_shared: EvalTierBTransitionDomainPreflight,
+}
+
+impl EvalTierBTransitionPreflight {
+    const fn new(
+        request: EvalTierBTransitionRequest,
+        worker: EvalTierBTransitionDomainPreflight,
+        permanent_shared: EvalTierBTransitionDomainPreflight,
+    ) -> Self {
+        Self {
+            request,
+            worker,
+            permanent_shared,
+        }
+    }
+
+    /// Returns the Tier-B request validated by this preflight.
+    pub const fn request(self) -> EvalTierBTransitionRequest {
+        self.request
+    }
+
+    /// Returns validated worker-domain admission metadata.
+    pub const fn worker(self) -> EvalTierBTransitionDomainPreflight {
+        self.worker
+    }
+
+    /// Returns validated permanent-shared admission metadata.
+    pub const fn permanent_shared(self) -> EvalTierBTransitionDomainPreflight {
+        self.permanent_shared
+    }
+
+    /// Returns all domain preflights in worker, permanent-shared order.
+    pub const fn domains(self) -> [EvalTierBTransitionDomainPreflight; 2] {
+        [self.worker, self.permanent_shared]
+    }
+
+    /// Returns total mapped bytes in the admitted pre-flip heap domains.
+    pub const fn pre_flip_mapped_bytes(self) -> usize {
+        self.request.pre_flip_mapped_bytes()
+    }
+}
+
+/// A Tier-B transition request no longer matches the heap snapshot it captured.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum EvalTierBTransitionPreflightError {
+    /// Worker-domain arena accounting changed after the request was captured.
+    #[error(
+        "Tier-B transition worker arena accounting changed: expected {expected:?}, actual {actual:?}"
+    )]
+    WorkerStatsChanged {
+        /// The worker-domain accounting recorded by the request.
+        expected: ArenaStats,
+        /// The worker-domain accounting currently reported by the heap.
+        actual: ArenaStats,
+    },
+    /// Permanent-shared arena accounting changed after the request was captured.
+    #[error(
+        "Tier-B transition permanent-shared arena accounting changed: expected {expected:?}, actual {actual:?}"
+    )]
+    PermanentSharedStatsChanged {
+        /// The permanent-shared accounting recorded by the request.
+        expected: ArenaStats,
+        /// The permanent-shared accounting currently reported by the heap.
+        actual: ArenaStats,
+    },
 }
 
 /// GC-stress heap scans recorded at a successful tree-walk evaluation boundary.
@@ -10839,6 +11015,25 @@ impl EvalOutcome {
             Some(action) => EvalTierBTransitionRequest::from_memory_budget_action(action),
             None => None,
         }
+    }
+
+    /// Returns validated Tier-B transition admission metadata, if requested.
+    ///
+    /// This checks that the outcome heap still matches the request's pre-flip
+    /// worker and permanent-shared arena snapshots, then reports the generation
+    /// assignment each domain would use for a future Tier-B install. It does
+    /// not mutate the heap or install a collector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalTierBTransitionPreflightError`] if the heap's arena
+    /// accounting no longer matches the captured Tier-B request.
+    pub fn tier_b_transition_preflight(
+        &self,
+    ) -> Result<Option<EvalTierBTransitionPreflight>, EvalTierBTransitionPreflightError> {
+        self.tier_b_transition_request()
+            .map(|request| request.preflight(&self.heap))
+            .transpose()
     }
 
     /// Returns the final cold-aware heap budget plan, if one was requested.

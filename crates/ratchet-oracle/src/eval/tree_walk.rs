@@ -404,8 +404,10 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcRootWritebackWrite,
     EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
     EvalGcStressBoundaryMinorGcRootWritebackWritePlanReport, EvalGcStressBoundaryScans,
-    EvalOutcome, EvalStats, EvalTierBTransitionRequest, EvalTraceKind, EvalTraceOutput,
-    EvalWarningOutput, IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer,
+    EvalOutcome, EvalStats, EvalTierBTransitionDomain, EvalTierBTransitionDomainPreflight,
+    EvalTierBTransitionPreflight, EvalTierBTransitionPreflightError, EvalTierBTransitionRequest,
+    EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail, IfdRealization,
+    IfdRealizationError, IfdRealizer,
 };
 pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
 pub(crate) use version::{

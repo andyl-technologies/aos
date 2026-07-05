@@ -626,6 +626,102 @@ fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
 }
 
 #[test]
+fn heap_memory_budget_tier_b_transition_preflight_admits_current_heap() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("\"budgeted\"");
+    let outcome =
+        eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_heap_memory_budget(budget))
+            .expect("string evaluates");
+
+    let request = outcome
+        .tier_b_transition_request()
+        .expect("over-budget outcome requests Tier B transition");
+    let preflight = outcome
+        .tier_b_transition_preflight()
+        .expect("current outcome heap matches transition request")
+        .expect("over-budget outcome has transition preflight");
+    assert_eq!(preflight.request(), request);
+    assert_eq!(
+        preflight.pre_flip_mapped_bytes(),
+        request.pre_flip_mapped_bytes()
+    );
+    assert_eq!(
+        preflight.worker().domain(),
+        EvalTierBTransitionDomain::Worker
+    );
+    assert_eq!(preflight.worker().stats(), outcome.heap().arena_stats());
+    assert_eq!(preflight.worker().generation(), HeapGeneration::Old);
+    assert_eq!(
+        preflight.permanent_shared().domain(),
+        EvalTierBTransitionDomain::PermanentShared
+    );
+    assert_eq!(
+        preflight.permanent_shared().stats(),
+        outcome.heap().permanent_arena_stats()
+    );
+    assert_eq!(
+        preflight.permanent_shared().generation(),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        preflight.domains(),
+        [preflight.worker(), preflight.permanent_shared()]
+    );
+}
+
+#[test]
+fn tier_b_transition_preflight_rejects_stale_worker_accounting() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("x: x");
+    let outcome =
+        eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_heap_memory_budget(budget))
+            .expect("lambda expression evaluates");
+
+    let request = outcome
+        .tier_b_transition_request()
+        .expect("over-budget outcome requests Tier B transition");
+    assert!(
+        request.worker_stats().used_bytes > 0,
+        "lambda fixture must allocate in the worker arena"
+    );
+    let stale_heap = EvalHeap::new();
+    let error = request
+        .preflight(&stale_heap)
+        .expect_err("fresh heap has different worker arena accounting");
+    assert_eq!(
+        error,
+        EvalTierBTransitionPreflightError::WorkerStatsChanged {
+            expected: request.worker_stats(),
+            actual: stale_heap.arena_stats(),
+        }
+    );
+}
+
+#[test]
+fn tier_b_transition_preflight_rejects_stale_permanent_shared_accounting() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("\"budgeted\"");
+    let outcome =
+        eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_heap_memory_budget(budget))
+            .expect("string evaluates");
+
+    let request = outcome
+        .tier_b_transition_request()
+        .expect("over-budget outcome requests Tier B transition");
+    let stale_heap = EvalHeap::new();
+    let error = request
+        .preflight(&stale_heap)
+        .expect_err("fresh heap has different permanent-shared arena accounting");
+    assert_eq!(
+        error,
+        EvalTierBTransitionPreflightError::PermanentSharedStatsChanged {
+            expected: request.permanent_stats(),
+            actual: stale_heap.permanent_arena_stats(),
+        }
+    );
+}
+
+#[test]
 fn heap_memory_budget_continuation_has_no_tier_b_transition_request() {
     let budget = HeapMemoryBudget::new(usize::MAX).expect("budget is non-zero");
     let ir = lower("\"budgeted\"");
@@ -638,6 +734,12 @@ fn heap_memory_budget_continuation_has_no_tier_b_transition_request() {
         .expect("tree-walk outcome records configured budget action");
     assert!(!action.requests_tier_b());
     assert_eq!(outcome.tier_b_transition_request(), None);
+    assert_eq!(
+        outcome
+            .tier_b_transition_preflight()
+            .expect("preflight checks are skipped without a transition request"),
+        None
+    );
 }
 
 #[test]
@@ -665,6 +767,12 @@ fn heap_memory_budget_advice_has_no_tier_b_transition_request() {
     assert!(decision.requires_runtime_action());
     assert!(!action.requests_tier_b());
     assert_eq!(outcome.tier_b_transition_request(), None);
+    assert_eq!(
+        outcome
+            .tier_b_transition_preflight()
+            .expect("preflight checks are skipped without a transition request"),
+        None
+    );
 }
 
 #[test]
