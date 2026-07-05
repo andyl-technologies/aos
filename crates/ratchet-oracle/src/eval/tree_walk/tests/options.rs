@@ -1251,6 +1251,159 @@ fn gc_stress_eval_root_lambda_allocation_dispatches_reserved_writeback_bridge() 
 }
 
 #[test]
+fn gc_stress_eval_root_string_allocation_dispatches_permanent_noop_bridge() {
+    let ir = lower("\"gc-stress-root-string\"");
+    let default_outcome = eval_whnf_owned(&ir).expect("default string evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress string evaluates");
+
+    assert_eq!(outcome.value().tag(), ValueTag::String);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("string generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("string is heap-owned")
+            .bytes(),
+        b"gc-stress-root-string"
+    );
+    assert_eq!(outcome.heap().len(), default_outcome.heap().len());
+    assert_eq!(
+        outcome.heap().permanent_allocation_safepoints().count(),
+        default_outcome
+            .heap()
+            .permanent_allocation_safepoints()
+            .count()
+    );
+    let permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root string allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_eval_root_uri_allocation_dispatches_permanent_noop_bridge() {
+    let ir = lower("https://gc-stress.example.test/root");
+    let default_outcome = eval_whnf_owned(&ir).expect("default URI evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress URI evaluates");
+
+    assert_eq!(outcome.value().tag(), ValueTag::String);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("URI string generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("URI string is heap-owned")
+            .bytes(),
+        b"https://gc-stress.example.test/root"
+    );
+    assert_eq!(outcome.heap().len(), default_outcome.heap().len());
+    assert_eq!(
+        outcome.heap().permanent_allocation_safepoints().count(),
+        default_outcome
+            .heap()
+            .permanent_allocation_safepoints()
+            .count()
+    );
+    let permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root URI allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_eval_root_path_allocation_dispatches_permanent_noop_bridge() {
+    let ir = lower("/tmp/gc-stress-root-path");
+    let default_outcome = eval_whnf_owned(&ir).expect("default path evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress path evaluates");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Path);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("path generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .get_path(outcome.value())
+            .expect("path is heap-owned")
+            .bytes(),
+        b"/tmp/gc-stress-root-path"
+    );
+    assert_eq!(outcome.heap().len(), default_outcome.heap().len());
+    assert_eq!(
+        outcome.heap().permanent_allocation_safepoints().count(),
+        default_outcome
+            .heap()
+            .permanent_allocation_safepoints()
+            .count()
+    );
+    let permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root path allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_lambda_allocation_dispatch_skips_direct_eval_node_callers() {
     let ir = lower("x: x");
     let mut evaluator = TreeWalk::with_options(

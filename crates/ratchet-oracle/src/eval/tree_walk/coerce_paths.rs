@@ -217,9 +217,7 @@ impl TreeWalk {
             )
         })?;
         owned.extend_from_slice(bytes);
-        self.heap
-            .alloc_string(NixString::from_bytes(owned))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+        self.alloc_tree_walk_string(id, node.span, NixString::from_bytes(owned))
     }
 
     pub(super) fn eval_path(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -230,9 +228,7 @@ impl TreeWalk {
             TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
         })?;
         let path = self.path_literal_bytes_for_node(id, node.span, bytes)?;
-        self.heap
-            .alloc_path(NixString::from_bytes(path))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+        self.alloc_tree_walk_path(id, node.span, NixString::from_bytes(path))
     }
 
     pub(super) fn eval_search_path(

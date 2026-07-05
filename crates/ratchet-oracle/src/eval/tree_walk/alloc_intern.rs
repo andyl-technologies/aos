@@ -856,6 +856,58 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn alloc_tree_walk_string(
+        &mut self,
+        id: IrId,
+        span: Span,
+        string: NixString,
+    ) -> Result<Value, TreeWalkError> {
+        let dispatch_gc_stress_safepoint =
+            self.can_dispatch_gc_stress_permanent_root_allocation_safepoint(id);
+        let previous_poll =
+            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
+        let value = self
+            .heap
+            .alloc_string(string)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if dispatch_gc_stress_safepoint {
+            self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
+                id,
+                span,
+                previous_poll,
+                value,
+            )
+        } else {
+            Ok(value)
+        }
+    }
+
+    pub(super) fn alloc_tree_walk_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path: NixString,
+    ) -> Result<Value, TreeWalkError> {
+        let dispatch_gc_stress_safepoint =
+            self.can_dispatch_gc_stress_permanent_root_allocation_safepoint(id);
+        let previous_poll =
+            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
+        let value = self
+            .heap
+            .alloc_path(path)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if dispatch_gc_stress_safepoint {
+            self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
+                id,
+                span,
+                previous_poll,
+                value,
+            )
+        } else {
+            Ok(value)
+        }
+    }
+
     pub(super) fn alloc_tree_walk_list(
         &mut self,
         id: IrId,

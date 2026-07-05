@@ -3063,11 +3063,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       registration only: ordinary Rust locals are still invisible unless a
       caller publishes them, and JIT stack maps, collector invocation, and full
       relocation-slot ownership remain open.
-- [x] Current tree-walk thunk/lambda/root-primop/root-list/root-attrset allocation GC-stress dispatch precursor:
+- [x] Current tree-walk thunk/lambda/root-primop/root-string/root-URI/root-path/root-list/root-attrset allocation GC-stress dispatch precursor:
       `TreeWalk::alloc_tree_walk_thunk`,
       `TreeWalk::alloc_tree_walk_lambda`,
       `TreeWalk::alloc_tree_walk_primop`,
-      `TreeWalk::alloc_tree_walk_list`, and
+      `TreeWalk::alloc_tree_walk_string`,
+      `TreeWalk::alloc_tree_walk_path`, `TreeWalk::alloc_tree_walk_list`, and
       `TreeWalk::alloc_tree_walk_attrs_with_projected_shape_metadata` detect when an admitted allocation
       produced a new collector poll, reserve destination records, publish any
       registered transient value-stack roots plus the just-allocated value as
@@ -3090,22 +3091,28 @@ GC must be observationally invisible (§8): every item is gated by the different
       table, and rely on the
       non-forwarding reserved writeback bridge to rewrite any live heap fields
       reachable through dirty cards before clearing the owned card table after
-      successful application. The dispatch uses the same promotion
+      successful application. Root string, URI, and path literals use the same
+      `eval_root` permanent-shared gate through a scalar no-op branch: the
+      current permanent poll is consumed, the scalar source card is validated
+      and cleared, and the permanent value identity/generation is preserved
+      because no young fields exist to rewrite. The dispatch uses the same promotion
       threshold of 2 as the existing tree-walk GC-stress bridges and
       intentionally leaves captured-env thunks, synthetic select/apply/builtin
       thunks and thunk fields, application-argument thunks, captured lambdas,
       captured-argument primop wrappers,
-      nested/direct `eval_node` lambda/primop/list/attrset allocations,
+      nested/direct `eval_node` lambda/primop/string/URI/path/list/attrset allocations,
       recursive/captured-lexical-env root attrsets, worker allocations inside
       list/binding local accumulator assembly, remaining non-root and
-      helper-generated permanent composite allocation sites that need
-      remembered-edge/barrier work, semispace
+      helper-generated permanent scalar/composite allocation sites that need
+      remembered-edge/barrier work or scalar no-op dispatch, semispace
       ownership, ABI object headers, interned/JIT roots, unsupported active
       frames, and Tier-B allocation dispatch open. Tests cover an active
       `eval_root` source `ThunkAlloc`, an `eval_root` source lambda, and an
       `eval_root` `builtins.map` primop under every-safepoint stress, including
-      the extra reserved allocation and the returned young destination value.
-      They also cover lazy list-element, application-argument, synthetic
+      the extra reserved allocation and the returned young destination value,
+      plus root string, URI, and path literals preserving their permanent values
+      through the scalar no-op bridge. They also cover lazy list-element,
+      application-argument, synthetic
       apply-thunk accumulator, and synthetic select-thunk field skips,
       multi-field list/attrset local-accumulator skips, a root list containing
       a lazy thunk whose permanent list dirty-card edge is rewritten
