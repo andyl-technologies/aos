@@ -485,6 +485,47 @@ impl EvalHeapTierBAdmissionPlan {
     }
 }
 
+/// Result of applying a Tier-B admission plan to heap-record metadata.
+///
+/// The report counts only generation metadata updates on existing typed heap
+/// records. Applying admission does not move objects, change allocation
+/// domains, reserve semispace storage, or install a collector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalHeapTierBAdmissionReport {
+    worker_records: usize,
+    permanent_shared_records: usize,
+    generation_rewrites: usize,
+}
+
+impl EvalHeapTierBAdmissionReport {
+    const fn new(
+        worker_records: usize,
+        permanent_shared_records: usize,
+        generation_rewrites: usize,
+    ) -> Self {
+        Self {
+            worker_records,
+            permanent_shared_records,
+            generation_rewrites,
+        }
+    }
+
+    /// Returns the number of worker-domain records admitted as old generation.
+    pub const fn worker_records(self) -> usize {
+        self.worker_records
+    }
+
+    /// Returns the number of permanent-shared records preserved as permanent.
+    pub const fn permanent_shared_records(self) -> usize {
+        self.permanent_shared_records
+    }
+
+    /// Returns the number of heap-record generation fields rewritten.
+    pub const fn generation_rewrites(self) -> usize {
+        self.generation_rewrites
+    }
+}
+
 /// An opt-in cold-aware budget plan with optional advice telemetry.
 ///
 /// This is planning metadata for the future spill path. Its decision can credit
@@ -674,6 +715,42 @@ impl EvalHeap {
             worker_records,
             permanent_shared_records,
             records,
+        ))
+    }
+
+    /// Applies a Tier-B admission plan to existing heap-record generations.
+    ///
+    /// The method validates that current heap accounting and typed heap records
+    /// still match `plan`, then rewrites only generation metadata: worker-domain
+    /// records become old-generation records and permanent-shared records remain
+    /// permanent. Allocation domains, object bodies, heap handles, allocator
+    /// storage, remembered sets, and card tables are not changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if `plan` no longer matches the current heap's
+    /// arena accounting, record count, record order, allocation domains, or
+    /// pre-admission generations.
+    pub fn apply_tier_b_admission_plan(
+        &mut self,
+        plan: &EvalHeapTierBAdmissionPlan,
+    ) -> Result<EvalHeapTierBAdmissionReport, EvalHeapError> {
+        self.validate_tier_b_admission_plan(plan)?;
+
+        let mut generation_rewrites = 0usize;
+        for record in &mut self.records {
+            let admitted_generation =
+                tier_b_admitted_generation_for_allocation_domain(record.allocation_domain);
+            if record.generation != admitted_generation {
+                record.generation = admitted_generation;
+                generation_rewrites = generation_rewrites.saturating_add(1);
+            }
+        }
+
+        Ok(EvalHeapTierBAdmissionReport::new(
+            plan.worker_records,
+            plan.permanent_shared_records,
+            generation_rewrites,
         ))
     }
 
@@ -2496,6 +2573,65 @@ impl EvalHeap {
         }
 
         Ok(reclaimed)
+    }
+
+    fn validate_tier_b_admission_plan(
+        &self,
+        plan: &EvalHeapTierBAdmissionPlan,
+    ) -> Result<(), EvalHeapError> {
+        let worker_stats = self.arena_stats();
+        if worker_stats != plan.worker_stats {
+            return Err(EvalHeapError::TierBAdmissionStaleArenaStats {
+                domain: "worker",
+                expected: plan.worker_stats,
+                actual: worker_stats,
+            });
+        }
+
+        let permanent_stats = self.permanent_arena_stats();
+        if permanent_stats != plan.permanent_stats {
+            return Err(EvalHeapError::TierBAdmissionStaleArenaStats {
+                domain: "permanent-shared",
+                expected: plan.permanent_stats,
+                actual: permanent_stats,
+            });
+        }
+
+        if self.records.len() != plan.records.len() {
+            return Err(EvalHeapError::TierBAdmissionStaleRecordCount {
+                expected_records: plan.records.len(),
+                actual_records: self.records.len(),
+            });
+        }
+
+        for (index, (record, planned)) in self.records.iter().zip(plan.records.iter()).enumerate() {
+            let address = gc_address_for_heap_record(record)?;
+            if address != planned.address {
+                return Err(EvalHeapError::TierBAdmissionStaleRecordAddress {
+                    index,
+                    expected: planned.address,
+                    actual: address,
+                });
+            }
+            if record.allocation_domain != planned.allocation_domain {
+                return Err(EvalHeapError::TierBAdmissionStaleRecordDomain {
+                    index,
+                    address,
+                    expected: planned.allocation_domain,
+                    actual: record.allocation_domain,
+                });
+            }
+            if record.generation != planned.current_generation {
+                return Err(EvalHeapError::TierBAdmissionStaleRecordGeneration {
+                    index,
+                    address,
+                    expected: planned.current_generation,
+                    actual: record.generation,
+                });
+            }
+        }
+
+        Ok(())
     }
 
     fn validate_worker_region_mark_is_innermost(

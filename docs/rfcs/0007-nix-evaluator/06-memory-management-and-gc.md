@@ -3164,6 +3164,17 @@ GC must be observationally invisible (§8): every item is gated by the different
       preflight errors propagating before heap-record planning. This still does
       not install a collector, switch allocators, mutate heap-record
       generations, rewrite handles, or relocate values.
+- [x] Current heap Tier-B admission application precursor:
+      `EvalHeap::apply_tier_b_admission_plan` validates that the current heap
+      still matches the captured admission plan, then rewrites only existing
+      heap-record generation metadata: worker-domain records become old
+      generation and permanent-shared records remain permanent. Tests cover
+      successful mixed-domain application, stale worker-accounting rejection,
+      stale record-generation rejection before partial mutation, preserved
+      allocation domains, and unchanged arena accounting. This still does not
+      install a collector, switch allocators, reserve semispace storage, rewrite
+      handles, mutate object bodies, publish remembered/card state, or relocate
+      values.
 
 ### Region inference (§5)
 

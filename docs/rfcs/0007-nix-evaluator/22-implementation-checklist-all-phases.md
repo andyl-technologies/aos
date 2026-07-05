@@ -6824,6 +6824,16 @@ and helps the oracle directly.
       planning. This remains a bridge only: it does not install a collector,
       switch allocators, mutate heap-record generations, rewrite handles, or
       relocate values.
+      `EvalHeap::apply_tier_b_admission_plan` now validates that the current
+      heap still matches the captured admission plan, then rewrites only
+      existing heap-record generation metadata: worker-domain records become old
+      generation and permanent-shared records remain permanent. Tests cover
+      successful mixed-domain application, stale worker-accounting rejection,
+      stale record-generation rejection before partial mutation, preserved
+      allocation domains, and unchanged arena accounting. This remains an
+      explicit heap-metadata admission step only: it does not install a
+      collector, switch allocators, reserve semispace storage, rewrite handles,
+      mutate object bodies, publish remembered/card state, or relocate values.
       Hash-cons hits skip the poll because no heap
       allocation occurred. Linux and Darwin budget polls now sample process RSS
       from `/proc/self/statm` or Mach `MACH_TASK_BASIC_INFO` through

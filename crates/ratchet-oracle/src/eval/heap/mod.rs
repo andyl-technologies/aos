@@ -47,7 +47,7 @@ pub use arena::{
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan,
     EvalHeapColdHashConsedAdviceReport, EvalHeapMemoryAdviceReport, EvalHeapMemoryBudgetAction,
     EvalHeapMemoryBudgetDecision, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
-    EvalHeapTierBAdmissionPlan, EvalHeapTierBAdmissionRecord,
+    EvalHeapTierBAdmissionPlan, EvalHeapTierBAdmissionRecord, EvalHeapTierBAdmissionReport,
 };
 pub(crate) use roots::{
     AllocationCollectorPollCopiedHeapFieldWrite, AllocationCollectorPollDirectHeapFieldWrite,
@@ -573,6 +573,72 @@ pub enum EvalHeapError {
     WorkerResetLiveRecords {
         /// The number of worker-domain records still registered in the heap.
         records: usize,
+    },
+    /// A Tier-B admission plan no longer matches current arena accounting.
+    #[error(
+        "Tier-B admission plan is stale for {domain} arena: expected {expected:?}, actual {actual:?}"
+    )]
+    TierBAdmissionStaleArenaStats {
+        /// The arena domain whose accounting changed.
+        domain: &'static str,
+        /// The arena accounting captured by the admission plan.
+        expected: ArenaStats,
+        /// The current arena accounting.
+        actual: ArenaStats,
+    },
+    /// A Tier-B admission plan no longer matches the heap record count.
+    #[error(
+        "Tier-B admission plan is stale: record count was {expected_records}, now {actual_records}"
+    )]
+    TierBAdmissionStaleRecordCount {
+        /// The typed heap record count captured by the plan.
+        expected_records: usize,
+        /// The current typed heap record count.
+        actual_records: usize,
+    },
+    /// A Tier-B admission plan no longer matches the record at an index.
+    #[error(
+        "Tier-B admission plan record {index} address is stale: expected 0x{expected:x}, actual 0x{actual:x}",
+        expected = expected.address_bits(),
+        actual = actual.address_bits()
+    )]
+    TierBAdmissionStaleRecordAddress {
+        /// The heap-record index whose address changed.
+        index: usize,
+        /// The heap address captured by the plan.
+        expected: GcHeapAddress,
+        /// The current heap address at the same index.
+        actual: GcHeapAddress,
+    },
+    /// A Tier-B admission plan no longer matches a record's allocation domain.
+    #[error(
+        "Tier-B admission plan record {index} at 0x{address:x} allocation domain changed: expected {expected:?}, actual {actual:?}",
+        address = address.address_bits()
+    )]
+    TierBAdmissionStaleRecordDomain {
+        /// The heap-record index whose allocation domain changed.
+        index: usize,
+        /// The heap address of the record.
+        address: GcHeapAddress,
+        /// The allocation domain captured by the plan.
+        expected: HeapAllocationDomain,
+        /// The current allocation domain.
+        actual: HeapAllocationDomain,
+    },
+    /// A Tier-B admission plan no longer matches a record's generation.
+    #[error(
+        "Tier-B admission plan record {index} at 0x{address:x} generation changed: expected {expected:?}, actual {actual:?}",
+        address = address.address_bits()
+    )]
+    TierBAdmissionStaleRecordGeneration {
+        /// The heap-record index whose generation changed.
+        index: usize,
+        /// The heap address of the record.
+        address: GcHeapAddress,
+        /// The generation captured by the plan.
+        expected: HeapGeneration,
+        /// The current generation.
+        actual: HeapGeneration,
     },
     /// A worker-region marker referred to more records than the heap currently
     /// contains.

@@ -1484,6 +1484,102 @@ fn tier_b_admission_plan_keeps_existing_old_worker_generation_stable() {
 }
 
 #[test]
+fn tier_b_admission_application_rewrites_worker_records_to_old_generation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let worker = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    let permanent = heap
+        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
+        .expect("permanent string allocates");
+    let worker_stats = heap.arena_stats();
+    let permanent_stats = heap.permanent_arena_stats();
+    let plan = heap
+        .plan_tier_b_admission()
+        .expect("admission planning succeeds");
+
+    let report = heap
+        .apply_tier_b_admission_plan(&plan)
+        .expect("admission application succeeds");
+
+    assert_eq!(report.worker_records(), 1);
+    assert_eq!(report.permanent_shared_records(), 1);
+    assert_eq!(report.generation_rewrites(), 1);
+    assert_eq!(heap_generation(&heap, worker), HeapGeneration::Old);
+    assert_eq!(heap_generation(&heap, permanent), HeapGeneration::Permanent);
+    assert_eq!(
+        allocation_domain(&heap, worker),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        allocation_domain(&heap, permanent),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert_eq!(heap.arena_stats(), worker_stats);
+    assert_eq!(heap.permanent_arena_stats(), permanent_stats);
+}
+
+#[test]
+fn tier_b_admission_application_rejects_stale_worker_stats_before_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let worker = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("worker thunk allocates");
+    let plan = heap
+        .plan_tier_b_admission()
+        .expect("admission planning succeeds");
+    let expected_stats = plan.worker_stats();
+
+    heap.alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("second worker thunk allocates");
+    let actual_stats = heap.arena_stats();
+    let error = heap
+        .apply_tier_b_admission_plan(&plan)
+        .expect_err("stale worker accounting is rejected");
+
+    assert_eq!(
+        error,
+        EvalHeapError::TierBAdmissionStaleArenaStats {
+            domain: "worker",
+            expected: expected_stats,
+            actual: actual_stats,
+        }
+    );
+    assert_eq!(heap_generation(&heap, worker), HeapGeneration::Young);
+}
+
+#[test]
+fn tier_b_admission_application_rejects_stale_record_generation_before_mutation() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let first = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("first worker thunk allocates");
+    let second = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(2)))
+        .expect("second worker thunk allocates");
+    let plan = heap
+        .plan_tier_b_admission()
+        .expect("admission planning succeeds");
+    set_heap_generation(&mut heap, second, HeapGeneration::Old);
+
+    let error = heap
+        .apply_tier_b_admission_plan(&plan)
+        .expect_err("stale generation is rejected");
+
+    assert_eq!(
+        error,
+        EvalHeapError::TierBAdmissionStaleRecordGeneration {
+            index: 1,
+            address: gc_address(second),
+            expected: HeapGeneration::Young,
+            actual: HeapGeneration::Old,
+        }
+    );
+    assert_eq!(heap_generation(&heap, first), HeapGeneration::Young);
+    assert_eq!(heap_generation(&heap, second), HeapGeneration::Old);
+}
+
+#[test]
 fn cold_hash_consed_estimate_flows_into_opt_in_budget_classification() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(65536).expect("heap creates");
     let string = heap
