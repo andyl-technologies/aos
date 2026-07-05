@@ -787,13 +787,13 @@ impl TreeWalk {
                 })?;
             NixString::new(bytes, context)
         };
-        self.heap
-            .alloc_string(result)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_add_drv_output_dependencies_primop(
         &mut self,
+        id: IrId,
+        span: Span,
         argument: IrId,
         argument_span: Span,
         value: Value,
@@ -871,19 +871,13 @@ impl TreeWalk {
             })?;
             NixString::new(bytes, context)
         };
-        self.heap.alloc_string(result).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Heap {
-                    id: argument,
-                    source,
-                },
-                argument_span,
-            )
-        })
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_unsafe_discard_output_dependency_primop(
         &mut self,
+        id: IrId,
+        span: Span,
         argument: IrId,
         argument_span: Span,
         value: Value,
@@ -946,19 +940,13 @@ impl TreeWalk {
             let bytes = Self::copy_bytes_for_node(argument, argument_span, string.bytes())?;
             NixString::new(bytes, StringContext::new(elements))
         };
-        self.heap.alloc_string(result).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Heap {
-                    id: argument,
-                    source,
-                },
-                argument_span,
-            )
-        })
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_unsafe_discard_string_context_primop(
         &mut self,
+        id: IrId,
+        span: Span,
         argument: IrId,
         argument_span: Span,
         value: Value,
@@ -984,15 +972,7 @@ impl TreeWalk {
                 )
             })?
         };
-        self.heap.alloc_string(result).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Heap {
-                    id: argument,
-                    source,
-                },
-                argument_span,
-            )
-        })
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_string_length_primop(

@@ -49,7 +49,13 @@ fn unsafe_discard_output_dependency_primop_downgrades_deep_contexts() {
         .expect("context-bearing string allocates");
 
     let result = evaluator
-        .eval_unsafe_discard_output_dependency_primop(argument, argument_span, value)
+        .eval_unsafe_discard_output_dependency_primop(
+            ir.root,
+            root.span,
+            argument,
+            argument_span,
+            value,
+        )
         .expect("unsafeDiscardOutputDependency evaluates");
     let string = evaluator
         .heap

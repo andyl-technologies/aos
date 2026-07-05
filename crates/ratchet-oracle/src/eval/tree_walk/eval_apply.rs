@@ -543,15 +543,24 @@ impl TreeWalk {
             StrictUnaryPrimOp::GetEnv => {
                 self.eval_get_env_primop(id, span, argument, argument_span, value)
             }
-            StrictUnaryPrimOp::AddDrvOutputDependencies => {
-                self.eval_add_drv_output_dependencies_primop(argument, argument_span, value)
-            }
-            StrictUnaryPrimOp::UnsafeDiscardOutputDependency => {
-                self.eval_unsafe_discard_output_dependency_primop(argument, argument_span, value)
-            }
-            StrictUnaryPrimOp::UnsafeDiscardStringContext => {
-                self.eval_unsafe_discard_string_context_primop(argument, argument_span, value)
-            }
+            StrictUnaryPrimOp::AddDrvOutputDependencies => self
+                .eval_add_drv_output_dependencies_primop(id, span, argument, argument_span, value),
+            StrictUnaryPrimOp::UnsafeDiscardOutputDependency => self
+                .eval_unsafe_discard_output_dependency_primop(
+                    id,
+                    span,
+                    argument,
+                    argument_span,
+                    value,
+                ),
+            StrictUnaryPrimOp::UnsafeDiscardStringContext => self
+                .eval_unsafe_discard_string_context_primop(
+                    id,
+                    span,
+                    argument,
+                    argument_span,
+                    value,
+                ),
             StrictUnaryPrimOp::Placeholder => {
                 self.eval_placeholder_primop(id, span, argument, argument_span, value)
             }
@@ -562,9 +571,11 @@ impl TreeWalk {
                 self.eval_string_length_primop(argument, argument_span, value)
             }
             StrictUnaryPrimOp::BaseNameOf => {
-                self.eval_base_name_of_primop(argument, argument_span, value)
+                self.eval_base_name_of_primop(id, span, argument, argument_span, value)
             }
-            StrictUnaryPrimOp::DirOf => self.eval_dir_of_primop(argument, argument_span, value),
+            StrictUnaryPrimOp::DirOf => {
+                self.eval_dir_of_primop(id, span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::ParseDrvName => {
                 self.eval_parse_drv_name_primop(id, span, argument, argument_span, value)
             }

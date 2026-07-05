@@ -183,6 +183,8 @@ impl TreeWalk {
 
     pub(super) fn eval_base_name_of_primop(
         &mut self,
+        id: IrId,
+        span: Span,
         argument: IrId,
         argument_span: Span,
         value: Value,
@@ -211,19 +213,13 @@ impl TreeWalk {
                     )
                 })?
         };
-        self.heap.alloc_string(result).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Heap {
-                    id: argument,
-                    source,
-                },
-                argument_span,
-            )
-        })
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_dir_of_primop(
         &mut self,
+        id: IrId,
+        span: Span,
         argument: IrId,
         argument_span: Span,
         value: Value,
@@ -245,15 +241,7 @@ impl TreeWalk {
                 }
                 None => context_free_dot_string(argument, argument_span)?,
             };
-            return self.heap.alloc_path(result).map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Heap {
-                        id: argument,
-                        source,
-                    },
-                    argument_span,
-                )
-            });
+            return self.alloc_tree_walk_path(id, span, result);
         }
 
         let string = self.coerce_to_string(argument, value, argument_span)?;
@@ -284,15 +272,7 @@ impl TreeWalk {
                 None => context_free_dot_string(argument, argument_span)?,
             }
         };
-        self.heap.alloc_string(result).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Heap {
-                    id: argument,
-                    source,
-                },
-                argument_span,
-            )
-        })
+        self.alloc_tree_walk_string(id, span, result)
     }
 
     pub(super) fn eval_parse_drv_name_primop(

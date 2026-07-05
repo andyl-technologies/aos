@@ -747,7 +747,7 @@ fn add_drv_output_dependencies_primop_upgrades_derivation_context() {
         .expect("context-bearing string allocates");
 
     let result = evaluator
-        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .eval_add_drv_output_dependencies_primop(ir.root, root.span, argument, argument_span, value)
         .expect("addDrvOutputDependencies evaluates");
     let string = evaluator
         .heap
@@ -792,7 +792,7 @@ fn add_drv_output_dependencies_primop_is_idempotent_for_deep_context() {
         .expect("context-bearing string allocates");
 
     let result = evaluator
-        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .eval_add_drv_output_dependencies_primop(ir.root, root.span, argument, argument_span, value)
         .expect("addDrvOutputDependencies evaluates");
     let string = evaluator
         .heap
@@ -846,7 +846,7 @@ fn add_drv_output_dependencies_primop_rejects_invalid_context_shapes() {
         .alloc_string(NixString::new(b"x".to_vec(), context))
         .expect("context-bearing string allocates");
     let error = evaluator
-        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .eval_add_drv_output_dependencies_primop(ir.root, root.span, argument, argument_span, value)
         .expect_err("multiple context elements are rejected");
     assert_eq!(
         error.kind(),
@@ -867,7 +867,7 @@ fn add_drv_output_dependencies_primop_rejects_invalid_context_shapes() {
         .alloc_string(NixString::new(source_path.to_vec(), context))
         .expect("context-bearing string allocates");
     let error = evaluator
-        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .eval_add_drv_output_dependencies_primop(ir.root, root.span, argument, argument_span, value)
         .expect_err("non-derivation context paths are rejected");
     assert_eq!(
         error.kind(),
@@ -889,7 +889,7 @@ fn add_drv_output_dependencies_primop_rejects_invalid_context_shapes() {
         .alloc_string(NixString::new(drv_path.to_vec(), context))
         .expect("context-bearing string allocates");
     let error = evaluator
-        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .eval_add_drv_output_dependencies_primop(ir.root, root.span, argument, argument_span, value)
         .expect_err("output context is rejected");
     assert_eq!(
         error.kind(),

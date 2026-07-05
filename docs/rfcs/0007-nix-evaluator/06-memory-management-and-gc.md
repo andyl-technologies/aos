@@ -3097,10 +3097,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       and cleared, and the permanent value identity/generation is preserved
       because no young fields exist to rewrite. Helper-generated static strings
       now route through the same wrapper, so admitted root helper string
-      allocations use the same scalar no-op dispatch. The dispatch uses the
-      same promotion threshold of 2 as the existing tree-walk GC-stress
-      bridges and
-      intentionally leaves captured-env thunks, synthetic select/apply/builtin
+      allocations use the same scalar no-op dispatch. Root-result unary
+      string/path helpers (`baseNameOf`, `dirOf`, and `toPath`) now pass the
+      owning primop id/span into the same wrappers, and the permanent gate
+      admits already-interned string/path roots because those scalar permanent
+      hash-cons roots have no heap `Value` fields to rewrite. Context-rewriting
+      string helpers (`addDrvOutputDependencies`,
+      `unsafeDiscardOutputDependency`, and `unsafeDiscardStringContext`) also
+      pass the owning primop id/span into the wrapper, so admitted helper
+      result allocations use the scalar no-op dispatch when they allocate a
+      distinct string record. The dispatch uses the same promotion threshold of
+      2 as the existing tree-walk GC-stress bridges and intentionally leaves
+      captured-env thunks, synthetic select/apply/builtin
       thunks and thunk fields, application-argument thunks, captured lambdas,
       captured-argument primop wrappers,
       nested/direct `eval_node` lambda/primop/string/URI/path/list/attrset allocations,
@@ -3110,16 +3118,21 @@ GC must be observationally invisible (§8): every item is gated by the different
       non-root helper scalar sites that do not pass the active-root gate,
       helper-generated permanent composite allocation sites that need
       remembered-edge/barrier work, semispace
-      ownership, ABI object headers, interned/JIT roots, unsupported active
-      frames, and Tier-B allocation dispatch open. Tests cover an active
+      ownership, ABI object headers, interned list/attr roots, JIT roots,
+      unsupported active frames, and Tier-B allocation dispatch open. Tests
+      cover an active
       `eval_root` source `ThunkAlloc`, an `eval_root` source lambda, and an
       `eval_root` `builtins.map` primop under every-safepoint stress, including
       the extra reserved allocation and the returned young destination value,
       plus root string, URI, and path literals preserving their permanent values
-      through the scalar no-op bridge, static helper string allocations
+      through the scalar no-op bridge, root-result `baseNameOf`, `dirOf`, and
+      `toPath` helper allocations relocating registered transient roots while
+      interned string/path roots are live, static helper string allocations
       preserving their permanent values while relocating registered transient
-      roots through that same bridge, and symbol helper strings intentionally
-      skipping dispatch while retaining registered transient roots unchanged.
+      roots through that same bridge, context-rewriting helper string
+      allocations preserving their bytes while relocating registered transient
+      roots, and symbol helper strings intentionally skipping dispatch while
+      retaining registered transient roots unchanged.
       They also cover lazy list-element,
       application-argument, synthetic
       apply-thunk accumulator, and synthetic select-thunk field skips,

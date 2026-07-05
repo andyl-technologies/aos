@@ -1072,7 +1072,17 @@ impl TreeWalk {
             && self.active_primop_arg_roots.is_empty()
             && self.active_primop_arg_frames.is_empty()
             && self.import_cache.is_empty()
-            && matches!(self.heap.interned_root_set(), Ok(roots) if roots.is_empty())
+            && self.can_dispatch_gc_stress_interned_roots()
+    }
+
+    fn can_dispatch_gc_stress_interned_roots(&self) -> bool {
+        let Ok(roots) = self.heap.interned_root_set() else {
+            return false;
+        };
+        roots
+            .roots()
+            .iter()
+            .all(|root| matches!(root.value().tag(), ValueTag::String | ValueTag::Path))
     }
 
     fn apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(

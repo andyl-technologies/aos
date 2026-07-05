@@ -1543,6 +1543,252 @@ fn gc_stress_eval_root_path_allocation_dispatches_permanent_noop_bridge() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+fn assert_gc_stress_root_string_result_dispatches(source: &str, expected: &[u8]) {
+    let ir = lower(source);
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress root expression evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while evaluating {source}"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("string generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(value)
+            .expect("string is heap-owned")
+            .bytes(),
+        expected
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root string result allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+fn assert_gc_stress_root_path_result_dispatches(source: &str, expected: &[u8]) {
+    let ir = lower(source);
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress root expression evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while evaluating {source}"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Path);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("path generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_path(value)
+            .expect("path is heap-owned")
+            .bytes(),
+        expected
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root path result allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_eval_root_unary_string_result_helpers_dispatch_permanent_noop_bridge() {
+    let cases: &[(&str, &[u8])] = &[
+        (
+            r#"builtins.baseNameOf "/tmp/gc-stress-root-name""#,
+            b"gc-stress-root-name",
+        ),
+        (r#"builtins.dirOf "/tmp/gc-stress-root-name""#, b"/tmp"),
+        (
+            r#"builtins.toPath "/tmp/../var/gc-stress-root-name""#,
+            b"/var/gc-stress-root-name",
+        ),
+    ];
+
+    for (source, expected) in cases {
+        assert_gc_stress_root_string_result_dispatches(source, expected);
+    }
+}
+
+#[test]
+fn gc_stress_eval_root_unary_path_result_helpers_dispatch_permanent_noop_bridge() {
+    assert_gc_stress_root_path_result_dispatches(
+        "builtins.dirOf /tmp/gc-stress-root-name",
+        b"/tmp",
+    );
+}
+
+#[test]
+fn gc_stress_context_string_result_helpers_dispatch_permanent_noop_bridge() {
+    type ContextStringHelper =
+        fn(&mut TreeWalk, IrId, Span, IrId, Span, Value) -> Result<Value, TreeWalkError>;
+    let cases: &[(&str, ContextStringHelper)] = &[
+        (
+            "builtins.addDrvOutputDependencies \"x\"",
+            TreeWalk::eval_add_drv_output_dependencies_primop,
+        ),
+        (
+            "builtins.unsafeDiscardOutputDependency \"x\"",
+            TreeWalk::eval_unsafe_discard_output_dependency_primop,
+        ),
+        (
+            "builtins.unsafeDiscardStringContext \"x\"",
+            TreeWalk::eval_unsafe_discard_string_context_primop,
+        ),
+    ];
+
+    for (source, helper) in cases {
+        let ir = lower(source);
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("context helper argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::with_options(
+            &ir,
+            TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+        );
+        let context_path = b"/nix/store/context.drv".to_vec();
+        let source_element = if source.contains("unsafeDiscardOutputDependency") {
+            ContextElement::deep_derivation(context_path).expect("source context builds")
+        } else {
+            ContextElement::opaque_path(context_path).expect("source context builds")
+        };
+        let source_context =
+            StringContext::singleton(source_element).expect("source context allocates");
+        let source_string = evaluator
+            .heap
+            .alloc_string(NixString::new(b"x".to_vec(), source_context))
+            .expect("source string allocates");
+        let local_source = evaluator
+            .heap
+            .alloc_thunk(EvalThunk::new(IrId::new(7)))
+            .expect("registered local thunk allocates");
+        let mut roots = [local_source];
+
+        evaluator.active_root_eval_node = Some(ir.root);
+        let value = evaluator
+            .with_transient_value_stack_roots(ir.root, root.span, &mut roots, |eval| {
+                helper(
+                    eval,
+                    ir.root,
+                    root.span,
+                    argument,
+                    argument_span,
+                    source_string,
+                )
+            })
+            .expect("context string helper evaluates under GC stress");
+        evaluator.active_root_eval_node = None;
+
+        assert!(evaluator.transient_value_stack_roots().is_empty());
+        assert!(
+            !roots[0].raw_eq(local_source),
+            "registered root was not relocated while evaluating {source}"
+        );
+        assert_eq!(roots[0].tag(), ValueTag::Thunk);
+        assert_eq!(value.tag(), ValueTag::String);
+        assert_eq!(
+            evaluator
+                .heap()
+                .generation(value)
+                .expect("context result string generation is known"),
+            HeapGeneration::Permanent
+        );
+        assert_eq!(
+            evaluator
+                .heap()
+                .get_string(value)
+                .expect("context result string is heap-owned")
+                .bytes(),
+            b"x"
+        );
+        let permanent_safepoint = evaluator
+            .heap()
+            .permanent_allocation_safepoints()
+            .last()
+            .expect("context result string allocation safepoint records");
+        assert_eq!(
+            permanent_safepoint.entrypoint(),
+            RuntimeAllocationEntryPoint::AosAllocString
+        );
+        assert_eq!(
+            permanent_safepoint.gc_poll_reason(),
+            Some(AllocationGcPollReason::GcStressEverySafepoint)
+        );
+        assert!(evaluator.thunk_resolve_card_table().is_empty());
+    }
+}
+
 #[test]
 fn gc_stress_lambda_allocation_dispatch_skips_direct_eval_node_callers() {
     let ir = lower("x: x");

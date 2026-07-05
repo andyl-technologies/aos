@@ -48,7 +48,13 @@ fn unsafe_discard_string_context_primop_returns_context_free_string() {
         .expect("context-bearing string allocates");
 
     let result = evaluator
-        .eval_unsafe_discard_string_context_primop(argument, argument_span, value)
+        .eval_unsafe_discard_string_context_primop(
+            ir.root,
+            root.span,
+            argument,
+            argument_span,
+            value,
+        )
         .expect("unsafeDiscardStringContext evaluates");
     let string = evaluator
         .heap
