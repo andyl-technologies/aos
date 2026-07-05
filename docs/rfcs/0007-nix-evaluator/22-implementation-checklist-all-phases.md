@@ -6980,6 +6980,16 @@ and helps the oracle directly.
       object-body/generation writes to already-bound destination records,
       rewrites supported tree-walk root storage and record-owned heap fields,
       publishes the planned next remembered set, and clears the live card table.
+      `TreeWalk::collector_poll_minor_gc_reserved_reference_writeback_plan_for_safepoint`
+      now validates the caller's current poll, reserves placeholder destination
+      records for current young worker records, scans and plans against the
+      post-reservation heap snapshot, maps survivors through
+      `EvalHeap::plan_collector_poll_minor_gc_reserved_relocation_destinations`,
+      and feeds the same object body/generation plus root/field publication path.
+      Its reserved validate/apply wrappers prove that after scratch-record
+      reservation, preflight leaves live roots, fields, remembered sets, and
+      card tables unchanged while apply consumes the reserved destination records
+      through the existing writer, including caller-owned primop arguments.
       Unit tests cover a real poll rewriting every supported
       mutable tree-walk root kind, direct stale-poll rejection before mutation
       in the planning wrapper, root-only applicator, buffer applicator, stale
@@ -7002,11 +7012,12 @@ and helps the oracle directly.
       card-table rejection before live mutation, and a dirty permanent-list
       remembered edge whose mixed root/field plan is rejected without touching
       the value stack, active frame root, or ready import-cache root. This is
-      still not automatic allocation-site dispatch and still does not allocate
-      destination records, reserve semispace storage, install forwarding
-      headers, or consume JIT stack maps. The full remembered-set/card-table
-      publication remains limited to this explicit existing-destination
-      tree-walk bridge.
+      still not automatic allocation-site dispatch and still does not reserve
+      semispace storage, install forwarding headers, or consume JIT stack maps.
+      Destination records are allocated only by the explicit
+      reserved-destination tree-walk bridge, not by collector-owned semispace
+      dispatch. The full remembered-set/card-table publication remains limited
+      to these explicit tree-walk live-reference bridges.
 - [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
       collector-poll heap graph still matches current typed heap records, maps
@@ -7055,8 +7066,9 @@ and helps the oracle directly.
       maps only the actual survivors onto those records while rejecting stale
       reservation snapshots. This connects precise-root minor-GC planning to
       concrete evaluator destination records with placeholder bodies, but
-      semispace ownership, automatic collector dispatch, root/field publication,
-      and object-header writes remain open.
+      semispace ownership, automatic collector dispatch, root/field publication
+      outside the explicit tree-walk reserved-destination bridge, and
+      object-header writes remain open.
 - [x] Current `heap/roots.rs` commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` stores the remembered-set
       snapshot captured during allocation-poll planning and composes it with the

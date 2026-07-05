@@ -17,6 +17,7 @@ use crate::heap::{
 use crate::list::NixList;
 use crate::runtime::alloc::{
     AllocationCollectorPoll, AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint,
+    RuntimeAllocatorTier,
 };
 use std::path::PathBuf;
 
@@ -2214,6 +2215,331 @@ fn reference_writebacks_validate_and_apply_live_heap_fields_with_primop_argument
             .heap()
             .generation(destination)
             .expect("destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+    let expected_edges = [RememberedEdge::new(gc_address(parent), destination_address)];
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        expected_edges.as_slice()
+    );
+    assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
+}
+
+#[test]
+fn reference_writebacks_reserved_destination_rejects_stale_worker_poll_before_reservation() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let child = evaluator.eval_root().expect("lambda child evaluates");
+    let stale_poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a worker collector poll");
+    let sibling = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(9)))
+        .expect("sibling thunk allocation advances worker poll");
+    let current_poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("sibling allocation requested a worker collector poll");
+    let records_before = evaluator.heap().len();
+    let worker_safepoints_before = evaluator.heap().allocation_safepoints();
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints();
+    let value_stack = vec![child, sibling];
+
+    let err = evaluator
+        .validate_collector_poll_minor_gc_reserved_reference_writebacks_for_safepoint_root_storage_and_heap_fields(
+            stale_poll,
+            MinorGcPromotionPolicy::new(2),
+            &value_stack,
+        )
+        .expect_err("stale worker poll rejects before destination reservation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Scan(TreeWalkSafepointScanError::StaleCollectorPoll {
+            poll: stale_poll,
+            current: Some(current_poll),
+        },)
+    );
+    assert_eq!(evaluator.heap().len(), records_before);
+    assert_eq!(
+        evaluator.heap().allocation_safepoints(),
+        worker_safepoints_before
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints(),
+        permanent_safepoints_before
+    );
+}
+
+#[test]
+fn reference_writebacks_apply_reserved_worker_poll_switch_and_promote_destination() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let child = evaluator.eval_root().expect("lambda child evaluates");
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a worker collector poll");
+    assert_eq!(poll.tier(), RuntimeAllocatorTier::TierAOneShot);
+    let records_before = evaluator.heap().len();
+    let mut value_stack = vec![child];
+
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields(
+            poll,
+            MinorGcPromotionPolicy::new(0),
+            &mut value_stack,
+        )
+        .expect("reserved worker-poll writebacks apply");
+
+    assert_ne!(application.poll(), poll);
+    assert_eq!(
+        application.poll().tier(),
+        RuntimeAllocatorTier::TierAOneShot
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .allocation_safepoints()
+            .last_safepoint_collector_poll(),
+        Some(application.poll())
+    );
+    assert_eq!(evaluator.heap().len(), records_before + 1);
+    assert_eq!(application.scanned_roots(), 1);
+    assert_eq!(application.scanned_objects(), 1);
+    assert_eq!(application.survivors(), 1);
+    assert_eq!(application.reference_slots(), 1);
+    assert_eq!(application.root_writebacks(), 1);
+    assert_eq!(application.heap_field_writebacks(), 0);
+    assert_eq!(application.object_bodies_written(), 1);
+    assert_eq!(application.object_generations_written(), 1);
+    assert_eq!(application.applied_root_writebacks(), 1);
+    assert_eq!(application.live_heap_field_writebacks(), 0);
+    assert_eq!(application.applied_live_writebacks(), 1);
+    assert_eq!(application.remembered_set_published_edges(), 0);
+    assert_eq!(application.card_table_dirty_cards_cleared(), 0);
+    assert_ne!(gc_address(value_stack[0]), gc_address(child));
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value_stack[0])
+            .expect("promoted reserved destination is heap-bound"),
+        HeapGeneration::Old
+    );
+}
+
+#[test]
+fn reference_writebacks_validate_reserved_destination_without_live_mutation() {
+    let (mut evaluator, child, parent, poll, value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let child_address = gc_address(child);
+    let original_remembered_edges = evaluator.thunk_resolve_remembered_set.edges().to_vec();
+    let original_dirty_cards = evaluator.thunk_resolve_card_table.dirty_cards().to_vec();
+    let preflight = evaluator
+        .validate_collector_poll_minor_gc_reserved_reference_writebacks_for_safepoint_root_storage_and_heap_fields(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            &value_stack,
+        )
+        .expect("reserved destination reference writebacks validate without live mutation");
+
+    assert_eq!(preflight.poll(), poll);
+    assert_eq!(preflight.scanned_roots(), 4);
+    assert_eq!(preflight.scanned_objects(), 2);
+    assert_eq!(preflight.survivors(), 1);
+    assert_eq!(preflight.reference_slots(), 5);
+    assert_eq!(preflight.root_writebacks(), 3);
+    assert_eq!(preflight.heap_field_writebacks(), 1);
+    assert_eq!(preflight.object_bodies_preflighted(), 1);
+    assert_eq!(preflight.object_generations_preflighted(), 1);
+    assert_eq!(preflight.validated_root_writebacks(), 3);
+    assert_eq!(preflight.live_heap_field_writebacks(), 1);
+    assert_eq!(preflight.validated_live_writebacks(), 4);
+    let destination_address = gc_address(preflight.root_value_writeback_slots()[0].value());
+    assert_ne!(destination_address, child_address);
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    for slot in preflight.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+    assert_eq!(preflight.heap_field_writeback_slots().len(), 1);
+    assert_eq!(
+        resolved_heap_destination_address(preflight.heap_field_writeback_slots()[0].value()),
+        Some(destination_address)
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, child);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(relocated)
+            .expect("reserved destination is heap-bound"),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_card_table.dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
+fn reference_writebacks_reserved_destination_plan_uses_unbound_placeholder_body() {
+    let (mut evaluator, child, _parent, poll, value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let child_address = gc_address(child);
+    let plan = evaluator
+        .collector_poll_minor_gc_reserved_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            &value_stack,
+        )
+        .expect("reserved destination reference writeback plan derives");
+
+    assert_eq!(plan.poll(), poll);
+    assert_eq!(plan.scanned_roots(), 4);
+    assert_eq!(plan.scanned_objects(), 2);
+    assert_eq!(plan.survivors(), 1);
+    assert_eq!(plan.reference_slots(), 5);
+    assert_eq!(plan.object_bodies(), 1);
+    let request = plan.object_body_plan().requests()[0];
+    assert_eq!(request.source(), child_address);
+    assert_ne!(request.destination(), child_address);
+    assert_eq!(request.action(), MinorGcSurvivorAction::CopyToNursery);
+    assert_eq!(request.destination_generation(), HeapGeneration::Young);
+    assert!(matches!(
+        evaluator
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(request, ValueTag::Lambda),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+
+    let preflight = evaluator
+        .validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields(
+            &plan,
+            &value_stack,
+        )
+        .expect("reserved destination plan preflights");
+    assert_eq!(preflight.object_bodies_preflighted(), 1);
+    assert!(matches!(
+        evaluator
+            .heap()
+            .validate_collector_poll_minor_gc_object_body_binding(request, ValueTag::Lambda),
+        Err(EvalHeapError::CollectorPollObjectBodyWriteBindingMismatch {
+            reason: "destination record body does not match source record body",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn reference_writebacks_apply_reserved_destination_with_primop_arguments() {
+    let (mut evaluator, child, parent, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let child_address = gc_address(child);
+    let mut primop_arguments = vec![child];
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_primop_arguments(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            &mut value_stack,
+            &mut primop_arguments,
+        )
+        .expect("reserved destination writebacks apply to roots and live heap fields");
+
+    assert_eq!(application.poll(), poll);
+    assert_eq!(application.scanned_roots(), 5);
+    assert_eq!(application.scanned_objects(), 2);
+    assert_eq!(application.survivors(), 1);
+    assert_eq!(application.reference_slots(), 6);
+    assert_eq!(application.root_writebacks(), 4);
+    assert_eq!(application.heap_field_writebacks(), 1);
+    assert_eq!(application.object_bodies_written(), 1);
+    assert_eq!(application.object_generations_written(), 1);
+    assert_eq!(application.applied_root_writebacks(), 4);
+    assert_eq!(application.live_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_live_writebacks(), 5);
+    assert_eq!(application.remembered_set_published_edges(), 1);
+    assert_eq!(application.card_table_clear_report().dirty_cards(), 1);
+    assert_eq!(application.card_table_dirty_cards_cleared(), 1);
+    assert!(
+        application
+            .root_value_writeback_slots()
+            .iter()
+            .any(|slot| slot.source() == &EvalRootSource::PrimopArgument { index: 0 })
+    );
+    let destination_address = gc_address(application.root_value_writeback_slots()[0].value());
+    assert_ne!(destination_address, child_address);
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    for slot in application.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, relocated);
+    assert_raw_eq(primop_arguments[0], relocated);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        relocated,
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(relocated)
+            .expect("reserved destination remains heap-bound"),
         HeapGeneration::Young
     );
     let expected_edges = [RememberedEdge::new(gc_address(parent), destination_address)];

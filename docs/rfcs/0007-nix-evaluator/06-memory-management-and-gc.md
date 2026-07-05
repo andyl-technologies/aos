@@ -1822,10 +1822,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       rejection, copied and promoted reserved destination records, dead young
       reservations that are ignored, and stale reservation snapshots. This still
       does not reserve semispace pages, choose destination bases for the live
-      collector, dispatch Tier B automatically, publish roots/fields, write
-      object headers, or manage nursery/old generation spaces; reserved records
-      carry placeholder bodies and are only scratch evaluator records consumed
-      by the existing object body/generation writers before publication.
+      collector, dispatch Tier B automatically, publish roots/fields outside the
+      explicit tree-walk reserved-destination bridge, write object headers, or
+      manage nursery/old generation spaces; reserved records carry placeholder
+      bodies and are only scratch evaluator records consumed by the existing
+      object body/generation writers before publication.
 - [x] Current allocation-poll commit-plan bridge precursor:
       `AllocationCollectorPollMinorGcPlan::commit_plan` owns the remembered-set
       snapshot consumed by the poll plan and composes the existing lower-level
@@ -2648,7 +2649,18 @@ GC must be observationally invisible (§8): every item is gated by the different
       planned next remembered set, applies paired object-body/generation writes
       to already-bound destination records, rewrites supported tree-walk root
       storage and record-owned heap fields, publishes the planned next
-      remembered set, and clears the live card table. Tests cover the poll-derived
+      remembered set, and clears the live card table.
+      `TreeWalk::collector_poll_minor_gc_reserved_reference_writeback_plan_for_safepoint`
+      now validates the caller's current poll, reserves placeholder destination
+      records for current young worker records, scans and plans against the
+      post-reservation heap snapshot, maps survivors through
+      `EvalHeap::plan_collector_poll_minor_gc_reserved_relocation_destinations`,
+      and feeds the same object body/generation plus root/field publication
+      path. Its reserved validate/apply wrappers prove that after scratch-record
+      reservation, preflight leaves live roots, fields, remembered sets, and
+      card tables unchanged while apply consumes the reserved destination
+      records through the existing writer, including caller-owned primop
+      arguments. Tests cover the poll-derived
       all-root rewrite, direct stale-poll rejection before mutation in the
       planning wrapper, root-only applicator, buffer applicator, stale typed-root,
       heap-field metadata, and live heap-field buffer rejection before either
@@ -2667,11 +2679,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       mutation, and dirty permanent-list mixed-plan
       rejection before mutating the value stack, active frame root, or ready
       import-cache root. These helpers still do not bind semispace storage,
-      allocate destination records, mutate interned roots or JIT stack-map
-      slots, install forwarding headers, or wire root writebacks into automatic
-      allocation-safepoint collection. The full
-      remembered-set/card-table publication remains limited to this explicit
-      existing-destination tree-walk bridge.
+      mutate interned roots or JIT stack-map slots, install forwarding headers,
+      or wire root writebacks into automatic allocation-safepoint collection.
+      Destination records are allocated only by the explicit
+      reserved-destination tree-walk bridge, not by collector-owned semispace
+      dispatch. The full remembered-set/card-table publication remains limited
+      to these explicit tree-walk live-reference bridges.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
       then gates a single outcome-owned card-table clear on the same successful
       owned dry-run validation;
