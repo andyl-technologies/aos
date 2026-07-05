@@ -331,6 +331,145 @@ fn ordinary_filesystem_import_uses_configured_parse_cache() {
 }
 
 #[test]
+fn ordinary_filesystem_import_refreshes_parse_cache_analysis_facts() {
+    use crate::cache::ParseCache;
+
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache-analysis"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    let source = b"(x: x + 1) (1 + 2)";
+    fs::write(root.join("dep.nix"), source).expect("dep writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    let ir = lower("import ./dep.nix");
+
+    let mut first = TreeWalk::with_options(&ir, options.clone());
+    assert_eq!(
+        first
+            .eval_root()
+            .expect("first import evaluates")
+            .as_int()
+            .expect("first result is int"),
+        4
+    );
+    assert_eq!(first.import_parse_cache_stats(), (0, 1));
+    assert!(
+        first.stats().thunks_elided() > 0,
+        "analyzed imported IR should elide a strict thunk"
+    );
+
+    let parse_cache = ParseCache::new(&cache_root);
+    let cached = parse_cache
+        .load_cached_bytes(source)
+        .expect("cached import reads")
+        .expect("cache entry exists");
+    assert!(
+        cached
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .any(|facts| *facts != crate::compile::ExprFacts::conservative()),
+        "import analysis should persist non-conservative facts"
+    );
+
+    let mut second = TreeWalk::with_options(&ir, options);
+    assert_eq!(
+        second
+            .eval_root()
+            .expect("cached import evaluates")
+            .as_int()
+            .expect("cached result is int"),
+        4
+    );
+    assert_eq!(second.import_parse_cache_stats(), (1, 0));
+    assert!(
+        second.stats().thunks_elided() > 0,
+        "cached analyzed import should preserve lowering facts"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn ordinary_filesystem_import_persists_refreshed_analysis_facts() {
+    use crate::cache::ParseCache;
+
+    let root = fs::canonicalize(unique_temp_dir("import-persist-parse-cache-analysis"))
+        .expect("temp directory canonicalizes");
+    let first_parse_root = root.join("first-parse");
+    let second_parse_root = root.join("second-parse");
+    let persist_root = root.join("persist");
+    let source = b"(x: x + 1) (1 + 2)";
+    fs::write(root.join("dep.nix"), source).expect("dep writes");
+    let ir = lower("import ./dep.nix");
+
+    let mut first_options = TreeWalkOptions::new();
+    first_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    first_options.set_parse_cache_root(&first_parse_root);
+    first_options.set_persist_cache_root(&persist_root);
+
+    let mut first = TreeWalk::with_options(&ir, first_options);
+    assert_eq!(
+        first
+            .eval_root()
+            .expect("first import evaluates")
+            .as_int()
+            .expect("first result is int"),
+        4
+    );
+    assert_eq!(first.import_parse_cache_stats(), (0, 1));
+    assert!(
+        first.stats().thunks_elided() > 0,
+        "first analyzed import should elide a strict thunk"
+    );
+
+    let mut second_options = TreeWalkOptions::new();
+    second_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    second_options.set_parse_cache_root(&second_parse_root);
+    second_options.set_persist_cache_root(&persist_root);
+
+    let mut second = TreeWalk::with_options(&ir, second_options);
+    assert_eq!(
+        second
+            .eval_root()
+            .expect("persistent cached import evaluates")
+            .as_int()
+            .expect("persistent cached result is int"),
+        4
+    );
+    assert_eq!(second.import_parse_cache_stats(), (1, 0));
+    assert!(
+        second.stats().thunks_elided() > 0,
+        "persistent analyzed import should preserve refreshed facts"
+    );
+
+    let cached = ParseCache::new(&second_parse_root)
+        .load_cached_bytes(source)
+        .expect("persistent hydrated import reads")
+        .expect("persistent hydrated cache entry exists");
+    assert!(
+        cached
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .any(|facts| *facts != crate::compile::ExprFacts::conservative()),
+        "persistent hydrated import should carry non-conservative facts"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn ordinary_filesystem_import_uses_persistent_parse_cache_index() {
     use crate::cache::{MaterializationDecision, ParseCache, ParseFileKey, PersistCache};
 

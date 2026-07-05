@@ -899,7 +899,8 @@ impl TreeWalk {
             return Ok(None);
         }
 
-        if let Some(cached) = self.load_persist_cached_import(realpath, source) {
+        if let Some(mut cached) = self.load_persist_cached_import(realpath, source) {
+            self.refresh_and_materialize_persist_cached_import(realpath, source, &mut cached);
             return Ok(Some(cached));
         }
 
@@ -908,12 +909,12 @@ impl TreeWalk {
         };
 
         let source_hint = Some(realpath.to_string_lossy().into_owned());
-        let cached = cache
+        let mut cached = cache
             .load_or_parse_bytes(source, source_hint)
             .map_err(|error| {
                 Self::parse_cache_import_error(argument, argument_span, path, source, error)
             })?;
-        self.materialize_persist_cached_import(realpath, source, &cached);
+        self.refresh_and_materialize_persist_cached_import(realpath, source, &mut cached);
         Ok(Some(cached))
     }
 
@@ -951,6 +952,16 @@ impl TreeWalk {
             &cached.entry,
             MaterializationDecision::Materialize,
         );
+    }
+
+    fn refresh_and_materialize_persist_cached_import(
+        &mut self,
+        realpath: &Path,
+        source: &[u8],
+        cached: &mut CachedParse,
+    ) {
+        let _ = cached.refresh_and_store_facts();
+        self.materialize_persist_cached_import(realpath, source, cached);
     }
 
     fn open_persist_import_cache(&mut self) {

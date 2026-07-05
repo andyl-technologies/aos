@@ -3860,6 +3860,20 @@ alone (`M-1`/`Q-A`).
       source roots and raw native expressions are covered separately. Mmap
       reads, full artifact semantic validation beyond existing decoders,
       GC/repack, and harness proof remain open (`C-13`/`C-14`/`R-10`).
+- [x] Current ordinary filesystem import analyzed-fact integration:
+      unscoped filesystem imports with configured `parse_cache_root` now
+      best-effort refresh analysis facts on `CachedParse` hits and miss/fallback
+      parses before IR remapping/evaluation and before persistent
+      materialization, preserving existing hit/miss accounting. Refreshed facts
+      are written to `facts.bin` when possible, and existing parse/file artifact
+      bundles transport that sidecar when later materialized or hydrated.
+      Scoped imports, text-store imports, uncached imports, and refresh/write
+      failures remain conservative. This is ordinary import integration only:
+      no whole-program analysis scheduler, no every-module analyzed-once index,
+      no mmap read path, no independent IR-hash fact artifact/index, and no full
+      cached/uncached harness proof (`C-13`/`S-9`). Gate:
+      `ordinary_filesystem_import_refreshes_parse_cache_analysis_facts`,
+      `ordinary_filesystem_import_persists_refreshed_analysis_facts`.
 - [x] Current file-backed native root durable parse-cache integration:
       `NixNative::lower_native_source_bytes` now accepts an optional canonical
       source path from file-backed instantiation roots and, when both
@@ -8995,9 +9009,10 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       are not indexed for omission. The analysis soundness harness now proves
       annotated IR preserves the conservative result/trace output and removes
       the dead binding's thunk allocation, while raw-IR tests cover malformed
-      omitted thunk preflight and planner-error fallback. Source imports that
-      are lowered without annotation keep conservative facts, so this consumes
-      imported facts only when a loaded module already carries them. This is
+      omitted thunk preflight and planner-error fallback. Configured
+      parse-cache imports may carry best-effort refreshed facts; uncached,
+      scoped, and text-store imports lowered without annotation keep
+      conservative facts. This is
       still a tree-walk `let` consumer only; it does not rewrite IR, compact
       frame layouts, emit worker dummy arguments, handle attrset/formal-argument
       absence, improve cardinality precision, or run the whole-program demand
@@ -9192,6 +9207,20 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       integration, whole-program fixpoint scheduling, independent IR-hash fact
       persistence, an analyzed-once cross-source fact index, or a JIT lowering
       consumer.
+- [x] Current configured-import analysis refresh precursor:
+      ordinary unscoped filesystem imports with a configured parse cache now
+      best-effort refresh facts on loaded or freshly parsed `CachedParse`
+      results before IR remapping/evaluation and before persistent
+      parse-artifact materialization. The tree-walk oracle can therefore
+      consume current strictness/cardinality/escape facts for eligible imports,
+      and validated `facts.bin` sidecars are written when possible. Scoped
+      imports, text-store imports, uncached imports, and refresh/write failures
+      stay conservative. This is configured import integration for the current
+      local analysis pipeline, not whole-program fixpoint scheduling,
+      independent IR-hash fact persistence, an analyzed-once cross-source fact
+      index, or a JIT lowering consumer. Gate:
+      `ordinary_filesystem_import_refreshes_parse_cache_analysis_facts`,
+      `ordinary_filesystem_import_persists_refreshed_analysis_facts`.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).

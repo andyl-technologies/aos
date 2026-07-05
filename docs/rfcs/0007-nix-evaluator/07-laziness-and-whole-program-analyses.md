@@ -859,6 +859,18 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       analyzed-load helper; it is not automatic evaluator/import integration,
       whole-program fixpoint scheduling, independent IR-hash fact persistence,
       or an analyzed-once cross-source fact index.
+- [x] Current configured-import analysis refresh precursor:
+      ordinary unscoped filesystem imports with a configured parse cache now
+      best-effort refresh facts on loaded or freshly parsed `CachedParse`
+      results before IR remapping/evaluation and before persistent
+      parse-artifact materialization. The tree-walk oracle can therefore
+      consume current strictness/cardinality/escape facts for eligible imports,
+      and validated `facts.bin` sidecars are written when possible. Scoped
+      imports, text-store imports, uncached imports, and refresh/write failures
+      stay conservative. This is configured import integration for the current
+      local analysis pipeline, not whole-program fixpoint scheduling,
+      independent IR-hash fact persistence, or an analyzed-once cross-source
+      fact index.
 
 ### Strictness / demand analysis + worker-wrapper (§4)
 
@@ -961,9 +973,10 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       preserving conservative result/trace observables and falling back to
       normal lazy allocation on planner failure. The planner rejects
       fact-table/node-count mismatches before it consumes imported cardinality
-      facts, so short or overlong fact tables cannot license omission. Source
-      imports lowered without annotation keep conservative facts. This is a
-      tree-walk `let` consumer only; IR rewriting, frame compaction, worker dummy arguments,
+      facts, so short or overlong fact tables cannot license omission.
+      Configured parse-cache imports may carry best-effort refreshed facts;
+      uncached, scoped, and text-store imports lowered without annotation keep
+      conservative facts. This is a tree-walk `let` consumer only; IR rewriting, frame compaction, worker dummy arguments,
       attrset/formal-argument absence, stronger cardinality, and the
       whole-program demand fixpoint remain open.
 - [ ] Cardinality precision under higher-order Nix (`map`/`foldl'`/recursion schemes), pushed as far as it pays before the incremental cache subsumes the win (§5.3, §10 item 1) — **P4/P8**, `M-15` (measure-gated precision, IN SCOPE — chased, not cut).
