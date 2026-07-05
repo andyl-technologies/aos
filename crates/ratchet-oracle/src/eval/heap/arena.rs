@@ -1167,6 +1167,13 @@ impl EvalHeap {
         self.records.get(index).map(Self::value_for_record)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_record_values(
+        &self,
+    ) -> impl Iterator<Item = Result<Value, EvalHeapError>> + '_ {
+        self.records.iter().map(Self::value_for_record)
+    }
+
     /// Allocates a Nix string object and returns its opaque runtime value.
     ///
     /// The returned value is only meaningful while this [`EvalHeap`] remains

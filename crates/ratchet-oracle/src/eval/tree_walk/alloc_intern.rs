@@ -527,9 +527,7 @@ impl TreeWalk {
         for child in children.iter().copied() {
             elements.push(self.eval_lazy_node(child)?);
         }
-        self.heap
-            .alloc_list(NixList::new(elements))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+        self.alloc_tree_walk_list(id, node.span, NixList::new(elements))
     }
 
     pub(super) fn eval_local_var(&self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -834,6 +832,32 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn alloc_tree_walk_list(
+        &mut self,
+        id: IrId,
+        span: Span,
+        list: NixList,
+    ) -> Result<Value, TreeWalkError> {
+        let dispatch_gc_stress_safepoint =
+            self.can_dispatch_gc_stress_permanent_root_allocation_safepoint(id);
+        let previous_poll =
+            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
+        let value = self
+            .heap
+            .alloc_list(list)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if dispatch_gc_stress_safepoint {
+            self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
+                id,
+                span,
+                previous_poll,
+                value,
+            )
+        } else {
+            Ok(value)
+        }
+    }
+
     fn can_dispatch_gc_stress_lambda_allocation_safepoint(
         &self,
         id: IrId,
@@ -853,6 +877,10 @@ impl TreeWalk {
         self.can_dispatch_gc_stress_root_allocation_safepoint(id) && primop.args().is_empty()
     }
 
+    fn can_dispatch_gc_stress_permanent_root_allocation_safepoint(&self, id: IrId) -> bool {
+        self.can_dispatch_gc_stress_root_allocation_safepoint(id)
+    }
+
     fn can_dispatch_gc_stress_root_allocation_safepoint(&self, id: IrId) -> bool {
         self.active_root_eval_node == Some(id)
             && self.env.is_empty()
@@ -864,6 +892,86 @@ impl TreeWalk {
             && self.active_primop_arg_frames.is_empty()
             && self.import_cache.is_empty()
             && matches!(self.heap.interned_root_set(), Ok(roots) if roots.is_empty())
+    }
+
+    fn apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        previous_poll: Option<AllocationCollectorPoll>,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let Some(current_poll) =
+            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared)
+        else {
+            return Ok(value);
+        };
+        if Some(current_poll) == previous_poll {
+            return Ok(value);
+        }
+        let original_card_table = self
+            .thunk_resolve_card_table
+            .try_clone()
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id,
+                        source: EvalHeapError::GenerationalGc(source),
+                    },
+                    span,
+                )
+            })?;
+        self.mark_gc_stress_allocation_source_card(id, span, value)?;
+        let result = self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
+            id,
+            span,
+            RuntimeAllocatorTier::PermanentShared,
+            previous_poll,
+            value,
+            false,
+        );
+        if result.is_err() {
+            self.thunk_resolve_card_table = original_card_table;
+        }
+        result
+    }
+
+    fn mark_gc_stress_allocation_source_card(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let ptr = value.as_heap_ptr().map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id,
+                    source: EvalHeapError::Value(source),
+                },
+                span,
+            )
+        })?;
+        let source = GcHeapAddress::new(ptr.as_ptr() as usize).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id,
+                    source: EvalHeapError::GenerationalGc(source),
+                },
+                span,
+            )
+        })?;
+        self.thunk_resolve_card_table
+            .mark_source(source)
+            .map(|_| ())
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id,
+                        source: EvalHeapError::GenerationalGc(source),
+                    },
+                    span,
+                )
+            })
     }
 
     fn apply_gc_stress_allocation_safepoint_to_just_allocated_value(

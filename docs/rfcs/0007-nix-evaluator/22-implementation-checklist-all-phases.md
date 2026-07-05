@@ -7086,32 +7086,43 @@ and helps the oracle directly.
       reserved-destination tree-walk bridge, not by collector-owned semispace
       dispatch. The full remembered-set/card-table publication remains limited
       to these explicit tree-walk live-reference bridges.
-- [x] Current tree-walk thunk/lambda/root-primop allocation GC-stress dispatch precursor:
+- [x] Current tree-walk thunk/lambda/root-primop/root-list allocation GC-stress dispatch precursor:
       `TreeWalk::alloc_tree_walk_thunk`,
-      `TreeWalk::alloc_tree_walk_lambda`, and
-      `TreeWalk::alloc_tree_walk_primop` detect when an admitted worker
-      allocation produced a new collector poll, reserve destination records,
-      publish the just-allocated value as transient value-stack root storage,
-      and return the rewritten `Value` to the caller. Thunks use the
-      current-poll reserved forwarding bridge from the previous slice.
+      `TreeWalk::alloc_tree_walk_lambda`,
+      `TreeWalk::alloc_tree_walk_primop`, and
+      `TreeWalk::alloc_tree_walk_list` detect when an admitted allocation
+      produced a new collector poll, reserve destination records, publish the
+      just-allocated value as transient value-stack root storage, and return
+      the rewritten `Value` to the caller. Thunks use the current-poll
+      reserved forwarding bridge from the previous slice.
       Uncaptured source lambdas and argument-free first-class primop wrappers
       dispatch only when they are the active `eval_root` node, where the
       just-allocated value is the only transient root, and use the
       non-forwarding reserved writeback bridge to avoid publishing unnecessary
-      forwarding side-table state. The dispatch uses the same promotion
+      forwarding side-table state. Root list allocations use the same
+      `eval_root` gate on the permanent-shared allocator, mark the newly
+      allocated list source in the owned card table, and rely on the
+      non-forwarding reserved writeback bridge to rewrite any live heap fields
+      reachable through dirty cards before clearing the owned card table after
+      successful application. The dispatch uses the same promotion
       threshold of 2 as the existing tree-walk GC-stress bridges and
       intentionally leaves captured lambdas, captured-argument primop wrappers,
-      nested/direct `eval_node` lambda/primop allocations, permanent composite
-      allocation sites that need remembered-edge/barrier work, semispace
+      nested/direct `eval_node` lambda/primop/list allocations, remaining
+      permanent composite allocation sites that need remembered-edge/barrier
+      work, semispace
       ownership, ABI object headers, interned/JIT roots, unsupported active
       frames, and Tier-B allocation dispatch open. Tests cover a lazy list
       element thunk, an `eval_root` source lambda, and an `eval_root`
       `builtins.map` primop under every-safepoint stress, including the extra
-      reserved allocation and the returned young destination value; direct
-      `eval_node` lambda/primop callers and a captured-argument primop are
-      pinned outside the dispatch gate. The reserved bridge also covers the
-      periodic policy case where the scratch reservation safepoint does not
-      poll.
+      reserved allocation and the returned young destination value. They also
+      cover a root list containing a lazy thunk, where the permanent list's
+      dirty-card edge is rewritten from the first relocated thunk to the
+      post-list-GC relocated thunk, while a direct `eval_node` list caller keeps
+      the first relocated thunk because it is outside the root-list dispatch
+      gate. Direct `eval_node` lambda/primop callers and a captured-argument
+      primop are pinned outside their dispatch gates. The reserved bridge also
+      covers the periodic policy case where the scratch reservation safepoint
+      does not poll.
 - [x] Current `heap/roots.rs` collector-poll minor-GC bridge precursor:
       `EvalHeap::plan_collector_poll_minor_gc` validates that a copied
       collector-poll heap graph still matches current typed heap records, maps

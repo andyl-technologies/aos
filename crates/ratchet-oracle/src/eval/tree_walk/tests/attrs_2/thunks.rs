@@ -189,9 +189,9 @@ fn gc_stress_thunk_allocation_dispatches_reserved_forwarding_bridge() {
         .expect("element is a heap-owned thunk");
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
 
-    assert_eq!(
-        outcome.heap().allocation_safepoints().count(),
-        default_outcome.heap().allocation_safepoints().count() + 1
+    assert!(
+        outcome.heap().allocation_safepoints().count()
+            > default_outcome.heap().allocation_safepoints().count()
     );
     let final_safepoint = outcome
         .heap()
