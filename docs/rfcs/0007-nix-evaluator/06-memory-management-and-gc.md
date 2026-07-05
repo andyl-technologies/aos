@@ -3290,12 +3290,12 @@ GC must be observationally invisible (§8): every item is gated by the different
       transient roots for context-free, context-bearing, empty, and strict
       payloads, with non-attrset-origin attr replay preserving registered
       transient roots through the attrset IR-kind gate,
-      static helper string allocations
-      preserving their permanent values while relocating registered transient
-      roots through that same bridge, context-rewriting helper string
-      allocations preserving their bytes while relocating registered transient
-      roots, and symbol helper strings intentionally skipping dispatch while
-      retaining registered transient roots unchanged.
+      static and symbol helper string allocations preserving their permanent
+      values while relocating registered transient roots through that same
+      bridge, direct `mapAttrs` and `zipAttrsWith` symbol-name allocations
+      preserving live function/value/list locals across symbol-name safepoints,
+      and context-rewriting helper string allocations preserving their bytes
+      while relocating registered transient roots.
       They also cover lazy list-element,
       application-argument, synthetic
       apply-thunk accumulator, and synthetic select-thunk field skips,

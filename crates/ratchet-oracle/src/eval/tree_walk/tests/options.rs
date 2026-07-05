@@ -1372,7 +1372,7 @@ fn gc_stress_alloc_static_string_helper_dispatches_permanent_noop_bridge() {
 }
 
 #[test]
-fn gc_stress_alloc_symbol_string_helper_skips_unregistered_local_dispatch() {
+fn gc_stress_alloc_symbol_string_helper_dispatches_permanent_noop_bridge() {
     let ir = lower("{ helperSymbol = 1; }");
     let span = Span::new(0, 0);
     let symbol = symbol_for(&ir, b"helperSymbol");
@@ -1391,11 +1391,14 @@ fn gc_stress_alloc_symbol_string_helper_skips_unregistered_local_dispatch() {
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
             eval.alloc_symbol_string(ir.root, span, symbol)
         })
-        .expect("symbol helper string allocates without dispatching");
+        .expect("symbol helper string allocates under GC stress");
     evaluator.active_root_eval_node = None;
 
     assert!(evaluator.transient_value_stack_roots().is_empty());
-    assert!(roots[0].raw_eq(local_source));
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating symbol helper string"
+    );
     assert_eq!(roots[0].tag(), ValueTag::Thunk);
     assert_eq!(
         evaluator
@@ -1420,7 +1423,7 @@ fn gc_stress_alloc_symbol_string_helper_skips_unregistered_local_dispatch() {
             .bytes(),
         b"helperSymbol"
     );
-    assert_eq!(evaluator.heap().len(), 2);
+    assert_eq!(evaluator.heap().len(), 3);
     assert_eq!(
         evaluator.heap().permanent_allocation_safepoints().count(),
         1
@@ -3940,19 +3943,29 @@ fn gc_stress_generic_closure_result_routes_through_list_wrapper() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
-fn zipped_apply2_second_argument(evaluator: &TreeWalk, value: Value) -> Value {
+fn apply2_thunk_values(evaluator: &TreeWalk, value: Value) -> (Value, Value, Value) {
     let thunk = evaluator
         .heap()
         .get_thunk(value)
-        .expect("zipAttrsWith result is a thunk");
+        .expect("apply2 result is a thunk");
     let EvalThunkKind::Apply2 {
+        function_value,
+        first_argument_value,
         second_argument_value,
         ..
     } = thunk.kind()
     else {
-        panic!("zipAttrsWith result is an apply2 thunk");
+        panic!("result is an apply2 thunk");
     };
-    *second_argument_value
+    (
+        *function_value,
+        *first_argument_value,
+        *second_argument_value,
+    )
+}
+
+fn zipped_apply2_second_argument(evaluator: &TreeWalk, value: Value) -> Value {
+    apply2_thunk_values(evaluator, value).2
 }
 
 fn assert_heap_string_bytes(evaluator: &TreeWalk, value: Value, expected: &[u8]) {
@@ -3987,6 +4000,206 @@ fn assert_nix_path_entry(
     };
     assert_heap_string_bytes(evaluator, prefix, expected_prefix);
     assert_heap_string_bytes(evaluator, path, expected_path);
+}
+
+#[test]
+fn gc_stress_map_attrs_symbol_names_preserve_live_locals() {
+    let ir = lower("name: value: value");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let function = evaluator
+        .eval_node(ir.root)
+        .expect("mapAttrs function allocates");
+    let a_key = evaluator.symbols.intern(b"a").expect("a interns");
+    let b_key = evaluator.symbols.intern(b"b").expect("b interns");
+    let left = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(31)))
+        .expect("left value thunk allocates");
+    let right = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(37)))
+        .expect("right value thunk allocates");
+
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .alloc_mapped_attrs(
+            ir.root,
+            span,
+            ir.root,
+            span,
+            function,
+            ir.root,
+            vec![AttrEntry::new(a_key, left), AttrEntry::new(b_key, right)],
+        )
+        .expect("mapAttrs result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let (a_thunk, b_thunk) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("mapAttrs result is heap-owned");
+        (
+            attrs.get(a_key).expect("a result exists"),
+            attrs.get(b_key).expect("b result exists"),
+        )
+    };
+    let (a_function, a_name, a_value) = apply2_thunk_values(&evaluator, a_thunk);
+    let (b_function, b_name, b_value) = apply2_thunk_values(&evaluator, b_thunk);
+
+    assert!(
+        !a_function.raw_eq(function),
+        "first mapAttrs function handle was not relocated before thunk capture"
+    );
+    assert!(
+        !b_function.raw_eq(function),
+        "second mapAttrs function handle was not written back after relocation"
+    );
+    evaluator
+        .heap()
+        .get_lambda(a_function)
+        .expect("first mapAttrs function remains heap-owned");
+    evaluator
+        .heap()
+        .get_lambda(b_function)
+        .expect("second mapAttrs function remains heap-owned");
+    assert_heap_string_bytes(&evaluator, a_name, b"a");
+    assert_heap_string_bytes(&evaluator, b_name, b"b");
+    assert!(
+        !a_value.raw_eq(left),
+        "current mapAttrs value was not relocated before thunk capture"
+    );
+    assert!(
+        !b_value.raw_eq(right),
+        "unprocessed mapAttrs entry tail was not written back after relocation"
+    );
+    assert_eq!(a_value.tag(), ValueTag::Thunk);
+    assert_eq!(b_value.tag(), ValueTag::Thunk);
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_zip_attrs_with_symbol_names_preserve_values_lists() {
+    let ir = lower("name: values: values");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let function = evaluator
+        .eval_node(ir.root)
+        .expect("zipAttrsWith function allocates");
+    let a_key = evaluator.symbols.intern(b"a").expect("a interns");
+    let b_key = evaluator.symbols.intern(b"b").expect("b interns");
+    let left = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(41)))
+        .expect("left value thunk allocates");
+    let middle = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(43)))
+        .expect("middle value thunk allocates");
+    let right = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(47)))
+        .expect("right value thunk allocates");
+    let first_attrs = FlatAttrs::new(
+        vec![AttrEntry::new(a_key, left), AttrEntry::new(b_key, middle)],
+        &evaluator.symbols,
+    )
+    .expect("first attrs build");
+    let first = evaluator
+        .heap
+        .alloc_attrs(0, first_attrs)
+        .expect("first attrs allocate");
+    let second_attrs = FlatAttrs::new(vec![AttrEntry::new(a_key, right)], &evaluator.symbols)
+        .expect("second attrs build");
+    let second = evaluator
+        .heap
+        .alloc_attrs(0, second_attrs)
+        .expect("second attrs allocate");
+
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .alloc_zipped_attrs_with(
+            ir.root,
+            span,
+            ir.root,
+            span,
+            function,
+            ir.root,
+            span,
+            vec![first, second],
+        )
+        .expect("zipAttrsWith result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let (a_thunk, b_thunk) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("zipAttrsWith result is heap-owned");
+        (
+            attrs.get(a_key).expect("a result exists"),
+            attrs.get(b_key).expect("b result exists"),
+        )
+    };
+    let (a_function, a_name, a_values) = apply2_thunk_values(&evaluator, a_thunk);
+    let (b_function, b_name, b_values) = apply2_thunk_values(&evaluator, b_thunk);
+
+    evaluator
+        .heap()
+        .get_lambda(a_function)
+        .expect("first zipAttrsWith function remains heap-owned");
+    evaluator
+        .heap()
+        .get_lambda(b_function)
+        .expect("second zipAttrsWith function remains heap-owned");
+    assert_heap_string_bytes(&evaluator, a_name, b"a");
+    assert_heap_string_bytes(&evaluator, b_name, b"b");
+    let a_items = {
+        let list = evaluator
+            .heap()
+            .get_list(a_values)
+            .expect("a grouped values are heap-owned");
+        assert_eq!(list.len(), 2);
+        [
+            list.get(0).expect("first a value exists"),
+            list.get(1).expect("second a value exists"),
+        ]
+    };
+    let b_item = {
+        let list = evaluator
+            .heap()
+            .get_list(b_values)
+            .expect("b grouped values are heap-owned");
+        assert_eq!(list.len(), 1);
+        list.get(0).expect("b value exists")
+    };
+    assert_eq!(a_items[0].tag(), ValueTag::Thunk);
+    assert_eq!(a_items[1].tag(), ValueTag::Thunk);
+    assert_eq!(b_item.tag(), ValueTag::Thunk);
+    evaluator
+        .heap()
+        .get_thunk(a_items[0])
+        .expect("first zipAttrsWith grouped value remains heap-owned");
+    evaluator
+        .heap()
+        .get_thunk(a_items[1])
+        .expect("second zipAttrsWith grouped value remains heap-owned");
+    evaluator
+        .heap()
+        .get_thunk(b_item)
+        .expect("remaining zipAttrsWith group tail remains heap-owned");
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
 #[test]

@@ -10,9 +10,9 @@ impl TreeWalk {
         span: Span,
         function_id: IrId,
         function_span: Span,
-        function: Value,
+        mut function: Value,
         attrs_id: IrId,
-        entries: Vec<AttrEntry>,
+        mut entries: Vec<AttrEntry>,
     ) -> Result<Value, TreeWalkError> {
         let mut mapped = Vec::new();
         mapped.try_reserve_exact(entries.len()).map_err(|_| {
@@ -26,8 +26,17 @@ impl TreeWalk {
                 span,
             )
         })?;
-        for entry in entries {
-            let name = self.alloc_symbol_string(id, span, entry.key)?;
+        for entry_index in 0..entries.len() {
+            let key = entries[entry_index].key;
+            let name = self.alloc_mapped_attr_name(
+                id,
+                span,
+                &mut function,
+                &mut mapped,
+                &mut entries[entry_index..],
+                key,
+            )?;
+            let entry_value = entries[entry_index].value;
             let value = self.alloc_apply2_thunk(
                 id,
                 span,
@@ -39,9 +48,9 @@ impl TreeWalk {
                 name,
                 attrs_id,
                 self.node(attrs_id)?.span,
-                entry.value,
+                entry_value,
             )?;
-            mapped.push(AttrEntry::new(entry.key, value));
+            mapped.push(AttrEntry::new(key, value));
         }
 
         let attrs = FlatAttrs::new(mapped, &self.symbols)
@@ -54,6 +63,60 @@ impl TreeWalk {
             attrs,
             AttrSetConstruction::Dynamic { len },
         )
+    }
+
+    fn alloc_mapped_attr_name(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: &mut Value,
+        mapped: &mut [AttrEntry],
+        remaining_entries: &mut [AttrEntry],
+        key: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        let root_count = 1usize
+            .checked_add(mapped.len())
+            .and_then(|count| count.checked_add(remaining_entries.len()))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: mapped.len(),
+                    },
+                    span,
+                )
+            })?;
+        let mut roots = Vec::new();
+        roots.try_reserve_exact(root_count).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: root_count,
+                },
+                span,
+            )
+        })?;
+        roots.push(*function);
+        roots.extend(mapped.iter().map(|entry| entry.value));
+        roots.extend(remaining_entries.iter().map(|entry| entry.value));
+
+        let name = self.with_transient_value_stack_roots(id, span, &mut roots, |eval| {
+            eval.alloc_symbol_string(id, span, key)
+        })?;
+        if let Some(root) = roots.first().copied() {
+            *function = root;
+        }
+        for (entry, root) in mapped.iter_mut().zip(roots.iter().copied().skip(1)) {
+            entry.value = root;
+        }
+        let remaining_start = 1usize.saturating_add(mapped.len());
+        for (entry, root) in remaining_entries
+            .iter_mut()
+            .zip(roots.iter().copied().skip(remaining_start))
+        {
+            entry.value = root;
+        }
+        Ok(name)
     }
 
     pub(super) fn eval_zip_attrs_with_primop(
@@ -272,7 +335,16 @@ impl TreeWalk {
                 &mut groups,
                 values,
             )?;
-            let name = self.alloc_symbol_string(id, span, key)?;
+            let mut values = values;
+            let name = self.alloc_zipped_attrs_with_symbol_name(
+                id,
+                span,
+                &mut function,
+                &mut entries,
+                &mut groups,
+                &mut values,
+                key,
+            )?;
             let value = self.alloc_apply2_thunk(
                 id,
                 span,
@@ -365,6 +437,77 @@ impl TreeWalk {
             }
         }
         Ok(value)
+    }
+
+    fn alloc_zipped_attrs_with_symbol_name(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: &mut Value,
+        entries: &mut [AttrEntry],
+        groups: &mut [(Symbol, Vec<Value>)],
+        values: &mut Value,
+        key: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        let grouped_root_count = groups.iter().try_fold(0usize, |count, (_, values)| {
+            count.checked_add(values.len()).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed { id, len: count },
+                    span,
+                )
+            })
+        })?;
+        let root_count = 2usize
+            .checked_add(entries.len())
+            .and_then(|count| count.checked_add(grouped_root_count))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: entries.len(),
+                    },
+                    span,
+                )
+            })?;
+        let mut roots = Vec::new();
+        roots.try_reserve_exact(root_count).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: root_count,
+                },
+                span,
+            )
+        })?;
+        roots.push(*function);
+        roots.extend(entries.iter().map(|entry| entry.value));
+        for (_, values) in groups.iter() {
+            roots.extend(values.iter().copied());
+        }
+        roots.push(*values);
+
+        let name = self.with_transient_value_stack_roots(id, span, &mut roots, |eval| {
+            eval.alloc_symbol_string(id, span, key)
+        })?;
+        if let Some(root) = roots.first().copied() {
+            *function = root;
+        }
+        for (entry, root) in entries.iter_mut().zip(roots.iter().copied().skip(1)) {
+            entry.value = root;
+        }
+        let mut root_index = 1usize.saturating_add(entries.len());
+        for (_, group_values) in groups.iter_mut() {
+            for value in group_values.iter_mut() {
+                if let Some(root) = roots.get(root_index).copied() {
+                    *value = root;
+                }
+                root_index = root_index.saturating_add(1);
+            }
+        }
+        if let Some(root) = roots.get(root_index).copied() {
+            *values = root;
+        }
+        Ok(name)
     }
 
     pub(super) fn eval_cat_attrs_primop(
