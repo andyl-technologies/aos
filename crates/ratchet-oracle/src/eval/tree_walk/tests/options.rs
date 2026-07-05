@@ -2170,6 +2170,294 @@ fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots(
 }
 
 #[test]
+fn gc_stress_strict_unary_attr_names_list_result_skips_composite_input_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let z = evaluator.symbols.intern(b"z").expect("z interns");
+    let attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(z, Value::int(2)),
+            AttrEntry::new(a, Value::int(1)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    let attrs_value = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrs allocate");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.eval_strict_unary_primop_value(
+                ir.root,
+                span,
+                StrictUnaryPrimOp::AttrNames,
+                ir.root,
+                span,
+                attrs_value,
+            )
+        })
+        .expect("attrNames helper list allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while attrNames input attrset root was live"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("attrNames result is heap-owned");
+    assert_eq!(list.len(), 2);
+    let first = evaluator
+        .heap()
+        .get_string(list.get(0).expect("first attr name exists"))
+        .expect("first attr name is a string");
+    let second = evaluator
+        .heap()
+        .get_string(list.get(1).expect("second attr name exists"))
+        .expect("second attr name is a string");
+    assert_eq!(first.bytes(), b"a");
+    assert_eq!(second.bytes(), b"z");
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("attrNames list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_strict_unary_attr_values_list_result_skips_composite_input_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let a = evaluator.symbols.intern(b"a").expect("a interns");
+    let z = evaluator.symbols.intern(b"z").expect("z interns");
+    let attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(z, Value::int(2)),
+            AttrEntry::new(a, Value::int(1)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("attrs build");
+    let attrs_value = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrs allocate");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.eval_strict_unary_primop_value(
+                ir.root,
+                span,
+                StrictUnaryPrimOp::AttrValues,
+                ir.root,
+                span,
+                attrs_value,
+            )
+        })
+        .expect("attrValues helper list allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while attrValues input attrset root was live"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("attrValues result is heap-owned");
+    assert_eq!(list.len(), 2);
+    assert_eq!(
+        list.get(0).expect("first attr value exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        list.get(1).expect("second attr value exists").as_int(),
+        Ok(2)
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("attrValues list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_strict_unary_tail_list_result_skips_composite_input_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let input = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![
+            Value::int(0),
+            Value::int(1),
+            Value::bool(true),
+        ]))
+        .expect("input list allocates");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.eval_strict_unary_primop_value(
+                ir.root,
+                span,
+                StrictUnaryPrimOp::Tail,
+                ir.root,
+                span,
+                input,
+            )
+        })
+        .expect("tail helper list allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while tail input list root was live"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("tail result is heap-owned");
+    assert_eq!(list.len(), 2);
+    assert_eq!(
+        list.get(0).expect("first tail value exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        list.get(1).expect("second tail value exists").as_bool(),
+        Ok(true)
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("tail list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_alloc_tree_walk_list_skips_active_primop_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    evaluator
+        .push_active_primop_arg_roots(
+            ir.root,
+            span,
+            &[EvalPrimOpArg::new(ir.root, span, Value::int(9))],
+        )
+        .expect("active primop roots push");
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.alloc_tree_walk_list(ir.root, span, NixList::new(vec![Value::int(1)]))
+        })
+        .expect("list wrapper allocates with active primop roots");
+    evaluator.pop_active_primop_arg_roots();
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated despite active primop roots"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("list wrapper result is heap-owned");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list.get(0).expect("list value exists").as_int(), Ok(1));
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_reflected_context_result_helpers_skip_interned_composite_roots() {
     assert_gc_stress_root_string_result_skips_dispatch(
         r#"builtins.appendContext "x" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; }"#,

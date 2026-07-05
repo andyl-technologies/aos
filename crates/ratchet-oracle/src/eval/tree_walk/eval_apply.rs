@@ -388,11 +388,7 @@ impl TreeWalk {
                 for symbol in names {
                     elements.push(self.alloc_symbol_string(id, span, symbol)?);
                 }
-                self.heap
-                    .alloc_list(NixList::new(elements))
-                    .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                    })
+                self.alloc_tree_walk_list(id, span, NixList::new(elements))
             }
             StrictUnaryPrimOp::AttrValues => {
                 let value = self.force_lazy_foldl_initial_value(argument, argument_span, value)?;
@@ -431,11 +427,7 @@ impl TreeWalk {
                     }
                     values
                 };
-                self.heap
-                    .alloc_list(NixList::new(values))
-                    .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                    })
+                self.alloc_tree_walk_list(id, span, NixList::new(values))
             }
             StrictUnaryPrimOp::Tail => {
                 if value.tag() != ValueTag::List {
@@ -481,11 +473,7 @@ impl TreeWalk {
                     values.extend_from_slice(tail);
                     values
                 };
-                self.heap
-                    .alloc_list(NixList::new(values))
-                    .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                    })
+                self.alloc_tree_walk_list(id, span, NixList::new(values))
             }
             StrictUnaryPrimOp::Head => {
                 if value.tag() != ValueTag::List {

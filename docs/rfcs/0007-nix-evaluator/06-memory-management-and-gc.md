@@ -3232,6 +3232,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       while interned reflected-context attr roots block dispatch,
       root `concatStringsSep` and `replaceStrings` evaluations preserving
       registered transient roots while interned list roots block dispatch,
+      direct `attrNames`, `attrValues`, and `tail` list-result helper
+      allocations preserving registered transient roots while input composite
+      roots block dispatch, direct list-wrapper allocation preserving
+      registered transient roots while active first-class primop argument roots
+      block dispatch,
       direct `derivationStrict` result-string assembly relocating registered
       transient roots while keeping partially built result entries registered
       across later result-string allocations,
