@@ -2121,7 +2121,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       action paths, and the sub-page/unsupported advice-capacity guard. The
       `aos --max-rss` / `AOS_NIX_MAX_RSS` knob now flows through
       `NixEvalConfig` into native-eval `TreeWalkOptions` as a validated
-      `HeapMemoryBudget`, and `TreeWalk` installs that budget on `EvalHeap`.
+      `HeapMemoryBudget`, enables automatic Tier-B metadata admission for
+      native owned outcomes, and `TreeWalk` installs that budget on `EvalHeap`.
       Successful typed heap allocations now poll the configured budget
       automatically, dispatch the implemented unused-tail advice response, and
       retain the latest action for tests and later daemon policy; `EvalOutcome`
@@ -3188,6 +3189,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       `TreeWalkOptions::set_heap_tier_b_transition_admission_enabled` lets
       owned root and attr-path evaluation entry points apply the existing
       outcome admission bridge before returning a budget-triggered outcome.
+      Native AOS config enables the option automatically when
+      `NixEvalConfig` carries a heap memory budget from `--max-rss` or
+      `AOS_NIX_MAX_RSS`.
       Tests cover default-off configuration, root-result admission, and
       attr-path selected-value admission. This remains a metadata-only
       generation rewrite: it does not install a collector, switch allocators,

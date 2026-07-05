@@ -6781,7 +6781,8 @@ and helps the oracle directly.
       aggregation, the three current action paths, and the sub-page/unsupported
       advice-capacity guard. The `aos --max-rss` / `AOS_NIX_MAX_RSS` knob now
       flows through `NixEvalConfig` into native-eval `TreeWalkOptions` as a
-      validated `HeapMemoryBudget`, and `TreeWalk` installs that budget on
+      validated `HeapMemoryBudget`, enables automatic Tier-B metadata admission
+      for native owned outcomes, and `TreeWalk` installs that budget on
       `EvalHeap`. Successful typed heap allocations now poll the configured
       budget automatically, dispatch the implemented unused-tail advice response,
       and retain the latest action for tests and later daemon policy;
@@ -6846,8 +6847,9 @@ and helps the oracle directly.
       `TreeWalkOptions::set_heap_tier_b_transition_admission_enabled` now lets
       owned root and attr-path evaluation entry points apply that same outcome
       admission bridge before returning a budget-triggered outcome. Tests cover
-      default-off configuration, root-result admission, and attr-path
-      selected-value admission. This remains automatic metadata admission only:
+      default-off configuration, native `NixEvalConfig` max-RSS mapping,
+      root-result admission, and attr-path selected-value admission. This
+      remains automatic metadata admission only:
       it does not install a collector, switch allocators, reserve semispace
       storage, rewrite handles, mutate object bodies, publish remembered/card
       state, or relocate values.

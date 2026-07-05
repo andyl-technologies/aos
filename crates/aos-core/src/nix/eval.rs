@@ -2650,6 +2650,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     }
     if let Some(max_resident_bytes) = config.heap_memory_budget_bytes() {
         options.set_heap_memory_budget(HeapMemoryBudget::new(max_resident_bytes)?);
+        options.set_heap_tier_b_transition_admission_enabled(true);
     }
     options.set_trace_verbose(config.trace_verbose());
     Ok(options)
@@ -3392,6 +3393,11 @@ mod tests {
     fn eval_config_maps_heap_memory_budget_to_native_options() -> Result<()> {
         let mut config = NixEvalConfig::new();
         config.set_eval_mode(NixEvalMode::Impure);
+        config.clear_heap_memory_budget();
+
+        let options = tree_walk_options_from_config(&config)?;
+        assert!(!options.heap_tier_b_transition_admission_enabled());
+
         config.set_heap_memory_budget_bytes(4096)?;
 
         let options = tree_walk_options_from_config(&config)?;
@@ -3402,6 +3408,7 @@ mod tests {
                 .map(|budget| budget.max_resident_bytes()),
             Some(4096)
         );
+        assert!(options.heap_tier_b_transition_admission_enabled());
         Ok(())
     }
 
