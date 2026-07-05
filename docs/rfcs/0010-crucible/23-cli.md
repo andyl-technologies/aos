@@ -1251,7 +1251,8 @@ branch on the verdict without parsing output:
   backend-routed output path now appends a machine-readable final-outcome record
   to canonical `json`/`jsonl` traces, keeps human summary/footer lines out of
   machine-readable stdout, process-tests local-double `run`, `save`, `search`,
-  `fuzz`, and `replay --check` success/mismatch JSONL output with parsed
+  `fuzz`, marker-resolved QEMU `save`, `resume`, and `fork`, `replay --check`
+  success/mismatch, and `replay --to <SAVEPOINT>` JSONL output with parsed
   command-specific canonical events plus `final_outcome`, and regression-tests
   the RFC §15 exit-code mapping for success, failure/divergence, timeout,
   crash/backend/identity, discovery,
