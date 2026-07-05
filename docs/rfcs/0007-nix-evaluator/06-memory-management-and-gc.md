@@ -2666,7 +2666,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       writes supported roots before forwarding install, and then commits
       evaluator side-table forwarding cells plus staged object
       bodies/generations, fields, remembered-set state, and card-table state
-      without another fallible heap-publication pass. Tests cover
+      without another fallible heap-publication pass.
+      `TreeWalk::apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
+      and its primop-argument variant now derive reserved-destination plans and
+      enter that forwarding-aware applicator directly. Tests cover
       the poll-derived
       all-root rewrite, direct stale-poll rejection before mutation in the
       planning wrapper, root-only applicator, buffer applicator, stale typed-root,
@@ -2685,7 +2688,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       rejection before live mutation, stale live heap-field rejection before root
       mutation, reserved-destination forwarding-slot installation, occupied
       forwarding-slot rejection before live mutation, forwarding-aware
-      frame-borrow rejection without forwarding install, and dirty
+      frame-borrow rejection without forwarding install, poll-derived reserved
+      forwarding wrappers with and without primop arguments, and dirty
       permanent-list mixed-plan
       rejection before mutating the value stack, active frame root, or ready
       import-cache root. These helpers still do not bind semispace storage,

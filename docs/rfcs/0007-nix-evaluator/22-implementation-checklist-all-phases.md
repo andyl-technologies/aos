@@ -6997,6 +6997,9 @@ and helps the oracle directly.
       evaluator side-table forwarding cells plus staged object
       bodies/generations, fields, remembered-set state, and card-table state
       without another fallible heap-publication pass.
+      `TreeWalk::apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
+      and its primop-argument variant now derive reserved-destination plans and
+      enter that forwarding-aware applicator directly.
       Unit tests cover a real poll rewriting every supported
       mutable tree-walk root kind, direct stale-poll rejection before mutation
       in the planning wrapper, root-only applicator, buffer applicator, stale
@@ -7019,7 +7022,8 @@ and helps the oracle directly.
       card-table rejection before live mutation, reserved-destination
       forwarding-slot installation, occupied forwarding-slot rejection before
       live mutation, forwarding-aware frame-borrow rejection without forwarding
-      install, and a dirty permanent-list
+      install, poll-derived reserved forwarding wrappers with and without
+      primop arguments, and a dirty permanent-list
       remembered edge whose mixed root/field plan is rejected without touching
       the value stack, active frame root, or ready import-cache root. This is
       still not automatic allocation-site dispatch and still does not reserve

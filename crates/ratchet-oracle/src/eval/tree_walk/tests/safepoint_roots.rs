@@ -2611,6 +2611,105 @@ fn reference_writebacks_apply_reserved_destination_with_forwarding_slots() {
 }
 
 #[test]
+fn reference_writebacks_apply_reserved_destination_wrapper_with_forwarding_slots() {
+    let (mut evaluator, child, parent, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let source_address = gc_address(child);
+
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            &mut value_stack,
+        )
+        .expect("reserved destination wrapper installs forwarding and applies");
+
+    assert_eq!(application.forwarding_pointers_installed(), 1);
+    assert_eq!(application.object_bodies_written(), 1);
+    assert_eq!(application.object_generations_written(), 1);
+    assert_eq!(application.applied_root_writebacks(), 3);
+    assert_eq!(application.live_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_live_writebacks(), 4);
+    let forwarded = evaluator
+        .heap()
+        .minor_gc_forwarding_value_at(source_address)
+        .expect("forwarding source remains known")
+        .expect("forwarding slot installs");
+    let destination_address =
+        resolved_heap_destination_address(forwarded).expect("forwarded value is heap-backed");
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        relocated,
+    );
+    assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
+}
+
+#[test]
+fn reference_writebacks_apply_reserved_forwarding_wrapper_with_primop_arguments() {
+    let (mut evaluator, child, parent, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let source_address = gc_address(child);
+    let mut primop_arguments = vec![child];
+
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            &mut value_stack,
+            &mut primop_arguments,
+        )
+        .expect("reserved destination primop wrapper installs forwarding and applies");
+
+    assert_eq!(application.forwarding_pointers_installed(), 1);
+    assert_eq!(application.root_value_writeback_slots().len(), 4);
+    assert_eq!(application.heap_field_writeback_slots().len(), 1);
+    assert_eq!(application.applied_root_writebacks(), 4);
+    assert_eq!(application.live_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_live_writebacks(), 5);
+    assert!(
+        application
+            .root_value_writeback_slots()
+            .iter()
+            .any(|slot| slot.source() == &EvalRootSource::PrimopArgument { index: 0 })
+    );
+    let forwarded = evaluator
+        .heap()
+        .minor_gc_forwarding_value_at(source_address)
+        .expect("forwarding source remains known")
+        .expect("forwarding slot installs");
+    let destination_address =
+        resolved_heap_destination_address(forwarded).expect("forwarded value is heap-backed");
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(primop_arguments[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        relocated,
+    );
+    assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
+}
+
+#[test]
 fn reference_writebacks_forwarding_slots_reject_occupied_before_live_mutation() {
     let (mut evaluator, child, parent, destination, poll, mut value_stack) =
         tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();

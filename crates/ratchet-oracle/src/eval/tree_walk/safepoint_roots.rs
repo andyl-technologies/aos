@@ -2581,6 +2581,78 @@ impl TreeWalk {
         )
     }
 
+    /// Reserves destinations, installs forwarding slots, and applies writebacks.
+    ///
+    /// This is the side-table-forwarding counterpart to
+    /// [`Self::apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields`].
+    /// It derives the reserved-destination plan from the supplied poll and then
+    /// applies the plan through
+    /// [`Self::apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`].
+    ///
+    /// This remains side-table forwarding only: it does not write real ABI
+    /// object headers, reserve semispace storage, consume JIT stack maps, or
+    /// dispatch Tier B from allocation sites.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if the supplied poll is
+    /// stale before reservation, if destination reservation or planning fails,
+    /// if current root or heap-field validation fails, if forwarding-slot
+    /// validation fails, if reserved destination records reject paired
+    /// body/generation writes, or if live root or heap-field mutation fails.
+    pub fn apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+        &mut self,
+        poll: AllocationCollectorPoll,
+        promotion_policy: MinorGcPromotionPolicy,
+        value_stack: &mut [Value],
+    ) -> Result<
+        TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        let mut primop_arguments: [Value; 0] = [];
+        self.apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+            poll,
+            promotion_policy,
+            value_stack,
+            &mut primop_arguments,
+        )
+    }
+
+    /// Reserves destinations and applies forwarding writebacks with primop roots.
+    ///
+    /// This is the caller-buffer-aware form of
+    /// [`Self::apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if the supplied poll is
+    /// stale before reservation, if destination reservation or planning fails,
+    /// if current root or heap-field validation fails, if forwarding-slot
+    /// validation fails, if reserved destination records reject paired
+    /// body/generation writes, or if live root or heap-field mutation fails.
+    pub fn apply_collector_poll_minor_gc_reserved_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+        &mut self,
+        poll: AllocationCollectorPoll,
+        promotion_policy: MinorGcPromotionPolicy,
+        value_stack: &mut [Value],
+        primop_arguments: &mut [Value],
+    ) -> Result<
+        TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        let plan = self.collector_poll_minor_gc_reserved_reference_writeback_plan_for_safepoint_with_primop_arguments(
+            poll,
+            promotion_policy,
+            value_stack,
+            primop_arguments,
+        )?;
+        self.apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+            &plan,
+            value_stack,
+            primop_arguments,
+        )
+    }
+
     fn safepoint_root_value_writeback_slots(
         &self,
         plan: &AllocationCollectorPollRootWritebackPlan,
