@@ -461,8 +461,16 @@ pub fn eval_raw_bytes_with_options_source(
 
 pub(in crate::eval) fn eval_raw_bytes_with_evaluator(
     ir: &Ir,
-    mut evaluator: TreeWalk,
+    evaluator: TreeWalk,
 ) -> Result<Vec<u8>, TreeWalkError> {
+    let (out, _) = eval_raw_bytes_with_evaluator_owned(ir, evaluator)?;
+    Ok(out)
+}
+
+pub(in crate::eval) fn eval_raw_bytes_with_evaluator_owned(
+    ir: &Ir,
+    mut evaluator: TreeWalk,
+) -> Result<(Vec<u8>, TreeWalk), TreeWalkError> {
     let value = evaluator.eval_root()?;
     let span = evaluator.node(ir.root)?.span;
     let mut out = Vec::new();
@@ -471,7 +479,7 @@ pub(in crate::eval) fn eval_raw_bytes_with_evaluator(
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
-    Ok(out)
+    Ok((out, evaluator))
 }
 
 /// Evaluates an IR root and renders a numeric value like raw `nix-instantiate --eval`.

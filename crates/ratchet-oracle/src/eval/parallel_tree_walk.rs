@@ -30,7 +30,8 @@ use super::{
     },
     thunk_cas::ParallelThunkWorkerId,
     tree_walk::{
-        EvalDerivation, TreeWalk, TreeWalkError, TreeWalkOptions, eval_raw_bytes_with_evaluator,
+        EvalDerivation, TreeWalk, TreeWalkError, TreeWalkOptions,
+        eval_raw_bytes_with_evaluator_owned,
     },
 };
 
@@ -657,7 +658,7 @@ fn eval_raw_bytes_for_parallel_worker(
     Ok(ParallelTreeWalkRawEvaluation {
         raw_bytes,
         parallel_thunk_worker_id: metadata.parallel_thunk_worker_id,
-        heap_uses_thread_local_tier_a: metadata.heap_uses_thread_local_tier_a,
+        worker_heap_report: metadata.heap_report,
     })
 }
 
@@ -673,7 +674,7 @@ fn eval_drv_outputs_for_parallel_worker(
     Ok(ParallelTreeWalkDrvEvaluation {
         output,
         parallel_thunk_worker_id: metadata.parallel_thunk_worker_id,
-        heap_uses_thread_local_tier_a: metadata.heap_uses_thread_local_tier_a,
+        worker_heap_report: metadata.heap_report,
     })
 }
 
@@ -707,8 +708,8 @@ fn eval_raw_bytes_for_root_with_metadata(
         }
         None => TreeWalk::with_options(&ir, options),
     };
+    let (raw_bytes, evaluator) = eval_raw_bytes_with_evaluator_owned(&ir, evaluator)?;
     let metadata = ParallelTreeWalkWorkerMetadata::from_evaluator(&evaluator);
-    let raw_bytes = eval_raw_bytes_with_evaluator(&ir, evaluator)?;
     Ok((raw_bytes, metadata))
 }
 
@@ -734,11 +735,11 @@ fn eval_drv_outputs_for_root_with_metadata(
         }
         None => TreeWalk::with_options(&ir, options),
     };
-    let metadata = ParallelTreeWalkWorkerMetadata::from_evaluator(&evaluator);
     let value = evaluator.eval_root()?;
     let string_context = root_string_context(&evaluator, value)?;
     evaluator.force_root_derivation_surfaces(value)?;
     let derivations = evaluator.derivation_snapshot()?;
+    let metadata = ParallelTreeWalkWorkerMetadata::from_evaluator(&evaluator);
     Ok((
         ParallelOutputTaskResult::new(string_context, drv_outputs_from_derivations(derivations)?),
         metadata,
@@ -748,14 +749,14 @@ fn eval_drv_outputs_for_root_with_metadata(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ParallelTreeWalkWorkerMetadata {
     parallel_thunk_worker_id: ParallelThunkWorkerId,
-    heap_uses_thread_local_tier_a: bool,
+    heap_report: ParallelTreeWalkWorkerHeapReport,
 }
 
 impl ParallelTreeWalkWorkerMetadata {
     fn from_evaluator(evaluator: &TreeWalk) -> Self {
         Self {
             parallel_thunk_worker_id: evaluator.parallel_thunk_worker_id(),
-            heap_uses_thread_local_tier_a: evaluator.heap().uses_thread_local_tier_a(),
+            heap_report: ParallelTreeWalkWorkerHeapReport::from_evaluator(evaluator),
         }
     }
 }
@@ -1079,7 +1080,7 @@ impl ParallelTreeWalkRootSource {
 pub struct ParallelTreeWalkRawEvaluation {
     raw_bytes: Vec<u8>,
     parallel_thunk_worker_id: ParallelThunkWorkerId,
-    heap_uses_thread_local_tier_a: bool,
+    worker_heap_report: ParallelTreeWalkWorkerHeapReport,
 }
 
 impl ParallelTreeWalkRawEvaluation {
@@ -1095,7 +1096,12 @@ impl ParallelTreeWalkRawEvaluation {
 
     /// Returns whether the task heap used thread-local Tier-A worker storage.
     pub const fn heap_uses_thread_local_tier_a(&self) -> bool {
-        self.heap_uses_thread_local_tier_a
+        self.worker_heap_report.uses_thread_local_tier_a()
+    }
+
+    /// Returns the heap counters observed after this task completed.
+    pub const fn worker_heap_report(&self) -> ParallelTreeWalkWorkerHeapReport {
+        self.worker_heap_report
     }
 
     /// Consumes the evaluation and returns the strict raw value bytes.
@@ -1109,7 +1115,7 @@ impl ParallelTreeWalkRawEvaluation {
 pub struct ParallelTreeWalkDrvEvaluation {
     output: ParallelOutputTaskResult,
     parallel_thunk_worker_id: ParallelThunkWorkerId,
-    heap_uses_thread_local_tier_a: bool,
+    worker_heap_report: ParallelTreeWalkWorkerHeapReport,
 }
 
 impl ParallelTreeWalkDrvEvaluation {
@@ -1125,8 +1131,162 @@ impl ParallelTreeWalkDrvEvaluation {
 
     /// Returns whether the task heap used thread-local Tier-A worker storage.
     pub const fn heap_uses_thread_local_tier_a(&self) -> bool {
-        self.heap_uses_thread_local_tier_a
+        self.worker_heap_report.uses_thread_local_tier_a()
     }
+
+    /// Returns the heap counters observed after this task completed.
+    pub const fn worker_heap_report(&self) -> ParallelTreeWalkWorkerHeapReport {
+        self.worker_heap_report
+    }
+}
+
+/// Heap counters observed after one successful scheduler-backed tree-walk task.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ParallelTreeWalkWorkerHeapReport {
+    heap_records: usize,
+    worker_allocation_safepoints: u64,
+    permanent_allocation_safepoints: u64,
+    uses_thread_local_tier_a: bool,
+}
+
+impl ParallelTreeWalkWorkerHeapReport {
+    fn from_evaluator(evaluator: &TreeWalk) -> Self {
+        let heap = evaluator.heap();
+        Self {
+            heap_records: heap.len(),
+            worker_allocation_safepoints: heap.allocation_safepoints().count(),
+            permanent_allocation_safepoints: heap.permanent_allocation_safepoints().count(),
+            uses_thread_local_tier_a: heap.uses_thread_local_tier_a(),
+        }
+    }
+
+    /// Returns the number of typed heap records owned by the completed task.
+    pub const fn heap_records(self) -> usize {
+        self.heap_records
+    }
+
+    /// Returns worker-domain allocation safepoints observed by the task heap.
+    pub const fn worker_allocation_safepoints(self) -> u64 {
+        self.worker_allocation_safepoints
+    }
+
+    /// Returns permanent-domain allocation safepoints observed by the task heap.
+    pub const fn permanent_allocation_safepoints(self) -> u64 {
+        self.permanent_allocation_safepoints
+    }
+
+    /// Returns whether worker allocations used thread-local Tier-A storage.
+    pub const fn uses_thread_local_tier_a(self) -> bool {
+        self.uses_thread_local_tier_a
+    }
+}
+
+/// Worker-local heap totals aggregated from successful tree-walk tasks.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ParallelTreeWalkWorkerHeapSummary {
+    worker_id: usize,
+    successful_tasks: usize,
+    heap_records: usize,
+    worker_allocation_safepoints: u64,
+    permanent_allocation_safepoints: u64,
+    all_successful_tasks_used_thread_local_tier_a: bool,
+}
+
+impl ParallelTreeWalkWorkerHeapSummary {
+    const fn empty(worker_id: usize) -> Self {
+        Self {
+            worker_id,
+            successful_tasks: 0,
+            heap_records: 0,
+            worker_allocation_safepoints: 0,
+            permanent_allocation_safepoints: 0,
+            all_successful_tasks_used_thread_local_tier_a: true,
+        }
+    }
+
+    fn record_success(&mut self, report: ParallelTreeWalkWorkerHeapReport) {
+        self.successful_tasks = self.successful_tasks.saturating_add(1);
+        self.heap_records = self.heap_records.saturating_add(report.heap_records());
+        self.worker_allocation_safepoints = self
+            .worker_allocation_safepoints
+            .saturating_add(report.worker_allocation_safepoints());
+        self.permanent_allocation_safepoints = self
+            .permanent_allocation_safepoints
+            .saturating_add(report.permanent_allocation_safepoints());
+        self.all_successful_tasks_used_thread_local_tier_a &= report.uses_thread_local_tier_a();
+    }
+
+    /// Returns the scheduler worker this summary describes.
+    pub const fn worker_id(self) -> usize {
+        self.worker_id
+    }
+
+    /// Returns how many successful tasks contributed heap counters.
+    pub const fn successful_tasks(self) -> usize {
+        self.successful_tasks
+    }
+
+    /// Returns the summed typed heap records from successful tasks.
+    pub const fn heap_records(self) -> usize {
+        self.heap_records
+    }
+
+    /// Returns the summed worker-domain allocation safepoints.
+    pub const fn worker_allocation_safepoints(self) -> u64 {
+        self.worker_allocation_safepoints
+    }
+
+    /// Returns the summed permanent-domain allocation safepoints.
+    pub const fn permanent_allocation_safepoints(self) -> u64 {
+        self.permanent_allocation_safepoints
+    }
+
+    /// Returns whether every successful task used thread-local Tier-A storage.
+    pub const fn all_successful_tasks_used_thread_local_tier_a(self) -> bool {
+        self.all_successful_tasks_used_thread_local_tier_a
+    }
+}
+
+/// Summarizes successful raw tree-walk task heap counters by executing worker.
+///
+/// Root-local errors do not contribute to the returned heap counters because no
+/// final task heap snapshot is available for failed evaluations.
+pub fn summarize_parallel_tree_walk_raw_worker_heaps(
+    report: &ParallelTreeWalkRawEvaluationReport,
+) -> Vec<ParallelTreeWalkWorkerHeapSummary> {
+    let mut summaries = (0..report.worker_count())
+        .map(ParallelTreeWalkWorkerHeapSummary::empty)
+        .collect::<Vec<_>>();
+    for outcome in report.outcomes() {
+        if let (Some(summary), Ok(evaluation)) = (
+            summaries.get_mut(outcome.worker_id()),
+            outcome.outcome().as_ref(),
+        ) {
+            summary.record_success(evaluation.worker_heap_report());
+        }
+    }
+    summaries
+}
+
+/// Summarizes successful `.drv` tree-walk task heap counters by executing worker.
+///
+/// Root-local errors do not contribute to the returned heap counters because no
+/// final task heap snapshot is available for failed evaluations.
+pub fn summarize_parallel_tree_walk_drv_worker_heaps(
+    report: &ParallelTreeWalkDrvEvaluationReport,
+) -> Vec<ParallelTreeWalkWorkerHeapSummary> {
+    let mut summaries = (0..report.worker_count())
+        .map(ParallelTreeWalkWorkerHeapSummary::empty)
+        .collect::<Vec<_>>();
+    for outcome in report.outcomes() {
+        if let (Some(summary), Ok(evaluation)) = (
+            summaries.get_mut(outcome.worker_id()),
+            outcome.outcome().as_ref(),
+        ) {
+            summary.record_success(evaluation.worker_heap_report());
+        }
+    }
+    summaries
 }
 
 /// A raw tree-walk task outcome after scheduler metadata has been removed.
@@ -1728,6 +1888,7 @@ mod tests {
         );
         assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
         assert!(evaluation.heap_uses_thread_local_tier_a());
+        assert!(evaluation.worker_heap_report().uses_thread_local_tier_a());
     }
 
     #[test]
@@ -1765,11 +1926,67 @@ mod tests {
                     );
                     assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
                     assert!(evaluation.heap_uses_thread_local_tier_a());
+                    assert!(evaluation.worker_heap_report().uses_thread_local_tier_a());
                     evaluation.raw_bytes().to_vec()
                 })
                 .collect::<Vec<_>>(),
             vec![b"3".to_vec(), b"8".to_vec()]
         );
+    }
+
+    #[test]
+    fn chase_lev_parallel_raw_eval_summarizes_successful_worker_heaps() {
+        let roots = [
+            "{ a = [ 1 true null ]; b = \"x\"; }",
+            "let shared = [ 1 2 3 ]; in { first = shared; second = shared; }",
+        ]
+        .into_iter()
+        .map(|source| ParallelTreeWalkRoot::expression(lower(source)));
+
+        let report = eval_raw_bytes_parallel_chase_lev_top_level_roots(
+            roots,
+            workers(1),
+            ParallelFailurePolicy::CollectAll,
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev raw evaluation completes");
+        let summaries = summarize_parallel_tree_walk_raw_worker_heaps(&report);
+        let expected_heap_records = report
+            .outcomes()
+            .iter()
+            .map(|outcome| {
+                outcome
+                    .outcome()
+                    .as_ref()
+                    .expect("root succeeded")
+                    .worker_heap_report()
+                    .heap_records()
+            })
+            .sum::<usize>();
+        let expected_worker_safepoints = report
+            .outcomes()
+            .iter()
+            .map(|outcome| {
+                outcome
+                    .outcome()
+                    .as_ref()
+                    .expect("root succeeded")
+                    .worker_heap_report()
+                    .worker_allocation_safepoints()
+            })
+            .sum::<u64>();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].worker_id(), 0);
+        assert_eq!(summaries[0].successful_tasks(), 2);
+        assert_eq!(summaries[0].heap_records(), expected_heap_records);
+        assert_eq!(
+            summaries[0].worker_allocation_safepoints(),
+            expected_worker_safepoints
+        );
+        assert!(summaries[0].heap_records() > 0);
+        assert!(summaries[0].worker_allocation_safepoints() > 0);
+        assert!(summaries[0].all_successful_tasks_used_thread_local_tier_a());
     }
 
     #[test]
@@ -2050,6 +2267,8 @@ mod tests {
         );
         assert_ne!(evaluation.parallel_thunk_worker_id(), sentinel_worker_id);
         assert!(evaluation.heap_uses_thread_local_tier_a());
+        assert!(evaluation.worker_heap_report().uses_thread_local_tier_a());
+        assert!(evaluation.worker_heap_report().heap_records() > 0);
         assert_eq!(evaluation.output().drv_outputs().len(), 1);
         assert!(
             evaluation.output().drv_outputs()[0]
@@ -2087,11 +2306,65 @@ mod tests {
                 && evaluation.parallel_thunk_worker_id() == ParallelThunkWorkerId::FIRST
                 && evaluation.parallel_thunk_worker_id() != sentinel_worker_id
                 && evaluation.heap_uses_thread_local_tier_a()
+                && evaluation.worker_heap_report().uses_thread_local_tier_a()
                 && evaluation.output().drv_outputs().len() == 1
                 && evaluation.output().drv_outputs()[0]
                     .path()
                     .ends_with(b".drv")
         }));
+    }
+
+    #[test]
+    fn chase_lev_parallel_drv_output_eval_summarizes_successful_worker_heaps() {
+        let roots = [
+            derivation_root("parallel-drv-worker-heap-alpha"),
+            derivation_root("parallel-drv-worker-heap-beta"),
+        ];
+
+        let report = eval_drv_outputs_parallel_chase_lev_top_level_roots(
+            roots,
+            workers(1),
+            ParallelFailurePolicy::CollectAll,
+            TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+        )
+        .expect("Chase-Lev .drv evaluation completes");
+        let summaries = summarize_parallel_tree_walk_drv_worker_heaps(&report);
+        let expected_heap_records = report
+            .outcomes()
+            .iter()
+            .map(|outcome| {
+                outcome
+                    .outcome()
+                    .as_ref()
+                    .expect("root succeeded")
+                    .worker_heap_report()
+                    .heap_records()
+            })
+            .sum::<usize>();
+        let expected_worker_safepoints = report
+            .outcomes()
+            .iter()
+            .map(|outcome| {
+                outcome
+                    .outcome()
+                    .as_ref()
+                    .expect("root succeeded")
+                    .worker_heap_report()
+                    .worker_allocation_safepoints()
+            })
+            .sum::<u64>();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].worker_id(), 0);
+        assert_eq!(summaries[0].successful_tasks(), 2);
+        assert_eq!(summaries[0].heap_records(), expected_heap_records);
+        assert_eq!(
+            summaries[0].worker_allocation_safepoints(),
+            expected_worker_safepoints
+        );
+        assert!(summaries[0].heap_records() > 0);
+        assert!(summaries[0].worker_allocation_safepoints() > 0);
+        assert!(summaries[0].all_successful_tasks_used_thread_local_tier_a());
     }
 
     #[test]

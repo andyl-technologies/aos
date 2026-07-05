@@ -4968,13 +4968,14 @@ and helps the oracle directly.
       scheduler-derived parallel thunk worker id and enables the existing
       thread-local Tier-A worker-storage backend before raw or `.drv`
       evaluation. Successful raw and `.drv` task reports expose whether the
-      task heap used thread-local Tier-A storage, and tests pin the safe-queue
-      raw bridge, Chase-Lev raw bridge, direct raw worker bridge, direct `.drv`
-      worker bridge, and Chase-Lev `.drv` bridge. This is scheduler bridge
-      plumbing only: task-local tree-walk heaps still use the existing
-      evaluator-level thread-local backend lifecycle, no shared thunk graph or
-      final live per-worker nursery is installed, tree-walk's ordinary default
-      remains unchanged, and the CLI-wide byte-green Tier-A proof remains open.
+      task heap used thread-local Tier-A storage plus post-success heap
+      counters, and tests pin the safe-queue raw bridge, Chase-Lev raw bridge,
+      direct raw worker bridge, direct `.drv` worker bridge, and Chase-Lev
+      `.drv` bridge. This is scheduler bridge plumbing only: task-local
+      tree-walk heaps still use the existing evaluator-level thread-local
+      backend lifecycle, no shared thunk graph or final live per-worker nursery
+      is installed, tree-walk's ordinary default remains unchanged, and the
+      CLI-wide byte-green Tier-A proof remains open.
 - [x] Current Tier-A strict-JSON stats precursor: `EvalStats` now mirrors worker
       and permanent-shared arena chunk counts, logical reserved bytes,
       page-rounded mapped bytes, and used bytes from the default tree-walk heap,
@@ -8532,13 +8533,26 @@ nurseries build on the bump arena.
       evaluation with cloned options that carry the scheduler-derived parallel
       thunk worker id and opt into the current thread-local Tier-A worker
       backend. The raw and `.drv` task result types expose a
-      `heap_uses_thread_local_tier_a` observation, and tests pin safe-queue raw
-      execution, Chase-Lev raw execution, direct raw worker execution, direct
-      `.drv` worker execution, and Chase-Lev `.drv` execution. This is still a
-      task-local evaluator bridge only: no live worker nursery is shared across
-      task heaps, no L2 shared thunk graph is installed, the final CLI-wide
-      never-free Tier-A default remains open, and the loom/Miri/TSan gate is not
-      closed.
+      `heap_uses_thread_local_tier_a` observation plus post-success heap
+      counters, and tests pin safe-queue raw execution, Chase-Lev raw execution,
+      direct raw worker execution, direct `.drv` worker execution, and Chase-Lev
+      `.drv` execution. This is still a task-local evaluator bridge only: no
+      live worker nursery is shared across task heaps, no L2 shared thunk graph
+      is installed, the final CLI-wide never-free Tier-A default remains open,
+      and the loom/Miri/TSan gate is not closed.
+- [x] Current parallel tree-walk worker-heap summary bridge:
+      successful scheduler-backed raw and `.drv` task results now carry a
+      `ParallelTreeWalkWorkerHeapReport` with the completed task's typed heap
+      record count, worker-domain allocation-safepoint count, permanent-domain
+      allocation-safepoint count, and thread-local Tier-A backend flag.
+      `summarize_parallel_tree_walk_raw_worker_heaps` and
+      `summarize_parallel_tree_walk_drv_worker_heaps` aggregate those successful
+      task reports into stable per-executing-worker heap summaries. Tests pin
+      the one-worker raw and `.drv` aggregation path and the direct task heap
+      reports. This is successful-task reporting only: failed root evaluations
+      have no final heap snapshot, task heaps are still task-local, the live
+      per-worker nursery/hash-cons merge remains uninstalled, and the
+      loom/Miri/TSan gate remains open.
 - [ ] Single-entry-thunk downgrade restricted to escape-analysis-proven
       *frame-local* thunks (C-8), so the blackhole-skip is sound under parallel
       schedules.
