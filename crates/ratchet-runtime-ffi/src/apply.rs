@@ -196,6 +196,17 @@ mod tests {
     }
 
     #[test]
+    fn apply_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+        let binding = runtime_apply_native_wrapper_bindings()
+            .into_iter()
+            .next()
+            .expect("apply wrapper binding exists");
+        let oracle_blockers = RuntimeApplyEntryPoint::AosApply.native_export_blockers();
+
+        assert_eq!(binding.remaining_export_blockers(), &oracle_blockers[1..]);
+    }
+
+    #[test]
     fn aos_apply_native_wrapper_aborts() {
         assert_child_process_aborts(APPLY_ABORT_CHILD);
     }

@@ -3426,6 +3426,21 @@ mod tests {
             apply_export_gap.missing_exported_call_control_blockers(),
             Some(apply_blockers)
         );
+        assert_eq!(
+            apply_export_gap
+                .missing_exported_call_control_blockers()
+                .expect("apply blockers exist"),
+            [
+                RuntimeApplyNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeApplyNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                RuntimeApplyNativeExportBlocker::ActiveCallRootBindingUnimplemented,
+                RuntimeApplyNativeExportBlocker::CallDepthAccountingUnimplemented,
+                RuntimeApplyNativeExportBlocker::CallableDispatchBindingUnimplemented,
+                RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented,
+                RuntimeApplyNativeExportBlocker::NativeValueReturnUnmaterialized,
+            ]
+            .as_slice()
+        );
         assert!(
             apply_export_gap
                 .missing_exported_call_control_blockers()

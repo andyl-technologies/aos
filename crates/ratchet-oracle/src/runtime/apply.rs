@@ -67,10 +67,10 @@ pub fn runtime_apply_rust_callable_bindings() -> Vec<RuntimeApplyRustCallableBin
 /// Builds native-export readiness metadata for frozen apply helpers.
 ///
 /// The returned report is intentionally negative today: the helper has frozen
-/// ABI metadata and a safe evaluator-callable wrapper, but no exported C ABI
-/// wrapper. The blocker list is precise so later unsafe wrapper work can clear
-/// individual obligations without treating the Rust callable as a native ABI
-/// export.
+/// ABI metadata and a safe evaluator-callable wrapper, but no wrapper is
+/// admitted as a final native export by this oracle gate. The blocker list is
+/// precise so later unsafe wrapper work can clear individual obligations without
+/// treating the Rust callable as a native ABI export.
 pub fn runtime_apply_native_export_preflight() -> RuntimeApplyNativeExportPreflight {
     RuntimeApplyNativeExportPreflight::new(
         runtime_apply_entrypoints()
@@ -674,6 +674,19 @@ mod tests {
         assert_eq!(
             record.blockers(),
             RuntimeApplyEntryPoint::AosApply.native_export_blockers()
+        );
+        assert_eq!(
+            record.blockers(),
+            [
+                RuntimeApplyNativeExportBlocker::MissingFinalExportedWrapper,
+                RuntimeApplyNativeExportBlocker::RuntimeContextDecodeUnimplemented,
+                RuntimeApplyNativeExportBlocker::ActiveCallRootBindingUnimplemented,
+                RuntimeApplyNativeExportBlocker::CallDepthAccountingUnimplemented,
+                RuntimeApplyNativeExportBlocker::CallableDispatchBindingUnimplemented,
+                RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented,
+                RuntimeApplyNativeExportBlocker::NativeValueReturnUnmaterialized,
+            ]
+            .as_slice()
         );
         assert!(!record.is_export_ready());
         assert!(
