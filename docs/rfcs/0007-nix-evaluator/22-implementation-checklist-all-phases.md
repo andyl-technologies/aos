@@ -9320,6 +9320,22 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       still a tree-walk semantic harness only; it does not exhaustively generate
       valid inputs for every builtin, compare against the C++ oracle for each
       generated sample, or prove aggregate/result-forwarding escape behavior.
+- [x] Current conservative semantic escape-signature expansion:
+      the `ratchet-oracle` semantic escape-signature harness now expands
+      conservative sample coverage for root direct `PrimOp`s whose signatures
+      must remain outside the immediate-scalar allowlist even when their current
+      result is heap-valued or inline. Heap samples cover type/string codecs,
+      JSON/XML/TOML conversion, attr/list transforms, regex split, hash/string
+      helpers, and map/filter/grouping-style builders; scalar-result samples
+      cover numeric `add`, while scalar-forwarding samples cover `head`,
+      `getAttr`, `seq`, and `elemAt`. Each sample asserts the requested builtin
+      name survives lowering at the root, the signature is conservative, and the
+      tree-walk result has the expected heap or inline tag. This expands
+      negative semantic coverage for the escape table, but still does not
+      exhaustively generate valid inputs for every conservative builtin, compare
+      against the C++ oracle for each sample, or prove aggregate/result-forwarding
+      escape behavior. Gate:
+      `conservative_escape_signatures_cover_heap_and_forwarding_samples`.
 - [x] Current lowering-policy precursor: `ExprFacts::binding_lowering`
       encodes THUNK/EAGER/SCALAR selection with THUNK as the conservative
       default, `Eager` gated by proven strictness, and `Scalar` gated by both

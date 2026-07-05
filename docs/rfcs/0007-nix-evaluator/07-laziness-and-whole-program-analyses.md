@@ -1057,6 +1057,19 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       harness beyond tag-only samples, but C++-oracle comparison, exhaustive
       input generation for every builtin, and aggregate/result-forwarding
       escape proofs remain open.
+- [x] Current conservative semantic escape-signature expansion:
+      `ratchet-oracle` now also samples conservative direct builtin signatures
+      that return heap values, compute inline scalar results, or forward operand
+      values, including type/string codecs, JSON/XML/TOML conversion, attr/list
+      transforms, regex split, hash/string helpers, conservative scalar results
+      such as numeric `add`, and scalar forwarding through `head`, `getAttr`,
+      `seq`, and `elemAt`.
+      Each sample must lower to the requested root
+      direct `PrimOp`, remain outside the immediate-scalar allowlist, and return
+      the expected heap or inline tag. This expands negative semantic coverage
+      for the escape table, but still does not exhaustively generate valid
+      inputs for every conservative builtin, compare against the C++ oracle for
+      each sample, or prove aggregate/result-forwarding escape behavior.
 
 ### Whole-program closed-world enablers (§8)
 

@@ -151,9 +151,34 @@ const IMMEDIATE_SCALAR_SEMANTIC_SAMPLES: &[SemanticPrimOpSample] = &[
 
 const CONSERVATIVE_HEAP_SEMANTIC_SAMPLES: &[SemanticPrimOpSample] = &[
     SemanticPrimOpSample {
+        name: b"typeOf",
+        source: "builtins.typeOf 1",
+        expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
         name: b"toString",
         source: "builtins.toString 1",
         expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
+        name: b"toJSON",
+        source: "builtins.toJSON { a = 1; }",
+        expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
+        name: b"toXML",
+        source: "builtins.toXML { a = 1; }",
+        expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
+        name: b"fromJSON",
+        source: r#"builtins.fromJSON "{\"a\":1}""#,
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"fromTOML",
+        source: r#"builtins.fromTOML "a = 1""#,
+        expected_tag: ValueTag::Attrs,
     },
     SemanticPrimOpSample {
         name: b"seq",
@@ -175,6 +200,126 @@ const CONSERVATIVE_HEAP_SEMANTIC_SAMPLES: &[SemanticPrimOpSample] = &[
         source: "builtins.attrNames { b = 2; a = 1; }",
         expected_tag: ValueTag::List,
     },
+    SemanticPrimOpSample {
+        name: b"attrValues",
+        source: "builtins.attrValues { b = 2; a = 1; }",
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"tail",
+        source: "builtins.tail [ 1 2 ]",
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"functionArgs",
+        source: "builtins.functionArgs ({ a ? 1, b }: a)",
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"getContext",
+        source: r#"builtins.getContext "x""#,
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"unsafeDiscardStringContext",
+        source: r#"builtins.unsafeDiscardStringContext "x""#,
+        expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
+        name: b"baseNameOf",
+        source: r#"builtins.baseNameOf "/a/b""#,
+        expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
+        name: b"dirOf",
+        source: r#"builtins.dirOf "/a/b""#,
+        expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
+        name: b"parseDrvName",
+        source: r#"builtins.parseDrvName "foo-1.0""#,
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"splitVersion",
+        source: r#"builtins.splitVersion "1.2""#,
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"hashString",
+        source: r#"builtins.hashString "sha256" "abc""#,
+        expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
+        name: b"concatLists",
+        source: "builtins.concatLists [ [ 1 ] [ 2 ] ]",
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"concatMap",
+        source: "builtins.concatMap (x: [ x ]) [ 1 2 ]",
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"filter",
+        source: "builtins.filter (x: x < 2) [ 1 2 ]",
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"genList",
+        source: "builtins.genList (x: x) 2",
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"groupBy",
+        source: "builtins.groupBy (x: builtins.toString x) [ 1 2 ]",
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"map",
+        source: "builtins.map (x: x + 1) [ 1 ]",
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"partition",
+        source: "builtins.partition (x: x < 2) [ 1 2 ]",
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"split",
+        source: r#"builtins.split "(a)" "a""#,
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"removeAttrs",
+        source: r#"builtins.removeAttrs { a = 1; b = 2; } [ "a" ]"#,
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"intersectAttrs",
+        source: "builtins.intersectAttrs { a = 1; } { a = 2; b = 3; }",
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"catAttrs",
+        source: r#"builtins.catAttrs "a" [ { a = 1; } { b = 2; } ]"#,
+        expected_tag: ValueTag::List,
+    },
+    SemanticPrimOpSample {
+        name: b"concatStringsSep",
+        source: r#"builtins.concatStringsSep "," [ "a" "b" ]"#,
+        expected_tag: ValueTag::String,
+    },
+    SemanticPrimOpSample {
+        name: b"mapAttrs",
+        source: "builtins.mapAttrs (name: value: value) { a = 1; }",
+        expected_tag: ValueTag::Attrs,
+    },
+    SemanticPrimOpSample {
+        name: b"zipAttrsWith",
+        source: "builtins.zipAttrsWith (name: values: values) [ { a = 1; } { a = 2; } ]",
+        expected_tag: ValueTag::Attrs,
+    },
 ];
 
 const CONSERVATIVE_SCALAR_SEMANTIC_SAMPLES: &[SemanticPrimOpSample] = &[
@@ -191,6 +336,16 @@ const CONSERVATIVE_SCALAR_SEMANTIC_SAMPLES: &[SemanticPrimOpSample] = &[
     SemanticPrimOpSample {
         name: b"elemAt",
         source: "builtins.elemAt [ 1 ] 0",
+        expected_tag: ValueTag::Int,
+    },
+    SemanticPrimOpSample {
+        name: b"head",
+        source: "builtins.head [ 1 ]",
+        expected_tag: ValueTag::Int,
+    },
+    SemanticPrimOpSample {
+        name: b"getAttr",
+        source: r#"builtins.getAttr "a" { a = 1; }"#,
         expected_tag: ValueTag::Int,
     },
 ];
