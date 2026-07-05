@@ -909,8 +909,6 @@ impl TreeWalk {
             .union(&appended_context)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
         let result = NixString::new(bytes, context);
-        self.heap
-            .alloc_string(result)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, result)
     }
 }

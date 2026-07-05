@@ -1791,6 +1791,14 @@ fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots(
 }
 
 #[test]
+fn gc_stress_eval_root_reflected_context_result_helpers_skip_interned_composite_roots() {
+    assert_gc_stress_root_string_result_skips_dispatch(
+        r#"builtins.appendContext "x" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; }"#,
+        b"x",
+    );
+}
+
+#[test]
 fn gc_stress_context_string_result_helpers_dispatch_permanent_noop_bridge() {
     type ContextStringHelper =
         fn(&mut TreeWalk, IrId, Span, IrId, Span, Value) -> Result<Value, TreeWalkError>;

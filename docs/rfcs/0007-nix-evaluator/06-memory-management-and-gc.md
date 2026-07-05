@@ -3121,6 +3121,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       `toJSON` and `toXML` final serialized string allocations now route
       through the wrapper, and scalar direct-root serializer results dispatch
       through the scalar no-op bridge.
+      `appendContext` final string allocations now route through the wrapper,
+      while direct-root reflected-context calls still skip dispatch when their
+      reflected context attrsets leave interned composite roots live.
       `concatStringsSep` and `replaceStrings` final string allocations are
       wrapper-routed for direct builtin calls and first-class primop-value
       calls, while public direct-root calls still skip dispatch when their
@@ -3156,6 +3159,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       roots,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
       registered transient roots,
+      root `appendContext` evaluations preserving registered transient roots
+      while interned reflected-context attr roots block dispatch,
       root `concatStringsSep` and `replaceStrings` evaluations preserving
       registered transient roots while interned list roots block dispatch,
       static helper string allocations
