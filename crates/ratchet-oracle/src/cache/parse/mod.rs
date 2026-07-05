@@ -32,10 +32,10 @@ use crate::cache::hashing::ParseCacheSourceHash;
 use crate::cache::{DurableBlake3Hash, LoweredIrFingerprint, ParseFileContentHash};
 use crate::compile::{
     Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo, InheritGroupId,
-    InheritResolution, InheritSource, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
-    IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError, IrFacts, IrId, IrInlineCacheSiteId,
-    IrKind, IrNode, IrShape, IrShapeId, IrWithChain, ResolvedAst, ScopeError, ScopeTables,
-    Strictness, Upvalue, WithChain, resolve,
+    InheritResolution, InheritSource, Ir, IrAnalysisError, IrAnalysisReport, IrArena, IrAttrPathId,
+    IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError,
+    IrFacts, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain,
+    ResolvedAst, ScopeError, ScopeTables, Strictness, Upvalue, WithChain, annotate_ir, resolve,
 };
 use crate::runtime::builtins::{BuiltinDirect, direct_builtin};
 use crate::syntax::{
@@ -436,6 +436,25 @@ pub struct CachedParse {
     pub stored: bool,
 }
 
+impl CachedParse {
+    /// Refreshes this parsed module's analysis facts and writes its sidecar.
+    ///
+    /// The in-memory IR is refreshed before the sidecar write. If the sidecar
+    /// write fails, the refreshed facts remain available through [`Self::ir`]
+    /// and the storage failure is returned to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseFactRefreshError`] if analysis rejects malformed IR or the
+    /// refreshed fact sidecar cannot be written for this parse-cache entry.
+    pub fn refresh_and_store_facts(&mut self) -> Result<IrAnalysisReport, ParseFactRefreshError> {
+        let report = annotate_ir(&mut self.ir)
+            .map_err(|source| ParseFactRefreshError::Analyze { source })?;
+        self.entry.write_fact_sidecar(&self.ir)?;
+        Ok(report)
+    }
+}
+
 fn encode_bundle_section(
     out: &mut Vec<u8>,
     bytes: &[u8],
@@ -536,7 +555,7 @@ use validate::*;
 // and the sibling/test modules' `use super::*` resolve them unqualified.
 pub use bundle::ParseArtifactBundle;
 pub use entry::ParseCacheEntry;
-pub use error::ParseCacheError;
+pub use error::{ParseCacheError, ParseFactRefreshError};
 pub use meta::ParseCacheMeta;
 
 #[cfg(test)]

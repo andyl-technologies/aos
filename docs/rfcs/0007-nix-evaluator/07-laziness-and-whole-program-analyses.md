@@ -840,6 +840,16 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       parse-cache sidecar update path, not the independent IR-hash fact artifact
       store, closed-world fixpoint cache, or analyzed-once cross-source fact
       index.
+- [x] Current explicit fact-refresh adapter precursor:
+      `CachedParse::refresh_and_store_facts` now runs `annotate_ir` over a
+      loaded or freshly parsed module, leaves refreshed facts in the in-memory
+      `Ir`, and persists them through the validated `facts.bin` sidecar writer.
+      It reports analysis failures separately from cache write failures, and a
+      failed sidecar write does not discard the refreshed in-memory facts. This
+      is an opt-in API for callers that already chose to analyze a parse result,
+      not automatic analysis scheduling, whole-program fixpoint orchestration,
+      independent IR-hash fact persistence, or an analyzed-once cross-source
+      fact index.
 
 ### Strictness / demand analysis + worker-wrapper (§4)
 

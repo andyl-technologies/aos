@@ -894,6 +894,15 @@ fn write_fact_sidecar_rejects_ir_for_different_artifact() {
         fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
         original_facts
     );
+    assert!(
+        parsed
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .all(|facts| *facts == ExprFacts::conservative()),
+        "failed analysis should leave in-memory facts conservative"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
@@ -995,6 +1004,90 @@ fn write_fact_sidecar_reports_fact_write_failure() {
     assert!(
         cache_temp_files(&parsed.entry).is_empty(),
         "temporary files were not cleaned up"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cached_parse_refresh_and_store_facts_updates_memory_and_sidecar() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"builtins.toJSON (let x = 1; in x)";
+    let mut parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let conservative = parsed.ir.facts.as_slice().to_vec();
+
+    let report = parsed
+        .refresh_and_store_facts()
+        .expect("facts refresh and store");
+
+    assert!(!report.dependency_footprint.is_empty());
+    assert_ne!(parsed.ir.facts.as_slice(), conservative.as_slice());
+    let cached = cache
+        .load_cached_bytes(source)
+        .expect("cache read succeeds")
+        .expect("cache entry exists");
+    assert_eq!(cached.ir.facts.as_slice(), parsed.ir.facts.as_slice());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cached_parse_refresh_and_store_facts_reports_analysis_failure_without_writing() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let mut parsed = cache
+        .load_or_parse_bytes(b"let x = 1; in x", Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let original_facts =
+        fs::read(parsed.entry.facts_path()).expect("original conservative facts read");
+    parsed.ir.root = IrId::new(u32::MAX);
+
+    let error = parsed
+        .refresh_and_store_facts()
+        .expect_err("invalid IR root rejects analysis");
+
+    assert!(matches!(error, ParseFactRefreshError::Analyze { .. }));
+    assert_eq!(
+        fs::read(parsed.entry.facts_path()).expect("facts remain readable"),
+        original_facts
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cached_parse_refresh_and_store_facts_reports_sidecar_write_failure() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let mut parsed = cache
+        .load_or_parse_bytes(
+            b"builtins.toJSON (let x = 1; in x)",
+            Some("expr.nix".to_owned()),
+        )
+        .expect("source parses on miss");
+    fs::remove_file(parsed.entry.facts_path()).expect("fact sidecar removes");
+    fs::create_dir(parsed.entry.facts_path()).expect("blocking fact path creates");
+
+    let error = parsed
+        .refresh_and_store_facts()
+        .expect_err("fact sidecar write failure is reported");
+
+    assert!(matches!(
+        error,
+        ParseFactRefreshError::Cache(ParseCacheError::WriteArtifact { path, .. })
+            if path == parsed.entry.facts_path()
+    ));
+    assert!(
+        parsed
+            .ir
+            .facts
+            .as_slice()
+            .iter()
+            .any(|facts| *facts != ExprFacts::conservative()),
+        "in-memory facts should remain refreshed after sidecar write failure"
     );
 
     let _ = fs::remove_dir_all(root);

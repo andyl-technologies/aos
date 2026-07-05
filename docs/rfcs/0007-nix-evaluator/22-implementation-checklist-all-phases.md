@@ -2374,6 +2374,16 @@ alone (`M-1`/`Q-A`).
       best-effort. This is explicit parse-cache sidecar refresh only; durable
       index lookup, automatic analysis scheduling, mmap reads, independent
       IR-hash fact artifacts, and harness proof remain open (`C-13`/`S-9`).
+- [x] Current explicit parsed-module fact refresh adapter:
+      `CachedParse::refresh_and_store_facts` runs the current `annotate_ir`
+      pipeline for a loaded or freshly parsed module, keeps refreshed facts in
+      memory, and commits them through the validated parse-cache `facts.bin`
+      sidecar writer. It distinguishes analysis failures from cache write
+      failures and leaves the in-memory facts refreshed if only the sidecar
+      write fails. This is caller-driven parse-result refresh only; automatic
+      analysis scheduling, durable index lookup, mmap reads, independent
+      IR-hash fact artifacts, analyzed-once cross-source fact indexes, and
+      harness proof remain open (`C-13`/`S-9`).
 - [x] Current cache-level blob pack/index initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` and `PersistBlobIndex` handles after schema validation
@@ -9152,6 +9162,16 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       parse-cache sidecar update path, not the independent IR-hash fact artifact
       store, closed-world fixpoint cache, analyzed-once cross-source fact index,
       automatic analysis scheduler, or JIT lowering consumer.
+- [x] Current explicit fact-refresh adapter precursor:
+      `CachedParse::refresh_and_store_facts` now runs `annotate_ir` over a
+      loaded or freshly parsed module, leaves refreshed facts in the in-memory
+      `Ir`, and persists them through the validated `facts.bin` sidecar writer.
+      It reports analysis failures separately from cache write failures, and a
+      failed sidecar write does not discard the refreshed in-memory facts. This
+      is an opt-in API for callers that already chose to analyze a parse result,
+      not automatic analysis scheduling, whole-program fixpoint orchestration,
+      independent IR-hash fact persistence, an analyzed-once cross-source fact
+      index, or a JIT lowering consumer.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).
