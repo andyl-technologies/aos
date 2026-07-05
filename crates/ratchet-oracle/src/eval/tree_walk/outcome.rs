@@ -12,7 +12,8 @@ use crate::eval::heap::{
     AllocationCollectorPollObjectBodyWriteReport, AllocationCollectorPollObjectByteCopyPlan,
     AllocationCollectorPollObjectGenerationWritePlan,
     AllocationCollectorPollObjectGenerationWriteReport, EvalHeapError, EvalHeapMemoryAdviceReport,
-    EvalHeapMemoryBudgetDecision, EvalHeapTierBAdmissionPlan, EvalRootSource,
+    EvalHeapMemoryBudgetDecision, EvalHeapTierBAdmissionPlan, EvalHeapTierBAdmissionReport,
+    EvalRootSource,
 };
 use crate::heap::{ArenaStats, HeapGeneration};
 use crate::value::HeapObject;
@@ -389,6 +390,17 @@ pub enum EvalTierBTransitionAdmissionPlanError {
     Preflight(#[from] EvalTierBTransitionPreflightError),
     /// The heap-record admission plan could not be built.
     #[error("Tier-B heap admission planning failed: {0}")]
+    Heap(#[from] EvalHeapError),
+}
+
+/// A Tier-B transition admission plan could not be applied.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum EvalTierBTransitionAdmissionApplyError {
+    /// The transition admission plan could not be built.
+    #[error("Tier-B transition admission planning failed: {0}")]
+    Plan(#[from] EvalTierBTransitionAdmissionPlanError),
+    /// The heap rejected the admission plan during application.
+    #[error("Tier-B heap admission application failed: {0}")]
     Heap(#[from] EvalHeapError),
 }
 
@@ -11129,6 +11141,33 @@ impl EvalOutcome {
         self.tier_b_transition_request()
             .map(|request| request.admission_plan(&self.heap))
             .transpose()
+    }
+
+    /// Applies the requested Tier-B transition admission to heap metadata.
+    ///
+    /// This builds the current read-only transition admission plan and then
+    /// applies its heap-record generation metadata update to the outcome heap.
+    /// It only rewrites existing heap-record generation fields; it does not
+    /// install a collector, switch allocators, reserve semispace storage,
+    /// rewrite handles, mutate object bodies, publish remembered/card state, or
+    /// relocate values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalTierBTransitionAdmissionApplyError`] if transition
+    /// admission planning fails or if the heap rejects the plan during
+    /// application.
+    pub fn apply_tier_b_transition_admission_plan(
+        &mut self,
+    ) -> Result<Option<EvalHeapTierBAdmissionReport>, EvalTierBTransitionAdmissionApplyError> {
+        let Some(request) = self.tier_b_transition_request() else {
+            return Ok(None);
+        };
+        let admission = request.admission_plan(&self.heap)?;
+        let report = self
+            .heap
+            .apply_tier_b_admission_plan(admission.heap_plan())?;
+        Ok(Some(report))
     }
 
     /// Returns the final cold-aware heap budget plan, if one was requested.

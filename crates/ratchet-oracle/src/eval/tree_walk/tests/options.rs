@@ -696,6 +696,38 @@ fn heap_memory_budget_tier_b_transition_preflight_admits_current_heap() {
 }
 
 #[test]
+fn heap_memory_budget_tier_b_transition_application_admits_worker_records() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("x: x");
+    let mut outcome =
+        eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_heap_memory_budget(budget))
+            .expect("lambda expression evaluates");
+    let value = outcome.value();
+
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(value)
+            .expect("lambda has a heap generation"),
+        HeapGeneration::Young
+    );
+    let report = outcome
+        .apply_tier_b_transition_admission_plan()
+        .expect("transition admission applies")
+        .expect("over-budget outcome has transition admission");
+    assert!(report.worker_records() > 0);
+    assert_eq!(report.permanent_shared_records(), 0);
+    assert_eq!(report.generation_rewrites(), report.worker_records());
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(value)
+            .expect("lambda has a heap generation"),
+        HeapGeneration::Old
+    );
+}
+
+#[test]
 fn tier_b_transition_preflight_rejects_stale_worker_accounting() {
     let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
     let ir = lower("x: x");
@@ -775,7 +807,7 @@ fn tier_b_transition_preflight_rejects_stale_permanent_shared_accounting() {
 fn heap_memory_budget_continuation_has_no_tier_b_transition_request() {
     let budget = HeapMemoryBudget::new(usize::MAX).expect("budget is non-zero");
     let ir = lower("\"budgeted\"");
-    let outcome =
+    let mut outcome =
         eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_heap_memory_budget(budget))
             .expect("string evaluates");
 
@@ -796,6 +828,12 @@ fn heap_memory_budget_continuation_has_no_tier_b_transition_request() {
             .expect("admission planning is skipped without a transition request")
             .is_none()
     );
+    assert!(
+        outcome
+            .apply_tier_b_transition_admission_plan()
+            .expect("admission application is skipped without a transition request")
+            .is_none()
+    );
 }
 
 #[test]
@@ -807,7 +845,7 @@ fn heap_memory_budget_advice_has_no_tier_b_transition_request() {
         .mapped_bytes
         .saturating_add(baseline.heap().permanent_arena_stats().mapped_bytes);
     let budget = HeapMemoryBudget::new(resident_bytes).expect("budget is non-zero");
-    let outcome = eval_owned_with_options_and_heap_resident_memory_mode(
+    let mut outcome = eval_owned_with_options_and_heap_resident_memory_mode(
         "\"budgeted\"",
         TreeWalkOptions::with_heap_memory_budget(budget),
         EvalHeapResidentMemoryMode::ArenaMappedBytes,
@@ -833,6 +871,12 @@ fn heap_memory_budget_advice_has_no_tier_b_transition_request() {
         outcome
             .tier_b_transition_admission_plan()
             .expect("admission planning is skipped without a transition request")
+            .is_none()
+    );
+    assert!(
+        outcome
+            .apply_tier_b_transition_admission_plan()
+            .expect("admission application is skipped without a transition request")
             .is_none()
     );
 }

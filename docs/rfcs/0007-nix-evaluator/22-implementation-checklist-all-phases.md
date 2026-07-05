@@ -6834,6 +6834,15 @@ and helps the oracle directly.
       explicit heap-metadata admission step only: it does not install a
       collector, switch allocators, reserve semispace storage, rewrite handles,
       mutate object bodies, publish remembered/card state, or relocate values.
+      `EvalOutcome::apply_tier_b_transition_admission_plan()` now builds the
+      current transition admission plan for a budget-triggered outcome and
+      delegates to the heap admission applicator, giving callers an explicit
+      outcome-level entry point for the generation-metadata transition. Tests
+      cover worker-result admission to old generation and no-op application for
+      Continue/Advice actions. This remains an outcome bridge only: it does not
+      install a collector, switch allocators, reserve semispace storage, rewrite
+      handles, mutate object bodies, publish remembered/card state, or relocate
+      values.
       Hash-cons hits skip the poll because no heap
       allocation occurred. Linux and Darwin budget polls now sample process RSS
       from `/proc/self/statm` or Mach `MACH_TASK_BASIC_INFO` through

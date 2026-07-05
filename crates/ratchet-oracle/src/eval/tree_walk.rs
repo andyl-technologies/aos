@@ -404,9 +404,9 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcRootWritebackWrite,
     EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
     EvalGcStressBoundaryMinorGcRootWritebackWritePlanReport, EvalGcStressBoundaryScans,
-    EvalOutcome, EvalStats, EvalTierBTransitionAdmissionPlan,
-    EvalTierBTransitionAdmissionPlanError, EvalTierBTransitionDomain,
-    EvalTierBTransitionDomainPreflight, EvalTierBTransitionPreflight,
+    EvalOutcome, EvalStats, EvalTierBTransitionAdmissionApplyError,
+    EvalTierBTransitionAdmissionPlan, EvalTierBTransitionAdmissionPlanError,
+    EvalTierBTransitionDomain, EvalTierBTransitionDomainPreflight, EvalTierBTransitionPreflight,
     EvalTierBTransitionPreflightError, EvalTierBTransitionRequest, EvalTraceKind, EvalTraceOutput,
     EvalWarningOutput, IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer,
 };

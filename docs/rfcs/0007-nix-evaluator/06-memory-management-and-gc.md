@@ -3175,6 +3175,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       install a collector, switch allocators, reserve semispace storage, rewrite
       handles, mutate object bodies, publish remembered/card state, or relocate
       values.
+- [x] Current outcome Tier-B admission application bridge:
+      `EvalOutcome::apply_tier_b_transition_admission_plan()` builds the
+      current transition admission plan for a budget-triggered outcome and
+      delegates to the heap admission applicator, so callers can explicitly
+      perform the generation-metadata transition on the outcome heap. Tests
+      cover worker-result admission to old generation and no-op application for
+      Continue/Advice actions. This still does not install a collector, switch
+      allocators, reserve semispace storage, rewrite handles, mutate object
+      bodies, publish remembered/card state, or relocate values.
 
 ### Region inference (§5)
 
