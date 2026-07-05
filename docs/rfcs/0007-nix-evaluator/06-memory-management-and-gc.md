@@ -2616,6 +2616,23 @@ GC must be observationally invisible (§8): every item is gated by the different
       caller-buffer application surface only: it does not allocate destination
       objects, bind buffers to real heap storage or object headers, own the live
       card table, scan/rescan old fields, or manage semispaces.
+- [x] Current minor-GC owned-storage commit precursor:
+      `MinorGcOwnedCommitBuffers`,
+      `MinorGcCommitPlan::apply_to_owned_destination_storage`, and its
+      report-returning variant connect the commit plan to
+      `MinorGcOwnedDestinationStorage`. The helper validates source-object bytes
+      against the owned destination storage and object-copy schedule, then
+      validates forwarding slots, planned reference rewrites, unplanned young
+      references in the commit buffer, and remembered-set publication before
+      mutation. A successful commit copies bytes into owned next-nursery and
+      old-generation buffers, installs forwarding values, rewrites references,
+      publishes the next remembered set, and clears an optional card table.
+      Tests cover successful owned-storage commit, an unplanned late young
+      reference, and a late remembered-set mismatch that leaves owned
+      destination storage, forwarding slots, references, remembered-set state,
+      and dirty cards unchanged. This still does not bind destination storage
+      to real heap object headers, read bytes from live from-space objects, swap
+      nursery semispaces, own the card table, or dispatch a mutating collector.
 - [ ] Precise root + field scanning: type-tag → layout, `ShapeId` → attrset field map, explicit roots (value stack, force continuation, spilled primop args, interned tables) — no conservative C-stack scan; Cranelift stack maps at JIT tiers (§4.4) — **P3** for tree-walk roots; JIT stack maps **P6** ([08](08-execution-tiers-and-cranelift.md)).
 - [x] Current tree-walk precise root/field-scan graph precursor:
       `ratchet-oracle::eval::heap::roots` provides explicit

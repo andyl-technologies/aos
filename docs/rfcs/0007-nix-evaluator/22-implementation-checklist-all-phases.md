@@ -5336,6 +5336,23 @@ and helps the oracle directly.
       caller-buffer application surface only; destination object allocation,
       binding buffers to real heap storage or object headers, live card-table
       ownership, old-field rescanning, and semispace management remain open.
+- [x] Current minor-GC owned-storage commit precursor:
+      `MinorGcOwnedCommitBuffers` and
+      `MinorGcCommitPlan::apply_to_owned_destination_storage` bind the existing
+      commit plan to `MinorGcOwnedDestinationStorage`, caller-supplied source
+      object bytes, forwarding slots, reference slots, remembered-set state,
+      and an optional card table. The helper validates owned storage/source
+      bytes, forwarding slots, planned reference rewrites, unplanned young
+      references in the commit buffer, and remembered-set publication before
+      mutation, then copies source bytes into owned next-nursery/old destination
+      storage, installs forwarding values, rewrites references, publishes the
+      next remembered set, and clears dirty cards when supplied. Unit tests
+      cover successful owned-storage commit, an unplanned late young reference,
+      and a late remembered-set mismatch that leaves destination storage,
+      forwarding slots, references, remembered-set state, and dirty cards
+      unchanged. This still does not bind buffers to real heap object headers,
+      own source-byte reads, swap nursery semispaces, own the live card table,
+      or dispatch a mutating collector.
 - [ ] `runtime/alloc.rs` — all allocation routes through `aos_alloc_*` runtime
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).

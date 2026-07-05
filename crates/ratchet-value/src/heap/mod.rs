@@ -39,7 +39,7 @@ pub use gc::{
     MinorGcDestinationPlacement, MinorGcDestinationPlacementPlan, MinorGcForwardingPointer,
     MinorGcForwardingPointerPlan, MinorGcForwardingSlot, MinorGcObjectByteCopyBuffer,
     MinorGcObjectCopy, MinorGcObjectCopyPlan, MinorGcOldFieldRescan, MinorGcOldFieldRescanPlan,
-    MinorGcOldObjectFields, MinorGcOwnedDestinationStorage,
+    MinorGcOldObjectFields, MinorGcOwnedCommitBuffers, MinorGcOwnedDestinationStorage,
     MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan, MinorGcPromotionPolicy,
     MinorGcReferenceRewrite, MinorGcReferenceRewritePlan, MinorGcRelocation,
     MinorGcRelocationDestination, MinorGcRelocationDestinationPlan, MinorGcRelocationPlan,

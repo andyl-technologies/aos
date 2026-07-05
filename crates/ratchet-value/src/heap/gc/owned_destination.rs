@@ -199,6 +199,15 @@ impl MinorGcOwnedDestinationStorage {
         Ok(report)
     }
 
+    pub(super) fn validate_copy_from_sources(
+        &self,
+        copy_plan: &MinorGcObjectCopyPlan,
+        sources: &[MinorGcSourceObjectBytes<'_>],
+    ) -> Result<(), GenerationalGcError> {
+        let _ = validated_copies(self, copy_plan, sources)?;
+        Ok(())
+    }
+
     /// Returns the reserved next-nursery destination bytes.
     pub fn nursery_destination_bytes(&self) -> &[u8] {
         self.nursery.destination_bytes()
