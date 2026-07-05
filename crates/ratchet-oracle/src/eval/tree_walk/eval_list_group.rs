@@ -683,12 +683,7 @@ impl TreeWalk {
             )
         })?;
         for (key, values) in groups {
-            let value = self
-                .heap
-                .alloc_list(NixList::new(values))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
+            let value = self.alloc_tree_walk_list(id, span, NixList::new(values))?;
             entries.push(AttrEntry::new(key, value));
         }
         let attrs = FlatAttrs::new(entries, &self.symbols)

@@ -3249,6 +3249,135 @@ fn gc_stress_concat_map_result_skips_active_argument_roots() {
 }
 
 #[test]
+fn gc_stress_group_by_bucket_lists_skip_active_argument_roots() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let int_key = evaluator.symbols.intern(b"int").expect("int interns");
+    let string_key = evaluator.symbols.intern(b"string").expect("string interns");
+    let string_value = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"x".to_vec()))
+        .expect("string input allocates");
+    let input = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![
+            Value::int(1),
+            string_value,
+            Value::int(2),
+        ]))
+        .expect("input list allocates");
+    let function_symbol = evaluator.symbols.intern(b"typeOf").expect("typeOf interns");
+    let function_builtin = lookup_builtin(b"typeOf").expect("typeOf builtin exists");
+    let function = evaluator
+        .heap
+        .alloc_primop(EvalPrimOp::registered(function_symbol, function_builtin))
+        .expect("function primop allocates");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    evaluator
+        .push_active_primop_arg_roots(
+            ir.root,
+            span,
+            &[
+                EvalPrimOpArg::new(ir.root, span, function),
+                EvalPrimOpArg::new(ir.root, span, input),
+            ],
+        )
+        .expect("active groupBy argument roots push");
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+        eval.eval_group_by_elements(
+            ir.root,
+            span,
+            ir.root,
+            span,
+            function,
+            ir.root,
+            vec![Value::int(1), string_value, Value::int(2)],
+        )
+    });
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.pop_active_primop_arg_roots();
+    let value = result.expect("groupBy result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 2,
+        "groupBy bucket lists did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while active groupBy argument roots were live"
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("groupBy result is heap-owned");
+    let int_group = attrs.get(int_key).expect("int group exists");
+    let string_group = attrs.get(string_key).expect("string group exists");
+    let int_group = evaluator
+        .heap()
+        .get_list(int_group)
+        .expect("int group is heap-owned");
+    assert_eq!(int_group.len(), 2);
+    assert_eq!(
+        int_group
+            .get(0)
+            .expect("first int group value exists")
+            .as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        int_group
+            .get(1)
+            .expect("second int group value exists")
+            .as_int(),
+        Ok(2)
+    );
+    let string_group = evaluator
+        .heap()
+        .get_list(string_group)
+        .expect("string group is heap-owned");
+    assert_eq!(string_group.len(), 1);
+    assert!(
+        string_group
+            .get(0)
+            .expect("string group value exists")
+            .raw_eq(string_value)
+    );
+    let permanent_safepoints = evaluator.heap().permanent_allocation_safepoints();
+    assert!(
+        permanent_safepoints.count() >= permanent_safepoints_before + 3,
+        "groupBy result did not record at least the two bucket-list safepoints plus attrs safepoint"
+    );
+    let permanent_safepoint = permanent_safepoints
+        .last()
+        .expect("groupBy attrs allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_filter_result_skips_active_argument_roots() {
     let ir = lower("null");
     let span = ir.arena.node(ir.root).expect("root exists").span;

@@ -7412,6 +7412,8 @@ and helps the oracle directly.
       dispatch,
       direct `concatMap` output list-result allocations preserving registered
       transient roots while active primop argument roots block dispatch,
+      direct `groupBy` bucket-list allocations preserving registered transient
+      roots while active primop argument roots block dispatch,
       direct non-empty `map` list-result allocations preserving registered
       transient roots while mapped apply-thunk fields block dispatch,
       direct non-empty `genList` list-result allocations preserving registered
