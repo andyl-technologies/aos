@@ -142,7 +142,10 @@ impl TreeWalk {
         if let Some((bytes, context)) = payload.context_path_parts() {
             let bytes = try_clone_bytes(bytes).ok()?;
             let context = context.try_clone_context().ok()?;
-            return self.heap.alloc_path(NixString::new(bytes, context)).ok();
+            return self.alloc_replayed_payload_path(
+                replay_allocation_node,
+                NixString::new(bytes, context),
+            );
         }
         if payload.is_empty_list() {
             return self.heap.alloc_list(NixList::empty()).ok();
@@ -189,6 +192,6 @@ impl TreeWalk {
             return self.alloc_replayed_attrs_with_census(repr, attrs);
         }
         let bytes = try_clone_bytes(payload.path_bytes()?).ok()?;
-        self.heap.alloc_path(NixString::from_bytes(bytes)).ok()
+        self.alloc_replayed_payload_path(replay_allocation_node, NixString::from_bytes(bytes))
     }
 }

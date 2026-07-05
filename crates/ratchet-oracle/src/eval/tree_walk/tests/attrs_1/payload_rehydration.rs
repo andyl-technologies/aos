@@ -150,6 +150,131 @@ fn gc_stress_context_payload_replay_string_dispatches_permanent_noop_bridge() {
 }
 
 #[test]
+fn gc_stress_context_free_payload_replay_path_dispatches_permanent_noop_bridge() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let payload = CachedExpressionValue::path(b"/tmp/cached-path".to_vec());
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-context-free-replay-path");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("context-free path payload replay allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while replaying cached path payload"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Path);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed path generation is known"),
+        HeapGeneration::Permanent
+    );
+    let path = evaluator
+        .heap()
+        .get_path(value)
+        .expect("replayed value is a path");
+    assert_eq!(path.bytes(), b"/tmp/cached-path");
+    assert!(!path.has_context());
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay path allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_context_payload_replay_path_dispatches_permanent_noop_bridge() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let context = StringContext::singleton(
+        ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("opaque context path is valid"),
+    )
+    .expect("path context builds");
+    let payload =
+        CachedExpressionValue::context_path(b"/nix/store/context-path".to_vec(), context.clone());
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-context-replay-path");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("context path payload replay allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while replaying cached context path payload"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Path);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed context path generation is known"),
+        HeapGeneration::Permanent
+    );
+    let path = evaluator
+        .heap()
+        .get_path(value)
+        .expect("replayed value is a path");
+    assert_eq!(path.bytes(), b"/nix/store/context-path");
+    assert!(path.has_context());
+    assert_eq!(path.context(), &context);
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay context path allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn search_path_forced_inline_thunks_rehydrate_after_impure_input_edges() {
     let root = unique_temp_dir("force-cache-search-path");
     let target = root.join("target");

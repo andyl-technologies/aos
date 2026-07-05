@@ -7316,9 +7316,10 @@ and helps the oracle directly.
       `fetchTree` and `fetchGit` result attrset `outPath` and metadata string
       allocations now route through the wrapper; partially built result entries
       are registered as transient roots around later result-string allocations.
-      Persistent payload replay context-free and context string allocations
-      with real replay-allocation origins in the current module now route
-      through the wrapper; originless synthetic replay subjects and
+      Persistent payload replay context-free/context string and
+      context-free/context path allocations with real replay-allocation
+      origins in the current module now route through the wrapper; originless
+      synthetic replay subjects and
       cross-module origins keep non-dispatching heap allocation instead of
       fabricating source provenance.
       The dispatch uses the same promotion threshold of 2 as the existing
@@ -7331,8 +7332,8 @@ and helps the oracle directly.
       list/binding local accumulator assembly, helper-generated symbol strings
       that can run from primops holding unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
-      persistent payload replay path/list/attr allocations,
-      originless or cross-module persistent payload replay string fallbacks,
+      persistent payload replay list/attr allocations,
+      originless or cross-module persistent payload replay string/path fallbacks,
       helper-generated permanent composite allocation sites that need
       remembered-edge/barrier work, semispace
       ownership, ABI object headers, interned list/attr roots, JIT roots,
@@ -7397,8 +7398,8 @@ and helps the oracle directly.
       direct `fetchTree` and `fetchGit` result-string assembly relocating
       registered transient roots while keeping partially built result entries
       registered across later metadata string allocations,
-      direct origin-bearing persistent payload string replay relocating
-      registered transient roots for both context-free and context string
+      direct origin-bearing persistent payload string/path replay relocating
+      registered transient roots for both context-free and context-bearing
       payloads,
       static helper string allocations
       preserving their permanent values while relocating registered transient
