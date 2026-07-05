@@ -1886,6 +1886,152 @@ fn gc_stress_split_version_empty_list_result_dispatches_permanent_noop_bridge() 
 }
 
 #[test]
+fn gc_stress_match_capture_list_result_dispatches_permanent_noop_bridge() {
+    let ir = lower(r#"builtins.match "(a)(b)" "ab""#);
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("match capture list evaluates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "match capture list did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating match capture list"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    let captures = evaluator
+        .heap()
+        .get_list(value)
+        .expect("match captures are heap-owned");
+    assert_eq!(captures.len(), 2);
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(captures.get(0).expect("first capture exists"))
+            .expect("first capture is a string")
+            .bytes(),
+        b"a"
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(captures.get(1).expect("second capture exists"))
+            .expect("second capture is a string")
+            .bytes(),
+        b"b"
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("match capture list safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_split_capture_and_result_lists_preserve_accumulated_values() {
+    let ir = lower(r#"builtins.split "([-=])" "a-b=c""#);
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("split result evaluates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 3,
+        "split capture lists and result list did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating split regex lists"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    let items = {
+        let list = evaluator
+            .heap()
+            .get_list(value)
+            .expect("split result is heap-owned");
+        assert_eq!(list.len(), 5);
+        [
+            list.get(0).expect("first split item exists"),
+            list.get(1).expect("second split item exists"),
+            list.get(2).expect("third split item exists"),
+            list.get(3).expect("fourth split item exists"),
+            list.get(4).expect("fifth split item exists"),
+        ]
+    };
+    assert_heap_string_bytes(&evaluator, items[0], b"a");
+    assert_heap_string_bytes(&evaluator, items[2], b"b");
+    assert_heap_string_bytes(&evaluator, items[4], b"c");
+    for (capture_list, expected) in [(items[1], b"-".as_slice()), (items[3], b"=".as_slice())] {
+        let captures = evaluator
+            .heap()
+            .get_list(capture_list)
+            .expect("split capture list is heap-owned");
+        assert_eq!(captures.len(), 1);
+        assert_heap_string_bytes(
+            &evaluator,
+            captures.get(0).expect("split capture exists"),
+            expected,
+        );
+    }
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("split result list safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_substring_string_result_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches(r#"builtins.substring 1 2 "abcd""#, b"bc");
 }

@@ -117,15 +117,16 @@ impl TreeWalk {
                 &mut values,
                 &string[previous_end..captures.range.start],
             )?;
-            let value = self.alloc_regex_capture_list(id, span, string, &captures.groups)?;
+            let value =
+                self.with_transient_value_stack_roots(id, span, values.as_mut_slice(), |eval| {
+                    eval.alloc_regex_capture_list(id, span, string, &captures.groups)
+                })?;
             Self::push_list_value(id, span, &mut values, value)?;
             previous_end = captures.range.end;
         }
 
         self.push_split_string(id, span, &mut values, &string[previous_end..])?;
-        self.heap
-            .alloc_list(NixList::new(values))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(values))
     }
 
     pub(super) fn collect_split_matches(
@@ -204,7 +205,10 @@ impl TreeWalk {
         values: &mut Vec<Value>,
         bytes: &[u8],
     ) -> Result<(), TreeWalkError> {
-        let value = self.alloc_static_string(id, span, bytes)?;
+        let value =
+            self.with_transient_value_stack_roots(id, span, values.as_mut_slice(), |eval| {
+                eval.alloc_static_string(id, span, bytes)
+            })?;
         Self::push_list_value(id, span, values, value)
     }
 
@@ -249,15 +253,15 @@ impl TreeWalk {
         })?;
         for capture in captures {
             let value = if let Some(capture) = capture {
-                self.alloc_static_string(id, span, &string[capture.clone()])?
+                self.with_transient_value_stack_roots(id, span, values.as_mut_slice(), |eval| {
+                    eval.alloc_static_string(id, span, &string[capture.clone()])
+                })?
             } else {
                 Value::null()
             };
             values.push(value);
         }
-        self.heap
-            .alloc_list(NixList::new(values))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(values))
     }
 
     pub(super) fn eval_match_bytes(
@@ -288,15 +292,15 @@ impl TreeWalk {
         })?;
         for capture in captures.iter().skip(1) {
             let value = if let Some(capture) = capture {
-                self.alloc_static_string(id, span, capture.as_bytes())?
+                self.with_transient_value_stack_roots(id, span, values.as_mut_slice(), |eval| {
+                    eval.alloc_static_string(id, span, capture.as_bytes())
+                })?
             } else {
                 Value::null()
             };
             values.push(value);
         }
-        self.heap
-            .alloc_list(NixList::new(values))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(values))
     }
 
     pub(super) fn compile_split_regex(

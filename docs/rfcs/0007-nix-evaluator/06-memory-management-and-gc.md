@@ -3264,6 +3264,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       direct `zipAttrsWith` grouped value-list allocations preserving
       direct-root live locals and registered transient roots while active
       primop argument roots block dispatch,
+      direct regex `match` capture-list and `split` capture/result-list
+      allocations preserving accumulated result roots,
       direct non-empty `map` list-result allocations preserving registered
       transient roots while mapped apply-thunk fields block dispatch,
       direct non-empty `genList` list-result allocations preserving registered
