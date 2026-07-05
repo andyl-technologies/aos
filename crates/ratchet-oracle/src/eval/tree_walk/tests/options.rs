@@ -1770,6 +1770,15 @@ fn gc_stress_eval_root_to_string_scalar_result_dispatch_permanent_noop_bridge() 
 }
 
 #[test]
+fn gc_stress_eval_root_serializer_scalar_results_dispatch_permanent_noop_bridge() {
+    assert_gc_stress_root_string_result_dispatches("builtins.toJSON 123", b"123");
+    assert_gc_stress_root_string_result_dispatches(
+        "builtins.toXML 1",
+        b"<?xml version='1.0' encoding='utf-8'?>\n<expr>\n  <int value=\"1\" />\n</expr>\n",
+    );
+}
+
+#[test]
 fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots() {
     let cases: &[(&str, &[u8])] = &[
         (r#"builtins.concatStringsSep "," [ "a" "b" ]"#, b"a,b"),

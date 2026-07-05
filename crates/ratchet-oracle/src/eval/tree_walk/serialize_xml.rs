@@ -36,9 +36,7 @@ impl TreeWalk {
         )?;
         Self::write_xml_close_element(id, span, &mut bytes, 0, b"expr")?;
 
-        self.heap
-            .alloc_string(NixString::new(bytes, context))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, NixString::new(bytes, context))
     }
 
     #[allow(clippy::too_many_arguments)]

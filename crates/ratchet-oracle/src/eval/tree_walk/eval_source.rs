@@ -607,9 +607,7 @@ impl TreeWalk {
             &mut bytes,
             &mut context,
         )?;
-        self.heap
-            .alloc_string(NixString::new(bytes, context))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, NixString::new(bytes, context))
     }
 
     pub(super) fn write_json_value(

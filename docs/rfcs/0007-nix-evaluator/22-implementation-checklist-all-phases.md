@@ -7278,6 +7278,9 @@ and helps the oracle directly.
       `toString` final string allocations now route through the wrapper, and
       scalar direct-root `toString` results dispatch through the scalar no-op
       bridge.
+      `toJSON` and `toXML` final serialized string allocations now route
+      through the wrapper, and scalar direct-root serializer results dispatch
+      through the scalar no-op bridge.
       `concatStringsSep` and `replaceStrings` final string allocations are
       wrapper-routed for direct builtin calls and first-class primop-value
       calls, while public direct-root calls still skip dispatch when their
@@ -7311,6 +7314,8 @@ and helps the oracle directly.
       registered transient roots while interned string/path roots are live,
       root scalar `toString` final allocations relocating registered transient
       roots,
+      root scalar `toJSON` and `toXML` final serializer allocations relocating
+      registered transient roots,
       root `concatStringsSep` and `replaceStrings` evaluations preserving
       registered transient roots while interned list roots block dispatch,
       static helper string allocations
