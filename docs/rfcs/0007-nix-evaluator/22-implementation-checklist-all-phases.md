@@ -4946,6 +4946,19 @@ and helps the oracle directly.
       reserved bytes and page-rounded mapped bytes, and exposes
       `ThreadLocalBumpArena` for per-worker never-free arenas. Full Tier-A
       closure proof and benchmark evidence remain open in the row above.
+- [x] Current runtime thread-local Tier-A precursor:
+      `RuntimeAllocator::tier_a_thread_local()` routes the existing worker
+      `aos_alloc_*` dispatch table through `ThreadLocalBumpArena` while still
+      reporting the `TierAOneShot` safepoint tier. The thread-local backend
+      admits one active runtime allocator per worker thread and fails closed on
+      cross-thread use, keeping stats, unused-tail advice, region marks,
+      allocation safepoints, GC-stress policy, and `reset_to_empty` bound to
+      that worker arena. Tests cover vtable selection, safepoint recording,
+      same-thread sharing rejection, cross-thread use rejection, thread
+      isolation, region pop, GC-stress poll metadata, and reset accounting.
+      This remains opt-in runtime plumbing: tree-walk still defaults to its
+      owned arena, no C ABI symbols are exported, and the CLI-wide byte-green
+      Tier-A proof remains open.
 - [x] Current Tier-A strict-JSON stats precursor: `EvalStats` now mirrors worker
       and permanent-shared arena chunk counts, logical reserved bytes,
       page-rounded mapped bytes, and used bytes from the default tree-walk heap,

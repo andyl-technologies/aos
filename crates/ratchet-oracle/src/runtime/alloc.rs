@@ -1,20 +1,86 @@
 //! Runtime allocation strategy dispatch for evaluator heap objects.
 //!
 //! The tree-walk oracle allocates through this layer instead of naming a heap
-//! backend directly. Today the installed worker strategy is the Tier-A one-shot
-//! bump arena, with a separate permanent-shared bump arena for hash-consed
-//! values. Later Phase-3 work can install the precise generational collector
-//! behind the same worker `aos_alloc_*` entry-point surface. A
+//! backend directly. Today the default worker strategy is the Tier-A one-shot
+//! bump arena, an opt-in Tier-A backend can route through the current thread's
+//! arena, and a separate permanent-shared bump arena stores hash-consed values.
+//! Later Phase-3 work can install the precise generational collector behind the
+//! same worker `aos_alloc_*` entry-point surface. A
 //! [`RuntimeAllocationRequest`] provides the current safe Rust call boundary
 //! that native wrappers can eventually lower into the same dispatch table.
 
-use std::mem;
+use std::{
+    collections::HashMap,
+    mem,
+    sync::{
+        LazyLock, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread::{self, ThreadId},
+};
 
 use crate::heap::arena::{
     ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionMark, ArenaRegionPopReport,
-    ArenaStats, BumpArena, HeapObjectKind,
+    ArenaStats, BumpArena, HeapObjectKind, ThreadLocalBumpArena,
 };
 use crate::heap::{HeapMemoryBudget, HeapMemoryBudgetResponse, HeapMemorySample, MemoryAdviceKind};
+
+static NEXT_THREAD_LOCAL_RUNTIME_ALLOCATOR_TOKEN: AtomicU64 = AtomicU64::new(1);
+static THREAD_LOCAL_RUNTIME_ALLOCATOR_OWNERS: LazyLock<Mutex<HashMap<ThreadId, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn with_thread_local_runtime_allocator_owners<R>(
+    f: impl FnOnce(&mut HashMap<ThreadId, u64>) -> R,
+) -> R {
+    let owners = THREAD_LOCAL_RUNTIME_ALLOCATOR_OWNERS.lock();
+    let mut owners = match owners {
+        Ok(owners) => owners,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    f(&mut owners)
+}
+
+fn reserve_thread_local_runtime_allocator(owner: ThreadId) -> u64 {
+    let token = match NEXT_THREAD_LOCAL_RUNTIME_ALLOCATOR_TOKEN.fetch_update(
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+        |token| token.checked_add(1),
+    ) {
+        Ok(token) => token,
+        Err(_) => panic!("thread-local runtime allocator token space exhausted"),
+    };
+    with_thread_local_runtime_allocator_owners(|owners| {
+        assert!(
+            !owners.contains_key(&owner),
+            "thread already has an active thread-local runtime allocator"
+        );
+        owners.insert(owner, token);
+    });
+    token
+}
+
+fn release_thread_local_runtime_allocator(owner: ThreadId, token: u64) {
+    with_thread_local_runtime_allocator_owners(|owners| {
+        if owners.get(&owner).copied() == Some(token) {
+            owners.remove(&owner);
+        }
+    });
+}
+
+fn assert_thread_local_runtime_allocator_owner(owner: ThreadId, token: u64) {
+    assert_eq!(
+        thread::current().id(),
+        owner,
+        "thread-local runtime allocator used from a different thread"
+    );
+    with_thread_local_runtime_allocator_owners(|owners| {
+        assert_eq!(
+            owners.get(&owner).copied(),
+            Some(token),
+            "thread-local runtime allocator is no longer active for this thread"
+        );
+    });
+}
 
 /// The installed runtime allocation strategy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1481,6 +1547,31 @@ impl RuntimeAllocator {
         })
     }
 
+    /// Creates a Tier-A runtime allocator backed by the current thread's arena.
+    ///
+    /// The allocator preserves the same `TierAOneShot` safepoint tier and
+    /// `aos_alloc_*` dispatch table as [`Self::tier_a_one_shot`], but allocation
+    /// storage comes from [`ThreadLocalBumpArena`] instead of an owned
+    /// [`BumpArena`]. Exactly one thread-local runtime allocator may be active
+    /// on a worker thread at a time, and using that allocator from another
+    /// thread fails closed. This is the per-worker arena precursor; it is
+    /// opt-in and does not change the tree-walk evaluator's default owned
+    /// arena.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current thread already has an active thread-local runtime
+    /// allocator, or if the internal owner-token counter is exhausted.
+    pub fn tier_a_thread_local() -> Self {
+        let owner = thread::current().id();
+        let token = reserve_thread_local_runtime_allocator(owner);
+        Self {
+            backend: RuntimeAllocatorBackend::TierAThreadLocal { owner, token },
+            safepoints: AllocationSafepointState::default(),
+            gc_stress_policy: GcStressPolicy::disabled(),
+        }
+    }
+
     /// Returns this allocator with a GC-stress polling policy installed.
     pub fn with_gc_stress_policy(mut self, policy: GcStressPolicy) -> Self {
         self.gc_stress_policy = policy;
@@ -1504,13 +1595,17 @@ impl RuntimeAllocator {
     pub fn tier(&self) -> RuntimeAllocatorTier {
         match &self.backend {
             RuntimeAllocatorBackend::TierAOneShot(_) => RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocatorBackend::TierAThreadLocal { .. } => RuntimeAllocatorTier::TierAOneShot,
         }
     }
 
     /// Returns the safe allocation dispatch table for the installed backend.
     fn allocation_vtable(&self) -> &'static RuntimeAllocationVTable {
         let vtable = match &self.backend {
-            RuntimeAllocatorBackend::TierAOneShot(_) => &TIER_A_ONE_SHOT_ALLOCATION_VTABLE,
+            RuntimeAllocatorBackend::TierAOneShot(_)
+            | RuntimeAllocatorBackend::TierAThreadLocal { .. } => {
+                &TIER_A_ONE_SHOT_ALLOCATION_VTABLE
+            }
         };
         debug_assert_eq!(vtable.tier(), self.tier());
         debug_assert_eq!(vtable.entrypoints(), runtime_allocation_entrypoints());
@@ -1519,24 +1614,56 @@ impl RuntimeAllocator {
     }
 
     /// Returns current allocation accounting for the installed strategy.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this allocator uses [`Self::tier_a_thread_local`] from a
+    /// different thread, when its thread-local owner token is inactive, or when
+    /// the current thread's arena is already mutably borrowed.
     pub fn stats(&self) -> ArenaStats {
         match &self.backend {
             RuntimeAllocatorBackend::TierAOneShot(arena) => arena.stats(),
+            RuntimeAllocatorBackend::TierAThreadLocal { owner, token } => {
+                assert_thread_local_runtime_allocator_owner(*owner, *token);
+                ThreadLocalBumpArena::with_current(|arena| arena.stats())
+            }
         }
     }
 
     /// Advises unused bytes at the end of chunks owned by this allocator.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this allocator uses [`Self::tier_a_thread_local`] from a
+    /// different thread, when its thread-local owner token is inactive, or when
+    /// the current thread's arena is already mutably borrowed.
     pub fn advise_unused_tail(&self, kind: MemoryAdviceKind) -> ArenaMemoryAdviceReport {
         match &self.backend {
             RuntimeAllocatorBackend::TierAOneShot(arena) => arena.advise_unused_tail(kind),
+            RuntimeAllocatorBackend::TierAThreadLocal { owner, token } => {
+                assert_thread_local_runtime_allocator_owner(*owner, *token);
+                ThreadLocalBumpArena::with_current(|arena| arena.advise_unused_tail(kind))
+            }
         }
     }
 
     /// Returns unused-tail bytes this allocator can lower to page advice.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this allocator uses [`Self::tier_a_thread_local`] from a
+    /// different thread, when its thread-local owner token is inactive, or when
+    /// the current thread's arena is already mutably borrowed.
     pub fn supported_unused_tail_advice_bytes(&self) -> usize {
         match &self.backend {
             RuntimeAllocatorBackend::TierAOneShot(arena) => {
                 arena.supported_unused_tail_advice_bytes()
+            }
+            RuntimeAllocatorBackend::TierAThreadLocal { owner, token } => {
+                assert_thread_local_runtime_allocator_owner(*owner, *token);
+                ThreadLocalBumpArena::with_current(|arena| {
+                    arena.supported_unused_tail_advice_bytes()
+                })
             }
         }
     }
@@ -1546,6 +1673,12 @@ impl RuntimeAllocator {
         match &self.backend {
             RuntimeAllocatorBackend::TierAOneShot(arena) => {
                 RuntimeAllocatorRegionMark::new(arena.region_mark(), self.safepoints)
+            }
+            RuntimeAllocatorBackend::TierAThreadLocal { owner, token } => {
+                assert_thread_local_runtime_allocator_owner(*owner, *token);
+                ThreadLocalBumpArena::with_current(|arena| {
+                    RuntimeAllocatorRegionMark::new(arena.region_mark(), self.safepoints)
+                })
             }
         }
     }
@@ -1567,7 +1700,8 @@ impl RuntimeAllocator {
         // allocator lifetime, is the innermost active marker, reclaims only
         // worker-domain suffix records, and has no retained precise edges into
         // that suffix before reaching this allocator boundary.
-        let report = unsafe { self.arena_mut().pop_region_to_mark(mark.arena()) }?;
+        let report =
+            unsafe { self.with_tier_a_arena_mut(|arena| arena.pop_region_to_mark(mark.arena()))? };
         self.safepoints = mark.safepoints();
         Ok(report)
     }
@@ -1579,21 +1713,32 @@ impl RuntimeAllocator {
 
     /// Drops the installed worker arena and replaces it with an empty arena.
     ///
-    /// The returned accounting describes the dropped arena. The installed
-    /// GC-stress policy is preserved for the next worker lifetime, while
-    /// allocation-safepoint accounting is reset with the new empty arena. Any
-    /// allocation handles returned before the reset must be considered dead by
-    /// the caller; [`EvalHeap::reset_worker_allocator_if_idle`](crate::eval::heap::EvalHeap::reset_worker_allocator_if_idle)
+    /// For owned Tier-A allocators, the method replaces the owned
+    /// [`BumpArena`]. For thread-local allocators, it resets the current
+    /// thread's [`ThreadLocalBumpArena`]. The returned accounting describes the
+    /// dropped arena. The installed GC-stress policy is preserved for the next
+    /// worker lifetime, while allocation-safepoint accounting is reset with the
+    /// new empty arena. Any allocation handles returned before the reset must be
+    /// considered dead by the caller;
+    /// [`EvalHeap::reset_worker_allocator_if_idle`](crate::eval::heap::EvalHeap::reset_worker_allocator_if_idle)
     /// is the typed side-table admission boundary for evaluator-owned values.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this allocator uses [`Self::tier_a_thread_local`] from a
+    /// different thread, when its thread-local owner token is inactive, or when
+    /// the current thread's arena is already mutably borrowed.
     pub(crate) fn reset_to_empty(&mut self) -> ArenaStats {
-        let previous = mem::replace(
-            &mut self.backend,
-            RuntimeAllocatorBackend::TierAOneShot(BumpArena::new()),
-        );
-        let stats = match &previous {
-            RuntimeAllocatorBackend::TierAOneShot(arena) => arena.stats(),
+        let stats = match &mut self.backend {
+            RuntimeAllocatorBackend::TierAOneShot(arena) => {
+                let previous = mem::take(arena);
+                previous.stats()
+            }
+            RuntimeAllocatorBackend::TierAThreadLocal { owner, token } => {
+                assert_thread_local_runtime_allocator_owner(*owner, *token);
+                ThreadLocalBumpArena::reset_current()
+            }
         };
-        drop(previous);
         self.safepoints = AllocationSafepointState::default();
         stats
     }
@@ -1604,6 +1749,12 @@ impl RuntimeAllocator {
     ///
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this allocator uses [`Self::tier_a_thread_local`] from a
+    /// different thread, when its thread-local owner token is inactive, or when
+    /// the current thread's arena is already mutably borrowed.
     pub fn allocate(
         &mut self,
         request: RuntimeAllocationRequest,
@@ -1617,6 +1768,10 @@ impl RuntimeAllocator {
     ///
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::allocate`].
     pub fn aos_alloc_thunk(&mut self) -> Result<ArenaAllocation, ArenaError> {
         self.allocate(RuntimeAllocationRequest::Thunk)
     }
@@ -1627,6 +1782,10 @@ impl RuntimeAllocator {
     ///
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::allocate`].
     pub fn aos_alloc_lambda(&mut self) -> Result<ArenaAllocation, ArenaError> {
         self.allocate(RuntimeAllocationRequest::Lambda)
     }
@@ -1637,6 +1796,10 @@ impl RuntimeAllocator {
     ///
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::allocate`].
     pub fn aos_alloc_attrs(
         &mut self,
         shape: u32,
@@ -1651,6 +1814,10 @@ impl RuntimeAllocator {
     ///
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::allocate`].
     pub fn aos_alloc_cons(&mut self) -> Result<ArenaAllocation, ArenaError> {
         self.allocate(RuntimeAllocationRequest::Cons)
     }
@@ -1661,6 +1828,10 @@ impl RuntimeAllocator {
     ///
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::allocate`].
     pub fn aos_alloc_list(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
         self.allocate(RuntimeAllocationRequest::List { len })
     }
@@ -1671,6 +1842,10 @@ impl RuntimeAllocator {
     ///
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::allocate`].
     pub fn aos_alloc_string(&mut self, len: usize) -> Result<ArenaAllocation, ArenaError> {
         self.allocate(RuntimeAllocationRequest::String { len })
     }
@@ -1681,6 +1856,10 @@ impl RuntimeAllocator {
     ///
     /// Returns [`ArenaError`] if the active allocation strategy cannot reserve
     /// the requested object.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::allocate`].
     pub fn aos_alloc_raw(
         &mut self,
         size: usize,
@@ -1694,9 +1873,13 @@ impl RuntimeAllocator {
         })
     }
 
-    fn arena_mut(&mut self) -> &mut BumpArena {
+    fn with_tier_a_arena_mut<R>(&mut self, f: impl FnOnce(&mut BumpArena) -> R) -> R {
         match &mut self.backend {
-            RuntimeAllocatorBackend::TierAOneShot(arena) => arena,
+            RuntimeAllocatorBackend::TierAOneShot(arena) => f(arena),
+            RuntimeAllocatorBackend::TierAThreadLocal { owner, token } => {
+                assert_thread_local_runtime_allocator_owner(*owner, *token);
+                ThreadLocalBumpArena::with_current(f)
+            }
         }
     }
 
@@ -1713,14 +1896,22 @@ impl RuntimeAllocator {
     }
 }
 
+impl Drop for RuntimeAllocator {
+    fn drop(&mut self) {
+        if let RuntimeAllocatorBackend::TierAThreadLocal { owner, token } = &self.backend {
+            release_thread_local_runtime_allocator(*owner, *token);
+        }
+    }
+}
+
 fn tier_a_alloc_thunk(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
-    let allocation = allocator.arena_mut().aos_alloc_thunk()?;
+    let allocation = allocator.with_tier_a_arena_mut(BumpArena::aos_alloc_thunk)?;
     allocator.record_allocation_safepoint(RuntimeAllocationRequest::Thunk, allocation);
     Ok(allocation)
 }
 
 fn tier_a_alloc_lambda(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
-    let allocation = allocator.arena_mut().aos_alloc_lambda()?;
+    let allocation = allocator.with_tier_a_arena_mut(BumpArena::aos_alloc_lambda)?;
     allocator.record_allocation_safepoint(RuntimeAllocationRequest::Lambda, allocation);
     Ok(allocation)
 }
@@ -1730,14 +1921,15 @@ fn tier_a_alloc_attrs(
     shape: u32,
     slots: u32,
 ) -> Result<ArenaAllocation, ArenaError> {
-    let allocation = allocator.arena_mut().aos_alloc_attrs(shape, slots)?;
+    let allocation =
+        allocator.with_tier_a_arena_mut(|arena| arena.aos_alloc_attrs(shape, slots))?;
     allocator
         .record_allocation_safepoint(RuntimeAllocationRequest::Attrs { shape, slots }, allocation);
     Ok(allocation)
 }
 
 fn tier_a_alloc_cons(allocator: &mut RuntimeAllocator) -> Result<ArenaAllocation, ArenaError> {
-    let allocation = allocator.arena_mut().aos_alloc_cons()?;
+    let allocation = allocator.with_tier_a_arena_mut(BumpArena::aos_alloc_cons)?;
     allocator.record_allocation_safepoint(RuntimeAllocationRequest::Cons, allocation);
     Ok(allocation)
 }
@@ -1746,7 +1938,7 @@ fn tier_a_alloc_list(
     allocator: &mut RuntimeAllocator,
     len: usize,
 ) -> Result<ArenaAllocation, ArenaError> {
-    let allocation = allocator.arena_mut().aos_alloc_list(len)?;
+    let allocation = allocator.with_tier_a_arena_mut(|arena| arena.aos_alloc_list(len))?;
     allocator.record_allocation_safepoint(RuntimeAllocationRequest::List { len }, allocation);
     Ok(allocation)
 }
@@ -1755,7 +1947,7 @@ fn tier_a_alloc_string(
     allocator: &mut RuntimeAllocator,
     len: usize,
 ) -> Result<ArenaAllocation, ArenaError> {
-    let allocation = allocator.arena_mut().aos_alloc_string(len)?;
+    let allocation = allocator.with_tier_a_arena_mut(|arena| arena.aos_alloc_string(len))?;
     allocator.record_allocation_safepoint(RuntimeAllocationRequest::String { len }, allocation);
     Ok(allocation)
 }
@@ -1766,7 +1958,8 @@ fn tier_a_alloc_raw(
     align: usize,
     type_tag: u32,
 ) -> Result<ArenaAllocation, ArenaError> {
-    let allocation = allocator.arena_mut().aos_alloc_raw(size, align, type_tag)?;
+    let allocation =
+        allocator.with_tier_a_arena_mut(|arena| arena.aos_alloc_raw(size, align, type_tag))?;
     allocator.record_allocation_safepoint(
         RuntimeAllocationRequest::Raw {
             size,
@@ -1826,6 +2019,7 @@ fn native_aos_alloc_raw(
 #[derive(Debug)]
 enum RuntimeAllocatorBackend {
     TierAOneShot(BumpArena),
+    TierAThreadLocal { owner: ThreadId, token: u64 },
 }
 
 /// Allocates reusable hash-consed values in permanent shared storage.
@@ -1995,6 +2189,7 @@ fn permanent_shared_alloc_string(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::thread;
 
     use crate::compile::{RuntimeHelperRole, runtime_helper_symbols};
     use crate::heap::arena::HeapObjectKind;
@@ -2562,14 +2757,152 @@ mod tests {
         let default_allocator = RuntimeAllocator::default();
         let configured_allocator =
             RuntimeAllocator::tier_a_with_initial_chunk_bytes(512).expect("allocator creates");
+        let thread_local_allocator = RuntimeAllocator::tier_a_thread_local();
 
-        for allocator in [&default_allocator, &configured_allocator] {
+        for allocator in [
+            &default_allocator,
+            &configured_allocator,
+            &thread_local_allocator,
+        ] {
             let vtable = allocator.allocation_vtable();
 
             assert_eq!(vtable.tier(), RuntimeAllocatorTier::TierAOneShot);
             assert_eq!(vtable.entrypoints(), runtime_allocation_entrypoints());
             assert_eq!(vtable.abi_signatures(), runtime_allocation_abi_signatures());
         }
+    }
+
+    #[test]
+    fn tier_a_thread_local_allocator_routes_allocations_and_reset() {
+        ThreadLocalBumpArena::reset_current();
+        let mut allocator = RuntimeAllocator::tier_a_thread_local();
+
+        assert_eq!(allocator.tier(), RuntimeAllocatorTier::TierAOneShot);
+        assert_eq!(allocator.stats(), ArenaStats::default());
+
+        let allocation = allocator
+            .aos_alloc_string(5)
+            .expect("thread-local string allocates");
+        let stats = allocator.stats();
+        assert_eq!(
+            ThreadLocalBumpArena::with_current(|arena| arena.stats()),
+            stats
+        );
+        assert_last_safepoint(
+            allocator.allocation_safepoints(),
+            1,
+            RuntimeAllocatorTier::TierAOneShot,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            allocation,
+            stats,
+        );
+
+        let worker = thread::spawn(|| {
+            ThreadLocalBumpArena::reset_current();
+            let before = ThreadLocalBumpArena::with_current(|arena| arena.stats());
+            let mut allocator = RuntimeAllocator::tier_a_thread_local();
+            allocator
+                .aos_alloc_thunk()
+                .expect("worker thread-local thunk allocates");
+            let after = allocator.stats();
+            ThreadLocalBumpArena::reset_current();
+            (before, after)
+        })
+        .join()
+        .expect("worker thread joins");
+        assert_eq!(worker.0, ArenaStats::default());
+        assert!(worker.1.chunks > 0);
+        assert_eq!(allocator.stats(), stats);
+
+        let dropped = allocator.reset_to_empty();
+        assert_eq!(dropped, stats);
+        assert_eq!(allocator.stats(), ArenaStats::default());
+        assert_eq!(allocator.tier(), RuntimeAllocatorTier::TierAOneShot);
+        ThreadLocalBumpArena::reset_current();
+    }
+
+    #[test]
+    #[should_panic(expected = "thread already has an active thread-local runtime allocator")]
+    fn tier_a_thread_local_allocator_rejects_same_thread_sharing() {
+        ThreadLocalBumpArena::reset_current();
+        let _first = RuntimeAllocator::tier_a_thread_local();
+        let _second = RuntimeAllocator::tier_a_thread_local();
+    }
+
+    #[test]
+    fn tier_a_thread_local_allocator_rejects_cross_thread_use() {
+        ThreadLocalBumpArena::reset_current();
+        let allocator = RuntimeAllocator::tier_a_thread_local();
+
+        let rejected =
+            thread::spawn(move || std::panic::catch_unwind(|| allocator.stats()).is_err())
+                .join()
+                .expect("worker thread joins");
+        assert!(rejected);
+
+        let replacement = RuntimeAllocator::tier_a_thread_local();
+        assert_eq!(replacement.stats(), ArenaStats::default());
+        drop(replacement);
+        ThreadLocalBumpArena::reset_current();
+    }
+
+    #[test]
+    fn tier_a_thread_local_allocator_region_pop_rewinds_current_thread_arena() {
+        ThreadLocalBumpArena::reset_current();
+        let mut allocator = RuntimeAllocator::tier_a_thread_local();
+
+        allocator
+            .aos_alloc_raw(16, 8, 1)
+            .expect("first raw allocation succeeds");
+        let mark = allocator.region_mark();
+        allocator
+            .aos_alloc_raw(24, 8, 2)
+            .expect("second raw allocation succeeds");
+        let before = allocator.stats();
+        assert!(before.used_bytes > mark.arena().cursor());
+
+        let report = allocator
+            .pop_caller_validated_region(mark, 0)
+            .expect("region pop succeeds");
+
+        assert_eq!(report.before_stats(), before);
+        assert_eq!(report.after_stats(), allocator.stats());
+        assert_eq!(allocator.allocation_safepoints(), mark.safepoints());
+        assert_eq!(
+            ThreadLocalBumpArena::with_current(|arena| arena.stats()),
+            report.after_stats()
+        );
+        drop(allocator);
+        ThreadLocalBumpArena::reset_current();
+    }
+
+    #[test]
+    fn tier_a_thread_local_allocator_records_gc_stress_poll_reason() {
+        ThreadLocalBumpArena::reset_current();
+        let mut allocator = RuntimeAllocator::tier_a_thread_local()
+            .with_gc_stress_policy(GcStressPolicy::every_safepoint());
+
+        allocator
+            .aos_alloc_thunk()
+            .expect("thread-local thunk allocates");
+
+        let poll = allocator
+            .allocation_safepoints()
+            .last_safepoint_collector_poll()
+            .expect("thread-local safepoint records poll");
+        assert_eq!(poll.sequence(), 1);
+        assert_eq!(poll.tier(), RuntimeAllocatorTier::TierAOneShot);
+        assert_eq!(
+            poll.entrypoint(),
+            RuntimeAllocationEntryPoint::AosAllocThunk
+        );
+        assert_eq!(
+            poll.reason(),
+            AllocationGcPollReason::GcStressEverySafepoint
+        );
+        assert_eq!(poll.stats_after(), allocator.stats());
+        drop(allocator);
+        ThreadLocalBumpArena::reset_current();
     }
 
     #[test]

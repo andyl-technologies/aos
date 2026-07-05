@@ -2053,6 +2053,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       thread-local per-worker arenas, per-chunk `munmap` drop (O(#chunks)),
       CLI-wide Tier-A default, and byte-green differential proof under Tier A
       (§3.1–§3.2) — **P3**, `S-8`/`C-10` (per-invocation first).
+- [x] Current runtime thread-local Tier-A precursor:
+      `RuntimeAllocator::tier_a_thread_local()` routes the existing worker
+      `aos_alloc_*` dispatch table through `ThreadLocalBumpArena` while still
+      reporting the `TierAOneShot` safepoint tier. The thread-local backend
+      admits one active runtime allocator per worker thread and fails closed on
+      cross-thread use, keeping stats, unused-tail advice, region marks,
+      allocation safepoints, GC-stress policy, and `reset_to_empty` bound to
+      that worker arena. Tests cover vtable selection, safepoint recording,
+      same-thread sharing rejection, cross-thread use rejection, thread
+      isolation, region pop, GC-stress poll metadata, and reset accounting.
+      This remains opt-in runtime plumbing: tree-walk still defaults to its
+      owned arena, no C ABI symbols are exported, and the CLI-wide byte-green
+      Tier-A proof remains open.
 - [x] Distinct permanent arena for hash-consed/shared values, never freed by a worker-arena drop (§3.2) — **P3**, ties to hash-consing ([05](05-value-representation.md) §5.5).
 - [x] Current permanent-shared arena closure:
       `ratchet-oracle::runtime::alloc::PermanentSharedAllocator` provides a
