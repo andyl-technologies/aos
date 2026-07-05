@@ -2230,6 +2230,58 @@ struct CollectorPollDirectHeapFieldWrite {
     remembered_edge: Option<RememberedEdge>,
 }
 
+/// Staged live heap writes for a tree-walk minor-GC publication.
+pub(crate) struct AllocationCollectorPollLiveHeapFieldWriteStage {
+    object_body_writes: Vec<CollectorPollObjectBodyWrite>,
+    object_generation_writes: Vec<(usize, HeapGeneration)>,
+    staged_heap_field_writes: Vec<(usize, HeapObjectValue)>,
+    staged_barriers: Option<(RememberedSet, GcCardTable)>,
+    object_body_and_generation_write_report:
+        AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+    copied_report: AllocationCollectorPollCopiedHeapFieldWriteReport,
+    direct_report: AllocationCollectorPollDirectHeapFieldWriteReport,
+}
+
+impl AllocationCollectorPollLiveHeapFieldWriteStage {
+    /// Returns the paired object-body and generation write report.
+    pub(crate) const fn object_body_and_generation_write_report(
+        &self,
+    ) -> AllocationCollectorPollObjectBodyAndGenerationWriteReport {
+        self.object_body_and_generation_write_report
+    }
+
+    /// Returns the copied heap-field write report.
+    pub(crate) const fn copied_report(&self) -> AllocationCollectorPollCopiedHeapFieldWriteReport {
+        self.copied_report
+    }
+
+    /// Returns the direct heap-field write report.
+    pub(crate) const fn direct_report(&self) -> AllocationCollectorPollDirectHeapFieldWriteReport {
+        self.direct_report
+    }
+
+    /// Returns how many live heap fields are staged for rewrite.
+    pub(crate) const fn live_heap_field_writebacks(&self) -> usize {
+        self.copied_report
+            .fields()
+            .saturating_add(self.direct_report.fields())
+    }
+}
+
+/// Staged side-table forwarding writes for a tree-walk minor-GC publication.
+pub(crate) struct AllocationCollectorPollForwardingInstallStage {
+    planned: Vec<(usize, GcHeapAddress, ResolvedValueGeneration)>,
+}
+
+impl AllocationCollectorPollForwardingInstallStage {
+    /// Returns the forwarding installation report for this staged write.
+    pub(crate) fn report(&self) -> AllocationCollectorPollForwardingInstallReport {
+        AllocationCollectorPollForwardingInstallReport {
+            forwarding_pointers: self.planned.len(),
+        }
+    }
+}
+
 enum RecordOwnedHeapFieldWriteObjectError {
     UnsupportedSource,
     Attr(AttrError),
@@ -5066,14 +5118,75 @@ impl EvalHeap {
         ),
         EvalHeapError,
     > {
+        let staged = self.stage_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
+            object_body_plan,
+            copied_writes,
+            direct_writes,
+            remembered_set,
+            card_table,
+        )?;
+        Ok(
+            self.commit_collector_poll_minor_gc_staged_live_heap_field_writes_with_card_table(
+                staged,
+                remembered_set,
+                card_table,
+            ),
+        )
+    }
+
+    pub(crate) fn validate_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
+        &self,
+        object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
+        copied_writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
+        direct_writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+        remembered_set: &RememberedSet,
+        card_table: &GcCardTable,
+    ) -> Result<
+        (
+            AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+            AllocationCollectorPollCopiedHeapFieldWriteReport,
+            AllocationCollectorPollDirectHeapFieldWriteReport,
+        ),
+        EvalHeapError,
+    > {
+        let staged = self.stage_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
+            object_body_plan,
+            copied_writes,
+            direct_writes,
+            remembered_set,
+            card_table,
+        )?;
+
+        Ok((
+            staged.object_body_and_generation_write_report(),
+            staged.copied_report(),
+            staged.direct_report(),
+        ))
+    }
+
+    /// Stages live object, field, remembered-set, and card-table writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if object-body, generation, field, or barrier
+    /// staging fails. The evaluator heap and supplied side tables are left
+    /// unchanged when an error is returned.
+    pub(crate) fn stage_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
+        &self,
+        object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
+        copied_writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
+        direct_writes: &[AllocationCollectorPollDirectHeapFieldWrite],
+        remembered_set: &RememberedSet,
+        card_table: &GcCardTable,
+    ) -> Result<AllocationCollectorPollLiveHeapFieldWriteStage, EvalHeapError> {
         validate_collector_poll_minor_gc_heap_field_write_request_invariants(
             copied_writes,
             direct_writes,
         )?;
         let generation_plan = object_body_plan.object_generation_write_plan()?;
-        let (body_writes, body_write_report) =
+        let (object_body_writes, body_write_report) =
             self.stage_collector_poll_minor_gc_object_body_writes(object_body_plan)?;
-        let generation_writes =
+        let object_generation_writes =
             self.stage_collector_poll_minor_gc_object_generation_writes(&generation_plan)?;
         let generation_write_report = generation_plan.report();
         let (planned_copied, copied_report) = self
@@ -5113,94 +5226,55 @@ impl EvalHeap {
             card_table,
         )?;
 
-        self.commit_collector_poll_minor_gc_object_body_writes(body_writes);
-        self.commit_collector_poll_minor_gc_object_generation_writes(generation_writes);
+        Ok(AllocationCollectorPollLiveHeapFieldWriteStage {
+            object_body_writes,
+            object_generation_writes,
+            staged_heap_field_writes: staged,
+            staged_barriers,
+            object_body_and_generation_write_report:
+                AllocationCollectorPollObjectBodyAndGenerationWriteReport::new(
+                    body_write_report,
+                    generation_write_report,
+                ),
+            copied_report,
+            direct_report,
+        })
+    }
+
+    /// Commits prevalidated live heap-field writes and staged side-table changes.
+    pub(crate) fn commit_collector_poll_minor_gc_staged_live_heap_field_writes_with_card_table(
+        &mut self,
+        staged: AllocationCollectorPollLiveHeapFieldWriteStage,
+        remembered_set: &mut RememberedSet,
+        card_table: &mut GcCardTable,
+    ) -> (
+        AllocationCollectorPollObjectBodyAndGenerationWriteReport,
+        AllocationCollectorPollCopiedHeapFieldWriteReport,
+        AllocationCollectorPollDirectHeapFieldWriteReport,
+    ) {
+        let AllocationCollectorPollLiveHeapFieldWriteStage {
+            object_body_writes,
+            object_generation_writes,
+            staged_heap_field_writes,
+            staged_barriers,
+            object_body_and_generation_write_report,
+            copied_report,
+            direct_report,
+        } = staged;
+
+        self.commit_collector_poll_minor_gc_object_body_writes(object_body_writes);
+        self.commit_collector_poll_minor_gc_object_generation_writes(object_generation_writes);
         if let Some((staged_remembered_set, staged_card_table)) = staged_barriers {
             *remembered_set = staged_remembered_set;
             *card_table = staged_card_table;
         }
-        self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
+        self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged_heap_field_writes);
 
-        Ok((
-            AllocationCollectorPollObjectBodyAndGenerationWriteReport::new(
-                body_write_report,
-                generation_write_report,
-            ),
-            copied_report,
-            direct_report,
-        ))
-    }
-
-    pub(crate) fn validate_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
-        &self,
-        object_body_plan: &AllocationCollectorPollObjectByteCopyPlan,
-        copied_writes: &[AllocationCollectorPollCopiedHeapFieldWrite],
-        direct_writes: &[AllocationCollectorPollDirectHeapFieldWrite],
-        remembered_set: &RememberedSet,
-        card_table: &GcCardTable,
-    ) -> Result<
         (
-            AllocationCollectorPollObjectBodyAndGenerationWriteReport,
-            AllocationCollectorPollCopiedHeapFieldWriteReport,
-            AllocationCollectorPollDirectHeapFieldWriteReport,
-        ),
-        EvalHeapError,
-    > {
-        validate_collector_poll_minor_gc_heap_field_write_request_invariants(
-            copied_writes,
-            direct_writes,
-        )?;
-        let generation_plan = object_body_plan.object_generation_write_plan()?;
-        let (_body_writes, body_write_report) =
-            self.stage_collector_poll_minor_gc_object_body_writes(object_body_plan)?;
-        let _generation_writes =
-            self.stage_collector_poll_minor_gc_object_generation_writes(&generation_plan)?;
-        let generation_write_report = generation_plan.report();
-        let (planned_copied, copied_report) = self
-            .plan_collector_poll_minor_gc_copied_heap_field_writes_for_live_destinations(
-                copied_writes,
-            )?;
-        let (planned_direct, direct_report) = self
-            .plan_collector_poll_minor_gc_direct_heap_field_writes_for_live_destinations(
-                direct_writes,
-                true,
-            )?;
-        let entries = copied_writes.len().checked_add(direct_writes.len()).ok_or(
-            EvalHeapError::RootScanLengthOverflow {
-                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
-            },
-        )?;
-        let mut staged = Vec::new();
-        staged
-            .try_reserve_exact(entries)
-            .map_err(|_| EvalHeapError::RootScanAllocationFailed {
-                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
-                entries,
-            })?;
-        self.stage_collector_poll_minor_gc_copied_heap_field_writes_into(
-            &planned_copied,
-            &mut staged,
-            entries,
-        )?;
-        self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
-            &planned_direct,
-            &mut staged,
-            entries,
-        )?;
-        let _ = self.stage_collector_poll_minor_gc_direct_heap_field_write_barriers(
-            &planned_direct,
-            remembered_set,
-            card_table,
-        )?;
-
-        Ok((
-            AllocationCollectorPollObjectBodyAndGenerationWriteReport::new(
-                body_write_report,
-                generation_write_report,
-            ),
+            object_body_and_generation_write_report,
             copied_report,
             direct_report,
-        ))
+        )
     }
 
     fn apply_collector_poll_minor_gc_heap_field_writes_with_optional_barriers(
@@ -5917,6 +5991,61 @@ impl EvalHeap {
         &mut self,
         slots: &[MinorGcForwardingSlot],
     ) -> Result<AllocationCollectorPollForwardingInstallReport, EvalHeapError> {
+        let staged = self.stage_collector_poll_minor_gc_forwarding_slots(slots)?;
+        Ok(self.commit_collector_poll_minor_gc_staged_forwarding_slots(staged))
+    }
+
+    /// Validates live evaluator heap forwarding slots without installing them.
+    ///
+    /// This performs the same checks as
+    /// [`Self::install_collector_poll_minor_gc_forwarding_slots`] while leaving
+    /// every source object's forwarding cell unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if a slot is empty, duplicated, references an
+    /// unknown or non-young source object, or if the source object's forwarding
+    /// cell is already occupied.
+    pub fn validate_collector_poll_minor_gc_forwarding_slots(
+        &self,
+        slots: &[MinorGcForwardingSlot],
+    ) -> Result<AllocationCollectorPollForwardingInstallReport, EvalHeapError> {
+        let staged = self.stage_collector_poll_minor_gc_forwarding_slots(slots)?;
+        Ok(staged.report())
+    }
+
+    /// Stages live evaluator heap forwarding slots without installing them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] under the same conditions as
+    /// [`Self::install_collector_poll_minor_gc_forwarding_slots`].
+    pub(crate) fn stage_collector_poll_minor_gc_forwarding_slots(
+        &self,
+        slots: &[MinorGcForwardingSlot],
+    ) -> Result<AllocationCollectorPollForwardingInstallStage, EvalHeapError> {
+        let planned = self.collector_poll_minor_gc_forwarding_slot_plan(slots)?;
+        Ok(AllocationCollectorPollForwardingInstallStage { planned })
+    }
+
+    /// Commits a prevalidated evaluator heap forwarding slot stage.
+    pub(crate) fn commit_collector_poll_minor_gc_staged_forwarding_slots(
+        &mut self,
+        staged: AllocationCollectorPollForwardingInstallStage,
+    ) -> AllocationCollectorPollForwardingInstallReport {
+        let report = staged.report();
+        for (record_index, _, forwarded) in staged.planned {
+            self.records[record_index]
+                .minor_gc_forwarding
+                .set(Some(forwarded));
+        }
+        report
+    }
+
+    fn collector_poll_minor_gc_forwarding_slot_plan(
+        &self,
+        slots: &[MinorGcForwardingSlot],
+    ) -> Result<Vec<(usize, GcHeapAddress, ResolvedValueGeneration)>, EvalHeapError> {
         let mut planned = Vec::new();
         planned.try_reserve_exact(slots.len()).map_err(|_| {
             EvalHeapError::RootScanAllocationFailed {
@@ -5956,15 +6085,7 @@ impl EvalHeap {
             planned.push((record_index, slot.source(), forwarded));
         }
 
-        for (record_index, _, forwarded) in planned.iter().copied() {
-            self.records[record_index]
-                .minor_gc_forwarding
-                .set(Some(forwarded));
-        }
-
-        Ok(AllocationCollectorPollForwardingInstallReport {
-            forwarding_pointers: planned.len(),
-        })
+        Ok(planned)
     }
 
     /// Derives a reference buffer for heap-field-backed commit slots.

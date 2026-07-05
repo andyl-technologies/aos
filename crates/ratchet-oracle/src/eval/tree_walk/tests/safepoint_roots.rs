@@ -10,9 +10,9 @@ use crate::eval::heap::{
 };
 use crate::eval::tree_walk::safepoint_roots::TreeWalkSafepointRootWritebackError;
 use crate::heap::{
-    GcCardTable, GcHeapAddress, GenerationalGcTier, HeapGeneration, MinorGcDestinationBases,
-    MinorGcForwardingSlot, MinorGcPromotionPolicy, MinorGcSurvivorAction, RememberedEdge,
-    RememberedSet, ResolvedValueGeneration,
+    GcCardTable, GcHeapAddress, GenerationalGcError, GenerationalGcTier, HeapGeneration,
+    MinorGcDestinationBases, MinorGcForwardingSlot, MinorGcPromotionPolicy, MinorGcSurvivorAction,
+    RememberedEdge, RememberedSet, ResolvedValueGeneration,
 };
 use crate::list::NixList;
 use crate::runtime::alloc::{
@@ -2548,6 +2548,245 @@ fn reference_writebacks_apply_reserved_destination_with_primop_arguments() {
         expected_edges.as_slice()
     );
     assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
+}
+
+#[test]
+fn reference_writebacks_apply_reserved_destination_with_forwarding_slots() {
+    let (mut evaluator, child, parent, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let source_address = gc_address(child);
+    let plan = evaluator
+        .collector_poll_minor_gc_reserved_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            &value_stack,
+        )
+        .expect("reserved destination reference writeback plan derives");
+    assert_eq!(plan.forwarding_pointers(), 1);
+    let forwarding_slot = plan.forwarding_slots()[0];
+    assert_eq!(forwarding_slot.source(), source_address);
+    let forwarded = forwarding_slot
+        .forwarded_value()
+        .expect("forwarding slot is filled");
+    let destination_address =
+        resolved_heap_destination_address(forwarded).expect("forwarded value is heap-backed");
+    assert_ne!(destination_address, source_address);
+
+    let application = evaluator
+        .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+            &plan,
+            &mut value_stack,
+        )
+        .expect("reserved destination writebacks install forwarding and apply");
+
+    assert_eq!(application.forwarding_pointers_installed(), 1);
+    assert_eq!(application.object_bodies_written(), 1);
+    assert_eq!(application.object_generations_written(), 1);
+    assert_eq!(application.applied_root_writebacks(), 3);
+    assert_eq!(application.live_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_live_writebacks(), 4);
+    assert_eq!(
+        evaluator
+            .heap()
+            .minor_gc_forwarding_value_at(source_address)
+            .expect("forwarding source remains known"),
+        Some(forwarded)
+    );
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        relocated,
+    );
+    assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
+}
+
+#[test]
+fn reference_writebacks_forwarding_slots_reject_occupied_before_live_mutation() {
+    let (mut evaluator, child, parent, destination, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();
+    let source_address = gc_address(child);
+    let destination_address = gc_address(destination);
+    let destination_lambda = evaluator
+        .heap()
+        .get_lambda(destination)
+        .expect("scratch destination remains a lambda");
+    let original_destination_pattern = destination_lambda.pattern();
+    let original_destination_body = destination_lambda.body();
+    let original_destination_frame = destination_lambda.frame();
+    let original_destination_generation = evaluator
+        .heap()
+        .generation(destination)
+        .expect("destination starts heap-bound");
+    let original_remembered_edges = evaluator.thunk_resolve_remembered_set.edges().to_vec();
+    let original_dirty_cards = evaluator.thunk_resolve_card_table.dirty_cards().to_vec();
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writeback plan derives for existing destination");
+    let forwarding_slot = plan.forwarding_slots()[0];
+    let forwarded = forwarding_slot
+        .forwarded_value()
+        .expect("forwarding slot is filled");
+    evaluator
+        .heap
+        .install_collector_poll_minor_gc_forwarding_slots(plan.forwarding_slots())
+        .expect("initial forwarding slot installs");
+
+    let err = evaluator
+        .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+            &plan,
+            &mut value_stack,
+        )
+        .expect_err("occupied forwarding slot rejects before live mutation");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Heap(EvalHeapError::GenerationalGc(
+            GenerationalGcError::MinorGcForwardingPointerSlotOccupied {
+                index: 0,
+                address: source_address,
+                actual: forwarded,
+            },
+        ))
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+    let destination_lambda = evaluator
+        .heap()
+        .get_lambda(destination)
+        .expect("scratch destination remains a lambda");
+    assert_eq!(destination_lambda.pattern(), original_destination_pattern);
+    assert_eq!(destination_lambda.body(), original_destination_body);
+    assert_eq!(destination_lambda.frame(), original_destination_frame);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_card_table.dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
+}
+
+#[test]
+fn reference_writebacks_forwarding_slots_reject_frame_borrow_without_forwarding_install() {
+    let (mut evaluator, child, parent, destination, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();
+    let source_address = gc_address(child);
+    let destination_address = gc_address(destination);
+    let destination_lambda = evaluator
+        .heap()
+        .get_lambda(destination)
+        .expect("scratch destination remains a lambda");
+    let original_destination_pattern = destination_lambda.pattern();
+    let original_destination_body = destination_lambda.body();
+    let original_destination_frame = destination_lambda.frame();
+    let original_destination_generation = evaluator
+        .heap()
+        .generation(destination)
+        .expect("destination starts heap-bound");
+    let original_remembered_edges = evaluator.thunk_resolve_remembered_set.edges().to_vec();
+    let original_dirty_cards = evaluator.thunk_resolve_card_table.dirty_cards().to_vec();
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+            &value_stack,
+        )
+        .expect("mixed reference writeback plan derives for existing destination");
+    let active_frame = evaluator.env[0].clone();
+    let _held_frame_borrow = active_frame
+        .borrow_slots_for_test()
+        .expect("test holds active frame borrow");
+
+    let err = evaluator
+        .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+            &plan,
+            &mut value_stack,
+        )
+        .expect_err("held frame borrow rejects before forwarding install");
+
+    assert_eq!(
+        err,
+        TreeWalkSafepointRootWritebackError::Environment(EvalEnvError::BorrowConflict)
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .minor_gc_forwarding_value_at(source_address)
+            .expect("forwarding source remains known"),
+        None
+    );
+    assert_raw_eq(value_stack[0], child);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        child,
+    );
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+    let destination_lambda = evaluator
+        .heap()
+        .get_lambda(destination)
+        .expect("scratch destination remains a lambda");
+    assert_eq!(destination_lambda.pattern(), original_destination_pattern);
+    assert_eq!(destination_lambda.body(), original_destination_body);
+    assert_eq!(destination_lambda.frame(), original_destination_frame);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        original_destination_generation
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        original_remembered_edges.as_slice()
+    );
+    assert_eq!(
+        evaluator.thunk_resolve_card_table.dirty_cards(),
+        original_dirty_cards.as_slice()
+    );
 }
 
 #[test]

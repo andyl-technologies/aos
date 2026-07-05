@@ -2660,7 +2660,14 @@ GC must be observationally invisible (§8): every item is gated by the different
       reservation, preflight leaves live roots, fields, remembered sets, and
       card tables unchanged while apply consumes the reserved destination
       records through the existing writer, including caller-owned primop
-      arguments. Tests cover the poll-derived
+      arguments. The plan now carries filled forwarding slots, and
+      `TreeWalk::apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
+      validates those slots against the live heap, stages live heap publication,
+      writes supported roots before forwarding install, and then commits
+      evaluator side-table forwarding cells plus staged object
+      bodies/generations, fields, remembered-set state, and card-table state
+      without another fallible heap-publication pass. Tests cover
+      the poll-derived
       all-root rewrite, direct stale-poll rejection before mutation in the
       planning wrapper, root-only applicator, buffer applicator, stale typed-root,
       heap-field metadata, and live heap-field buffer rejection before either
@@ -2676,11 +2683,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       field mutation, late suspended-frame root-target borrow rejection before
       partial root mutation, stale source remembered-set and source card-table
       rejection before live mutation, stale live heap-field rejection before root
-      mutation, and dirty permanent-list mixed-plan
+      mutation, reserved-destination forwarding-slot installation, occupied
+      forwarding-slot rejection before live mutation, forwarding-aware
+      frame-borrow rejection without forwarding install, and dirty
+      permanent-list mixed-plan
       rejection before mutating the value stack, active frame root, or ready
       import-cache root. These helpers still do not bind semispace storage,
-      mutate interned roots or JIT stack-map slots, install forwarding headers,
-      or wire root writebacks into automatic allocation-safepoint collection.
+      mutate interned roots or JIT stack-map slots, write real ABI object
+      headers, or wire root writebacks into automatic allocation-safepoint
+      collection.
       Destination records are allocated only by the explicit
       reserved-destination tree-walk bridge, not by collector-owned semispace
       dispatch. The full remembered-set/card-table publication remains limited

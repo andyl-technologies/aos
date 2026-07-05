@@ -10,7 +10,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use thiserror::Error;
 
+use crate::heap::MinorGcForwardingSlot;
+
 use crate::eval::heap::{
+    AllocationCollectorPollForwardingInstallReport,
     AllocationCollectorPollObjectBodyAndGenerationWriteReport,
     AllocationCollectorPollObjectByteCopyPlan, EvalRootSource,
 };
@@ -267,6 +270,7 @@ pub struct TreeWalkSafepointMinorGcReferenceWritebackPlan {
     source_card_table: GcCardTable,
     remembered_set_refreshes: usize,
     next_remembered_set: RememberedSet,
+    forwarding_slots: Vec<MinorGcForwardingSlot>,
     object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
     writebacks: AllocationCollectorPollReferenceWritebackPlan,
 }
@@ -282,6 +286,7 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
         source_card_table: GcCardTable,
         remembered_set_refreshes: usize,
         next_remembered_set: RememberedSet,
+        forwarding_slots: Vec<MinorGcForwardingSlot>,
         object_body_plan: AllocationCollectorPollObjectByteCopyPlan,
         writebacks: AllocationCollectorPollReferenceWritebackPlan,
     ) -> Self {
@@ -295,6 +300,7 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
             source_card_table,
             remembered_set_refreshes,
             next_remembered_set,
+            forwarding_slots,
             object_body_plan,
             writebacks,
         }
@@ -361,6 +367,16 @@ impl TreeWalkSafepointMinorGcReferenceWritebackPlan {
     /// Returns the number of remembered edges in the rebuilt next-epoch set.
     pub fn next_remembered_set_edges(&self) -> usize {
         self.next_remembered_set.len()
+    }
+
+    /// Returns the filled forwarding slots for relocated source objects.
+    pub fn forwarding_slots(&self) -> &[MinorGcForwardingSlot] {
+        &self.forwarding_slots
+    }
+
+    /// Returns the number of forwarding pointers in the plan.
+    pub fn forwarding_pointers(&self) -> usize {
+        self.forwarding_slots.len()
     }
 
     /// Returns the object-copy plan for relocated destination records.
@@ -706,6 +722,84 @@ impl TreeWalkSafepointMinorGcLiveReferenceWritebackApplication {
     /// Returns heap-field buffer slots used to prevalidate live heap-field writes.
     pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
         self.root_storage.heap_field_writeback_slots()
+    }
+}
+
+/// Applied forwarding slots plus tree-walk roots and live heap-field writes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication {
+    reference_application: TreeWalkSafepointMinorGcLiveReferenceWritebackApplication,
+    forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
+}
+
+impl TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication {
+    fn new(
+        reference_application: TreeWalkSafepointMinorGcLiveReferenceWritebackApplication,
+        forwarding_install_report: AllocationCollectorPollForwardingInstallReport,
+    ) -> Self {
+        Self {
+            reference_application,
+            forwarding_install_report,
+        }
+    }
+
+    /// Returns the live-reference application committed with forwarding install.
+    pub const fn reference_application(
+        &self,
+    ) -> &TreeWalkSafepointMinorGcLiveReferenceWritebackApplication {
+        &self.reference_application
+    }
+
+    /// Returns the live forwarding installation report.
+    pub const fn forwarding_install_report(
+        &self,
+    ) -> AllocationCollectorPollForwardingInstallReport {
+        self.forwarding_install_report
+    }
+
+    /// Returns how many forwarding cells were installed.
+    pub const fn forwarding_pointers_installed(&self) -> usize {
+        self.forwarding_install_report.forwarding_pointers()
+    }
+
+    /// Returns the collector poll used to derive the writebacks.
+    pub const fn poll(&self) -> AllocationCollectorPoll {
+        self.reference_application.poll()
+    }
+
+    /// Returns how many destination object bodies were written.
+    pub const fn object_bodies_written(&self) -> usize {
+        self.reference_application.object_bodies_written()
+    }
+
+    /// Returns how many destination object generations were written.
+    pub const fn object_generations_written(&self) -> usize {
+        self.reference_application.object_generations_written()
+    }
+
+    /// Returns the number of live tree-walk root slots rewritten.
+    pub const fn applied_root_writebacks(&self) -> usize {
+        self.reference_application.applied_root_writebacks()
+    }
+
+    /// Returns how many live heap fields were rewritten.
+    pub const fn live_heap_field_writebacks(&self) -> usize {
+        self.reference_application.live_heap_field_writebacks()
+    }
+
+    /// Returns the total number of live root and heap-field references rewritten.
+    pub const fn applied_live_writebacks(&self) -> usize {
+        self.reference_application.applied_live_writebacks()
+    }
+
+    /// Returns root slots used to update live tree-walk root storage.
+    pub fn root_value_writeback_slots(&self) -> &[AllocationCollectorPollRootValueWritebackSlot] {
+        self.reference_application.root_value_writeback_slots()
+    }
+
+    /// Returns heap-field slots used to prevalidate live heap-field writes.
+    pub fn heap_field_writeback_slots(&self) -> &[AllocationCollectorPollHeapFieldWritebackSlot] {
+        self.reference_application.heap_field_writeback_slots()
     }
 }
 
@@ -1313,6 +1407,12 @@ impl TreeWalk {
             .next_remembered_set()
             .try_clone()
             .map_err(EvalHeapError::from)?;
+        let mut forwarding_slots = commit_plan.forwarding_slot_buffer()?;
+        commit_plan
+            .commit_plan()
+            .forwarding_pointers()
+            .install_into_slots(&mut forwarding_slots)
+            .map_err(EvalHeapError::from)?;
         let object_body_plan = self
             .heap
             .collector_poll_minor_gc_object_byte_copy_plan(&commit_plan)?;
@@ -1329,6 +1429,7 @@ impl TreeWalk {
             source_card_table,
             remembered_set_refreshes,
             next_remembered_set,
+            forwarding_slots,
             object_body_plan,
             writebacks,
         ))
@@ -1443,6 +1544,12 @@ impl TreeWalk {
             .next_remembered_set()
             .try_clone()
             .map_err(EvalHeapError::from)?;
+        let mut forwarding_slots = commit_plan.forwarding_slot_buffer()?;
+        commit_plan
+            .commit_plan()
+            .forwarding_pointers()
+            .install_into_slots(&mut forwarding_slots)
+            .map_err(EvalHeapError::from)?;
         let object_body_plan = self
             .heap
             .collector_poll_minor_gc_object_byte_copy_plan(&commit_plan)?;
@@ -1459,6 +1566,7 @@ impl TreeWalk {
             source_card_table,
             remembered_set_refreshes,
             next_remembered_set,
+            forwarding_slots,
             object_body_plan,
             writebacks,
         ))
@@ -2092,6 +2200,102 @@ impl TreeWalk {
         TreeWalkSafepointMinorGcLiveReferenceWritebackApplication,
         TreeWalkSafepointRootWritebackError,
     > {
+        let (application, _) = self
+            .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_optional_forwarding_slots(
+                plan,
+                value_stack,
+                primop_arguments,
+                None,
+            )?;
+        Ok(application)
+    }
+
+    /// Installs forwarding slots and applies live reference writebacks.
+    ///
+    /// This is the side-table-forwarding companion to
+    /// [`Self::apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields`].
+    /// It runs the same full root/heap-field preflight, validates the plan's
+    /// filled forwarding slots and heap publication work without mutating them,
+    /// writes supported roots before forwarding cells are installed, and then
+    /// commits the staged forwarding, destination body/generation, heap-field,
+    /// remembered-set, and card-table state without further fallible staging.
+    ///
+    /// This remains side-table forwarding only: it does not write real ABI
+    /// object headers, reserve semispace storage, consume JIT stack maps, or
+    /// dispatch Tier B from allocation sites.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if the plan's poll is no
+    /// longer current, if root storage cannot be read or written, if current
+    /// root or heap-field validation fails, if live forwarding-slot validation
+    /// fails, if paired body/generation writes fail, or if live root or
+    /// heap-field mutation fails.
+    pub fn apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots(
+        &mut self,
+        plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
+        value_stack: &mut [Value],
+    ) -> Result<
+        TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        let mut primop_arguments: [Value; 0] = [];
+        self.apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+            plan,
+            value_stack,
+            &mut primop_arguments,
+        )
+    }
+
+    /// Installs forwarding slots and applies writebacks with primop arguments.
+    ///
+    /// This is the caller-buffer-aware form of
+    /// [`Self::apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkSafepointRootWritebackError`] if the plan's poll is no
+    /// longer current, if root storage cannot be read or written, if current
+    /// root or heap-field validation fails, if live forwarding-slot validation
+    /// fails, if paired body/generation writes fail, or if live root or
+    /// heap-field mutation fails.
+    pub fn apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots_and_primop_arguments(
+        &mut self,
+        plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
+        value_stack: &mut [Value],
+        primop_arguments: &mut [Value],
+    ) -> Result<
+        TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication,
+        TreeWalkSafepointRootWritebackError,
+    > {
+        let (reference_application, forwarding_install_report) = self
+            .apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_optional_forwarding_slots(
+                plan,
+                value_stack,
+                primop_arguments,
+                Some(plan.forwarding_slots()),
+            )?;
+        Ok(
+            TreeWalkSafepointMinorGcForwardingLiveReferenceWritebackApplication::new(
+                reference_application,
+                forwarding_install_report,
+            ),
+        )
+    }
+
+    fn apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_optional_forwarding_slots(
+        &mut self,
+        plan: &TreeWalkSafepointMinorGcReferenceWritebackPlan,
+        value_stack: &mut [Value],
+        primop_arguments: &mut [Value],
+        forwarding_slots: Option<&[MinorGcForwardingSlot]>,
+    ) -> Result<
+        (
+            TreeWalkSafepointMinorGcLiveReferenceWritebackApplication,
+            AllocationCollectorPollForwardingInstallReport,
+        ),
+        TreeWalkSafepointRootWritebackError,
+    > {
         let preflight = self
             .validate_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments(
                 plan,
@@ -2108,6 +2312,13 @@ impl TreeWalk {
             value_stack,
             primop_arguments,
         )?;
+        let forwarding_install_stage = match forwarding_slots {
+            Some(forwarding_slots) => Some(
+                self.heap
+                    .stage_collector_poll_minor_gc_forwarding_slots(forwarding_slots)?,
+            ),
+            None => None,
+        };
         let next_remembered_set = plan
             .next_remembered_set()
             .try_clone()
@@ -2125,18 +2336,16 @@ impl TreeWalk {
             planned_live_heap_field_writebacks,
             application.applied_heap_field_writebacks(),
         )?;
-        let (object_body_and_generation_write_report, copied_report, direct_report) = self
+        let staged_live_heap_field_writes = self
             .heap
-            .apply_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
+            .stage_collector_poll_minor_gc_live_heap_field_writes_with_card_table(
                 plan.object_body_plan(),
                 &copied_writes,
                 &direct_writes,
-                &mut self.thunk_resolve_remembered_set,
-                &mut self.thunk_resolve_card_table,
+                &self.thunk_resolve_remembered_set,
+                &self.thunk_resolve_card_table,
             )?;
-        let live_heap_field_writebacks = copied_report
-            .fields()
-            .saturating_add(direct_report.fields());
+        let live_heap_field_writebacks = staged_live_heap_field_writes.live_heap_field_writebacks();
         debug_assert_eq!(
             live_heap_field_writebacks,
             preflight_live_heap_field_writebacks
@@ -2145,18 +2354,73 @@ impl TreeWalk {
             live_heap_field_writebacks,
             planned_live_heap_field_writebacks
         );
-        for slot in application.root_value_writeback_slots() {
-            self.write_safepoint_root_writeback_value(
-                slot.source(),
-                slot.value(),
-                value_stack,
-                primop_arguments,
-            )?;
-        }
+        let (
+            forwarding_install_report,
+            object_body_and_generation_write_report,
+            copied_report,
+            direct_report,
+        ) = if let Some(forwarding_install_stage) = forwarding_install_stage {
+            // Root writes are the final fallible operation in the forwarding
+            // path. Do them before installing side-table forwarding cells so a
+            // rejected target cannot poison a retry with an occupied forwarding
+            // slot.
+            for slot in application.root_value_writeback_slots() {
+                self.write_safepoint_root_writeback_value(
+                    slot.source(),
+                    slot.value(),
+                    value_stack,
+                    primop_arguments,
+                )?;
+            }
+            let forwarding_install_report = self
+                .heap
+                .commit_collector_poll_minor_gc_staged_forwarding_slots(forwarding_install_stage);
+            let (object_body_and_generation_write_report, copied_report, direct_report) = self
+                .heap
+                .commit_collector_poll_minor_gc_staged_live_heap_field_writes_with_card_table(
+                    staged_live_heap_field_writes,
+                    &mut self.thunk_resolve_remembered_set,
+                    &mut self.thunk_resolve_card_table,
+                );
+            (
+                forwarding_install_report,
+                object_body_and_generation_write_report,
+                copied_report,
+                direct_report,
+            )
+        } else {
+            let (object_body_and_generation_write_report, copied_report, direct_report) = self
+                .heap
+                .commit_collector_poll_minor_gc_staged_live_heap_field_writes_with_card_table(
+                    staged_live_heap_field_writes,
+                    &mut self.thunk_resolve_remembered_set,
+                    &mut self.thunk_resolve_card_table,
+                );
+            for slot in application.root_value_writeback_slots() {
+                self.write_safepoint_root_writeback_value(
+                    slot.source(),
+                    slot.value(),
+                    value_stack,
+                    primop_arguments,
+                )?;
+            }
+            (
+                AllocationCollectorPollForwardingInstallReport::default(),
+                object_body_and_generation_write_report,
+                copied_report,
+                direct_report,
+            )
+        };
+        debug_assert_eq!(
+            live_heap_field_writebacks,
+            copied_report
+                .fields()
+                .saturating_add(direct_report.fields())
+        );
         self.thunk_resolve_remembered_set = next_remembered_set;
         let card_table_clear_report = self.thunk_resolve_card_table.clear_dirty_cards();
 
-        Ok(
+        Ok((
             TreeWalkSafepointMinorGcLiveReferenceWritebackApplication::new(
                 TreeWalkSafepointMinorGcReferenceWritebackRootStorageApplication::new(application),
                 object_body_and_generation_write_report,
@@ -2164,7 +2428,8 @@ impl TreeWalk {
                 remembered_set_published_edges,
                 card_table_clear_report,
             ),
-        )
+            forwarding_install_report,
+        ))
     }
 
     /// Derives and applies complete live reference writebacks from a current poll.

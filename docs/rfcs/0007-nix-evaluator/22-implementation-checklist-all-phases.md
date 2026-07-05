@@ -6989,7 +6989,14 @@ and helps the oracle directly.
       Its reserved validate/apply wrappers prove that after scratch-record
       reservation, preflight leaves live roots, fields, remembered sets, and
       card tables unchanged while apply consumes the reserved destination records
-      through the existing writer, including caller-owned primop arguments.
+      through the existing writer, including caller-owned primop arguments. The
+      plan now carries filled forwarding slots, and
+      `TreeWalk::apply_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_forwarding_slots`
+      validates those slots against the live heap, stages live heap publication,
+      writes supported roots before forwarding install, and then commits
+      evaluator side-table forwarding cells plus staged object
+      bodies/generations, fields, remembered-set state, and card-table state
+      without another fallible heap-publication pass.
       Unit tests cover a real poll rewriting every supported
       mutable tree-walk root kind, direct stale-poll rejection before mutation
       in the planning wrapper, root-only applicator, buffer applicator, stale
@@ -7009,11 +7016,14 @@ and helps the oracle directly.
       applicator before root or field mutation, stale live heap-field rejection
       before root mutation, late suspended-frame root-target borrow rejection
       before partial root mutation, stale source remembered-set and source
-      card-table rejection before live mutation, and a dirty permanent-list
+      card-table rejection before live mutation, reserved-destination
+      forwarding-slot installation, occupied forwarding-slot rejection before
+      live mutation, forwarding-aware frame-borrow rejection without forwarding
+      install, and a dirty permanent-list
       remembered edge whose mixed root/field plan is rejected without touching
       the value stack, active frame root, or ready import-cache root. This is
       still not automatic allocation-site dispatch and still does not reserve
-      semispace storage, install forwarding headers, or consume JIT stack maps.
+      semispace storage, write real ABI object headers, or consume JIT stack maps.
       Destination records are allocated only by the explicit
       reserved-destination tree-walk bridge, not by collector-owned semispace
       dispatch. The full remembered-set/card-table publication remains limited
