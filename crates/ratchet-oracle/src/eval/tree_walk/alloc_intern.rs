@@ -993,6 +993,10 @@ impl TreeWalk {
         span: Span,
         list: NixList,
     ) -> Result<Value, TreeWalkError> {
+        #[cfg(test)]
+        {
+            self.tree_walk_list_wrapper_calls = self.tree_walk_list_wrapper_calls.saturating_add(1);
+        }
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_permanent_list_allocation_safepoint(id, &list);
         let previous_poll =
@@ -1011,6 +1015,11 @@ impl TreeWalk {
         } else {
             Ok(value)
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::eval::tree_walk) const fn tree_walk_list_wrapper_calls(&self) -> usize {
+        self.tree_walk_list_wrapper_calls
     }
 
     pub(super) fn alloc_tree_walk_attrs_with_projected_shape_metadata(

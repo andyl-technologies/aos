@@ -2615,6 +2615,82 @@ fn gc_stress_alloc_tree_walk_list_skips_active_primop_roots() {
 }
 
 #[test]
+fn gc_stress_list_concat_result_skips_composite_input_roots() {
+    let ir = lower("[ 1 ] ++ [ 2 true ]");
+    let node = ir.arena.node(ir.root).expect("root exists");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let left = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![Value::int(1)]))
+        .expect("left list allocates");
+    let right = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![Value::int(2), Value::bool(true)]))
+        .expect("right list allocates");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, node.span, &mut roots, |eval| {
+            eval.concat_lists(ir.root, node, left, right)
+        })
+        .expect("list concat result allocates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "list concat result did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while list concat input list roots were live"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("list concat result is heap-owned");
+    assert_eq!(list.len(), 3);
+    assert_eq!(
+        list.get(0).expect("first concat value exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        list.get(1).expect("second concat value exists").as_int(),
+        Ok(2)
+    );
+    assert_eq!(
+        list.get(2).expect("third concat value exists").as_bool(),
+        Ok(true)
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("list concat allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_reflected_context_result_helpers_skip_interned_composite_roots() {
     assert_gc_stress_root_string_result_skips_dispatch(
         r#"builtins.appendContext "x" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; }"#,

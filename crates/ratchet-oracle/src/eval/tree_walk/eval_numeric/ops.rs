@@ -377,9 +377,7 @@ impl TreeWalk {
                 TreeWalkError::new(TreeWalkErrorKind::List { id, source }, node.span)
             })?
         };
-        self.heap
-            .alloc_list(concatenated)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+        self.alloc_tree_walk_list(id, node.span, concatenated)
     }
 
     pub(in crate::eval::tree_walk) fn eval_comparison(

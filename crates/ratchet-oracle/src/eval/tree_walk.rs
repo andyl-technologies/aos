@@ -1049,6 +1049,8 @@ pub struct TreeWalk {
     // Empty-list foldl' returns keep the initial accumulator lazy, but attr consumers
     // must still demand it when coercing to an attrset.
     lazy_foldl_initial_thunks: BTreeSet<u64>,
+    #[cfg(test)]
+    tree_walk_list_wrapper_calls: usize,
 }
 
 /// Reports cold hash-consed values ensured in the indexed persistent value pack.
