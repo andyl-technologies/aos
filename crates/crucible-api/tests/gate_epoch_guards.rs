@@ -2,11 +2,11 @@
 
 #![forbid(unsafe_code)]
 
-use crucible::{QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, SchedulerError, Seed};
+use crucible::{QuantumLoop, QuantumOutcome, QuantumRequest, SchedulerError, Seed};
 use crucible_api::{
     AttachRequest, CreateSessionRequest, DestroySessionRequest, EventLogCursor,
     LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError, LifecycleControlPlane,
-    ScenarioCatalogEntry, SendRequest, SessionId, StreamingApiError,
+    LifecycleLoopFactory, ScenarioCatalogEntry, SendRequest, SessionId, StreamingApiError,
 };
 use crucible_session::{LiveStateKind, SessionCommand};
 
@@ -172,8 +172,7 @@ async fn session_epoch_is_server_monotonic_and_closed_protocol_identity() {
         .unwrap_or_else(|error| panic!("cleanup destroy should stop actor: {error}"));
 }
 
-fn lifecycle_control_plane()
--> LifecycleControlPlane<NoopLoop, impl Fn(&ScenarioDef, Seed) -> NoopLoop> {
+fn lifecycle_control_plane() -> LifecycleControlPlane<NoopLoop, LifecycleLoopFactory<NoopLoop>> {
     LifecycleControlPlane::new(
         "crucible-epoch-guard-test-server",
         vec![catalog_entry()],

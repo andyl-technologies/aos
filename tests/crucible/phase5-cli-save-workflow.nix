@@ -20,6 +20,8 @@
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
   apiStreaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
+  apiControlClient = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  apiLifecycleUnary = builtins.readFile ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -65,6 +67,10 @@
         label = "T-CLI-9 process qemu save progress";
         needle = "process-tests real-binary `save --backend qemu`";
       }
+      {
+        label = "T-CLI-9 remote selector source transfer progress";
+        needle = "transfers arbitrary scenario selector sources";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -82,6 +88,10 @@
       {
         label = "phase5 CLI process qemu save progress";
         needle = "process-tests real-binary `save --backend qemu` JSONL output and handle export";
+      }
+      {
+        label = "phase5 CLI remote selector source transfer progress";
+        needle = "transfers arbitrary scenario selector sources";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -265,6 +275,10 @@
         label = "remote daemon selector save test";
         needle = "remote-selector-save";
       }
+      {
+        label = "remote inline scenario source transfer";
+        needle = "CreateSessionRequest::inline_form(run_plan.scenario.scenario_form().clone(), seed)";
+      }
     ]
     ++ failuresFor "crates/crucible-api/src/streaming.rs" apiStreaming [
       {
@@ -276,6 +290,30 @@
       {
         label = "lifecycle white-box policy hook";
         needle = "with_white_box_policy_provider";
+      }
+      {
+        label = "form-bearing inline create session constructor";
+        needle = "pub fn inline_form";
+      }
+      {
+        label = "inline scenario source field";
+        needle = "scenario_form: Option<ScenarioDefForm>";
+      }
+      {
+        label = "inline scenario identity validation";
+        needle = "InlineScenarioIdentityMismatch";
+      }
+      {
+        label = "inline scenario white-box policy derivation";
+        needle = "scenario_form_white_box_policies";
+      }
+      {
+        label = "request-aware white-box policy resolution";
+        needle = "white_box_policies_for_source";
+      }
+      {
+        label = "source-aware lifecycle loop factory";
+        needle = "new_with_source_factory";
       }
       {
         label = "quiescent loop records schedule decision";
@@ -319,6 +357,14 @@
         label = "RPC breakpoint policy request payload";
         needle = "\"breakpoint-policy\"";
       }
+      {
+        label = "RPC inline scenario source payload encoder";
+        needle = "\"scenario-payload\"";
+      }
+      {
+        label = "RPC inline scenario source compact encoder";
+        needle = "scenario_form.to_compact_binary()";
+      }
     ]
     ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
       {
@@ -360,6 +406,50 @@
       {
         label = "RPC duration step request parser";
         needle = "step-duration-nanos=";
+      }
+      {
+        label = "RPC inline scenario source payload parser";
+        needle = "parse_scenario_form_line(Some(line), \"scenario-payload=\")";
+      }
+      {
+        label = "RPC inline scenario source identity validation";
+        needle = "scenario payload id";
+      }
+      {
+        label = "RPC inline scenario source constructor";
+        needle = "CreateSessionRequest::inline_form(scenario_form, seed)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" apiControlClient [
+      {
+        label = "RPC inline form wire snapshot";
+        needle = "create-session-inline-form-request";
+      }
+      {
+        label = "RPC inline form payload assertion";
+        needle = "form-bearing inline create-session must transfer source payload";
+      }
+      {
+        label = "RPC inline form conformance marker";
+        needle = "create-session-inline-form";
+      }
+      {
+        label = "RPC inline form typed request";
+        needle = "CreateSessionRequest::inline_form";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/tests/gate_lifecycle_unary.rs" apiLifecycleUnary [
+      {
+        label = "inline form identity mismatch regression";
+        needle = "create_session_rejects_inline_form_identity_mismatch_without_side_effects";
+      }
+      {
+        label = "inline source public request construction";
+        needle = "CreateSessionSource::Inline";
+      }
+      {
+        label = "inline source mismatch error assertion";
+        needle = "InlineScenarioIdentityMismatch";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
@@ -472,6 +562,27 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
+              -p crucible-api \
+              rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
+              -p crucible-api \
+              control_client_trait_is_transport_agnostic_over_in_process_and_rpc \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
+              -p crucible-api \
+              create_session_rejects_inline_form_identity_mismatch_without_side_effects \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-save-workflow-target" \
               -p crucible-cli \
               cli_save \
               -- --test-threads=1
@@ -503,6 +614,7 @@ in
             component=crucible-cli
             contract=save-workflow-progress
             process_qemu_save=marker-resolved-jsonl-handle
+            remote_inline_scenario_transfer=form-bearing-rpc-payload
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

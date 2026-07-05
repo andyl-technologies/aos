@@ -533,8 +533,8 @@ pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
         ),
         shmem_abi_version: String::from("1"),
         guest_host_protocol_version: String::from("1"),
-        rpc_abi_version: String::from("3.0.0"),
-        rpc_abi_build: String::from("crucible-rpc-abi-v3"),
+        rpc_abi_version: String::from("4.0.0"),
+        rpc_abi_build: String::from("crucible-rpc-abi-v4"),
         plugin_abi: String::from("simdouble-mock-plugin-abi"),
     }
 }

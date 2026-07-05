@@ -302,6 +302,8 @@ pub enum CreateSessionSource {
     Inline {
         /// Inline scenario definition.
         scenario: ScenarioDef,
+        /// Optional full scenario source transferred with the request.
+        scenario_form: Option<ScenarioDefForm>,
     },
 }
 
@@ -331,7 +333,24 @@ impl CreateSessionRequest {
     #[must_use]
     pub fn inline(scenario: ScenarioDef, seed: Seed) -> Self {
         Self {
-            source: CreateSessionSource::Inline { scenario },
+            source: CreateSessionSource::Inline {
+                scenario,
+                scenario_form: None,
+            },
+            seed,
+            start_paused: true,
+        }
+    }
+
+    /// Builds a request from an inline scenario source form.
+    #[must_use]
+    pub fn inline_form(scenario_form: ScenarioDefForm, seed: Seed) -> Self {
+        let scenario = scenario_form.scenario_def();
+        Self {
+            source: CreateSessionSource::Inline {
+                scenario,
+                scenario_form: Some(scenario_form),
+            },
             seed,
             start_paused: true,
         }
@@ -343,6 +362,28 @@ impl CreateSessionRequest {
         self.start_paused = start_paused;
         self
     }
+}
+
+fn inline_scenario_form(request: &CreateSessionRequest) -> Option<&ScenarioDefForm> {
+    let CreateSessionSource::Inline {
+        scenario_form: Some(scenario_form),
+        ..
+    } = &request.source
+    else {
+        return None;
+    };
+    Some(scenario_form)
+}
+
+fn scenario_form_white_box_policies(
+    scenario_form: &ScenarioDefForm,
+) -> BTreeMap<NodeId, WhiteBoxPolicy> {
+    scenario_form
+        .world()
+        .nodes()
+        .iter()
+        .map(|node| (node.id.clone(), node.white_box))
+        .collect()
 }
 
 /// Response returned by `CreateSession`.
@@ -805,6 +846,14 @@ pub enum LifecycleApiError {
         /// Seed supplied by the request.
         request_seed: Seed,
     },
+    /// An inline scenario source did not match its advertised identity.
+    #[error("inline scenario payload identity mismatch: expected={expected:?} actual={actual:?}")]
+    InlineScenarioIdentityMismatch {
+        /// Advertised scenario definition handle.
+        expected: ScenarioDef,
+        /// Scenario definition handle reconstructed from the inline payload.
+        actual: ScenarioDef,
+    },
     /// The genesis temporal graph could not be created.
     #[error("failed to create genesis temporal graph: {message}")]
     GenesisGraph {
@@ -867,6 +916,10 @@ pub enum LifecycleApiError {
     },
 }
 
+/// Source-aware loop factory used by the lifecycle control plane.
+pub type LifecycleLoopFactory<L> =
+    Box<dyn Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync>;
+
 /// In-process lifecycle control plane for unary API methods.
 pub struct LifecycleControlPlane<L, F> {
     server_name: String,
@@ -883,18 +936,35 @@ pub struct LifecycleControlPlane<L, F> {
     _loop: PhantomData<fn() -> L>,
 }
 
-impl<L, F> LifecycleControlPlane<L, F>
+impl<L> LifecycleControlPlane<L, LifecycleLoopFactory<L>>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L,
 {
     /// Builds a lifecycle control plane from a scenario catalog and loop factory.
     #[must_use]
-    pub fn new(
+    pub fn new<F>(
         server_name: impl Into<String>,
         scenarios: Vec<ScenarioCatalogEntry>,
         loop_factory: F,
-    ) -> Self {
+    ) -> Self
+    where
+        F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    {
+        Self::new_with_source_factory(server_name, scenarios, move |scenario, _source, seed| {
+            loop_factory(scenario, seed)
+        })
+    }
+
+    /// Builds a lifecycle control plane from a source-aware loop factory.
+    #[must_use]
+    pub fn new_with_source_factory<F>(
+        server_name: impl Into<String>,
+        scenarios: Vec<ScenarioCatalogEntry>,
+        loop_factory: F,
+    ) -> Self
+    where
+        F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
+    {
         let scenarios = scenarios
             .into_iter()
             .map(|entry| (entry.name.clone(), entry))
@@ -905,7 +975,7 @@ where
             sessions: BTreeMap::new(),
             next_session_id: 1,
             next_epoch: 1,
-            loop_factory,
+            loop_factory: Box::new(loop_factory),
             white_box_policy_provider: Box::new(|_| BTreeMap::new()),
             mailbox_capacity: LIFECYCLE_SESSION_MAILBOX_CAPACITY,
             startup_max_actor_yields: LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS,
@@ -913,7 +983,13 @@ where
             _loop: PhantomData,
         }
     }
+}
 
+impl<L, F> LifecycleControlPlane<L, F>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L,
+{
     /// Installs a trusted guest-marker white-box policy provider for new sessions.
     ///
     /// The lifecycle plane calls this provider inside the same process as the
@@ -1005,10 +1081,11 @@ where
             }
         }
         let scenario = self.resolve_scenario(&request)?;
+        let scenario_form = inline_scenario_form(&request);
         let configuration = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario)?;
-        let loop_instance = (self.loop_factory)(&scenario, request.seed);
-        let white_box_policies = (self.white_box_policy_provider)(&scenario);
+        let loop_instance = (self.loop_factory)(&scenario, scenario_form, request.seed);
+        let white_box_policies = self.white_box_policies_for_source(scenario_form, &scenario);
         let engine = Engine::new(configuration, graph, loop_instance)
             .with_white_box_policies(white_box_policies);
         let (sender, receiver) = mpsc::channel(self.mailbox_capacity);
@@ -1090,9 +1167,10 @@ where
                 .map_err(resume_checkpoint_error)?;
         }
 
-        let parent_loop = (self.loop_factory)(&scenario, request.seed);
-        let resumed_loop = (self.loop_factory)(&scenario, request.seed);
-        let white_box_policies = (self.white_box_policy_provider)(&scenario);
+        let parent_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed);
+        let resumed_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed);
+        let white_box_policies =
+            self.white_box_policies_for_source(Some(&request.scenario), &scenario);
         let genesis = Configuration::genesis(scenario);
         let mut parent =
             Engine::new(genesis, graph, parent_loop).with_white_box_policies(white_box_policies);
@@ -1237,7 +1315,19 @@ where
                 .get(name)
                 .ok_or_else(|| LifecycleApiError::ScenarioNotFound { name: name.clone() })?
                 .scenario_for_seed(request.seed),
-            CreateSessionSource::Inline { scenario } => {
+            CreateSessionSource::Inline {
+                scenario,
+                scenario_form,
+            } => {
+                if let Some(scenario_form) = scenario_form {
+                    let source_scenario = scenario_form.scenario_def();
+                    if source_scenario != *scenario {
+                        return Err(LifecycleApiError::InlineScenarioIdentityMismatch {
+                            expected: scenario.clone(),
+                            actual: source_scenario,
+                        });
+                    }
+                }
                 if scenario.seed() != request.seed {
                     return Err(LifecycleApiError::ScenarioSeedMismatch {
                         scenario_seed: scenario.seed(),
@@ -1247,6 +1337,18 @@ where
                 Ok(scenario.clone())
             }
         }
+    }
+
+    fn white_box_policies_for_source(
+        &self,
+        scenario_form: Option<&ScenarioDefForm>,
+        scenario: &ScenarioDef,
+    ) -> BTreeMap<NodeId, WhiteBoxPolicy> {
+        let mut policies = scenario_form
+            .map(scenario_form_white_box_policies)
+            .unwrap_or_default();
+        policies.extend((self.white_box_policy_provider)(scenario));
+        policies
     }
 
     fn next_session_ref(&mut self, seed: Seed) -> SessionRef {
@@ -1381,7 +1483,7 @@ impl<L, F> InProcessLifecycleClient<L, F> {
 impl<L, F> InProcessLifecycleClient<L, F>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     /// Returns the number of live sessions in the wrapped control plane.
     pub async fn session_count(&self) -> usize {
@@ -1392,7 +1494,7 @@ where
 impl<L, F> ControlClient for InProcessLifecycleClient<L, F>
 where
     L: QuantumLoop + Send + 'static,
-    F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync + 'static,
 {
     fn transport(&self) -> ControlTransportKind {
         ControlTransportKind::InProcess
