@@ -5679,6 +5679,74 @@ fn existing_destination_live_metadata_rejects_synthetic_destination_before_metad
 }
 
 #[test]
+fn existing_destination_live_commit_rejects_synthetic_destination_before_metadata_install() {
+    let (mut outcome, original_value, destination_value) =
+        boundary_lambda_outcome_with_existing_destination();
+    let original_address = gc_address(original_value);
+    let destination_generation_before = outcome
+        .heap()
+        .generation(destination_value)
+        .expect("destination starts heap-bound");
+    let missing_destination = static_gc_address(0x1000_0000);
+
+    let err = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_commit(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(missing_destination, static_gc_address(0x2000_0000)),
+        )
+        .expect_err(
+            "composed existing-destination commit rejects synthetic destinations before install",
+        );
+
+    assert_eq!(
+        err,
+        EvalHeapError::UnknownCollectorPollObjectBodyDestination {
+            destination: missing_destination,
+        }
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_destination_storage()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_object_generations()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_reference_writebacks()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_forwarding_destination_binding_metadata()
+            .is_empty()
+    );
+    assert!(
+        outcome
+            .gc_stress_boundary_minor_gc_writeback_destination_bindings()
+            .is_empty()
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(original_address)
+            .expect("source forwarding cell remains readable"),
+        None
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("unrelated destination remains heap-bound"),
+        destination_generation_before
+    );
+    assert!(outcome.value().raw_eq(original_value));
+}
+
+#[test]
 fn live_object_bodies_bind_existing_copied_destination_record_body() {
     let (mut outcome, original_value, destination_value) =
         boundary_lambda_outcome_with_existing_destination();
@@ -7413,6 +7481,81 @@ fn live_existing_destination_commit_applies_references_after_header_validation()
     assert_eq!(
         outcome.thunk_resolve_remembered_set().edges(),
         published_remembered_edges.as_slice()
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn existing_destination_live_commit_runs_metadata_and_reference_commit() {
+    let (mut outcome, parent, child, destination) =
+        boundary_root_and_permanent_lambda_field_outcome_with_existing_destination();
+    let source_address = gc_address(child);
+    let destination_address = gc_address(destination);
+
+    let commit = outcome
+        .gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_commit(
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+        )
+        .expect("composed existing-destination live commit applies");
+
+    assert_eq!(commit.forwarding_pointers_installed(), 1);
+    assert_eq!(commit.object_bodies_written(), 1);
+    assert_eq!(commit.object_generations_written(), 1);
+    assert_eq!(commit.value_stack_roots(), 1);
+    assert_eq!(commit.fields(), 1);
+    assert_eq!(commit.references(), 2);
+    assert_eq!(commit.card_table_dirty_cards_cleared(), 1);
+    assert_eq!(commit.live_metadata().object_body_preflight_objects(), 1);
+    assert_eq!(
+        commit.live_metadata().object_generation_preflight_objects(),
+        1
+    );
+    assert_eq!(commit.live_commit().forwarding_headers_validated(), 1);
+    assert!(
+        commit
+            .live_metadata()
+            .live_metadata()
+            .remembered_set_published()
+    );
+    assert!(outcome.value().raw_eq(destination));
+    assert!(
+        outcome
+            .heap()
+            .get_lambda(parent)
+            .expect("parent lambda remains typed")
+            .with_scope_env()
+            .scopes()[0]
+            .value()
+            .raw_eq(destination)
+    );
+    let root_plan = outcome
+        .gc_stress_boundary_minor_gc_root_writeback_write_plan()
+        .expect("root writeback plan still validates after commit");
+    let root_write = &root_plan.writes()[0];
+    outcome
+        .heap()
+        .validate_collector_poll_minor_gc_object_body_binding(
+            root_write.request(),
+            root_write.replacement_tag(),
+        )
+        .expect("existing destination body is bound");
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .minor_gc_forwarding_value_at(source_address)
+            .expect("source forwarding cell remains readable"),
+        Some(ResolvedValueGeneration::Heap {
+            address: destination_address,
+            generation: HeapGeneration::Young,
+        })
     );
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }

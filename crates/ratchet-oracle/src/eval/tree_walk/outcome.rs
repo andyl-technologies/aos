@@ -2877,6 +2877,85 @@ impl EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport {
     }
 }
 
+/// Result of running the existing-destination live commit bridge end to end.
+///
+/// This report keeps the strict existing-destination metadata installation next
+/// to the subsequent live reference commit. The operation is still a
+/// tree-walk/GC-stress bridge: it requires destination records that already
+/// exist in the evaluator heap, and it does not allocate synthetic destinations,
+/// reserve semispace storage, write ABI forwarding headers, mutate active
+/// evaluator frames or import caches, update JIT stack maps, or invoke Tier B.
+/// The report is returned only when both phases complete; it does not represent
+/// a rollback token for metadata installed before a later commit error.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EvalGcStressBoundaryMinorGcExistingDestinationLiveCommit {
+    live_metadata: EvalGcStressBoundaryMinorGcExistingDestinationLiveMetadataCommitDryRun,
+    live_commit: EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport,
+}
+
+impl EvalGcStressBoundaryMinorGcExistingDestinationLiveCommit {
+    const fn new(
+        live_metadata: EvalGcStressBoundaryMinorGcExistingDestinationLiveMetadataCommitDryRun,
+        live_commit: EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport,
+    ) -> Self {
+        Self {
+            live_metadata,
+            live_commit,
+        }
+    }
+
+    /// Returns the strict existing-destination metadata installation report.
+    pub const fn live_metadata(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcExistingDestinationLiveMetadataCommitDryRun {
+        &self.live_metadata
+    }
+
+    /// Returns the applied live reference commit report.
+    pub const fn live_commit(
+        &self,
+    ) -> EvalGcStressBoundaryMinorGcLiveExistingDestinationCommitApplyReport {
+        self.live_commit
+    }
+
+    /// Returns how many forwarding values were installed by the metadata phase.
+    pub const fn forwarding_pointers_installed(&self) -> usize {
+        self.live_metadata
+            .live_metadata()
+            .forwarding_pointers_installed()
+    }
+
+    /// Returns how many destination object bodies were written by the commit phase.
+    pub const fn object_bodies_written(&self) -> usize {
+        self.live_commit.object_bodies_written()
+    }
+
+    /// Returns how many destination object generations were written by the commit phase.
+    pub const fn object_generations_written(&self) -> usize {
+        self.live_commit.object_generations_written()
+    }
+
+    /// Returns how many outcome-owned value-stack roots were rewritten.
+    pub const fn value_stack_roots(&self) -> usize {
+        self.live_commit.value_stack_roots()
+    }
+
+    /// Returns how many live heap fields were rewritten.
+    pub const fn fields(&self) -> usize {
+        self.live_commit.fields()
+    }
+
+    /// Returns how many supported references were rewritten.
+    pub const fn references(&self) -> usize {
+        self.live_commit.references()
+    }
+
+    /// Returns how many dirty-card markers were cleared after live field writes.
+    pub const fn card_table_dirty_cards_cleared(&self) -> usize {
+        self.live_commit.card_table_dirty_cards_cleared()
+    }
+}
+
 /// One validated live heap-field writeback input.
 ///
 /// This is an immutable write plan for a future object-field writer. It proves
@@ -12147,6 +12226,60 @@ impl EvalOutcome {
             EvalGcStressBoundaryMinorGcExistingDestinationLiveMetadataCommitDryRun::new(
                 live_metadata,
                 object_body_and_generation_write_report,
+            ),
+        )
+    }
+
+    /// Runs the existing-destination boundary commit bridge end to end.
+    ///
+    /// This composes
+    /// [`Self::gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata`]
+    /// with
+    /// [`Self::apply_gc_stress_boundary_minor_gc_live_existing_destination_commit`]
+    /// without exposing a caller interleaving point between metadata
+    /// installation and live reference publication. The first phase derives the
+    /// boundary dry run, validates installable metadata, and preflights paired
+    /// destination body/generation writes for already-bound destination records
+    /// before any metadata mutation. The second phase validates installed
+    /// forwarding metadata, remembered-set publication, card-table state, roots,
+    /// fields, and destination body/generation staging before committing
+    /// existing destination bodies/generations, supported heap fields, and the
+    /// outcome-owned root.
+    ///
+    /// This remains a narrow GC-stress bridge for existing destination records.
+    /// It does not allocate synthetic destinations, reserve semispace storage,
+    /// mutate active evaluator frames or import caches, update JIT stack maps,
+    /// write ABI forwarding headers, or invoke Tier B.
+    /// It is not an all-or-nothing transaction across both phases: if the first
+    /// phase installs forwarding cells, outcome-owned metadata, remembered-set
+    /// state, or card-table state and the second phase later returns an error,
+    /// those first-phase mutations remain installed. The second phase still
+    /// keeps its own validation-before-live-reference-mutation contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError`] if the metadata dry run or existing-destination
+    /// preflight fails, if live metadata cannot be installed, or if the
+    /// subsequent existing-destination live commit rejects installed metadata,
+    /// roots, heap fields, remembered-set/card-table state, or paired
+    /// body/generation writes. Errors from the subsequent live commit are
+    /// returned after the metadata phase has already installed its side effects.
+    pub fn gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_commit(
+        &mut self,
+        promotion_policy: MinorGcPromotionPolicy,
+        bases: MinorGcDestinationBases,
+    ) -> Result<EvalGcStressBoundaryMinorGcExistingDestinationLiveCommit, EvalHeapError> {
+        let live_metadata = self
+            .gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_metadata(
+                promotion_policy,
+                bases,
+            )?;
+        let live_commit =
+            self.apply_gc_stress_boundary_minor_gc_live_existing_destination_commit()?;
+        Ok(
+            EvalGcStressBoundaryMinorGcExistingDestinationLiveCommit::new(
+                live_metadata,
+                live_commit,
             ),
         )
     }

@@ -6440,6 +6440,27 @@ and helps the oracle directly.
       semispace storage, and does not cover active evaluator frames, import
       caches, arbitrary value-stack roots, JIT stack maps, shared lexical frame
       slots, blackholed thunk deferred-work/capture fields, or Tier-B dispatch.
+- [x] Current boundary existing-destination live commit orchestration bridge:
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_commit`
+      runs the strict existing-destination metadata installer and the
+      existing-destination live commit applicator back to back. The metadata
+      phase still preflights paired destination body/generation writes before
+      installing forwarding, destination, object-generation, writeback,
+      remembered-set, or card-table metadata; the commit phase then revalidates
+      installed forwarding metadata, published remembered-set state, clean
+      card-table state, roots, fields, and paired body/generation writes before
+      mutating existing destination records, supported heap fields, and the
+      outcome-owned root. Unit tests cover mixed root plus dirty permanent
+      lambda-capture field success through the composed method and synthetic
+      destination rejection before metadata installation. This still requires
+      destination records to already exist, does not allocate synthetic
+      destinations, reserve semispace storage, write ABI object headers, mutate
+      active evaluator frames or import caches, update JIT stack maps, or invoke
+      Tier B. The bridge is not a transaction across both phases: if the
+      metadata phase installs forwarding cells, outcome-owned metadata,
+      remembered-set state, or card-table state and the later commit rejects,
+      those first-phase mutations remain installed while the live commit keeps
+      its own validation-before-reference-mutation guarantees.
 - [x] Current boundary live reference writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_reference_writebacks`
       consumes installed live root and heap-field writeback metadata plus
@@ -7365,6 +7386,12 @@ and helps the oracle directly.
       commit applicator preserves the already-published remembered set after
       that recorded-publication check and clears the card-table dirt introduced
       while applying direct heap-field barriers.
+      `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_commit`
+      composes the strict existing-destination metadata installer with that
+      commit applicator so callers cannot interleave arbitrary state changes
+      between live metadata installation and the existing-destination commit;
+      it is not a rollback boundary for metadata installed before a later commit
+      rejection.
       The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
