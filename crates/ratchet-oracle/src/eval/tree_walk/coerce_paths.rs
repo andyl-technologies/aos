@@ -680,12 +680,7 @@ impl TreeWalk {
                     return self.eval_path_interp(id, node, &children);
                 }
                 let Some((first, rest)) = children.split_first() else {
-                    return self
-                        .heap
-                        .alloc_string(NixString::default())
-                        .map_err(|source| {
-                            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
-                        });
+                    return self.alloc_tree_walk_string(id, node.span, NixString::default());
                 };
                 let first_span = self.node(*first)?.span;
                 let mut current = {
@@ -702,12 +697,7 @@ impl TreeWalk {
                 }
                 Ok(current)
             }
-            IrData::None => self
-                .heap
-                .alloc_string(NixString::default())
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
-                }),
+            IrData::None => self.alloc_tree_walk_string(id, node.span, NixString::default()),
             IrData::Symbol(symbol) => {
                 let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
                     TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
@@ -723,11 +713,7 @@ impl TreeWalk {
                     )
                 })?;
                 owned.extend_from_slice(bytes);
-                self.heap
-                    .alloc_string(NixString::from_bytes(owned))
-                    .map_err(|source| {
-                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
-                    })
+                self.alloc_tree_walk_string(id, node.span, NixString::from_bytes(owned))
             }
             _ => Err(self.invalid_payload(id, node, "interpolation payload")),
         }
@@ -834,9 +820,7 @@ impl TreeWalk {
             ValueTag::String => Ok(value),
             ValueTag::Path => {
                 let path = self.source_path_store_string(id, span, value)?;
-                self.heap.alloc_string(path).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })
+                self.alloc_tree_walk_string(id, span, path)
             }
             ValueTag::Attrs => self.coerce_attrs_to_interpolation_string(id, value, span),
             actual => Err(TreeWalkError::new(
@@ -887,9 +871,7 @@ impl TreeWalk {
             ValueTag::String => Ok(value),
             ValueTag::Path => {
                 let path = self.clone_path_value(id, span, value)?;
-                self.heap.alloc_string(path).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })
+                self.alloc_tree_walk_string(id, span, path)
             }
             ValueTag::Attrs => self.coerce_attrs_to_string(id, value, span),
             actual => Err(TreeWalkError::new(

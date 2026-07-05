@@ -1831,6 +1831,64 @@ fn gc_stress_nested_to_file_result_skips_unregistered_outer_locals() {
 }
 
 #[test]
+fn gc_stress_eval_root_interpolation_literal_result_dispatch_permanent_noop_bridge() {
+    let root = IrId::new(0);
+    let span = Span::new(0, 2);
+    let ir = manual_ir(root, vec![pure_node(IrKind::Interp, span, IrData::None)]);
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress interpolation expression evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while evaluating manual empty interpolation"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(value)
+            .expect("interpolation result is heap-owned")
+            .bytes(),
+        b""
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root interpolation allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_nested_path_interpolation_coercion_skips_unregistered_outer_locals() {
+    let (dir, path) = temp_file_with_bytes("gc-stress-path-interpolation", b"abc");
+    let path = path_source(&path);
+    assert_gc_stress_root_bool_result_skips_dispatch(&format!(r#""left" == "${{{path}}}""#), false);
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn gc_stress_eval_root_path_source_string_results_skip_interned_source_setup() {
     let (file_dir, file_path) = temp_file_with_bytes("gc-stress-source-path", b"abc");
     let file_path = path_source(&file_path);
