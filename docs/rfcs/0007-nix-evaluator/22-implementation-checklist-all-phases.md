@@ -5391,15 +5391,19 @@ and helps the oracle directly.
       `aos_gc_write_barrier`, `aos_has_attr`, `aos_select_ic`, and `aos_update`
       while
       carrying oracle missing bindings for unbound helpers and builtins. The
-      bridge now records per-candidate provenance and exposes helper-role filtered
-      candidate views, including the allocation-helper manifest-order subset.
+      bridge now records per-candidate provenance, exposes the runtime-FFI
+      trap-wrapper's remaining native-export blockers on that provenance, and
+      exposes helper-role filtered candidate views, including the
+      allocation-helper manifest-order subset.
       Tests pin allocation, call-control, attrset-access, environment-access,
       forcing, and write-barrier role filtering, `aos_env_get`,
       `aos_apply`, `aos_blackhole_check`, `aos_force`, `aos_force_deep`, and
-      `aos_gc_write_barrier`, `aos_alloc_*`, `aos_has_attr`, `aos_select_ic`, and `aos_update`
+      `aos_gc_write_barrier`, `aos_alloc_*`, `aos_has_attr`, `aos_select_ic`,
+      and `aos_update`
       runtime-FFI address/provenance, prove the runtime-FFI provenance set
-      follows the unified native-wrapper manifest, feed only the
-      allocation-filtered subset through JIT
+      follows the unified native-wrapper manifest, prove allocation
+      trap-wrapper blockers no longer include the missing extern-C blocker, feed
+      only the allocation-filtered subset through JIT
       registration, and still cover registered env-slot tier-1 promotion for
       `aos_env_get`. This is safe integration preflight plumbing only: it does
       not make addresses serializable or relinkable, cast finalized code
@@ -5417,10 +5421,14 @@ and helps the oracle directly.
       `aos_update` now have
       runtime-FFI native-wrapper provenance. Tests prove allocation-helper, `aos_apply`,
       `aos_env_get`, `aos_blackhole_check`/`aos_force`/`aos_force_deep`, and
-      `aos_gc_write_barrier` plus attrset-access binding/address parity, preserve the current
-      unbound helper and builtin missing-native-address registration gaps, and
-      prove registered helper addresses still retain native-export blockers while
-      covered helper families have no Rust-callable provenance gaps. This is safe integration preflight
+      `aos_gc_write_barrier` plus attrset-access binding/address parity,
+      preserve the current unbound helper and builtin missing-native-address
+      registration gaps, and prove registered helper addresses still retain
+      native-export blockers while covered helper families have no Rust-callable
+      provenance gaps. The
+      runtime-FFI provenance retains the trap-wrapper blocker list, while the
+      separate native-export preflight still reports missing final exported
+      wrappers. This is safe integration preflight
       metadata only: it does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, call native code, or complete runtime-symbol
@@ -5629,7 +5637,11 @@ and helps the oracle directly.
       transfer, typed heap-pointer return materialization, and semantic payload
       initialization for cons/lambda/thunk payloads exist. `aos-nix` uses these
       addresses for runtime-symbol provenance, replacing the allocation
-      Rust-callable provenance gap, but the oracle native-export readiness gate
+      Rust-callable provenance gap, and that provenance now carries the
+      trap-wrapper's remaining native-export blockers: missing extern-C wrapper
+      is removed by the trap body, while runtime-context decoding,
+      trap transfer, typed pointer returns, and semantic payload initialization
+      remain explicit where applicable. The oracle native-export readiness gate
       still rejects final registration. This is process-local preflight
       metadata only: no allocation wrapper allocates, initializes heap payloads,
       transfers traps, registers with `JITBuilder::symbol`, or becomes a final

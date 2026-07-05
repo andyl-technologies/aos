@@ -2,15 +2,15 @@
 //!
 //! This module lives in `aos-nix` because it composes the safe
 //! `ratchet-oracle` runtime metadata, the unsafe-capable `ratchet-jit` crate,
-//! and the narrow `ratchet-runtime-ffi` native-wrapper crate. Most projected
-//! addresses are still process-local Rust callable helper addresses.
-//! `aos_env_get`, `aos_blackhole_check`, `aos_force`, and `aos_force_deep` now
-//! come from success-path runtime-FFI native wrappers. The safe registered
-//! native-call gate in this module still refuses to cross the unsafe native-call
-//! boundary until the strict exported runtime-symbol registration plan is
-//! complete. The separate literal conformance precursor uses `ratchet-jit`'s
-//! reviewed no-import thunk-call path only, so it does not dereference or call
-//! registered helper addresses.
+//! and the narrow `ratchet-runtime-ffi` native-wrapper crate. Covered
+//! allocation, call-control, attrset-access, environment-access, forcing, and
+//! write-barrier helpers come from trap-only runtime-FFI native wrappers and
+//! keep their remaining native-export blockers in address provenance. The safe
+//! registered native-call gate in this module still refuses to cross the unsafe
+//! native-call boundary until the strict exported runtime-symbol registration
+//! plan is complete. The separate literal conformance precursor uses
+//! `ratchet-jit`'s reviewed no-import thunk-call path only, so it does not
+//! dereference or call registered helper addresses.
 
 use ratchet_core::{IrArena, IrId};
 use ratchet_jit::{

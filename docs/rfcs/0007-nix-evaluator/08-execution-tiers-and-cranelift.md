@@ -1466,12 +1466,15 @@ harness, never cut for scope.
       `aos_has_attr`, `aos_select_ic`, and `aos_update` addresses into
       `JitRuntimeSymbolAddressCandidate` values
       while preserving oracle missing bindings for unbound helpers and builtins.
-      It also records per-candidate provenance and exposes helper-role filtered candidate views, including the
+      It also records per-candidate provenance, exposes the runtime-FFI
+      trap-wrapper's remaining native-export blockers on that provenance, and
+      exposes helper-role filtered candidate views, including the
       allocation-helper subset in manifest order. Tests pin allocation,
       call-control, attrset-access, environment-access, forcing, and write-barrier role filtering,
       `aos_alloc_*`, `aos_env_get`, `aos_apply`, `aos_blackhole_check`, `aos_force`,
       `aos_force_deep`, `aos_gc_write_barrier`, `aos_has_attr`,
       `aos_select_ic`, and `aos_update` runtime-FFI address/provenance,
+      allocation trap-wrapper blockers without the missing extern-C blocker,
       feed only the allocation-filtered subset through the JIT registration preflight, and
       still cover the registered env-slot promotion path for `aos_env_get`.
       This is integration preflight plumbing only: the addresses are not
@@ -1492,7 +1495,10 @@ harness, never cut for scope.
       `aos_gc_write_barrier` plus attrset-access binding/address parity, preserve the current
       unbound helper and builtin missing-native-address registration gaps, and
       prove registered helper addresses still carry native-export blockers while
-      covered helper families have no Rust-callable provenance gaps.
+      covered helper families have no Rust-callable provenance gaps. The
+      runtime-FFI provenance retains the trap-wrapper blocker list, while the
+      separate native-export preflight still reports missing final exported
+      wrappers.
       This is still readiness metadata only: it does not call
       `JITBuilder::symbol`, export C ABI wrappers, finalize code, dereference
       helper addresses, or call native code.

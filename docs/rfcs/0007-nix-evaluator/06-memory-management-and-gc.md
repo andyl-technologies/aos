@@ -917,7 +917,11 @@ GC must be observationally invisible (§8): every item is gated by the different
       transfer, typed heap-pointer return materialization, and semantic payload
       initialization for cons/lambda/thunk payloads exist. `aos-nix` uses these
       addresses for runtime-symbol provenance, replacing the allocation
-      Rust-callable provenance gap, but the oracle native-export readiness gate
+      Rust-callable provenance gap, and that provenance now carries the
+      trap-wrapper's remaining native-export blockers: missing extern-C wrapper
+      is removed by the trap body, while runtime-context decoding,
+      trap transfer, typed pointer returns, and semantic payload initialization
+      remain explicit where applicable. The oracle native-export readiness gate
       still rejects final registration. This is process-local preflight
       metadata only: no allocation wrapper allocates, initializes heap payloads,
       transfers traps, registers with `JITBuilder::symbol`, or becomes a final

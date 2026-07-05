@@ -980,10 +980,14 @@ harness, never cut for scope.
       safepoint/trap transfer, typed heap-pointer return materialization, and
       semantic payload initialization for cons/lambda/thunk payloads exist.
       `aos-nix` projects these addresses as runtime-FFI provenance for JIT
-      address candidates, but the oracle native-export gate still rejects final
-      registration. This is address/provenance metadata only; no wrapper
-      allocates, initializes heap payloads, transfers traps, registers with
-      `JITBuilder::symbol`, or becomes a final exported native ABI target.
+      address candidates and exposes the trap-wrapper's remaining
+      native-export blockers there, proving the trap body exists while
+      runtime-context decoding, trap transfer, typed pointer returns, and
+      semantic payload initialization remain gated. The oracle native-export
+      gate still rejects final registration. This is address/provenance
+      metadata only; no wrapper allocates, initializes heap payloads, transfers
+      traps, registers with `JITBuilder::symbol`, or becomes a final exported
+      native ABI target.
 - [x] Current runtime-helper failure-convention precursor:
       `RuntimeHelperBinding::failure_convention` pins every currently bound
       allocation, call-control, attrset-access, environment-access, forcing, and write-barrier helper as

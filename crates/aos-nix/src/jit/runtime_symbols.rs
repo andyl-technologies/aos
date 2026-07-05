@@ -15,7 +15,9 @@ use ratchet_oracle::runtime::helpers::{
     RuntimeSymbolNativeExportMissingBinding, RuntimeSymbolNativeExportPreflight,
     runtime_symbol_native_export_preflight, runtime_symbol_rust_callable_preflight,
 };
-use ratchet_runtime_ffi::wrappers::{RuntimeNativeWrapperBinding, runtime_native_wrapper_bindings};
+use ratchet_runtime_ffi::wrappers::{
+    RuntimeNativeWrapperBinding, RuntimeNativeWrapperBlockers, runtime_native_wrapper_bindings,
+};
 use thiserror::Error;
 
 /// A failure while building Nix JIT runtime-symbol address candidates.
@@ -135,6 +137,8 @@ pub enum NixJitRuntimeSymbolAddressProvenance {
         symbol_name: String,
         /// The runtime symbol family served by the address candidate.
         kind: RuntimeSymbolKind,
+        /// Family-specific blockers that still prevent final native export.
+        remaining_export_blockers: RuntimeNativeWrapperBlockers,
     },
 }
 
@@ -146,10 +150,14 @@ impl NixJitRuntimeSymbolAddressProvenance {
         }
     }
 
-    fn runtime_ffi_native_wrapper(candidate: &JitRuntimeSymbolAddressCandidate) -> Self {
+    fn runtime_ffi_native_wrapper(
+        candidate: &JitRuntimeSymbolAddressCandidate,
+        remaining_export_blockers: RuntimeNativeWrapperBlockers,
+    ) -> Self {
         Self::RuntimeFfiNativeWrapper {
             symbol_name: candidate.symbol_name().to_owned(),
             kind: candidate.kind(),
+            remaining_export_blockers,
         }
     }
 
@@ -178,6 +186,19 @@ impl NixJitRuntimeSymbolAddressProvenance {
     /// Returns true when the candidate uses a runtime-FFI native wrapper address.
     pub const fn is_runtime_ffi_native_wrapper(&self) -> bool {
         matches!(self, Self::RuntimeFfiNativeWrapper { .. })
+    }
+
+    /// Returns runtime-FFI wrapper blockers that still prevent final native export.
+    pub const fn runtime_ffi_remaining_export_blockers(
+        &self,
+    ) -> Option<RuntimeNativeWrapperBlockers> {
+        match self {
+            Self::RuntimeFfiNativeWrapper {
+                remaining_export_blockers,
+                ..
+            } => Some(*remaining_export_blockers),
+            Self::RustCallableHelper { .. } => None,
+        }
     }
 }
 
@@ -502,10 +523,11 @@ impl NixJitRuntimeSymbolAddressCandidatePreflight {
 
 /// Builds process-local JIT address candidates from runtime wrapper metadata.
 ///
-/// Most returned candidates intentionally use current-process Rust helper
-/// callable addresses, not exported native ABI wrappers. The currently covered
-/// trap-only helper families are sourced from the unified
-/// `ratchet-runtime-ffi` native-wrapper manifest. This lets the bridge
+/// Covered helper families intentionally use current-process runtime-FFI
+/// trap-wrapper addresses, not final exported native ABI targets. Helpers
+/// without runtime-FFI wrappers fall back to Rust-callable metadata. The
+/// currently covered trap-only helper families are sourced from the unified
+/// `ratchet-runtime-ffi` native-wrapper manifest, letting the bridge
 /// distinguish native-wrapper address provenance from the remaining
 /// native-export blockers. The candidates let integration code exercise JIT
 /// registration and relocation plumbing while keeping the actual native call
@@ -672,8 +694,10 @@ fn jit_address_candidate_for_helper_binding(
 > {
     if let Some(native_wrapper) = native_wrappers.get(binding.symbol_name()).copied() {
         let candidate = jit_address_candidate_for_runtime_ffi_native_wrapper(native_wrapper)?;
-        let provenance =
-            NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(&candidate);
+        let provenance = NixJitRuntimeSymbolAddressProvenance::runtime_ffi_native_wrapper(
+            &candidate,
+            native_wrapper.remaining_export_blockers(),
+        );
         return Ok((candidate, provenance));
     }
 
@@ -733,6 +757,90 @@ fn runtime_native_wrappers_by_symbol()
         .into_iter()
         .map(|binding| (binding.symbol_name(), binding))
         .collect())
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use ratchet_oracle::runtime::alloc::RuntimeAllocationNativeExportBlocker;
+
+    use super::*;
+
+    #[test]
+    fn jit_runtime_symbol_address_provenance_exposes_runtime_ffi_export_blockers() {
+        let preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("JIT address candidate preflight builds");
+        let attrs = preflight
+            .address_provenance_for_symbol("aos_alloc_attrs")
+            .expect("attrs allocation provenance exists");
+        let thunk = preflight
+            .address_provenance_for_symbol("aos_alloc_thunk")
+            .expect("thunk allocation provenance exists");
+
+        assert!(attrs.is_runtime_ffi_native_wrapper());
+        assert!(matches!(
+            attrs.runtime_ffi_remaining_export_blockers(),
+            Some(RuntimeNativeWrapperBlockers::Allocation(blockers))
+                if blockers.contains(
+                    &RuntimeAllocationNativeExportBlocker::RuntimeContextAbiUnimplemented
+                )
+                    && blockers.contains(
+                        &RuntimeAllocationNativeExportBlocker::TrapTransferUnimplemented
+                    )
+                    && blockers.contains(
+                        &RuntimeAllocationNativeExportBlocker::TypedPointerReturnUnmaterialized
+                    )
+                    && !blockers.contains(
+                        &RuntimeAllocationNativeExportBlocker::MissingExternCWrapper
+                    )
+                    && !blockers.contains(
+                        &RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented
+                    )
+        ));
+        assert!(matches!(
+            thunk.runtime_ffi_remaining_export_blockers(),
+            Some(RuntimeNativeWrapperBlockers::Allocation(blockers))
+                if blockers.contains(
+                    &RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented
+                )
+                    && !blockers.contains(
+                        &RuntimeAllocationNativeExportBlocker::MissingExternCWrapper
+                    )
+        ));
+
+        let registration = nix_jit_runtime_symbol_registration_preflight()
+            .expect("Nix JIT registration preflight builds");
+        assert!(
+            registration
+                .native_export_gap_for_symbol("aos_alloc_attrs")
+                .is_some_and(|gap| gap
+                    .missing_exported_allocation_blockers()
+                    .is_some_and(|blockers| blockers
+                        .contains(&RuntimeAllocationNativeExportBlocker::MissingExternCWrapper)))
+        );
+        assert!(
+            registration
+                .address_provenance_gap_for_symbol("aos_alloc_attrs")
+                .is_none()
+        );
+
+        let binding = runtime_symbol_rust_callable_preflight()
+            .expect("oracle Rust-callable preflight builds")
+            .helper_callables()
+            .iter()
+            .copied()
+            .find(|binding| binding.symbol_name() == "aos_env_get")
+            .expect("oracle env Rust callable exists");
+        let (_, fallback_provenance) =
+            jit_address_candidate_for_helper_binding(binding, &BTreeMap::new())
+                .expect("fallback Rust-callable candidate builds");
+
+        assert!(fallback_provenance.is_rust_callable_helper());
+        assert!(
+            fallback_provenance
+                .runtime_ffi_remaining_export_blockers()
+                .is_none()
+        );
+    }
 }
 
 #[cfg(test)]
