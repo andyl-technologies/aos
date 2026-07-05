@@ -1650,6 +1650,43 @@ fn assert_gc_stress_root_string_result_skips_dispatch(source: &str, expected: &[
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+fn assert_gc_stress_root_bool_result_skips_dispatch(source: &str, expected: bool) {
+    let ir = lower(source);
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress root expression evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while evaluating {source}"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.as_bool(), Ok(expected));
+    assert!(evaluator.heap().permanent_allocation_safepoints().count() > 0);
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("permanent allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
 fn assert_gc_stress_root_path_result_dispatches(source: &str, expected: &[u8]) {
     let ir = lower(source);
     let span = ir.arena.node(ir.root).expect("root exists").span;
@@ -1774,6 +1811,22 @@ fn gc_stress_eval_root_store_path_result_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches(
         r#"builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src""#,
         b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src",
+    );
+}
+
+#[test]
+fn gc_stress_eval_root_to_file_result_dispatch_permanent_noop_bridge() {
+    assert_gc_stress_root_string_result_dispatches(
+        r#"builtins.toFile "foo" "bar""#,
+        b"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo",
+    );
+}
+
+#[test]
+fn gc_stress_nested_to_file_result_skips_unregistered_outer_locals() {
+    assert_gc_stress_root_bool_result_skips_dispatch(
+        r#""left" == builtins.toFile "foo" "bar""#,
+        false,
     );
 }
 

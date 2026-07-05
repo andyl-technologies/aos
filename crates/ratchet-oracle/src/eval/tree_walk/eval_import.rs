@@ -512,9 +512,7 @@ impl TreeWalk {
                 references: reference_context,
             },
         );
-        self.heap
-            .alloc_string(NixString::new(path, context))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, NixString::new(path, context))
     }
 
     pub(super) fn to_file_store_path_name(
