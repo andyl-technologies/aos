@@ -31,12 +31,20 @@ use crate::syntax::Symbol;
 ///
 /// # Errors
 ///
-/// Returns [`ScalarReplacementError`] if the fact table is missing an arena
-/// entry, if an immediate scalar node carries a payload that does not match its
-/// kind, or if a candidate replacement references malformed side tables.
+/// Returns [`ScalarReplacementError`] if the fact table length does not match
+/// the arena node count, if an immediate scalar node carries a payload that does
+/// not match its kind, or if a candidate replacement references malformed side
+/// tables.
 pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarReplacementError> {
+    let node_count = ir.arena.nodes().len();
+    if ir.facts.len() != node_count {
+        return Err(ScalarReplacementError::InvalidFactTableLength {
+            expected: node_count,
+            actual: ir.facts.len(),
+        });
+    }
     let mut plan = ScalarReplacementPlan {
-        node_count: ir.arena.nodes().len(),
+        node_count,
         ..ScalarReplacementPlan::default()
     };
 
@@ -583,6 +591,14 @@ pub enum ScalarReplacementError {
         /// The expected direct-primop argument count.
         expected: usize,
         /// The actual lowered argument count.
+        actual: usize,
+    },
+    /// The fact table length did not match the arena node count.
+    #[error("invalid fact table length: expected {expected}, got {actual}")]
+    InvalidFactTableLength {
+        /// The number of fact records required by the arena.
+        expected: usize,
+        /// The number of fact records present.
         actual: usize,
     },
 }

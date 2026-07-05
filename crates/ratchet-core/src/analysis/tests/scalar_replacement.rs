@@ -120,6 +120,63 @@ fn scalar_replacement_plan_retains_unsupported_strict_no_escape_nodes() {
 }
 
 #[test]
+fn scalar_replacement_plan_rejects_fact_table_length_mismatches() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Int,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Int(1),
+        )],
+        Vec::new(),
+    );
+    let mut overlong = Ir {
+        root: IrId::new(0),
+        arena: arena.clone(),
+        facts: IrFacts::conservative(2),
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(&mut overlong, IrId::new(1), strict_no_escape());
+
+    let error = scalar_replacement_plan(&overlong).expect_err("overlong fact table rejects");
+
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidFactTableLength {
+            expected: 1,
+            actual: 2,
+        }
+    );
+
+    let short = Ir {
+        root: IrId::new(0),
+        arena,
+        facts: IrFacts::conservative(0),
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let error = scalar_replacement_plan(&short).expect_err("short fact table rejects");
+
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidFactTableLength {
+            expected: 1,
+            actual: 0,
+        }
+    );
+}
+
+#[test]
 fn scalar_replacement_plan_admits_strict_no_escape_primop_scalars() {
     let mut ir = annotate_allocations("builtins.isInt 1");
     let root = ir.root;
@@ -863,36 +920,6 @@ fn scalar_replacement_plan_retains_conservative_primops_despite_facts() {
                     kind: IrKind::PrimOp,
                 }
     }));
-}
-
-#[test]
-fn scalar_replacement_plan_rejects_missing_facts() {
-    let ir = Ir {
-        root: IrId::new(0),
-        arena: IrArena::from_raw_parts(
-            vec![IrNode::new(
-                IrKind::Int,
-                Span::new(0, 1),
-                EffectClass::pure(),
-                IrData::Int(1),
-            )],
-            Vec::new(),
-        ),
-        facts: IrFacts::conservative(0),
-        symbols: SymbolTable::new(),
-        frames: Box::new([]),
-        with_chains: Box::new([]),
-        attr_paths: Box::new([]),
-        bindings: Box::new([]),
-        shapes: Box::new([]),
-    };
-
-    let error = scalar_replacement_plan(&ir).expect_err("missing facts reject");
-
-    assert_eq!(
-        error,
-        ScalarReplacementError::MissingFact { id: IrId::new(0) }
-    );
 }
 
 #[test]
