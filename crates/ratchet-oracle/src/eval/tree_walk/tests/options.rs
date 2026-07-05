@@ -3488,6 +3488,241 @@ fn gc_stress_sort_result_skips_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+fn zipped_apply2_second_argument(evaluator: &TreeWalk, value: Value) -> Value {
+    let thunk = evaluator
+        .heap()
+        .get_thunk(value)
+        .expect("zipAttrsWith result is a thunk");
+    let EvalThunkKind::Apply2 {
+        second_argument_value,
+        ..
+    } = thunk.kind()
+    else {
+        panic!("zipAttrsWith result is an apply2 thunk");
+    };
+    *second_argument_value
+}
+
+fn assert_heap_string_bytes(evaluator: &TreeWalk, value: Value, expected: &[u8]) {
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("value is a heap-owned string");
+    assert_eq!(string.bytes(), expected);
+}
+
+#[test]
+fn gc_stress_zip_attrs_with_direct_root_value_lists_preserve_live_locals() {
+    let ir = lower(
+        r#"
+builtins.zipAttrsWith (name: values: values) [
+  { a = "left"; b = "middle"; }
+  { a = "right"; }
+]
+"#,
+    );
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .eval_root()
+        .expect("root zipAttrsWith evaluates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+
+    assert!(
+        wrapper_calls_after >= wrapper_calls_before + 2,
+        "root zipAttrsWith grouped value lists did not route through the tree-walk list wrapper"
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let a_key = evaluator.symbols.intern(b"a").expect("a interns");
+    let b_key = evaluator.symbols.intern(b"b").expect("b interns");
+    let (a_thunk, b_thunk) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("zipAttrsWith result is heap-owned");
+        (
+            attrs.get(a_key).expect("a result exists"),
+            attrs.get(b_key).expect("b result exists"),
+        )
+    };
+    let a_values = evaluator
+        .force_value(ir.root, span, a_thunk)
+        .expect("a grouped values thunk forces");
+    let b_values = evaluator
+        .force_value(ir.root, span, b_thunk)
+        .expect("b grouped values thunk forces");
+    let a_items = {
+        let list = evaluator
+            .heap()
+            .get_list(a_values)
+            .expect("a grouped values are heap-owned");
+        assert_eq!(list.len(), 2);
+        [
+            list.get(0).expect("first a value exists"),
+            list.get(1).expect("second a value exists"),
+        ]
+    };
+    let b_item = {
+        let list = evaluator
+            .heap()
+            .get_list(b_values)
+            .expect("b grouped values are heap-owned");
+        assert_eq!(list.len(), 1);
+        list.get(0).expect("b value exists")
+    };
+    let first_a = evaluator
+        .force_value(ir.root, span, a_items[0])
+        .expect("first a grouped value forces");
+    let second_a = evaluator
+        .force_value(ir.root, span, a_items[1])
+        .expect("second a grouped value forces");
+    let b = evaluator
+        .force_value(ir.root, span, b_item)
+        .expect("b grouped value forces");
+
+    assert_heap_string_bytes(&evaluator, first_a, b"left");
+    assert_heap_string_bytes(&evaluator, second_a, b"right");
+    assert_heap_string_bytes(&evaluator, b, b"middle");
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_zip_attrs_with_value_lists_skip_active_argument_roots() {
+    let ir = lower("name: values: values");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let function = evaluator
+        .eval_node(ir.root)
+        .expect("zipAttrsWith function allocates");
+    assert_eq!(function.tag(), ValueTag::Lambda);
+    let a_key = evaluator.symbols.intern(b"a").expect("a interns");
+    let b_key = evaluator.symbols.intern(b"b").expect("b interns");
+    let first_attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(a_key, Value::int(1)),
+            AttrEntry::new(b_key, Value::int(2)),
+        ],
+        &evaluator.symbols,
+    )
+    .expect("first attrs build");
+    let first = evaluator
+        .heap
+        .alloc_attrs(0, first_attrs)
+        .expect("first attrs allocate");
+    let second_attrs = FlatAttrs::new(
+        vec![AttrEntry::new(a_key, Value::int(3))],
+        &evaluator.symbols,
+    )
+    .expect("second attrs build");
+    let second = evaluator
+        .heap
+        .alloc_attrs(0, second_attrs)
+        .expect("second attrs allocate");
+    let input = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![first, second]))
+        .expect("input list allocates");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    evaluator
+        .push_active_primop_arg_roots(
+            ir.root,
+            span,
+            &[
+                EvalPrimOpArg::new(ir.root, span, function),
+                EvalPrimOpArg::new(ir.root, span, input),
+            ],
+        )
+        .expect("active zipAttrsWith argument roots push");
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+        eval.alloc_zipped_attrs_with(
+            ir.root,
+            span,
+            ir.root,
+            span,
+            function,
+            ir.root,
+            span,
+            vec![first, second],
+        )
+    });
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.pop_active_primop_arg_roots();
+    let value = result.expect("zipAttrsWith result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 2,
+        "zipAttrsWith grouped value lists did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while active zipAttrsWith argument roots were live"
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("zipAttrsWith result is heap-owned");
+    let a_value = attrs.get(a_key).expect("a result exists");
+    let b_value = attrs.get(b_key).expect("b result exists");
+    let a_values = zipped_apply2_second_argument(&evaluator, a_value);
+    let b_values = zipped_apply2_second_argument(&evaluator, b_value);
+    let a_values = evaluator
+        .heap()
+        .get_list(a_values)
+        .expect("a grouped values list is heap-owned");
+    assert_eq!(a_values.len(), 2);
+    assert_eq!(
+        a_values.get(0).expect("first a value exists").as_int(),
+        Ok(1)
+    );
+    assert_eq!(
+        a_values.get(1).expect("second a value exists").as_int(),
+        Ok(3)
+    );
+    let b_values = evaluator
+        .heap()
+        .get_list(b_values)
+        .expect("b grouped values list is heap-owned");
+    assert_eq!(b_values.len(), 1);
+    assert_eq!(b_values.get(0).expect("b value exists").as_int(), Ok(2));
+    let permanent_safepoints = evaluator.heap().permanent_allocation_safepoints();
+    assert!(
+        permanent_safepoints.count() >= permanent_safepoints_before + 3,
+        "zipAttrsWith result did not record expected permanent allocations after grouped value-list wrapper calls"
+    );
+    let permanent_safepoint = permanent_safepoints
+        .last()
+        .expect("zipAttrsWith attrs allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
 #[test]
 fn gc_stress_filter_result_skips_active_argument_roots() {
     let ir = lower("null");

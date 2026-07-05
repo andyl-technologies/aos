@@ -167,7 +167,7 @@ impl TreeWalk {
         span: Span,
         function_id: IrId,
         function_span: Span,
-        function: Value,
+        mut function: Value,
         list_id: IrId,
         list_span: Span,
         elements: Vec<Value>,
@@ -261,13 +261,17 @@ impl TreeWalk {
                 span,
             )
         })?;
-        for (key, values) in groups {
-            let values = self
-                .heap
-                .alloc_list(NixList::new(values))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                })?;
+        for group_index in 0..groups.len() {
+            let key = groups[group_index].0;
+            let values = std::mem::take(&mut groups[group_index].1);
+            let values = self.alloc_zipped_attrs_with_values_list(
+                id,
+                span,
+                &mut function,
+                &mut entries,
+                &mut groups,
+                values,
+            )?;
             let name = self.alloc_symbol_string(id, span, key)?;
             let value = self.alloc_apply2_thunk(
                 id,
@@ -295,6 +299,72 @@ impl TreeWalk {
             attrs,
             AttrSetConstruction::Dynamic { len },
         )
+    }
+
+    fn alloc_zipped_attrs_with_values_list(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: &mut Value,
+        entries: &mut [AttrEntry],
+        groups: &mut [(Symbol, Vec<Value>)],
+        values: Vec<Value>,
+    ) -> Result<Value, TreeWalkError> {
+        let grouped_root_count = groups.iter().try_fold(0usize, |count, (_, values)| {
+            count.checked_add(values.len()).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed { id, len: count },
+                    span,
+                )
+            })
+        })?;
+        let root_count = 1usize
+            .checked_add(entries.len())
+            .and_then(|count| count.checked_add(grouped_root_count))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: entries.len(),
+                    },
+                    span,
+                )
+            })?;
+        let mut roots = Vec::new();
+        roots.try_reserve_exact(root_count).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: root_count,
+                },
+                span,
+            )
+        })?;
+        roots.push(*function);
+        roots.extend(entries.iter().map(|entry| entry.value));
+        for (_, values) in groups.iter() {
+            roots.extend(values.iter().copied());
+        }
+
+        let value = self.with_transient_value_stack_roots(id, span, &mut roots, |eval| {
+            eval.alloc_tree_walk_list(id, span, NixList::new(values))
+        })?;
+        if let Some(root) = roots.first().copied() {
+            *function = root;
+        }
+        for (entry, root) in entries.iter_mut().zip(roots.iter().copied().skip(1)) {
+            entry.value = root;
+        }
+        let mut root_index = 1usize.saturating_add(entries.len());
+        for (_, values) in groups.iter_mut() {
+            for value in values.iter_mut() {
+                if let Some(root) = roots.get(root_index).copied() {
+                    *value = root;
+                }
+                root_index = root_index.saturating_add(1);
+            }
+        }
+        Ok(value)
     }
 
     pub(super) fn eval_cat_attrs_primop(
