@@ -7426,6 +7426,8 @@ and helps the oracle directly.
       primop argument roots block dispatch,
       direct regex `match` capture-list and `split` capture/result-list
       allocations preserving accumulated result roots,
+      direct `builtins.nixPath` result-list allocations preserving
+      accumulated entry roots,
       direct non-empty `map` list-result allocations preserving registered
       transient roots while mapped apply-thunk fields block dispatch,
       direct non-empty `genList` list-result allocations preserving registered

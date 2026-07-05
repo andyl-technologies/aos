@@ -2032,6 +2032,71 @@ fn gc_stress_split_capture_and_result_lists_preserve_accumulated_values() {
 }
 
 #[test]
+fn gc_stress_nix_path_value_result_list_preserves_accumulated_entries() {
+    let ir = lower("builtins.nixPath");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    options
+        .add_nix_path_entry(b"left".to_vec(), b"/aos/left".to_vec())
+        .expect("left nixPath entry configures");
+    options
+        .add_nix_path_entry(b"right".to_vec(), b"/aos/right".to_vec())
+        .expect("right nixPath entry configures");
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("nixPath value evaluates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "nixPath result list did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating nixPath result list"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    let items = {
+        let list = evaluator
+            .heap()
+            .get_list(value)
+            .expect("nixPath result is heap-owned");
+        assert_eq!(list.len(), 2);
+        [
+            list.get(0).expect("first nixPath entry exists"),
+            list.get(1).expect("second nixPath entry exists"),
+        ]
+    };
+    assert_nix_path_entry(&mut evaluator, items[0], b"left", b"/aos/left");
+    assert_nix_path_entry(&mut evaluator, items[1], b"right", b"/aos/right");
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("nixPath result list safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_substring_string_result_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches(r#"builtins.substring 1 2 "abcd""#, b"bc");
 }
@@ -3829,6 +3894,32 @@ fn assert_heap_string_bytes(evaluator: &TreeWalk, value: Value, expected: &[u8])
         .get_string(value)
         .expect("value is a heap-owned string");
     assert_eq!(string.bytes(), expected);
+}
+
+fn assert_nix_path_entry(
+    evaluator: &mut TreeWalk,
+    value: Value,
+    expected_prefix: &[u8],
+    expected_path: &[u8],
+) {
+    let path_key = evaluator.symbols.intern(b"path").expect("path key interns");
+    let prefix_key = evaluator
+        .symbols
+        .intern(b"prefix")
+        .expect("prefix key interns");
+    let (path, prefix) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("nixPath entry is a heap-owned attrset");
+        assert_eq!(attrs.len(), 2);
+        (
+            attrs.get(path_key).expect("path attr exists"),
+            attrs.get(prefix_key).expect("prefix attr exists"),
+        )
+    };
+    assert_heap_string_bytes(evaluator, prefix, expected_prefix);
+    assert_heap_string_bytes(evaluator, path, expected_path);
 }
 
 #[test]

@@ -300,7 +300,7 @@ impl TreeWalk {
         }
         let entries = self.visible_nix_path().to_vec();
         let mut values = Vec::new();
-        values.try_reserve_exact(entries.len()).map_err(|_| {
+        let value_capacity = entries.len().checked_add(2).ok_or_else(|| {
             TreeWalkError::new(
                 TreeWalkErrorKind::ListAllocationFailed {
                     id,
@@ -309,12 +309,31 @@ impl TreeWalk {
                 span,
             )
         })?;
+        values.try_reserve_exact(value_capacity).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: value_capacity,
+                },
+                span,
+            )
+        })?;
         let path_key = self.intern_builtin_attr_symbol(id, PATH_ATTR, span)?;
         let prefix_key = self.intern_builtin_attr_symbol(id, PREFIX_ATTR, span)?;
 
         for entry in entries {
-            let path = self.alloc_static_string(id, span, entry.path())?;
-            let prefix = self.alloc_static_string(id, span, entry.prefix())?;
+            let path =
+                self.with_transient_value_stack_roots(id, span, values.as_mut_slice(), |eval| {
+                    eval.alloc_static_string(id, span, entry.path())
+                })?;
+            let entry_root_start = values.len();
+            values.push(path);
+            let prefix =
+                self.with_transient_value_stack_roots(id, span, values.as_mut_slice(), |eval| {
+                    eval.alloc_static_string(id, span, entry.prefix())
+                })?;
+            let path = values[entry_root_start];
+            values.truncate(entry_root_start);
             let attrs = FlatAttrs::new(
                 vec![
                     AttrEntry::new(path_key, path),
@@ -324,19 +343,24 @@ impl TreeWalk {
             )
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
             let len = attrs.len();
-            let attrs = self.alloc_flat_attrs_with_repr_telemetry(
-                id,
-                span,
-                0,
-                attrs,
-                AttrSetConstruction::Dynamic { len },
-            )?;
+            let entry_root_start = values.len();
+            values.push(path);
+            values.push(prefix);
+            let attrs =
+                self.with_transient_value_stack_roots(id, span, values.as_mut_slice(), |eval| {
+                    eval.alloc_flat_attrs_with_repr_telemetry(
+                        id,
+                        span,
+                        0,
+                        attrs,
+                        AttrSetConstruction::Dynamic { len },
+                    )
+                })?;
+            values.truncate(entry_root_start);
             values.push(attrs);
         }
 
-        self.heap
-            .alloc_list(NixList::new(values))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(values))
     }
 
     pub(super) fn eval_find_file_primop(
