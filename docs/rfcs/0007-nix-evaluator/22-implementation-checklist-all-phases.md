@@ -7394,6 +7394,8 @@ and helps the oracle directly.
       registered transient roots while interned list roots block dispatch,
       parsed JSON and TOML array-result helper allocations relocating
       registered transient roots,
+      direct `splitVersion` empty-list result allocations relocating
+      registered transient roots,
       direct list-concat result allocations preserving registered transient
       roots while input composite list roots block dispatch,
       direct `attrNames`, `attrValues`, and `tail` list-result helper

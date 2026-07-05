@@ -324,9 +324,7 @@ impl TreeWalk {
         for (start, end) in SplitVersionRanges::new(&bytes) {
             elements.push(self.alloc_static_string(id, span, &bytes[start..end])?);
         }
-        self.heap
-            .alloc_list(NixList::new(elements))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(elements))
     }
 
     pub(super) fn eval_compare_versions_primop(
