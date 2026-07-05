@@ -477,8 +477,10 @@ long-held locks.
   and separate model artifact/replay-state evidence, and terminal savepoint
   replay-oracle validation, plus explicitly selected local-QEMU forks through
   the same child-session materialization with resolved QEMU/plugin identity
-  provenance in stdout and the canonical log; full closure waits for
-  process-backed real-QEMU fork execution.
+  provenance in stdout and the canonical log, and process-level
+  `fork --backend qemu` JSONL output plus child artifact creation through
+  marker-resolved QEMU/plugin identity; full closure waits for backend-executed
+  real-QEMU fork execution.
   `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
   covers `replay --check <original-log>` parsing, pinned-identity validation
   before store access, content-addressed component payload resolution from the

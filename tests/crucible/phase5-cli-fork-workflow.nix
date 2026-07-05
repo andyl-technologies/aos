@@ -15,6 +15,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -71,6 +72,10 @@
         label = "T-CLI-11 local-QEMU fork routing progress";
         needle = "routes explicitly selected local-QEMU forks through the same child-session";
       }
+      {
+        label = "T-CLI-11 process qemu fork progress";
+        needle = "process-tests real-binary `fork --backend qemu` JSONL";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -92,6 +97,10 @@
       {
         label = "phase5 CLI fork local-QEMU progress";
         needle = "explicitly selected local-QEMU forks through\n  the same child-session materialization";
+      }
+      {
+        label = "phase5 CLI process qemu fork progress";
+        needle = "process-level\n  `fork --backend qemu` JSONL output plus child artifact creation";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -224,6 +233,32 @@
         needle = "cli_fork_workflow_rejects_tampered_handle_frontier";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
+      {
+        label = "process qemu fork JSONL regression";
+        needle = "cli_fork_qemu_process_jsonl_reports_identity_and_artifact";
+      }
+      {
+        label = "process qemu fork runner kind";
+        needle = "\"fork_qemu_runner\"";
+      }
+      {
+        label = "process qemu fork artifact kind";
+        needle = "\"fork_reproduction_artifact\"";
+      }
+      {
+        label = "process qemu fork oracle kind";
+        needle = "\"fork_oracle_validation\"";
+      }
+      {
+        label = "process qemu fork patch series";
+        needle = "qemu_patch_series=sha256-process-qemu-patch-series";
+      }
+      {
+        label = "process qemu fork materialization";
+        needle = "materialization=child-session-savepoint";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes CLI fork workflow check";
@@ -293,6 +328,13 @@ in
               -p crucible-cli \
               cli_fork \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-fork-workflow-target" \
+              -p crucible-cli \
+              cli_fork_qemu_process_jsonl_reports_identity_and_artifact \
+              -- --test-threads=1
           '';
         }
         {
@@ -306,6 +348,7 @@ in
             tasks=$TASK_IDS
             component=crucible-cli
             contract=fork-workflow-progress
+            process_qemu_fork=marker-resolved-jsonl-artifact
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
