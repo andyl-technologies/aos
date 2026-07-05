@@ -35,8 +35,21 @@ impl EvalThunk {
                 scoped_globals,
             },
             cell: ThunkCell::new(),
+            force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
+    }
+
+    /// Marks this node thunk as single-entry storage.
+    ///
+    /// Single-entry storage is admitted only after the C-8 frame-local
+    /// analysis proves that the thunk is used once and cannot escape. It keeps
+    /// the serial cell present for heap metadata compatibility, but the force
+    /// path evaluates the body directly without publishing a cached result.
+    pub(crate) fn into_single_entry(mut self) -> Self {
+        self.force_storage_mode = EvalThunkForceStorageMode::SingleEntry;
+        self.parallel_cell = None;
+        self
     }
 
     /// Creates a suspended function-application thunk record.
@@ -58,6 +71,7 @@ impl EvalThunk {
                 argument_value,
             },
             cell: ThunkCell::new(),
+            force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
     }
@@ -91,6 +105,7 @@ impl EvalThunk {
                 second_argument_value,
             },
             cell: ThunkCell::new(),
+            force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
     }
@@ -109,6 +124,7 @@ impl EvalThunk {
                 path,
             },
             cell: ThunkCell::new(),
+            force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
     }
@@ -118,6 +134,7 @@ impl EvalThunk {
         Self {
             kind: EvalThunkKind::BuiltinAttr { symbol, builtin },
             cell: ThunkCell::new(),
+            force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
     }
@@ -127,6 +144,7 @@ impl EvalThunk {
         Self {
             kind: thunk.kind.clone(),
             cell: ThunkCell::forced(value),
+            force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
     }
@@ -139,7 +157,10 @@ impl EvalThunk {
     /// It is intentionally crate-internal while serial `ThunkCell` forcing
     /// remains authoritative and scheduler integration is incomplete.
     pub(crate) fn with_parallel_payload_cell(mut self, dropped_claim_error: TreeWalkError) -> Self {
-        self.parallel_cell = Some(TreeWalkParallelThunkCell::new(dropped_claim_error));
+        if self.force_storage_mode == EvalThunkForceStorageMode::Serial {
+            self.force_storage_mode = EvalThunkForceStorageMode::SerialWithParallelPayload;
+            self.parallel_cell = Some(TreeWalkParallelThunkCell::new(dropped_claim_error));
+        }
         self
     }
 
@@ -211,10 +232,15 @@ impl EvalThunk {
     /// Returns the currently attached force-storage mode.
     #[allow(dead_code)]
     pub(crate) const fn force_storage_mode(&self) -> EvalThunkForceStorageMode {
-        match &self.parallel_cell {
-            Some(_) => EvalThunkForceStorageMode::SerialWithParallelPayload,
-            None => EvalThunkForceStorageMode::Serial,
-        }
+        self.force_storage_mode
+    }
+
+    /// Returns whether this thunk uses the single-entry direct force path.
+    pub(crate) const fn is_single_entry_force_storage(&self) -> bool {
+        matches!(
+            self.force_storage_mode,
+            EvalThunkForceStorageMode::SingleEntry
+        )
     }
 
     /// Returns the evaluator-native parallel payload cell, if one is attached.
@@ -332,6 +358,21 @@ mod tests {
             Ok(42)
         );
         assert_eq!(forced.body(), Some(IrId::new(7)));
+    }
+
+    #[test]
+    fn eval_thunk_single_entry_storage_skips_parallel_payload_cell() {
+        let thunk = EvalThunk::new(IrId::new(7))
+            .into_single_entry()
+            .with_parallel_payload_cell(tree_walk_error(99));
+
+        assert_eq!(
+            thunk.force_storage_mode(),
+            EvalThunkForceStorageMode::SingleEntry
+        );
+        assert!(thunk.parallel_payload_cell().is_none());
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+        assert_eq!(thunk.body(), Some(IrId::new(7)));
     }
 
     #[test]

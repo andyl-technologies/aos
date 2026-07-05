@@ -8570,7 +8570,7 @@ nurseries build on the bump arena.
       change tree-walk allocation, install a single-entry representation,
       implement call-by-name lowering, improve cardinality/escape precision, or
       close the loom/Miri/TSan audit.
-- [x] Current tree-walk thunk allocation planning precursor:
+- [x] Current tree-walk thunk allocation/storage bridge:
       `ratchet-oracle::eval::thunk_lowering` consumes the C-8
       `frame_local_single_entry_thunk_downgrade` proof at the tree-walk
       allocation boundary and returns an explicit plan: ordinary update slot,
@@ -8580,21 +8580,28 @@ nurseries build on the bump arena.
       forcing ordinary update slots while frames are populated before consulting
       analysis facts, lets strictness elision take precedence over lazy
       single-entry storage when no thunk is allocated, and treats contradictory
-      absent-plus-strict facts conservatively as an update slot. In the current
-      runtime, `SingleEntry` and demanded `Omit` plans deliberately fall back to
-      ordinary suspended thunk allocation; dead-binding frame assembly remains
-      the only live omission consumer until a no-storage demanded-value contract
-      exists. Tests cover lazy frame-local single-entry admission, strict elision
-      precedence, order-sensitive update fallback with present and missing
-      facts, escaping-thunk update fallback, absent omission, absent-strict
-      conflict rejection of elision, live fallback for single-entry and demanded
-      omit plans, plus demand-position rejection for missing facts, missing
+      absent-plus-strict facts conservatively as an update slot. `SingleEntry`
+      plans now allocate an `EvalThunk` with explicit single-entry force
+      storage; forcing that thunk evaluates the captured node body directly
+      under the normal active-force root, increments the force counter, and
+      leaves the serial `ThunkCell` suspended instead of publishing a cached
+      serial or parallel payload result. Demanded `Omit` plans still fall back
+      to ordinary suspended thunk allocation; dead-binding frame assembly
+      remains the only live omission consumer until a no-storage demanded-value
+      contract exists. Tests cover lazy frame-local single-entry admission,
+      direct single-entry forcing without cache publication, parallel-payload
+      admission bypass, throwing direct-force suspension preservation, strict
+      elision precedence, order-sensitive update fallback with present and
+      missing facts, escaping-thunk update fallback, absent omission,
+      absent-strict conflict rejection of elision, demanded-omit fallback
+      allocation, plus demand-position rejection for missing facts, missing
       thunk nodes, non-thunk nodes, malformed thunk payloads, and missing thunk
       bodies, while both planner contexts reject self-referential thunk bodies
-      before returning a plan. This is still a representation precursor only: it
-      does not install a single-entry runtime representation, change `ThunkCell`,
-      implement call-by-name lowering, remove absent bindings from frame layout,
-      improve analysis precision, or close the loom/Miri/TSan audit.
+      before returning a plan. This is still a narrow storage bridge only: it
+      does not remove the compatibility `ThunkCell`, implement call-by-name
+      lowering, remove absent bindings from frame layout, improve analysis
+      precision, wire single-entry storage into the parallel thunk wait
+      protocol, or close the loom/Miri/TSan audit.
 - [x] Current fallible L1 root execution precursor:
       `ratchet-oracle::eval::parallel_failure` adds a safe fallible top-level
       executor for independent roots. Root-local failures are stored as per-task
@@ -9136,10 +9143,13 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       uninitialized forward-reference slots or reordering value errors ahead of
       dynamic-key and duplicate-key validation. The tree-walk oracle treats
       `Scalar` as eager WHNF until optimized tiers add non-heap storage; current
-      `SingleEntry` and demanded `Omit` plans allocate ordinary suspended thunks
-      until those representations are implemented. Gate: `attrs_2` tests cover
+      `SingleEntry` plans allocate explicit direct-force thunk storage that
+      keeps the compatibility serial cell suspended after force, while demanded
+      `Omit` plans still allocate ordinary suspended thunks until a no-storage
+      demanded-value contract exists. Gate: `attrs_2` tests cover
       conservative thunk preservation, safe strict/eager fact elision,
-      single-entry and demanded-omit fallback allocation, inherited-select
+      single-entry direct storage, direct-force error suspension, parallel
+      payload bypass, demanded-omit fallback allocation, inherited-select
       assembly preservation, dynamic-key error ordering, and frame-initialization
       preservation.
 - [ ] `--eval --json` differential check green (`C-4`) — required before the

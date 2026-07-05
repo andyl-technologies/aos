@@ -150,6 +150,7 @@ pub(crate) enum EvalThunkKind {
 pub struct EvalThunk {
     kind: EvalThunkKind,
     cell: ThunkCell,
+    force_storage_mode: EvalThunkForceStorageMode,
     #[allow(dead_code)]
     parallel_cell: Option<TreeWalkParallelThunkCell>,
 }
@@ -160,6 +161,9 @@ pub struct EvalThunk {
 pub(crate) enum EvalThunkForceStorageMode {
     /// The thunk only has the serial tree-walk [`ThunkCell`].
     Serial,
+    /// The thunk is proven frame-local and used once, so forcing evaluates the
+    /// body directly without publishing a cached serial or parallel result.
+    SingleEntry,
     /// The thunk has the serial cell plus an evaluator-native parallel payload cell.
     SerialWithParallelPayload,
 }

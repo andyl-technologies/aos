@@ -7819,6 +7819,7 @@ fn record_owned_heap_field_write_object(
             Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk {
                 kind: thunk.kind().clone(),
                 cell: ThunkCell::forced(replacement),
+                force_storage_mode: thunk.force_storage_mode(),
                 parallel_cell,
             })))
         }
@@ -7840,6 +7841,7 @@ fn record_owned_heap_field_write_object(
                 kind: thunk.kind().clone(),
                 cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                     .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
+                force_storage_mode: thunk.force_storage_mode(),
                 parallel_cell: Some(parallel_cell),
             })))
         }
@@ -7919,6 +7921,7 @@ fn rebuild_thunk_for_heap_field_write(
         kind,
         cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
             .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
+        force_storage_mode: thunk.force_storage_mode(),
         parallel_cell: clone_parallel_thunk_cell_for_heap_field_write(thunk)?,
     })))
 }

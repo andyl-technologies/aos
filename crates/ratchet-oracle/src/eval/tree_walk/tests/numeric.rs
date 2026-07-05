@@ -145,9 +145,17 @@ fn malformed_thunk_body_ids_are_reported_through_list_children() {
 
     assert_eq!(
         error.kind(),
-        TreeWalkErrorKind::InvalidNodeId { id: missing }
+        TreeWalkErrorKind::ThunkAllocation {
+            id: child,
+            source: crate::eval::TreeWalkThunkAllocationError::Downgrade(
+                crate::compile::FrameLocalThunkDowngradeError::MissingThunkBody {
+                    id: child,
+                    body: missing,
+                },
+            ),
+        }
     );
-    assert_eq!(error.span(), Span::default());
+    assert_eq!(error.span(), child_span);
 }
 
 #[test]

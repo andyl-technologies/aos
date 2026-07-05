@@ -890,6 +890,19 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       call-by-name lowering, improve cardinality/escape precision, or satisfy
       the loom/Miri/TSan gate (§3.6, §5.4;
       [07](07-laziness-and-whole-program-analyses.md) §5.1/§10).
+- [x] Current tree-walk single-entry thunk storage bridge:
+      `EvalThunk` now carries an explicit force-storage mode. Tree-walk
+      `SingleEntry` allocation plans create thunks in that mode, and the serial
+      force entry evaluates their captured node body directly under the normal
+      active-force root without publishing a cached serial result or attaching a
+      parallel payload cell. Tests pin the planner-to-runtime storage mode,
+      parallel-payload admission bypass, force-count accounting, zero cache-hit
+      accounting, and the still-suspended compatibility `ThunkCell` after both
+      successful and throwing direct forces. This is a narrow tree-walk bridge
+      only: demanded `Omit` plans still allocate ordinary suspended thunks, the
+      compatibility cell remains present, single-entry storage is not wired into
+      the parallel thunk wait protocol, and the loom/Miri/TSan gate remains
+      open.
 
 ### L1 — coarse top-level parallelism (§4)
 

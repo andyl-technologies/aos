@@ -612,7 +612,11 @@ impl TreeWalk {
                 self.alloc_update_thunk_from_plan(update.thunk(), update.body(), node.span)
             }
             TreeWalkThunkAllocationPlan::SingleEntry(single_entry) => self
-                .alloc_update_thunk_from_plan(single_entry.thunk(), single_entry.body(), node.span),
+                .alloc_single_entry_thunk_from_plan(
+                    single_entry.thunk(),
+                    single_entry.body(),
+                    node.span,
+                ),
             TreeWalkThunkAllocationPlan::Omit(omitted) => {
                 self.alloc_update_thunk_from_plan(omitted.thunk(), omitted.body(), node.span)
             }
@@ -638,6 +642,19 @@ impl TreeWalk {
         span: Span,
     ) -> Result<Value, TreeWalkError> {
         let value = self.alloc_thunk_for_node(id, body, span)?;
+        let region_plan = self.region_plan_for_allocation(id, RegionRuntimeTier::OneShotArena);
+        self.record_source_thunk_region_plan_decision(region_plan);
+        Ok(value)
+    }
+
+    fn alloc_single_entry_thunk_from_plan(
+        &mut self,
+        id: IrId,
+        body: IrId,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        let thunk = self.thunk_for_node(id, body, span)?.into_single_entry();
+        let value = self.alloc_tree_walk_thunk(id, span, thunk)?;
         let region_plan = self.region_plan_for_allocation(id, RegionRuntimeTier::OneShotArena);
         self.record_source_thunk_region_plan_decision(region_plan);
         Ok(value)
@@ -669,16 +686,28 @@ impl TreeWalk {
         body: IrId,
         span: Span,
     ) -> Result<Value, TreeWalkError> {
+        let thunk = self.thunk_for_node(id, body, span)?;
+        let value = self.alloc_tree_walk_thunk(id, span, thunk)?;
+        Ok(value)
+    }
+
+    fn thunk_for_node(
+        &mut self,
+        id: IrId,
+        body: IrId,
+        span: Span,
+    ) -> Result<EvalThunk, TreeWalkError> {
         self.node(body)?;
         let env = self.capture_env(id, span)?;
         let with_env = self.capture_with_env(id, span)?;
         let scoped_globals = self.capture_scoped_global_env(id, span)?;
-        let value = self.alloc_tree_walk_thunk(
-            id,
-            span,
-            EvalThunk::with_captures(self.current_module, body, env, with_env, scoped_globals),
-        )?;
-        Ok(value)
+        Ok(EvalThunk::with_captures(
+            self.current_module,
+            body,
+            env,
+            with_env,
+            scoped_globals,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1457,6 +1486,15 @@ impl TreeWalk {
         forced_payload: u64,
         thunk: &EvalThunk,
     ) -> Result<Value, TreeWalkError> {
+        if thunk.is_single_entry_force_storage() {
+            return self.force_single_entry_thunk_value(
+                id,
+                span,
+                source_thunk,
+                forced_payload,
+                thunk,
+            );
+        }
         match thunk
             .cell()
             .begin_force()
@@ -1481,6 +1519,25 @@ impl TreeWalk {
                 result
             }
         }
+    }
+
+    fn force_single_entry_thunk_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        source_thunk: Value,
+        forced_payload: u64,
+        thunk: &EvalThunk,
+    ) -> Result<Value, TreeWalkError> {
+        self.push_active_force_root(id, span, source_thunk)?;
+        let result = (|| -> Result<Value, TreeWalkError> {
+            self.increment_thunks_forced();
+            self.eval_thunk_body(id, span, thunk)
+        })();
+        self.pop_active_force_root(source_thunk);
+        let value = result?;
+        self.unmark_lazy_identity_thunk_payload(forced_payload);
+        Ok(value)
     }
 
     fn force_memoized_claimed_thunk(
@@ -1517,111 +1574,7 @@ impl TreeWalk {
             self.active_memo_read_nodes
                 .push(ActiveMemoReadNode::new(node));
         }
-        let result = (|| -> Result<Value, TreeWalkError> {
-            match thunk.kind() {
-                EvalThunkKind::Node {
-                    body,
-                    env,
-                    with_env,
-                    scoped_globals,
-                } => {
-                    let thunk_env = self.clone_env_frames(id, env, span)?;
-                    let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
-                    let thunk_scoped_globals =
-                        self.clone_scoped_globals(id, scoped_globals, span)?;
-                    self.reserve_suspended_env_root_frame(id, span)?;
-                    let saved_env = std::mem::replace(&mut self.env, thunk_env);
-                    let saved_with_scopes =
-                        std::mem::replace(&mut self.with_scopes, thunk_with_env);
-                    let saved_scoped_globals =
-                        std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
-                    self.push_suspended_env_roots(
-                        saved_env,
-                        saved_with_scopes,
-                        saved_scoped_globals,
-                    );
-                    let result =
-                        self.with_current_module(body.module(), |eval| eval.eval_node(body.id()));
-                    if let Some(saved) = self.pop_suspended_env_roots() {
-                        self.env = saved.env;
-                        self.with_scopes = saved.with_scopes;
-                        self.scoped_globals = saved.scoped_globals;
-                    } else {
-                        debug_assert!(false, "suspended env root stack is unbalanced");
-                    }
-                    result
-                }
-                EvalThunkKind::Apply {
-                    function,
-                    function_span,
-                    function_value,
-                    argument,
-                    argument_value,
-                } => self.with_current_module(function.module(), |eval| {
-                    eval.apply_lambda_value(
-                        id,
-                        span,
-                        function.id(),
-                        *function_value,
-                        *function_span,
-                        argument.id(),
-                        *argument_value,
-                    )
-                }),
-                EvalThunkKind::Apply2 {
-                    function,
-                    function_span,
-                    function_value,
-                    first_argument,
-                    first_argument_span,
-                    first_argument_value,
-                    second_argument,
-                    second_argument_span,
-                    second_argument_value,
-                } => self.with_current_module(function.module(), |eval| {
-                    eval.apply_lambda_value_2(
-                        id,
-                        span,
-                        function.id(),
-                        *function_value,
-                        *function_span,
-                        first_argument.id(),
-                        *first_argument_span,
-                        *first_argument_value,
-                        second_argument.id(),
-                        *second_argument_span,
-                        *second_argument_value,
-                    )
-                }),
-                EvalThunkKind::Select {
-                    select,
-                    receiver,
-                    path,
-                } => self.with_current_module(select.module(), |eval| {
-                    let node = *eval.node(select.id())?;
-                    let span = node.span;
-                    let IrData::Select { site, .. } = node.data else {
-                        return Err(eval.invalid_payload(select.id(), &node, "select payload"));
-                    };
-                    // Lowering builds select thunks from the same select node whose
-                    // site id owns the payload path. Preserve that site so forced
-                    // select thunks share the active static-segment flat IC.
-                    let value = eval.eval_select_from_value(
-                        select.id(),
-                        span,
-                        *receiver,
-                        *path,
-                        Some(site),
-                        None,
-                        true,
-                    )?;
-                    eval.force_node_result(select.id(), span, value)
-                }),
-                EvalThunkKind::BuiltinAttr { symbol, builtin } => {
-                    (*builtin).select(self, id, span, *symbol)
-                }
-            }
-        })();
+        let result = self.eval_thunk_body(id, span, thunk);
         let active_force_cache_node = if active_force_cache_node.is_some() {
             let popped = self.active_memo_read_nodes.pop();
             debug_assert_eq!(
@@ -1660,6 +1613,111 @@ impl TreeWalk {
             );
         }
         Ok(value)
+    }
+
+    fn eval_thunk_body(
+        &mut self,
+        id: IrId,
+        span: Span,
+        thunk: &EvalThunk,
+    ) -> Result<Value, TreeWalkError> {
+        match thunk.kind() {
+            EvalThunkKind::Node {
+                body,
+                env,
+                with_env,
+                scoped_globals,
+            } => {
+                let thunk_env = self.clone_env_frames(id, env, span)?;
+                let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
+                let thunk_scoped_globals = self.clone_scoped_globals(id, scoped_globals, span)?;
+                self.reserve_suspended_env_root_frame(id, span)?;
+                let saved_env = std::mem::replace(&mut self.env, thunk_env);
+                let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
+                let saved_scoped_globals =
+                    std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
+                self.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
+                let result =
+                    self.with_current_module(body.module(), |eval| eval.eval_node(body.id()));
+                if let Some(saved) = self.pop_suspended_env_roots() {
+                    self.env = saved.env;
+                    self.with_scopes = saved.with_scopes;
+                    self.scoped_globals = saved.scoped_globals;
+                } else {
+                    debug_assert!(false, "suspended env root stack is unbalanced");
+                }
+                result
+            }
+            EvalThunkKind::Apply {
+                function,
+                function_span,
+                function_value,
+                argument,
+                argument_value,
+            } => self.with_current_module(function.module(), |eval| {
+                eval.apply_lambda_value(
+                    id,
+                    span,
+                    function.id(),
+                    *function_value,
+                    *function_span,
+                    argument.id(),
+                    *argument_value,
+                )
+            }),
+            EvalThunkKind::Apply2 {
+                function,
+                function_span,
+                function_value,
+                first_argument,
+                first_argument_span,
+                first_argument_value,
+                second_argument,
+                second_argument_span,
+                second_argument_value,
+            } => self.with_current_module(function.module(), |eval| {
+                eval.apply_lambda_value_2(
+                    id,
+                    span,
+                    function.id(),
+                    *function_value,
+                    *function_span,
+                    first_argument.id(),
+                    *first_argument_span,
+                    *first_argument_value,
+                    second_argument.id(),
+                    *second_argument_span,
+                    *second_argument_value,
+                )
+            }),
+            EvalThunkKind::Select {
+                select,
+                receiver,
+                path,
+            } => self.with_current_module(select.module(), |eval| {
+                let node = *eval.node(select.id())?;
+                let span = node.span;
+                let IrData::Select { site, .. } = node.data else {
+                    return Err(eval.invalid_payload(select.id(), &node, "select payload"));
+                };
+                // Lowering builds select thunks from the same select node whose
+                // site id owns the payload path. Preserve that site so forced
+                // select thunks share the active static-segment flat IC.
+                let value = eval.eval_select_from_value(
+                    select.id(),
+                    span,
+                    *receiver,
+                    *path,
+                    Some(site),
+                    None,
+                    true,
+                )?;
+                eval.force_node_result(select.id(), span, value)
+            }),
+            EvalThunkKind::BuiltinAttr { symbol, builtin } => {
+                (*builtin).select(self, id, span, *symbol)
+            }
+        }
     }
 
     fn finish_forced_value(

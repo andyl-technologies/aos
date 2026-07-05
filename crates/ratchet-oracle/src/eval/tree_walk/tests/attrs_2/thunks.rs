@@ -3,6 +3,7 @@
 use super::*;
 use crate::attrs::repr::AttrSetReprKind;
 use crate::attrs::telemetry::{HistogramBucket, ShapeMultiplicityBucket};
+use crate::eval::heap::EvalThunkForceStorageMode;
 use crate::heap::HeapGeneration;
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
@@ -223,31 +224,118 @@ fn gc_stress_list_element_thunk_allocation_skips_reserved_forwarding_bridge() {
 }
 
 #[test]
-fn single_entry_thunk_plan_currently_allocates_update_storage() {
+fn single_entry_thunk_plan_uses_direct_force_storage_without_parallel_payload_or_cache_publish() {
     let mut ir = lower("[ (1 + 6) ]");
     let thunk_alloc = first_thunk_alloc_id(&ir);
+    let thunk_span = ir
+        .arena
+        .node(thunk_alloc)
+        .expect("thunk alloc node exists")
+        .span;
     *ir.facts.get_mut(thunk_alloc).expect("thunk fact exists") = crate::compile::ExprFacts {
         strictness: crate::compile::Strictness::Unknown,
         cardinality: crate::compile::Cardinality::Once,
         escape: crate::compile::Escape::NoEscape,
     };
 
-    let outcome = eval_whnf_owned(&ir).expect("single-entry thunk alloc evaluates");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+    );
+    let value = evaluator
+        .eval_root()
+        .expect("single-entry thunk alloc evaluates");
     let element = {
-        let list = outcome
+        let list = evaluator
             .heap()
-            .get_list(outcome.value())
+            .get_list(value)
             .expect("root is a heap-owned list");
         list.get(0).expect("element exists")
     };
 
     assert_eq!(element.tag(), ValueTag::Thunk);
-    assert_eq!(outcome.stats().thunks_allocated(), 1);
-    assert_eq!(outcome.stats().thunks_elided(), 0);
-    let thunk = outcome
+    assert_eq!(evaluator.stats().thunks_allocated(), 1);
+    assert_eq!(evaluator.stats().thunks_elided(), 0);
+    {
+        let thunk = evaluator
+            .heap()
+            .get_thunk(element)
+            .expect("element is a heap-owned thunk");
+        assert_eq!(
+            thunk.force_storage_mode(),
+            EvalThunkForceStorageMode::SingleEntry
+        );
+        assert!(thunk.parallel_payload_cell().is_none());
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+    }
+
+    let forced = evaluator
+        .force_value(thunk_alloc, thunk_span, element)
+        .expect("single-entry thunk forces directly");
+    assert_eq!(forced.as_int(), Ok(7));
+    assert_eq!(evaluator.stats().thunks_forced(), 1);
+    assert_eq!(evaluator.stats().thunk_cache_hits(), 0);
+
+    let thunk = evaluator
         .heap()
         .get_thunk(element)
-        .expect("element is a heap-owned thunk");
+        .expect("element remains a heap-owned thunk");
+    assert_eq!(
+        thunk.force_storage_mode(),
+        EvalThunkForceStorageMode::SingleEntry
+    );
+    assert!(thunk.parallel_payload_cell().is_none());
+    assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+}
+
+#[test]
+fn single_entry_thunk_force_errors_leave_compatibility_cell_suspended() {
+    let mut ir = lower("[ (1 / 0) ]");
+    let thunk_alloc = first_thunk_alloc_id(&ir);
+    let thunk_span = ir
+        .arena
+        .node(thunk_alloc)
+        .expect("thunk alloc node exists")
+        .span;
+    *ir.facts.get_mut(thunk_alloc).expect("thunk fact exists") = crate::compile::ExprFacts {
+        strictness: crate::compile::Strictness::Unknown,
+        cardinality: crate::compile::Cardinality::Once,
+        escape: crate::compile::Escape::NoEscape,
+    };
+
+    let mut options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    options.set_parallel_thunk_payloads_enabled(true);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator
+        .eval_root()
+        .expect("single-entry throwing thunk list allocates");
+    let element = {
+        let list = evaluator
+            .heap()
+            .get_list(value)
+            .expect("root is a heap-owned list");
+        list.get(0).expect("element exists")
+    };
+
+    let error = evaluator
+        .force_value(thunk_alloc, thunk_span, element)
+        .expect_err("single-entry thunk body throws");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::DivisionByZero { .. }
+    ));
+    assert_eq!(evaluator.stats().thunks_forced(), 1);
+    assert_eq!(evaluator.stats().thunk_cache_hits(), 0);
+
+    let thunk = evaluator
+        .heap()
+        .get_thunk(element)
+        .expect("element remains a heap-owned thunk");
+    assert_eq!(
+        thunk.force_storage_mode(),
+        EvalThunkForceStorageMode::SingleEntry
+    );
+    assert!(thunk.parallel_payload_cell().is_none());
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
 }
 
