@@ -2598,7 +2598,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       force continuations, and active first-class primop argument frames,
       ready-import indexing that skips evaluating entries, and stale value-stack
       plus stale active-frame rejection that leaves tree-walk-owned roots
-      unchanged.
+      unchanged. The `*_with_primop_arguments` variants add caller-owned
+      `EvalRootSource::PrimopArgument` buffers to the same scan, planning,
+      buffer application, root-storage application, and live-reference
+      preflight/application path; tests cover poll-derived buffer application,
+      root-storage plus heap-field-buffer application, existing-destination
+      live-reference preflight/application, and stale primop-argument rejection
+      before any tree-walk root mutation.
       `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
       now derives that root partition from a current collector poll, live
       remembered-set/card-table snapshots, caller-supplied destination bases, and
@@ -2652,9 +2658,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       mutation, and dirty permanent-list mixed-plan
       rejection before mutating the value stack, active frame root, or ready
       import-cache root. These helpers still do not bind semispace storage,
-      allocate destination records, mutate interned roots, detached primop
-      metadata, or JIT stack-map slots, install forwarding headers, or wire root
-      writebacks into automatic allocation-safepoint collection. The full
+      allocate destination records, mutate interned roots or JIT stack-map
+      slots, install forwarding headers, or wire root writebacks into automatic
+      allocation-safepoint collection. The full
       remembered-set/card-table publication remains limited to this explicit
       existing-destination tree-walk bridge.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_live_card_table`
@@ -2817,8 +2823,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       tree-walk root storage after validating a temporary typed slot buffer,
       covering value-stack roots, active/suspended frames and dynamic scopes,
       force continuations, active first-class primop arguments, and ready
-      import-cache roots while leaving interned roots, detached primop metadata,
-      and JIT stack maps unsupported.
+      import-cache roots. The caller-buffer-aware `*_with_primop_arguments`
+      variants also scan, validate, and rewrite generic
+      `EvalRootSource::PrimopArgument` slots supplied by the caller while
+      leaving interned roots and JIT stack maps unsupported.
       `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
       derives the same root partition from a current collector poll and the live
       remembered-set/card-table snapshots, and rejects plans that also require

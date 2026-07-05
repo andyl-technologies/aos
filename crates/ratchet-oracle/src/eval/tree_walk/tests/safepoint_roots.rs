@@ -647,14 +647,32 @@ fn root_writeback_plan_for_supported_mutable_roots(
     value_stack: &[Value],
     nursery_base: GcHeapAddress,
 ) -> AllocationCollectorPollRootWritebackPlan {
+    root_writeback_plan_for_supported_mutable_roots_with_primop_arguments(
+        evaluator,
+        value_stack,
+        &[],
+        nursery_base,
+    )
+}
+
+fn root_writeback_plan_for_supported_mutable_roots_with_primop_arguments(
+    evaluator: &TreeWalk,
+    value_stack: &[Value],
+    primop_arguments: &[Value],
+    nursery_base: GcHeapAddress,
+) -> AllocationCollectorPollRootWritebackPlan {
     let poll = evaluator
         .heap()
         .allocation_safepoints()
         .last_safepoint_collector_poll()
         .expect("lambda allocation requested a collector poll");
     let scan = evaluator
-        .safepoint_collector_poll_scan(poll, value_stack.iter().copied())
-        .expect("collector poll scans supported roots");
+        .safepoint_collector_poll_scan_with_primop_arguments(
+            poll,
+            value_stack.iter().copied(),
+            primop_arguments.iter().copied(),
+        )
+        .expect("collector poll scans supported roots and primop arguments");
     let remembered_set = RememberedSet::new();
     let minor_gc = evaluator
         .heap()
@@ -993,6 +1011,47 @@ fn root_value_writebacks_update_supported_tree_walk_roots() {
 }
 
 #[test]
+fn root_value_writebacks_update_caller_owned_primop_arguments() {
+    let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
+    let mut primop_arguments = vec![live];
+    let nursery_base = static_gc_address(0x1000_0000);
+    let plan = root_writeback_plan_for_supported_mutable_roots_with_primop_arguments(
+        &evaluator,
+        &value_stack,
+        &primop_arguments,
+        nursery_base,
+    );
+    let sources: Vec<_> = plan
+        .writebacks()
+        .iter()
+        .map(|write| write.source())
+        .collect();
+
+    assert_eq!(plan.len(), 11);
+    assert!(sources.contains(&&EvalRootSource::PrimopArgument { index: 0 }));
+
+    let report = evaluator
+        .apply_root_value_writebacks_to_safepoint_roots_with_primop_arguments(
+            &plan,
+            &mut value_stack,
+            &mut primop_arguments,
+        )
+        .expect("root and primop-argument writebacks apply");
+
+    assert_eq!(report.writebacks(), plan.len());
+    assert_supported_mutable_roots_eq(
+        &evaluator,
+        &value_stack,
+        replacement_for_source(&plan, EvalRootSource::ValueStack { slot: 0 }),
+    );
+    assert_raw_eq(
+        primop_arguments[0],
+        replacement_for_source(&plan, EvalRootSource::PrimopArgument { index: 0 }),
+    );
+    assert!(!primop_arguments[0].raw_eq(live));
+}
+
+#[test]
 fn root_value_writebacks_reject_late_frame_borrow_before_partial_mutation() {
     let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
     let nursery_base = static_gc_address(0x1000_0000);
@@ -1046,6 +1105,46 @@ fn collector_poll_minor_gc_root_writebacks_apply_to_safepoint_roots() {
         relocated_value(ValueTag::Lambda, nursery_base),
     );
     assert!(!value_stack[0].raw_eq(live));
+}
+
+#[test]
+fn collector_poll_minor_gc_root_writebacks_apply_to_primop_argument_roots() {
+    let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
+    let mut primop_arguments = vec![live];
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+    let nursery_base = static_gc_address(0x1000_0000);
+    let report = evaluator
+        .apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots_with_primop_arguments(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &mut value_stack,
+            &mut primop_arguments,
+        )
+        .expect("collector-poll primop root writebacks apply");
+
+    assert_eq!(report.poll(), poll);
+    assert_eq!(report.scanned_roots(), 11);
+    assert_eq!(report.scanned_objects(), 1);
+    assert_eq!(report.survivors(), 1);
+    assert_eq!(report.reference_slots(), 11);
+    assert_eq!(report.root_writebacks(), 11);
+    assert_eq!(report.heap_field_writebacks(), 0);
+    assert_eq!(report.applied_root_writebacks(), 11);
+    assert_supported_mutable_roots_eq(
+        &evaluator,
+        &value_stack,
+        relocated_value(ValueTag::Lambda, nursery_base),
+    );
+    assert_raw_eq(
+        primop_arguments[0],
+        relocated_value(ValueTag::Lambda, nursery_base),
+    );
+    assert!(!primop_arguments[0].raw_eq(live));
 }
 
 #[test]
@@ -1160,6 +1259,77 @@ fn collector_poll_minor_gc_reference_writebacks_apply_to_safepoint_buffers_all_r
         assert_raw_eq(slot.value(), relocated);
     }
     assert_supported_mutable_roots_eq(&evaluator, &value_stack, live);
+}
+
+#[test]
+fn reference_writeback_plan_and_buffers_include_caller_owned_primop_arguments() {
+    let (evaluator, live, value_stack) = tree_walk_with_supported_mutable_roots();
+    let primop_arguments = vec![live];
+    let poll = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last_safepoint_collector_poll()
+        .expect("lambda allocation requested a collector poll");
+    let nursery_base = static_gc_address(0x1000_0000);
+    let bases = MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000));
+    let plan = evaluator
+        .collector_poll_minor_gc_reference_writeback_plan_for_safepoint_with_primop_arguments(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            bases,
+            &value_stack,
+            &primop_arguments,
+        )
+        .expect("collector-poll reference writeback plan includes primop arguments");
+
+    assert_eq!(plan.scanned_roots(), 11);
+    assert_eq!(plan.scanned_objects(), 1);
+    assert_eq!(plan.survivors(), 1);
+    assert_eq!(plan.reference_slots(), 11);
+    assert_eq!(plan.root_writebacks(), 11);
+    assert_eq!(plan.heap_field_writebacks(), 0);
+    let root_sources: Vec<_> = plan
+        .writebacks()
+        .root_writebacks()
+        .writebacks()
+        .iter()
+        .map(|writeback| writeback.source())
+        .collect();
+    assert!(root_sources.contains(&&EvalRootSource::PrimopArgument { index: 0 }));
+
+    let application = evaluator
+        .apply_reference_writebacks_to_safepoint_buffers_with_primop_arguments(
+            &plan,
+            &value_stack,
+            &primop_arguments,
+        )
+        .expect("reference writebacks apply to primop argument buffers");
+    let derived_application = evaluator
+        .apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_buffers_with_primop_arguments(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            bases,
+            &value_stack,
+            &primop_arguments,
+        )
+        .expect("poll-derived reference writebacks apply to primop argument buffers");
+
+    assert_eq!(application, derived_application);
+    assert_eq!(application.applied_root_writebacks(), 11);
+    assert_eq!(application.applied_heap_field_writebacks(), 0);
+    assert_eq!(application.root_value_writeback_slots().len(), 11);
+    assert!(
+        application
+            .root_value_writeback_slots()
+            .iter()
+            .any(|slot| slot.source() == &EvalRootSource::PrimopArgument { index: 0 })
+    );
+    let relocated = relocated_value(ValueTag::Lambda, nursery_base);
+    for slot in application.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+    assert_supported_mutable_roots_eq(&evaluator, &value_stack, live);
+    assert_raw_eq(primop_arguments[0], live);
 }
 
 #[test]
@@ -1600,6 +1770,90 @@ fn reference_writebacks_apply_root_storage_after_field_buffer_validation() {
 }
 
 #[test]
+fn reference_writebacks_apply_root_storage_and_field_buffers_with_primop_arguments() {
+    let nursery_base = static_gc_address(0x1000_0000);
+    let (mut evaluator, child, parent, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks();
+    let mut primop_arguments = vec![child];
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_field_buffers_with_primop_arguments(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(nursery_base, static_gc_address(0x2000_0000)),
+            &mut value_stack,
+            &mut primop_arguments,
+        )
+        .expect("mixed primop reference writebacks apply to roots and field buffers");
+
+    assert_eq!(application.poll(), poll);
+    assert_eq!(application.scanned_roots(), 5);
+    assert_eq!(application.scanned_objects(), 2);
+    assert_eq!(application.survivors(), 1);
+    assert_eq!(application.reference_slots(), 6);
+    assert_eq!(application.root_writebacks(), 4);
+    assert_eq!(application.heap_field_writebacks(), 1);
+    assert_eq!(application.applied_root_writebacks(), 4);
+    assert_eq!(application.applied_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_writebacks(), 5);
+    assert_eq!(application.buffers().applied_writebacks(), 5);
+    let relocated = relocated_value(ValueTag::Lambda, nursery_base);
+    let root_sources: Vec<_> = application
+        .root_value_writeback_slots()
+        .iter()
+        .map(|slot| slot.source())
+        .collect();
+    assert!(root_sources.contains(&&EvalRootSource::ValueStack { slot: 0 }));
+    assert!(root_sources.contains(&&EvalRootSource::TreeWalkFrame { frame: 0, slot: 0 }));
+    assert!(root_sources.contains(&&EvalRootSource::ImportCache { index: 0 }));
+    assert!(root_sources.contains(&&EvalRootSource::PrimopArgument { index: 0 }));
+    for slot in application.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+
+    let heap_field_slots = application.heap_field_writeback_slots();
+    assert_eq!(heap_field_slots.len(), 1);
+    assert_eq!(heap_field_slots[0].validation_object(), gc_address(parent));
+    assert_eq!(heap_field_slots[0].writeback_object(), gc_address(parent));
+    assert_eq!(heap_field_slots[0].field_index(), 0);
+    assert_eq!(
+        heap_field_slots[0].source(),
+        &HeapEdgeSource::ListElement { index: 0 }
+    );
+    assert_eq!(
+        heap_field_slots[0].value(),
+        ResolvedValueGeneration::Heap {
+            address: nursery_base,
+            generation: HeapGeneration::Young,
+        }
+    );
+
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(primop_arguments[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, relocated);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        child,
+    );
+}
+
+#[test]
 fn reference_writebacks_root_storage_reject_late_frame_borrow_before_partial_mutation() {
     let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
     let poll = evaluator
@@ -1821,6 +2075,140 @@ fn reference_writebacks_apply_root_storage_and_live_heap_fields_for_existing_des
         .heap()
         .validate_collector_poll_minor_gc_object_body_binding(request, ValueTag::Lambda)
         .expect("existing destination body is bound");
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(destination)
+            .expect("destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+    let expected_edges = [RememberedEdge::new(gc_address(parent), destination_address)];
+    assert_eq!(
+        evaluator.thunk_resolve_remembered_set.edges(),
+        expected_edges.as_slice()
+    );
+    assert!(evaluator.thunk_resolve_card_table.dirty_cards().is_empty());
+}
+
+#[test]
+fn reference_writebacks_validate_and_apply_live_heap_fields_with_primop_arguments() {
+    {
+        let (evaluator, child, parent, destination, poll, value_stack) =
+            tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();
+        let destination_address = gc_address(destination);
+        let primop_arguments = vec![child];
+        let preflight = evaluator
+            .validate_collector_poll_minor_gc_reference_writebacks_for_safepoint_root_storage_and_heap_fields_with_primop_arguments(
+                poll,
+                MinorGcPromotionPolicy::new(2),
+                MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+                &value_stack,
+                &primop_arguments,
+            )
+            .expect("mixed primop reference writebacks validate without mutation");
+
+        assert_eq!(preflight.poll(), poll);
+        assert_eq!(preflight.scanned_roots(), 5);
+        assert_eq!(preflight.scanned_objects(), 2);
+        assert_eq!(preflight.survivors(), 1);
+        assert_eq!(preflight.reference_slots(), 6);
+        assert_eq!(preflight.root_writebacks(), 4);
+        assert_eq!(preflight.heap_field_writebacks(), 1);
+        assert_eq!(preflight.object_bodies_preflighted(), 1);
+        assert_eq!(preflight.object_generations_preflighted(), 1);
+        assert_eq!(preflight.validated_root_writebacks(), 4);
+        assert_eq!(preflight.live_heap_field_writebacks(), 1);
+        assert_eq!(preflight.validated_live_writebacks(), 5);
+        assert!(
+            preflight
+                .root_value_writeback_slots()
+                .iter()
+                .any(|slot| slot.source() == &EvalRootSource::PrimopArgument { index: 0 })
+        );
+        let relocated = relocated_value(ValueTag::Lambda, destination_address);
+        for slot in preflight.root_value_writeback_slots() {
+            assert_raw_eq(slot.value(), relocated);
+        }
+        assert_eq!(preflight.heap_field_writeback_slots().len(), 1);
+        assert_eq!(
+            resolved_heap_destination_address(preflight.heap_field_writeback_slots()[0].value()),
+            Some(destination_address)
+        );
+        assert_raw_eq(value_stack[0], child);
+        assert_raw_eq(primop_arguments[0], child);
+        assert_raw_eq(
+            evaluator
+                .heap()
+                .get_list(parent)
+                .expect("parent list remains typed")
+                .get(0)
+                .expect("parent list element exists"),
+            child,
+        );
+    }
+
+    let (mut evaluator, child, parent, destination, poll, mut value_stack) =
+        tree_walk_with_mixed_root_and_heap_field_writebacks_existing_destination();
+    let destination_address = gc_address(destination);
+    let mut primop_arguments = vec![child];
+    let application = evaluator
+        .apply_collector_poll_minor_gc_reference_writebacks_to_safepoint_root_storage_and_heap_fields_with_primop_arguments(
+            poll,
+            MinorGcPromotionPolicy::new(2),
+            MinorGcDestinationBases::new(destination_address, static_gc_address(0x2000_0000)),
+            &mut value_stack,
+            &mut primop_arguments,
+        )
+        .expect("mixed primop reference writebacks apply to roots and live heap fields");
+
+    assert_eq!(application.poll(), poll);
+    assert_eq!(application.scanned_roots(), 5);
+    assert_eq!(application.scanned_objects(), 2);
+    assert_eq!(application.survivors(), 1);
+    assert_eq!(application.reference_slots(), 6);
+    assert_eq!(application.root_writebacks(), 4);
+    assert_eq!(application.heap_field_writebacks(), 1);
+    assert_eq!(application.object_bodies_written(), 1);
+    assert_eq!(application.object_generations_written(), 1);
+    assert_eq!(application.applied_root_writebacks(), 4);
+    assert_eq!(application.live_heap_field_writebacks(), 1);
+    assert_eq!(application.applied_live_writebacks(), 5);
+    assert_eq!(application.remembered_set_published_edges(), 1);
+    assert_eq!(application.card_table_dirty_cards_cleared(), 1);
+    assert!(
+        application
+            .root_value_writeback_slots()
+            .iter()
+            .any(|slot| slot.source() == &EvalRootSource::PrimopArgument { index: 0 })
+    );
+    let relocated = relocated_value(ValueTag::Lambda, destination_address);
+    for slot in application.root_value_writeback_slots() {
+        assert_raw_eq(slot.value(), relocated);
+    }
+    assert_raw_eq(value_stack[0], relocated);
+    assert_raw_eq(primop_arguments[0], relocated);
+    assert_raw_eq(
+        evaluator.env[0].get(0).expect("active frame slot exists"),
+        relocated,
+    );
+    let ImportCacheEntry::Ready { value, .. } = evaluator
+        .import_cache
+        .values()
+        .next()
+        .expect("ready import cache entry exists")
+    else {
+        panic!("import cache entry remains ready");
+    };
+    assert_raw_eq(*value, relocated);
+    assert_raw_eq(
+        evaluator
+            .heap()
+            .get_list(parent)
+            .expect("parent list remains typed")
+            .get(0)
+            .expect("parent list element exists"),
+        relocated,
+    );
     assert_eq!(
         evaluator
             .heap()
@@ -2549,6 +2937,41 @@ fn root_value_writebacks_reject_stale_value_stack_before_tree_walk_mutation() {
     ));
     assert!(value_stack[0].raw_eq(stale_value));
     assert_supported_tree_walk_roots_eq(&evaluator, live);
+}
+
+#[test]
+fn root_value_writebacks_reject_stale_primop_argument_before_tree_walk_mutation() {
+    let (mut evaluator, live, mut value_stack) = tree_walk_with_supported_mutable_roots();
+    let mut primop_arguments = vec![live];
+    let nursery_base = static_gc_address(0x1000_0000);
+    let plan = root_writeback_plan_for_supported_mutable_roots_with_primop_arguments(
+        &evaluator,
+        &value_stack,
+        &primop_arguments,
+        nursery_base,
+    );
+    let stale_value = Value::int(1);
+    primop_arguments[0] = stale_value;
+
+    let err = evaluator
+        .apply_root_value_writebacks_to_safepoint_roots_with_primop_arguments(
+            &plan,
+            &mut value_stack,
+            &mut primop_arguments,
+        )
+        .expect_err("stale primop argument rejects before tree-walk roots mutate");
+
+    assert!(matches!(
+        err,
+        TreeWalkSafepointRootWritebackError::Heap(
+            EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+                actual_tag: ValueTag::Int,
+                ..
+            }
+        )
+    ));
+    assert!(primop_arguments[0].raw_eq(stale_value));
+    assert_supported_mutable_roots_eq(&evaluator, &value_stack, live);
 }
 
 #[test]

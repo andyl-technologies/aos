@@ -6919,11 +6919,19 @@ and helps the oracle directly.
       and active first-class primop argument frames, ready-import indexing that
       skips evaluating entries, and stale value-stack plus stale active-frame
       rejection plus late suspended-frame root-target borrow rejection that
-      leave tree-walk-owned roots unchanged. This is not wired into evaluator
-      allocation safepoints yet and still does not mutate
-      interned roots, detached primop-argument metadata, JIT stack-map slots,
-      heap fields, object bytes, forwarding headers, remembered/card state, or
-      semispace storage.
+      leave tree-walk-owned roots unchanged. The caller-buffer-aware
+      `*_with_primop_arguments` variants add generic
+      `EvalRootSource::PrimopArgument` buffers to the same scan, planning,
+      buffer application, root-storage application, and live-reference
+      preflight/application path; tests cover poll-derived buffer application,
+      root-storage plus heap-field-buffer application, existing-destination
+      live-reference preflight/application, and stale primop-argument rejection
+      before tree-walk-owned roots are mutated. The root-only adaptor remains
+      outside automatic evaluator allocation safepoint dispatch and still does
+      not mutate interned roots, JIT stack-map slots, heap fields, object bytes,
+      forwarding headers, remembered/card state, or semispace storage; the
+      explicit existing-destination live-reference bridge below is the covered
+      heap-field/body and remembered/card mutation path.
 - [x] Current tree-walk poll-derived root-writeback bridge precursor:
       `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
       now derives live root writebacks from a current collector poll instead of
@@ -6966,7 +6974,10 @@ and helps the oracle directly.
       Unit tests cover a real poll rewriting every supported
       mutable tree-walk root kind, direct stale-poll rejection before mutation
       in the planning wrapper, root-only applicator, buffer applicator, stale
-      typed-root, heap-field metadata, and live heap-field buffer rejection
+      typed-root, caller-owned primop-argument root relocation/staleness,
+      root-storage plus heap-field-buffer primop integration,
+      existing-destination live-reference primop integration, heap-field
+      metadata, and live heap-field buffer rejection
       before either buffer partition is rewritten, complete mixed root/field
       partition reporting down to the remembered list-field
       owner/source/replacement, mixed root/heap-field buffer application, mixed
@@ -7320,7 +7331,9 @@ and helps the oracle directly.
       root storage after validating a temporary typed slot buffer, covering
       value-stack roots, active/suspended frames and dynamic scopes, force
       continuations, active first-class primop arguments, and ready import-cache
-      roots while leaving interned roots, detached primop metadata, and JIT stack
+      roots. The caller-buffer-aware `*_with_primop_arguments` variants also
+      scan, validate, and rewrite generic `EvalRootSource::PrimopArgument`
+      slots supplied by the caller while leaving interned roots and JIT stack
       maps unsupported.
       `TreeWalk::apply_collector_poll_minor_gc_root_writebacks_to_safepoint_roots`
       derives that root partition from a current collector poll, the live
