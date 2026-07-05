@@ -890,6 +890,16 @@ Parallel graph evaluation is **P3.5** (decision `C-12`): promoted from the rank-
       call-by-name lowering, improve cardinality/escape precision, or satisfy
       the loom/Miri/TSan gate (§3.6, §5.4;
       [07](07-laziness-and-whole-program-analyses.md) §5.1/§10).
+- [x] Current analyzer-produced direct-body single-entry proof:
+      `annotate_escape` now supplies a narrow lazy-thunk `NoEscape` proof for
+      static `let x = ...; in x` shapes when every key in the frame is static
+      and no sibling binding value captures the slot, with exactly one direct
+      IR reference to the thunk allocation, while the existing cardinality
+      producer supplies the matching `Once` proof. This feeds the C-8 preflight
+      from analysis for one frame-local lazy-thunk shape; list publication,
+      sibling captures, nested frame producers, dynamic-key cases, raw/shared
+      thunk aliases, and the whole-program demand/escape fixpoint remain
+      conservative.
 - [x] Current tree-walk single-entry thunk storage bridge:
       `EvalThunk` now carries an explicit force-storage mode. Tree-walk
       `SingleEntry` allocation plans create thunks in that mode, and the serial

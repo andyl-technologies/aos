@@ -896,6 +896,18 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       machinery. This is a proof API only; the single-entry representation,
       call-by-name lowering, dead-binding elimination, and stronger
       cardinality/escape analyses remain open.
+- [x] Current direct-body `let` thunk frame-local proof:
+      `annotate_escape` now marks a lazy `let` binding thunk `NoEscape` only
+      when the enclosing `let` body is exactly that binding's same-frame local
+      slot, the binding value is a well-formed `ThunkAlloc`, every binding key
+      in the frame is static, no sibling binding value captures the slot, and
+      the thunk allocation has exactly one direct IR reference.
+      Combined with the current local cardinality producer, `annotate_ir` feeds
+      the `Once + NoEscape` proof into `frame_local_single_entry_thunk_downgrade`
+      for the narrow `let x = ...; in x` shape. List publication,
+      sibling-binding capture, nested frame producers, self-referential thunk
+      bodies, higher-order uses, raw/shared thunk aliases, and the whole-program
+      demand/escape fixpoint remain conservative.
 - [ ] Absence → dead-binding elimination via the dual of the demand fixpoint (worker takes a dummy, code never emitted) (§5.2) — **P4**, `S-9`; reduction in [26](26-optimization-pass-catalog.md).
 - [x] Current tree-walk dead-binding consumer:
       `ratchet-oracle` now consumes successful `dead_binding_elimination_plan`
@@ -935,6 +947,15 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       kind/payload pairs are rejected. This does not yet prove non-escaping
       attrsets, lists, thunks, or primop results, and it does not perform scalar
       replacement.
+- [x] Current direct-body lazy-thunk escape precursor:
+      `annotate_escape` now also proves frame-locality for static lazy `let`
+      thunks whose only admitted use is the direct `let` body local slot and
+      whose frame has only static keys and no sibling binding value capture of
+      that slot, with no extra direct IR aliases of the thunk allocation. This
+      gives the C-8 single-entry preflight one analyzer-produced lazy-thunk proof
+      while keeping list publication, sibling captures, nested frame producers,
+      dynamic keys, raw/shared thunk aliases, and general closure escape
+      conservative.
 - [ ] Scalar Replacement of Aggregates: decompose a non-escaping attrset/list/thunk into SSA values (Cranelift block params as join points; unboxed multi-returns) — no heap object at all (§7.1, §7.4) — **P4** facts / **P6–P7** CLIF realization ([08](08-execution-tiers-and-cranelift.md)); reduction in [26](26-optimization-pass-catalog.md).
 - [ ] Escape-signature table for the ~120-primop surface, with the to-be-interned boundary treated as an escape (§7.3) — **P4**, `R-9`; property-test fuzzing (not just the closure diff), default-off until green.
 - [x] Current semantic escape-signature fuzz expansion:

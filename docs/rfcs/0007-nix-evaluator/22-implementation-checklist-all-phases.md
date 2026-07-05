@@ -8958,6 +8958,18 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       payloads, missing body nodes, and missing fact records. This protects the
       downgrade safety boundary for raw/imported IR corruption; it does not add
       new cardinality precision, escape proofs, or evaluator lowering.
+- [x] Current direct-body `let` thunk frame-local proof:
+      `annotate_escape` now marks static lazy `let` binding thunks `NoEscape`
+      only when the `let` body is exactly that binding's same-frame local slot,
+      the binding value is a well-formed `ThunkAlloc`, every key in the frame is
+      static, no sibling binding value captures the slot, and the thunk
+      allocation has exactly one direct IR reference. With the current local
+      cardinality producer, `annotate_ir` feeds a real `Once + NoEscape` proof
+      into the C-8 `frame_local_single_entry_thunk_downgrade` preflight for the
+      narrow `let x = ...; in x` shape. Published list elements, sibling
+      captures, nested frame producers, self-referential thunk bodies,
+      higher-order uses, dynamic-key cases, raw/shared thunk aliases, and the
+      whole-program demand/escape fixpoint remain conservative.
 - [ ] `analysis/escape.rs` — escape analysis + scalar replacement for
       non-escaping attrsets/thunks.
 - [x] Current `analysis/escape.rs` precursor: `ratchet-core` exposes a
@@ -8977,6 +8989,15 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       Lazy/unproven wrapping thunks, mixed strict-and-captured formals,
       raw/shared IR aliases through arena nodes, the root id, or dynamic
       `with` chains, aggregate escape, and closure-capture/frame escape remain
+      conservative.
+- [x] Current direct-body lazy-thunk escape precursor:
+      `annotate_escape` now also proves frame-locality for static lazy `let`
+      thunks whose admitted use is the direct `let` body local slot and whose
+      frame has only static keys and no sibling binding value capture of that
+      slot, with no extra direct IR aliases of the thunk allocation. This gives
+      the C-8 single-entry preflight an analyzer-produced lazy-thunk proof,
+      while list publication, sibling captures, nested frame producers, dynamic
+      keys, raw/shared thunk aliases, and general closure escape remain
       conservative.
 - [x] Current aggregate scalar-primop escape precursor:
       `annotate_escape` now marks `List` and `AttrSet` allocations `NoEscape`

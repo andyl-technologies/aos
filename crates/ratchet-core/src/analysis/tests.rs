@@ -900,6 +900,158 @@ fn escape_keeps_lazy_wrapping_thunks_conservative() {
 }
 
 #[test]
+fn escape_marks_direct_body_let_thunks_frame_local() {
+    let mut ir = lowered("let x = builtins.sub 3 1; in x");
+    let binding = let_binding_values(&ir, ir.root)[0];
+
+    annotate_ir(&mut ir).expect("analysis succeeds");
+
+    assert_eq!(cardinality(&ir, binding), Cardinality::Once);
+    assert_eq!(escape(&ir, binding), Escape::NoEscape);
+    let decision =
+        frame_local_single_entry_thunk_downgrade(&ir, binding).expect("preflight succeeds");
+    assert!(matches!(
+        decision,
+        FrameLocalThunkDowngrade::SingleEntry(single_entry) if single_entry.thunk() == binding
+    ));
+}
+
+#[test]
+fn escape_keeps_let_thunks_published_into_lists_conservative() {
+    let mut ir = lowered("let x = builtins.sub 3 1; in [ x ]");
+    let binding = let_binding_values(&ir, ir.root)[0];
+
+    annotate_ir(&mut ir).expect("analysis succeeds");
+
+    assert_eq!(cardinality(&ir, binding), Cardinality::Once);
+    assert_eq!(escape(&ir, binding), Escape::Escapes);
+    assert_eq!(
+        frame_local_single_entry_thunk_downgrade(&ir, binding).expect("preflight succeeds"),
+        FrameLocalThunkDowngrade::KeepUpdate(FrameLocalThunkUpdateReason::EscapesFrame)
+    );
+}
+
+#[test]
+fn escape_keeps_let_thunks_captured_by_sibling_bindings_conservative() {
+    let mut ir = lowered("let x = builtins.sub 3 1; y = x; in x");
+    let binding = let_binding_values(&ir, ir.root)[0];
+
+    annotate_ir(&mut ir).expect("analysis succeeds");
+
+    assert_eq!(escape(&ir, binding), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_dynamic_key_direct_body_let_thunks_conservative() {
+    let root = IrId::new(3);
+    let (mut ir, thunk) = raw_direct_body_let_thunk_ir(root, None, Box::new([]));
+    ir.bindings[0].key = IrAttrPathSegment::Dynamic(IrId::new(0));
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, thunk), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_raw_aliased_direct_body_let_thunks_conservative() {
+    let thunk = IrId::new(1);
+    let root = IrId::new(3);
+    let (mut ir, thunk) = raw_direct_body_let_thunk_ir(root, Some(thunk), Box::new([]));
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, thunk), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_root_aliased_direct_body_let_thunks_conservative() {
+    let thunk = IrId::new(1);
+    let (mut ir, thunk) = raw_direct_body_let_thunk_ir(thunk, None, Box::new([]));
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, thunk), Escape::Escapes);
+}
+
+#[test]
+fn escape_keeps_with_chain_aliased_direct_body_let_thunks_conservative() {
+    let thunk = IrId::new(1);
+    let root = IrId::new(3);
+    let (mut ir, thunk) =
+        raw_direct_body_let_thunk_ir(root, None, Box::new([IrWithChain::new(Box::new([thunk]))]));
+
+    annotate_escape(&mut ir).expect("escape analysis succeeds");
+
+    assert_eq!(escape(&ir, thunk), Escape::Escapes);
+}
+
+fn raw_direct_body_let_thunk_ir(
+    root: IrId,
+    alias_child: Option<IrId>,
+    with_chains: Box<[IrWithChain]>,
+) -> (Ir, IrId) {
+    let span = Span::new(0, 1);
+    let mut symbols = SymbolTable::new();
+    let x = symbols.intern(b"x").expect("symbol interns");
+    let body = IrId::new(0);
+    let thunk = IrId::new(1);
+    let local = IrId::new(2);
+    let mut nodes = vec![
+        IrNode::new(IrKind::Int, span, EffectClass::pure(), IrData::Int(1)),
+        IrNode::new(
+            IrKind::ThunkAlloc,
+            span,
+            EffectClass::pure(),
+            IrData::Node(body),
+        ),
+        IrNode::new(
+            IrKind::LocalVar,
+            span,
+            EffectClass::pure(),
+            IrData::Local { slot: 0 },
+        ),
+        IrNode::new(
+            IrKind::Let,
+            span,
+            EffectClass::pure(),
+            IrData::Let {
+                bindings: IrBindingSlice::new(0, 1),
+                body: local,
+                frame: None,
+            },
+        ),
+    ];
+    let mut children = Vec::new();
+    if let Some(alias_child) = alias_child {
+        children.push(alias_child);
+        nodes.push(IrNode::new(
+            IrKind::List,
+            span,
+            EffectClass::pure(),
+            IrData::Children(IrChildSlice::new(0, 1)),
+        ));
+    }
+    let arena = IrArena::from_raw_parts(nodes, children);
+    let ir = Ir {
+        root,
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols,
+        frames: Box::new([]),
+        with_chains,
+        attr_paths: Box::new([]),
+        bindings: vec![IrBinding {
+            key: IrAttrPathSegment::Static(x),
+            position: None,
+            value: thunk,
+        }]
+        .into_boxed_slice(),
+        shapes: Box::new([]),
+    };
+    (ir, thunk)
+}
+
+#[test]
 fn escape_keeps_strict_and_captured_wrapping_thunks_conservative() {
     let mut ir = lowered("(x: builtins.seq x [ x ]) (builtins.sub 3 1)");
     let IrData::Pair {
