@@ -216,6 +216,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with post-evaluation Tier-B admission configured.
+    pub fn with_heap_tier_b_transition_admission_enabled(enabled: bool) -> Self {
+        let mut options = Self::default();
+        options.set_heap_tier_b_transition_admission_enabled(enabled);
+        options
+    }
+
     /// Creates evaluator options with a GC-stress polling policy.
     pub fn with_gc_stress_policy(policy: GcStressPolicy) -> Self {
         let mut options = Self::default();
@@ -635,6 +642,18 @@ impl TreeWalkOptions {
         self.heap_memory_budget = None;
     }
 
+    /// Enables or disables automatic post-evaluation Tier-B admission.
+    ///
+    /// When enabled, owned evaluation outcomes whose final heap-budget action
+    /// requested Tier B immediately apply the generation-metadata admission
+    /// bridge before being returned to the caller. This does not install a
+    /// collector, switch allocators, reserve semispace storage, rewrite
+    /// handles, mutate object bodies, publish remembered/card state, or
+    /// relocate values.
+    pub fn set_heap_tier_b_transition_admission_enabled(&mut self, enabled: bool) {
+        self.heap_tier_b_transition_admission_enabled = enabled;
+    }
+
     /// Installs a GC-stress polling policy for evaluator heap allocations.
     pub fn set_gc_stress_policy(&mut self, policy: GcStressPolicy) {
         self.gc_stress_policy = policy;
@@ -841,6 +860,11 @@ impl TreeWalkOptions {
     /// Returns the configured high-water heap budget, if one is available.
     pub const fn heap_memory_budget(&self) -> Option<HeapMemoryBudget> {
         self.heap_memory_budget
+    }
+
+    /// Returns whether owned outcomes automatically apply Tier-B admission.
+    pub const fn heap_tier_b_transition_admission_enabled(&self) -> bool {
+        self.heap_tier_b_transition_admission_enabled
     }
 
     /// Returns the configured GC-stress polling policy.

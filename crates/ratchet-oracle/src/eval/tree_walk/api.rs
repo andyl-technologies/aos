@@ -64,7 +64,10 @@ pub fn eval_whnf_owned(ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
 ///
 /// # Errors
 ///
-/// Returns [`TreeWalkError`] if root evaluation fails.
+/// Returns [`TreeWalkError`] if root evaluation fails. Returns
+/// [`TreeWalkErrorKind::TierBTransitionAdmission`] if automatic Tier-B
+/// admission is enabled and the post-evaluation admission bridge rejects the
+/// completed outcome heap.
 pub fn eval_whnf_owned_with_options(
     ir: &Ir,
     options: TreeWalkOptions,
@@ -76,7 +79,10 @@ pub fn eval_whnf_owned_with_options(
 ///
 /// # Errors
 ///
-/// Returns [`TreeWalkError`] if root evaluation fails.
+/// Returns [`TreeWalkError`] if root evaluation fails. Returns
+/// [`TreeWalkErrorKind::TierBTransitionAdmission`] if automatic Tier-B
+/// admission is enabled and the post-evaluation admission bridge rejects the
+/// completed outcome heap.
 pub fn eval_whnf_owned_with_options_and_realizer(
     ir: &Ir,
     options: TreeWalkOptions,
@@ -98,7 +104,10 @@ pub fn eval_whnf_owned_with_options_and_realizer(
 ///
 /// # Errors
 ///
-/// Returns [`TreeWalkError`] if root evaluation fails.
+/// Returns [`TreeWalkError`] if root evaluation fails. Returns
+/// [`TreeWalkErrorKind::TierBTransitionAdmission`] if automatic Tier-B
+/// admission is enabled and the post-evaluation admission bridge rejects the
+/// completed outcome heap.
 pub fn eval_whnf_owned_with_options_realizer_and_eval_cache(
     ir: &Ir,
     options: TreeWalkOptions,
@@ -122,42 +131,22 @@ fn eval_whnf_owned_with_evaluator(
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
-    evaluator.advance_persist_eval_cache_run_boundary();
-    let memory_budget_action = evaluator.heap.last_memory_budget_action();
-    let (
-        cheap_memory_budget_plan,
-        cheap_memory_advice_report,
-        cold_hash_consed_value_materialization,
-    ) = post_eval_heap_memory_reports(&mut evaluator);
-    Ok(EvalOutcome {
+    let id = evaluator.current_ir().root;
+    let span = evaluator
+        .current_ir()
+        .arena
+        .node(id)
+        .map(|node| node.span)
+        .unwrap_or_default();
+    finish_owned_eval_outcome(
+        evaluator,
         value,
-        heap: evaluator.heap,
         stats,
-        attr_telemetry: evaluator.attr_telemetry,
-        trace_output: evaluator.trace_output,
-        warning_output: evaluator.warning_output,
-        impure_input_trace: evaluator.impure_input_trace,
-        impure_input_trace_complete: evaluator.impure_input_trace_complete,
-        persist_force_cache_hit_keys: evaluator.persist_force_cache_hit_keys,
         derivations,
-        thunk_resolve_remembered_set: evaluator.thunk_resolve_remembered_set,
-        thunk_resolve_card_table: evaluator.thunk_resolve_card_table,
-        memory_budget_action,
-        cheap_memory_budget_plan,
-        cheap_memory_advice_report,
-        cold_hash_consed_value_materialization,
         gc_stress_boundary_scans,
-        gc_stress_boundary_minor_gc_reference_writebacks:
-            EvalGcStressBoundaryMinorGcLiveReferenceWritebacks::default(),
-        gc_stress_boundary_minor_gc_forwarding_destination_bindings:
-            EvalGcStressBoundaryMinorGcLiveForwardingDestinationBindings::default(),
-        gc_stress_boundary_minor_gc_destination_storage:
-            EvalGcStressBoundaryMinorGcLiveDestinationStorage::default(),
-        gc_stress_boundary_minor_gc_object_generations:
-            EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
-        gc_stress_boundary_minor_gc_writeback_destination_bindings:
-            EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
-    })
+        id,
+        span,
+    )
 }
 
 /// Evaluates an IR root and selects an attr path with `nix-instantiate -A` auto-calls.
@@ -169,7 +158,10 @@ fn eval_whnf_owned_with_evaluator(
 /// # Errors
 ///
 /// Returns [`TreeWalkError`] if root evaluation, formal-set auto-call, or
-/// attribute selection fails.
+/// attribute selection fails. Returns
+/// [`TreeWalkErrorKind::TierBTransitionAdmission`] if automatic Tier-B
+/// admission is enabled and the post-evaluation admission bridge rejects the
+/// completed outcome heap.
 pub fn eval_instantiation_attr_path_owned_with_options_and_realizer(
     ir: &Ir,
     attr_path: &[Vec<u8>],
@@ -191,7 +183,10 @@ pub fn eval_instantiation_attr_path_owned_with_options_and_realizer(
 /// # Errors
 ///
 /// Returns [`TreeWalkError`] if root evaluation, formal-set auto-call, or
-/// attribute selection fails.
+/// attribute selection fails. Returns
+/// [`TreeWalkErrorKind::TierBTransitionAdmission`] if automatic Tier-B
+/// admission is enabled and the post-evaluation admission bridge rejects the
+/// completed outcome heap.
 pub fn eval_instantiation_attr_path_owned_with_options_source_and_realizer(
     ir: &Ir,
     attr_path: &[Vec<u8>],
@@ -217,7 +212,10 @@ pub fn eval_instantiation_attr_path_owned_with_options_source_and_realizer(
 /// # Errors
 ///
 /// Returns [`TreeWalkError`] if root evaluation, formal-set auto-call, or
-/// attribute selection fails.
+/// attribute selection fails. Returns
+/// [`TreeWalkErrorKind::TierBTransitionAdmission`] if automatic Tier-B
+/// admission is enabled and the post-evaluation admission bridge rejects the
+/// completed outcome heap.
 pub fn eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
     ir: &Ir,
     attr_path: &[Vec<u8>],
@@ -254,6 +252,26 @@ fn eval_instantiation_attr_path_with_evaluator(
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
+    finish_owned_eval_outcome(
+        evaluator,
+        value,
+        stats,
+        derivations,
+        gc_stress_boundary_scans,
+        ir.root,
+        span,
+    )
+}
+
+fn finish_owned_eval_outcome(
+    mut evaluator: TreeWalk,
+    value: Value,
+    stats: EvalStats,
+    derivations: Vec<EvalDerivation>,
+    gc_stress_boundary_scans: EvalGcStressBoundaryScans,
+    tier_b_transition_admission_id: IrId,
+    tier_b_transition_admission_span: Span,
+) -> Result<EvalOutcome, TreeWalkError> {
     evaluator.advance_persist_eval_cache_run_boundary();
     let memory_budget_action = evaluator.heap.last_memory_budget_action();
     let (
@@ -261,7 +279,9 @@ fn eval_instantiation_attr_path_with_evaluator(
         cheap_memory_advice_report,
         cold_hash_consed_value_materialization,
     ) = post_eval_heap_memory_reports(&mut evaluator);
-    Ok(EvalOutcome {
+    let apply_tier_b_transition_admission =
+        evaluator.options.heap_tier_b_transition_admission_enabled();
+    let mut outcome = EvalOutcome {
         value,
         heap: evaluator.heap,
         stats,
@@ -289,7 +309,23 @@ fn eval_instantiation_attr_path_with_evaluator(
             EvalGcStressBoundaryMinorGcLiveObjectGenerations::default(),
         gc_stress_boundary_minor_gc_writeback_destination_bindings:
             EvalGcStressBoundaryMinorGcLiveWritebackDestinationBindings::default(),
-    })
+    };
+
+    if apply_tier_b_transition_admission {
+        outcome
+            .apply_tier_b_transition_admission_plan()
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::TierBTransitionAdmission {
+                        id: tier_b_transition_admission_id,
+                        source,
+                    },
+                    tier_b_transition_admission_span,
+                )
+            })?;
+    }
+
+    Ok(outcome)
 }
 
 fn post_eval_heap_memory_reports(

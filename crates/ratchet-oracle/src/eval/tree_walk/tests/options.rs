@@ -573,6 +573,20 @@ fn heap_memory_budget_option_can_be_configured() {
 }
 
 #[test]
+fn heap_tier_b_transition_admission_option_can_be_configured() {
+    let mut options = TreeWalkOptions::new();
+
+    assert!(!options.heap_tier_b_transition_admission_enabled());
+    options.set_heap_tier_b_transition_admission_enabled(true);
+    assert!(options.heap_tier_b_transition_admission_enabled());
+    options.set_heap_tier_b_transition_admission_enabled(false);
+    assert!(!options.heap_tier_b_transition_admission_enabled());
+
+    let options = TreeWalkOptions::with_heap_tier_b_transition_admission_enabled(true);
+    assert!(options.heap_tier_b_transition_admission_enabled());
+}
+
+#[test]
 fn heap_memory_budget_option_polls_tree_walk_heap_allocations() {
     let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
     let ir = lower("\"budgeted\"");
@@ -724,6 +738,42 @@ fn heap_memory_budget_tier_b_transition_application_admits_worker_records() {
             .generation(value)
             .expect("lambda has a heap generation"),
         HeapGeneration::Old
+    );
+}
+
+#[test]
+fn heap_memory_budget_tier_b_transition_admission_option_admits_owned_outcome() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("x: x");
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_heap_tier_b_transition_admission_enabled(true);
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("lambda expression evaluates");
+    let value = outcome.value();
+
+    assert!(
+        outcome
+            .memory_budget_action()
+            .expect("tree-walk outcome records configured budget action")
+            .requests_tier_b()
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(value)
+            .expect("lambda has a heap generation"),
+        HeapGeneration::Old
+    );
+    let admission = outcome
+        .tier_b_transition_admission_plan()
+        .expect("current outcome heap still admits transition request")
+        .expect("over-budget outcome has transition admission plan");
+    assert!(admission.heap_plan().worker_records() > 0);
+    assert!(
+        admission
+            .heap_plan()
+            .records()
+            .iter()
+            .all(|record| !record.needs_generation_rewrite())
     );
 }
 
@@ -910,6 +960,35 @@ fn attr_path_eval_reports_final_heap_memory_budget_action() {
     assert_eq!(transition.decision(), action.decision());
     assert!(action.decision().requires_runtime_action());
     assert_eq!(outcome.cheap_memory_budget_plan(), None);
+}
+
+#[test]
+fn attr_path_eval_tier_b_transition_admission_option_admits_selected_value() {
+    let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
+    let ir = lower("{ value = x: x; }");
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_heap_tier_b_transition_admission_enabled(true);
+    let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
+        &ir,
+        &[b"value".to_vec()],
+        options,
+        None,
+    )
+    .expect("attr-path selection evaluates");
+
+    assert!(
+        outcome
+            .memory_budget_action()
+            .expect("attr-path outcome records configured budget action")
+            .requests_tier_b()
+    );
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("selected lambda has a heap generation"),
+        HeapGeneration::Old
+    );
 }
 
 #[test]

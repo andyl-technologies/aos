@@ -6843,6 +6843,14 @@ and helps the oracle directly.
       install a collector, switch allocators, reserve semispace storage, rewrite
       handles, mutate object bodies, publish remembered/card state, or relocate
       values.
+      `TreeWalkOptions::set_heap_tier_b_transition_admission_enabled` now lets
+      owned root and attr-path evaluation entry points apply that same outcome
+      admission bridge before returning a budget-triggered outcome. Tests cover
+      default-off configuration, root-result admission, and attr-path
+      selected-value admission. This remains automatic metadata admission only:
+      it does not install a collector, switch allocators, reserve semispace
+      storage, rewrite handles, mutate object bodies, publish remembered/card
+      state, or relocate values.
       Hash-cons hits skip the poll because no heap
       allocation occurred. Linux and Darwin budget polls now sample process RSS
       from `/proc/self/statm` or Mach `MACH_TASK_BASIC_INFO` through

@@ -3184,6 +3184,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       Continue/Advice actions. This still does not install a collector, switch
       allocators, reserve semispace storage, rewrite handles, mutate object
       bodies, publish remembered/card state, or relocate values.
+- [x] Current automatic Tier-B admission option precursor:
+      `TreeWalkOptions::set_heap_tier_b_transition_admission_enabled` lets
+      owned root and attr-path evaluation entry points apply the existing
+      outcome admission bridge before returning a budget-triggered outcome.
+      Tests cover default-off configuration, root-result admission, and
+      attr-path selected-value admission. This remains a metadata-only
+      generation rewrite: it does not install a collector, switch allocators,
+      reserve semispace storage, rewrite handles, mutate object bodies, publish
+      remembered/card state, or relocate values.
 
 ### Region inference (§5)
 

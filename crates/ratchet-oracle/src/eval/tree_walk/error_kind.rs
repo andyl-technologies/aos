@@ -868,6 +868,14 @@ pub enum TreeWalkErrorKind {
         /// The lower-level tree-walk writeback failure.
         source: TreeWalkSafepointRootWritebackError,
     },
+    /// Automatic post-evaluation Tier-B admission failed.
+    #[error("Tier-B transition admission failed at node {id:?}: {source}")]
+    TierBTransitionAdmission {
+        /// The root node whose completed evaluation triggered admission.
+        id: IrId,
+        /// The lower-level admission failure.
+        source: EvalTierBTransitionAdmissionApplyError,
+    },
     /// The evaluator heap failed while allocating or retrieving a value.
     #[error("heap operation failed at node {id:?}: {source}")]
     Heap {
