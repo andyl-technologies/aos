@@ -3242,6 +3242,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       transient roots while active primop argument roots block dispatch,
       direct `catAttrs` list-result allocations preserving registered
       transient roots while active primop argument roots block dispatch,
+      direct `catAttrs` IR-helper list-result allocations preserving
+      registered transient roots while active lexical environment roots block
+      dispatch,
       direct `attrNames`, `attrValues`, and `tail` list-result helper
       allocations preserving registered transient roots while input composite
       roots block dispatch, direct list-wrapper allocation preserving

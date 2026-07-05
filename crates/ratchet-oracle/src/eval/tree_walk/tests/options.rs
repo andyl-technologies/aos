@@ -2936,6 +2936,90 @@ fn gc_stress_cat_attrs_list_result_skips_active_argument_roots() {
 }
 
 #[test]
+fn gc_stress_cat_attrs_direct_list_result_skips_active_env_roots() {
+    let root = IrId::new(0);
+    let name_node = IrId::new(1);
+    let list_node = IrId::new(2);
+    let span = Span::new(0, 0);
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"a").expect("a interns");
+    let ir = manual_ir_with_symbols(
+        root,
+        vec![
+            pure_node(IrKind::Null, span, IrData::None),
+            pure_node(IrKind::Str, span, IrData::Symbol(key)),
+            pure_node(IrKind::LocalVar, span, IrData::Local { slot: 0 }),
+        ],
+        symbols,
+    );
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let attrs = FlatAttrs::new(vec![AttrEntry::new(key, Value::int(1))], &evaluator.symbols)
+        .expect("attrs build");
+    let attrs_value = evaluator
+        .heap
+        .alloc_attrs(0, attrs)
+        .expect("attrs allocate");
+    let input = evaluator
+        .heap
+        .alloc_list(NixList::new(vec![attrs_value]))
+        .expect("input list allocates");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+    let frame = EvalFrame::new(1).expect("active frame allocates");
+    frame.set(0, input).expect("active frame slot sets");
+
+    evaluator.env.push(frame);
+    evaluator.active_root_eval_node = Some(root);
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .with_transient_value_stack_roots(root, span, &mut roots, |eval| {
+            eval.eval_cat_attrs_primop(root, span, name_node, list_node)
+        })
+        .expect("direct catAttrs list result allocates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.active_root_eval_node = None;
+    evaluator.env.pop();
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "direct catAttrs result did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while active catAttrs environment roots were live"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("direct catAttrs result is heap-owned");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list.get(0).expect("catAttrs value exists").as_int(), Ok(1));
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("direct catAttrs list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_reflected_context_result_helpers_skip_interned_composite_roots() {
     assert_gc_stress_root_string_result_skips_dispatch(
         r#"builtins.appendContext "x" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; }"#,
