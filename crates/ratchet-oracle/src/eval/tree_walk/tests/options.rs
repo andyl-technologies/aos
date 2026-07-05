@@ -1853,6 +1853,38 @@ fn gc_stress_nested_fetchurl_result_skips_unregistered_outer_locals() {
 }
 
 #[test]
+fn gc_stress_eval_root_read_file_result_dispatch_permanent_noop_bridge() {
+    let (dir, path) = temp_file_with_bytes("gc-stress-read-file", b"abc");
+    let path = nix_string_literal(&path_source(&path));
+    assert_gc_stress_root_string_result_dispatches(&format!("builtins.readFile {path}"), b"abc");
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
+fn gc_stress_eval_root_read_file_text_store_result_skips_nested_text_store_setup() {
+    assert_gc_stress_root_string_result_skips_dispatch(
+        r#"builtins.readFile (builtins.toFile "gc-read" "abc")"#,
+        b"abc",
+    );
+}
+
+#[test]
+fn gc_stress_nested_read_file_result_skips_unregistered_outer_locals() {
+    assert_gc_stress_root_bool_result_skips_dispatch(
+        r#""left" == builtins.readFile (builtins.toFile "gc-read" "abc")"#,
+        false,
+    );
+
+    let (dir, path) = temp_file_with_bytes("gc-stress-nested-read-file", b"abc");
+    let path = nix_string_literal(&path_source(&path));
+    assert_gc_stress_root_bool_result_skips_dispatch(
+        &format!(r#""left" == builtins.readFile {path}"#),
+        false,
+    );
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn gc_stress_eval_root_serializer_scalar_results_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches("builtins.toJSON 123", b"123");
     assert_gc_stress_root_string_result_dispatches(

@@ -385,12 +385,11 @@ impl TreeWalk {
                     argument_span,
                 ));
             }
-            return self
-                .heap
-                .alloc_string(NixString::new(entry.contents, entry.references))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_tree_walk_string(
+                id,
+                span,
+                NixString::new(entry.contents, entry.references),
+            );
         }
         let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
             TreeWalkError::new(
@@ -416,9 +415,7 @@ impl TreeWalk {
         // source. Without this the read string is context-free and such inputs
         // are dropped, diverging from C++ Nix.
         let context = self.read_file_content_context(id, span, &contents)?;
-        self.heap
-            .alloc_string(NixString::new(contents, context))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_string(id, span, NixString::new(contents, context))
     }
 
     /// Builds the string-context for a `builtins.readFile` result.
