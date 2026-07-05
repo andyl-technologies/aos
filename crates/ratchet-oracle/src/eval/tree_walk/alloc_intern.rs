@@ -524,9 +524,15 @@ impl TreeWalk {
                 node.span,
             )
         })?;
-        for child in children.iter().copied() {
-            elements.push(self.eval_lazy_node(child)?);
-        }
+        self.begin_gc_stress_composite_accumulator();
+        let result = (|| {
+            for child in children.iter().copied() {
+                elements.push(self.eval_lazy_node(child)?);
+            }
+            Ok(())
+        })();
+        self.end_gc_stress_composite_accumulator();
+        result?;
         self.alloc_tree_walk_list(id, node.span, NixList::new(elements))
     }
 
@@ -638,10 +644,22 @@ impl TreeWalk {
 
     pub(super) fn begin_order_sensitive_binding_assembly(&mut self) {
         self.order_sensitive_binding_depth = self.order_sensitive_binding_depth.saturating_add(1);
+        self.begin_gc_stress_composite_accumulator();
     }
 
     pub(super) fn end_order_sensitive_binding_assembly(&mut self) {
         self.order_sensitive_binding_depth = self.order_sensitive_binding_depth.saturating_sub(1);
+        self.end_gc_stress_composite_accumulator();
+    }
+
+    fn begin_gc_stress_composite_accumulator(&mut self) {
+        self.active_composite_accumulator_depth =
+            self.active_composite_accumulator_depth.saturating_add(1);
+    }
+
+    fn end_gc_stress_composite_accumulator(&mut self) {
+        self.active_composite_accumulator_depth =
+            self.active_composite_accumulator_depth.saturating_sub(1);
     }
 
     pub(super) fn alloc_thunk_for_node(
@@ -759,6 +777,8 @@ impl TreeWalk {
         span: Span,
         thunk: EvalThunk,
     ) -> Result<Value, TreeWalkError> {
+        let dispatch_gc_stress_safepoint =
+            self.can_dispatch_gc_stress_thunk_allocation_safepoint(id, &thunk);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
         let value = self
@@ -766,14 +786,18 @@ impl TreeWalk {
             .alloc_thunk(self.admit_parallel_thunk_payload_cell(id, span, thunk))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         self.increment_thunks_allocated();
-        self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
-            id,
-            span,
-            RuntimeAllocatorTier::TierAOneShot,
-            previous_poll,
-            value,
-            true,
-        )
+        if dispatch_gc_stress_safepoint {
+            self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
+                id,
+                span,
+                RuntimeAllocatorTier::TierAOneShot,
+                previous_poll,
+                value,
+                true,
+            )
+        } else {
+            Ok(value)
+        }
     }
 
     pub(super) fn alloc_tree_walk_lambda(
@@ -839,12 +863,41 @@ impl TreeWalk {
         list: NixList,
     ) -> Result<Value, TreeWalkError> {
         let dispatch_gc_stress_safepoint =
-            self.can_dispatch_gc_stress_permanent_root_allocation_safepoint(id);
+            self.can_dispatch_gc_stress_permanent_list_allocation_safepoint(id, &list);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
         let value = self
             .heap
             .alloc_list(list)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if dispatch_gc_stress_safepoint {
+            self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
+                id,
+                span,
+                previous_poll,
+                value,
+            )
+        } else {
+            Ok(value)
+        }
+    }
+
+    pub(super) fn alloc_tree_walk_attrs_with_projected_shape_metadata(
+        &mut self,
+        id: IrId,
+        span: Span,
+        shape: u32,
+        repr: AttrSetReprKind,
+        projected_shape: Option<ShapeId>,
+        attrs: FlatAttrs,
+    ) -> Result<Value, TreeWalkError> {
+        let dispatch_gc_stress_safepoint =
+            self.can_dispatch_gc_stress_permanent_attrs_allocation_safepoint(id, &attrs);
+        let previous_poll =
+            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::PermanentShared);
+        let value = self
+            .heap
+            .alloc_attrs_with_projected_shape_metadata(shape, repr, projected_shape, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if dispatch_gc_stress_safepoint {
             self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
@@ -864,9 +917,16 @@ impl TreeWalk {
         lambda: &EvalLambda,
     ) -> bool {
         self.can_dispatch_gc_stress_root_allocation_safepoint(id)
-            && lambda.env().frames().is_empty()
-            && lambda.with_scope_env().scopes().is_empty()
-            && lambda.scoped_global_env().scopes().is_empty()
+            && Self::is_gc_stress_uncaptured_lambda(lambda)
+    }
+
+    fn can_dispatch_gc_stress_thunk_allocation_safepoint(
+        &self,
+        id: IrId,
+        thunk: &EvalThunk,
+    ) -> bool {
+        self.can_dispatch_gc_stress_root_allocation_safepoint(id)
+            && Self::is_gc_stress_uncaptured_node_thunk(thunk)
     }
 
     fn can_dispatch_gc_stress_primop_allocation_safepoint(
@@ -877,15 +937,84 @@ impl TreeWalk {
         self.can_dispatch_gc_stress_root_allocation_safepoint(id) && primop.args().is_empty()
     }
 
+    fn can_dispatch_gc_stress_permanent_list_allocation_safepoint(
+        &self,
+        id: IrId,
+        list: &NixList,
+    ) -> bool {
+        self.can_dispatch_gc_stress_permanent_root_allocation_safepoint(id)
+            && list
+                .iter()
+                .copied()
+                .all(|value| self.can_dispatch_gc_stress_permanent_composite_field(value))
+    }
+
+    fn can_dispatch_gc_stress_permanent_attrs_allocation_safepoint(
+        &self,
+        id: IrId,
+        attrs: &FlatAttrs,
+    ) -> bool {
+        self.can_dispatch_gc_stress_permanent_root_allocation_safepoint(id)
+            && matches!(self.node(id), Ok(node) if node.kind == IrKind::AttrSet)
+            && attrs
+                .iter_by_symbol()
+                .all(|entry| self.can_dispatch_gc_stress_permanent_composite_field(entry.value))
+    }
+
     fn can_dispatch_gc_stress_permanent_root_allocation_safepoint(&self, id: IrId) -> bool {
-        self.can_dispatch_gc_stress_root_allocation_safepoint(id)
+        self.active_root_eval_node == Some(id)
+            && self.can_dispatch_gc_stress_ambient_allocation_safepoint()
+    }
+
+    fn can_dispatch_gc_stress_permanent_composite_field(&self, value: Value) -> bool {
+        match value.tag() {
+            ValueTag::Lambda => matches!(
+                self.heap.get_lambda(value),
+                Ok(lambda) if Self::is_gc_stress_uncaptured_lambda(lambda)
+            ),
+            ValueTag::Primop => matches!(
+                self.heap.get_primop(value),
+                Ok(primop) if primop.args().is_empty()
+            ),
+            ValueTag::Thunk => matches!(
+                self.heap.get_thunk(value),
+                Ok(thunk) if Self::is_gc_stress_uncaptured_node_thunk(thunk)
+            ),
+            _ => true,
+        }
+    }
+
+    fn is_gc_stress_uncaptured_lambda(lambda: &EvalLambda) -> bool {
+        lambda.env().frames().is_empty()
+            && lambda.with_scope_env().scopes().is_empty()
+            && lambda.scoped_global_env().scopes().is_empty()
+    }
+
+    fn is_gc_stress_uncaptured_node_thunk(thunk: &EvalThunk) -> bool {
+        matches!(
+            thunk.kind(),
+            EvalThunkKind::Node {
+                env,
+                with_env,
+                scoped_globals,
+                ..
+            } if env.frames().is_empty()
+                && with_env.scopes().is_empty()
+                && scoped_globals.scopes().is_empty()
+        )
     }
 
     fn can_dispatch_gc_stress_root_allocation_safepoint(&self, id: IrId) -> bool {
         self.active_root_eval_node == Some(id)
+            && self.can_dispatch_gc_stress_ambient_allocation_safepoint()
+    }
+
+    fn can_dispatch_gc_stress_ambient_allocation_safepoint(&self) -> bool {
+        self.active_root_eval_node.is_some()
             && self.env.is_empty()
             && self.with_scopes.is_empty()
             && self.scoped_globals.is_empty()
+            && self.active_composite_accumulator_depth == 0
             && self.suspended_env_roots.is_empty()
             && self.active_force_roots.is_empty()
             && self.active_primop_arg_roots.is_empty()

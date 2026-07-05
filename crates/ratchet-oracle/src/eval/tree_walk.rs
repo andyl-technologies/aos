@@ -1027,6 +1027,7 @@ pub struct TreeWalk {
     ifd_realizer: Option<IfdRealizer>,
     call_depth: usize,
     order_sensitive_binding_depth: usize,
+    active_composite_accumulator_depth: usize,
     active_root_eval_node: Option<IrId>,
     active_force_roots: Vec<Value>,
     active_primop_arg_roots: Vec<EvalPrimOpArg>,

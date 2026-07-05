@@ -156,7 +156,7 @@ fn conservative_thunk_alloc_facts_keep_lazy_thunks() {
 }
 
 #[test]
-fn gc_stress_thunk_allocation_dispatches_reserved_forwarding_bridge() {
+fn gc_stress_list_element_thunk_allocation_skips_reserved_forwarding_bridge() {
     let ir = lower("[ (1 + 6) ]");
     let default_outcome = eval_whnf_owned(&ir).expect("default thunk alloc evaluates");
 
@@ -188,6 +188,20 @@ fn gc_stress_thunk_allocation_dispatches_reserved_forwarding_bridge() {
         .get_thunk(element)
         .expect("element is a heap-owned thunk");
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
+    let thunk_values = outcome
+        .heap()
+        .test_record_values()
+        .map(|value| value.expect("heap record value rebuilds"))
+        .filter(|value| value.tag() == ValueTag::Thunk)
+        .collect::<Vec<_>>();
+    assert!(thunk_values.iter().any(|value| value.raw_eq(element)));
+    assert_eq!(
+        thunk_values
+            .iter()
+            .filter(|value| !value.raw_eq(element))
+            .count(),
+        1
+    );
 
     assert!(
         outcome.heap().allocation_safepoints().count()
@@ -197,7 +211,7 @@ fn gc_stress_thunk_allocation_dispatches_reserved_forwarding_bridge() {
         .heap()
         .allocation_safepoints()
         .last()
-        .expect("final thunk forwarding allocation safepoint records");
+        .expect("final thunk allocation safepoint records");
     assert_eq!(
         final_safepoint.entrypoint(),
         RuntimeAllocationEntryPoint::AosAllocThunk

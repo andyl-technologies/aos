@@ -358,6 +358,7 @@ impl TreeWalk {
             ifd_realizer: None,
             call_depth: 0,
             order_sensitive_binding_depth: 0,
+            active_composite_accumulator_depth: 0,
             active_root_eval_node: None,
             active_force_roots: Vec::new(),
             active_primop_arg_roots: Vec::new(),

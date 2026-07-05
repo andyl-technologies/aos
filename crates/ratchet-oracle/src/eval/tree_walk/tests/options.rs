@@ -930,6 +930,67 @@ fn heap_record_values_with_tag(heap: &EvalHeap, tag: ValueTag) -> Vec<Value> {
 }
 
 #[test]
+fn gc_stress_eval_root_thunk_allocation_dispatches_reserved_forwarding_bridge() {
+    let body = IrId::new(0);
+    let root = IrId::new(1);
+    let ir = manual_ir(
+        root,
+        vec![
+            pure_node(IrKind::Int, Span::new(0, 1), IrData::Int(7)),
+            pure_node(IrKind::ThunkAlloc, Span::new(0, 1), IrData::Node(body)),
+        ],
+    );
+    let default_outcome = eval_whnf_owned(&ir).expect("default root thunk alloc evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress root thunk alloc evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(7));
+    assert_eq!(outcome.stats().thunks_allocated(), 1);
+    assert_eq!(outcome.heap().len(), default_outcome.heap().len() + 1);
+    let source_value = outcome
+        .heap()
+        .test_record_value(0)
+        .expect("original thunk source record exists")
+        .expect("original thunk source value rebuilds");
+    let destination_value = outcome
+        .heap()
+        .test_record_value(1)
+        .expect("reserved thunk destination record exists")
+        .expect("reserved thunk destination value rebuilds");
+    assert_eq!(source_value.tag(), ValueTag::Thunk);
+    assert_eq!(destination_value.tag(), ValueTag::Thunk);
+    assert!(!source_value.raw_eq(destination_value));
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(destination_value)
+            .expect("root thunk destination generation is known"),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        outcome.heap().allocation_safepoints().count(),
+        default_outcome.heap().allocation_safepoints().count() + 1
+    );
+    let final_safepoint = outcome
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("final root thunk reserved allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocThunk
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+}
+
+#[test]
 fn gc_stress_eval_root_list_allocation_dispatches_dirty_card_writeback_bridge() {
     let ir = lower("[ (x: x) ]");
     let default_outcome = eval_whnf_owned(&ir).expect("default list evaluates");
@@ -972,7 +1033,7 @@ fn gc_stress_eval_root_list_allocation_dispatches_dirty_card_writeback_bridge() 
             .iter()
             .filter(|value| !value.raw_eq(element))
             .count()
-            >= 2
+            >= 1
     );
 
     assert!(
@@ -1016,6 +1077,64 @@ fn gc_stress_eval_root_list_allocation_dispatches_dirty_card_writeback_bridge() 
 }
 
 #[test]
+fn gc_stress_list_allocation_dispatch_skips_local_accumulator_fields() {
+    let ir = lower("[ (x: x) (y: y) ]");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress multi-element list evaluates without local accumulator writebacks");
+
+    assert_eq!(outcome.value().tag(), ValueTag::List);
+    let elements = {
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("root list is heap-owned");
+        vec![
+            list.get(0).expect("first list element exists"),
+            list.get(1).expect("second list element exists"),
+        ]
+    };
+    for element in &elements {
+        assert_eq!(element.tag(), ValueTag::Thunk);
+        assert_eq!(
+            outcome
+                .heap()
+                .generation(*element)
+                .expect("element generation is known"),
+            HeapGeneration::Young
+        );
+    }
+    let thunk_values = heap_record_values_with_tag(outcome.heap(), ValueTag::Thunk);
+    for element in &elements {
+        assert!(thunk_values.iter().any(|value| value.raw_eq(*element)));
+    }
+    assert!(
+        thunk_values
+            .iter()
+            .filter(|value| !elements.iter().any(|element| value.raw_eq(*element)))
+            .count()
+            >= elements.len()
+    );
+    let permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_list_allocation_dispatch_skips_direct_eval_node_callers() {
     let ir = lower("[ (x: x) ]");
     let mut evaluator = TreeWalk::with_options(
@@ -1037,18 +1156,11 @@ fn gc_stress_list_allocation_dispatch_skips_direct_eval_node_callers() {
     };
     assert_eq!(element.tag(), ValueTag::Thunk);
     let thunk_values = heap_record_values_with_tag(evaluator.heap(), ValueTag::Thunk);
-    assert_eq!(thunk_values.len(), 2);
+    assert_eq!(thunk_values.len(), 1);
     assert_eq!(
         thunk_values
             .iter()
             .filter(|value| value.raw_eq(element))
-            .count(),
-        1
-    );
-    assert_eq!(
-        thunk_values
-            .iter()
-            .filter(|value| !value.raw_eq(element))
             .count(),
         1
     );
@@ -1078,6 +1190,428 @@ fn gc_stress_list_allocation_dispatch_skips_direct_eval_node_callers() {
     assert_eq!(
         permanent_safepoint.entrypoint(),
         RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_eval_root_attrs_allocation_dispatches_dirty_card_writeback_bridge() {
+    let ir = lower("{ a = x: x; }");
+    let a = symbol_for(&ir, b"a");
+    let default_outcome = eval_whnf_owned(&ir).expect("default attrset evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress attrset evaluates");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(outcome.value())
+            .expect("attrset generation is known"),
+        HeapGeneration::Permanent
+    );
+    assert!(outcome.heap().len() > default_outcome.heap().len());
+
+    let attr_value = {
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("root attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(attr_value.tag(), ValueTag::Thunk);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(attr_value)
+            .expect("attr value generation is known"),
+        HeapGeneration::Young
+    );
+    let thunk_values = heap_record_values_with_tag(outcome.heap(), ValueTag::Thunk);
+    assert!(thunk_values.iter().any(|value| value.raw_eq(attr_value)));
+    assert!(
+        thunk_values
+            .iter()
+            .filter(|value| !value.raw_eq(attr_value))
+            .count()
+            >= 1
+    );
+
+    assert!(
+        outcome.heap().allocation_safepoints().count()
+            > default_outcome.heap().allocation_safepoints().count()
+    );
+    let final_worker_safepoint = outcome
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("reserved thunk allocation safepoint records");
+    assert_eq!(
+        final_worker_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocThunk
+    );
+    assert_eq!(
+        final_worker_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert_eq!(
+        outcome.heap().permanent_allocation_safepoints().count(),
+        default_outcome
+            .heap()
+            .permanent_allocation_safepoints()
+            .count()
+    );
+    let final_permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root attrset allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_attrs_allocation_dispatch_skips_local_accumulator_fields() {
+    let ir = lower("{ a = x: x; b = y: y; }");
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress multi-attr attrset evaluates without local accumulator writebacks");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+    let attr_values = {
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("root attrset is heap-owned");
+        (
+            attrs.get(a).expect("a exists"),
+            attrs.get(b).expect("b exists"),
+        )
+    };
+    let values = [attr_values.0, attr_values.1];
+    for value in values {
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        assert_eq!(
+            outcome
+                .heap()
+                .generation(value)
+                .expect("attr value generation is known"),
+            HeapGeneration::Young
+        );
+    }
+    let thunk_values = heap_record_values_with_tag(outcome.heap(), ValueTag::Thunk);
+    for value in values {
+        assert!(thunk_values.iter().any(|record| record.raw_eq(value)));
+    }
+    assert!(
+        thunk_values
+            .iter()
+            .filter(|record| !values.iter().any(|value| record.raw_eq(*value)))
+            .count()
+            >= values.len()
+    );
+    let permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_attrs_allocation_dispatch_skips_captured_lexical_env_fields() {
+    let ir = lower("rec { a = b; b = x: x; }");
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let default_outcome = eval_whnf_owned(&ir).expect("default recursive attrset evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress recursive attrset evaluates without unsupported captured-env writebacks");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+    let (a_value, b_value) = {
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("root attrset is heap-owned");
+        (
+            attrs.get(a).expect("a exists"),
+            attrs.get(b).expect("b exists"),
+        )
+    };
+    assert_eq!(a_value.tag(), ValueTag::Thunk);
+    assert_eq!(b_value.tag(), ValueTag::Thunk);
+    let a_thunk = outcome
+        .heap()
+        .get_thunk(a_value)
+        .expect("a is a heap-owned thunk");
+    let b_thunk = outcome
+        .heap()
+        .get_thunk(b_value)
+        .expect("b is a heap-owned thunk");
+    assert!(a_thunk.env().is_some_and(|env| !env.frames().is_empty()));
+    assert!(b_thunk.env().is_some_and(|env| !env.frames().is_empty()));
+
+    assert_eq!(
+        outcome.heap().permanent_allocation_safepoints().count(),
+        default_outcome
+            .heap()
+            .permanent_allocation_safepoints()
+            .count()
+    );
+    let permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("recursive attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_thunk_allocation_dispatch_skips_active_lexical_env_frames() {
+    let ir = lower("let r = rec { a = b; b = x: x; }; in { inherit (r) a; }");
+    let a = symbol_for(&ir, b"a");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress inherited select evaluates without active-frame writebacks");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+    let selected = {
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("root attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(selected.tag(), ValueTag::Thunk);
+    let selected_thunk = outcome
+        .heap()
+        .get_thunk(selected)
+        .expect("inherited select is a heap-owned thunk");
+    assert!(selected_thunk.env().is_none());
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_attrs_allocation_dispatch_skips_synthetic_select_thunk_fields() {
+    let ir = lower("{ inherit ({ a = 1; }) a; }");
+    let a = symbol_for(&ir, b"a");
+    let default_outcome = eval_whnf_owned(&ir).expect("default inherited attrset evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress inherited attrset evaluates without synthetic select writebacks");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+    let selected = {
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("root attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(selected.tag(), ValueTag::Thunk);
+    let selected_thunk = outcome
+        .heap()
+        .get_thunk(selected)
+        .expect("inherited select is a heap-owned thunk");
+    assert!(matches!(
+        selected_thunk.kind(),
+        EvalThunkKind::Select { .. }
+    ));
+    assert_eq!(
+        outcome.heap().permanent_allocation_safepoints().count(),
+        default_outcome
+            .heap()
+            .permanent_allocation_safepoints()
+            .count()
+    );
+    let permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_thunk_allocation_dispatch_skips_application_argument_locals() {
+    let ir = lower("(x: 1) (y: y)");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress root application evaluates without hidden callee-local writebacks");
+
+    assert_eq!(outcome.value().as_int(), Ok(1));
+    let thunk_values = heap_record_values_with_tag(outcome.heap(), ValueTag::Thunk);
+    assert_eq!(thunk_values.len(), 1);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(thunk_values[0])
+            .expect("argument thunk source generation is known"),
+        HeapGeneration::Young
+    );
+    let final_worker_safepoint = outcome
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("argument thunk allocation safepoint records");
+    assert_eq!(
+        final_worker_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocThunk
+    );
+    assert_eq!(
+        final_worker_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_thunk_allocation_dispatch_skips_synthetic_apply_accumulators() {
+    let ir = lower("builtins.map (x: x) [ 1 2 ]");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress map evaluates without synthetic apply accumulator writebacks");
+
+    assert_eq!(outcome.value().tag(), ValueTag::List);
+    let elements = {
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("mapped list is heap-owned");
+        assert_eq!(list.len(), 2);
+        [
+            list.get(0).expect("first mapped element exists"),
+            list.get(1).expect("second mapped element exists"),
+        ]
+    };
+    let thunk_values = heap_record_values_with_tag(outcome.heap(), ValueTag::Thunk);
+    assert_eq!(thunk_values.len(), elements.len());
+    for element in elements {
+        assert_eq!(element.tag(), ValueTag::Thunk);
+        assert!(thunk_values.iter().any(|value| value.raw_eq(element)));
+        let thunk = outcome
+            .heap()
+            .get_thunk(element)
+            .expect("mapped element is a heap-owned thunk");
+        assert!(matches!(thunk.kind(), EvalThunkKind::Apply { .. }));
+    }
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_attrs_allocation_dispatch_skips_direct_eval_node_callers() {
+    let ir = lower("{ a = x: x; }");
+    let a = symbol_for(&ir, b"a");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+
+    let value = evaluator
+        .eval_node(ir.root)
+        .expect("direct attrset node evaluation succeeds");
+
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let attr_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("root attrset is heap-owned");
+        attrs.get(a).expect("a exists")
+    };
+    assert_eq!(attr_value.tag(), ValueTag::Thunk);
+    let thunk_values = heap_record_values_with_tag(evaluator.heap(), ValueTag::Thunk);
+    assert_eq!(thunk_values.len(), 1);
+    assert_eq!(
+        thunk_values
+            .iter()
+            .filter(|value| value.raw_eq(attr_value))
+            .count(),
+        1
+    );
+    assert!(evaluator.heap().allocation_safepoints().count() >= 1);
+    let final_worker_safepoint = evaluator
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("direct attrset worker allocation safepoint records");
+    assert_eq!(
+        final_worker_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocThunk
+    );
+    assert_eq!(
+        final_worker_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        1
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("direct attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
     );
     assert_eq!(
         permanent_safepoint.gc_poll_reason(),

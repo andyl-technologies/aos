@@ -2979,43 +2979,64 @@ GC must be observationally invisible (§8): every item is gated by the different
       without explicit value-stack registration, bind mutable
       relocation slots, invoke a collector, or consume JIT stack maps; those
       remain open in the full precise-root row above.
-- [x] Current tree-walk thunk/lambda/root-primop/root-list allocation GC-stress dispatch precursor:
+- [x] Current tree-walk thunk/lambda/root-primop/root-list/root-attrset allocation GC-stress dispatch precursor:
       `TreeWalk::alloc_tree_walk_thunk`,
       `TreeWalk::alloc_tree_walk_lambda`,
-      `TreeWalk::alloc_tree_walk_primop`, and
-      `TreeWalk::alloc_tree_walk_list` detect when an admitted allocation
+      `TreeWalk::alloc_tree_walk_primop`,
+      `TreeWalk::alloc_tree_walk_list`, and
+      `TreeWalk::alloc_tree_walk_attrs_with_projected_shape_metadata` detect when an admitted allocation
       produced a new collector poll, reserve destination records, publish the
       just-allocated value as transient value-stack root storage, and return
       the rewritten `Value` to the caller. Thunks use the current-poll
-      reserved forwarding bridge from the previous slice.
+      reserved forwarding bridge from the previous slice only when the
+      allocated thunk is the active `eval_root` node, no hidden roots or local
+      composite accumulators are active, and the deferred work carries no
+      unsupported lexical capture.
       Uncaptured source lambdas and argument-free first-class primop wrappers
       dispatch only when they are the active `eval_root` node, where the
       just-allocated value is the only transient root, and use the
       non-forwarding reserved writeback bridge to avoid publishing unnecessary
-      forwarding side-table state. Root list allocations use the same
-      `eval_root` gate on the permanent-shared allocator, mark the newly
-      allocated list source in the owned card table, and rely on the
+      forwarding side-table state. Root list and root attrset allocations whose
+      immediate worker fields are non-composites, uncaptured lambdas/primops,
+      or ordinary source-node thunks without captured lexical, `with`, or
+      scoped-global environments use the same `eval_root` gate on the
+      permanent-shared allocator after list or binding local accumulators have
+      finished, mark the newly allocated composite source in the owned card
+      table, and rely on the
       non-forwarding reserved writeback bridge to rewrite any live heap fields
       reachable through dirty cards before clearing the owned card table after
       successful application. The dispatch uses the same promotion
       threshold of 2 as the existing tree-walk GC-stress bridges and
-      intentionally leaves captured lambdas, captured-argument primop wrappers,
-      nested/direct `eval_node` lambda/primop/list allocations, remaining
-      permanent composite allocation sites that need remembered-edge/barrier
-      work, semispace
+      intentionally leaves captured-env thunks, synthetic select/apply/builtin
+      thunks and thunk fields, application-argument thunks, captured lambdas,
+      captured-argument primop wrappers,
+      nested/direct `eval_node` lambda/primop/list/attrset allocations,
+      recursive/captured-lexical-env root attrsets, worker allocations inside
+      list/binding local accumulator assembly, remaining non-root and
+      helper-generated permanent composite allocation sites that need
+      remembered-edge/barrier work, semispace
       ownership, ABI object headers, interned/JIT roots, unsupported active
-      frames, and Tier-B allocation dispatch open. Tests cover a lazy list
-      element thunk, an `eval_root` source lambda, and an `eval_root`
-      `builtins.map` primop under every-safepoint stress, including the extra
-      reserved allocation and the returned young destination value. They also
-      cover a root list containing a lazy thunk, where the permanent list's
-      dirty-card edge is rewritten from the first relocated thunk to the
-      post-list-GC relocated thunk, while a direct `eval_node` list caller keeps
-      the first relocated thunk because it is outside the root-list dispatch
-      gate. Direct `eval_node` lambda/primop callers and a captured-argument
-      primop are pinned outside their dispatch gates. The reserved bridge also
-      covers the periodic policy case where the scratch reservation safepoint
-      does not poll.
+      frames, and Tier-B allocation dispatch open. Tests cover an active
+      `eval_root` source `ThunkAlloc`, an `eval_root` source lambda, and an
+      `eval_root` `builtins.map` primop under every-safepoint stress, including
+      the extra reserved allocation and the returned young destination value.
+      They also cover lazy list-element, application-argument, synthetic
+      apply-thunk accumulator, and synthetic select-thunk field skips,
+      multi-field list/attrset local-accumulator skips, a root list containing
+      a lazy thunk whose permanent list dirty-card edge is rewritten
+      from the source thunk to the post-list-GC relocated thunk, a direct
+      `eval_node` list caller that keeps the original source thunk because it
+      is outside the root-list dispatch gate, and a root attrset containing a
+      lazy thunk with the analogous attr-field rewrite/direct-caller skip. A
+      recursive attrset whose lazy
+      fields capture a lexical frame is pinned outside the root-attrset dispatch
+      gate until captured-env heap-field writeback is supported, and inherited
+      select thunks allocated while such frames are active are pinned outside
+      thunk dispatch for the same reason. Direct
+      `eval_node` lambda/primop callers and a captured-argument primop are
+      pinned outside their dispatch gates. The reserved bridge also covers the
+      periodic policy case where the scratch reservation safepoint does not
+      poll.
 - [ ] The single generational write barrier at `thunk_resolve` (`Blackhole → Forced(young)`), card-marking only there — no general field-store barrier (§4.5) — **P3**, `S-8`.
 - [x] Current thunk-resolve write-barrier precursor:
       `ratchet-value::heap::gc` defines the generational decision table for the
