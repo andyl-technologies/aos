@@ -3203,6 +3203,79 @@ fn gc_stress_mapped_list_result_skips_apply_thunk_fields() {
 }
 
 #[test]
+fn gc_stress_generated_list_result_skips_apply_thunk_fields() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let generator_symbol = evaluator.symbols.intern(b"isInt").expect("isInt interns");
+    let generator_builtin = lookup_builtin(b"isInt").expect("isInt builtin exists");
+    let generator = evaluator
+        .heap
+        .alloc_primop(EvalPrimOp::registered(generator_symbol, generator_builtin))
+        .expect("generator primop allocates");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+        eval.alloc_generated_list(ir.root, span, ir.root, span, generator, ir.root, 2)
+    });
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    let value = result.expect("generated list result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "generated list result did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while generated apply-thunk fields were live"
+    );
+    assert_eq!(value.tag(), ValueTag::List);
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("generated list result is heap-owned");
+    assert_eq!(list.len(), 2);
+    for index in 0..2 {
+        assert_eq!(
+            list.get(index).expect("generated element exists").tag(),
+            ValueTag::Thunk
+        );
+    }
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 1,
+        "generated list allocation did not record exactly one permanent safepoint"
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("generated list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_reflected_context_result_helpers_skip_interned_composite_roots() {
     assert_gc_stress_root_string_result_skips_dispatch(
         r#"builtins.appendContext "x" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; }"#,

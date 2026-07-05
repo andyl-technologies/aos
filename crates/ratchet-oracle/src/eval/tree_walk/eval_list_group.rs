@@ -132,9 +132,7 @@ impl TreeWalk {
             )?);
         }
 
-        self.heap
-            .alloc_list(NixList::new(generated))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        self.alloc_tree_walk_list(id, span, NixList::new(generated))
     }
 
     pub(super) fn expect_non_negative_list_length(

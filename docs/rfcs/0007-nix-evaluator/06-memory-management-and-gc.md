@@ -3249,6 +3249,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       roots while active primop argument roots block dispatch,
       direct non-empty `map` list-result allocations preserving registered
       transient roots while mapped apply-thunk fields block dispatch,
+      direct non-empty `genList` list-result allocations preserving registered
+      transient roots while generated apply-thunk fields block dispatch,
       direct `attrNames`, `attrValues`, and `tail` list-result helper
       allocations preserving registered transient roots while input composite
       roots block dispatch, direct list-wrapper allocation preserving
