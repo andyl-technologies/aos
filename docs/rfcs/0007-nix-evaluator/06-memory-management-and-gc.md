@@ -3122,6 +3122,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       through the wrapper and dispatch for direct root store-path results.
       `toFile` final text-store path string allocations now route through the
       wrapper and dispatch for direct root text-store path results.
+      `fetchurl` final fixed-output store-path string allocations now route
+      through the wrapper and dispatch for direct root fetchurl results without
+      routing shared fetch-tree/fetch-git attrset out-path construction.
       `toJSON` and `toXML` final serialized string allocations now route
       through the wrapper, and scalar direct-root serializer results dispatch
       through the scalar no-op bridge.
@@ -3166,6 +3169,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       root `toFile` final text-store path allocations relocating registered
       transient roots,
       nested `toFile` final text-store path allocations preserving
+      unregistered outer locals,
+      root `fetchurl` final fixed-output path allocations relocating registered
+      transient roots,
+      nested `fetchurl` final fixed-output path allocations preserving
       unregistered outer locals,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
       registered transient roots,

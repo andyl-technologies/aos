@@ -177,13 +177,32 @@ impl TreeWalk {
         span: Span,
         path: Vec<u8>,
     ) -> Result<Value, TreeWalkError> {
+        let string = Self::fetchurl_path_string(id, span, path)?;
+        self.heap
+            .alloc_string(string)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    pub(super) fn alloc_fetchurl_result_path_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path: Vec<u8>,
+    ) -> Result<Value, TreeWalkError> {
+        let string = Self::fetchurl_path_string(id, span, path)?;
+        self.alloc_tree_walk_string(id, span, string)
+    }
+
+    fn fetchurl_path_string(
+        id: IrId,
+        span: Span,
+        path: Vec<u8>,
+    ) -> Result<NixString, TreeWalkError> {
         let context = StringContext::singleton(ContextElement::opaque_path(path.clone()).map_err(
             |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
         )?)
         .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
-        self.heap
-            .alloc_string(NixString::new(path, context))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+        Ok(NixString::new(path, context))
     }
 
     pub(super) fn parse_fetchurl_url(
