@@ -774,6 +774,7 @@ impl TreeWalk {
                     persistent_clear_identity: impure_observation_identity,
                     free_var_value_hashes,
                     replay_position_module: Some(body.module()),
+                    replay_allocation_node: Some(*body),
                     memoization_admission,
                 })
             }
@@ -853,6 +854,7 @@ impl TreeWalk {
             persistent_clear_identity: Some(identity),
             free_var_value_hashes: vec![selected_hash],
             replay_position_module: None,
+            replay_allocation_node: None,
             memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
         })
     }
@@ -886,6 +888,7 @@ impl TreeWalk {
             persistent_clear_identity: observation_identity,
             free_var_value_hashes: Vec::new(),
             replay_position_module: None,
+            replay_allocation_node: None,
             memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
         })
     }
@@ -917,6 +920,7 @@ impl TreeWalk {
             persistent_clear_identity: Some(identity),
             free_var_value_hashes,
             replay_position_module: None,
+            replay_allocation_node: Some(EvalNodeRef::new(self.current_module, id)),
             memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
         })
     }

@@ -1,8 +1,153 @@
 //! Force-cache payload rehydration tests for lists, attrsets, paths, and strings.
 
 use super::*;
+use crate::heap::HeapGeneration;
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy};
 
 mod context_paths;
+
+fn replay_allocation_subject(id: IrId, salt: &[u8]) -> ForceCacheSubject {
+    let identity = CacheExprIdentity::new(
+        CacheExprSourceHash::from_persisted_hash(DurableBlake3Hash::for_bytes(salt)),
+        id,
+    );
+    ForceCacheSubject {
+        lookup_identity: Some(identity),
+        pure_observation_identity: Some(identity),
+        impure_observation_identity: Some(identity),
+        metadata_identity: Some(identity),
+        persistent_clear_identity: Some(identity),
+        free_var_value_hashes: Vec::new(),
+        replay_position_module: None,
+        replay_allocation_node: Some(EvalNodeRef::new(EvalModuleId::ROOT, id)),
+        memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
+    }
+}
+
+#[test]
+fn gc_stress_context_free_payload_replay_string_dispatches_permanent_noop_bridge() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let payload = CachedExpressionValue::context_free_string(b"cached string".to_vec());
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-context-free-replay-string");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("context-free payload replay allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while replaying cached string payload"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed string generation is known"),
+        HeapGeneration::Permanent
+    );
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("replayed value is a string");
+    assert_eq!(string.bytes(), b"cached string");
+    assert!(!string.has_context());
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay string allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_context_payload_replay_string_dispatches_permanent_noop_bridge() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root node exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let context = StringContext::singleton(
+        ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("opaque context path is valid"),
+    )
+    .expect("string context builds");
+    let payload =
+        CachedExpressionValue::context_string(b"context string".to_vec(), context.clone());
+    let subject = replay_allocation_subject(ir.root, b"gc-stress-context-replay-string");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_for_cached_expression_payload_for_subject(payload, &subject)
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id: ir.root }, span)
+                })
+        })
+        .expect("context payload replay allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while replaying cached context string payload"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("replayed context string generation is known"),
+        HeapGeneration::Permanent
+    );
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("replayed value is a string");
+    assert_eq!(string.bytes(), b"context string");
+    assert!(string.has_context());
+    assert_eq!(string.context(), &context);
+    let final_permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("payload replay context string allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
 
 #[test]
 fn search_path_forced_inline_thunks_rehydrate_after_impure_input_edges() {
@@ -572,6 +717,7 @@ fn strict_attrset_payloads_rehydrate_after_heap_lookup() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -637,6 +783,7 @@ fn strict_attrset_payloads_preserve_position_bearing_attrsets_in_memory() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: Some(EvalModuleId::ROOT),
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
@@ -907,6 +1054,7 @@ fn source_ordered_attrset_payloads_rehydrate_after_heap_lookup() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));

@@ -19,6 +19,7 @@ fn context_path_payloads_rehydrate_after_heap_lookup() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));

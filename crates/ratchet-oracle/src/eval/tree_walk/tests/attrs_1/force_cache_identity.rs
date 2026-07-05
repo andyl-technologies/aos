@@ -531,6 +531,7 @@ fn synthetic_selected_force_cache_subject(identity: CacheExprIdentity) -> ForceC
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
     }
 }
@@ -556,6 +557,7 @@ fn observation_only_subject_allocates_active_node_without_lookup_replay() {
         persistent_clear_identity: Some(observation_identity),
         free_var_value_hashes: vec![free_var_hash],
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
     };
     let observed_node = {

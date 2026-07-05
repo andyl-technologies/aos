@@ -4,13 +4,18 @@ use super::*;
 use crate::cache::AttrPositionSourceHash;
 
 impl TreeWalk {
-    pub(super) fn value_for_cached_expression_payload_for_subject(
+    pub(in crate::eval::tree_walk) fn value_for_cached_expression_payload_for_subject(
         &mut self,
         payload: CachedExpressionValue,
         subject: &ForceCacheSubject,
     ) -> Option<Value> {
         let position_remap = self.payload_position_remap_for_subject(&payload, subject)?;
-        self.value_for_cached_expression_payload_with_depth(payload, 0, position_remap)
+        self.value_for_cached_expression_payload_with_depth(
+            payload,
+            0,
+            position_remap,
+            subject.replay_allocation_node,
+        )
     }
 
     #[cfg(test)]
@@ -18,7 +23,7 @@ impl TreeWalk {
         &mut self,
         payload: CachedExpressionValue,
     ) -> Option<Value> {
-        self.value_for_cached_expression_payload_with_depth(payload, 0, None)
+        self.value_for_cached_expression_payload_with_depth(payload, 0, None, None)
     }
 
     pub(super) fn prepare_observable_payload_for_subject(
@@ -111,6 +116,7 @@ impl TreeWalk {
         payload: CachedExpressionValue,
         depth: usize,
         position_remap: Option<(u32, u32)>,
+        replay_allocation_node: Option<EvalNodeRef>,
     ) -> Option<Value> {
         if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
             return None;
@@ -120,12 +126,18 @@ impl TreeWalk {
         }
         if let Some(bytes) = payload.context_free_string_bytes() {
             let bytes = try_clone_bytes(bytes).ok()?;
-            return self.heap.alloc_string(NixString::from_bytes(bytes)).ok();
+            return self.alloc_replayed_payload_string(
+                replay_allocation_node,
+                NixString::from_bytes(bytes),
+            );
         }
         if let Some((bytes, context)) = payload.context_string_parts() {
             let bytes = try_clone_bytes(bytes).ok()?;
             let context = context.try_clone_context().ok()?;
-            return self.heap.alloc_string(NixString::new(bytes, context)).ok();
+            return self.alloc_replayed_payload_string(
+                replay_allocation_node,
+                NixString::new(bytes, context),
+            );
         }
         if let Some((bytes, context)) = payload.context_path_parts() {
             let bytes = try_clone_bytes(bytes).ok()?;
@@ -143,6 +155,7 @@ impl TreeWalk {
                     element,
                     depth.saturating_add(1),
                     position_remap,
+                    replay_allocation_node,
                 )?);
             }
             return self.heap.alloc_list(NixList::new(elements)).ok();
@@ -161,6 +174,7 @@ impl TreeWalk {
                     value_payload,
                     depth.saturating_add(1),
                     position_remap,
+                    replay_allocation_node,
                 )?;
                 let entry = match position {
                     Some(position) => {

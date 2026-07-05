@@ -103,6 +103,7 @@ fn materialized_replayable_attrset_capture_hashes_key_runtime_payloads() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: vec![hash],
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
     };
     let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));

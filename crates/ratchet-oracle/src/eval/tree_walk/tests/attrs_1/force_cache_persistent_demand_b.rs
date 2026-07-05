@@ -56,6 +56,7 @@ fn rejected_force_observation_clears_persistent_value_link() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     evaluator.observe_forced_inline_expression_result(
@@ -160,6 +161,7 @@ fn cacheable_impure_force_observation_writes_persistent_value_link() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     PersistCache::open(&persist_root)
@@ -286,6 +288,7 @@ fn force_observation_with_unproven_memo_supplier_clears_persistent_value_link() 
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     PersistCache::open(&persist_root)
@@ -347,6 +350,7 @@ fn large_force_payload_measurement_skips_unprofitable_persistent_value_link() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     PersistCache::open(&persist_root)
@@ -420,6 +424,7 @@ fn force_work_measurement_materializes_large_persistent_value_link() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     PersistCache::open(&persist_root)
@@ -617,6 +622,7 @@ fn unsupported_force_payload_clears_persistent_value_link() {
         persistent_clear_identity: Some(identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     evaluator.observe_forced_inline_expression_result(

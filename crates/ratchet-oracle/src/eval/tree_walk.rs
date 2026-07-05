@@ -663,6 +663,7 @@ struct ForceCacheSubject {
     persistent_clear_identity: Option<CacheExprIdentity>,
     free_var_value_hashes: Vec<ValueHash>,
     replay_position_module: Option<EvalModuleId>,
+    replay_allocation_node: Option<EvalNodeRef>,
     memoization_admission: ForceCacheMemoizationAdmission,
 }
 

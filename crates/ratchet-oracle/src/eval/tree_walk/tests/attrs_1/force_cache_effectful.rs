@@ -3227,6 +3227,7 @@ fn effectful_primop_child_misses_record_memo_read_edges() {
         persistent_clear_identity: Some(parent_identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
     };
 
@@ -3258,6 +3259,7 @@ fn effectful_primop_child_misses_record_memo_read_edges() {
         persistent_clear_identity: Some(primop_identity),
         free_var_value_hashes: vec![path_hash],
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::ConditionalThunk,
     };
     evaluator.record_force_cache_memoization_demand(&primop_subject);
@@ -3824,6 +3826,7 @@ fn effectful_forced_inline_thunks_hit_from_persistent_cache_after_revalidation()
         persistent_clear_identity: Some(parent_identity),
         free_var_value_hashes: Vec::new(),
         replay_position_module: None,
+        replay_allocation_node: None,
         memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
     };
 
