@@ -4000,6 +4000,137 @@ fn gc_stress_filter_result_skips_active_argument_roots() {
 }
 
 #[test]
+fn gc_stress_filter_map_empty_direct_results_route_through_list_wrapper() {
+    for (label, eval_empty_result) in [
+        (
+            "filter",
+            TreeWalk::eval_filter_primop
+                as fn(&mut TreeWalk, IrId, Span, IrId, IrId) -> Result<Value, TreeWalkError>,
+        ),
+        (
+            "map",
+            TreeWalk::eval_map_primop
+                as fn(&mut TreeWalk, IrId, Span, IrId, IrId) -> Result<Value, TreeWalkError>,
+        ),
+    ] {
+        let ir = lower("[]");
+        let span = ir.arena.node(ir.root).expect("root exists").span;
+        let mut evaluator = TreeWalk::with_options(
+            &ir,
+            TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+        );
+        let local_source = evaluator
+            .heap
+            .alloc_thunk(EvalThunk::new(IrId::new(7)))
+            .expect("registered local thunk allocates");
+        let mut roots = [local_source];
+
+        evaluator.active_root_eval_node = Some(ir.root);
+        let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+        let value = evaluator
+            .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+                eval_empty_result(eval, ir.root, span, ir.root, ir.root)
+            })
+            .expect("empty direct list builtin result evaluates under GC stress");
+        let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+        evaluator.active_root_eval_node = None;
+
+        assert_eq!(
+            wrapper_calls_after,
+            wrapper_calls_before + 2,
+            "{label} input literal and empty result did not route through the tree-walk list wrapper"
+        );
+        assert!(evaluator.transient_value_stack_roots().is_empty());
+        assert_eq!(roots[0].tag(), ValueTag::Thunk);
+        assert_eq!(value.tag(), ValueTag::List);
+        let list = evaluator
+            .heap()
+            .get_list(value)
+            .expect("empty direct result is heap-owned");
+        assert!(list.is_empty());
+        assert!(evaluator.thunk_resolve_card_table().is_empty());
+    }
+}
+
+#[test]
+fn gc_stress_filter_map_empty_primop_value_results_route_through_list_wrapper() {
+    for (label, eval_empty_result) in [
+        (
+            "filter",
+            TreeWalk::eval_filter_primop_value
+                as fn(
+                    &mut TreeWalk,
+                    IrId,
+                    Span,
+                    EvalPrimOpArg,
+                    EvalPrimOpArg,
+                ) -> Result<Value, TreeWalkError>,
+        ),
+        (
+            "map",
+            TreeWalk::eval_map_primop_value
+                as fn(
+                    &mut TreeWalk,
+                    IrId,
+                    Span,
+                    EvalPrimOpArg,
+                    EvalPrimOpArg,
+                ) -> Result<Value, TreeWalkError>,
+        ),
+    ] {
+        let ir = lower("null");
+        let span = ir.arena.node(ir.root).expect("root exists").span;
+        let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+        let input = evaluator
+            .heap
+            .alloc_list(NixList::new(Vec::new()))
+            .expect("empty input list allocates");
+        evaluator
+            .heap
+            .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+        let local_source = evaluator
+            .heap
+            .alloc_thunk(EvalThunk::new(IrId::new(7)))
+            .expect("registered local thunk allocates");
+        let mut roots = [local_source];
+
+        evaluator.active_root_eval_node = Some(ir.root);
+        let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+        let value = evaluator
+            .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+                eval_empty_result(
+                    eval,
+                    ir.root,
+                    span,
+                    EvalPrimOpArg::new(ir.root, span, Value::int(1)),
+                    EvalPrimOpArg::new(ir.root, span, input),
+                )
+            })
+            .expect("empty primop-value list builtin result evaluates under GC stress");
+        let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+        evaluator.active_root_eval_node = None;
+
+        assert_eq!(
+            wrapper_calls_after,
+            wrapper_calls_before + 1,
+            "{label} empty primop-value result did not route through the tree-walk list wrapper"
+        );
+        assert!(evaluator.transient_value_stack_roots().is_empty());
+        assert!(
+            roots[0].raw_eq(local_source),
+            "registered root changed while routing empty {label} primop-value result"
+        );
+        assert_eq!(value.tag(), ValueTag::List);
+        let list = evaluator
+            .heap()
+            .get_list(value)
+            .expect("empty primop-value result is heap-owned");
+        assert!(list.is_empty());
+        assert!(evaluator.thunk_resolve_card_table().is_empty());
+    }
+}
+
+#[test]
 fn gc_stress_mapped_list_result_skips_apply_thunk_fields() {
     let ir = lower("null");
     let span = ir.arena.node(ir.root).expect("root exists").span;

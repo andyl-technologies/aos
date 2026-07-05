@@ -637,12 +637,7 @@ impl TreeWalk {
             Self::clone_list_elements(list_id, list_span, list)?
         };
         if elements.is_empty() {
-            return self
-                .heap
-                .alloc_list(NixList::new(Vec::new()))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_tree_walk_list(id, span, NixList::new(Vec::new()));
         }
 
         let predicate_span = self.node(predicate_id)?.span;
@@ -692,12 +687,7 @@ impl TreeWalk {
             Self::clone_list_elements(list.id(), list.span(), list_value)?
         };
         if elements.is_empty() {
-            return self
-                .heap
-                .alloc_list(NixList::new(Vec::new()))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_tree_walk_list(id, span, NixList::new(Vec::new()));
         }
 
         let predicate_value =
@@ -798,12 +788,7 @@ impl TreeWalk {
             Self::clone_list_elements(list_id, list_span, list)?
         };
         if elements.is_empty() {
-            return self
-                .heap
-                .alloc_list(NixList::new(Vec::new()))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_tree_walk_list(id, span, NixList::new(Vec::new()));
         }
 
         let function_span = self.node(function_id)?.span;
@@ -853,12 +838,7 @@ impl TreeWalk {
             Self::clone_list_elements(list.id(), list.span(), list_value)?
         };
         if elements.is_empty() {
-            return self
-                .heap
-                .alloc_list(NixList::new(Vec::new()))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
+            return self.alloc_tree_walk_list(id, span, NixList::new(Vec::new()));
         }
 
         let function_value =
