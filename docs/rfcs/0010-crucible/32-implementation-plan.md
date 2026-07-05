@@ -458,8 +458,12 @@ long-held locks.
   remote boundaries, terminal savepoint replay-oracle validation, and terminal
   remote interactive finalization through stopped snapshot query, actor-owned
   terminal savepoint validation, replay-oracle proof, and stopped-session
-  cleanup; full closure waits for real-QEMU coverage and full replay-oracle
-  coverage across those runners.
+  cleanup, plus explicitly selected local-QEMU resumes through the same
+  resumed-session materialization with resolved QEMU/plugin identity provenance
+  in stdout and the canonical log, and process-level `resume --backend qemu`
+  JSONL output plus replay-oracle validation through marker-resolved QEMU/plugin
+  identity; full closure waits for backend-executed real-QEMU resume coverage
+  and full replay-oracle coverage across those runners.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,

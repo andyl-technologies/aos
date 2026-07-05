@@ -1087,8 +1087,13 @@ branch on the verdict without parsing output:
   that terminal materialization. Terminal remote interactive command sequences
   now query the stopped snapshot, validate the actor-materialized terminal
   savepoint, emit the same replay-oracle proof, and clean up the stopped remote
-  session. Full closure remains blocked on real-QEMU coverage and full
-  replay-oracle coverage across those runners.
+  session. Explicitly selected local-QEMU resumes now route through the same
+  resumed-session materialization with resolved QEMU/plugin identity provenance
+  in stdout and the canonical log, and process-tests real-binary
+  `resume --backend qemu` JSONL output plus replay-oracle validation through
+  marker-resolved QEMU/plugin identity. Full closure remains blocked on
+  backend-executed real-QEMU resume coverage and full replay-oracle coverage
+  across those runners.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.

@@ -160,6 +160,86 @@ fn cli_save_qemu_process_jsonl_reports_identity_and_handle() -> Result<(), Box<d
 }
 
 #[test]
+fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let save_artifact_dir = temp.path().join("resume-source-artifacts");
+    let save_store = temp.path().join("resume-source-store");
+    let resume_artifact_dir = temp.path().join("qemu-resume-artifacts");
+    let resume_store = temp.path().join("qemu-resume-store");
+    let (qemu, plugin) = qemu_process_artifacts(temp.path())?;
+
+    let save_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            "jsonl",
+            "--backend",
+            "double",
+            "--seed",
+            "8",
+            "--artifact-dir",
+        ])
+        .arg(&save_artifact_dir)
+        .arg("--store")
+        .arg(&save_store)
+        .arg("save")
+        .arg("builtin:happy-path.scn")
+        .args(["--at", "quiescence", "--label", "resume-source"])
+        .output()?;
+    assert!(
+        save_output.status.success(),
+        "source savepoint for qemu resume should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&save_output.stdout),
+        String::from_utf8_lossy(&save_output.stderr),
+    );
+    let source = single_savepoint_handle(&save_artifact_dir, "resume-source")?;
+
+    let resume_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "qemu", "--qemu"])
+        .arg(&qemu)
+        .arg("--plugin")
+        .arg(&plugin)
+        .arg("--artifact-dir")
+        .arg(&resume_artifact_dir)
+        .arg("--store")
+        .arg(&resume_store)
+        .arg("resume")
+        .arg(&source)
+        .args(["--until", "virtual-time", "--max-virtual-time", "2ticks"])
+        .output()?;
+    assert!(
+        resume_output.status.success(),
+        "crucible resume --backend qemu --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&resume_output.stdout),
+        String::from_utf8_lossy(&resume_output.stderr),
+    );
+    let stdout = String::from_utf8(resume_output.stdout)?;
+    assert_machine_readable_jsonl(
+        &stdout,
+        &[
+            "backend_fidelity",
+            "resume_checkpoint",
+            "resume_oracle_validation",
+            "resume_qemu_runner",
+        ],
+    )?;
+    let expected_qemu_build_id = content_address_bytes(b"process-qemu-build-v1");
+    let expected_plugin_abi = qemu_process_plugin_abi();
+    assert!(stdout.contains("summary\":\"Qemu\""));
+    assert!(stdout.contains("until=virtual-time"));
+    assert!(stdout.contains("checkpoint=blake3:"));
+    assert!(stdout.contains("configuration=blake3:"));
+    assert!(stdout.contains("status=fat==thin-passed"));
+    assert!(stdout.contains("materialization=resumed-session-savepoint"));
+    assert!(stdout.contains(&format!("qemu_build_id={expected_qemu_build_id}")));
+    assert!(stdout.contains("qemu_patch_series=sha256-process-qemu-patch-series"));
+    assert!(stdout.contains(&format!("plugin_abi={expected_plugin_abi}")));
+    assert!(stdout.contains(&format!("shmem_abi={}", crucible::SHMEM_ABI_VERSION)));
+    assert!(stdout.contains("exit_code=0"));
+
+    Ok(())
+}
+
+#[test]
 fn cli_fork_qemu_process_jsonl_reports_identity_and_artifact() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let save_artifact_dir = temp.path().join("fork-source-artifacts");
