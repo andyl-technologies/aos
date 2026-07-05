@@ -813,7 +813,7 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       sidecar that overlays facts when present and fingerprint-matched, and
       falls back to conservative facts when absent, malformed, or stale. This is
       only the default-safe annotation substrate; whole-program fixpoints,
-      IR-hash content-addressed fact persistence, and JIT THUNK/EAGER/SCALAR
+      IR-hash content-addressed fact persistence, and actual JIT CLIF/storage
       consumers remain open.
 - [x] Current fact-refresh precursor: `ratchet-core::ir::annotate_ir` resets a
       lowered `Ir` to conservative facts, runs the current strictness,
@@ -929,7 +929,23 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       `ExprFacts::thunk_sharing` similarly keeps normal update/blackhole
       machinery unless cardinality and frame-locality proofs license a
       single-entry thunk, or a non-contradicted absence proof licenses
-      omission. This records the policy API; future JIT consumers remain open.
+      omission. This records the policy API; actual JIT CLIF/storage consumers
+      remain open.
+- [x] Current JIT fact-plan precursor:
+      `ratchet-jit::lower::jit_tier1_thunk_fact_plan` validates that a requested
+      node is a well-formed `ThunkAlloc` with an existing non-self body and a
+      fact table whose length matches the arena node count, then produces an
+      address-free
+      `JitTier1ThunkFactPlan` carrying the source `ExprFacts`,
+      `BindingLowering`, `ThunkSharing`, and a collapsed
+      `JitTier1ThunkFactDecision`. Conservative facts still choose ordinary
+      updating thunk storage, non-absent strict facts choose eager WHNF or
+      scalar eligibility, `Once + NoEscape` lazy facts choose a single-entry
+      thunk, non-contradicted absence chooses omission, and `Absent + Strict`
+      contradictions fail closed to ordinary updating thunk storage. This is a
+      checked policy bridge for future tier-1 lowering only; it does not emit
+      CLIF for thunk storage, call runtime helpers, register symbols, or execute
+      native code.
 - [x] Current tree-walk lowering consumer: the oracle's `ThunkAlloc` path reads
       each node's `ExprFacts::binding_lowering`, keeps conservative/unknown
       facts lazy, evaluates proven-strict `Eager` and `Scalar` facts directly to

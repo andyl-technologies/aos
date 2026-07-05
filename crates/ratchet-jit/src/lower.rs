@@ -18,8 +18,8 @@ use cranelift_codegen::{
     verifier::{VerifierErrors, verify_function},
 };
 use ratchet_core::{
-    Ir, IrArena, IrData, IrId, IrKind, IrNode, runtime_helper_call_signature,
-    runtime_thunk_call_signature,
+    BindingLowering, Cardinality, ExprFacts, Ir, IrArena, IrData, IrId, IrKind, IrNode, Strictness,
+    ThunkSharing, runtime_helper_call_signature, runtime_thunk_call_signature,
 };
 use ratchet_value::value::Value;
 
@@ -73,6 +73,176 @@ pub fn clif_external_name_for_aos_force() -> UserExternalName {
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_FORCE_FUNCTION_INDEX,
     )
+}
+
+/// The fact-licensed tier-1 lowering decision for one thunk allocation.
+///
+/// This is an address-free policy result only. It records how the current
+/// strictness/cardinality/escape facts would steer a future tier-1 thunk
+/// lowerer before that lowerer emits CLIF storage, helper calls, or native
+/// entrypoints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum JitTier1ThunkFactDecision {
+    /// Allocates ordinary thunk update and blackhole state.
+    AllocateUpdatingThunk,
+    /// Allocates a single-entry thunk representation for a frame-local thunk.
+    AllocateSingleEntryThunk,
+    /// Omits lazy thunk storage for a proven-absent binding.
+    OmitLazyBinding,
+    /// Evaluates the thunk body to WHNF without allocating thunk storage.
+    EvaluateEagerWhnf,
+    /// Evaluates eagerly and keeps the result eligible for non-heap scalar storage.
+    EvaluateScalarValue,
+}
+
+/// Returns the tier-1 thunk decision licensed by one expression fact record.
+///
+/// An absent-plus-strict fact record is contradictory, so the decision keeps
+/// ordinary updating thunk storage. Otherwise, strict binding-lowering facts
+/// take precedence because they avoid lazy thunk allocation entirely. Sharing
+/// facts only choose among lazy thunk storage shapes when the binding still
+/// lowers as a thunk.
+pub const fn jit_tier1_thunk_fact_decision_for_facts(
+    facts: ExprFacts,
+) -> JitTier1ThunkFactDecision {
+    match (facts.cardinality, facts.strictness) {
+        (Cardinality::Absent, Strictness::Strict) => {
+            return JitTier1ThunkFactDecision::AllocateUpdatingThunk;
+        }
+        (_, _) => {}
+    }
+
+    match facts.binding_lowering() {
+        BindingLowering::Eager => JitTier1ThunkFactDecision::EvaluateEagerWhnf,
+        BindingLowering::Scalar => JitTier1ThunkFactDecision::EvaluateScalarValue,
+        BindingLowering::Thunk => match facts.thunk_sharing() {
+            ThunkSharing::Update => JitTier1ThunkFactDecision::AllocateUpdatingThunk,
+            ThunkSharing::SingleEntry => JitTier1ThunkFactDecision::AllocateSingleEntryThunk,
+            ThunkSharing::Omit => JitTier1ThunkFactDecision::OmitLazyBinding,
+        },
+    }
+}
+
+/// Address-free fact plan for a future tier-1 thunk-allocation lowerer.
+///
+/// The plan mirrors the current Core fact policy at a JIT crate boundary:
+/// [`BindingLowering`] captures whether the thunk remains lazy, eager, or
+/// scalar-eligible, [`ThunkSharing`] captures the lazy storage machinery, and
+/// [`JitTier1ThunkFactDecision`] collapses those facts into the decision a
+/// future CLIF lowerer can consume.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct JitTier1ThunkFactPlan {
+    thunk: IrId,
+    body: IrId,
+    facts: ExprFacts,
+    binding_lowering: BindingLowering,
+    thunk_sharing: ThunkSharing,
+    decision: JitTier1ThunkFactDecision,
+}
+
+impl JitTier1ThunkFactPlan {
+    const fn new(thunk: IrId, body: IrId, facts: ExprFacts) -> Self {
+        Self {
+            thunk,
+            body,
+            facts,
+            binding_lowering: facts.binding_lowering(),
+            thunk_sharing: facts.thunk_sharing(),
+            decision: jit_tier1_thunk_fact_decision_for_facts(facts),
+        }
+    }
+
+    /// Returns the thunk-allocation node this plan describes.
+    pub const fn thunk(self) -> IrId {
+        self.thunk
+    }
+
+    /// Returns the body node referenced by the thunk allocation.
+    pub const fn body(self) -> IrId {
+        self.body
+    }
+
+    /// Returns the expression facts consumed by the plan.
+    pub const fn facts(self) -> ExprFacts {
+        self.facts
+    }
+
+    /// Returns the binding-lowering policy derived from the facts.
+    pub const fn binding_lowering(self) -> BindingLowering {
+        self.binding_lowering
+    }
+
+    /// Returns the lazy thunk-sharing policy derived from the facts.
+    pub const fn thunk_sharing(self) -> ThunkSharing {
+        self.thunk_sharing
+    }
+
+    /// Returns the collapsed tier-1 thunk decision derived from the facts.
+    pub const fn decision(self) -> JitTier1ThunkFactDecision {
+        self.decision
+    }
+}
+
+/// Builds the address-free JIT fact plan for one thunk-allocation node.
+///
+/// This validates that `thunk` identifies a direct [`IrKind::ThunkAlloc`] node
+/// with an existing, non-self body and an attached fact record. It does not
+/// generate CLIF, register runtime helpers, allocate storage, or call native
+/// code.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `thunk` is not present in the
+/// arena, [`JitLowerError::UnsupportedThunkFactNode`] when it is not a thunk
+/// allocation, [`JitLowerError::MismatchedIrNodeData`] when the thunk payload is
+/// malformed, [`JitLowerError::MissingIrBody`] when the referenced body is not
+/// present, [`JitLowerError::SelfReferentialThunkBody`] when the thunk points at
+/// itself, or [`JitLowerError::MismatchedIrFactTable`] when the fact table does
+/// not have exactly one record per arena node.
+pub fn jit_tier1_thunk_fact_plan(
+    ir: &Ir,
+    thunk: IrId,
+) -> Result<JitTier1ThunkFactPlan, JitLowerError> {
+    let node_count = ir.arena.nodes().len();
+    let fact_count = ir.facts.len();
+    if fact_count != node_count {
+        return Err(JitLowerError::MismatchedIrFactTable {
+            node_count,
+            fact_count,
+        });
+    }
+
+    let node = ir
+        .arena
+        .node(thunk)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root: thunk })?;
+    let body = match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(body)) => body,
+        (IrKind::ThunkAlloc, data) => {
+            return Err(JitLowerError::MismatchedIrNodeData {
+                kind: IrKind::ThunkAlloc,
+                data,
+                expected: "body node",
+            });
+        }
+        (kind, _) => return Err(JitLowerError::UnsupportedThunkFactNode { id: thunk, kind }),
+    };
+
+    ir.arena
+        .node(body)
+        .ok_or(JitLowerError::MissingIrBody { body })?;
+    if body == thunk {
+        return Err(JitLowerError::SelfReferentialThunkBody { thunk });
+    }
+
+    let facts = ir
+        .node_facts(thunk)
+        .ok_or(JitLowerError::MismatchedIrFactTable {
+            node_count,
+            fact_count,
+        })?;
+    Ok(JitTier1ThunkFactPlan::new(thunk, body, facts))
 }
 
 /// Lowers a constant runtime value into a verified compiled-thunk CLIF body.
@@ -490,6 +660,25 @@ pub enum JitLowerError {
         /// The unsupported body node kind.
         kind: IrKind,
     },
+    /// The requested node is not a thunk allocation fact planning can consume.
+    UnsupportedThunkFactNode {
+        /// The requested node id.
+        id: IrId,
+        /// The unsupported node kind.
+        kind: IrKind,
+    },
+    /// The IR fact table does not match the arena node count.
+    MismatchedIrFactTable {
+        /// The number of nodes in the arena.
+        node_count: usize,
+        /// The number of fact records attached to the IR.
+        fact_count: usize,
+    },
+    /// A thunk allocation points at itself as its body.
+    SelfReferentialThunkBody {
+        /// The self-referential thunk-allocation node.
+        thunk: IrId,
+    },
     /// A literal IR node carried payload data that did not match its kind.
     MismatchedConstantData {
         /// The literal node kind.
@@ -571,6 +760,24 @@ impl fmt::Display for JitLowerError {
                     "IR thunk body kind {kind:?} is not supported by the environment-access lowerer"
                 )
             }
+            Self::UnsupportedThunkFactNode { id, kind } => {
+                write!(
+                    formatter,
+                    "IR node {id:?} with kind {kind:?} is not a thunk allocation fact planning can consume"
+                )
+            }
+            Self::MismatchedIrFactTable {
+                node_count,
+                fact_count,
+            } => {
+                write!(
+                    formatter,
+                    "IR fact table has {fact_count} records for {node_count} arena nodes"
+                )
+            }
+            Self::SelfReferentialThunkBody { thunk } => {
+                write!(formatter, "IR thunk allocation {thunk:?} points at itself")
+            }
             Self::MismatchedConstantData { kind, data } => write!(
                 formatter,
                 "IR root kind {kind:?} carried incompatible constant payload {data:?}"
@@ -605,6 +812,9 @@ impl Error for JitLowerError {
             | Self::UnsupportedIrBody { .. }
             | Self::UnsupportedEnvRoot { .. }
             | Self::UnsupportedEnvBody { .. }
+            | Self::UnsupportedThunkFactNode { .. }
+            | Self::MismatchedIrFactTable { .. }
+            | Self::SelfReferentialThunkBody { .. }
             | Self::MismatchedConstantData { .. }
             | Self::MismatchedBodyConstantData { .. }
             | Self::MismatchedIrNodeData { .. } => None,
@@ -966,7 +1176,8 @@ mod tests {
         ExtFuncData, ExternalName, FuncRef, InstructionData, Opcode, Type, types,
     };
     use ratchet_core::{
-        EffectClass, Ir, IrFacts, IrNode, lower, resolve,
+        BindingLowering, Cardinality, EffectClass, Escape, Ir, IrFacts, IrNode, Strictness,
+        ThunkSharing, lower, resolve,
         syntax::{Span, SymbolTable, parse_str},
     };
     use ratchet_value::value::ValueTag;
@@ -1014,6 +1225,244 @@ mod tests {
 
         assert_eq!(name.namespace, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE);
         assert_eq!(name.index, AOS_FORCE_FUNCTION_INDEX);
+    }
+
+    #[test]
+    fn tier1_thunk_fact_decision_maps_core_fact_lattice() {
+        let cases = [
+            (
+                ExprFacts::conservative(),
+                BindingLowering::Thunk,
+                ThunkSharing::Update,
+                JitTier1ThunkFactDecision::AllocateUpdatingThunk,
+            ),
+            (
+                ExprFacts {
+                    strictness: Strictness::Strict,
+                    cardinality: Cardinality::Many,
+                    escape: Escape::Escapes,
+                },
+                BindingLowering::Eager,
+                ThunkSharing::Update,
+                JitTier1ThunkFactDecision::EvaluateEagerWhnf,
+            ),
+            (
+                ExprFacts {
+                    strictness: Strictness::Strict,
+                    cardinality: Cardinality::Many,
+                    escape: Escape::NoEscape,
+                },
+                BindingLowering::Scalar,
+                ThunkSharing::Update,
+                JitTier1ThunkFactDecision::EvaluateScalarValue,
+            ),
+            (
+                ExprFacts {
+                    strictness: Strictness::Strict,
+                    cardinality: Cardinality::Absent,
+                    escape: Escape::NoEscape,
+                },
+                BindingLowering::Scalar,
+                ThunkSharing::Update,
+                JitTier1ThunkFactDecision::AllocateUpdatingThunk,
+            ),
+            (
+                ExprFacts {
+                    strictness: Strictness::Unknown,
+                    cardinality: Cardinality::Once,
+                    escape: Escape::NoEscape,
+                },
+                BindingLowering::Thunk,
+                ThunkSharing::SingleEntry,
+                JitTier1ThunkFactDecision::AllocateSingleEntryThunk,
+            ),
+            (
+                ExprFacts {
+                    strictness: Strictness::Unknown,
+                    cardinality: Cardinality::Absent,
+                    escape: Escape::Escapes,
+                },
+                BindingLowering::Thunk,
+                ThunkSharing::Omit,
+                JitTier1ThunkFactDecision::OmitLazyBinding,
+            ),
+        ];
+
+        for (facts, expected_lowering, expected_sharing, expected_decision) in cases {
+            assert_eq!(facts.binding_lowering(), expected_lowering);
+            assert_eq!(facts.thunk_sharing(), expected_sharing);
+            assert_eq!(
+                jit_tier1_thunk_fact_decision_for_facts(facts),
+                expected_decision
+            );
+        }
+    }
+
+    #[test]
+    fn tier1_thunk_fact_plan_reads_thunk_alloc_facts_without_lowering_clif() {
+        let facts = ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Once,
+            escape: Escape::NoEscape,
+        };
+        let ir = direct_thunk_ir_with_facts(facts);
+
+        let plan = jit_tier1_thunk_fact_plan(&ir, IrId::new(1)).expect("thunk fact plan is built");
+
+        assert_eq!(plan.thunk(), IrId::new(1));
+        assert_eq!(plan.body(), IrId::new(0));
+        assert_eq!(plan.facts(), facts);
+        assert_eq!(plan.binding_lowering(), BindingLowering::Thunk);
+        assert_eq!(plan.thunk_sharing(), ThunkSharing::SingleEntry);
+        assert_eq!(
+            plan.decision(),
+            JitTier1ThunkFactDecision::AllocateSingleEntryThunk
+        );
+    }
+
+    #[test]
+    fn tier1_thunk_fact_plan_preserves_absent_strict_contradiction_guard() {
+        let facts = ExprFacts {
+            strictness: Strictness::Strict,
+            cardinality: Cardinality::Absent,
+            escape: Escape::NoEscape,
+        };
+        let ir = direct_thunk_ir_with_facts(facts);
+
+        let plan = jit_tier1_thunk_fact_plan(&ir, IrId::new(1)).expect("thunk fact plan is built");
+
+        assert_eq!(plan.binding_lowering(), BindingLowering::Scalar);
+        assert_eq!(plan.thunk_sharing(), ThunkSharing::Update);
+        assert_eq!(
+            plan.decision(),
+            JitTier1ThunkFactDecision::AllocateUpdatingThunk
+        );
+    }
+
+    #[test]
+    fn tier1_thunk_fact_plan_rejects_malformed_thunk_nodes() {
+        let missing_root_ir = minimal_ir(IrId::new(0), IrArena::new());
+        let non_thunk_ir = minimal_ir(
+            IrId::new(0),
+            IrArena::from_raw_parts(
+                vec![IrNode::new(
+                    IrKind::Int,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Int(1),
+                )],
+                Vec::new(),
+            ),
+        );
+        let missing_body_ir = minimal_ir(
+            IrId::new(0),
+            IrArena::from_raw_parts(
+                vec![IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(9)),
+                )],
+                Vec::new(),
+            ),
+        );
+        let malformed_payload_ir = minimal_ir(
+            IrId::new(0),
+            IrArena::from_raw_parts(
+                vec![IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::None,
+                )],
+                Vec::new(),
+            ),
+        );
+        let self_referential_ir = minimal_ir(
+            IrId::new(0),
+            IrArena::from_raw_parts(
+                vec![IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                )],
+                Vec::new(),
+            ),
+        );
+
+        let missing_root_error = jit_tier1_thunk_fact_plan(&missing_root_ir, IrId::new(7))
+            .expect_err("missing thunk node is rejected");
+        let non_thunk_error = jit_tier1_thunk_fact_plan(&non_thunk_ir, IrId::new(0))
+            .expect_err("non-thunk root is rejected");
+        let missing_body_error = jit_tier1_thunk_fact_plan(&missing_body_ir, IrId::new(0))
+            .expect_err("missing thunk body is rejected");
+        let malformed_payload_error =
+            jit_tier1_thunk_fact_plan(&malformed_payload_ir, IrId::new(0))
+                .expect_err("malformed thunk payload is rejected");
+        let self_referential_error = jit_tier1_thunk_fact_plan(&self_referential_ir, IrId::new(0))
+            .expect_err("self-referential thunk body is rejected");
+
+        assert!(
+            matches!(missing_root_error, JitLowerError::MissingIrNode { root } if root == IrId::new(7))
+        );
+        assert!(matches!(
+            non_thunk_error,
+            JitLowerError::UnsupportedThunkFactNode {
+                id,
+                kind: IrKind::Int,
+            } if id == IrId::new(0)
+        ));
+        assert!(
+            matches!(missing_body_error, JitLowerError::MissingIrBody { body } if body == IrId::new(9))
+        );
+        assert!(matches!(
+            malformed_payload_error,
+            JitLowerError::MismatchedIrNodeData {
+                kind: IrKind::ThunkAlloc,
+                data: IrData::None,
+                expected: "body node",
+            }
+        ));
+        assert!(matches!(
+            self_referential_error,
+            JitLowerError::SelfReferentialThunkBody { thunk } if thunk == IrId::new(0)
+        ));
+    }
+
+    #[test]
+    fn tier1_thunk_fact_plan_rejects_fact_table_node_count_mismatch() {
+        let arena = direct_thunk_arena();
+        let mut facts = IrFacts::conservative(3);
+        *facts
+            .get_mut(IrId::new(1))
+            .expect("overlong fixture still has a thunk fact slot") = ExprFacts {
+            strictness: Strictness::Strict,
+            cardinality: Cardinality::Many,
+            escape: Escape::NoEscape,
+        };
+        let ir = Ir {
+            root: IrId::new(1),
+            arena,
+            facts,
+            symbols: SymbolTable::new(),
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: Box::new([]),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        };
+
+        let error = jit_tier1_thunk_fact_plan(&ir, IrId::new(1))
+            .expect_err("fact table length mismatch is rejected");
+
+        assert!(matches!(
+            error,
+            JitLowerError::MismatchedIrFactTable {
+                node_count: 2,
+                fact_count: 3,
+            }
+        ));
     }
 
     #[test]
@@ -2086,6 +2535,34 @@ mod tests {
             Span::new(0, 1),
             EffectClass::pure(),
             IrData::Local { slot },
+        )
+    }
+
+    fn direct_thunk_ir_with_facts(facts: ExprFacts) -> Ir {
+        let mut ir = minimal_ir(IrId::new(1), direct_thunk_arena());
+        *ir.facts
+            .get_mut(IrId::new(1))
+            .expect("direct thunk fixture has a fact record") = facts;
+        ir
+    }
+
+    fn direct_thunk_arena() -> IrArena {
+        IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(1, 2),
+                    EffectClass::pure(),
+                    IrData::Int(1),
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 2),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
         )
     }
 

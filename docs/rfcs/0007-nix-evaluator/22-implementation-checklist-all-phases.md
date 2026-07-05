@@ -9166,7 +9166,7 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       thunk elision, exposes region-plan classification from those facts, and
       records source-thunk allocation-site region-plan sampling in `EvalStats`,
       but cache-key reuse, closed-world fixpoints, allocation-site placement,
-      and JIT consumers remain open.
+      and actual JIT CLIF/storage consumers remain open.
 - [x] Current annotation dependency-footprint precursor:
       `IrAnalysisReport` now carries an `IrDependencyFootprint` exposing strict
       IR node ids in arena order and resolver frame capture coordinates in
@@ -9188,7 +9188,7 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       facts when the sidecar is absent, malformed, or stale.
       This does not close `ir/annotate.rs`: analysis passes, IR-hash
       content-addressed persistent fact artifacts, strictness FV sets, and
-      JIT lowering consumers remain open.
+      actual JIT CLIF/storage consumers remain open.
 - [x] Current persistent fact-sidecar transport precursor:
       parse-artifact bundles now carry an optional fifth `facts.bin` section
       after the mandatory frontend artifacts, and hydration writes that sidecar
@@ -9326,8 +9326,28 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       proven strictness and proven no-escape. `ExprFacts::thunk_sharing` keeps
       normal update/blackhole machinery unless cardinality plus no-escape
       proofs license single-entry thunks, or a non-contradicted absence proof
-      licenses omission. This is the policy API; JIT consumers and the analysis
-      passes remain open.
+      licenses omission. This is the policy API; actual JIT CLIF/storage
+      consumers and the analysis passes remain open.
+- [x] Current JIT fact-plan precursor:
+      `ratchet-jit::lower::jit_tier1_thunk_fact_plan` validates that a requested
+      node is a well-formed `ThunkAlloc` with an existing non-self body and a
+      fact table whose length matches the arena node count, then returns an
+      address-free
+      `JitTier1ThunkFactPlan` carrying the source `ExprFacts`,
+      `BindingLowering`, `ThunkSharing`, and a collapsed
+      `JitTier1ThunkFactDecision`. Conservative facts choose ordinary updating
+      thunk storage, non-absent strict facts choose eager WHNF or scalar
+      eligibility, `Once + NoEscape` lazy facts choose single-entry thunk
+      storage, non-contradicted absence chooses omission, and `Absent + Strict`
+      contradictions fail closed to ordinary updating thunk storage. This is a
+      checked policy bridge for future tier-1 lowering only; it does not emit
+      CLIF for thunk storage, call runtime helpers, register symbols, or execute
+      native code. Gate:
+      `tier1_thunk_fact_decision_maps_core_fact_lattice`,
+      `tier1_thunk_fact_plan_reads_thunk_alloc_facts_without_lowering_clif`,
+      `tier1_thunk_fact_plan_preserves_absent_strict_contradiction_guard`,
+      `tier1_thunk_fact_plan_rejects_malformed_thunk_nodes`,
+      `tier1_thunk_fact_plan_rejects_fact_table_node_count_mismatch`.
 - [x] Current tree-walk lowering consumer: `eval_thunk_alloc` now consumes the
       explicit `tree_walk_thunk_allocation_plan`, which in turn consumes
       `ExprFacts::binding_lowering` for thunk-allocation nodes. Conservative
