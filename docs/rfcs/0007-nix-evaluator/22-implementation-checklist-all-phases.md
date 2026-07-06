@@ -7558,6 +7558,8 @@ and helps the oracle directly.
       root empty `readDir` generated-attrset result allocations preserving
       registered transient roots while primop-result composite dispatch remains
       blocked,
+      helper-level non-empty `readDir` entry type-string allocations relocating
+      registered transient roots before the final generated attrset allocation,
       root `tryEval` generated-attrset result allocations preserving
       registered transient roots while primop-result composite dispatch remains
       blocked,

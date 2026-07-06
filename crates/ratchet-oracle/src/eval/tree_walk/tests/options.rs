@@ -2698,6 +2698,108 @@ fn gc_stress_eval_root_read_dir_empty_attrset_result_skips_primop_composite_disp
 }
 
 #[test]
+fn gc_stress_read_dir_entry_type_strings_dispatch_before_attrset_skip() {
+    let dir = unique_temp_dir("gc-stress-read-dir-entry-types");
+    let regular = dir.join("regular");
+    let nested = dir.join("nested");
+    fs::write(&regular, b"data").expect("regular file writes");
+    fs::create_dir(&nested).expect("nested directory creates");
+    let path = path_source(&dir);
+    let source = format!("builtins.readDir {}", nix_string_literal(&path));
+    let ir = lower(&source);
+    let root = *ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let argument = ir
+        .arena
+        .child_slice(args)
+        .expect("primop args exist")
+        .first()
+        .copied()
+        .expect("readDir argument exists");
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let argument_value = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(path.into_bytes()))
+        .expect("argument path string allocates");
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, root.span, &mut roots, |eval| {
+            eval.eval_read_dir_primop(ir.root, root.span, argument, argument_span, argument_value)
+        })
+        .expect("GC-stress non-empty readDir evaluates");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while readDir entry type strings allocated"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let regular_key = evaluator
+        .symbols
+        .intern(b"regular")
+        .expect("regular key interns");
+    let nested_key = evaluator
+        .symbols
+        .intern(b"nested")
+        .expect("nested key interns");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("readDir result is heap-owned");
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(attrs.get(regular_key).expect("regular attr exists"))
+            .expect("regular type string is heap-owned")
+            .bytes(),
+        b"regular"
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(attrs.get(nested_key).expect("nested attr exists"))
+            .expect("nested type string is heap-owned")
+            .bytes(),
+        b"directory"
+    );
+    assert!(
+        evaluator.heap().permanent_allocation_safepoints().count()
+            >= permanent_safepoints_before + 3,
+        "two entry type strings and final attrset should allocate under GC stress"
+    );
+    let final_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("readDir final attrset allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn gc_stress_eval_root_try_eval_result_skips_primop_composite_dispatch() {
     let ir = lower("builtins.tryEval 7");
     let span = ir.arena.node(ir.root).expect("root exists").span;
