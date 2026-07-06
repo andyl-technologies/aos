@@ -2325,6 +2325,9 @@ fn gc_stress_split_capture_and_result_lists_preserve_accumulated_values() {
     let mut roots = [local_source];
 
     let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
         .expect("split result evaluates under GC stress");
@@ -2371,6 +2374,15 @@ fn gc_stress_split_capture_and_result_lists_preserve_accumulated_values() {
             expected,
         );
     }
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocList,
+        ],
+        "split should dispatch the first text string, capture string, and capture list before accumulated capture-list roots block later dispatch"
+    );
     let permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()

@@ -3393,7 +3393,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       direct-root live locals and registered transient roots while active
       primop argument roots block dispatch,
       direct regex `match` capture-string/list allocations and `split`
-      capture/result-list allocations preserving accumulated result roots,
+      first text/capture string/list allocations preserving accumulated
+      result roots after later dispatch is blocked,
       direct `builtins.nixPath` result-list allocations preserving
       accumulated entry roots,
       direct reflected-context outputs-list allocations preserving
