@@ -1389,6 +1389,39 @@ fn repeated_static_has_attr_site_uses_shaped_inline_cache_for_projected_flat_rec
 }
 
 #[test]
+fn repeated_static_has_attr_site_keeps_shaped_cache_after_missing_receiver() {
+    let ir = lower(
+        "let f = x: x ? a;
+         in if (f { a = 1; })
+            then if (f { b = 2; })
+                 then 0
+                 else if (f { a = 3; }) then 1 else 0
+            else 0",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("hit-miss-hit static hasAttr evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(1));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 1);
+    assert_eq!(counts.shaped_misses, 1);
+}
+
+#[test]
 fn repeated_static_has_attr_site_keeps_projected_shaped_misses_uncached() {
     let ir = lower("let f = x: x ? missing; in if (f {}) || (f {}) then 1 else 0");
 

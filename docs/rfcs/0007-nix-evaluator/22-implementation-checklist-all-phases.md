@@ -9806,6 +9806,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       terminal monomorphic site state, and slow-select shaped hit/miss counts.
       This does not cover polymorphic or megamorphic active bridge states,
       `hasAttr`/`with` probes, native lowering, or `.drv` parity.
+- [x] Current projected-shaped hit-miss-hit `hasAttr` canary: a tree-walk
+      static `hasAttr` probe now proves the same monomorphic cache-retention
+      invariant for active key-presence checks. One projected-shaped present
+      receiver installs the site, one missing receiver resolves false without
+      caching absence, and a later present receiver returns through the cached
+      hit path. The test checks mirrored hit/miss counters, shaped lookup
+      telemetry, terminal monomorphic site state, and slow-select shaped
+      hit/miss counts. This does not cover `with` probes, polymorphic or
+      megamorphic active bridge states, native lowering, or `.drv` parity.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
