@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::heap::HeapGeneration;
-use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy};
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
 #[test]
 fn derivation_strict_unions_input_hash_replacement_outputs() {
@@ -158,6 +158,10 @@ fn gc_stress_derivation_strict_result_strings_dispatch_with_registered_entry_roo
     let mut roots = [local_source];
 
     evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
             eval.alloc_derivation_strict_result(
@@ -197,11 +201,29 @@ fn gc_stress_derivation_strict_result_strings_dispatch_with_registered_entry_roo
                 .generation(entry.value)
                 .is_ok_and(|generation| generation == HeapGeneration::Permanent)
     }));
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+        ],
+        "derivationStrict should dispatch output strings and drvPath string before final generated-attrset dispatch remains blocked"
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 4,
+        "derivationStrict should allocate two output strings, the drvPath string, and final attrset under GC stress"
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("derivation result allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
