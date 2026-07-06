@@ -1050,6 +1050,9 @@ fn codec_attrsets_record_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 6);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 6);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -1932,6 +1935,49 @@ fn partition_projected_shape_preserves_order_and_records_order_parity_telemetry(
     let stats = outcome.attr_telemetry().order_parity_stats();
     assert_eq!(stats.matched, 1);
     assert_eq!(stats.mismatched, 0);
+}
+
+#[test]
+fn codec_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let json_source = r#"builtins.fromJSON ''{"z":1,"A":2,"aa":3,"_":4,"a":5}''"#;
+    let toml_source = r#"builtins.fromTOML "z = 1
+A = 2
+aa = 3
+_ = 4
+a = 5
+""#;
+
+    for source in [json_source, toml_source] {
+        assert_eq!(
+            eval_list_string_bytes(&format!("builtins.attrNames ({source})")),
+            vec![
+                b"A".to_vec(),
+                b"_".to_vec(),
+                b"a".to_vec(),
+                b"aa".to_vec(),
+                b"z".to_vec(),
+            ],
+            "{source}",
+        );
+        assert_eq!(
+            eval_list_ints(&format!("builtins.attrValues ({source})")),
+            vec![2, 4, 5, 3, 1],
+            "{source}",
+        );
+
+        let ir = lower(source);
+        let outcome = eval_whnf_owned(&ir).expect("codec projected-shape result evaluates");
+        let metadata = outcome
+            .heap()
+            .get_attrs_metadata(outcome.value())
+            .expect("codec result metadata exists");
+
+        assert!(metadata.projected_shape().is_some(), "{source}");
+        assert_eq!(metadata.repr(), AttrSetReprKind::Flat, "{source}");
+        let stats = outcome.attr_telemetry().order_parity_stats();
+        assert_eq!(stats.matched, 1, "{source}");
+        assert_eq!(stats.mismatched, 0, "{source}");
+    }
 }
 
 #[test]

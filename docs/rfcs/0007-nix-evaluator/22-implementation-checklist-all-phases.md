@@ -10050,6 +10050,18 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       This pins the current flat-payload `partition` result boundary only; it
       does not claim shaped/HAMT heap payload iteration, C++ oracle comparison,
       full conformance 20-21, or full AOS closure `.drv` parity.
+- [x] Current active projected-shape codec order-parity canary:
+      decoded `builtins.fromJSON` objects, `builtins.fromTOML` tables, and TOML
+      timestamp wrapper attrsets now share the successful dynamic-result
+      order-parity telemetry hook. A tree-walk canary decodes adversarial JSON
+      and TOML flat tables and checks each result `attrNames`, result
+      `attrValues`, projected-shape metadata, and one matched, zero mismatched
+      direct-result telemetry sample. Existing nested codec coverage also pins
+      six matched, zero mismatched allocation samples across nested JSON, nested
+      TOML, and timestamp-wrapper decoding. This pins the current flat-payload
+      codec result boundary only; it does not claim shaped/HAMT heap payload
+      iteration, C++ oracle comparison, full conformance 20-21, or full AOS
+      closure `.drv` parity.
 - [x] Current active projected-shape `listToAttrs` order-parity canary:
       `builtins.listToAttrs` now shares the successful dynamic-result
       order-parity telemetry hook. A tree-walk canary converts an adversarial
@@ -10086,8 +10098,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       there too. Active `attrNames`/`attrValues` calls now also record
       successful in-process raw-byte order-parity checks, as do successful
       `mapAttrs`, `zipAttrsWith`, `removeAttrs`, and `intersectAttrs` result
-      allocations plus `partition`, `listToAttrs`, and `groupBy` results. Cache
-      hits use mirrored `EvalStats` inline-cache counters while
+      allocations plus `partition`, codec-generated `fromJSON`/`fromTOML`
+      results, `listToAttrs`, and `groupBy` results. Cache hits use mirrored
+      `EvalStats` inline-cache counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape
       projection separately increments `EvalStats::shape_transitions` for
