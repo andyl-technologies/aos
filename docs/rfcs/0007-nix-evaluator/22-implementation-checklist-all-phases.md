@@ -7458,6 +7458,11 @@ and helps the oracle directly.
       wrappers; originless synthetic replay subjects and cross-module origins
       keep non-dispatching heap allocation instead of fabricating source
       provenance.
+      Root list local-accumulator child allocations publish already-built list
+      elements as transient value-stack roots and admit the current child as a
+      scoped accumulator allocation result, so every-safepoint stress can run
+      the worker reserved forwarding bridge before the final permanent list
+      bridge.
       The dispatch uses the same promotion threshold of 2 as the existing
       tree-walk GC-stress bridges and intentionally leaves
       captured-env thunks, synthetic select/apply/builtin
@@ -7465,7 +7470,7 @@ and helps the oracle directly.
       captured-argument primop wrappers,
       nested/direct `eval_node` lambda/primop/string/URI/path/list/attrset allocations,
       recursive/captured-lexical-env root attrsets, worker allocations inside
-      list/binding local accumulator assembly, helper-generated symbol strings
+      binding local accumulator assembly, helper-generated symbol strings
       that can run from primops holding unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
       originless or cross-module persistent payload replay string/path/list/attr
@@ -7478,6 +7483,9 @@ and helps the oracle directly.
       `eval_root` source `ThunkAlloc`, an `eval_root` source lambda, and an
       `eval_root` `builtins.map` primop under every-safepoint stress, including
       the extra reserved allocation and the returned young destination value,
+      root list child thunk allocations dispatching through the scoped
+      local-accumulator result gate and multi-element list assembly relocating
+      accumulated transient roots,
       plus root string, URI, and path literals preserving their permanent values
       through the scalar no-op bridge, root-result `baseNameOf`, `dirOf`, and
       `toPath` helper allocations relocating registered transient roots while

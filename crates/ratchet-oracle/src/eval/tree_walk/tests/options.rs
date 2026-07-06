@@ -9,7 +9,7 @@ use crate::eval::{
     EvalThunk, ForceError, ParallelThunkTerminalStatus, ParallelThunkWorkerId,
     TreeWalkParallelThunkWait,
 };
-use crate::heap::{HeapGeneration, HeapMemoryBudgetResponse, MemoryAdviceKind};
+use crate::heap::{GcHeapAddress, HeapGeneration, HeapMemoryBudgetResponse, MemoryAdviceKind};
 use crate::runtime::alloc::{
     AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint, RuntimeAllocator,
 };
@@ -5151,6 +5151,22 @@ fn heap_record_values_with_tag(heap: &EvalHeap, tag: ValueTag) -> Vec<Value> {
         .collect()
 }
 
+fn gc_address(value: Value) -> GcHeapAddress {
+    GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
+        .expect("heap pointer is a valid GC address")
+}
+
+fn heap_record_forwarding_slot_count(heap: &EvalHeap, values: &[Value]) -> usize {
+    values
+        .iter()
+        .filter(|value| {
+            heap.minor_gc_forwarding_value_at(gc_address(**value))
+                .expect("forwarding slot lookup succeeds")
+                .is_some()
+        })
+        .count()
+}
+
 #[test]
 fn gc_stress_eval_root_thunk_allocation_dispatches_reserved_forwarding_bridge() {
     let body = IrId::new(0);
@@ -5299,14 +5315,14 @@ fn gc_stress_eval_root_list_allocation_dispatches_dirty_card_writeback_bridge() 
 }
 
 #[test]
-fn gc_stress_list_allocation_dispatch_skips_local_accumulator_fields() {
+fn gc_stress_list_accumulator_thunk_allocations_publish_accumulated_roots() {
     let ir = lower("[ (x: x) (y: y) ]");
 
     let outcome = eval_whnf_owned_with_options(
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
     )
-    .expect("GC-stress multi-element list evaluates without local accumulator writebacks");
+    .expect("GC-stress multi-element list evaluates with local accumulator writebacks");
 
     assert_eq!(outcome.value().tag(), ValueTag::List);
     let elements = {
@@ -5333,13 +5349,7 @@ fn gc_stress_list_allocation_dispatch_skips_local_accumulator_fields() {
     for element in &elements {
         assert!(thunk_values.iter().any(|value| value.raw_eq(*element)));
     }
-    assert!(
-        thunk_values
-            .iter()
-            .filter(|value| !elements.iter().any(|element| value.raw_eq(*element)))
-            .count()
-            >= elements.len()
-    );
+    assert!(heap_record_forwarding_slot_count(outcome.heap(), &thunk_values) > elements.len());
     let permanent_safepoint = outcome
         .heap()
         .permanent_allocation_safepoints()
@@ -5354,6 +5364,49 @@ fn gc_stress_list_allocation_dispatch_skips_local_accumulator_fields() {
         Some(AllocationGcPollReason::GcStressEverySafepoint)
     );
     assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_list_accumulator_allocation_node_clears_after_child_error() {
+    let span = Span::new(0, 1);
+    let body = IrId::new(0);
+    let first_child = IrId::new(1);
+    let error_child = IrId::new(2);
+    let root = IrId::new(3);
+    let ir = empty_ir(
+        root,
+        IrArena::from_raw_parts(
+            vec![
+                pure_node(IrKind::Int, span, IrData::Int(7)),
+                pure_node(IrKind::ThunkAlloc, span, IrData::Node(body)),
+                pure_node(IrKind::LocalVar, span, IrData::Local { slot: 0 }),
+                pure_node(
+                    IrKind::List,
+                    span,
+                    IrData::Children(IrChildSlice::new(0, 2)),
+                ),
+            ],
+            vec![first_child, error_child],
+        ),
+    );
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+
+    let error = evaluator
+        .eval_root()
+        .expect_err("invalid list child reports evaluation error");
+
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::MissingEnvironment { id: error_child }
+    );
+    let thunk_values = heap_record_values_with_tag(evaluator.heap(), ValueTag::Thunk);
+    assert!(heap_record_forwarding_slot_count(evaluator.heap(), &thunk_values) >= 1);
+    assert_eq!(evaluator.active_root_eval_node, None);
+    assert_eq!(evaluator.active_gc_stress_accumulator_allocation_node, None);
+    assert!(evaluator.transient_value_stack_roots().is_empty());
 }
 
 #[test]

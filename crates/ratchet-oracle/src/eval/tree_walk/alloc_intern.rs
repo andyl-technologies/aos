@@ -525,14 +525,34 @@ impl TreeWalk {
                 node.span,
             )
         })?;
-        self.begin_gc_stress_composite_accumulator();
-        let result = (|| {
-            for child in children.iter().copied() {
-                elements.push(self.eval_lazy_node(child)?);
-            }
-            Ok(())
-        })();
-        self.end_gc_stress_composite_accumulator();
+        let result = if self.can_admit_gc_stress_list_accumulator_allocation_safepoints(id) {
+            (|| {
+                for child in children.iter().copied() {
+                    let value = self.with_transient_value_stack_roots(
+                        id,
+                        node.span,
+                        elements.as_mut_slice(),
+                        |eval| {
+                            eval.with_gc_stress_accumulator_allocation_node(child, |eval| {
+                                eval.eval_lazy_node(child)
+                            })
+                        },
+                    )?;
+                    elements.push(value);
+                }
+                Ok(())
+            })()
+        } else {
+            self.begin_gc_stress_composite_accumulator();
+            let result = (|| {
+                for child in children.iter().copied() {
+                    elements.push(self.eval_lazy_node(child)?);
+                }
+                Ok(())
+            })();
+            self.end_gc_stress_composite_accumulator();
+            result
+        };
         result?;
         self.alloc_tree_walk_list(id, node.span, NixList::new(elements))
     }
@@ -678,6 +698,25 @@ impl TreeWalk {
     fn end_gc_stress_composite_accumulator(&mut self) {
         self.active_composite_accumulator_depth =
             self.active_composite_accumulator_depth.saturating_sub(1);
+    }
+
+    fn with_gc_stress_accumulator_allocation_node<T>(
+        &mut self,
+        id: IrId,
+        body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        let previous = self
+            .active_gc_stress_accumulator_allocation_node
+            .replace(id);
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.active_gc_stress_accumulator_allocation_node = previous;
+                std::panic::resume_unwind(payload);
+            }
+        };
+        self.active_gc_stress_accumulator_allocation_node = previous;
+        result
     }
 
     pub(super) fn alloc_thunk_for_node(
@@ -1175,6 +1214,12 @@ impl TreeWalk {
     }
 
     fn can_dispatch_gc_stress_root_allocation_safepoint(&self, id: IrId) -> bool {
+        (self.active_root_eval_node == Some(id)
+            || self.active_gc_stress_accumulator_allocation_node == Some(id))
+            && self.can_dispatch_gc_stress_ambient_allocation_safepoint()
+    }
+
+    fn can_admit_gc_stress_list_accumulator_allocation_safepoints(&self, id: IrId) -> bool {
         self.active_root_eval_node == Some(id)
             && self.can_dispatch_gc_stress_ambient_allocation_safepoint()
     }

@@ -4,8 +4,24 @@ use super::*;
 use crate::attrs::repr::AttrSetReprKind;
 use crate::attrs::telemetry::{HistogramBucket, ShapeMultiplicityBucket};
 use crate::eval::heap::EvalThunkForceStorageMode;
-use crate::heap::HeapGeneration;
+use crate::heap::{GcHeapAddress, HeapGeneration};
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
+
+fn gc_address(value: Value) -> GcHeapAddress {
+    GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
+        .expect("heap pointer is a valid GC address")
+}
+
+fn heap_record_forwarding_slot_count(heap: &EvalHeap, values: &[Value]) -> usize {
+    values
+        .iter()
+        .filter(|value| {
+            heap.minor_gc_forwarding_value_at(gc_address(**value))
+                .expect("forwarding slot lookup succeeds")
+                .is_some()
+        })
+        .count()
+}
 
 #[test]
 fn shared_thunks_emit_trace_once_when_forced_repeatedly() {
@@ -157,7 +173,7 @@ fn conservative_thunk_alloc_facts_keep_lazy_thunks() {
 }
 
 #[test]
-fn gc_stress_list_element_thunk_allocation_skips_reserved_forwarding_bridge() {
+fn gc_stress_list_element_thunk_allocation_dispatches_reserved_forwarding_bridge() {
     let ir = lower("[ (1 + 6) ]");
     let default_outcome = eval_whnf_owned(&ir).expect("default thunk alloc evaluates");
 
@@ -196,13 +212,7 @@ fn gc_stress_list_element_thunk_allocation_skips_reserved_forwarding_bridge() {
         .filter(|value| value.tag() == ValueTag::Thunk)
         .collect::<Vec<_>>();
     assert!(thunk_values.iter().any(|value| value.raw_eq(element)));
-    assert_eq!(
-        thunk_values
-            .iter()
-            .filter(|value| !value.raw_eq(element))
-            .count(),
-        1
-    );
+    assert!(heap_record_forwarding_slot_count(outcome.heap(), &thunk_values) >= 1);
 
     assert!(
         outcome.heap().allocation_safepoints().count()
