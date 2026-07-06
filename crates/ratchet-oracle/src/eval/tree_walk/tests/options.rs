@@ -6267,6 +6267,9 @@ fn gc_stress_mapped_list_result_skips_apply_thunk_fields() {
 
     evaluator.active_root_eval_node = Some(ir.root);
     let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
     let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
         eval.alloc_mapped_list(
@@ -6310,6 +6313,13 @@ fn gc_stress_mapped_list_result_skips_apply_thunk_fields() {
         permanent_safepoints_before + 1,
         "mapped list allocation did not record exactly one permanent safepoint"
     );
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "mapped apply-thunk fields should block permanent-root list dispatch"
+    );
     let permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
@@ -6348,6 +6358,9 @@ fn gc_stress_generated_list_result_skips_apply_thunk_fields() {
 
     evaluator.active_root_eval_node = Some(ir.root);
     let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
     let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
         eval.alloc_generated_list(ir.root, span, ir.root, span, generator, ir.root, 2)
@@ -6382,6 +6395,13 @@ fn gc_stress_generated_list_result_skips_apply_thunk_fields() {
         evaluator.heap().permanent_allocation_safepoints().count(),
         permanent_safepoints_before + 1,
         "generated list allocation did not record exactly one permanent safepoint"
+    );
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "generated apply-thunk fields should block permanent-root list dispatch"
     );
     let permanent_safepoint = evaluator
         .heap()
