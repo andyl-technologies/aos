@@ -183,6 +183,9 @@ mod tests {
                     || trimmed.starts_with(
                         "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(",
                     )
+                    || trimmed.starts_with(
+                        "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(",
+                    )
                     || trimmed
                         == "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };"
                     || trimmed == "let value = unsafe { thunk_entry(rt, env) };"
@@ -275,6 +278,14 @@ mod tests {
         assert_eq!(
             trimmed_line_occurrences(
                 &cranelift,
+                "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(",
+            ),
+            1,
+            "full-IR promotion-gated registered native thunk-call entrypoint must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &cranelift,
                 "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };",
             ),
             1,
@@ -290,8 +301,8 @@ mod tests {
                 &cranelift,
                 "let promotion_gated_registered_native_thunk_invocation = unsafe {",
             ),
-            1,
-            "promotion-gated registered native thunk call must stay singly reviewed"
+            2,
+            "promotion-gated registered native thunk calls must stay explicitly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(

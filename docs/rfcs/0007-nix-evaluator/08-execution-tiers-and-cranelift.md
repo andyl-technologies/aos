@@ -1156,8 +1156,9 @@ harness, never cut for scope.
       candidates, runtime/environment pointers, valid returned `Value` tags, and
       the supported host `Value` calling convention satisfy the native ABI.
       Tests use integration-test `extern "C"` candidates on the reviewed host
-      ABI to execute `aos_env_get` and `aos_env_get` + `aos_force` artifacts,
-      and preserve missing-import rejection before native invocation. This
+      ABI to execute `aos_env_get`, `aos_env_get` + `aos_force`, direct
+      `aos_apply`, and static `aos_select_ic` artifacts, and preserve
+      missing-import rejection before native invocation. This
       proves registered helper relocation plus a native thunk call with
       synthetic host-ABI-matched candidates only: real exported oracle wrappers,
       evaluator thunk publication, thunk-state CAS, runtime trap transfer, full
@@ -1217,11 +1218,13 @@ harness, never cut for scope.
       roots, literal multi-use promotion without runtime candidates, promoted
       missing-candidate failure with slot counter preservation, deferred
       lowering errors, pointer equality, registered/imported symbol metadata,
-      and module ownership. This is still safe preflight assembly only: no
-      evaluator heap thunk is mutated, no atomic thunk-state CAS runs,
-      registered addresses are not directly dereferenced or called, no native
-      code pointer is cast or called, and generic runtime-call lowering beyond
-      bounded env-slot/apply precursors remains open.
+      module ownership, and the full-IR registered promotion variant finalizing
+      a bounded static select with `aos_env_get`/`aos_force`/`aos_select_ic`
+      candidates. This is still safe preflight assembly only: no evaluator heap
+      thunk is mutated, no atomic thunk-state CAS runs, registered addresses are
+      not directly dereferenced or called, no native code pointer is cast or
+      called, and generic runtime-call lowering beyond bounded env-slot/apply/
+      static-select precursors remains open.
 - [x] Current force-aware registered promotion precursor:
       `ratchet-jit::cranelift::jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates()`
       records one invocation with the same tier-up policy, preserves the
@@ -1235,11 +1238,13 @@ harness, never cut for scope.
       unsupported-root no-lowering behavior, literal multi-use promotion without
       runtime candidates, hot env-slot and wrapped env-slot force-call promotion
       with registered/imported helper metadata, wrapped apply promotion without
-      an `aos_force` candidate, and missing-`aos_force` candidate rejection with
-      the invocation-updated slot preserved. This is still a policy/lowering
+      an `aos_force` candidate, full-IR static-select promotion with
+      `aos_select_ic`, and missing-`aos_force` candidate rejection with the
+      invocation-updated slot preserved. This is still a policy/lowering
       handoff: no evaluator heap thunk is mutated, no atomic thunk-state CAS
-      runs, no native code pointer is cast or called, and the `aos_force` or
-      `aos_apply` wrappers are not invoked by this safe promotion path.
+      runs, no native code pointer is cast or called, and the `aos_force`,
+      `aos_apply`, or `aos_select_ic` wrappers are not invoked by this safe
+      promotion path.
 - [x] Current promotion-gated registered native thunk-call precursor:
       `ratchet-jit::cranelift::jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates()`
       records one tier-up invocation, preserves cold no-lowering/no-candidate
@@ -1250,11 +1255,13 @@ harness, never cut for scope.
       returned value. Tests pin cold no-call behavior, promoted forced env-slot
       execution with synthetic `aos_env_get`/`aos_force` candidates, promoted
       direct local-slot apply execution with synthetic `aos_env_get`/`aos_apply`
-      candidates, slot pointer equality, helper import/registration metadata,
-      module ownership, and missing-`aos_force` or `aos_apply` candidate
-      rejection with the invocation-updated slot preserved. This still does not
-      publish evaluator thunks, perform atomic thunk-state CAS, use real exported
-      oracle wrappers, run trap transfer, or prove `.drv` parity.
+      candidates, full-IR static select execution with synthetic
+      `aos_env_get`/`aos_force`/`aos_select_ic` candidates, slot pointer
+      equality, helper import/registration metadata, module ownership, and
+      missing-`aos_force`, `aos_apply`, or `aos_select_ic` candidate rejection
+      with the invocation-updated slot preserved. This still does not publish
+      evaluator thunks, perform atomic thunk-state CAS, use real exported oracle
+      wrappers, run trap transfer, or prove `.drv` parity.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       records one tier-up invocation in safe code and preserves cold
@@ -1880,12 +1887,14 @@ harness, never cut for scope.
       rewrites them with synthetic candidates. Tests pin helper namespace/index
       metadata, imported signature parity, exact call operands, symbol/site
       immediates backed by the IR symbol table, artifact import resolution,
-      registered definition with synthetic candidates, and rejection of dynamic
-      paths, defaults, and non-local receivers. This is still a bounded static
-      select bridge: no multi-segment paths, dynamic attr paths, `or` defaults,
-      generic receiver lowering, selector promotion integration, exported
-      wrapper address execution, evaluator heap publication, raw pointer call,
-      generic IR traversal, or `HasAttr` lowering is implemented here. `HasAttr`
+      registered definition with synthetic candidates, full-IR selector
+      selection, full-IR registered promotion/finalization, and native
+      thunk-call execution with synthetic host-ABI candidates, plus rejection
+      of dynamic paths, defaults, and non-local receivers. This is still a
+      bounded static select bridge: no multi-segment paths, dynamic attr paths,
+      `or` defaults, generic receiver lowering, real exported wrapper address
+      execution from `aos-nix`, evaluator heap publication, generic IR
+      traversal, or `HasAttr` lowering is implemented here. `HasAttr`
       remains deferred because its full IR semantics return false for non-attr
       receivers while the current `aos_has_attr` helper expects an already
       forced attrset value.
@@ -1914,19 +1923,23 @@ harness, never cut for scope.
       is implemented.
 - [x] Current shape-directed tier-1 lowerer selector precursor:
       `ratchet-jit::lower::lower_tier1_ir_thunk_body_artifact()` and
-      `lower_force_aware_tier1_ir_thunk_body_artifact()` now own the bounded
-      tier-1 root selection used by registered Cranelift promotion paths. The selector
-      accepts literal roots, local-slot roots, direct local-slot apply roots,
-      and one direct `ThunkAlloc` wrapper around those shapes; the force-aware
-      variant preserves literal and apply lowering but lowers local slots through
-      `aos_env_get` plus `aos_force`.
-      Tests pin literal no-import selection, env-get-only local selection,
-      forced local selection with both helper imports, direct apply selection,
-      wrapped local bodies, and unsupported direct/wrapped shape errors. This is
-      still selector plumbing over arena-only bounded lowerers: no generic IR
-      traversal, non-local applications, selector-integrated selects or hasAttr
-      probes, attrsets, branches, exported helper wrappers, executable buffer,
-      or native call is implemented by these selector entrypoints.
+      `lower_force_aware_tier1_ir_thunk_body_artifact()` own the arena-only
+      bounded tier-1 root selection used by registered Cranelift promotion
+      paths, while `*_artifact_for_ir()` variants accept full lowered `Ir`
+      metadata and can select bounded static attr reads through
+      `aos_select_ic`. The selector accepts literal roots, local-slot roots,
+      direct local-slot apply roots, bounded static select roots through the
+      full-IR entrypoints, and one direct `ThunkAlloc` wrapper around those
+      shapes; the force-aware variant preserves literal, apply, and select
+      lowering but lowers standalone local slots through `aos_env_get` plus
+      `aos_force`. Tests pin literal no-import selection, env-get-only local
+      selection, forced local selection with both helper imports, direct apply
+      selection, full-IR static select selection, wrapped local bodies, and
+      unsupported direct/wrapped shape errors. This is still selector plumbing
+      over bounded lowerers: no generic IR traversal, non-local applications,
+      hasAttr probes, attrsets, branches, exported helper wrappers, evaluator
+      thunk publication, or broad native execution is implemented by these
+      selector entrypoints.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [x] Current compiled-tier safepoint policy precursor:

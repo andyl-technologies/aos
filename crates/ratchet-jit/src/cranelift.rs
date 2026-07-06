@@ -28,7 +28,7 @@ use cranelift_codegen::{
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleError};
-use ratchet_core::{IrArena, IrId};
+use ratchet_core::{Ir, IrArena, IrId};
 use ratchet_value::value::{Value, ValueError};
 
 use crate::{
@@ -36,7 +36,9 @@ use crate::{
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     lower::{
         JitLowerError, lower_constant_ir_thunk_body_artifact,
-        lower_force_aware_tier1_ir_thunk_body_artifact, lower_tier1_ir_thunk_body_artifact,
+        lower_force_aware_tier1_ir_thunk_body_artifact,
+        lower_force_aware_tier1_ir_thunk_body_artifact_for_ir, lower_tier1_ir_thunk_body_artifact,
+        lower_tier1_ir_thunk_body_artifact_for_ir,
     },
     module::{
         JitModuleArtifactMetadata, JitModuleArtifactRuntimeImport, JitModuleReadinessError,
@@ -2180,6 +2182,71 @@ pub fn jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candi
     })
 }
 
+/// Records one invocation and compiles a supported registered full-IR root on promotion.
+///
+/// This is the full lowered-IR counterpart to
+/// [`jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates`].
+/// It preserves the arena-only literal, env-slot, and apply roots, and also
+/// admits bounded static attr selections because full IR carries the attr-path
+/// side tables required by `aos_select_ic` lowering.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftTier1PromotionError`] if policy requests promotion but
+/// the current full-IR lowerer cannot lower `root`, required artifact runtime
+/// imports lack matching candidates, finalization fails, or tier-slot
+/// installation fails. The error preserves the invocation-updated slot and the
+/// policy decision alongside the underlying setup error.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_registered_artifact_finalization_preflight_with_candidates`]
+/// when policy requests promotion and Cranelift finalizes an artifact.
+pub fn jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
+    mut slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<JitCraneliftRegisteredTier1PromotionPreflight, JitCraneliftTier1PromotionError> {
+    let decision = slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(JitCraneliftRegisteredTier1PromotionPreflight::StayedInTier { slot, decision });
+    }
+
+    let artifact = match lower_tier1_ir_thunk_body_artifact_for_ir(ir, root) {
+        Ok(artifact) => artifact,
+        Err(source) => {
+            return Err(JitCraneliftTier1PromotionError::new(
+                slot,
+                decision,
+                JitCraneliftModuleSetupError::LowerTier1Artifact { root, source },
+            ));
+        }
+    };
+    let finalization =
+        match jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
+            artifact, candidates,
+        ) {
+            Ok(finalization) => finalization,
+            Err(source) => {
+                return Err(JitCraneliftTier1PromotionError::new(slot, decision, source));
+            }
+        };
+    let preflight =
+        registered_tier1_slot_preflight_from_finalization_preserving_slot(finalization, slot)
+            .map_err(|(slot, source)| {
+                JitCraneliftTier1PromotionError::new(slot, decision, source)
+            })?;
+
+    Ok(JitCraneliftRegisteredTier1PromotionPreflight::Promoted {
+        preflight,
+        decision,
+    })
+}
+
 /// Records one invocation and compiles a force-aware registered IR root on promotion.
 ///
 /// This composes tier-up policy with the registered-symbol tier-1 slot path, but
@@ -2222,6 +2289,71 @@ pub fn jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_roo
     }
 
     let artifact = match lower_force_aware_tier1_ir_thunk_body_artifact(arena, root) {
+        Ok(artifact) => artifact,
+        Err(source) => {
+            return Err(JitCraneliftTier1PromotionError::new(
+                slot,
+                decision,
+                JitCraneliftModuleSetupError::LowerTier1Artifact { root, source },
+            ));
+        }
+    };
+    let finalization =
+        match jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
+            artifact, candidates,
+        ) {
+            Ok(finalization) => finalization,
+            Err(source) => {
+                return Err(JitCraneliftTier1PromotionError::new(slot, decision, source));
+            }
+        };
+    let preflight =
+        registered_tier1_slot_preflight_from_finalization_preserving_slot(finalization, slot)
+            .map_err(|(slot, source)| {
+                JitCraneliftTier1PromotionError::new(slot, decision, source)
+            })?;
+
+    Ok(JitCraneliftRegisteredTier1PromotionPreflight::Promoted {
+        preflight,
+        decision,
+    })
+}
+
+/// Records one invocation and compiles a force-aware registered full-IR root on promotion.
+///
+/// This is the full lowered-IR counterpart to
+/// [`jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates`].
+/// It preserves the arena-only literal, forced env-slot, and apply roots, and
+/// additionally admits bounded static attr selections that import
+/// `aos_env_get`, `aos_force`, and `aos_select_ic`.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftTier1PromotionError`] if policy requests promotion but
+/// the current full-IR force-aware lowerer cannot lower `root`, required
+/// artifact runtime imports lack matching candidates, finalization fails, or
+/// tier-slot installation fails. The error preserves the invocation-updated
+/// slot and the policy decision alongside the underlying setup error.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_registered_artifact_finalization_preflight_with_candidates`]
+/// when policy requests promotion and Cranelift finalizes an artifact.
+pub fn jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
+    mut slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+) -> Result<JitCraneliftRegisteredTier1PromotionPreflight, JitCraneliftTier1PromotionError> {
+    let decision = slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(JitCraneliftRegisteredTier1PromotionPreflight::StayedInTier { slot, decision });
+    }
+
+    let artifact = match lower_force_aware_tier1_ir_thunk_body_artifact_for_ir(ir, root) {
         Ok(artifact) => artifact,
         Err(source) => {
             return Err(JitCraneliftTier1PromotionError::new(
@@ -2309,6 +2441,110 @@ pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_prefl
 
     let artifact =
         lower_force_aware_tier1_ir_thunk_body_artifact(arena, root).map_err(|source| {
+            JitCraneliftRegisteredTier1NativeCallError::new(
+                slot.clone(),
+                decision,
+                JitCraneliftNativeCallError::FinalizeArtifact {
+                    source: JitCraneliftModuleSetupError::LowerTier1Artifact { root, source },
+                },
+            )
+        })?;
+    // SAFETY: This function forwards its caller's native-address, runtime,
+    // environment, host-ABI, non-unwinding, and valid returned-tag obligations
+    // to the registered native thunk-call boundary.
+    let promotion_gated_registered_native_thunk_invocation = unsafe {
+        jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(
+            artifact, candidates, rt, env,
+        )
+    }
+    .map_err(|source| {
+        JitCraneliftRegisteredTier1NativeCallError::new(slot.clone(), decision, source)
+    })?;
+
+    let code_ptr = promotion_gated_registered_native_thunk_invocation
+        .finalized_function()
+        .compiled_code_ptr();
+    if let Err(source) = slot.install_tier1_code(code_ptr) {
+        return Err(JitCraneliftRegisteredTier1NativeCallError::new(
+            slot,
+            decision,
+            JitCraneliftNativeCallError::FinalizeArtifact {
+                source: JitCraneliftModuleSetupError::InstallTier1Code {
+                    symbol_name: promotion_gated_registered_native_thunk_invocation
+                        .finalized_function()
+                        .symbol_name()
+                        .to_owned(),
+                    source,
+                },
+            },
+        ));
+    }
+
+    Ok(
+        JitCraneliftRegisteredTier1NativeCallPreflight::PromotedAndCalled {
+            slot,
+            invocation: promotion_gated_registered_native_thunk_invocation,
+            decision,
+        },
+    )
+}
+
+/// Records one invocation, compiles a force-aware registered full-IR root, and calls it on promotion.
+///
+/// This is the full lowered-IR counterpart to
+/// [`jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates`].
+/// It preserves the arena-only native-call subset and adds bounded static attr
+/// selections through the registered `aos_env_get`, `aos_force`, and
+/// `aos_select_ic` helper path.
+///
+/// Non-promoted results return the updated slot without lowering, requiring
+/// candidates, constructing a module, finalizing code, or crossing the native
+/// call boundary. This function does not publish into evaluator thunk state or
+/// perform atomic thunk-state transitions.
+///
+/// # Safety
+///
+/// The caller must either prove this attempt cannot promote, or uphold the same
+/// candidate, runtime/environment pointer, host ABI, non-unwinding, and valid
+/// returned-tag requirements as
+/// [`jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates`]
+/// for any path that may promote and enter native code.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftRegisteredTier1NativeCallError`] if policy requests
+/// promotion but the current full-IR force-aware lowerer cannot lower `root`,
+/// required artifact runtime imports lack matching candidates, the host native
+/// `Value` ABI is not supported, finalization or native invocation fails, the
+/// returned valid-tag value has an invalid payload, or tier-slot metadata
+/// installation fails. The error preserves the invocation-updated slot and the
+/// policy decision alongside the underlying native-call error.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates`]
+/// when policy requests promotion and Cranelift finalizes an artifact.
+pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(
+    mut slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    candidates: &[JitRuntimeSymbolAddressCandidate],
+    rt: JitRuntimeContextPtr,
+    env: JitEnvFramePtr,
+) -> Result<
+    JitCraneliftRegisteredTier1NativeCallPreflight,
+    JitCraneliftRegisteredTier1NativeCallError,
+> {
+    let decision = slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(JitCraneliftRegisteredTier1NativeCallPreflight::StayedInTier { slot, decision });
+    }
+
+    let artifact =
+        lower_force_aware_tier1_ir_thunk_body_artifact_for_ir(ir, root).map_err(|source| {
             JitCraneliftRegisteredTier1NativeCallError::new(
                 slot.clone(),
                 decision,
@@ -2790,10 +3026,11 @@ mod tests {
     use cranelift_codegen::ir::{
         ExtFuncData, ExternalName, Function, UserExternalName, UserFuncName,
     };
-    use ratchet_core::syntax::Span;
     use ratchet_core::{
-        EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
+        EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
+        IrInlineCacheSiteId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
         runtime_helper_call_signature, runtime_thunk_call_signature,
+        syntax::{Span, SymbolTable},
     };
     use ratchet_value::value::Value;
 
@@ -2897,6 +3134,48 @@ mod tests {
         );
 
         arena
+    }
+
+    fn static_select_ir(slot: u32) -> Ir {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols
+            .intern(b"target")
+            .expect("test symbol table accepts target");
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local { slot },
+                ),
+                IrNode::new(
+                    IrKind::Select,
+                    Span::new(0, 8),
+                    EffectClass::pure(),
+                    IrData::Select {
+                        receiver: IrId::new(0),
+                        path: IrAttrPathId::new(0),
+                        site: IrInlineCacheSiteId::new(11),
+                        default: None,
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let facts = IrFacts::conservative(arena.nodes().len());
+        Ir {
+            root: IrId::new(1),
+            arena,
+            facts,
+            symbols,
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+                .into_boxed_slice(),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
     }
 
     fn wrapped_apply_arena(function_slot: u32, argument_slot: u32) -> IrArena {
@@ -4874,6 +5153,64 @@ mod tests {
     }
 
     #[test]
+    fn registered_lowered_ir_promotion_preflight_installs_static_select_root() {
+        let ir = static_select_ir(9);
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+            synthetic_address_candidate(
+                "aos_select_ic",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                7,
+            ),
+        ];
+
+        let result =
+            jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
+                JitTieredCodeSlot::new(),
+                TierUpPolicy::default(),
+                TierUpDemandHint::MultiUse,
+                &ir,
+                ir.root,
+                &candidates,
+            )
+            .expect("full-IR registered promotion finalizes static select");
+
+        assert!(result.did_compile());
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion owns registered tier-1 preflight");
+        assert_eq!(
+            promoted
+                .finalization()
+                .artifact_runtime_imports()
+                .iter()
+                .map(JitModuleArtifactRuntimeImport::symbol_name)
+                .collect::<Vec<_>>(),
+            ["aos_env_get", "aos_force", "aos_select_ic"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_select_ic")
+                .is_some()
+        );
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+    }
+
+    #[test]
     fn force_aware_registered_promotion_preflight_records_cold_invocation_without_lowering() {
         let arena = IrArena::from_raw_parts(
             vec![IrNode::new(
@@ -4943,6 +5280,92 @@ mod tests {
                 .is_empty()
         );
         assert!(promoted.finalization().registered_symbols().is_empty());
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+        assert!(result.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn force_aware_registered_lowered_ir_promotion_preflight_installs_static_select_root() {
+        let ir = static_select_ir(13);
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                11,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                13,
+            ),
+            synthetic_address_candidate(
+                "aos_select_ic",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                17,
+            ),
+        ];
+
+        let result =
+            jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
+                JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                    DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+                )),
+                TierUpPolicy::default(),
+                TierUpDemandHint::NoMultiUseEvidence,
+                &ir,
+                ir.root,
+                &candidates,
+            )
+            .expect("full-IR force-aware promotion finalizes static select");
+
+        assert_eq!(
+            result.slot().invocation_counter().invocations(),
+            DEFAULT_TIER1_INVOCATION_THRESHOLD
+        );
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        assert_eq!(
+            result.decision().reasons(),
+            Some(TierUpReasons::new(true, false))
+        );
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion owns registered tier-1 preflight");
+        assert_eq!(
+            promoted
+                .finalization()
+                .artifact_runtime_imports()
+                .iter()
+                .map(JitModuleArtifactRuntimeImport::symbol_name)
+                .collect::<Vec<_>>(),
+            ["aos_env_get", "aos_force", "aos_select_ic"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_force")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_select_ic")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_apply")
+                .is_none()
+        );
         assert_eq!(
             result.slot().tier1_code_ptr(),
             Some(promoted.finalized_function().compiled_code_ptr())
