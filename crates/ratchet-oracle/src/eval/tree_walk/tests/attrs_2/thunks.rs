@@ -904,6 +904,7 @@ fn zip_attrs_with_records_dynamic_repr_decisions() {
         "builtins.deepSeq [
             (builtins.zipAttrsWith (_name: values: values) [ { a = 1; } { b = 2; } ])
             (let zip = builtins.zipAttrsWith (_name: values: values); in zip [ { c = 3; } ])
+            (builtins.zipAttrsWith (_name: values: values) [])
         ] 0",
     );
 
@@ -914,11 +915,14 @@ fn zip_attrs_with_records_dynamic_repr_decisions() {
         .attr_telemetry()
         .update_merge_snapshot()
         .expect("repr telemetry snapshot allocates");
-    assert_eq!(snapshot.decisions, 5);
-    assert_eq!(snapshot.flat_decisions, 5);
+    assert_eq!(snapshot.decisions, 6);
+    assert_eq!(snapshot.flat_decisions, 6);
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 3);
-    assert_eq!(snapshot.reasons.small_shape_stable, 2);
+    assert_eq!(snapshot.reasons.small_shape_stable, 3);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 3);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -1808,6 +1812,43 @@ fn map_attrs_projected_shape_preserves_order_and_records_order_parity_telemetry(
         .heap()
         .get_attrs_metadata(outcome.value())
         .expect("mapAttrs result metadata exists");
+
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
+}
+
+#[test]
+fn zip_attrs_with_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let zip_source = r#"
+        builtins.zipAttrsWith
+          (name: values: name + ":" + builtins.toString (builtins.length values))
+          [ { z = 1; A = 2; } { aa = 3; _ = 4; a = 5; A = 6; } ]
+    "#;
+    let names_source = format!("builtins.attrNames ({zip_source})");
+    let values_source =
+        format!("builtins.concatStringsSep \",\" (builtins.attrValues ({zip_source}))");
+
+    assert_eq!(
+        eval_list_string_bytes(&names_source),
+        vec![
+            b"A".to_vec(),
+            b"_".to_vec(),
+            b"a".to_vec(),
+            b"aa".to_vec(),
+            b"z".to_vec(),
+        ],
+    );
+    assert_eq!(eval_string_bytes(&values_source), b"A:2,_:1,a:1,aa:1,z:1");
+
+    let ir = lower(zip_source);
+    let outcome = eval_whnf_owned(&ir).expect("zipAttrsWith projected-shape result evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("zipAttrsWith result metadata exists");
 
     assert!(metadata.projected_shape().is_some());
     assert_eq!(metadata.repr(), AttrSetReprKind::Flat);

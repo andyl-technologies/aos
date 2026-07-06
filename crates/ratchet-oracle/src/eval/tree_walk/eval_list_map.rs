@@ -885,7 +885,11 @@ impl TreeWalk {
             Self::clone_attr_entries_source_order(attrs_id, attrs_span, attrs)?
         };
         if entries.is_empty() {
-            return self.alloc_map_attrs_result_with_order_telemetry(id, span, FlatAttrs::empty());
+            return self.alloc_dynamic_attrs_result_with_order_telemetry(
+                id,
+                span,
+                FlatAttrs::empty(),
+            );
         }
 
         let function_span = self.node(function_id)?.span;
@@ -922,7 +926,11 @@ impl TreeWalk {
             Self::clone_attr_entries_source_order(attrs.id(), attrs.span(), attrs_set)?
         };
         if entries.is_empty() {
-            return self.alloc_map_attrs_result_with_order_telemetry(id, span, FlatAttrs::empty());
+            return self.alloc_dynamic_attrs_result_with_order_telemetry(
+                id,
+                span,
+                FlatAttrs::empty(),
+            );
         }
 
         self.alloc_mapped_attrs(
