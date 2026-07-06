@@ -7560,9 +7560,10 @@ and helps the oracle directly.
       registered transient roots while primop-result composite dispatch remains
       blocked,
       root `removeAttrs`/`intersectAttrs`, helper-level empty-input
-      `mapAttrs`, and root empty-input `zipAttrsWith` generated-attrset result
-      allocations preserving registered transient roots while primop-result
-      composite dispatch remains blocked,
+      `mapAttrs`, root empty-input `zipAttrsWith`, and root empty-input
+      `listToAttrs` generated-attrset result allocations preserving
+      registered transient roots while primop-result composite dispatch remains
+      blocked,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
       registered transient roots,
       root `appendContext` evaluations preserving registered transient roots
