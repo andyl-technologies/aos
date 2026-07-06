@@ -70,6 +70,7 @@ use super::whnf_tag::{WhnfTagFastPath, classify_whnf_tag_fast_path};
 use crate::attrs::{
     AttrEntry, AttrError, AttrPosition, FlatAttrs,
     hamt::{HamtAttrs, HamtError, HamtMergeSummary},
+    order::{AttrOrderError, AttrOrderTarget, collect_checked_lexicographic_keys},
     pic::{
         FlatSelectCache, FlatSelectError, FlatSelectOutcome, FlatSelectSource, HamtSelectCache,
         HamtSelectError, HamtSelectOutcome, HamtSelectPolicy, HamtSelectSource, ShapedSelectCache,

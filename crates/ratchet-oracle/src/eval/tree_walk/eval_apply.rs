@@ -350,7 +350,7 @@ impl TreeWalk {
                         argument_span,
                     ));
                 }
-                let names = {
+                let (names, order_parity_result) = {
                     let attrs = self.heap.get_attrs(value).map_err(|source| {
                         TreeWalkError::new(
                             TreeWalkErrorKind::Heap {
@@ -370,10 +370,15 @@ impl TreeWalk {
                             span,
                         )
                     })?;
+                    let order_parity_result = collect_checked_lexicographic_keys(
+                        AttrOrderTarget::Flat(attrs),
+                        &self.symbols,
+                    )
+                    .map(|_| ());
                     for entry in attrs.iter_lexicographic() {
                         names.push(entry.key);
                     }
-                    names
+                    (names, order_parity_result)
                 };
                 let mut elements = Vec::new();
                 elements.try_reserve_exact(names.len()).map_err(|_| {
@@ -388,7 +393,9 @@ impl TreeWalk {
                 for symbol in names {
                     elements.push(self.alloc_symbol_string(id, span, symbol)?);
                 }
-                self.alloc_tree_walk_list(id, span, NixList::new(elements))
+                let result = self.alloc_tree_walk_list(id, span, NixList::new(elements))?;
+                self.record_attr_order_parity_telemetry(id, span, order_parity_result);
+                Ok(result)
             }
             StrictUnaryPrimOp::AttrValues => {
                 let value = self.force_lazy_foldl_initial_value(argument, argument_span, value)?;
@@ -402,7 +409,7 @@ impl TreeWalk {
                         argument_span,
                     ));
                 }
-                let values = {
+                let (values, order_parity_result) = {
                     let attrs = self.heap.get_attrs(value).map_err(|source| {
                         TreeWalkError::new(
                             TreeWalkErrorKind::Heap {
@@ -422,12 +429,19 @@ impl TreeWalk {
                             span,
                         )
                     })?;
+                    let order_parity_result = collect_checked_lexicographic_keys(
+                        AttrOrderTarget::Flat(attrs),
+                        &self.symbols,
+                    )
+                    .map(|_| ());
                     for entry in attrs.iter_lexicographic() {
                         values.push(entry.value);
                     }
-                    values
+                    (values, order_parity_result)
                 };
-                self.alloc_tree_walk_list(id, span, NixList::new(values))
+                let result = self.alloc_tree_walk_list(id, span, NixList::new(values))?;
+                self.record_attr_order_parity_telemetry(id, span, order_parity_result);
+                Ok(result)
             }
             StrictUnaryPrimOp::Tail => {
                 if value.tag() != ValueTag::List {

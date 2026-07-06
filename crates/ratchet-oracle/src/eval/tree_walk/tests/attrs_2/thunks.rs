@@ -1761,6 +1761,23 @@ fn projected_shape_static_attr_names_and_values_preserve_raw_byte_order() {
 }
 
 #[test]
+fn attr_names_and_values_record_projected_shape_order_parity_telemetry() {
+    let ir = lower(
+        "
+        let attrs = { z = 1; A = 2; aa = 3; _ = 4; a = 5; };
+        in builtins.length (builtins.attrNames attrs)
+           + builtins.length (builtins.attrValues attrs)
+        ",
+    );
+    let outcome = eval_whnf_owned(&ir).expect("attr order-parity sample evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(10));
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 2);
+    assert_eq!(stats.mismatched, 0);
+}
+
+#[test]
 fn force_cache_payload_replay_preserves_attr_repr_metadata() {
     let ir = lower(
         "((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; })",

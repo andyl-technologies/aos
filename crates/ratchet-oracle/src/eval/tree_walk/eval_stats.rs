@@ -423,6 +423,51 @@ impl TreeWalk {
         }
     }
 
+    pub(super) fn record_attr_order_parity_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        result: Result<(), AttrOrderError>,
+    ) {
+        let matched = match result {
+            Ok(()) => true,
+            Err(AttrOrderError::AllocationFailed { repr, entries }) => {
+                tracing::debug!(
+                    target: "aos_nix::eval::attr_telemetry",
+                    node = id.as_u32(),
+                    span_start = span.start,
+                    span_end = span.end,
+                    ?repr,
+                    entries,
+                    "skipping attr order-parity telemetry after key-buffer allocation failure"
+                );
+                return;
+            }
+            Err(source) => {
+                tracing::debug!(
+                    target: "aos_nix::eval::attr_telemetry",
+                    node = id.as_u32(),
+                    span_start = span.start,
+                    span_end = span.end,
+                    error = %source,
+                    "recording attr order-parity mismatch"
+                );
+                false
+            }
+        };
+
+        if let Err(source) = self.attr_telemetry.record_order_parity_check(matched) {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                error = %source,
+                "skipping attr order-parity telemetry after recording failure"
+            );
+        }
+    }
+
     pub(super) fn record_hamt_select_cache_lookup_telemetry(
         &mut self,
         id: IrId,
