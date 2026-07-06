@@ -7506,6 +7506,9 @@ and helps the oracle directly.
       accumulated transient roots,
       dynamic-key expression evaluation preserving registered transient roots
       while an inherited-select field blocks final attrset dispatch,
+      recursive override, `let`, and lambda-default binding assembly
+      preserving registered transient roots with active frame/suspended-env
+      state present while scoped accumulator dispatch remains disabled,
       plus root string, URI, and path literals preserving their permanent values
       through the scalar no-op bridge, root-result `baseNameOf`, `dirOf`, and
       `toPath` helper allocations relocating registered transient roots while

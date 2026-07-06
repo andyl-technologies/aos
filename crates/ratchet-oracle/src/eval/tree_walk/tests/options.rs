@@ -5899,6 +5899,167 @@ fn gc_stress_dynamic_attr_key_expression_preserves_registered_roots() {
 }
 
 #[test]
+fn gc_stress_recursive_override_binding_assembly_preserves_registered_roots() {
+    let ir = lower(r#"rec { a = x: x; __overrides = { b = y: y; }; ${"c"} = z: z; }"#);
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let c = symbol_for(&ir, b"c");
+    let overrides = symbol_for(&ir, b"__overrides");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(98)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress recursive override attrset evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while recursive override binding assembly was evaluated"
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let (a_value, b_value, c_value, overrides_value) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("root attrset is heap-owned");
+        (
+            attrs.get(a).expect("a exists"),
+            attrs.get(b).expect("override b exists"),
+            attrs.get(c).expect("dynamic c exists"),
+            attrs.get(overrides).expect("__overrides exists"),
+        )
+    };
+    assert_eq!(overrides_value.tag(), ValueTag::Thunk);
+    for value in [a_value, b_value, c_value] {
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap()
+            .get_thunk(value)
+            .expect("binding value is a heap-owned thunk");
+        assert!(thunk.env().is_some_and(|env| !env.frames().is_empty()));
+    }
+    let thunk_values = heap_record_values_with_tag(evaluator.heap(), ValueTag::Thunk);
+    assert_eq!(
+        heap_record_forwarding_slot_count(evaluator.heap(), &thunk_values),
+        0
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_let_binding_assembly_preserves_registered_roots() {
+    let ir = lower("let a = x: x; b = y: y; in { inherit a b; }");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(99)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress let binding attrset evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while let binding assembly was evaluated"
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let (a_value, b_value) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("root attrset is heap-owned");
+        (
+            attrs.get(a).expect("a exists"),
+            attrs.get(b).expect("b exists"),
+        )
+    };
+    for value in [a_value, b_value] {
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap()
+            .get_thunk(value)
+            .expect("binding value is a heap-owned thunk");
+        assert!(thunk.env().is_some_and(|env| !env.frames().is_empty()));
+    }
+    let thunk_values = heap_record_values_with_tag(evaluator.heap(), ValueTag::Thunk);
+    assert_eq!(
+        heap_record_forwarding_slot_count(evaluator.heap(), &thunk_values),
+        0
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_lambda_default_binding_assembly_preserves_registered_roots() {
+    let ir = lower("let captured = x: x; in ({ a ? captured, b ? (y: y) }: { inherit a b; }) { }");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(100)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress lambda default attrset evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while lambda default binding assembly was evaluated"
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let (a_value, b_value) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("root attrset is heap-owned");
+        (
+            attrs.get(a).expect("a exists"),
+            attrs.get(b).expect("b exists"),
+        )
+    };
+    for value in [a_value, b_value] {
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        let thunk = evaluator
+            .heap()
+            .get_thunk(value)
+            .expect("default value is a heap-owned thunk");
+        assert!(thunk.env().is_some_and(|env| !env.frames().is_empty()));
+    }
+    let thunk_values = heap_record_values_with_tag(evaluator.heap(), ValueTag::Thunk);
+    assert_eq!(
+        heap_record_forwarding_slot_count(evaluator.heap(), &thunk_values),
+        0
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_attrs_accumulator_allocation_node_clears_after_binding_error() {
     let span = Span::new(0, 1);
     let mut symbols = SymbolTable::new();
