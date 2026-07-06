@@ -3320,7 +3320,7 @@ GC must be observationally invisible (§8): every item is gated by the different
       blocked,
       root `removeAttrs`/`intersectAttrs`, helper-level empty-input
       `mapAttrs`, root empty-input `zipAttrsWith`, and root empty-input
-      `listToAttrs` generated-attrset result allocations preserving
+      `listToAttrs`/`groupBy` generated-attrset result allocations preserving
       registered transient roots while primop-result composite dispatch remains
       blocked,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
