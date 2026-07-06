@@ -290,10 +290,11 @@ pub fn nix_jit_tier1_conformance_readiness_for_ir_root(
 ///
 /// This function composes the top-level runtime-symbol registration bridge with
 /// the force-aware evaluator-thunk install-readiness report for `root`. It is a
-/// harness-facing gate only: local environment-slot roots can now finalize and
-/// install opaque tier-1 pointer metadata when their helper candidates are
-/// present, but still report the same runtime-symbol and evaluator publication
-/// blockers as literal roots. Cold roots preserve the no-code gap.
+/// harness-facing gate only: local environment-slot roots and direct local-slot
+/// apply roots can now finalize and install opaque tier-1 pointer metadata when
+/// their helper candidates are present, but still report the same runtime-symbol
+/// and evaluator publication blockers as literal roots. Cold roots preserve the
+/// no-code gap.
 ///
 /// # Errors
 ///
@@ -488,6 +489,8 @@ mod tests {
     };
 
     use super::*;
+
+    mod apply;
 
     fn local_var_arena(slot: u32) -> IrArena {
         IrArena::from_raw_parts(

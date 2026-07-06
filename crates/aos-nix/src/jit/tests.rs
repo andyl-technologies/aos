@@ -7,6 +7,8 @@ use ratchet_jit::{
 
 use super::*;
 
+mod apply;
+
 #[test]
 fn jit_runtime_symbol_address_candidates_feed_registered_env_promotion() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()

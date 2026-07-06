@@ -2,8 +2,9 @@ use crate::jit::nix_jit_runtime_symbol_address_candidate_preflight;
 
 use ratchet_core::{EffectClass, IrArena, IrData, IrId, IrKind, IrNode, syntax::Span};
 use ratchet_jit::{
-    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCompiledCodePointer, JitTieredCodeSlot, TierUpCounter,
-    TierUpDemandHint, TierUpPolicy,
+    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCompiledCodePointer,
+    JitCraneliftRegisteredTier1SlotPreflight, JitTieredCodeSlot, TierUpCounter, TierUpDemandHint,
+    TierUpPolicy,
 };
 use ratchet_oracle::{
     eval::{EvalEnv, EvalModuleId, EvalNodeRef, EvalThunk, ForceClaim, ThunkState},
@@ -21,6 +22,39 @@ fn local_var_arena(slot: u32) -> IrArena {
             EffectClass::pure(),
             IrData::Local { slot },
         )],
+        Vec::new(),
+    )
+}
+
+fn apply_arena(function_slot: u32, argument_slot: u32) -> IrArena {
+    IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local {
+                    slot: function_slot,
+                },
+            ),
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::Local {
+                    slot: argument_slot,
+                },
+            ),
+            IrNode::new(
+                IrKind::Apply,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Pair {
+                    first: IrId::new(0),
+                    second: IrId::new(1),
+                },
+            ),
+        ],
         Vec::new(),
     )
 }
@@ -51,6 +85,17 @@ fn bool_arena(value: bool) -> IrArena {
 
 fn hot_slot() -> JitTieredCodeSlot {
     JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1))
+}
+
+fn artifact_runtime_import_names(
+    preflight: &JitCraneliftRegisteredTier1SlotPreflight,
+) -> Vec<&str> {
+    preflight
+        .finalization()
+        .artifact_runtime_imports()
+        .iter()
+        .map(|artifact_import| artifact_import.symbol_name())
+        .collect()
 }
 
 #[test]
@@ -87,6 +132,76 @@ fn thunk_install_readiness_reports_cold_plan_without_publication_gaps() {
 }
 
 #[test]
+fn force_aware_thunk_install_readiness_reports_future_publish_gaps_for_apply_root() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let arena = apply_arena(4, 6);
+    let thunk = EvalThunk::new(IrId::new(2));
+
+    let readiness = nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root(
+        hot_slot(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(2),
+        &thunk,
+    )
+    .expect("force-aware apply readiness report builds");
+
+    assert!(readiness.install_plan().is_ready_for_install());
+    assert!(readiness.safe_preconditions_met());
+    assert!(!readiness.is_ready_for_evaluator_publish());
+    assert_eq!(
+        readiness
+            .install_plan()
+            .slot()
+            .invocation_counter()
+            .invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(
+        readiness.gaps(),
+        &[
+            NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+            NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+            NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        ]
+    );
+    let promoted = readiness
+        .install_plan()
+        .promoted_preflight()
+        .expect("readiness owns promoted preflight");
+    assert_eq!(
+        readiness.install_plan().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_apply"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_env_get")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_env_get")
+                    .expect("env candidate exists")
+                    .address())
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_apply")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_apply")
+                    .expect("apply candidate exists")
+                    .address())
+    );
+}
+
+#[test]
 fn thunk_install_readiness_reports_future_publish_gaps_for_ready_suspended_thunk() {
     let arena = local_var_arena(3);
     let thunk = EvalThunk::new(IrId::new(0));
@@ -111,6 +226,64 @@ fn thunk_install_readiness_reports_future_publish_gaps_for_ready_suspended_thunk
             NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
             NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
         ]
+    );
+}
+
+#[test]
+fn thunk_install_readiness_reports_future_publish_gaps_for_apply_root() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let arena = apply_arena(4, 6);
+    let thunk = EvalThunk::new(IrId::new(2));
+
+    let readiness = nix_jit_registered_tier1_thunk_install_readiness_for_ir_root(
+        hot_slot(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &arena,
+        IrId::new(2),
+        &thunk,
+    )
+    .expect("promoted apply readiness report builds");
+
+    assert!(readiness.install_plan().is_ready_for_install());
+    assert!(readiness.safe_preconditions_met());
+    assert!(!readiness.is_ready_for_evaluator_publish());
+    assert_eq!(
+        readiness.gaps(),
+        &[
+            NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+            NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+            NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        ]
+    );
+    let promoted = readiness
+        .install_plan()
+        .promoted_preflight()
+        .expect("readiness owns promoted preflight");
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_apply"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_env_get")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_env_get")
+                    .expect("env candidate exists")
+                    .address())
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_apply")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_apply")
+                    .expect("apply candidate exists")
+                    .address())
     );
 }
 

@@ -281,9 +281,11 @@ pub fn nix_jit_registered_tier1_thunk_install_readiness_for_ir_root(
 /// [`super::nix_jit_force_aware_registered_tier1_install_plan_for_ir_root`]. It
 /// validates the same read-only target-thunk conditions as the existing
 /// registered readiness bridge, while sourcing the install plan from the
-/// force-aware promotion path. It never mutates evaluator heap state, performs
-/// an atomic thunk-state compare-and-swap, casts or calls a code pointer,
-/// dereferences registered helper addresses, or calls native code.
+/// force-aware promotion path. Literal, forced local-slot, and direct
+/// local-slot apply roots can satisfy the implemented safe prerequisites before
+/// the report exposes future evaluator-publish gaps. It never mutates evaluator
+/// heap state, performs an atomic thunk-state compare-and-swap, casts or calls a
+/// code pointer, dereferences registered helper addresses, or calls native code.
 ///
 /// # Errors
 ///

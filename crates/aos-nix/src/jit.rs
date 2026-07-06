@@ -275,9 +275,12 @@ pub type NixJitRegisteredTier1NativeCallPreflightResult =
 /// This is the `aos-nix` integration handoff between the safe oracle runtime
 /// metadata and the JIT crate. It derives process-local helper address
 /// candidates, then delegates to the registered-symbol tier-1 promotion
-/// preflight. The returned preflight owns only safe tier metadata and Cranelift
-/// module ownership; it does not publish into evaluator thunk state, cast or
-/// call compiled code pointers, or call registered runtime helper addresses.
+/// preflight. Current bounded roots can include local environment slots and
+/// direct local-slot applications, so promotion may register `aos_env_get` alone
+/// or `aos_env_get` plus `aos_apply`. The returned preflight owns only safe tier
+/// metadata and Cranelift module ownership; it does not publish into evaluator
+/// thunk state, cast or call compiled code pointers, or call registered runtime
+/// helper addresses.
 /// Candidate projection runs only after the policy decision requests tier 1, so
 /// a cold attempt can record its invocation and stay in tier 0 without requiring
 /// helper-address metadata.
@@ -317,10 +320,11 @@ pub fn nix_jit_registered_tier1_promotion_preflight_for_ir_root(
 /// This is the `aos-nix` bridge for the JIT crate's force-aware promotion
 /// preflight. It keeps the existing literal promotion behavior, but local
 /// environment-slot roots lower through a forced env-slot artifact that imports
-/// `aos_env_get` and `aos_force`. The current runtime address candidates include
-/// both imported helpers, so hot local-slot roots can finalize and install
-/// opaque tier-1 pointer metadata while native calls remain gated by the strict
-/// aggregate readiness plan.
+/// `aos_env_get` and `aos_force`, while direct local-slot apply roots preserve
+/// the `aos_apply` helper boundary and import `aos_env_get` plus `aos_apply`.
+/// The current runtime address candidates include those imported helpers, so
+/// hot bounded roots can finalize and install opaque tier-1 pointer metadata
+/// while native calls remain gated by the strict aggregate readiness plan.
 ///
 /// Candidate projection runs only after the policy decision requests tier 1, so
 /// a cold attempt can record its invocation and stay in tier 0 without requiring
@@ -361,9 +365,11 @@ pub fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
 /// This composes the `aos-nix` registered promotion bridge with a handoff object
 /// that can later feed evaluator thunk-state integration. A cold result records
 /// the invocation and carries the updated slot. A promoted result additionally
-/// owns the registered Cranelift tier-1 preflight and its encapsulated module.
-/// The plan still does not mutate evaluator heap state, cast or call the code
-/// pointer, dereference registered helper addresses, or call native code.
+/// owns the registered Cranelift tier-1 preflight and its encapsulated module;
+/// bounded local-slot apply roots retain registered `aos_env_get` and
+/// `aos_apply` metadata in that owned preflight. The plan still does not mutate
+/// evaluator heap state, cast or call the code pointer, dereference registered
+/// helper addresses, or call native code.
 ///
 /// # Errors
 ///
@@ -393,8 +399,10 @@ pub fn nix_jit_registered_tier1_install_plan_for_ir_root(
 /// roots can produce a ready plan. Local environment-slot roots lower through
 /// the forced env-slot artifact and can produce the same safe pointer/module
 /// owner plan with registered `aos_env_get` and `aos_force` helper metadata.
-/// The plan still does not mutate evaluator heap state, cast or call the code
-/// pointer, dereference registered helper addresses, or call native code.
+/// Direct local-slot apply roots can produce the same safe plan with registered
+/// `aos_env_get` and `aos_apply` helper metadata. The plan still does not mutate
+/// evaluator heap state, cast or call the code pointer, dereference registered
+/// helper addresses, or call native code.
 ///
 /// # Errors
 ///
