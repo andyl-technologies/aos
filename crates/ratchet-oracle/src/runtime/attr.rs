@@ -137,7 +137,17 @@ pub fn rust_callable_aos_select_ic(
     eval.select_attr_value(id, span, attrs, symbol, site)
 }
 
-fn rust_callable_aos_update(
+/// Runs the Rust-callable `aos_update` helper through the tree-walk evaluator.
+///
+/// The helper performs the shallow right-biased attrset merge used by Nix
+/// `//` after callers have forced both operands to WHNF, then returns the
+/// merged attrset [`Value`].
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] when either operand is not an attrset value or
+/// when the tree-walk evaluator cannot merge or allocate the resulting attrset.
+pub fn rust_callable_aos_update(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,

@@ -18,8 +18,8 @@
 //! ratchet_runtime_ffi::apply
 //!   aos_apply trap-only wrapper for the frozen `(rt, Value, Value)` call ABI
 //! ratchet_runtime_ffi::attr
-//!   aos_has_attr and aos_select_ic success-path wrappers for frozen keyed
-//!   attrset-access ABIs; aos_update remains trap-only
+//!   aos_has_attr, aos_select_ic, and aos_update success-path wrappers for
+//!   frozen attrset-access ABIs
 //! ratchet_runtime_ffi::barrier
 //!   aos_gc_write_barrier trap-only wrapper for the frozen
 //!   `(rt, thunk, Value)` write-barrier ABI

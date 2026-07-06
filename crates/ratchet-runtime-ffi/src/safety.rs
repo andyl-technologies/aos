@@ -261,6 +261,7 @@ mod tests {
         concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_select_ic(");
     const ATTR_HAS_ATTR_DECODER_CALL_LINE: &str = concat!("let probed = ", "uns", "afe {");
     const ATTR_SELECT_IC_DECODER_CALL_LINE: &str = concat!("let selected = ", "uns", "afe {");
+    const ATTR_UPDATE_DECODER_CALL_LINE: &str = concat!("let updated = ", "uns", "afe {");
     const ATTR_CONTEXT_DECODER_LINE: &str =
         concat!("uns", "afe fn with_native_attr_access_context<R>(");
     const ATTR_CONTEXT_CAST_LINE: &str = concat!(
@@ -275,7 +276,7 @@ mod tests {
         "uns",
         "afe ",
         "ext",
-        "ern \"C\" fn aos_update(_rt: *mut c_void, _left: Value, _right: Value) -> Value {"
+        "ern \"C\" fn aos_update(rt: *mut c_void, left: Value, right: Value) -> Value {"
     );
     const ATTR_HAS_ATTR_PRESENT_TEST_CALL_LINE: &str = concat!(
         "let present = ",
@@ -302,6 +303,11 @@ mod tests {
         "uns",
         "afe { aos_select_ic(rt, attrs, key.as_u32(), 7) };"
     );
+    const ATTR_UPDATE_SUCCESS_TEST_CALL_LINE: &str = concat!(
+        "let result = ",
+        "uns",
+        "afe { aos_update(rt, left, right) };"
+    );
     const ATTR_HAS_ATTR_ERROR_TEST_CALL_LINE: &str = concat!(
         "let _ = ",
         "uns",
@@ -311,6 +317,11 @@ mod tests {
         "let _ = ",
         "uns",
         "afe { aos_select_ic(rt, attrs, missing_key.as_u32(), 7) };"
+    );
+    const ATTR_UPDATE_ERROR_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_update(rt, Value::int(42), attrs) };"
     );
     const ATTR_HAS_ATTR_ABORT_TEST_CALL_LINE: &str = concat!(
         "let _ = ",
@@ -712,6 +723,7 @@ mod tests {
                 || trimmed == ATTR_SELECT_IC_FN_LINE
                 || trimmed == ATTR_HAS_ATTR_DECODER_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_DECODER_CALL_LINE
+                || trimmed == ATTR_UPDATE_DECODER_CALL_LINE
                 || trimmed == ATTR_CONTEXT_DECODER_LINE
                 || trimmed == ATTR_CONTEXT_CAST_LINE
                 || trimmed == ATTR_CONTEXT_EVAL_LINE
@@ -721,8 +733,10 @@ mod tests {
                 || trimmed == ATTR_HAS_ATTR_MISSING_TEST_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_SELECTED_TEST_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_REPEATED_TEST_CALL_LINE
+                || trimmed == ATTR_UPDATE_SUCCESS_TEST_CALL_LINE
                 || trimmed == ATTR_HAS_ATTR_ERROR_TEST_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_ERROR_TEST_CALL_LINE
+                || trimmed == ATTR_UPDATE_ERROR_TEST_CALL_LINE
                 || trimmed == ATTR_HAS_ATTR_ABORT_TEST_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_ABORT_TEST_CALL_LINE
                 || trimmed == ATTR_UPDATE_ABORT_TEST_CALL_LINE
@@ -1222,6 +1236,11 @@ mod unchecked_cfg;
             "aos_select_ic wrapper call to the decoder must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_UPDATE_DECODER_CALL_LINE),
+            1,
+            "aos_update wrapper call to the decoder must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&attr, ATTR_CONTEXT_DECODER_LINE),
             1,
             "raw attrset-access context decoder must stay singly reviewed"
@@ -1267,6 +1286,11 @@ mod unchecked_cfg;
             "direct select-IC repeated test call must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_UPDATE_SUCCESS_TEST_CALL_LINE),
+            1,
+            "direct attrset-update success test call must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&attr, ATTR_HAS_ATTR_ERROR_TEST_CALL_LINE),
             1,
             "has-attr tree-walk error abort test call must stay singly reviewed"
@@ -1275,6 +1299,11 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&attr, ATTR_SELECT_IC_ERROR_TEST_CALL_LINE),
             1,
             "select-IC tree-walk error abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_UPDATE_ERROR_TEST_CALL_LINE),
+            1,
+            "attrset-update tree-walk error abort test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&attr, ATTR_HAS_ATTR_ABORT_TEST_CALL_LINE),
@@ -1515,6 +1544,11 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &attr_lines,
+            ATTR_UPDATE_DECODER_CALL_LINE,
+            "attrset-update decoder call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &attr_lines,
             ATTR_CONTEXT_DECODER_LINE,
             "raw attrset-access context decoder must keep a SAFETY comment",
         );
@@ -1555,6 +1589,11 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &attr_lines,
+            ATTR_UPDATE_SUCCESS_TEST_CALL_LINE,
+            "direct attrset-update success test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &attr_lines,
             ATTR_HAS_ATTR_ERROR_TEST_CALL_LINE,
             "has-attr tree-walk error abort test call must keep a SAFETY comment",
         );
@@ -1562,6 +1601,11 @@ mod unchecked_cfg;
             &attr_lines,
             ATTR_SELECT_IC_ERROR_TEST_CALL_LINE,
             "select-IC tree-walk error abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &attr_lines,
+            ATTR_UPDATE_ERROR_TEST_CALL_LINE,
+            "attrset-update tree-walk error abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &attr_lines,

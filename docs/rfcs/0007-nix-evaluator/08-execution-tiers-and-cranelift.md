@@ -1649,12 +1649,12 @@ harness, never cut for scope.
       failure result: helpers return only on success, while allocation,
       call-control, attrset-access, environment-access, forcing, or barrier failures
       must transfer to evaluator trap/error machinery. Tests pin the convention for
-      each `aos_alloc_*`, `aos_apply`, `aos_has_attr`/`aos_select_ic`,
-      `aos_env_get`, `aos_blackhole_check`/`aos_force`/`aos_force_deep`, and
-      `aos_gc_write_barrier` symbol. This remains metadata
+      each `aos_alloc_*`, `aos_apply`, `aos_has_attr`/`aos_select_ic`/
+      `aos_update`, `aos_env_get`, `aos_blackhole_check`/`aos_force`/
+      `aos_force_deep`, and `aos_gc_write_barrier` symbol. This remains metadata
       only; exported wrappers, actual trap transfer, `JITBuilder::symbol` registration, and
       native startup binding remain open.
-- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep` success-path wrappers plus `aos_alloc_*`/`aos_apply`/`aos_gc_write_barrier`/attrset-access trap wrappers:
+- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep`/attrset success-path wrappers plus `aos_alloc_*`/`aos_apply`/`aos_gc_write_barrier` trap wrappers:
       `ratchet-runtime-ffi` is the dedicated unsafe runtime ABI boundary so the
       safe `ratchet-oracle` crate can keep `unsafe_code` denied. Its
       `env::aos_env_get` wrapper defines an unmangled frozen `(env, slot) -> Value`
@@ -1695,19 +1695,22 @@ harness, never cut for scope.
       discriminants are undefined before the wrappers can inspect them.
       Its `attr::aos_has_attr` and `attr::aos_select_ic` wrappers define
       unmangled frozen `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`
-      symbols, while `attr::aos_update` defines an unmangled frozen
-      `(rt, Value left, Value right) -> Value` symbol. All three abort for every
-      call until runtime-context decoding, active attrset-root binding,
-      symbol-table and inline-cache site binding, inline-cache dispatch or
-      update merge, trap transfer, and native value-return materialization
-      exist. Returning today would be unsound because the wrappers cannot
-      preserve checked select/presence errors, inline-cache state, shallow
-      right-biased update semantics, or evaluator trap behavior without runtime
-      context.
+      symbols. They decode `rt` as a scoped `RuntimeAttrAccessContext`, bind the
+      frozen symbol and inline-cache site ids, enter the safe tree-walk
+      select-cache Rust-callable bridge, and return materialized `Value`
+      results for supported presence/select success paths; null contexts and
+      tree-walk errors still abort until evaluator trap transfer exists.
+      `attr::aos_update` defines an unmangled frozen
+      `(rt, Value left, Value right) -> Value` symbol. It decodes the same
+      scoped `RuntimeAttrAccessContext`, enters the safe tree-walk shallow
+      right-biased update bridge, and returns the merged attrset `Value` for
+      supported success paths; null contexts and tree-walk errors still abort
+      until evaluator trap transfer exists.
       Metadata exposes each wrapper's typed
       function pointer, process-local address, frozen ABI signature, and
-      remaining export blockers. Tests call the env/forcing wrappers and
-      metadata function pointers on their supported success paths, cover
+      remaining wrapper-local export blockers. Tests call the env/forcing
+      wrappers, attrset wrappers, and metadata function pointers on their
+      supported success paths, cover
       subprocess abort paths including the trap-only allocation, apply, and
       barrier wrappers,
       and the `aos-nix` address-candidate bridge now uses these wrapper
@@ -1727,9 +1730,8 @@ harness, never cut for scope.
       heap-pointer returns can be reached from native runtime context; and
       `aos_gc_write_barrier` remains a trap-only body until safe barrier
       dispatch can be reached from native runtime context; `aos_has_attr`,
-      `aos_select_ic`, and `aos_update` remain trap-only bodies until safe
-      attrset select/presence/update dispatch can be reached from native runtime
-      context. The strict
+      `aos_select_ic`, and `aos_update` abort on invalid scoped contexts or
+      tree-walk errors until native trap transfer exists. The strict
       native-export plan still rejects through the aggregate readiness gates, and
       `JITBuilder::symbol` registration/native calls remain gated.
 - [ ] `import` at the ABI seam (`nix.builtin.import`) consulting the content-addressed parse + result cache ([§7.3](#73-import-and-parse-caching-at-the-abi-seam), [12](12-incremental-evaluation-cache.md)) — P2, `S-12`.

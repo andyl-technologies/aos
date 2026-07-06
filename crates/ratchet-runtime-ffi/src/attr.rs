@@ -3,11 +3,10 @@
 //! Native tier-1 code imports attrset helpers with frozen keyed
 //! `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value` and update
 //! `(rt, Value left, Value right) -> Value` signatures. This module supplies
-//! success-path keyed wrappers for `aos_has_attr` and `aos_select_ic` by
-//! decoding `rt` as a scoped [`RuntimeAttrAccessContext`] and dispatching
+//! success-path wrappers for `aos_has_attr`, `aos_select_ic`, and `aos_update`
+//! by decoding `rt` as a scoped [`RuntimeAttrAccessContext`] and dispatching
 //! through the safe tree-walk oracle helpers. Failures still abort until native
-//! trap transfer exists. `aos_update` remains trap-only until the runtime can
-//! expose update merge semantics through this ABI.
+//! trap transfer exists.
 
 use std::{
     ffi::c_void,
@@ -23,7 +22,7 @@ use ratchet_oracle::{
     runtime::attr::{
         RuntimeAttrAccessAbiSignature, RuntimeAttrAccessEntryPoint,
         RuntimeAttrAccessNativeExportBlocker, rust_callable_aos_has_attr,
-        rust_callable_aos_select_ic,
+        rust_callable_aos_select_ic, rust_callable_aos_update,
     },
     syntax::{Span, Symbol},
     value::Value,
@@ -50,30 +49,22 @@ pub type RuntimeAttrAccessKeyedNativeFn =
 /// Native C ABI function pointer shape for `aos_update`.
 ///
 /// The function returns a by-value [`Value`] and transfers no error state. It
-/// aborts instead of unwinding until the evaluator runtime context can expose
-/// active attrset roots, native shallow-merge dispatch, trap transfer, and
-/// native value-return materialization to this ABI boundary.
+/// aborts instead of unwinding if the success-path safety contract is violated;
+/// final evaluator trap/error transfer remains future work.
 ///
 /// # Safety
 ///
 /// Calls through this pointer must satisfy the same host-ABI obligations
 /// documented on [`aos_update`]. `left` and `right` must be Rust-valid
-/// [`Value`] instances with valid tag discriminants. The current trap-only
-/// wrapper aborts before decoding `_rt` or inspecting either operand; future
-/// update dispatch will require all three arguments to be valid for the active
-/// evaluator runtime.
+/// [`Value`] instances with valid tag discriminants and heap payloads reachable
+/// from the evaluator encoded by the runtime pointer.
 pub type RuntimeAttrUpdateNativeFn = unsafe extern "C" fn(*mut c_void, Value, Value) -> Value;
 
 const ATTR_ACCESS_KEYED_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] =
     &[RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented];
 
-const ATTR_UPDATE_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[
-    RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
-];
+const ATTR_UPDATE_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] =
+    &[RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented];
 
 /// Reads the frozen keyed attr-presence native ABI body.
 ///
@@ -194,26 +185,48 @@ fn aos_select_ic_success_path(
     }
 }
 
-/// Aborts through the frozen attrset-update native ABI body.
+/// Updates through the frozen attrset-update native ABI body.
 ///
-/// This wrapper is the trap-only C ABI body for `aos_update`. It accepts the
-/// frozen runtime-context pointer plus by-value left and right operands, then
-/// aborts until native wrappers can safely enter the evaluator's shallow
-/// right-biased merge machinery and return a materialized [`Value`]. Returning
-/// today would be unsound because the wrapper cannot preserve attrset update
-/// semantics, operand error behavior, or evaluator trap behavior without runtime
-/// context.
+/// This wrapper is the success-path C ABI body for `aos_update`. It decodes
+/// `rt` as a [`RuntimeAttrAccessContext`], shallowly merges `left` and `right`
+/// through the safe tree-walk update helper, and returns the merged attrset
+/// [`Value`]. It deliberately does not implement evaluator trap/error transfer:
+/// the process aborts if the pointer is null or the safe helper reports an
+/// error.
 ///
 /// # Safety
 ///
-/// `left` and `right` must be Rust-valid [`Value`] instances with valid tag
-/// discriminants before crossing this ABI boundary. The current wrapper aborts
-/// before decoding `_rt` or inspecting either operand. The caller must also
-/// ensure the host ABI used to call this function matches the frozen
-/// `aos_update` runtime signature.
+/// `rt` must be a non-null pointer produced from a pinned live
+/// [`RuntimeAttrAccessContext`] whose wrapped evaluator and IR allocation
+/// outlive the call. The context must not move while the pointer is used. The
+/// caller must uphold exclusive mutable access to the wrapped evaluator for the
+/// duration of the call. `left` and `right` must be Rust-valid attrset
+/// [`Value`] instances with valid tag discriminants and heap payloads reachable
+/// from that evaluator. The caller must also ensure the host ABI used to call
+/// this function matches the frozen `aos_update` runtime signature.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn aos_update(_rt: *mut c_void, _left: Value, _right: Value) -> Value {
-    process::abort()
+pub unsafe extern "C" fn aos_update(rt: *mut c_void, left: Value, right: Value) -> Value {
+    // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
+    // RuntimeAttrAccessContext pointer contract documented on this function.
+    let updated = unsafe {
+        with_native_attr_access_context(rt, |eval, id, span| {
+            aos_update_success_path(eval, id, span, left, right)
+        })
+    };
+    updated
+}
+
+fn aos_update_success_path(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    left: Value,
+    right: Value,
+) -> Value {
+    match rust_callable_aos_update(eval, id, span, left, right) {
+        Ok(value) => value,
+        Err(_) => process::abort(),
+    }
 }
 
 /// Returns metadata for exported attrset-access wrappers in symbol order.
@@ -344,7 +357,7 @@ impl RuntimeAttrAccessNativeWrapperBinding {
     }
 }
 
-/// Scoped tree-walk evaluator context decoded by keyed attrset-access wrappers.
+/// Scoped tree-walk evaluator context decoded by attrset-access wrappers.
 ///
 /// Native attrset wrappers receive an opaque runtime pointer in their frozen C
 /// ABI. This context is the current explicit Rust-side representation for that
@@ -359,7 +372,7 @@ pub struct RuntimeAttrAccessContext<'eval> {
 }
 
 impl<'eval> RuntimeAttrAccessContext<'eval> {
-    /// Creates a scoped attrset-access context for native keyed wrapper calls.
+    /// Creates a scoped attrset-access context for native wrapper calls.
     pub fn new(eval: &'eval mut TreeWalk, id: IrId, span: Span) -> Self {
         Self {
             eval: NonNull::from(eval),
@@ -370,7 +383,7 @@ impl<'eval> RuntimeAttrAccessContext<'eval> {
         }
     }
 
-    /// Returns an opaque runtime pointer suitable for keyed attr wrapper calls.
+    /// Returns an opaque runtime pointer suitable for attr wrapper calls.
     ///
     /// The returned pointer is only valid while this pinned context value and
     /// its borrowed evaluator remain live. Callers must not move or drop the
@@ -407,7 +420,10 @@ mod tests {
         process::{Command, ExitStatus},
     };
 
-    use ratchet_oracle::{compile::resolve, syntax::parse_str};
+    use ratchet_oracle::{
+        compile::resolve, runtime::forcing::rust_callable_aos_force, syntax::parse_str,
+        value::ValueTag,
+    };
 
     use super::*;
 
@@ -417,7 +433,10 @@ mod tests {
         "attr::tests::aos_has_attr_native_wrapper_aborts_on_tree_walk_error_child";
     const SELECT_IC_ERROR_ABORT_CHILD: &str =
         "attr::tests::aos_select_ic_native_wrapper_aborts_on_tree_walk_error_child";
-    const UPDATE_ABORT_CHILD: &str = "attr::tests::aos_update_native_wrapper_aborts_child";
+    const UPDATE_ABORT_CHILD: &str =
+        "attr::tests::aos_update_native_wrapper_aborts_on_invalid_context_child";
+    const UPDATE_ERROR_ABORT_CHILD: &str =
+        "attr::tests::aos_update_native_wrapper_aborts_on_tree_walk_error_child";
 
     #[test]
     fn attr_access_native_wrapper_bindings_preserve_symbol_abi_and_address() {
@@ -498,14 +517,7 @@ mod tests {
         assert!(update.address().is_non_null());
         assert_eq!(
             update.remaining_export_blockers(),
-            [
-                RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::NativeAttrUpdateMergeUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
-            ]
-            .as_slice()
+            [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice()
         );
         assert!(!update.is_export_ready());
     }
@@ -514,32 +526,18 @@ mod tests {
     fn attr_access_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
         for binding in runtime_attr_access_native_wrapper_bindings() {
             let oracle_blockers = binding.entrypoint().native_export_blockers();
-            match binding.entrypoint() {
-                RuntimeAttrAccessEntryPoint::AosHasAttr
-                | RuntimeAttrAccessEntryPoint::AosSelectIc => {
-                    assert_eq!(
-                        binding.remaining_export_blockers(),
-                        [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented]
-                            .as_slice(),
-                        "{} runtime-FFI keyed wrapper has one remaining blocker",
-                        binding.symbol_name()
-                    );
-                    for blocker in binding.remaining_export_blockers() {
-                        assert!(
-                            oracle_blockers.contains(blocker),
-                            "{} runtime-FFI blocker {blocker:?} must remain tracked by oracle",
-                            binding.symbol_name()
-                        );
-                    }
-                }
-                RuntimeAttrAccessEntryPoint::AosUpdate => {
-                    assert_eq!(
-                        binding.remaining_export_blockers(),
-                        &oracle_blockers[1..],
-                        "{} runtime-FFI blockers extend oracle gate after final admission",
-                        binding.symbol_name()
-                    );
-                }
+            assert_eq!(
+                binding.remaining_export_blockers(),
+                [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice(),
+                "{} runtime-FFI wrapper has one remaining blocker",
+                binding.symbol_name()
+            );
+            for blocker in binding.remaining_export_blockers() {
+                assert!(
+                    oracle_blockers.contains(blocker),
+                    "{} runtime-FFI blocker {blocker:?} must remain tracked by oracle",
+                    binding.symbol_name()
+                );
             }
         }
     }
@@ -609,6 +607,52 @@ mod tests {
     }
 
     #[test]
+    fn aos_update_native_wrapper_updates_attrsets_shallowly() {
+        let source = "{ left = { a = 1 / 0; b = 1; }; right = { b = 2; c = 3; }; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut symbols = ir.symbols.clone();
+        let a = symbols.intern(b"a").expect("a symbol exists");
+        let b = symbols.intern(b"b").expect("b symbol exists");
+        let c = symbols.intern(b"c").expect("c symbol exists");
+        let left_key = symbols.intern(b"left").expect("left symbol exists");
+        let right_key = symbols.intern(b"right").expect("right symbol exists");
+        let mut eval = TreeWalk::new(&ir);
+        let root = eval.eval_root().expect("root attrset evaluates");
+        let (left, right) = {
+            let attrs = eval
+                .heap()
+                .get_attrs(root)
+                .expect("root is heap-owned attrs");
+            (
+                attrs.get(left_key).expect("left exists"),
+                attrs.get(right_key).expect("right exists"),
+            )
+        };
+        let left =
+            rust_callable_aos_force(&mut eval, ir.root, span, left).expect("left attrset forces");
+        let right =
+            rust_callable_aos_force(&mut eval, ir.root, span, right).expect("right attrset forces");
+        let mut context = std::pin::pin!(RuntimeAttrAccessContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and both attrset operands belong
+        // to that evaluator.
+        let result = unsafe { aos_update(rt, left, right) };
+
+        drop(context);
+        let attrs = eval
+            .heap()
+            .get_attrs(result)
+            .expect("update result is heap-owned");
+
+        assert_eq!(attrs.get(b).expect("b exists").as_int(), Ok(2));
+        assert_eq!(attrs.get(c).expect("c exists").as_int(), Ok(3));
+        assert_eq!(attrs.get(a).expect("a remains lazy").tag(), ValueTag::Thunk);
+    }
+
+    #[test]
     fn aos_has_attr_native_wrapper_aborts_on_invalid_context() {
         assert_child_process_aborts(HAS_ATTR_ABORT_CHILD);
     }
@@ -629,8 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn aos_update_native_wrapper_aborts() {
+    fn aos_update_native_wrapper_aborts_on_invalid_context() {
         assert_child_process_aborts(UPDATE_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_update_native_wrapper_aborts_on_tree_walk_error() {
+        assert_child_process_aborts(UPDATE_ERROR_ABORT_CHILD);
     }
 
     #[test]
@@ -700,15 +749,35 @@ mod tests {
 
     #[test]
     #[ignore = "subprocess target for abort behavior"]
-    fn aos_update_native_wrapper_aborts_child() {
+    fn aos_update_native_wrapper_aborts_on_invalid_context_child() {
+        let source = "{ a = 42; }";
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
         let rt = std::ptr::null_mut();
-        let left = Value::null();
-        let right = Value::int(1);
+        let left = eval.eval_root().expect("attrset evaluates");
+        let right = left;
 
-        // SAFETY: `left` and `right` have valid tag discriminants. The current
-        // wrapper is trap-only and aborts before decoding `rt` or inspecting
-        // either operand.
+        // SAFETY: `left` and `right` are attrset values owned by `eval`. The
+        // test deliberately violates only the runtime-context pointer contract
+        // to verify abort behavior before any attrset update can run.
         let _ = unsafe { aos_update(rt, left, right) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_update_native_wrapper_aborts_on_tree_walk_error_child() {
+        let source = "{ a = 42; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let attrs = eval.eval_root().expect("attrset evaluates");
+        let mut context = std::pin::pin!(RuntimeAttrAccessContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: The pinned context and its evaluator are live for the call,
+        // and `attrs` belongs to that evaluator. The non-attrs left operand
+        // deliberately forces a tree-walk error to verify FFI abort behavior.
+        let _ = unsafe { aos_update(rt, Value::int(42), attrs) };
     }
 
     fn assert_child_process_aborts(test_name: &str) {

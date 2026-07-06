@@ -90,7 +90,18 @@ fn rust_callable_aos_blackhole_check(
     Ok(())
 }
 
-fn rust_callable_aos_force(
+/// Runs the Rust-callable `aos_force` helper through the tree-walk evaluator.
+///
+/// The helper forces `value` to weak head normal form with the same thunk
+/// protocol used by ordinary tree-walk evaluation, then returns the forced
+/// [`Value`].
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] when forcing enters a blackhole, the thunk payload
+/// is malformed, the forced expression fails, or the evaluator cannot preserve
+/// required force roots during allocation.
+pub fn rust_callable_aos_force(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,

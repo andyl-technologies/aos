@@ -1145,19 +1145,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       `runtime::attr::runtime_attr_access_native_export_preflight()` records the
       exact blockers that keep `aos_has_attr`, `aos_select_ic`, and `aos_update`
       from being final exported native ABI symbols: missing final exported
-      wrapper admission, runtime-context decoding, active attrset-root binding,
+      wrapper admission, final runtime-context decoding, active attrset-root binding,
       symbol-table and inline-cache site binding plus inline-cache dispatch for
-      keyed helpers, native shallow-update merge for `aos_update`, evaluator
+      keyed helpers, final native shallow-update merge for `aos_update`, evaluator
       trap transfer, and native value-return materialization. The runtime-FFI
-      crate has process-local trap-only attrset-access wrapper addresses for JIT
-      provenance, but those wrappers are not accepted as final native exports by
-      this oracle gate. The aggregate
+      crate has process-local `aos_has_attr`, `aos_select_ic`, and `aos_update`
+      success-path wrapper addresses for JIT provenance, but those wrappers are
+      not accepted as final native exports by this oracle gate. The aggregate
       `runtime::helpers::runtime_symbol_native_export_preflight()` preserves
       attrset-access-specific blockers for the three frozen symbols in full
       runtime-symbol order. This remains safe readiness metadata only: no final
       native-export registration is admitted, no safe Rust callable is treated
       as the final ABI target, no `JITBuilder::symbol` registration occurs, and
-      no native trap transfer, inline-cache dispatch, or update merge is
+      no final native trap transfer, exported PIC dispatch, or standalone native update merge is
       implemented.
 - [x] Current write-barrier native-export readiness gate:
       `runtime::barrier::runtime_write_barrier_native_export_preflight()` records

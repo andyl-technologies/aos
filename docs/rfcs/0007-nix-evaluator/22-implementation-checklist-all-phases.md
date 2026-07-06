@@ -5895,26 +5895,26 @@ and helps the oracle directly.
       `runtime::attr::runtime_attr_access_native_export_preflight()` records the
       exact blockers that keep `aos_has_attr`, `aos_select_ic`, and `aos_update`
       from being final exported native ABI symbols: missing final exported
-      wrapper admission, runtime-context decoding, active attrset-root binding,
+      wrapper admission, final runtime-context decoding, active attrset-root binding,
       symbol-table and inline-cache site binding plus inline-cache dispatch for
-      keyed helpers, native shallow-update merge for `aos_update`, evaluator
+      keyed helpers, final native shallow-update merge for `aos_update`, evaluator
       trap transfer, and native value-return materialization. The runtime-FFI
-      crate has process-local keyed `aos_has_attr`/`aos_select_ic` success-path
-      wrapper addresses for JIT provenance: they decode a scoped
-      `RuntimeAttrAccessContext`, bind the frozen `SymbolId` and
-      `InlineCacheSiteId` words, dispatch through the safe tree-walk
-      select-cache bridge, and return a materialized `Value` on success while
-      aborting until trap transfer exists. `aos_update` remains a trap-only
-      wrapper. These wrappers are not accepted as final native exports by this
-      oracle gate. The aggregate
+      crate has process-local `aos_has_attr`, `aos_select_ic`, and `aos_update`
+      success-path wrapper addresses for JIT provenance: they decode a scoped
+      `RuntimeAttrAccessContext`; keyed helpers bind the frozen `SymbolId` and
+      `InlineCacheSiteId` words and dispatch through the safe tree-walk
+      select-cache bridge; `aos_update` dispatches through the safe tree-walk
+      shallow right-biased merge helper. The wrappers return materialized
+      `Value`s on success while aborting until trap transfer exists. These
+      wrappers are not accepted as final native exports by this oracle gate. The aggregate
       `runtime::helpers::runtime_symbol_native_export_preflight()` preserves
       attrset-access-specific blockers for the three frozen symbols in full
       runtime-symbol order. This remains safe readiness metadata only: no final
       native-export registration is admitted, no safe Rust callable is treated
       as the final ABI target, no `JITBuilder::symbol` registration occurs, and
-      no final native trap transfer, exported PIC dispatch, or update merge is
+      no final native trap transfer, exported PIC dispatch, or standalone native update merge is
       implemented.
-- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep`/keyed attrset success-path wrappers plus `aos_alloc_*`/`aos_apply`/`aos_gc_write_barrier`/`aos_update` trap wrappers:
+- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep`/attrset success-path wrappers plus `aos_alloc_*`/`aos_apply`/`aos_gc_write_barrier` trap wrappers:
       `ratchet-runtime-ffi` is the dedicated unsafe runtime ABI boundary so the
       safe `ratchet-oracle` crate can keep `unsafe_code` denied. Its
       `env::aos_env_get` wrapper defines an unmangled frozen `(env, slot) -> Value`
@@ -5961,16 +5961,18 @@ and helps the oracle directly.
       results for supported presence/select success paths; null contexts and
       tree-walk errors still abort until evaluator trap transfer exists.
       `attr::aos_update` defines an unmangled frozen
-      `(rt, Value left, Value right) -> Value` symbol and remains trap-only
-      until runtime-context decoding, active attrset-root binding, update merge,
-      trap transfer, and native value-return materialization exist.
+      `(rt, Value left, Value right) -> Value` symbol. It decodes the same
+      scoped `RuntimeAttrAccessContext`, enters the safe tree-walk shallow
+      right-biased update bridge, and returns the merged attrset `Value` for
+      supported success paths; null contexts and tree-walk errors still abort
+      until evaluator trap transfer exists.
       Metadata exposes each wrapper's typed
       function pointer, process-local address, frozen ABI signature, and
       remaining wrapper-local export blockers. The separate oracle native-export
       preflight remains authoritative for full final registration blockers,
-      including missing final exported-wrapper admission. Tests call the env/forcing wrappers and
-      attrset keyed wrappers and metadata function pointers on their supported
-      success paths, cover
+      including missing final exported-wrapper admission. Tests call the
+      env/forcing wrappers, attrset wrappers, and metadata function pointers on
+      their supported success paths, cover
       subprocess abort paths including the trap-only allocation, apply, and
       barrier wrappers,
       and the `aos-nix` address-candidate bridge now uses these wrapper
@@ -5991,8 +5993,8 @@ and helps the oracle directly.
       `aos_gc_write_barrier` remains a trap-only body until safe barrier
       dispatch can be reached from native runtime context; `aos_has_attr` and
       `aos_select_ic` abort on invalid scoped contexts or tree-walk errors until
-      native trap transfer exists; `aos_update` remains a trap-only body until
-      safe attrset update dispatch can be reached from native runtime context.
+      native trap transfer exists; `aos_update` aborts on invalid scoped
+      contexts or tree-walk errors until native trap transfer exists.
       The strict
       native-export plan still rejects through the aggregate readiness gates, and
       `JITBuilder::symbol` registration/native calls remain gated.
