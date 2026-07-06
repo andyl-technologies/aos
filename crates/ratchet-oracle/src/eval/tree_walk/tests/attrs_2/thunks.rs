@@ -893,6 +893,9 @@ fn map_attrs_records_dynamic_repr_decisions_for_empty_and_non_empty_results() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 2);
     assert_eq!(snapshot.reasons.small_shape_stable, 2);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 2);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -1774,6 +1777,42 @@ fn attr_names_and_values_record_projected_shape_order_parity_telemetry() {
     assert_eq!(outcome.value().as_int(), Ok(10));
     let stats = outcome.attr_telemetry().order_parity_stats();
     assert_eq!(stats.matched, 2);
+    assert_eq!(stats.mismatched, 0);
+}
+
+#[test]
+fn map_attrs_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let attrs_source = "{ z = 1; A = 2; aa = 3; _ = 4; a = 5; }";
+    let names_source =
+        format!("builtins.attrNames (builtins.mapAttrs (_name: value: value + 1) {attrs_source})");
+    let values_source = format!(
+        "builtins.concatStringsSep \",\" \
+         (builtins.attrValues (builtins.mapAttrs (name: _value: name) {attrs_source}))"
+    );
+
+    let expected_order = vec![
+        b"A".to_vec(),
+        b"_".to_vec(),
+        b"a".to_vec(),
+        b"aa".to_vec(),
+        b"z".to_vec(),
+    ];
+    assert_eq!(eval_list_string_bytes(&names_source), expected_order);
+    assert_eq!(eval_string_bytes(&values_source), b"A,_,a,aa,z");
+
+    let ir = lower(&format!(
+        "builtins.mapAttrs (_name: value: value + 1) {attrs_source}"
+    ));
+    let outcome = eval_whnf_owned(&ir).expect("mapAttrs projected-shape result evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("mapAttrs result metadata exists");
+
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
     assert_eq!(stats.mismatched, 0);
 }
 

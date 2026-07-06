@@ -10015,6 +10015,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       two matched, zero mismatched samples. This is active evaluator telemetry
       only; it does not claim shaped/HAMT heap payload iteration, C++ oracle
       comparison, full conformance 20-21, or full AOS closure `.drv` parity.
+- [x] Current active projected-shape `mapAttrs` order-parity canary:
+      `builtins.mapAttrs` result allocation now records the same in-process
+      raw-byte order-parity check after successful empty or non-empty result
+      allocation. A tree-walk canary maps an adversarial static attrset and
+      checks result `attrNames`, result `attrValues`, projected-shape metadata,
+      and one matched, zero mismatched `mapAttrs` result telemetry sample. This
+      pins the current flat-payload `mapAttrs` consumer boundary only; it does
+      not claim shaped/HAMT heap payload iteration, C++ oracle comparison, full
+      conformance 20-21, or full AOS closure `.drv` parity.
 - [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes in-process, byte-neutral counters/snapshots for shape census,
       slow-select hit/miss outcomes by representation, generic/flat/shaped/HAMT
@@ -10032,8 +10041,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       representation-dispatch bridge, and active static shaped/flat/HAMT
       select-cache terminal states plus shaped/HAMT lookup outcomes are recorded
       there too. Active `attrNames`/`attrValues` calls now also record
-      successful in-process raw-byte order-parity checks. Cache hits use
-      mirrored `EvalStats` inline-cache counters while
+      successful in-process raw-byte order-parity checks, as do successful
+      `mapAttrs` result allocations. Cache hits use mirrored `EvalStats`
+      inline-cache counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape
       projection separately increments `EvalStats::shape_transitions` for

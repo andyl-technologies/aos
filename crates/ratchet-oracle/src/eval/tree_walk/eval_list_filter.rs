@@ -3,6 +3,27 @@
 use super::*;
 
 impl TreeWalk {
+    pub(super) fn alloc_map_attrs_result_with_order_telemetry(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs: FlatAttrs,
+    ) -> Result<Value, TreeWalkError> {
+        let order_parity_result =
+            collect_checked_lexicographic_keys(AttrOrderTarget::Flat(&attrs), &self.symbols)
+                .map(|_| ());
+        let len = attrs.len();
+        let result = self.alloc_flat_attrs_with_repr_telemetry(
+            id,
+            span,
+            0,
+            attrs,
+            AttrSetConstruction::Dynamic { len },
+        )?;
+        self.record_attr_order_parity_telemetry(id, span, order_parity_result);
+        Ok(result)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn alloc_mapped_attrs(
         &mut self,
@@ -55,14 +76,7 @@ impl TreeWalk {
 
         let attrs = FlatAttrs::new(mapped, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-        let len = attrs.len();
-        self.alloc_flat_attrs_with_repr_telemetry(
-            id,
-            span,
-            0,
-            attrs,
-            AttrSetConstruction::Dynamic { len },
-        )
+        self.alloc_map_attrs_result_with_order_telemetry(id, span, attrs)
     }
 
     fn alloc_mapped_attr_name(
