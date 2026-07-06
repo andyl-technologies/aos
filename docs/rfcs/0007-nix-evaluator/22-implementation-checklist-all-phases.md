@@ -7549,6 +7549,8 @@ and helps the oracle directly.
       unregistered outer locals,
       root filesystem `readFile` final content-string allocations relocating
       registered transient roots,
+      root filesystem `readFileType` final file-type string allocations
+      relocating registered transient roots,
       root text-store `readFile` final content-string allocations preserving
       registered transient roots when nested text-store setup is live,
       nested `readFile` final content-string allocations preserving

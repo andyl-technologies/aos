@@ -2596,6 +2596,32 @@ fn gc_stress_eval_root_read_file_result_dispatch_permanent_noop_bridge() {
 }
 
 #[test]
+fn gc_stress_eval_root_read_file_type_result_dispatch_permanent_noop_bridge() {
+    let (dir, regular) = temp_file_with_bytes("gc-stress-read-file-type", b"abc");
+    let nested = dir.join("nested");
+    fs::create_dir(&nested).expect("nested directory creates");
+    let cases = [
+        (
+            nix_string_literal(&path_source(&regular)),
+            b"regular".as_slice(),
+        ),
+        (
+            nix_string_literal(&path_source(&nested)),
+            b"directory".as_slice(),
+        ),
+    ];
+
+    for (path, expected) in cases {
+        assert_gc_stress_root_string_result_dispatches(
+            &format!("builtins.readFileType {path}"),
+            expected,
+        );
+    }
+
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn gc_stress_eval_root_read_file_text_store_result_skips_nested_text_store_setup() {
     assert_gc_stress_root_string_result_skips_dispatch(
         r#"builtins.readFile (builtins.toFile "gc-read" "abc")"#,
