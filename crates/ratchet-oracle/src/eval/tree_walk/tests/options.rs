@@ -1317,6 +1317,9 @@ fn gc_stress_alloc_static_string_helper_dispatches_permanent_noop_bridge() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -1355,6 +1358,11 @@ fn gc_stress_alloc_static_string_helper_dispatches_permanent_noop_bridge() {
     assert_eq!(
         evaluator.heap().permanent_allocation_safepoints().count(),
         1
+    );
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[RuntimeAllocationEntryPoint::AosAllocString],
+        "static string helper should dispatch exactly one permanent string allocation"
     );
     let permanent_safepoint = evaluator
         .heap()
@@ -1548,6 +1556,9 @@ fn gc_stress_alloc_symbol_string_helper_dispatches_permanent_noop_bridge() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -1589,6 +1600,11 @@ fn gc_stress_alloc_symbol_string_helper_dispatches_permanent_noop_bridge() {
     assert_eq!(
         evaluator.heap().permanent_allocation_safepoints().count(),
         1
+    );
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[RuntimeAllocationEntryPoint::AosAllocString],
+        "symbol string helper should dispatch exactly one permanent string allocation"
     );
     let permanent_safepoint = evaluator
         .heap()
@@ -6560,6 +6576,11 @@ fn gc_stress_context_string_result_helpers_dispatch_permanent_noop_bridge() {
             .expect("registered local thunk allocates");
         let mut roots = [local_source];
 
+        let permanent_safepoints_before =
+            evaluator.heap().permanent_allocation_safepoints().count();
+        let permanent_dispatches_before = evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len();
         evaluator.active_root_eval_node = Some(ir.root);
         let value = evaluator
             .with_transient_value_stack_roots(ir.root, root.span, &mut roots, |eval| {
@@ -6596,6 +6617,17 @@ fn gc_stress_context_string_result_helpers_dispatch_permanent_noop_bridge() {
                 .expect("context result string is heap-owned")
                 .bytes(),
             b"x"
+        );
+        assert_eq!(
+            evaluator.heap().permanent_allocation_safepoints().count(),
+            permanent_safepoints_before + 1,
+            "{source} should allocate exactly one context result string"
+        );
+        assert_eq!(
+            &evaluator.gc_stress_permanent_root_allocation_dispatches()
+                [permanent_dispatches_before..],
+            &[RuntimeAllocationEntryPoint::AosAllocString],
+            "{source} should dispatch exactly one permanent context result string allocation"
         );
         let permanent_safepoint = evaluator
             .heap()
