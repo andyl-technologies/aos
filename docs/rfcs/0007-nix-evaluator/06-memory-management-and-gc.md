@@ -3318,6 +3318,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       direct `catAttrs` IR-helper list-result allocations preserving
       registered transient roots while active lexical environment roots block
       dispatch,
+      direct `mapAttrs` symbol-name helper allocations preserving registered
+      transient roots while active primop argument roots block dispatch,
       direct `filter` and `map` empty-input fast-path result routing through
       the tree-walk list wrapper,
       direct `filter` list-result allocations preserving registered transient
