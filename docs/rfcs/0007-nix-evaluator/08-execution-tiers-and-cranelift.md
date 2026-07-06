@@ -1264,16 +1264,22 @@ harness, never cut for scope.
       wrappers, run trap transfer, or prove `.drv` parity.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
-      records one tier-up invocation in safe code and preserves cold
-      no-plan/no-lowering behavior. When policy requests native execution, it
-      requires the strict `NixJitRuntimeSymbolRegistrationPlan` before any
+      and its full-IR sibling
+      `nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root()`
+      record one tier-up invocation in safe code and preserve cold
+      no-plan/no-lowering behavior. When policy requests native execution, they
+      require the strict `NixJitRuntimeSymbolRegistrationPlan` before any
       unsafe native-call handoff, so current runtime-symbol metadata is
       rejected with the invocation-updated slot and tier-up decision preserved
-      while native-export and unbound-symbol gaps remain. Tests pin cold pre-plan behavior, the current incomplete
-      exported-symbol gate, and synthetic registration-plan source failure after
-      promotion. This still does not lower, finalize, or call native code from
-      `aos-nix`, publish evaluator thunks, perform atomic thunk-state CAS, run
-      trap transfer, provide exported C ABI wrappers, or prove `.drv` parity.
+      while native-export and unbound-symbol gaps remain. Tests pin arena-root
+      cold pre-plan behavior, full-IR static-select entrypoint cold pre-plan
+      behavior, the current incomplete exported-symbol gate, global
+      runtime-symbol candidate visibility while invoked through the full-IR
+      entrypoint, and synthetic registration-plan source failure after promotion
+      for both arena-root and full-IR gates. This still does not inspect lowered
+      IR roots, lower, finalize, or call native code from `aos-nix`, publish
+      evaluator thunks, perform atomic thunk-state CAS, run trap transfer,
+      provide exported C ABI wrappers, or prove `.drv` parity.
 - [x] Current runtime symbol native-target candidate preflight precursor:
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability

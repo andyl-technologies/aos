@@ -625,6 +625,40 @@ pub fn nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root(
     )
 }
 
+/// Safely preflights a force-aware registered tier-1 native call for a full IR root.
+///
+/// This is the full-IR counterpart to
+/// [`nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root`].
+/// It accepts lowered IR and root identity so full-IR callers can use the same
+/// safe `aos-nix` gate that will eventually feed the unsafe registered
+/// native-call boundary. The current implementation still stops before
+/// inspecting the IR, lowering, finalization, code pointer casts, and native
+/// execution: once policy requests promotion, it requires the strict
+/// [`NixJitRuntimeSymbolRegistrationPlan`] first.
+///
+/// # Errors
+///
+/// Returns
+/// [`NixJitRegisteredTier1NativeCallPreflightError::RuntimeSymbolRegistrationPlan`]
+/// when policy requests native tier-1 execution but complete exported
+/// runtime-symbol registration metadata is not ready.
+pub fn nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+) -> NixJitRegisteredTier1NativeCallPreflightResult {
+    nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root_with_registration_plan_source(
+        slot,
+        policy,
+        demand_hint,
+        ir,
+        root,
+        nix_jit_runtime_symbol_registration_plan,
+    )
+}
+
 fn nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
     slot: JitTieredCodeSlot,
     policy: TierUpPolicy,
@@ -786,6 +820,45 @@ fn nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root_with_r
     policy: TierUpPolicy,
     demand_hint: TierUpDemandHint,
     _arena: &IrArena,
+    _root: IrId,
+    registration_plan_source: impl FnOnce() -> NixJitRuntimeSymbolRegistrationPlanResult,
+) -> NixJitRegisteredTier1NativeCallPreflightResult {
+    let mut observed_slot = slot;
+    let decision = observed_slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(NixJitRegisteredTier1NativeCallPreflight::StayedInTier {
+            slot: observed_slot,
+            decision,
+        });
+    }
+
+    let registration_plan = match registration_plan_source() {
+        Ok(registration_plan) => registration_plan,
+        Err(source) => {
+            return Err(
+                NixJitRegisteredTier1NativeCallPreflightError::RuntimeSymbolRegistrationPlan {
+                    slot: observed_slot,
+                    decision,
+                    source,
+                },
+            );
+        }
+    };
+
+    Ok(
+        NixJitRegisteredTier1NativeCallPreflight::RuntimeSymbolsReady {
+            slot: observed_slot,
+            decision,
+            registration_plan,
+        },
+    )
+}
+
+fn nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root_with_registration_plan_source(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    _ir: &Ir,
     _root: IrId,
     registration_plan_source: impl FnOnce() -> NixJitRuntimeSymbolRegistrationPlanResult,
 ) -> NixJitRegisteredTier1NativeCallPreflightResult {
