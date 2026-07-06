@@ -5,7 +5,8 @@
 //! return constant runtime [`Value`] words, perform one bounded local
 //! environment-slot read through the `aos_env_get` helper, force that loaded
 //! value through `aos_force`, apply two local-slot values through `aos_apply`,
-//! or perform one forced static attr selection through `aos_select_ic`.
+//! perform one forced static attr selection through `aos_select_ic`, or test one
+//! forced static attr presence through `aos_has_attr`.
 //! Shape-directed tier-1 selector entrypoints choose among the arena-only
 //! bounded paths before Cranelift module setup. These bodies use the same
 //! two-word `Value` ABI as [`crate::abi`], but they are not placed in a
@@ -66,6 +67,7 @@ pub const AOS_SELECT_IC_FUNCTION_INDEX: u32 = 4;
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
+const AOS_HAS_ATTR_SYMBOL: &str = "aos_has_attr";
 const AOS_SELECT_IC_SYMBOL: &str = "aos_select_ic";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
@@ -722,6 +724,79 @@ pub fn lower_select_local_slot_ir_root_thunk_body_artifact(
     lower_select_local_slot_ir_thunk_body_artifact(ir, ir.root)
 }
 
+/// Lowers a direct static attr presence test into a verified thunk CLIF body.
+///
+/// This bounded attr-access precursor accepts a direct [`IrKind::HasAttr`] root
+/// plus one direct [`IrKind::ThunkAlloc`] wrapper around such a test. The
+/// receiver must be a direct [`IrKind::LocalVar`] read and the attr path must
+/// contain exactly one static segment. The generated function imports
+/// `aos_env_get`, `aos_force`, and `aos_has_attr`, loads the receiver from the
+/// compiled thunk `env` parameter, forces it to WHNF, passes the static symbol
+/// id and inline-cache site id as `i32` immediates, and returns the helper's two
+/// runtime `Value` words. The helper owns the single-key `?` behavior for
+/// non-attr receivers by returning false.
+///
+/// The returned function remains non-executable CLIF only. It is not placed in a
+/// `JITModule`, linked against native helper addresses, finalized, or called.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `root` is not present in
+/// `ir.arena`. Returns [`JitLowerError::MissingIrBody`] for missing direct
+/// thunk bodies. Returns attr-specific unsupported-shape errors when the root,
+/// body, receiver, or path is outside the current bounded subset. Also returns
+/// runtime ABI signature-conversion and verifier errors for imported helpers.
+pub fn lower_has_attr_local_slot_ir_thunk_body(
+    ir: &Ir,
+    root: IrId,
+) -> Result<Function, JitLowerError> {
+    let lookup = attr_lookup_for_root(ir, root, AttrLookupLowering::HasAttr)?;
+    lower_attr_lookup_local_slot_thunk_body_with_name(
+        lookup,
+        AttrLookupLowering::HasAttr,
+        clif_name_for_ir_root(root),
+    )
+}
+
+/// Lowers a direct static attr presence test into a non-executable CLIF artifact.
+///
+/// The artifact records the Core IR root id as source metadata and contains the
+/// same verified CLIF function returned by [`lower_has_attr_local_slot_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_has_attr_local_slot_ir_thunk_body`].
+pub fn lower_has_attr_local_slot_ir_thunk_body_artifact(
+    ir: &Ir,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_has_attr_local_slot_ir_thunk_body(ir, root)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
+/// Lowers the root of a lowered IR artifact as a static attr presence test.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_has_attr_local_slot_ir_thunk_body`].
+pub fn lower_has_attr_local_slot_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
+    lower_has_attr_local_slot_ir_thunk_body(ir, ir.root)
+}
+
+/// Lowers the root static attr presence test into a non-executable CLIF artifact.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_has_attr_local_slot_ir_root_thunk_body`].
+pub fn lower_has_attr_local_slot_ir_root_thunk_body_artifact(
+    ir: &Ir,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_has_attr_local_slot_ir_thunk_body_artifact(ir, ir.root)
+}
+
 /// Lowers a currently supported tier-1 IR thunk body.
 ///
 /// This shape-directed selector accepts literal roots, local-slot roots, and
@@ -730,8 +805,9 @@ pub fn lower_select_local_slot_ir_root_thunk_body_artifact(
 /// [`lower_constant_ir_thunk_body`], local-slot roots lower through
 /// [`lower_env_get_ir_thunk_body`], and direct local-slot applications lower
 /// through [`lower_apply_local_slots_ir_thunk_body`].
-/// Static selections require full lowered-IR side tables, so they are accepted
-/// by [`lower_tier1_ir_thunk_body_for_ir`] instead of this arena-only entrypoint.
+/// Static attr selections and static attr presence tests require full
+/// lowered-IR side tables, so they are accepted by
+/// [`lower_tier1_ir_thunk_body_for_ir`] instead of this arena-only entrypoint.
 ///
 /// # Errors
 ///
@@ -766,15 +842,15 @@ pub fn lower_tier1_ir_thunk_body_artifact(
 ///
 /// This selector accepts the same arena-only roots as
 /// [`lower_tier1_ir_thunk_body`], and additionally accepts a direct static
-/// attr selection root plus one direct [`IrKind::ThunkAlloc`] wrapper around
-/// that shape when it can be validated against the lowered IR's attr-path side
-/// table.
+/// attr selection or static attr presence root plus one direct
+/// [`IrKind::ThunkAlloc`] wrapper around either shape when it can be validated
+/// against the lowered IR's attr-path side table.
 ///
 /// # Errors
 ///
 /// Returns the same errors as the selected bounded lowerer, including
 /// [`JitLowerError::UnsupportedIrRoot`], [`JitLowerError::UnsupportedIrBody`],
-/// or static attr-selection validation failures for roots outside the current
+/// or static attr-access validation failures for roots outside the current
 /// tier-1 subset.
 pub fn lower_tier1_ir_thunk_body_for_ir(ir: &Ir, root: IrId) -> Result<Function, JitLowerError> {
     let artifact = lower_tier1_ir_thunk_body_artifact_for_ir(ir, root)?;
@@ -807,9 +883,10 @@ pub fn lower_tier1_ir_thunk_body_artifact_for_ir(
 /// forced by `aos_force` before returning. Direct local-slot applications lower
 /// through [`lower_apply_local_slots_ir_thunk_body`] because `aos_apply` owns the
 /// function-call forcing boundary.
-/// Static selections require full lowered-IR side tables, so they are accepted
-/// by [`lower_force_aware_tier1_ir_thunk_body_for_ir`] instead of this
-/// arena-only entrypoint.
+/// Static attr selections and static attr presence tests require full
+/// lowered-IR side tables, so they are accepted by
+/// [`lower_force_aware_tier1_ir_thunk_body_for_ir`] instead of this arena-only
+/// entrypoint.
 ///
 /// # Errors
 ///
@@ -847,17 +924,17 @@ pub fn lower_force_aware_tier1_ir_thunk_body_artifact(
 ///
 /// This selector accepts the same arena-only roots as
 /// [`lower_force_aware_tier1_ir_thunk_body`], and additionally accepts a direct
-/// static attr selection root plus one direct [`IrKind::ThunkAlloc`] wrapper
-/// around that shape when it can be validated against the lowered IR's
-/// attr-path side table. Static attr selection already forces its receiver
-/// before calling `aos_select_ic`, so it uses the same CLIF as the ordinary
-/// tier-1 full-IR selector.
+/// static attr selection or static attr presence root plus one direct
+/// [`IrKind::ThunkAlloc`] wrapper around either shape when it can be validated
+/// against the lowered IR's attr-path side table. Static attr access already
+/// forces its receiver before calling `aos_select_ic` or `aos_has_attr`, so it
+/// uses the same CLIF as the ordinary tier-1 full-IR selector.
 ///
 /// # Errors
 ///
 /// Returns the same errors as the selected bounded lowerer, including
 /// [`JitLowerError::UnsupportedIrRoot`], [`JitLowerError::UnsupportedIrBody`],
-/// or static attr-selection validation failures for roots outside the current
+/// or static attr-access validation failures for roots outside the current
 /// tier-1 subset.
 pub fn lower_force_aware_tier1_ir_thunk_body_for_ir(
     ir: &Ir,
@@ -1441,24 +1518,28 @@ struct AttrLookup {
 
 #[derive(Clone, Copy)]
 enum AttrLookupLowering {
+    HasAttr,
     SelectIc,
 }
 
 impl AttrLookupLowering {
     const fn expected_kind(self) -> IrKind {
         match self {
+            Self::HasAttr => IrKind::HasAttr,
             Self::SelectIc => IrKind::Select,
         }
     }
 
     const fn symbol_name(self) -> &'static str {
         match self {
+            Self::HasAttr => AOS_HAS_ATTR_SYMBOL,
             Self::SelectIc => AOS_SELECT_IC_SYMBOL,
         }
     }
 
     fn external_name(self) -> UserExternalName {
         match self {
+            Self::HasAttr => clif_external_name_for_aos_has_attr(),
             Self::SelectIc => clif_external_name_for_aos_select_ic(),
         }
     }
@@ -1507,6 +1588,14 @@ fn attr_lookup_for_node(
     }
 
     match (lowering, node.data) {
+        (
+            AttrLookupLowering::HasAttr,
+            IrData::HasAttr {
+                receiver,
+                path,
+                site,
+            },
+        ) => attr_lookup(ir, receiver, path, site),
         (
             AttrLookupLowering::SelectIc,
             IrData::Select {
@@ -1702,6 +1791,7 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind_with_ir(
     is_thunk_body: bool,
 ) -> Result<JitClifArtifact, JitLowerError> {
     match kind {
+        IrKind::HasAttr => lower_has_attr_local_slot_ir_thunk_body_artifact(ir, root),
         IrKind::Select => lower_select_local_slot_ir_thunk_body_artifact(ir, root),
         _ => lower_tier1_ir_thunk_body_artifact_for_kind(
             &ir.arena,
@@ -3713,6 +3803,53 @@ mod tests {
     }
 
     #[test]
+    fn full_ir_tier1_selectors_accept_static_has_attr_roots() {
+        let ir = static_has_attr_ir(63);
+
+        let Err(arena_only_error) =
+            lower_force_aware_tier1_ir_thunk_body_artifact(&ir.arena, ir.root)
+        else {
+            panic!("arena-only force-aware selector should reject hasAttr roots");
+        };
+        assert!(matches!(
+            arena_only_error,
+            JitLowerError::UnsupportedIrRoot {
+                kind: IrKind::HasAttr
+            } | JitLowerError::UnsupportedIrBody {
+                kind: IrKind::HasAttr
+            }
+        ));
+
+        let artifact = lower_tier1_ir_thunk_body_artifact_for_ir(&ir, ir.root)
+            .expect("full-IR selector lowers static hasAttr root");
+        assert_eq!(artifact.function().dfg.ext_funcs.len(), 3);
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_force(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_has_attr(),
+        );
+
+        let force_aware_artifact =
+            lower_force_aware_tier1_ir_thunk_body_artifact_for_ir(&ir, ir.root)
+                .expect("full-IR force-aware selector lowers static hasAttr root");
+        assert_eq!(
+            force_aware_artifact.function().dfg.ext_funcs.len(),
+            artifact.function().dfg.ext_funcs.len()
+        );
+        imported_function_by_user_external_name(
+            force_aware_artifact.function(),
+            clif_external_name_for_aos_has_attr(),
+        );
+    }
+
+    #[test]
     fn full_ir_tier1_selectors_accept_wrapped_static_select_roots() {
         let ir = wrapped_static_select_ir(62);
 
@@ -3734,6 +3871,31 @@ mod tests {
         imported_function_by_user_external_name(
             artifact.function(),
             clif_external_name_for_aos_select_ic(),
+        );
+    }
+
+    #[test]
+    fn full_ir_tier1_selectors_accept_wrapped_static_has_attr_roots() {
+        let ir = wrapped_static_has_attr_ir(64);
+
+        let artifact = lower_force_aware_tier1_ir_thunk_body_artifact_for_ir(&ir, ir.root)
+            .expect("full-IR force-aware selector lowers wrapped static hasAttr root");
+        assert_eq!(
+            artifact.function_name(),
+            &clif_name_for_ir_root(IrId::new(2))
+        );
+        assert_eq!(artifact.function().dfg.ext_funcs.len(), 3);
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_force(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_has_attr(),
         );
     }
 
@@ -4043,6 +4205,42 @@ mod tests {
         }
     }
 
+    fn static_has_attr_ir(slot: u32) -> Ir {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols
+            .intern(b"target")
+            .expect("fixture symbol table accepts target");
+        let arena = IrArena::from_raw_parts(
+            vec![
+                local_var_node(slot),
+                IrNode::new(
+                    IrKind::HasAttr,
+                    Span::new(0, 8),
+                    EffectClass::pure(),
+                    IrData::HasAttr {
+                        receiver: IrId::new(0),
+                        path: IrAttrPathId::new(0),
+                        site: IrInlineCacheSiteId::new(11),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let facts = IrFacts::conservative(arena.nodes().len());
+        Ir {
+            root: IrId::new(1),
+            arena,
+            facts,
+            symbols,
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+                .into_boxed_slice(),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
+    }
+
     fn wrapped_static_select_ir(slot: u32) -> Ir {
         let mut symbols = SymbolTable::new();
         let symbol = symbols
@@ -4060,6 +4258,48 @@ mod tests {
                         path: IrAttrPathId::new(0),
                         site: IrInlineCacheSiteId::new(11),
                         default: None,
+                    },
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 8),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(1)),
+                ),
+            ],
+            Vec::new(),
+        );
+        let facts = IrFacts::conservative(arena.nodes().len());
+        Ir {
+            root: IrId::new(2),
+            arena,
+            facts,
+            symbols,
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+                .into_boxed_slice(),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
+    }
+
+    fn wrapped_static_has_attr_ir(slot: u32) -> Ir {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols
+            .intern(b"target")
+            .expect("fixture symbol table accepts target");
+        let arena = IrArena::from_raw_parts(
+            vec![
+                local_var_node(slot),
+                IrNode::new(
+                    IrKind::HasAttr,
+                    Span::new(0, 8),
+                    EffectClass::pure(),
+                    IrData::HasAttr {
+                        receiver: IrId::new(0),
+                        path: IrAttrPathId::new(0),
+                        site: IrInlineCacheSiteId::new(11),
                     },
                 ),
                 IrNode::new(

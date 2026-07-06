@@ -346,6 +346,11 @@ mod tests {
         "uns",
         "afe { aos_has_attr(rt, attrs, missing_key.as_u32(), 8) };"
     );
+    const ATTR_HAS_ATTR_NON_ATTRS_TEST_CALL_LINE: &str = concat!(
+        "let non_attrs = ",
+        "uns",
+        "afe { aos_has_attr(rt, Value::int(42), present_key.as_u32(), 9) };"
+    );
     const ATTR_SELECT_IC_SELECTED_TEST_CALL_LINE: &str = concat!(
         "let selected = ",
         "uns",
@@ -360,11 +365,6 @@ mod tests {
         "let result = ",
         "uns",
         "afe { aos_update(rt, left, right) };"
-    );
-    const ATTR_HAS_ATTR_ERROR_TEST_CALL_LINE: &str = concat!(
-        "let _ = ",
-        "uns",
-        "afe { aos_has_attr(rt, Value::int(42), key.as_u32(), 7) };"
     );
     const ATTR_SELECT_IC_ERROR_TEST_CALL_LINE: &str = concat!(
         "let _ = ",
@@ -838,10 +838,10 @@ mod tests {
                 || trimmed == ATTR_HAS_ATTR_PRESENT_TEST_CALL_LINE
                 || trimmed == ATTR_HAS_ATTR_REPEATED_TEST_CALL_LINE
                 || trimmed == ATTR_HAS_ATTR_MISSING_TEST_CALL_LINE
+                || trimmed == ATTR_HAS_ATTR_NON_ATTRS_TEST_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_SELECTED_TEST_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_REPEATED_TEST_CALL_LINE
                 || trimmed == ATTR_UPDATE_SUCCESS_TEST_CALL_LINE
-                || trimmed == ATTR_HAS_ATTR_ERROR_TEST_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_ERROR_TEST_CALL_LINE
                 || trimmed == ATTR_UPDATE_ERROR_TEST_CALL_LINE
                 || trimmed == ATTR_HAS_ATTR_ABORT_TEST_CALL_LINE
@@ -1448,6 +1448,11 @@ mod unchecked_cfg;
             "direct has-attr missing test call must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&attr, ATTR_HAS_ATTR_NON_ATTRS_TEST_CALL_LINE),
+            1,
+            "direct has-attr non-attrs test call must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&attr, ATTR_SELECT_IC_SELECTED_TEST_CALL_LINE),
             1,
             "direct select-IC selected test call must stay singly reviewed"
@@ -1461,11 +1466,6 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&attr, ATTR_UPDATE_SUCCESS_TEST_CALL_LINE),
             1,
             "direct attrset-update success test call must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&attr, ATTR_HAS_ATTR_ERROR_TEST_CALL_LINE),
-            1,
-            "has-attr tree-walk error abort test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&attr, ATTR_SELECT_IC_ERROR_TEST_CALL_LINE),
@@ -1871,6 +1871,11 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &attr_lines,
+            ATTR_HAS_ATTR_NON_ATTRS_TEST_CALL_LINE,
+            "direct has-attr non-attrs test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &attr_lines,
             ATTR_SELECT_IC_SELECTED_TEST_CALL_LINE,
             "direct select-IC selected test call must keep a SAFETY comment",
         );
@@ -1883,11 +1888,6 @@ mod unchecked_cfg;
             &attr_lines,
             ATTR_UPDATE_SUCCESS_TEST_CALL_LINE,
             "direct attrset-update success test call must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &attr_lines,
-            ATTR_HAS_ATTR_ERROR_TEST_CALL_LINE,
-            "has-attr tree-walk error abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &attr_lines,

@@ -105,6 +105,47 @@ fn static_select_ir(slot: u32) -> Ir {
     }
 }
 
+fn static_has_attr_ir(slot: u32) -> Ir {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols
+        .intern(b"target")
+        .expect("test symbol table accepts target");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot },
+            ),
+            IrNode::new(
+                IrKind::HasAttr,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::HasAttr {
+                    receiver: IrId::new(0),
+                    path: IrAttrPathId::new(0),
+                    site: IrInlineCacheSiteId::new(11),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(1),
+        arena,
+        facts,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+            .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
 fn string_arena() -> IrArena {
     IrArena::from_raw_parts(
         vec![IrNode::new(
@@ -654,6 +695,59 @@ fn force_aware_full_ir_thunk_install_readiness_reports_future_publish_gaps_for_s
 }
 
 #[test]
+fn force_aware_full_ir_thunk_install_readiness_reports_future_publish_gaps_for_static_has_attr() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = static_has_attr_ir(13);
+    let thunk = EvalThunk::new(ir.root);
+
+    let readiness =
+        nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_lowered_ir_root(
+            hot_slot(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &ir,
+            ir.root,
+            &thunk,
+        )
+        .expect("force-aware full-IR static-hasAttr readiness report builds");
+
+    assert!(readiness.install_plan().is_ready_for_install());
+    assert!(readiness.safe_preconditions_met());
+    assert!(!readiness.is_ready_for_evaluator_publish());
+    assert_eq!(
+        readiness.gaps(),
+        &[
+            NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+            NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+            NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        ]
+    );
+    let promoted = readiness
+        .install_plan()
+        .promoted_preflight()
+        .expect("readiness owns promoted preflight");
+    assert_eq!(
+        readiness.install_plan().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_has_attr"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_has_attr")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_has_attr")
+                    .expect("hasAttr candidate exists")
+                    .address())
+    );
+}
+
+#[test]
 fn full_ir_thunk_install_readiness_reports_future_publish_gaps_for_static_select() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
@@ -701,6 +795,58 @@ fn full_ir_thunk_install_readiness_reports_future_publish_gaps_for_static_select
                 == candidate_preflight
                     .address_candidate_for("aos_select_ic")
                     .expect("select candidate exists")
+                    .address())
+    );
+}
+
+#[test]
+fn full_ir_thunk_install_readiness_reports_future_publish_gaps_for_static_has_attr() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = static_has_attr_ir(11);
+    let thunk = EvalThunk::new(ir.root);
+
+    let readiness = nix_jit_registered_tier1_thunk_install_readiness_for_lowered_ir_root(
+        hot_slot(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir,
+        ir.root,
+        &thunk,
+    )
+    .expect("full-IR static-hasAttr readiness report builds");
+
+    assert!(readiness.install_plan().is_ready_for_install());
+    assert!(readiness.safe_preconditions_met());
+    assert!(!readiness.is_ready_for_evaluator_publish());
+    assert_eq!(
+        readiness.gaps(),
+        &[
+            NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+            NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+            NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        ]
+    );
+    let promoted = readiness
+        .install_plan()
+        .promoted_preflight()
+        .expect("readiness owns promoted preflight");
+    assert_eq!(
+        readiness.install_plan().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_has_attr"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_has_attr")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_has_attr")
+                    .expect("hasAttr candidate exists")
                     .address())
     );
 }

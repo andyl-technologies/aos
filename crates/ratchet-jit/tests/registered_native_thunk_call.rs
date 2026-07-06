@@ -14,6 +14,7 @@ use ratchet_jit::{
     jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates,
     lower_apply_local_slots_ir_thunk_body_artifact, lower_env_get_ir_thunk_body_artifact,
     lower_forced_env_get_ir_thunk_body_artifact,
+    lower_has_attr_local_slot_ir_root_thunk_body_artifact,
     lower_select_local_slot_ir_root_thunk_body_artifact,
 };
 use ratchet_value::value::Value;
@@ -52,6 +53,15 @@ extern "C" fn test_aos_select_ic(
     } else {
         Value::null()
     }
+}
+
+extern "C" fn test_aos_has_attr(
+    _rt: JitRuntimeContextPtr,
+    attrs: Value,
+    symbol: u32,
+    site: u32,
+) -> Value {
+    Value::bool(attrs.raw_eq(Value::int(38)) && symbol == 0 && site == 11)
 }
 
 fn local_var_arena(slot: u32) -> IrArena {
@@ -141,6 +151,47 @@ fn static_select_ir(slot: u32) -> Ir {
     }
 }
 
+fn static_has_attr_ir(slot: u32) -> Ir {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols
+        .intern(b"target")
+        .expect("fixture symbol table accepts target");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot },
+            ),
+            IrNode::new(
+                IrKind::HasAttr,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::HasAttr {
+                    receiver: IrId::new(0),
+                    path: IrAttrPathId::new(0),
+                    site: IrInlineCacheSiteId::new(11),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(1),
+        arena,
+        facts,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+            .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
 fn native_address(raw: usize) -> JitRuntimeSymbolAddress {
     JitRuntimeSymbolAddress::new(NonZeroUsize::new(raw).expect("test address is non-zero"))
 }
@@ -186,6 +237,14 @@ fn select_ic_candidate() -> JitRuntimeSymbolAddressCandidate {
         "aos_select_ic",
         RuntimeHelperRole::AttrsetAccess,
         test_aos_select_ic as *const () as usize,
+    )
+}
+
+fn has_attr_candidate() -> JitRuntimeSymbolAddressCandidate {
+    candidate(
+        "aos_has_attr",
+        RuntimeHelperRole::AttrsetAccess,
+        test_aos_has_attr as *const () as usize,
     )
 }
 
@@ -357,6 +416,44 @@ fn registered_native_thunk_call_executes_static_select_artifact_with_candidates(
         invocation
             .finalization()
             .registered_symbol_for("aos_select_ic")
+            .is_some_and(|registered| registered.address() == candidates[2].address())
+    );
+}
+
+#[test]
+fn registered_native_thunk_call_executes_static_has_attr_artifact_with_candidates() {
+    let ir = static_has_attr_ir(9);
+    let artifact = lower_has_attr_local_slot_ir_root_thunk_body_artifact(&ir)
+        .expect("static hasAttr artifact lowers");
+    let candidates = [env_get_candidate(), force_candidate(), has_attr_candidate()];
+
+    // SAFETY: The current test host is accepted by the native Value ABI gate.
+    // The artifact imports `aos_env_get`, `aos_force`, and `aos_has_attr`, and
+    // all candidates are live `extern "C"` test functions with the frozen
+    // helper ABIs. The helpers tolerate null runtime/environment pointers and
+    // return valid-tag Values.
+    let invocation = unsafe {
+        jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(
+            artifact,
+            &candidates,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    }
+    .expect("registered static hasAttr artifact can be called through native thunk ABI");
+
+    assert!(invocation.value().raw_eq(Value::bool(true)));
+    let import_names = invocation
+        .finalization()
+        .artifact_runtime_imports()
+        .iter()
+        .map(|artifact_import| artifact_import.symbol_name())
+        .collect::<Vec<_>>();
+    assert_eq!(import_names, ["aos_env_get", "aos_force", "aos_has_attr"]);
+    assert!(
+        invocation
+            .finalization()
+            .registered_symbol_for("aos_has_attr")
             .is_some_and(|registered| registered.address() == candidates[2].address())
     );
 }
@@ -585,6 +682,67 @@ fn promotion_gated_registered_native_thunk_call_executes_static_select_on_promot
 }
 
 #[test]
+fn promotion_gated_registered_native_thunk_call_executes_static_has_attr_on_promotion() {
+    let ir = static_has_attr_ir(9);
+    let candidates = [env_get_candidate(), force_candidate(), has_attr_candidate()];
+
+    // SAFETY: The current test host is accepted by the native Value ABI gate.
+    // The promoted artifact imports `aos_env_get`, `aos_force`, and
+    // `aos_has_attr`; all candidates are live `extern "C"` test functions with
+    // the frozen helper ABIs and valid returned-tag Values.
+    let preflight = unsafe {
+        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::MultiUse,
+            &ir,
+            ir.root,
+            &candidates,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    }
+    .expect("promotion-gated static hasAttr native call succeeds");
+
+    assert!(preflight.did_call_native_code());
+    assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(
+        preflight
+            .native_value()
+            .is_some_and(|value| value.raw_eq(Value::bool(true)))
+    );
+    let invocation = preflight
+        .native_invocation()
+        .expect("promoted preflight owns native invocation");
+    assert_eq!(
+        preflight.slot().tier1_code_ptr(),
+        Some(invocation.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        invocation
+            .finalization()
+            .artifact_runtime_imports()
+            .iter()
+            .map(|artifact_import| artifact_import.symbol_name())
+            .collect::<Vec<_>>(),
+        ["aos_env_get", "aos_force", "aos_has_attr"]
+    );
+    assert!(
+        invocation
+            .finalization()
+            .registered_symbol_for("aos_has_attr")
+            .is_some()
+    );
+    assert!(
+        invocation
+            .finalization()
+            .registered_symbol_for("aos_select_ic")
+            .is_none()
+    );
+    assert!(preflight.owns_encapsulated_module());
+}
+
+#[test]
 fn promotion_gated_registered_native_thunk_call_executes_apply_on_promotion() {
     let arena = apply_arena(4, 6);
     let candidates = [env_get_candidate(), apply_candidate()];
@@ -723,6 +881,44 @@ fn promotion_gated_registered_native_thunk_call_reports_missing_select_candidate
         );
     };
     assert_eq!(symbol_names, &["aos_select_ic".to_owned()]);
+}
+
+#[test]
+fn promotion_gated_registered_native_thunk_call_reports_missing_has_attr_candidate() {
+    let ir = static_has_attr_ir(9);
+    let candidates = [env_get_candidate(), force_candidate()];
+
+    // SAFETY: The supplied env/force candidates are host-ABI-matched, but the
+    // promoted static-hasAttr artifact also imports `aos_has_attr`;
+    // finalization must fail before native invocation.
+    let Err(error) = (unsafe {
+        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::MultiUse,
+            &ir,
+            ir.root,
+            &candidates,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    }) else {
+        panic!("missing hasAttr candidate must reject before native invocation");
+    };
+
+    assert_eq!(error.slot().invocation_counter().invocations(), 1);
+    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
+    let JitCraneliftNativeCallError::FinalizeArtifact {
+        source:
+            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names },
+    } = error.native_call_error()
+    else {
+        panic!(
+            "expected missing artifact-import candidate error, got {}",
+            error.native_call_error()
+        );
+    };
+    assert_eq!(symbol_names, &["aos_has_attr".to_owned()]);
 }
 
 #[test]

@@ -530,14 +530,7 @@ impl TreeWalk {
         site: IrInlineCacheSiteId,
     ) -> Result<Value, TreeWalkError> {
         if attrs_value.tag() != ValueTag::Attrs {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id,
-                    expected: "attrs",
-                    actual: attrs_value.tag(),
-                },
-                span,
-            ));
+            return Ok(Value::bool(false));
         }
         match self.select_static_attr_with_cache(id, span, attrs_value, symbol, site, 0)? {
             AttrSelectOutcome::Hit { .. } => Ok(Value::bool(true)),

@@ -231,7 +231,7 @@ fixed, named set of **runtime symbols**. These fall into four groups:
 |-------|----------|----------------------------------------|
 | Allocation | `aos_alloc_thunk`, `aos_alloc_attrs`, `aos_alloc_list`, `aos_alloc_string` | GC strategy swaps (bump arena ↔ generational) with zero JIT recompilation |
 | Forcing / control | `aos_force`, `aos_force_deep`, `aos_blackhole_check` | One canonical force implementation shared by all tiers; deopt hooks here |
-| Attrset access | `aos_select_ic`, `aos_has_attr`, `aos_update` (`//`) | Keyed selects/presence checks use runtime inline-cache cells; update is the shared shallow-merge slow path. See [hidden classes](09-attribute-sets-hidden-classes-and-inline-caches.md) |
+| Attrset access | `aos_select_ic`, `aos_has_attr`, `aos_update` (`//`) | Keyed selects/presence checks use runtime inline-cache cells; single-key `aos_has_attr` returns false for non-attr receivers; update is the shared shallow-merge slow path. See [hidden classes](09-attribute-sets-hidden-classes-and-inline-caches.md) |
 | Builtins | `nix.builtin.map`, `nix.builtin.derivationStrict`, … (~120) | Shared between oracle and JIT; perfect-hashed dispatch (§4) |
 
 The allocation indirection is the single most important design decision in this

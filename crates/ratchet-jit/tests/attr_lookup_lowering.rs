@@ -7,7 +7,7 @@ use ratchet_core::{
     EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
     IrInlineCacheSiteId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
     runtime_helper_call_signature,
-    syntax::{Span, SymbolTable},
+    syntax::{Span, Symbol, SymbolTable},
 };
 use ratchet_jit::{
     AOS_HAS_ATTR_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
@@ -17,6 +17,7 @@ use ratchet_jit::{
     clif_external_name_for_aos_select_ic, clif_signature_for_runtime_call,
     jit_cranelift_registered_artifact_definition_preflight_with_candidates,
     jit_module_readiness_preflight_for_artifact,
+    lower_has_attr_local_slot_ir_root_thunk_body_artifact, lower_has_attr_local_slot_ir_thunk_body,
     lower_select_local_slot_ir_root_thunk_body_artifact, lower_select_local_slot_ir_thunk_body,
 };
 
@@ -55,6 +56,34 @@ fn select_local_slot_ir_thunk_body_imports_env_force_and_select_helpers() {
     assert_eq!(
         function.dfg.signatures[select_ic_import.1.signature],
         helper_signature("aos_select_ic")
+    );
+    assert_eq!(iconst_words(&function), vec![5, 0, 11]);
+}
+
+#[test]
+fn has_attr_local_slot_ir_thunk_body_imports_env_force_and_has_attr_helpers() {
+    let ir = attr_lookup_ir(AttrLookupFixtureKind::HasAttr, 5, None);
+
+    let function = lower_has_attr_local_slot_ir_thunk_body(&ir, ir.root).expect("hasAttr lowers");
+    let env_get_import =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
+    let force_import =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+    let has_attr_import =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_has_attr());
+
+    assert_eq!(function.dfg.ext_funcs.len(), 3);
+    assert_eq!(
+        function.dfg.signatures[env_get_import.1.signature],
+        helper_signature("aos_env_get")
+    );
+    assert_eq!(
+        function.dfg.signatures[force_import.1.signature],
+        helper_signature("aos_force")
+    );
+    assert_eq!(
+        function.dfg.signatures[has_attr_import.1.signature],
+        helper_signature("aos_has_attr")
     );
     assert_eq!(iconst_words(&function), vec![5, 0, 11]);
 }
@@ -120,6 +149,66 @@ fn select_local_slot_ir_thunk_body_forces_receiver_then_calls_select_ic() {
 }
 
 #[test]
+fn has_attr_local_slot_ir_thunk_body_forces_receiver_then_calls_has_attr() {
+    let ir = attr_lookup_ir(AttrLookupFixtureKind::HasAttr, 7, None);
+
+    let function = lower_has_attr_local_slot_ir_thunk_body(&ir, ir.root).expect("hasAttr lowers");
+    let (env_get, _) =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
+    let (force, _) =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+    let (has_attr, _) =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_has_attr());
+    let calls = call_insts(&function);
+    let entry_values = entry_block_values(&function);
+    let iconsts = iconst_values(&function);
+
+    assert_eq!(calls.len(), 3);
+    assert_eq!(
+        iconsts.iter().map(|(_, word)| *word).collect::<Vec<_>>(),
+        vec![7, 0, 11]
+    );
+    assert_call_target(&function, calls[0], env_get);
+    assert_call_target(&function, calls[1], force);
+    assert_call_target(&function, calls[2], has_attr);
+    assert_eq!(
+        opcodes(&function),
+        vec![
+            Opcode::Iconst,
+            Opcode::Call,
+            Opcode::Call,
+            Opcode::Iconst,
+            Opcode::Iconst,
+            Opcode::Call,
+            Opcode::Return,
+        ]
+    );
+
+    let env_get_args = call_args(&function, calls[0]);
+    assert_eq!(env_get_args, vec![entry_values[1], iconsts[0].0]);
+    let env_get_results = function.dfg.inst_results(calls[0]).to_vec();
+
+    let force_args = call_args(&function, calls[1]);
+    assert_eq!(
+        force_args,
+        vec![entry_values[0], env_get_results[0], env_get_results[1]]
+    );
+    let force_results = function.dfg.inst_results(calls[1]).to_vec();
+
+    let has_attr_args = call_args(&function, calls[2]);
+    assert_eq!(
+        has_attr_args,
+        vec![
+            entry_values[0],
+            force_results[0],
+            force_results[1],
+            iconsts[1].0,
+            iconsts[2].0,
+        ]
+    );
+}
+
+#[test]
 fn select_root_artifact_records_runtime_imports() {
     let ir = attr_lookup_ir(AttrLookupFixtureKind::Select, 8, None);
 
@@ -131,6 +220,22 @@ fn select_root_artifact_records_runtime_imports() {
     assert_eq!(
         artifact_import_names(readiness.artifact_runtime_imports()),
         ["aos_env_get", "aos_force", "aos_select_ic"]
+    );
+    assert!(readiness.artifact_runtime_import_gaps().is_empty());
+}
+
+#[test]
+fn has_attr_root_artifact_records_runtime_imports() {
+    let ir = attr_lookup_ir(AttrLookupFixtureKind::HasAttr, 8, None);
+
+    let artifact = lower_has_attr_local_slot_ir_root_thunk_body_artifact(&ir)
+        .expect("hasAttr root artifact lowers");
+    let readiness =
+        jit_module_readiness_preflight_for_artifact(&artifact).expect("hasAttr readiness builds");
+
+    assert_eq!(
+        artifact_import_names(readiness.artifact_runtime_imports()),
+        ["aos_env_get", "aos_force", "aos_has_attr"]
     );
     assert!(readiness.artifact_runtime_import_gaps().is_empty());
 }
@@ -149,6 +254,24 @@ fn select_lowerer_accepts_direct_thunk_alloc_wrapper() {
                 .artifact_runtime_imports(),
         ),
         ["aos_env_get", "aos_force", "aos_select_ic"]
+    );
+    assert_eq!(iconst_words(artifact.function()), vec![10, 0, 11]);
+}
+
+#[test]
+fn has_attr_lowerer_accepts_direct_thunk_alloc_wrapper() {
+    let ir = wrapped_has_attr_ir(10);
+
+    let artifact =
+        lower_has_attr_local_slot_ir_root_thunk_body_artifact(&ir).expect("wrapped hasAttr lowers");
+
+    assert_eq!(
+        artifact_import_names(
+            jit_module_readiness_preflight_for_artifact(&artifact)
+                .expect("hasAttr readiness builds")
+                .artifact_runtime_imports(),
+        ),
+        ["aos_env_get", "aos_force", "aos_has_attr"]
     );
     assert_eq!(iconst_words(artifact.function()), vec![10, 0, 11]);
 }
@@ -178,6 +301,33 @@ fn registered_artifact_definition_rewrites_select_runtime_imports() {
     assert!(preflight.registered_symbol_for("aos_env_get").is_some());
     assert!(preflight.registered_symbol_for("aos_force").is_some());
     assert!(preflight.registered_symbol_for("aos_select_ic").is_some());
+}
+
+#[test]
+fn registered_artifact_definition_rewrites_has_attr_runtime_imports() {
+    let ir = attr_lookup_ir(AttrLookupFixtureKind::HasAttr, 13, None);
+    let artifact = lower_has_attr_local_slot_ir_root_thunk_body_artifact(&ir)
+        .expect("hasAttr root artifact lowers");
+    let preflight = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+        artifact,
+        &[
+            synthetic_candidate("aos_env_get", RuntimeHelperRole::EnvironmentAccess, 0x1000),
+            synthetic_candidate("aos_force", RuntimeHelperRole::ForcingControl, 0x2000),
+            synthetic_candidate("aos_has_attr", RuntimeHelperRole::AttrsetAccess, 0x3000),
+        ],
+    )
+    .expect("registered artifact definition accepts hasAttr helper candidates");
+
+    assert_eq!(
+        artifact_import_names(preflight.artifact_runtime_imports()),
+        ["aos_env_get", "aos_force", "aos_has_attr"]
+    );
+    assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+    assert!(preflight.imported_symbol_for("aos_force").is_some());
+    assert!(preflight.imported_symbol_for("aos_has_attr").is_some());
+    assert!(preflight.registered_symbol_for("aos_env_get").is_some());
+    assert!(preflight.registered_symbol_for("aos_force").is_some());
+    assert!(preflight.registered_symbol_for("aos_has_attr").is_some());
 }
 
 #[test]
@@ -221,8 +371,62 @@ fn select_lowering_rejects_unsupported_shapes() {
     ));
 }
 
+#[test]
+fn has_attr_lowering_rejects_unsupported_shapes() {
+    let dynamic_path_ir = attr_lookup_ir(
+        AttrLookupFixtureKind::HasAttr,
+        1,
+        Some(vec![IrAttrPathSegment::Dynamic(IrId::new(0))]),
+    );
+    let multi_segment_static_path_ir = attr_lookup_ir(
+        AttrLookupFixtureKind::HasAttr,
+        1,
+        Some(vec![
+            IrAttrPathSegment::Static(Symbol::new(0)),
+            IrAttrPathSegment::Static(Symbol::new(0)),
+        ]),
+    );
+    let non_local_receiver_ir =
+        attr_lookup_ir(AttrLookupFixtureKind::HasAttrNonLocalReceiver, 1, None);
+
+    let dynamic_path_error =
+        lower_has_attr_local_slot_ir_thunk_body(&dynamic_path_ir, dynamic_path_ir.root)
+            .expect_err("dynamic attr path is rejected");
+    let multi_segment_static_path_error = lower_has_attr_local_slot_ir_thunk_body(
+        &multi_segment_static_path_ir,
+        multi_segment_static_path_ir.root,
+    )
+    .expect_err("multi-segment static attr path is rejected");
+    let non_local_receiver_error =
+        lower_has_attr_local_slot_ir_thunk_body(&non_local_receiver_ir, non_local_receiver_ir.root)
+            .expect_err("non-local attr receiver is rejected");
+
+    assert!(matches!(
+        dynamic_path_error,
+        JitLowerError::UnsupportedAttrPathSegment {
+            path,
+            index: 0,
+            segment: IrAttrPathSegment::Dynamic(dynamic),
+        } if path == IrAttrPathId::new(0) && dynamic == IrId::new(0)
+    ));
+    assert!(matches!(
+        multi_segment_static_path_error,
+        JitLowerError::UnsupportedAttrPathLength { path, len }
+            if path == IrAttrPathId::new(0) && len == 2
+    ));
+    assert!(matches!(
+        non_local_receiver_error,
+        JitLowerError::UnsupportedAttrReceiver {
+            receiver,
+            kind: IrKind::Int,
+        } if receiver == IrId::new(0)
+    ));
+}
+
 #[derive(Clone, Copy)]
 enum AttrLookupFixtureKind {
+    HasAttr,
+    HasAttrNonLocalReceiver,
     Select,
     SelectNonLocalReceiver,
     SelectWithDefault,
@@ -239,13 +443,16 @@ fn attr_lookup_ir(
         .intern(b"target")
         .expect("fixture symbol table accepts target");
     let receiver = match kind {
-        AttrLookupFixtureKind::SelectNonLocalReceiver => IrNode::new(
+        AttrLookupFixtureKind::HasAttrNonLocalReceiver
+        | AttrLookupFixtureKind::SelectNonLocalReceiver => IrNode::new(
             IrKind::Int,
             span,
             EffectClass::pure(),
             IrData::Int(i64::from(slot)),
         ),
-        AttrLookupFixtureKind::Select | AttrLookupFixtureKind::SelectWithDefault => IrNode::new(
+        AttrLookupFixtureKind::HasAttr
+        | AttrLookupFixtureKind::Select
+        | AttrLookupFixtureKind::SelectWithDefault => IrNode::new(
             IrKind::LocalVar,
             span,
             EffectClass::pure(),
@@ -254,6 +461,13 @@ fn attr_lookup_ir(
     };
     let mut nodes = vec![receiver];
     let root_data = match kind {
+        AttrLookupFixtureKind::HasAttr | AttrLookupFixtureKind::HasAttrNonLocalReceiver => {
+            IrData::HasAttr {
+                site: IrInlineCacheSiteId::new(11),
+                receiver: IrId::new(0),
+                path: IrAttrPathId::new(0),
+            }
+        }
         AttrLookupFixtureKind::Select | AttrLookupFixtureKind::SelectNonLocalReceiver => {
             IrData::Select {
                 site: IrInlineCacheSiteId::new(11),
@@ -278,12 +492,15 @@ fn attr_lookup_ir(
         }
     };
     let root = IrId::new(nodes.len() as u32);
-    nodes.push(IrNode::new(
-        IrKind::Select,
-        span,
-        EffectClass::pure(),
-        root_data,
-    ));
+    let root_kind = match kind {
+        AttrLookupFixtureKind::HasAttr | AttrLookupFixtureKind::HasAttrNonLocalReceiver => {
+            IrKind::HasAttr
+        }
+        AttrLookupFixtureKind::Select
+        | AttrLookupFixtureKind::SelectNonLocalReceiver
+        | AttrLookupFixtureKind::SelectWithDefault => IrKind::Select,
+    };
+    nodes.push(IrNode::new(root_kind, span, EffectClass::pure(), root_data));
     let arena = IrArena::from_raw_parts(nodes, Vec::new());
     let facts = IrFacts::conservative(arena.nodes().len());
     Ir {
@@ -306,6 +523,30 @@ fn attr_lookup_ir(
 
 fn wrapped_attr_lookup_ir(slot: u32) -> Ir {
     let mut ir = attr_lookup_ir(AttrLookupFixtureKind::Select, slot, None);
+    let root = ir.root;
+    ir.arena = IrArena::from_raw_parts(
+        vec![
+            ir.arena
+                .node(IrId::new(0))
+                .copied()
+                .expect("receiver node exists"),
+            ir.arena.node(root).copied().expect("lookup node exists"),
+            IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Node(IrId::new(1)),
+            ),
+        ],
+        Vec::new(),
+    );
+    ir.root = IrId::new(2);
+    ir.facts = IrFacts::conservative(ir.arena.nodes().len());
+    ir
+}
+
+fn wrapped_has_attr_ir(slot: u32) -> Ir {
+    let mut ir = attr_lookup_ir(AttrLookupFixtureKind::HasAttr, slot, None);
     let root = ir.root;
     ir.arena = IrArena::from_raw_parts(
         vec![

@@ -37,10 +37,10 @@ use ratchet_oracle::{
 /// # Safety
 ///
 /// Calls through this pointer must satisfy the same host-ABI obligations
-/// documented on [`aos_has_attr`] and [`aos_select_ic`]. The attrset receiver
-/// must be a Rust-valid [`Value`] with a valid tag discriminant, and `symbol`
-/// plus `site` must use the frozen `u32` ABI representation for the evaluator's
-/// symbol table and inline-cache site ids. The runtime pointer must satisfy the
+/// documented on [`aos_has_attr`] and [`aos_select_ic`]. The receiver must be a
+/// Rust-valid [`Value`] with a valid tag discriminant, and `symbol` plus `site`
+/// must use the frozen `u32` ABI representation for the evaluator's symbol
+/// table and inline-cache site ids. The runtime pointer must satisfy the
 /// [`RuntimeAttrAccessContext`] obligations documented on [`aos_has_attr`] and
 /// [`aos_select_ic`].
 pub type RuntimeAttrAccessKeyedNativeFn =
@@ -72,9 +72,10 @@ const ATTR_UPDATE_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBloc
 /// `rt` as a [`RuntimeAttrAccessContext`], converts `symbol` and `site` through
 /// their frozen `u32` ABI representation, probes `attrs` through the safe
 /// tree-walk select-cache helper, and returns a materialized Nix boolean
-/// [`Value`]. It deliberately does not implement evaluator trap/error transfer:
-/// the process aborts if the pointer is null or the safe helper reports an
-/// error.
+/// [`Value`]. Non-attr receivers return false, matching single-key IR
+/// `HasAttr` semantics. It deliberately does not implement evaluator trap/error
+/// transfer: the process aborts if the pointer is null or the safe helper
+/// reports an error.
 ///
 /// # Safety
 ///
@@ -429,8 +430,6 @@ mod tests {
 
     const HAS_ATTR_ABORT_CHILD: &str = "attr::tests::aos_has_attr_native_wrapper_aborts_child";
     const SELECT_IC_ABORT_CHILD: &str = "attr::tests::aos_select_ic_native_wrapper_aborts_child";
-    const HAS_ATTR_ERROR_ABORT_CHILD: &str =
-        "attr::tests::aos_has_attr_native_wrapper_aborts_on_tree_walk_error_child";
     const SELECT_IC_ERROR_ABORT_CHILD: &str =
         "attr::tests::aos_select_ic_native_wrapper_aborts_on_tree_walk_error_child";
     const UPDATE_ABORT_CHILD: &str =
@@ -565,6 +564,9 @@ mod tests {
         // SAFETY: The same context and attrs remain live for this missing-key
         // presence probe.
         let missing = unsafe { aos_has_attr(rt, attrs, missing_key.as_u32(), 8) };
+        // SAFETY: The same context remains live. A non-attr receiver is a valid
+        // single-key has-attr probe and reports absence.
+        let non_attrs = unsafe { aos_has_attr(rt, Value::int(42), present_key.as_u32(), 9) };
 
         assert_eq!(present.as_bool().expect("present result is bool"), true);
         assert_eq!(
@@ -574,6 +576,10 @@ mod tests {
             true
         );
         assert_eq!(missing.as_bool().expect("missing result is bool"), false);
+        assert_eq!(
+            non_attrs.as_bool().expect("non-attrs result is bool"),
+            false
+        );
         drop(context);
         assert_eq!(eval.stats().inline_cache_hits(), 1);
         assert_eq!(eval.stats().inline_cache_misses(), 2);
@@ -663,11 +669,6 @@ mod tests {
     }
 
     #[test]
-    fn aos_has_attr_native_wrapper_aborts_on_tree_walk_error() {
-        assert_child_process_aborts(HAS_ATTR_ERROR_ABORT_CHILD);
-    }
-
-    #[test]
     fn aos_select_ic_native_wrapper_aborts_on_tree_walk_error() {
         assert_child_process_aborts(SELECT_IC_ERROR_ABORT_CHILD);
     }
@@ -708,24 +709,6 @@ mod tests {
         // passes a null runtime context to verify abort behavior before any
         // attrset lookup can run.
         let _ = unsafe { aos_select_ic(rt, attrs, symbol, site) };
-    }
-
-    #[test]
-    #[ignore = "subprocess target for abort behavior"]
-    fn aos_has_attr_native_wrapper_aborts_on_tree_walk_error_child() {
-        let source = "{ a = 42; }";
-        let span = Span::new(0, source.len() as u32);
-        let ir = lower_source(source);
-        let mut symbols = ir.symbols.clone();
-        let key = symbols.intern(b"a").expect("a symbol exists");
-        let mut eval = TreeWalk::new(&ir);
-        let mut context = std::pin::pin!(RuntimeAttrAccessContext::new(&mut eval, ir.root, span));
-        let rt = context.as_mut().as_mut_ptr();
-
-        // SAFETY: The pinned context and its evaluator are live for the call,
-        // and this test deliberately passes a non-attrs receiver to verify
-        // tree-walk errors abort instead of unwinding through the FFI boundary.
-        let _ = unsafe { aos_has_attr(rt, Value::int(42), key.as_u32(), 7) };
     }
 
     #[test]

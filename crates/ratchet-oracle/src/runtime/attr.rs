@@ -19,7 +19,7 @@ use crate::value::Value;
 /// The attribute-access entry point owned by the runtime ABI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeAttrAccessEntryPoint {
-    /// The `aos_has_attr` helper that probes one static attr key on an attrset value.
+    /// The `aos_has_attr` helper that probes one static attr key on a receiver value.
     AosHasAttr,
     /// The `aos_select_ic` helper that selects one static attr key from an attrset value.
     AosSelectIc,
@@ -98,13 +98,13 @@ type RuntimeUpdateFn = fn(&mut TreeWalk, IrId, Span, Value, Value) -> Result<Val
 /// Runs the Rust-callable `aos_has_attr` helper through the tree-walk evaluator.
 ///
 /// The helper probes `symbol` on `attrs` using the select-cache site identified
-/// by `site`, then returns a materialized Nix boolean [`Value`].
+/// by `site`, then returns a materialized Nix boolean [`Value`]. Non-attr
+/// receivers return false, matching single-key IR `HasAttr` semantics.
 ///
 /// # Errors
 ///
-/// Returns [`TreeWalkError`] when `attrs` is not an attrset value, when the
-/// inline-cache site rejects the keyed probe, or when the evaluator cannot
-/// allocate the resulting boolean value.
+/// Returns [`TreeWalkError`] when the inline-cache site rejects the keyed probe
+/// or when the evaluator cannot allocate the resulting boolean value.
 pub fn rust_callable_aos_has_attr(
     eval: &mut TreeWalk,
     id: IrId,
@@ -1217,15 +1217,8 @@ mod tests {
             missing_key,
             IrInlineCacheSiteId::new(7),
         )
-        .expect_err("non-attrs receiver reports a type error");
+        .expect("non-attrs receiver reports absence");
 
-        assert!(matches!(
-            non_attrs_presence.kind(),
-            TreeWalkErrorKind::Type {
-                expected: "attrs",
-                actual: ValueTag::Int,
-                ..
-            }
-        ));
+        assert_eq!(non_attrs_presence.as_bool(), Ok(false));
     }
 }
