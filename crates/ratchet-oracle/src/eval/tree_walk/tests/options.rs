@@ -4023,6 +4023,9 @@ fn gc_stress_strict_unary_attr_names_list_result_skips_composite_input_roots() {
     let mut roots = [local_source];
 
     evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
             eval.eval_strict_unary_primop_value(
@@ -4058,6 +4061,13 @@ fn gc_stress_strict_unary_attr_names_list_result_skips_composite_input_roots() {
         .expect("second attr name is a string");
     assert_eq!(first.bytes(), b"a");
     assert_eq!(second.bytes(), b"z");
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "attrNames input attrset root should block permanent-root list dispatch"
+    );
     let permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
@@ -4103,6 +4113,9 @@ fn gc_stress_strict_unary_attr_values_list_result_skips_composite_input_roots() 
     let mut roots = [local_source];
 
     evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
             eval.eval_strict_unary_primop_value(
@@ -4135,6 +4148,13 @@ fn gc_stress_strict_unary_attr_values_list_result_skips_composite_input_roots() 
     assert_eq!(
         list.get(1).expect("second attr value exists").as_int(),
         Ok(2)
+    );
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "attrValues input attrset root should block permanent-root list dispatch"
     );
     let permanent_safepoint = evaluator
         .heap()
@@ -4175,6 +4195,9 @@ fn gc_stress_strict_unary_tail_list_result_skips_composite_input_roots() {
     let mut roots = [local_source];
 
     evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
             eval.eval_strict_unary_primop_value(
@@ -4207,6 +4230,13 @@ fn gc_stress_strict_unary_tail_list_result_skips_composite_input_roots() {
     assert_eq!(
         list.get(1).expect("second tail value exists").as_bool(),
         Ok(true)
+    );
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "tail input list root should block permanent-root list dispatch"
     );
     let permanent_safepoint = evaluator
         .heap()
