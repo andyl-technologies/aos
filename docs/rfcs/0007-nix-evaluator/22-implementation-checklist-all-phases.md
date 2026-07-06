@@ -10361,9 +10361,31 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       selector coverage, malformed payload and child rejection, readiness import
       resolution, and registered definition with synthetic candidates. This is
       still a bounded call-control precursor: no generic expression traversal,
-      non-local function or argument lowering, select/attrset lowering, real
+      non-local function or argument lowering, generic select/attrset lowering, real
       exported wrapper addresses, evaluator heap publication, raw pointer call,
       or native invocation through `aos_apply` is implemented here.
+- [x] Current static select CLIF precursor:
+      `ratchet-jit::lower::lower_select_local_slot_ir_thunk_body()` lowers
+      direct `IrKind::Select` roots, plus one direct `ThunkAlloc` wrapper around
+      those roots, when the receiver is a direct `IrKind::LocalVar` read and
+      the attr path has exactly one static segment. The generated body imports
+      `aos_env_get`, `aos_force`, and `aos_select_ic`, reads the receiver from
+      the compiled thunk `env` parameter, forces it to WHNF, passes the static
+      symbol id and inline-cache site id as `i32` immediates, and returns the
+      helper's two runtime `Value` words. Module-readiness metadata resolves the
+      select helper imports, and the registered artifact-definition path
+      rewrites them with synthetic candidates. Tests pin helper namespace/index
+      metadata, imported signature parity, exact call operands, symbol/site
+      immediates backed by the IR symbol table, artifact import resolution,
+      registered definition with synthetic candidates, and rejection of dynamic
+      paths, defaults, and non-local receivers. This is still a bounded static
+      select bridge: no multi-segment paths, dynamic attr paths, `or` defaults,
+      generic receiver lowering, selector promotion integration, exported
+      wrapper address execution, evaluator heap publication, raw pointer call,
+      generic IR traversal, or `HasAttr` lowering is implemented here. `HasAttr`
+      remains deferred because its full IR semantics return false for non-attr
+      receivers while the current `aos_has_attr` helper expects an already
+      forced attrset value.
 - [x] Current deterministic IR-root CLIF naming precursor:
       `ratchet-jit::lower::clif_name_for_ir_root()` reserves a Cranelift
       user-function namespace for verified CLIF functions lowered from Core IR
@@ -10378,12 +10400,12 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `Function` values together with tier, thunk-body kind, and source identity
       metadata. The lowerer now exposes artifact-returning variants for
       standalone constant smoke bodies, literal IR roots, local env-slot roots,
-      direct local-slot apply roots, direct `ThunkAlloc` wrappers, and whole-IR
-      root entrypoints. Tests pin
+      direct local-slot apply roots, static select roots, direct
+      `ThunkAlloc` wrappers, and whole-IR root entrypoints. Tests pin
       tier-1/kind/source metadata, default smoke-body naming, direct
       `ThunkAlloc` root source ids, nonzero whole-artifact roots, env-slot and
-      apply artifact source ids, and extraction of the contained CLIF function. This
-      is address-free CLIF metadata only: no `JITModule`, executable buffer,
+      apply artifact source ids, select helper import metadata, and extraction of
+      the contained CLIF function. This is address-free CLIF metadata only: no `JITModule`, executable buffer,
       function pointer,
       symbol registration, compiled artifact cache, persistence format, or
       native call is implemented.
@@ -10398,10 +10420,10 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       Tests pin literal no-import selection, env-get-only local selection,
       forced local selection with both helper imports, direct apply selection,
       wrapped local bodies, and unsupported direct/wrapped shape errors. This is
-      still selector plumbing over bounded lowerers only: no generic IR
-      traversal, non-local applications, selects, attrsets, branches, exported
-      helper wrappers, executable buffer, or native call is implemented by the
-      lowerer itself.
+      still selector plumbing over arena-only bounded lowerers: no generic IR
+      traversal, non-local applications, selector-integrated selects or hasAttr
+      probes, attrsets, branches, exported helper wrappers, executable buffer,
+      or native call is implemented by these selector entrypoints.
 - [ ] `jit/abi.rs` — uniform `extern "C"` runtime ABI; primops called by symbol
       ([10](10-primops-and-runtime-abi.md); `M-9` default symbol-call only).
 - [x] Current uniform runtime-call ABI metadata precursor:

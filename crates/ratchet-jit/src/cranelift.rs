@@ -2660,6 +2660,14 @@ fn runtime_symbol_name_for_user_external_name(
             crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
             crate::lower::AOS_APPLY_FUNCTION_INDEX,
         ) => Some("aos_apply"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_HAS_ATTR_FUNCTION_INDEX,
+        ) => Some("aos_has_attr"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_SELECT_IC_FUNCTION_INDEX,
+        ) => Some("aos_select_ic"),
         _ => None,
     }
 }

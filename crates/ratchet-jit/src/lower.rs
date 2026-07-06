@@ -4,8 +4,9 @@
 //! build verified Cranelift [`Function`] values for compiled thunk bodies that
 //! return constant runtime [`Value`] words, perform one bounded local
 //! environment-slot read through the `aos_env_get` helper, force that loaded
-//! value through `aos_force`, or apply two local-slot values through
-//! `aos_apply`. Shape-directed tier-1 selector entrypoints choose among those
+//! value through `aos_force`, apply two local-slot values through `aos_apply`,
+//! or perform one forced static attr selection through `aos_select_ic`.
+//! Shape-directed tier-1 selector entrypoints choose among the arena-only
 //! bounded paths before Cranelift module setup. These bodies use the same
 //! two-word `Value` ABI as [`crate::abi`], but they are not placed in a
 //! `JITModule`, finalized, or called.
@@ -19,8 +20,9 @@ use cranelift_codegen::{
     verifier::{VerifierErrors, verify_function},
 };
 use ratchet_core::{
-    BindingLowering, Cardinality, ExprFacts, Ir, IrArena, IrData, IrId, IrKind, IrNode, Strictness,
-    ThunkSharing, runtime_helper_call_signature, runtime_thunk_call_signature,
+    BindingLowering, Cardinality, ExprFacts, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData,
+    IrId, IrInlineCacheSiteId, IrKind, IrNode, Strictness, ThunkSharing,
+    runtime_helper_call_signature, runtime_thunk_call_signature, syntax::Symbol,
 };
 use ratchet_value::value::Value;
 
@@ -55,9 +57,16 @@ pub const AOS_FORCE_FUNCTION_INDEX: u32 = 1;
 /// User-external function index reserved for the `aos_apply` helper.
 pub const AOS_APPLY_FUNCTION_INDEX: u32 = 2;
 
+/// User-external function index reserved for the `aos_has_attr` helper.
+pub const AOS_HAS_ATTR_FUNCTION_INDEX: u32 = 3;
+
+/// User-external function index reserved for the `aos_select_ic` helper.
+pub const AOS_SELECT_IC_FUNCTION_INDEX: u32 = 4;
+
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
+const AOS_SELECT_IC_SYMBOL: &str = "aos_select_ic";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
 pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
@@ -85,6 +94,22 @@ pub fn clif_external_name_for_aos_apply() -> UserExternalName {
     UserExternalName::new(
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_APPLY_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_has_attr`.
+pub fn clif_external_name_for_aos_has_attr() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_HAS_ATTR_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_select_ic`.
+pub fn clif_external_name_for_aos_select_ic() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_SELECT_IC_FUNCTION_INDEX,
     )
 }
 
@@ -622,6 +647,81 @@ pub fn lower_apply_local_slots_ir_root_thunk_body_artifact(
     lower_apply_local_slots_ir_thunk_body_artifact(&ir.arena, ir.root)
 }
 
+/// Lowers a direct static attr selection into a verified thunk CLIF body.
+///
+/// This bounded attr-access precursor accepts a direct [`IrKind::Select`] root
+/// plus one direct [`IrKind::ThunkAlloc`] wrapper around such a selection. The
+/// receiver must be a direct [`IrKind::LocalVar`] read, the attr path must
+/// contain exactly one static segment, and `or` defaults are intentionally
+/// rejected until the runtime helper boundary owns fallback semantics. The
+/// generated function imports `aos_env_get`, `aos_force`, and `aos_select_ic`,
+/// loads the receiver from the compiled thunk `env` parameter, forces it to
+/// WHNF, calls `aos_select_ic` with the compiled thunk `rt` parameter plus the
+/// static symbol and inline-cache site ids, and returns the two runtime `Value`
+/// words produced by that helper.
+///
+/// The returned function remains non-executable CLIF only. It is not placed in a
+/// `JITModule`, linked against native helper addresses, finalized, or called.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `root` is not present in
+/// `ir.arena`. Returns [`JitLowerError::MissingIrBody`] for missing direct
+/// thunk bodies. Returns attr-specific unsupported-shape errors when the root,
+/// body, receiver, path, or default is outside the current bounded subset. Also
+/// returns runtime ABI signature-conversion and verifier errors for imported
+/// helpers.
+pub fn lower_select_local_slot_ir_thunk_body(
+    ir: &Ir,
+    root: IrId,
+) -> Result<Function, JitLowerError> {
+    let lookup = attr_lookup_for_root(ir, root, AttrLookupLowering::SelectIc)?;
+    lower_attr_lookup_local_slot_thunk_body_with_name(
+        lookup,
+        AttrLookupLowering::SelectIc,
+        clif_name_for_ir_root(root),
+    )
+}
+
+/// Lowers a direct static attr selection into a non-executable CLIF artifact.
+///
+/// The artifact records the Core IR root id as source metadata and contains the
+/// same verified CLIF function returned by [`lower_select_local_slot_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_select_local_slot_ir_thunk_body`].
+pub fn lower_select_local_slot_ir_thunk_body_artifact(
+    ir: &Ir,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_select_local_slot_ir_thunk_body(ir, root)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
+/// Lowers the root of a lowered IR artifact as a static attr selection.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_select_local_slot_ir_thunk_body`].
+pub fn lower_select_local_slot_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
+    lower_select_local_slot_ir_thunk_body(ir, ir.root)
+}
+
+/// Lowers the root static attr selection into a non-executable CLIF artifact.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_select_local_slot_ir_root_thunk_body`].
+pub fn lower_select_local_slot_ir_root_thunk_body_artifact(
+    ir: &Ir,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_select_local_slot_ir_thunk_body_artifact(ir, ir.root)
+}
+
 /// Lowers a currently supported tier-1 IR thunk body.
 ///
 /// This shape-directed selector accepts literal roots, local-slot roots, and
@@ -778,6 +878,54 @@ pub enum JitLowerError {
         /// The unsupported child node kind.
         kind: IrKind,
     },
+    /// The requested IR root is not an attr lookup this precursor can lower.
+    UnsupportedAttrRoot {
+        /// The unsupported root node kind.
+        kind: IrKind,
+    },
+    /// The direct thunk-allocation body is not an attr lookup this precursor can lower.
+    UnsupportedAttrBody {
+        /// The unsupported body node kind.
+        kind: IrKind,
+    },
+    /// The attr lookup receiver was not present in the arena.
+    MissingAttrReceiver {
+        /// The missing receiver node id.
+        receiver: IrId,
+    },
+    /// The attr lookup receiver is not a local-slot read this precursor can lower.
+    UnsupportedAttrReceiver {
+        /// The unsupported receiver node id.
+        receiver: IrId,
+        /// The unsupported receiver node kind.
+        kind: IrKind,
+    },
+    /// The attr lookup path was not present in the IR side table.
+    MissingAttrPath {
+        /// The missing attr-path id.
+        path: IrAttrPathId,
+    },
+    /// The attr lookup path was outside the current single-segment subset.
+    UnsupportedAttrPathLength {
+        /// The unsupported attr-path id.
+        path: IrAttrPathId,
+        /// The number of segments found in the attr path.
+        len: usize,
+    },
+    /// The attr lookup path contained a dynamic segment.
+    UnsupportedAttrPathSegment {
+        /// The unsupported attr-path id.
+        path: IrAttrPathId,
+        /// The unsupported segment index.
+        index: usize,
+        /// The unsupported segment.
+        segment: IrAttrPathSegment,
+    },
+    /// Static attr selection with an `or` default is not lowered yet.
+    UnsupportedSelectDefault {
+        /// The lowered default thunk node.
+        default: IrId,
+    },
     /// The requested node is not a thunk allocation fact planning can consume.
     UnsupportedThunkFactNode {
         /// The requested node id.
@@ -902,6 +1050,55 @@ impl fmt::Display for JitLowerError {
                     "IR apply child {child:?} with kind {kind:?} is not a local-slot read this lowerer can consume"
                 )
             }
+            Self::UnsupportedAttrRoot { kind } => {
+                write!(
+                    formatter,
+                    "IR root kind {kind:?} is not supported by the static attr-access lowerer"
+                )
+            }
+            Self::UnsupportedAttrBody { kind } => {
+                write!(
+                    formatter,
+                    "IR thunk body kind {kind:?} is not supported by the static attr-access lowerer"
+                )
+            }
+            Self::MissingAttrReceiver { receiver } => {
+                write!(
+                    formatter,
+                    "IR attr receiver {receiver:?} is not present in the arena"
+                )
+            }
+            Self::UnsupportedAttrReceiver { receiver, kind } => {
+                write!(
+                    formatter,
+                    "IR attr receiver {receiver:?} with kind {kind:?} is not a local-slot read this lowerer can consume"
+                )
+            }
+            Self::MissingAttrPath { path } => {
+                write!(formatter, "IR attr path {path:?} is not present")
+            }
+            Self::UnsupportedAttrPathLength { path, len } => {
+                write!(
+                    formatter,
+                    "IR attr path {path:?} has {len} segments, expected exactly one static segment"
+                )
+            }
+            Self::UnsupportedAttrPathSegment {
+                path,
+                index,
+                segment,
+            } => {
+                write!(
+                    formatter,
+                    "IR attr path {path:?} segment {index} is unsupported by the static attr-access lowerer: {segment:?}"
+                )
+            }
+            Self::UnsupportedSelectDefault { default } => {
+                write!(
+                    formatter,
+                    "IR select default {default:?} is not supported by the static attr-access lowerer"
+                )
+            }
             Self::UnsupportedThunkFactNode { id, kind } => {
                 write!(
                     formatter,
@@ -958,6 +1155,14 @@ impl Error for JitLowerError {
             | Self::UnsupportedApplyBody { .. }
             | Self::MissingApplyChild { .. }
             | Self::UnsupportedApplyChild { .. }
+            | Self::UnsupportedAttrRoot { .. }
+            | Self::UnsupportedAttrBody { .. }
+            | Self::MissingAttrReceiver { .. }
+            | Self::UnsupportedAttrReceiver { .. }
+            | Self::MissingAttrPath { .. }
+            | Self::UnsupportedAttrPathLength { .. }
+            | Self::UnsupportedAttrPathSegment { .. }
+            | Self::UnsupportedSelectDefault { .. }
             | Self::UnsupportedThunkFactNode { .. }
             | Self::MismatchedIrFactTable { .. }
             | Self::SelfReferentialThunkBody { .. }
@@ -1141,6 +1346,159 @@ fn apply_local_child_slot(arena: &IrArena, child: IrId) -> Result<u32, JitLowerE
 }
 
 #[derive(Clone, Copy)]
+struct AttrLookup {
+    receiver_slot: u32,
+    symbol: Symbol,
+    site: IrInlineCacheSiteId,
+}
+
+#[derive(Clone, Copy)]
+enum AttrLookupLowering {
+    SelectIc,
+}
+
+impl AttrLookupLowering {
+    const fn expected_kind(self) -> IrKind {
+        match self {
+            Self::SelectIc => IrKind::Select,
+        }
+    }
+
+    const fn symbol_name(self) -> &'static str {
+        match self {
+            Self::SelectIc => AOS_SELECT_IC_SYMBOL,
+        }
+    }
+
+    fn external_name(self) -> UserExternalName {
+        match self {
+            Self::SelectIc => clif_external_name_for_aos_select_ic(),
+        }
+    }
+}
+
+fn attr_lookup_for_root(
+    ir: &Ir,
+    root: IrId,
+    lowering: AttrLookupLowering,
+) -> Result<AttrLookup, JitLowerError> {
+    let node = ir
+        .arena
+        .node(root)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root })?;
+
+    match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(body)) => {
+            let body_node = ir
+                .arena
+                .node(body)
+                .copied()
+                .ok_or(JitLowerError::MissingIrBody { body })?;
+            attr_lookup_for_node(ir, body_node, lowering, true)
+        }
+        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::ThunkAlloc,
+            data,
+            expected: "body node",
+        }),
+        _ => attr_lookup_for_node(ir, node, lowering, false),
+    }
+}
+
+fn attr_lookup_for_node(
+    ir: &Ir,
+    node: IrNode,
+    lowering: AttrLookupLowering,
+    is_thunk_body: bool,
+) -> Result<AttrLookup, JitLowerError> {
+    if node.kind != lowering.expected_kind() {
+        if is_thunk_body {
+            return Err(JitLowerError::UnsupportedAttrBody { kind: node.kind });
+        }
+        return Err(JitLowerError::UnsupportedAttrRoot { kind: node.kind });
+    }
+
+    match (lowering, node.data) {
+        (
+            AttrLookupLowering::SelectIc,
+            IrData::Select {
+                receiver,
+                path,
+                site,
+                default: None,
+            },
+        ) => attr_lookup(ir, receiver, path, site),
+        (
+            AttrLookupLowering::SelectIc,
+            IrData::Select {
+                default: Some(default),
+                ..
+            },
+        ) => Err(JitLowerError::UnsupportedSelectDefault { default }),
+        (_, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: lowering.expected_kind(),
+            data,
+            expected: "static attr lookup payload",
+        }),
+    }
+}
+
+fn attr_lookup(
+    ir: &Ir,
+    receiver: IrId,
+    path: IrAttrPathId,
+    site: IrInlineCacheSiteId,
+) -> Result<AttrLookup, JitLowerError> {
+    Ok(AttrLookup {
+        receiver_slot: attr_receiver_slot(ir, receiver)?,
+        symbol: single_static_attr_path_symbol(ir, path)?,
+        site,
+    })
+}
+
+fn attr_receiver_slot(ir: &Ir, receiver: IrId) -> Result<u32, JitLowerError> {
+    let node = ir
+        .arena
+        .node(receiver)
+        .copied()
+        .ok_or(JitLowerError::MissingAttrReceiver { receiver })?;
+
+    match (node.kind, node.data) {
+        (IrKind::LocalVar, IrData::Local { slot }) => Ok(slot),
+        (IrKind::LocalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::LocalVar,
+            data,
+            expected: "local slot payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedAttrReceiver { receiver, kind }),
+    }
+}
+
+fn single_static_attr_path_symbol(ir: &Ir, path: IrAttrPathId) -> Result<Symbol, JitLowerError> {
+    let segments = ir
+        .attr_paths
+        .get(path.index())
+        .ok_or(JitLowerError::MissingAttrPath { path })?;
+
+    if segments.len() != 1 {
+        return Err(JitLowerError::UnsupportedAttrPathLength {
+            path,
+            len: segments.len(),
+        });
+    }
+
+    match segments[0] {
+        IrAttrPathSegment::Static(symbol) => Ok(symbol),
+        segment => Err(JitLowerError::UnsupportedAttrPathSegment {
+            path,
+            index: 0,
+            segment,
+        }),
+    }
+}
+
+#[derive(Clone, Copy)]
 enum Tier1LocalSlotLowering {
     EnvGet,
     ForceEnvGet,
@@ -1260,6 +1618,38 @@ fn lower_apply_local_slots_thunk_body_with_name(
         apply,
         function_slot,
         argument_slot,
+    )?;
+    verify_clif_function(&function)?;
+    Ok(function)
+}
+
+fn lower_attr_lookup_local_slot_thunk_body_with_name(
+    lookup: AttrLookup,
+    lowering: AttrLookupLowering,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
+    let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(name, signature);
+    let env_get = import_env_get_function(&mut function)?;
+    let force = import_runtime_helper_function(
+        &mut function,
+        AOS_FORCE_SYMBOL,
+        clif_external_name_for_aos_force(),
+    )?;
+    let attr_helper = import_runtime_helper_function(
+        &mut function,
+        lowering.symbol_name(),
+        lowering.external_name(),
+    )?;
+    let entry_block = append_entry_block_params(&mut function);
+    emit_attr_lookup_local_slot_return(
+        &mut function,
+        entry_block,
+        env_get,
+        force,
+        attr_helper,
+        lookup,
+        lowering,
     )?;
     verify_clif_function(&function)?;
     Ok(function)
@@ -1471,6 +1861,76 @@ fn emit_apply_local_slots_return(
     }
 
     cursor.ins().return_(&apply_results);
+    Ok(())
+}
+
+fn emit_attr_lookup_local_slot_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    env_get: cranelift_codegen::ir::FuncRef,
+    force: cranelift_codegen::ir::FuncRef,
+    attr_helper: cranelift_codegen::ir::FuncRef,
+    lookup: AttrLookup,
+    lowering: AttrLookupLowering,
+) -> Result<(), JitLowerError> {
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let rt = entry_params
+        .first()
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let slot = cursor
+        .ins()
+        .iconst(types::I32, i64::from(lookup.receiver_slot));
+    let env_get_call = cursor.ins().call(env_get, &[env, slot]);
+    let env_get_results = cursor.func.dfg.inst_results(env_get_call).to_vec();
+
+    if env_get_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+            expected: 2,
+            actual: env_get_results.len(),
+        });
+    }
+
+    let force_call = cursor
+        .ins()
+        .call(force, &[rt, env_get_results[0], env_get_results[1]]);
+    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+
+    if force_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_FORCE_SYMBOL,
+            expected: 2,
+            actual: force_results.len(),
+        });
+    }
+
+    let symbol = cursor
+        .ins()
+        .iconst(types::I32, i64::from(lookup.symbol.as_u32()));
+    let site = cursor
+        .ins()
+        .iconst(types::I32, i64::from(lookup.site.as_u32()));
+    let attr_call = cursor.ins().call(
+        attr_helper,
+        &[rt, force_results[0], force_results[1], symbol, site],
+    );
+    let attr_results = cursor.func.dfg.inst_results(attr_call).to_vec();
+
+    if attr_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: lowering.symbol_name(),
+            expected: 2,
+            actual: attr_results.len(),
+        });
+    }
+
+    cursor.ins().return_(&attr_results);
     Ok(())
 }
 

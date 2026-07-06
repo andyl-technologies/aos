@@ -13,9 +13,9 @@
 //! for caller-supplied host-ABI-matched runtime candidates, and a
 //! promotion-gated registered native-call composition precursor,
 //! [`lower`] builds verified CLIF bodies for the first literal Core-IR, local
-//! environment-slot, direct local-slot application, constant-thunk smoke tests,
-//! bounded shape-directed tier-1 lowerer selectors, and address-free tier-1
-//! fact plans,
+//! environment-slot, direct local-slot application, static attr selection,
+//! constant-thunk smoke tests, bounded shape-directed tier-1 lowerer selectors,
+//! and address-free tier-1 fact plans,
 //! [`module`] composes artifacts with runtime-symbol declaration
 //! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
 //! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`
@@ -90,10 +90,12 @@ pub use cranelift::{
 };
 pub use lower::{
     AOS_APPLY_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX,
-    AOS_IR_ROOT_FUNCTION_NAMESPACE, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, JitLowerError,
+    AOS_HAS_ATTR_FUNCTION_INDEX, AOS_IR_ROOT_FUNCTION_NAMESPACE,
+    AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX, JitLowerError,
     JitTier1ThunkFactDecision, JitTier1ThunkFactPlan, clif_external_name_for_aos_apply,
-    clif_external_name_for_aos_env_get, clif_external_name_for_aos_force, clif_name_for_ir_root,
-    jit_tier1_thunk_fact_decision_for_facts, jit_tier1_thunk_fact_plan,
+    clif_external_name_for_aos_env_get, clif_external_name_for_aos_force,
+    clif_external_name_for_aos_has_attr, clif_external_name_for_aos_select_ic,
+    clif_name_for_ir_root, jit_tier1_thunk_fact_decision_for_facts, jit_tier1_thunk_fact_plan,
     lower_apply_local_slots_ir_root_thunk_body,
     lower_apply_local_slots_ir_root_thunk_body_artifact, lower_apply_local_slots_ir_thunk_body,
     lower_apply_local_slots_ir_thunk_body_artifact, lower_constant_ir_root_thunk_body,
@@ -104,7 +106,9 @@ pub use lower::{
     lower_env_get_ir_thunk_body_artifact, lower_force_aware_tier1_ir_thunk_body,
     lower_force_aware_tier1_ir_thunk_body_artifact, lower_forced_env_get_ir_root_thunk_body,
     lower_forced_env_get_ir_root_thunk_body_artifact, lower_forced_env_get_ir_thunk_body,
-    lower_forced_env_get_ir_thunk_body_artifact, lower_tier1_ir_thunk_body,
+    lower_forced_env_get_ir_thunk_body_artifact, lower_select_local_slot_ir_root_thunk_body,
+    lower_select_local_slot_ir_root_thunk_body_artifact, lower_select_local_slot_ir_thunk_body,
+    lower_select_local_slot_ir_thunk_body_artifact, lower_tier1_ir_thunk_body,
     lower_tier1_ir_thunk_body_artifact,
 };
 pub use module::{

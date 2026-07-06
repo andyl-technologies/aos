@@ -15,7 +15,8 @@ use crate::{
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     lower::{
         AOS_APPLY_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX,
-        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_HAS_ATTR_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_SELECT_IC_FUNCTION_INDEX,
     },
     symbols::{
         JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError,
@@ -27,6 +28,8 @@ use crate::{
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
+const AOS_HAS_ATTR_SYMBOL: &str = "aos_has_attr";
+const AOS_SELECT_IC_SYMBOL: &str = "aos_select_ic";
 
 /// Address-free CLIF artifact metadata needed by future module setup.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -451,6 +454,12 @@ fn runtime_symbol_for_external_name(
         }
         (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_APPLY_FUNCTION_INDEX) => {
             Some((AOS_APPLY_SYMBOL, user_external_name))
+        }
+        (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_HAS_ATTR_FUNCTION_INDEX) => {
+            Some((AOS_HAS_ATTR_SYMBOL, user_external_name))
+        }
+        (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX) => {
+            Some((AOS_SELECT_IC_SYMBOL, user_external_name))
         }
         _ => None,
     }
