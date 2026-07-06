@@ -5827,6 +5827,78 @@ fn gc_stress_mixed_inherited_attrs_accumulator_thunk_allocations_publish_select_
 }
 
 #[test]
+fn gc_stress_dynamic_attr_key_expression_preserves_registered_roots() {
+    let ir = lower(r#"{ inherit ({ a = 1; }) a; ${"b"} = 2; }"#);
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let default_outcome =
+        eval_whnf_owned(&ir).expect("default dynamic inherited attrset evaluates");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(97)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress dynamic inherited attrset evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while dynamic attr key expression was evaluated"
+    );
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let (selected, dynamic_value) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("root attrset is heap-owned");
+        (
+            attrs.get(a).expect("inherited attr exists"),
+            attrs.get(b).expect("dynamic attr exists"),
+        )
+    };
+    assert_eq!(selected.tag(), ValueTag::Thunk);
+    let selected_thunk = evaluator
+        .heap()
+        .get_thunk(selected)
+        .expect("inherited select is a heap-owned thunk");
+    assert!(matches!(
+        selected_thunk.kind(),
+        EvalThunkKind::Select { .. }
+    ));
+    assert_eq!(dynamic_value.as_int(), Ok(2));
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        default_outcome
+            .heap()
+            .permanent_allocation_safepoints()
+            .count(),
+        "dynamic-key expression should not add an extra permanent allocation safepoint"
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_attrs_accumulator_allocation_node_clears_after_binding_error() {
     let span = Span::new(0, 1);
     let mut symbols = SymbolTable::new();

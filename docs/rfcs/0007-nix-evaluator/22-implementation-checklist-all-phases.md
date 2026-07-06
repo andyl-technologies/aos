@@ -7504,6 +7504,8 @@ and helps the oracle directly.
       source-node binding-value thunk allocations dispatching through the same
       scoped local-accumulator result gate and multi-attr assembly relocating
       accumulated transient roots,
+      dynamic-key expression evaluation preserving registered transient roots
+      while an inherited-select field blocks final attrset dispatch,
       plus root string, URI, and path literals preserving their permanent values
       through the scalar no-op bridge, root-result `baseNameOf`, `dirOf`, and
       `toPath` helper allocations relocating registered transient roots while
