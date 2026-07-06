@@ -3395,8 +3395,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       direct regex `match` capture-string/list allocations and `split`
       first text/capture string/list allocations preserving accumulated
       result roots after later dispatch is blocked,
-      direct `builtins.nixPath` result-list allocations preserving
-      accumulated entry roots,
+      direct `builtins.nixPath` first path/prefix string allocations
+      preserving registered roots while accumulated entry roots block later
+      generated-entry and result-list dispatch,
       direct reflected-context output-name string/list allocations preserving
       accumulated output-name roots while final generated-attrset dispatch
       remains blocked,

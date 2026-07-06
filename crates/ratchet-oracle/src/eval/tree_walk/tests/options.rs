@@ -2418,6 +2418,10 @@ fn gc_stress_nix_path_value_result_list_preserves_accumulated_entries() {
     let mut roots = [local_source];
 
     let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
         .expect("nixPath value evaluates under GC stress");
@@ -2448,6 +2452,19 @@ fn gc_stress_nix_path_value_result_list_preserves_accumulated_entries() {
     };
     assert_nix_path_entry(&mut evaluator, items[0], b"left", b"/aos/left");
     assert_nix_path_entry(&mut evaluator, items[1], b"right", b"/aos/right");
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+        ],
+        "nixPath should dispatch the first entry path/prefix strings before accumulated entry roots block later generated allocations"
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 7,
+        "nixPath should allocate four strings, two generated entry attrsets, and the final list under GC stress"
+    );
     let permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
