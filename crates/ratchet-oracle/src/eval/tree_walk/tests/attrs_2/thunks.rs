@@ -950,6 +950,9 @@ fn attr_position_builtins_record_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 1);
     assert_eq!(snapshot.reasons.small_shape_stable, 2);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 2);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -1114,6 +1117,9 @@ fn try_eval_records_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 2);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 2);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -1159,6 +1165,30 @@ fn get_context_records_dynamic_repr_decisions() {
         .get_attrs(result)
         .expect("getContext result is attrs");
     assert_eq!(attrs.len(), 3);
+    let metadata = evaluator
+        .heap
+        .get_attrs_metadata(result)
+        .expect("getContext result metadata exists");
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let keys = attrs
+        .iter_lexicographic()
+        .map(|entry| {
+            evaluator
+                .symbols
+                .resolve(entry.key)
+                .expect("getContext key resolves")
+                .to_vec()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        keys,
+        vec![
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src".to_vec(),
+            b"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv".to_vec(),
+            b"/nix/store/cccccccccccccccccccccccccccccccc-deep.drv".to_vec(),
+        ],
+    );
     let snapshot = evaluator
         .attr_telemetry
         .update_merge_snapshot()
@@ -1168,6 +1198,9 @@ fn get_context_records_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 4);
+    let stats = evaluator.attr_telemetry.order_parity_stats();
+    assert_eq!(stats.matched, 4);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]

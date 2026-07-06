@@ -10092,6 +10092,17 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       This pins the current flat-payload fetchTree/flake-ref result boundary
       only; it does not claim shaped/HAMT heap payload iteration, C++ oracle
       comparison, full conformance 20-21, or full AOS closure `.drv` parity.
+- [x] Current active generated trace/context/position order-parity canary:
+      `builtins.tryEval`, `builtins.getContext` group and outer attrsets, and
+      source-position attrsets from `builtins.unsafeGetAttrPos`/`__curPos` now
+      share the successful dynamic-result order-parity telemetry hook. Existing
+      tree-walk canaries pin two matched, zero mismatched tryEval samples, four
+      matched, zero mismatched getContext samples with projected outer metadata
+      and path-key ordering, and two matched, zero mismatched source-position
+      samples. This pins the current flat-payload generated trace/context/position
+      result boundary only; it does not claim shaped/HAMT heap payload
+      iteration, C++ oracle comparison, full conformance 20-21, or full AOS
+      closure `.drv` parity.
 - [x] Current active projected-shape `functionArgs` order-parity canary:
       `builtins.functionArgs` now shares the successful dynamic-result
       order-parity telemetry hook. A tree-walk canary describes adversarial
@@ -10141,7 +10152,8 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       allocations plus `partition`, codec-generated `fromJSON`/`fromTOML`
       results, generated `parseDrvName`/`readDir`/`nixPath` entry results,
       generated `fetchGit`/`fetchTree`/`parseFlakeRef` results, `functionArgs`,
-      `listToAttrs`, and `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
+      generated `tryEval`/`getContext`/source-position results, `listToAttrs`,
+      and `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
       counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape
