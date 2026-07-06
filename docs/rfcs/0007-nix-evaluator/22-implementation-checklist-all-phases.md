@@ -7566,6 +7566,9 @@ and helps the oracle directly.
       primop-result composite dispatch remains blocked,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
       registered transient roots,
+      root static/ambient builtin string allocations (`nixVersion`, `storeDir`,
+      configured `currentSystem`, configured `getEnv`, and pure `getEnv`)
+      relocating registered transient roots,
       root `appendContext` evaluations preserving registered transient roots
       while interned reflected-context attr roots block dispatch,
       root no-context `getContext` generated-attrset result allocations

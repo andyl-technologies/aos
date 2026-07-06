@@ -1373,6 +1373,31 @@ fn gc_stress_alloc_static_string_helper_dispatches_permanent_noop_bridge() {
 }
 
 #[test]
+fn gc_stress_eval_root_static_builtin_string_results_dispatch_permanent_noop_bridge() {
+    assert_gc_stress_root_string_result_dispatches("builtins.nixVersion", PINNED_NIX_VERSION);
+    assert_gc_stress_root_string_result_dispatches("builtins.storeDir", b"/nix/store");
+    assert_gc_stress_root_string_result_dispatches_with_options(
+        "builtins.currentSystem",
+        b"x86_64-linux",
+        TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())
+            .expect("currentSystem configures"),
+    );
+    assert_gc_stress_root_string_result_dispatches_with_options(
+        r#"builtins.getEnv "AOS_RFC0007_STATIC_STRING""#,
+        b"configured-env",
+        TreeWalkOptions::with_env_var(
+            b"AOS_RFC0007_STATIC_STRING".to_vec(),
+            b"configured-env".to_vec(),
+        ),
+    );
+    assert_gc_stress_root_string_result_dispatches_with_options(
+        r#"builtins.getEnv "AOS_RFC0007_STATIC_STRING""#,
+        b"",
+        TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+    );
+}
+
+#[test]
 fn gc_stress_alloc_symbol_string_helper_dispatches_permanent_noop_bridge() {
     let ir = lower("{ helperSymbol = 1; }");
     let span = Span::new(0, 0);
