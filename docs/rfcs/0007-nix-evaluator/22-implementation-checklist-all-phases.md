@@ -9815,6 +9815,16 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       telemetry, terminal monomorphic site state, and slow-select shaped
       hit/miss counts. This does not cover `with` probes, polymorphic or
       megamorphic active bridge states, native lowering, or `.drv` parity.
+- [x] Current projected-shaped hit-miss-hit-miss `with` probe canary: a
+      tree-walk `with` chain now proves that a present inner projected-shaped
+      scope can install a monomorphic probe site, later missing inner scopes
+      can fall through to an outer shaped scope without caching absence, and a
+      later present inner scope returns through the cached-hit path. The test
+      checks mirrored hit/miss counters, shaped lookup telemetry for the inner
+      and fallback outer sites, terminal monomorphic site states, two resolved
+      inner misses with no cached misses, and slow-select shaped hit/miss
+      counts. This does not cover polymorphic or megamorphic active bridge
+      states, native lowering, or `.drv` parity.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie

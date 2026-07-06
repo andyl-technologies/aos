@@ -373,6 +373,35 @@ fn repeated_with_var_probe_uses_shaped_inline_cache_for_projected_flat_scopes() 
 }
 
 #[test]
+fn repeated_with_var_probe_keeps_shaped_cache_after_missing_scope() {
+    let ir = lower(
+        "let f = x: with { a = 10; }; with x; a;
+         in (f { a = 1; }) + (f {}) + (f { a = 3; }) + (f {})",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("hit-miss-hit-miss with-var probe evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(24));
+    assert_eq!(outcome.stats().inline_cache_hits(), 2);
+    assert_eq!(outcome.stats().inline_cache_misses(), 4);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 4);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 2);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 2);
+    assert_eq!(counts.shaped_misses, 2);
+}
+
+#[test]
 fn repeated_with_var_probe_uses_hamt_inline_cache_for_projected_hamt_scopes() {
     let ir = lower(
         "let base = ((((({ z = 6; } // { a = 1; }) // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; });
