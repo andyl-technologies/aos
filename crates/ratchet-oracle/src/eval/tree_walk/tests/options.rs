@@ -4153,7 +4153,7 @@ fn gc_stress_map_attrs_symbol_names_preserve_live_locals() {
 }
 
 #[test]
-fn gc_stress_map_attrs_symbol_names_skip_active_argument_roots() {
+fn gc_stress_map_attrs_symbol_names_dispatch_with_active_function_argument_root() {
     let ir = lower("name: value: value");
     let span = ir.arena.node(ir.root).expect("root exists").span;
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
@@ -4170,15 +4170,6 @@ fn gc_stress_map_attrs_symbol_names_skip_active_argument_roots() {
         .heap
         .alloc_thunk(EvalThunk::new(IrId::new(43)))
         .expect("right value thunk allocates");
-    let attrs = FlatAttrs::new(
-        vec![AttrEntry::new(a_key, left), AttrEntry::new(b_key, right)],
-        &evaluator.symbols,
-    )
-    .expect("input attrs build");
-    let attrs_value = evaluator
-        .heap
-        .alloc_attrs(0, attrs)
-        .expect("input attrs allocate");
     evaluator
         .heap
         .set_gc_stress_policy(GcStressPolicy::every_safepoint());
@@ -4195,7 +4186,7 @@ fn gc_stress_map_attrs_symbol_names_skip_active_argument_roots() {
             span,
             &[
                 EvalPrimOpArg::new(ir.root, span, function),
-                EvalPrimOpArg::new(ir.root, span, attrs_value),
+                EvalPrimOpArg::new(ir.root, span, Value::int(2)),
             ],
         )
         .expect("active mapAttrs argument roots push");
@@ -4216,9 +4207,120 @@ fn gc_stress_map_attrs_symbol_names_skip_active_argument_roots() {
     evaluator.active_root_eval_node = None;
 
     assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let (a_thunk, b_thunk) = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(value)
+            .expect("mapAttrs result is heap-owned");
+        (
+            attrs.get(a_key).expect("a result exists"),
+            attrs.get(b_key).expect("b result exists"),
+        )
+    };
+    let (a_function, a_name, a_value) = apply2_thunk_values(&evaluator, a_thunk);
+    let (b_function, b_name, b_value) = apply2_thunk_values(&evaluator, b_thunk);
+
+    assert!(
+        !a_function.raw_eq(function),
+        "first mapAttrs function argument was not relocated before thunk capture"
+    );
+    assert!(
+        !b_function.raw_eq(function),
+        "second mapAttrs function argument was not written back after relocation"
+    );
+    evaluator
+        .heap()
+        .get_lambda(a_function)
+        .expect("first mapAttrs function remains heap-owned");
+    evaluator
+        .heap()
+        .get_lambda(b_function)
+        .expect("second mapAttrs function remains heap-owned");
+    assert_heap_string_bytes(&evaluator, a_name, b"a");
+    assert_heap_string_bytes(&evaluator, b_name, b"b");
+    assert!(
+        !a_value.raw_eq(left),
+        "current mapAttrs value was not relocated before thunk capture"
+    );
+    assert!(
+        !b_value.raw_eq(right),
+        "unprocessed mapAttrs entry tail was not written back after relocation"
+    );
+    assert!(
+        evaluator.heap().permanent_allocation_safepoints().count()
+            >= permanent_safepoints_before + 3,
+        "mapAttrs result did not record expected permanent allocations"
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_map_attrs_symbol_names_skip_nested_active_argument_frames() {
+    let ir = lower("name: value: value");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let function = evaluator
+        .eval_node(ir.root)
+        .expect("mapAttrs function allocates");
+    let a_key = evaluator.symbols.intern(b"a").expect("a interns");
+    let b_key = evaluator.symbols.intern(b"b").expect("b interns");
+    let left = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(51)))
+        .expect("left value thunk allocates");
+    let right = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(53)))
+        .expect("right value thunk allocates");
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(57)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    evaluator
+        .push_active_primop_arg_roots(
+            ir.root,
+            span,
+            &[EvalPrimOpArg::new(ir.root, span, Value::int(1))],
+        )
+        .expect("outer active argument roots push");
+    evaluator
+        .push_active_primop_arg_roots(
+            ir.root,
+            span,
+            &[
+                EvalPrimOpArg::new(ir.root, span, function),
+                EvalPrimOpArg::new(ir.root, span, Value::int(2)),
+            ],
+        )
+        .expect("inner active mapAttrs argument roots push");
+    let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+        eval.alloc_mapped_attrs(
+            ir.root,
+            span,
+            ir.root,
+            span,
+            function,
+            ir.root,
+            vec![AttrEntry::new(a_key, left), AttrEntry::new(b_key, right)],
+        )
+    });
+    evaluator.pop_active_primop_arg_roots();
+    evaluator.pop_active_primop_arg_roots();
+    let value = result.expect("mapAttrs result allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
     assert!(
         roots[0].raw_eq(local_source),
-        "registered root relocated while active mapAttrs argument roots were live"
+        "registered root relocated while nested active primop argument frames were live"
     );
     assert_eq!(value.tag(), ValueTag::Attrs);
     let (a_thunk, b_thunk) = {
@@ -4240,11 +4342,6 @@ fn gc_stress_map_attrs_symbol_names_skip_active_argument_roots() {
     assert_heap_string_bytes(&evaluator, b_name, b"b");
     assert!(a_value.raw_eq(left));
     assert!(b_value.raw_eq(right));
-    assert!(
-        evaluator.heap().permanent_allocation_safepoints().count()
-            >= permanent_safepoints_before + 3,
-        "mapAttrs result did not record expected permanent allocations"
-    );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
@@ -4478,10 +4575,6 @@ fn gc_stress_zip_attrs_with_value_lists_skip_active_argument_roots() {
         .heap
         .alloc_attrs(0, second_attrs)
         .expect("second attrs allocate");
-    let input = evaluator
-        .heap
-        .alloc_list(NixList::new(vec![first, second]))
-        .expect("input list allocates");
     evaluator
         .heap
         .set_gc_stress_policy(GcStressPolicy::every_safepoint());
@@ -4498,7 +4591,7 @@ fn gc_stress_zip_attrs_with_value_lists_skip_active_argument_roots() {
             span,
             &[
                 EvalPrimOpArg::new(ir.root, span, function),
-                EvalPrimOpArg::new(ir.root, span, input),
+                EvalPrimOpArg::new(ir.root, span, Value::int(2)),
             ],
         )
         .expect("active zipAttrsWith argument roots push");

@@ -7484,7 +7484,7 @@ and helps the oracle directly.
       let/lambda, recursive, and override binding local accumulator assembly,
       inherited-select receiver/select-thunk allocations, dynamic-key
       expression evaluation before the current binding value is selected,
-      helper-generated symbol strings that can run from primops holding
+      remaining helper-generated symbol strings that can run from primops holding
       unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
       originless or cross-module persistent payload replay string/path/list/attr
@@ -7572,8 +7572,11 @@ and helps the oracle directly.
       direct `catAttrs` IR-helper list-result allocations preserving
       registered transient roots while active lexical environment roots block
       dispatch,
+      direct `mapAttrs` symbol-name helper allocations relocating registered
+      helper-local transient roots while a scoped active primop function
+      argument root is live,
       direct `mapAttrs` symbol-name helper allocations preserving registered
-      transient roots while active primop argument roots block dispatch,
+      transient roots while nested active primop argument frames block dispatch,
       direct `filter` and `map` empty-input fast-path result routing through
       the tree-walk list wrapper,
       direct `filter` list-result allocations preserving registered transient
@@ -7626,6 +7629,9 @@ and helps the oracle directly.
       values while relocating registered transient roots through that same
       bridge, direct `mapAttrs` and `zipAttrsWith` symbol-name allocations
       preserving live function/value/list locals across symbol-name safepoints,
+      with `mapAttrs` also relocating registered helper-local roots in the
+      scoped active-function-argument case and skipping when nested active
+      primop argument frames are present,
       and context-rewriting helper string allocations preserving their bytes
       while relocating registered transient roots.
       They also cover lazy list-element,

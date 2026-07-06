@@ -101,7 +101,9 @@ impl TreeWalk {
         roots.extend(remaining_entries.iter().map(|entry| entry.value));
 
         let name = self.with_transient_value_stack_roots(id, span, &mut roots, |eval| {
-            eval.alloc_symbol_string(id, span, key)
+            eval.with_gc_stress_primop_arg_root_admission(|eval| {
+                eval.alloc_symbol_string(id, span, key)
+            })
         })?;
         if let Some(root) = roots.first().copied() {
             *function = root;

@@ -365,6 +365,7 @@ impl TreeWalk {
             active_composite_accumulator_depth: 0,
             active_root_eval_node: None,
             active_gc_stress_accumulator_allocation_node: None,
+            active_gc_stress_primop_arg_root_admission_depth: 0,
             active_force_roots: Vec::new(),
             active_primop_arg_roots: Vec::new(),
             active_primop_arg_frames: Vec::new(),

@@ -742,6 +742,28 @@ impl TreeWalk {
         result
     }
 
+    pub(super) fn with_gc_stress_primop_arg_root_admission<T>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        self.active_gc_stress_primop_arg_root_admission_depth = self
+            .active_gc_stress_primop_arg_root_admission_depth
+            .saturating_add(1);
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                self.active_gc_stress_primop_arg_root_admission_depth = self
+                    .active_gc_stress_primop_arg_root_admission_depth
+                    .saturating_sub(1);
+                std::panic::resume_unwind(payload);
+            }
+        };
+        self.active_gc_stress_primop_arg_root_admission_depth = self
+            .active_gc_stress_primop_arg_root_admission_depth
+            .saturating_sub(1);
+        result
+    }
+
     pub(super) fn alloc_thunk_for_node(
         &mut self,
         id: IrId,
@@ -1268,10 +1290,38 @@ impl TreeWalk {
             && self.active_composite_accumulator_depth == 0
             && self.suspended_env_roots.is_empty()
             && self.active_force_roots.is_empty()
-            && self.active_primop_arg_roots.is_empty()
-            && self.active_primop_arg_frames.is_empty()
+            && self.can_dispatch_gc_stress_active_primop_arg_roots()
             && self.import_cache.is_empty()
             && self.can_dispatch_gc_stress_interned_roots()
+    }
+
+    fn can_dispatch_gc_stress_active_primop_arg_roots(&self) -> bool {
+        if self.active_primop_arg_roots.is_empty() && self.active_primop_arg_frames.is_empty() {
+            return true;
+        }
+        self.active_gc_stress_primop_arg_root_admission_depth > 0
+            && self.can_dispatch_gc_stress_admitted_active_primop_arg_roots()
+    }
+
+    fn can_dispatch_gc_stress_admitted_active_primop_arg_roots(&self) -> bool {
+        let [frame] = self.active_primop_arg_frames.as_slice() else {
+            return false;
+        };
+        if frame.start != 0 || frame.len != self.active_primop_arg_roots.len() {
+            return false;
+        }
+        self.active_primop_arg_roots
+            .iter()
+            .all(|arg| self.can_dispatch_gc_stress_admitted_active_primop_arg_root(arg.value()))
+    }
+
+    fn can_dispatch_gc_stress_admitted_active_primop_arg_root(&self, value: Value) -> bool {
+        if value.as_heap_ptr().is_err() {
+            return true;
+        }
+        self.transient_value_stack_roots
+            .iter()
+            .any(|root| root.raw_eq(value))
     }
 
     fn can_dispatch_gc_stress_interned_roots(&self) -> bool {
