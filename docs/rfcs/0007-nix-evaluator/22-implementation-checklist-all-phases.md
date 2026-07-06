@@ -10033,6 +10033,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       the current flat-payload `zipAttrsWith` consumer boundary only; it does
       not claim shaped/HAMT heap payload iteration, C++ oracle comparison, full
       conformance 20-21, or full AOS closure `.drv` parity.
+- [x] Current active projected-shape attr-filter order-parity canary:
+      `builtins.removeAttrs` and `builtins.intersectAttrs` now share the
+      successful dynamic-result order-parity telemetry hook. A tree-walk canary
+      filters adversarial static attrsets through both builtins and checks
+      result `attrNames`, result `attrValues`, projected-shape metadata, and one
+      matched, zero mismatched direct-result telemetry sample for each builtin.
+      This pins the current flat-payload attr-filter result boundary only; it
+      does not claim shaped/HAMT heap payload iteration, C++ oracle comparison,
+      full conformance 20-21, or full AOS closure `.drv` parity.
 - [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes in-process, byte-neutral counters/snapshots for shape census,
       slow-select hit/miss outcomes by representation, generic/flat/shaped/HAMT
@@ -10051,8 +10060,8 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       select-cache terminal states plus shaped/HAMT lookup outcomes are recorded
       there too. Active `attrNames`/`attrValues` calls now also record
       successful in-process raw-byte order-parity checks, as do successful
-      `mapAttrs` and `zipAttrsWith` result allocations. Cache hits use mirrored
-      `EvalStats` inline-cache counters while
+      `mapAttrs`, `zipAttrsWith`, `removeAttrs`, and `intersectAttrs` result
+      allocations. Cache hits use mirrored `EvalStats` inline-cache counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape
       projection separately increments `EvalStats::shape_transitions` for

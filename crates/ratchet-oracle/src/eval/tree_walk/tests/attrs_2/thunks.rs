@@ -870,6 +870,9 @@ fn attr_filter_builtins_record_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 6);
     assert_eq!(snapshot.reasons.small_shape_stable, 4);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 4);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -1855,6 +1858,46 @@ fn zip_attrs_with_projected_shape_preserves_order_and_records_order_parity_telem
     let stats = outcome.attr_telemetry().order_parity_stats();
     assert_eq!(stats.matched, 1);
     assert_eq!(stats.mismatched, 0);
+}
+
+#[test]
+fn attr_filter_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let attrs_source = "{ z = 1; A = 2; aa = 3; _ = 4; a = 5; }";
+    let remove_source = format!("builtins.removeAttrs {attrs_source} [ \"aa\" ]");
+    let intersect_source =
+        format!("builtins.intersectAttrs {{ _ = 0; z = 0; A = 0; missing = 0; }} {attrs_source}");
+
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({remove_source})")),
+        vec![b"A".to_vec(), b"_".to_vec(), b"a".to_vec(), b"z".to_vec()],
+    );
+    assert_eq!(
+        eval_list_ints(&format!("builtins.attrValues ({remove_source})")),
+        vec![2, 4, 5, 1],
+    );
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({intersect_source})")),
+        vec![b"A".to_vec(), b"_".to_vec(), b"z".to_vec()],
+    );
+    assert_eq!(
+        eval_list_ints(&format!("builtins.attrValues ({intersect_source})")),
+        vec![2, 4, 1],
+    );
+
+    for source in [remove_source, intersect_source] {
+        let ir = lower(&source);
+        let outcome = eval_whnf_owned(&ir).expect("attr filter result evaluates");
+        let metadata = outcome
+            .heap()
+            .get_attrs_metadata(outcome.value())
+            .expect("attr filter result metadata exists");
+
+        assert!(metadata.projected_shape().is_some());
+        assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+        let stats = outcome.attr_telemetry().order_parity_stats();
+        assert_eq!(stats.matched, 1, "{source}");
+        assert_eq!(stats.mismatched, 0, "{source}");
+    }
 }
 
 #[test]
