@@ -1426,6 +1426,114 @@ fn gc_stress_eval_root_type_of_static_string_results_dispatch_or_skip_composites
 }
 
 #[test]
+fn gc_stress_parse_drv_name_result_strings_dispatch_before_attrset_skip() {
+    let ir = lower(r#"builtins.parseDrvName "foo-1.2""#);
+    let root = *ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let argument = ir
+        .arena
+        .child_slice(args)
+        .expect("primop args exist")
+        .first()
+        .copied()
+        .expect("parseDrvName argument exists");
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let argument_value = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"foo-1.2".to_vec()))
+        .expect("argument string allocates");
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, root.span, &mut roots, |eval| {
+            eval.eval_parse_drv_name_primop(
+                ir.root,
+                root.span,
+                argument,
+                argument_span,
+                argument_value,
+            )
+        })
+        .expect("GC-stress parseDrvName evaluates");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while parseDrvName result strings allocated"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let name_key = evaluator.symbols.intern(b"name").expect("name key interns");
+    let version_key = evaluator
+        .symbols
+        .intern(b"version")
+        .expect("version key interns");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("parseDrvName result is heap-owned");
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(attrs.get(name_key).expect("name attr exists"))
+            .expect("name string is heap-owned")
+            .bytes(),
+        b"foo"
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .get_string(attrs.get(version_key).expect("version attr exists"))
+            .expect("version string is heap-owned")
+            .bytes(),
+        b"1.2"
+    );
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+        ],
+        "parseDrvName should dispatch the name/version string safepoints but not the final generated attrset"
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 3,
+        "parseDrvName should allocate exactly the name string, version string, and final attrset under GC stress"
+    );
+    let final_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("parseDrvName final attrset allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_alloc_symbol_string_helper_dispatches_permanent_noop_bridge() {
     let ir = lower("{ helperSymbol = 1; }");
     let span = Span::new(0, 0);

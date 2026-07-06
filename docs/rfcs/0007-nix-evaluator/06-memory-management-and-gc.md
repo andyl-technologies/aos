@@ -3335,6 +3335,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       root `typeOf` static type-name result allocations relocating registered
       transient roots for scalar/function/path inputs while preserving them when
       list/attrset argument roots block dispatch,
+      helper-level `parseDrvName` name/version result-string allocations
+      relocating registered transient roots before the final generated attrset
+      allocation,
       root `appendContext` evaluations preserving registered transient roots
       while interned reflected-context attr roots block dispatch,
       root no-context `getContext` generated-attrset result allocations

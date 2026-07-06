@@ -117,6 +117,8 @@ use crate::heap::{
     RegionSharing, RememberedEdge, RememberedSet, RememberedSetEpoch, ResolvedValueGeneration,
 };
 use crate::list::{NixList, NixListError};
+#[cfg(test)]
+use crate::runtime::alloc::RuntimeAllocationEntryPoint;
 use crate::runtime::alloc::{AllocationCollectorPoll, GcStressPolicy, RuntimeAllocatorTier};
 use crate::runtime::builtins::*;
 use crate::string::{
@@ -1051,6 +1053,8 @@ pub struct TreeWalk {
     lazy_foldl_initial_thunks: BTreeSet<u64>,
     #[cfg(test)]
     tree_walk_list_wrapper_calls: usize,
+    #[cfg(test)]
+    gc_stress_permanent_root_allocation_dispatches: Vec<RuntimeAllocationEntryPoint>,
 }
 
 /// Reports cold hash-consed values ensured in the indexed persistent value pack.

@@ -377,6 +377,8 @@ impl TreeWalk {
             lazy_foldl_initial_thunks: BTreeSet::new(),
             #[cfg(test)]
             tree_walk_list_wrapper_calls: 0,
+            #[cfg(test)]
+            gc_stress_permanent_root_allocation_dispatches: Vec::new(),
         }
     }
 

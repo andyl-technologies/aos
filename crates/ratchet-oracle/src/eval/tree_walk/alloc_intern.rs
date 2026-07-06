@@ -5,6 +5,8 @@ use crate::eval::{
     TreeWalkParallelThunkForceOutcome, TreeWalkThunkAllocationContext, TreeWalkThunkAllocationPlan,
     tree_walk_thunk_allocation_plan,
 };
+#[cfg(test)]
+use crate::runtime::alloc::RuntimeAllocationEntryPoint;
 use crate::runtime::barrier::{
     runtime_thunk_resolve_write_barrier, runtime_thunk_resolve_write_barrier_with_card_table,
 };
@@ -985,6 +987,10 @@ impl TreeWalk {
             .alloc_string(string)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if dispatch_gc_stress_safepoint {
+            #[cfg(test)]
+            self.record_gc_stress_permanent_root_allocation_dispatch(
+                RuntimeAllocationEntryPoint::AosAllocString,
+            );
             self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
                 id,
                 span,
@@ -1100,6 +1106,10 @@ impl TreeWalk {
             .alloc_path(path)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if dispatch_gc_stress_safepoint {
+            #[cfg(test)]
+            self.record_gc_stress_permanent_root_allocation_dispatch(
+                RuntimeAllocationEntryPoint::AosAllocString,
+            );
             self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
                 id,
                 span,
@@ -1130,6 +1140,10 @@ impl TreeWalk {
             .alloc_list(list)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if dispatch_gc_stress_safepoint {
+            #[cfg(test)]
+            self.record_gc_stress_permanent_root_allocation_dispatch(
+                RuntimeAllocationEntryPoint::AosAllocList,
+            );
             self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
                 id,
                 span,
@@ -1144,6 +1158,22 @@ impl TreeWalk {
     #[cfg(test)]
     pub(in crate::eval::tree_walk) const fn tree_walk_list_wrapper_calls(&self) -> usize {
         self.tree_walk_list_wrapper_calls
+    }
+
+    #[cfg(test)]
+    fn record_gc_stress_permanent_root_allocation_dispatch(
+        &mut self,
+        entrypoint: RuntimeAllocationEntryPoint,
+    ) {
+        self.gc_stress_permanent_root_allocation_dispatches
+            .push(entrypoint);
+    }
+
+    #[cfg(test)]
+    pub(in crate::eval::tree_walk) fn gc_stress_permanent_root_allocation_dispatches(
+        &self,
+    ) -> &[RuntimeAllocationEntryPoint] {
+        &self.gc_stress_permanent_root_allocation_dispatches
     }
 
     pub(super) fn alloc_tree_walk_attrs_with_projected_shape_metadata(
@@ -1164,6 +1194,10 @@ impl TreeWalk {
             .alloc_attrs_with_projected_shape_metadata(shape, repr, projected_shape, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if dispatch_gc_stress_safepoint {
+            #[cfg(test)]
+            self.record_gc_stress_permanent_root_allocation_dispatch(
+                RuntimeAllocationEntryPoint::AosAllocAttrs,
+            );
             self.apply_gc_stress_permanent_allocation_safepoint_to_just_allocated_value(
                 id,
                 span,
