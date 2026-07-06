@@ -258,6 +258,45 @@ fn assert_full_ir_native_call_registration_plan_gap(ir: &Ir, expected_symbols: &
     }
 }
 
+fn assert_full_ir_native_call_registration_plan_source_failure(ir: &Ir, symbol_name: &'static str) {
+    let result =
+        nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root_with_registration_plan_source(
+            JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+            )),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            ir,
+            ir.root,
+            || {
+                Err(NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates(
+                    NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
+                        symbol_name,
+                    },
+                ))
+            },
+        );
+
+    let Err(error) = result else {
+        panic!("hot full-IR native-call preflight should require registration planning");
+    };
+    assert!(error.decision().should_promote());
+    assert_eq!(
+        error.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
+    let NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates(
+        NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
+            symbol_name: actual_symbol,
+        },
+    ) = error.runtime_symbol_registration_plan_error()
+    else {
+        panic!("full-IR native-call preflight should preserve registration source failure");
+    };
+    assert_eq!(*actual_symbol, symbol_name);
+}
+
 #[test]
 fn jit_runtime_symbol_address_candidates_feed_registered_env_promotion() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
@@ -1627,80 +1666,26 @@ fn nix_jit_registered_native_call_preflight_reports_plan_source_failure_after_pr
 fn nix_jit_full_ir_update_native_call_preflight_reports_plan_source_failure_after_promotion() {
     let ir = update_ir(23, 25);
 
-    let result =
-        nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root_with_registration_plan_source(
-            JitTieredCodeSlot::with_counter(TierUpCounter::new(
-                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-            )),
-            TierUpPolicy::default(),
-            TierUpDemandHint::NoMultiUseEvidence,
-            &ir,
-            ir.root,
-            || {
-                Err(NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates(
-                    NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
-                        symbol_name: "aos_update",
-                    },
-                ))
-            },
-        );
-
-    let Err(error) = result else {
-        panic!("hot full-IR update native-call preflight should require registration planning");
-    };
-    assert!(error.decision().should_promote());
-    assert_eq!(
-        error.slot().invocation_counter().invocations(),
-        DEFAULT_TIER1_INVOCATION_THRESHOLD
-    );
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    assert!(matches!(
-        error.runtime_symbol_registration_plan_error(),
-        NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates(
-            NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
-                symbol_name: "aos_update"
-            }
-        )
-    ));
+    assert_full_ir_native_call_registration_plan_source_failure(&ir, "aos_update");
 }
 
 #[test]
-fn nix_jit_registered_full_ir_native_call_preflight_reports_plan_source_failure_after_promotion() {
+fn nix_jit_full_ir_apply_native_call_preflight_reports_plan_source_failure_after_promotion() {
+    let ir = apply_ir(23, 25);
+
+    assert_full_ir_native_call_registration_plan_source_failure(&ir, "aos_apply");
+}
+
+#[test]
+fn nix_jit_full_ir_has_attr_native_call_preflight_reports_plan_source_failure_after_promotion() {
+    let ir = static_has_attr_ir(23);
+
+    assert_full_ir_native_call_registration_plan_source_failure(&ir, "aos_has_attr");
+}
+
+#[test]
+fn nix_jit_full_ir_select_native_call_preflight_reports_plan_source_failure_after_promotion() {
     let ir = static_select_ir(23);
 
-    let result =
-        nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root_with_registration_plan_source(
-            JitTieredCodeSlot::with_counter(TierUpCounter::new(
-                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
-            )),
-            TierUpPolicy::default(),
-            TierUpDemandHint::NoMultiUseEvidence,
-            &ir,
-            ir.root,
-            || {
-                Err(NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates(
-                    NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
-                        symbol_name: "aos_select_ic",
-                    },
-                ))
-            },
-        );
-
-    let Err(error) = result else {
-        panic!("hot full-IR native-call preflight should require registration planning");
-    };
-    assert!(error.decision().should_promote());
-    assert_eq!(
-        error.slot().invocation_counter().invocations(),
-        DEFAULT_TIER1_INVOCATION_THRESHOLD
-    );
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    assert!(matches!(
-        error.runtime_symbol_registration_plan_error(),
-        NixJitRuntimeSymbolRegistrationPlanError::AddressCandidates(
-            NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
-                symbol_name: "aos_select_ic"
-            }
-        )
-    ));
+    assert_full_ir_native_call_registration_plan_source_failure(&ir, "aos_select_ic");
 }

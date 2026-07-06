@@ -1312,7 +1312,8 @@ harness, never cut for scope.
       bounded local-slot update attempts, global runtime-symbol candidate
       visibility while invoked through the full-IR entrypoint, and synthetic
       registration-plan source failure after promotion for arena-root, full-IR
-      static-select, and full-IR bounded update gates.
+      static-select, direct local-slot apply, static has-attr, and bounded
+      update gates.
       This still does not inspect lowered
       IR roots, lower, finalize, or call native code from `aos-nix`, publish
       evaluator thunks, perform atomic thunk-state CAS, run trap transfer,
