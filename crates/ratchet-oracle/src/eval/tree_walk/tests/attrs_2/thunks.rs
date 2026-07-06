@@ -1207,6 +1207,40 @@ fn repeated_static_select_site_separates_projected_shapes_with_different_slots()
 }
 
 #[test]
+fn polymorphic_static_select_defaults_keep_shaped_cache_after_missing_receiver() {
+    let ir = lower(
+        "let f = x: x.b or 10;
+         in (f { b = 1; })
+          + (f { a = 0; b = 2; })
+          + (f { c = 0; })
+          + (f { b = 3; })
+          + (f { a = 0; b = 4; })
+          + (f { c = 5; })",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("polymorphic hit-miss-hit-miss select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(30));
+    assert_eq!(outcome.stats().inline_cache_hits(), 2);
+    assert_eq!(outcome.stats().inline_cache_misses(), 4);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.polymorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.polymorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 4);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 0);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 2);
+    assert_eq!(counts.shaped_misses, 2);
+}
+
+#[test]
 fn projected_shaped_select_site_becomes_megamorphic_after_cap_overflow() {
     // The default shaped PIC cap is four entries; the fifth distinct projected
     // shape drives the active bridge into the megamorphic terminal state.
