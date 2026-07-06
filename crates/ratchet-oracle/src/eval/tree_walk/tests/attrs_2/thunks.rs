@@ -1732,6 +1732,35 @@ fn static_attrset_heap_metadata_records_projected_shape() {
 }
 
 #[test]
+fn projected_shape_static_attr_names_and_values_preserve_raw_byte_order() {
+    let attrs_source = "{ z = 1; A = 2; aa = 3; _ = 4; a = 5; }";
+    let names_source = format!("builtins.attrNames {attrs_source}");
+    let values_source = format!("builtins.attrValues {attrs_source}");
+
+    assert_eq!(
+        eval_list_string_bytes(&names_source),
+        vec![
+            b"A".to_vec(),
+            b"_".to_vec(),
+            b"a".to_vec(),
+            b"aa".to_vec(),
+            b"z".to_vec(),
+        ],
+    );
+    assert_eq!(eval_list_ints(&values_source), vec![2, 4, 5, 3, 1]);
+
+    let ir = lower(attrs_source);
+    let outcome = eval_whnf_owned(&ir).expect("projected-shape static attrset evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("result metadata exists");
+
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+}
+
+#[test]
 fn force_cache_payload_replay_preserves_attr_repr_metadata() {
     let ir = lower(
         "((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; })",

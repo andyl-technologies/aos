@@ -9998,6 +9998,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       land; it does not claim native storage, shaped/HAMT payload iteration,
       non-ASCII ordering beyond the derivationStrict canary above, full
       conformance 20-21, or full AOS closure `.drv` parity.
+- [x] Current active projected-shape `attrNames`/`attrValues` order canary: a
+      tree-walk static attrset whose heap metadata carries a projected shape
+      now checks both raw-byte lexicographic key order (`A`, `_`, `a`, `aa`,
+      `z`) and value alignment (`2`, `4`, `5`, `3`, `1`) through
+      `builtins.attrNames` and `builtins.attrValues`. This pins the active
+      evaluator's current projected-shape ordering surface before shaped heap
+      payloads land; it does not claim native storage, shaped payload
+      iteration, non-ASCII ordering beyond the derivationStrict canary above,
+      full conformance 20-21, or full AOS closure `.drv` parity.
 - [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes in-process, byte-neutral counters/snapshots for shape census,
       slow-select hit/miss outcomes by representation, generic/flat/shaped/HAMT
