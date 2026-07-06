@@ -3318,9 +3318,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       root `tryEval` generated-attrset result allocations preserving
       registered transient roots while primop-result composite dispatch remains
       blocked,
-      root `removeAttrs`/`intersectAttrs` and helper-level empty-input
-      `mapAttrs` generated-attrset result allocations preserving registered
-      transient roots while primop-result composite dispatch remains blocked,
+      root `removeAttrs`/`intersectAttrs`, helper-level empty-input
+      `mapAttrs`, and root empty-input `zipAttrsWith` generated-attrset result
+      allocations preserving registered transient roots while primop-result
+      composite dispatch remains blocked,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
       registered transient roots,
       root `appendContext` evaluations preserving registered transient roots
