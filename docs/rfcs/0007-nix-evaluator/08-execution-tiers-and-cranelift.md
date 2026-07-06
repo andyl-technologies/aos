@@ -1248,12 +1248,13 @@ harness, never cut for scope.
       with host-ABI-matched candidates, installs opaque tier-1 pointer metadata
       in the updated slot, and keeps the module-owning invocation beside the
       returned value. Tests pin cold no-call behavior, promoted forced env-slot
-      execution with synthetic `aos_env_get`/`aos_force` candidates, slot pointer
-      equality, helper import/registration metadata, module ownership, and
-      missing-`aos_force` candidate rejection with the invocation-updated slot
-      preserved. This still does not publish evaluator thunks, perform atomic
-      thunk-state CAS, use real exported oracle wrappers, run trap transfer, or
-      prove `.drv` parity.
+      execution with synthetic `aos_env_get`/`aos_force` candidates, promoted
+      direct local-slot apply execution with synthetic `aos_env_get`/`aos_apply`
+      candidates, slot pointer equality, helper import/registration metadata,
+      module ownership, and missing-`aos_force` or `aos_apply` candidate
+      rejection with the invocation-updated slot preserved. This still does not
+      publish evaluator thunks, perform atomic thunk-state CAS, use real exported
+      oracle wrappers, run trap transfer, or prove `.drv` parity.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       records one tier-up invocation in safe code and preserves cold
