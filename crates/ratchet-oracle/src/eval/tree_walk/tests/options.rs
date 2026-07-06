@@ -2784,6 +2784,120 @@ fn gc_stress_toml_array_result_dispatches_permanent_noop_bridge() {
 }
 
 #[test]
+fn gc_stress_json_empty_object_result_skips_primop_composite_dispatch() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_from_json(ir.root, span, JsonValue::Object(serde_json::Map::new()))
+        })
+        .expect("JSON empty object attrset allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while generated JSON object attrset dispatch was blocked"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("JSON object attrset generation is known"),
+        HeapGeneration::Permanent
+    );
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("JSON object result is heap-owned");
+    assert_eq!(attrs.len(), 0);
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("JSON object attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_toml_empty_table_result_skips_primop_composite_dispatch() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.value_from_toml(ir.root, span, TomlValue::Table(Default::default()))
+        })
+        .expect("TOML empty table attrset allocates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while generated TOML table attrset dispatch was blocked"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("TOML table attrset generation is known"),
+        HeapGeneration::Permanent
+    );
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("TOML table result is heap-owned");
+    assert_eq!(attrs.len(), 0);
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("TOML table attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots() {
     let cases: &[(&str, &[u8])] = &[
         (r#"builtins.concatStringsSep "," [ "a" "b" ]"#, b"a,b"),

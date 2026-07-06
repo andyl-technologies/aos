@@ -3322,7 +3322,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       root `concatStringsSep` and `replaceStrings` evaluations preserving
       registered transient roots while interned list roots block dispatch,
       parsed JSON and TOML array-result helper allocations relocating
-      registered transient roots,
+      registered transient roots, with empty JSON object and TOML table result
+      allocations preserving registered transient roots while primop-result
+      composite dispatch remains blocked,
       direct `splitVersion` empty-list result allocations relocating
       registered transient roots,
       direct list-concat result allocations preserving registered transient
