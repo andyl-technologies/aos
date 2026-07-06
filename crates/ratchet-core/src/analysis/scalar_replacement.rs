@@ -34,7 +34,10 @@ use crate::syntax::Symbol;
 /// Returns [`ScalarReplacementError`] if the fact table length does not match
 /// the arena node count, if an immediate scalar node carries a payload that does
 /// not match its kind, or if a candidate replacement references malformed side
-/// tables.
+/// tables. Aggregate candidates also recheck uniqueness across the IR, so
+/// malformed side tables traversed by that scan, including unrelated child
+/// slices, binding keys, or binding values, are rejected before replacement is
+/// admitted.
 pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarReplacementError> {
     let node_count = ir.arena.nodes().len();
     if ir.facts.len() != node_count {
@@ -71,13 +74,24 @@ pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarR
             continue;
         }
 
-        if facts.strictness == Strictness::Strict
-            && facts.escape == Escape::NoEscape
-            && let Some(kind) = aggregate_kind(ir, id, node.kind, node.data)?
-        {
-            plan.aggregate_candidate_count += 1;
-            plan.replacements.push(ScalarReplacement { node: id, kind });
-            continue;
+        if facts.strictness == Strictness::Strict && facts.escape == Escape::NoEscape {
+            match aggregate_kind(ir, id, node.kind, node.data)? {
+                Some(kind) => {
+                    plan.aggregate_candidate_count += 1;
+                    plan.replacements.push(ScalarReplacement { node: id, kind });
+                    continue;
+                }
+                None if matches!(node.kind, IrKind::List | IrKind::AttrSet) => {
+                    plan.retained.push(ScalarReplacementRetention {
+                        node: id,
+                        reason: ScalarReplacementRetentionReason::UnsupportedAggregateConsumer {
+                            kind: node.kind,
+                        },
+                    });
+                    continue;
+                }
+                None => {}
+            }
         }
 
         if facts.strictness == Strictness::Strict && facts.escape == Escape::NoEscape {
@@ -154,6 +168,7 @@ fn aggregate_kind(
 }
 
 fn unique_scalar_primop_argument(ir: &Ir, argument: IrId) -> Result<bool, ScalarReplacementError> {
+    validate_node(ir, ir.root)?;
     let mut reference_count = count_id(ir.root, argument);
     let mut scalar_argument_count = 0usize;
 
@@ -173,8 +188,11 @@ fn unique_scalar_primop_argument(ir: &Ir, argument: IrId) -> Result<bool, Scalar
         if primop_scalar_kind(ir, current, node.data)?.is_none() {
             continue;
         }
-        scalar_argument_count = scalar_argument_count
-            .saturating_add(count_ids(child_ids(ir, current, args)?, argument));
+        scalar_argument_count = scalar_argument_count.saturating_add(count_validated_ids(
+            ir,
+            child_ids(ir, current, args)?,
+            argument,
+        )?);
     }
 
     Ok(reference_count == 1 && scalar_argument_count == 1)
@@ -196,41 +214,77 @@ fn reference_count_in_node(
         | IrData::Local { .. }
         | IrData::Upval { .. }
         | IrData::DialectScopeVar { .. } => Ok(0),
-        IrData::SearchPath { search_path, .. } => Ok(count_optional_id(search_path, target)),
-        IrData::Node(child) => Ok(count_id(child, target)),
-        IrData::Pair { first, second } => Ok(count_id(first, target) + count_id(second, target)),
+        IrData::SearchPath { search_path, .. } => {
+            count_optional_validated_id(ir, search_path, target)
+        }
+        IrData::Node(child) => {
+            validate_node(ir, child)?;
+            Ok(count_id(child, target))
+        }
+        IrData::Pair { first, second } => {
+            validate_node(ir, first)?;
+            validate_node(ir, second)?;
+            Ok(count_id(first, target) + count_id(second, target))
+        }
         IrData::Triple {
             first,
             second,
             third,
-        } => Ok(count_id(first, target) + count_id(second, target) + count_id(third, target)),
+        } => {
+            validate_node(ir, first)?;
+            validate_node(ir, second)?;
+            validate_node(ir, third)?;
+            Ok(count_id(first, target) + count_id(second, target) + count_id(third, target))
+        }
         IrData::Children(slice) | IrData::PrimOp { args: slice, .. } => {
-            Ok(count_ids(child_ids(ir, id, slice)?, target))
+            count_validated_ids(ir, child_ids(ir, id, slice)?, target)
         }
         IrData::Bindings(slice) => count_binding_references(ir, id, slice, target),
-        IrData::Binary { lhs, rhs, .. } => Ok(count_id(lhs, target) + count_id(rhs, target)),
-        IrData::Unary { operand, .. } => Ok(count_id(operand, target)),
+        IrData::Binary { lhs, rhs, .. } => {
+            validate_node(ir, lhs)?;
+            validate_node(ir, rhs)?;
+            Ok(count_id(lhs, target) + count_id(rhs, target))
+        }
+        IrData::Unary { operand, .. } => {
+            validate_node(ir, operand)?;
+            Ok(count_id(operand, target))
+        }
         IrData::Select {
             receiver,
             path,
             default,
             ..
-        } => Ok(count_id(receiver, target)
-            + count_optional_id(default, target)
-            + count_attr_path_references(ir, id, path, target)?),
+        } => {
+            validate_node(ir, receiver)?;
+            if let Some(default) = default {
+                validate_node(ir, default)?;
+            }
+            Ok(count_id(receiver, target)
+                + count_optional_id(default, target)
+                + count_attr_path_references(ir, id, path, target)?)
+        }
         IrData::HasAttr { receiver, path, .. } => {
+            validate_node(ir, receiver)?;
             Ok(count_id(receiver, target) + count_attr_path_references(ir, id, path, target)?)
         }
-        IrData::DialectNode { argument, .. } => Ok(count_id(argument, target)),
+        IrData::DialectNode { argument, .. } => {
+            validate_node(ir, argument)?;
+            Ok(count_id(argument, target))
+        }
         IrData::Lambda { pattern, body, .. } => {
+            validate_node(ir, pattern)?;
+            validate_node(ir, body)?;
             Ok(count_id(pattern, target) + count_id(body, target))
         }
         IrData::Let { bindings, body, .. } => {
+            validate_node(ir, body)?;
             Ok(count_binding_references(ir, id, bindings, target)? + count_id(body, target))
         }
         IrData::AttrSet { bindings, .. } => count_binding_references(ir, id, bindings, target),
-        IrData::FormalSet { formals, .. } => Ok(count_ids(child_ids(ir, id, formals)?, target)),
-        IrData::Formal { default, .. } => Ok(count_optional_id(default, target)),
+        IrData::FormalSet { formals, .. } => {
+            count_validated_ids(ir, child_ids(ir, id, formals)?, target)
+        }
+        IrData::Formal { default, .. } => count_optional_validated_id(ir, default, target),
     }
 }
 
@@ -245,8 +299,10 @@ fn count_binding_references(
     let mut count = 0usize;
     for binding in bindings {
         if let IrAttrPathSegment::Dynamic(key) = binding.key {
+            validate_node(ir, key)?;
             count += count_id(key, target);
         }
+        validate_node(ir, binding.value)?;
         count += count_id(binding.value, target);
     }
     Ok(count)
@@ -292,10 +348,6 @@ fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], ScalarRe
         .ok_or(ScalarReplacementError::InvalidChildSlice { id, slice })
 }
 
-fn count_ids(ids: &[IrId], target: IrId) -> usize {
-    ids.iter().filter(|id| **id == target).count()
-}
-
 fn count_validated_ids(
     ir: &Ir,
     ids: &[IrId],
@@ -311,6 +363,19 @@ fn count_validated_ids(
 
 fn count_optional_id(id: Option<IrId>, target: IrId) -> usize {
     id.map_or(0, |id| count_id(id, target))
+}
+
+fn count_optional_validated_id(
+    ir: &Ir,
+    id: Option<IrId>,
+    target: IrId,
+) -> Result<usize, ScalarReplacementError> {
+    if let Some(id) = id {
+        validate_node(ir, id)?;
+        Ok(count_id(id, target))
+    } else {
+        Ok(0)
+    }
 }
 
 fn count_id(id: IrId, target: IrId) -> usize {
@@ -510,6 +575,11 @@ pub enum ScalarReplacementRetentionReason {
     /// The node is not a replacement kind supported by this precursor.
     UnsupportedNodeKind {
         /// The unsupported node kind.
+        kind: IrKind,
+    },
+    /// The aggregate proof did not have the required scalar-primop consumer.
+    UnsupportedAggregateConsumer {
+        /// The aggregate node kind that was retained.
         kind: IrKind,
     },
 }

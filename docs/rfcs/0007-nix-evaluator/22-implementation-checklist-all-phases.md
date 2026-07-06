@@ -9301,14 +9301,15 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
 - [x] Current scalar replacement planning precursor:
       `ratchet-core::analysis::scalar_replacement` consumes strictness and
       escape facts and returns the immediate scalar nodes whose current facts
-      license non-heap representation. The planner admits only `int`, `float`,
-      `bool`, `null`, and immediate-scalar direct primop nodes with both
-      `Strict` and `NoEscape`, retains scalar nodes with missing proofs, and
-      rejects fact-table/node-count mismatches, malformed scalar payloads, or
-      malformed primop side tables before admitting a primop. This is a planning precursor only:
-      optimized storage lowering, aggregate decomposition/lowering, the full
-      primop escape surface, and frame-local thunk/attrset escape integration
-      remain open.
+      license non-heap representation. For the immediate-scalar surface, the
+      planner admits `int`, `float`, `bool`, `null`, and immediate-scalar direct
+      primop nodes with both `Strict` and `NoEscape`, retains scalar nodes with
+      missing proofs, and rejects fact-table/node-count mismatches, malformed
+      scalar payloads, or malformed primop side tables before admitting a
+      primop. Aggregate scratch candidates are covered by the narrower precursor
+      below. This is a planning precursor only: optimized storage lowering,
+      aggregate decomposition/lowering, the full primop escape surface, and
+      frame-local thunk/attrset escape integration remain open.
 - [x] Current aggregate scalar-primop replacement planning precursor:
       `scalar_replacement_plan` now admits `List` and `AttrSet` aggregate
       scratch candidates only when their facts prove `Strict + NoEscape` and
@@ -9319,13 +9320,25 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       exposes a lowering-safe plan surface for the narrow aggregate escape
       precursor, but it still does not rewrite IR, decompose aggregate fields,
       or provide optimized storage lowering.
+- [x] Current aggregate scalar-replacement retention precursor:
+      `scalar_replacement_plan` now reports a distinct
+      `UnsupportedAggregateConsumer` retention reason when forged or stale
+      `Strict + NoEscape` facts appear on a list or attrset whose consumer shape
+      is not the unique immediate-scalar primop case. Tests pin shared-root,
+      `with`-chain, dynamic attr-path, and conservative-primop consumers as
+      fail-closed aggregate retentions. This is an observable planner API and
+      lowering-boundary refinement only: it does not add new aggregate
+      replacements, rewrite IR, decompose fields, or provide optimized storage
+      lowering.
 - [x] Current scalar replacement side-table validation hardening:
       `scalar_replacement_plan` tests now pin rejection for forged
       strict/no-escape proofs over malformed aggregate and primop side tables:
       unresolved primop symbols, invalid primop child slices, dangling primop
       child ids, invalid attrset shapes, invalid attrset binding slices,
       invalid attr-path ids, dangling dynamic attr-path segment ids, and
-      dangling `with`-chain scope ids. This is a planner-boundary hardening
+      dangling `with`-chain scope ids. The aggregate uniqueness scan also
+      validates unrelated child slices, dynamic binding keys, and binding values
+      it traverses before admitting a candidate. This is a planner-boundary hardening
       check only; it does not add new scalar-replacement candidates or optimized
       storage lowering.
 - [x] Current scalar replacement fact-table validation hardening:

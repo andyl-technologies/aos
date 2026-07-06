@@ -290,7 +290,9 @@ fn scalar_replacement_plan_retains_shared_aggregate_despite_forged_proofs() {
     assert!(plan.retained().iter().any(|retention| {
         retention.node() == list
             && retention.reason()
-                == ScalarReplacementRetentionReason::UnsupportedNodeKind { kind: IrKind::List }
+                == ScalarReplacementRetentionReason::UnsupportedAggregateConsumer {
+                    kind: IrKind::List,
+                }
     }));
 }
 
@@ -394,6 +396,63 @@ fn scalar_replacement_plan_rejects_malformed_list_aggregate_children() {
 }
 
 #[test]
+fn scalar_replacement_plan_rejects_malformed_unrelated_child_slices_during_aggregate_scan() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let unrelated = IrId::new(2);
+    let missing_child = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+            IrNode::new(
+                IrKind::List,
+                Span::new(3, 5),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(1, 1)),
+            ),
+        ],
+        vec![list, missing_child],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(3),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let error = scalar_replacement_plan(&ir)
+        .expect_err("malformed unrelated child slice rejects during aggregate scan");
+
+    assert_eq!(unrelated, IrId::new(2));
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidNode { id: missing_child }
+    );
+}
+
+#[test]
 fn scalar_replacement_plan_rejects_malformed_attrset_aggregate_bindings() {
     let attrset = IrId::new(0);
     let key_node = IrId::new(1);
@@ -453,6 +512,148 @@ fn scalar_replacement_plan_rejects_malformed_attrset_aggregate_bindings() {
 
     let error = scalar_replacement_plan(&ir).expect_err("malformed attrset binding rejects");
 
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidNode { id: missing_value }
+    );
+}
+
+#[test]
+fn scalar_replacement_plan_rejects_malformed_unrelated_dynamic_keys_during_aggregate_scan() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let attrset = IrId::new(2);
+    let value = IrId::new(3);
+    let missing_key = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+            IrNode::new(
+                IrKind::AttrSet,
+                Span::new(3, 8),
+                EffectClass::pure(),
+                IrData::AttrSet {
+                    shape: crate::ir::IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(0, 1),
+                    recursive: false,
+                    has_dynamic: true,
+                    frame: None,
+                },
+            ),
+            IrNode::new(
+                IrKind::Null,
+                Span::new(6, 7),
+                EffectClass::pure(),
+                IrData::None,
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(4),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([IrBinding {
+            key: IrAttrPathSegment::Dynamic(missing_key),
+            position: None,
+            value,
+        }]),
+        shapes: Box::new([IrShape::new(Box::new([]))]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let error = scalar_replacement_plan(&ir)
+        .expect_err("malformed unrelated dynamic key rejects during aggregate scan");
+
+    assert_eq!(attrset, IrId::new(2));
+    assert_eq!(
+        error,
+        ScalarReplacementError::InvalidNode { id: missing_key }
+    );
+}
+
+#[test]
+fn scalar_replacement_plan_rejects_malformed_unrelated_binding_values_during_aggregate_scan() {
+    let list = IrId::new(0);
+    let primop = IrId::new(1);
+    let attrset = IrId::new(2);
+    let missing_value = IrId::new(99);
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"a").expect("key symbol interns");
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::List,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::Children(IrChildSlice::new(0, 0)),
+            ),
+            IrNode::new(
+                IrKind::PrimOp,
+                Span::new(0, 2),
+                EffectClass::pure(),
+                IrData::PrimOp {
+                    symbol,
+                    args: IrChildSlice::new(0, 1),
+                },
+            ),
+            IrNode::new(
+                IrKind::AttrSet,
+                Span::new(3, 8),
+                EffectClass::pure(),
+                IrData::AttrSet {
+                    shape: crate::ir::IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(0, 1),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+        ],
+        vec![list],
+    );
+    let mut ir = Ir {
+        root: primop,
+        arena,
+        facts: IrFacts::conservative(3),
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([IrBinding {
+            key: IrAttrPathSegment::Static(key),
+            position: None,
+            value: missing_value,
+        }]),
+        shapes: Box::new([IrShape::new(Box::new([key]))]),
+    };
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let error = scalar_replacement_plan(&ir)
+        .expect_err("malformed unrelated binding value rejects during aggregate scan");
+
+    assert_eq!(attrset, IrId::new(2));
     assert_eq!(
         error,
         ScalarReplacementError::InvalidNode { id: missing_value }
@@ -645,7 +846,9 @@ fn scalar_replacement_plan_retains_with_chain_aggregate_despite_forged_proofs() 
     assert!(plan.retained().iter().any(|retention| {
         retention.node() == list
             && retention.reason()
-                == ScalarReplacementRetentionReason::UnsupportedNodeKind { kind: IrKind::List }
+                == ScalarReplacementRetentionReason::UnsupportedAggregateConsumer {
+                    kind: IrKind::List,
+                }
     }));
 }
 
@@ -768,7 +971,9 @@ fn scalar_replacement_plan_retains_dynamic_attr_path_aggregate_despite_forged_pr
     assert!(plan.retained().iter().any(|retention| {
         retention.node() == list
             && retention.reason()
-                == ScalarReplacementRetentionReason::UnsupportedNodeKind { kind: IrKind::List }
+                == ScalarReplacementRetentionReason::UnsupportedAggregateConsumer {
+                    kind: IrKind::List,
+                }
     }));
 }
 
@@ -900,6 +1105,31 @@ fn scalar_replacement_plan_rejects_malformed_dynamic_attr_path_segments() {
     let error = scalar_replacement_plan(&ir).expect_err("malformed attr path segment rejects");
 
     assert_eq!(error, ScalarReplacementError::InvalidNode { id: missing });
+}
+
+#[test]
+fn scalar_replacement_plan_retains_aggregate_consumed_by_conservative_primop() {
+    let mut ir = lowered("builtins.seq [ 1 ] true");
+    let args = primop_args(&ir, ir.root);
+    let list = args[0];
+    set_facts(&mut ir, list, strict_no_escape());
+
+    let plan = scalar_replacement_plan(&ir).expect("scalar replacement plan succeeds");
+
+    assert_eq!(plan.aggregate_candidate_count(), 0);
+    assert!(
+        !plan
+            .replacements()
+            .iter()
+            .any(|replacement| replacement.node() == list)
+    );
+    assert!(plan.retained().iter().any(|retention| {
+        retention.node() == list
+            && retention.reason()
+                == ScalarReplacementRetentionReason::UnsupportedAggregateConsumer {
+                    kind: IrKind::List,
+                }
+    }));
 }
 
 #[test]
