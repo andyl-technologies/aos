@@ -5437,6 +5437,9 @@ fn gc_stress_map_attrs_symbol_names_preserve_live_locals() {
     evaluator
         .heap
         .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .alloc_mapped_attrs(
@@ -5493,6 +5496,14 @@ fn gc_stress_map_attrs_symbol_names_preserve_live_locals() {
     );
     assert_eq!(a_value.tag(), ValueTag::Thunk);
     assert_eq!(b_value.tag(), ValueTag::Thunk);
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+        ],
+        "mapAttrs should dispatch the two symbol-name string allocations"
+    );
     assert!(evaluator.transient_value_stack_roots().is_empty());
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
@@ -5536,6 +5547,9 @@ fn gc_stress_map_attrs_symbol_names_dispatch_with_active_function_argument_root(
         )
         .expect("active mapAttrs argument roots push");
     let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
         eval.alloc_mapped_attrs(
             ir.root,
@@ -5552,6 +5566,10 @@ fn gc_stress_map_attrs_symbol_names_dispatch_with_active_function_argument_root(
     evaluator.active_root_eval_node = None;
 
     assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while active function argument root was admitted"
+    );
     assert_eq!(roots[0].tag(), ValueTag::Thunk);
     assert_eq!(value.tag(), ValueTag::Attrs);
     let (a_thunk, b_thunk) = {
@@ -5597,6 +5615,14 @@ fn gc_stress_map_attrs_symbol_names_dispatch_with_active_function_argument_root(
         evaluator.heap().permanent_allocation_safepoints().count()
             >= permanent_safepoints_before + 3,
         "mapAttrs result did not record expected permanent allocations"
+    );
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+        ],
+        "admitted mapAttrs function argument should allow the two symbol-name string dispatches"
     );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
@@ -5648,6 +5674,9 @@ fn gc_stress_map_attrs_symbol_names_skip_unregistered_active_argument_root() {
             ],
         )
         .expect("active mapAttrs argument roots push");
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
         eval.alloc_mapped_attrs(
             ir.root,
@@ -5688,6 +5717,13 @@ fn gc_stress_map_attrs_symbol_names_skip_unregistered_active_argument_root() {
     assert_heap_string_bytes(&evaluator, b_name, b"b");
     assert!(a_value.raw_eq(left));
     assert!(b_value.raw_eq(right));
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "unregistered active mapAttrs argument root should block symbol-name dispatch"
+    );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
@@ -5736,6 +5772,9 @@ fn gc_stress_map_attrs_symbol_names_skip_nested_active_argument_frames() {
             ],
         )
         .expect("inner active mapAttrs argument roots push");
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let result = evaluator.with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
         eval.alloc_mapped_attrs(
             ir.root,
@@ -5777,6 +5816,13 @@ fn gc_stress_map_attrs_symbol_names_skip_nested_active_argument_frames() {
     assert_heap_string_bytes(&evaluator, b_name, b"b");
     assert!(a_value.raw_eq(left));
     assert!(b_value.raw_eq(right));
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "nested active primop argument frames should block mapAttrs symbol-name dispatch"
+    );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
