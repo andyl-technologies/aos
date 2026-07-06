@@ -7553,6 +7553,9 @@ and helps the oracle directly.
       registered transient roots when nested text-store setup is live,
       nested `readFile` final content-string allocations preserving
       unregistered outer locals,
+      root empty `readDir` generated-attrset result allocations preserving
+      registered transient roots while primop-result composite dispatch remains
+      blocked,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
       registered transient roots,
       root `appendContext` evaluations preserving registered transient roots
