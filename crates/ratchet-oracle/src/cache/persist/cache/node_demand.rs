@@ -140,6 +140,8 @@ impl PersistCache {
             self.record_node_metadata_unlocked(advanced_entry)?;
             recorded.push(advanced_entry);
         }
+        self.node_metadata_index
+            .compact_if_bloated(NODE_SIDECAR_COMPACTION_FACTOR)?;
         Ok(recorded)
     }
 

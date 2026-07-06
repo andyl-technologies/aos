@@ -8,7 +8,9 @@
 //! The current crate contains read-only file mapping, content-addressed
 //! blob-pack building blocks, hash-to-offset sidecars, fixed-record frontend
 //! artifact sidecars, fixed-record node metadata sidecars, and variable-length
-//! node trace logs plus schema-version sidecars and owned-path lifecycle
+//! node trace logs — each fronted by a shared in-memory newest-record-wins index
+//! so lookups do not rescan the append log — plus schema-version sidecars and
+//! owned-path lifecycle
 //! helpers, staged file-replacement helpers, advisory filesystem lock helpers,
 //! and process-local cache-root lock slots used by later persistent cache
 //! adapters. Higher-level cache formats remain in `ratchet-oracle` until they
@@ -26,4 +28,5 @@ pub mod node_trace_log;
 pub mod owned_paths;
 pub mod root_locks;
 pub mod schema;
+pub mod sidecar_index;
 pub mod store;

@@ -52,6 +52,12 @@ pub struct PersistCache {
     root_locks: Arc<PersistRootLocks>,
 }
 
+/// Compaction fires when a node sidecar's physical record count exceeds this
+/// multiple of its live keys. A warm re-run appends about one record per live
+/// key, so a factor of four bounds the append log to a few runs' worth of churn
+/// before it is rewritten to one record per key.
+const NODE_SIDECAR_COMPACTION_FACTOR: u64 = 4;
+
 type PendingFileRootKey = ([u8; PERSIST_BLOB_INDEX_KEY_LEN], u64, u64);
 type PendingFileRoots = Mutex<BTreeMap<PendingFileRootKey, PersistBlobLiveRoot>>;
 

@@ -1116,6 +1116,13 @@ impl TreeWalk {
                 "tree-walk evaluator persistent force demand run-boundary advancement failed"
             );
         }
+        if let Err(error) = persist_cache.compact_node_traces_if_bloated() {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent force trace run-boundary compaction failed"
+            );
+        }
     }
 
     pub(in crate::eval::tree_walk) fn open_persist_eval_cache(&mut self) {

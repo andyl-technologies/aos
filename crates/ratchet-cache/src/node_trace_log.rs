@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -193,6 +193,10 @@ impl NodeTraceLog {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, NodeTraceLogError> {
         let path = path.into();
         ensure_node_trace_log_file(&path)?;
+        // Validate the whole log's record framing once at open. `ensure` only
+        // creates and stats the file (running a full scan on every append made
+        // appends quadratic), so the open-time framing check lives here.
+        scan_node_trace_log_entries_from(&path, 0, |_| {})?;
         Ok(Self { path })
     }
 
@@ -258,6 +262,51 @@ impl NodeTraceLog {
             entries.push(entry);
         })?;
         Ok(entries)
+    }
+
+    /// Returns the current log file length in bytes, or `0` if it is absent.
+    ///
+    /// This is the cheap change-detection primitive for callers maintaining an
+    /// in-memory tail cache: it is a single stat with no directory creation or
+    /// file open, so it stays cheap on the lookup hot path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeTraceLogError`] if the log length cannot be inspected for a
+    /// reason other than the file being absent.
+    pub fn len(&self) -> Result<u64, NodeTraceLogError> {
+        match fs::metadata(&self.path) {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(source) => Err(NodeTraceLogError::Metadata {
+                path: self.path.clone(),
+                source,
+            }),
+        }
+    }
+
+    /// Reads records from byte `offset` to end of file in physical append order.
+    ///
+    /// Returns the decoded records and the byte offset one past the last record
+    /// read (the log length at read time). `offset` must be a record boundary
+    /// (`0` or a previously returned end offset); the append-only format
+    /// guarantees earlier offsets stay valid. An `offset` at or past the end
+    /// yields no records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeTraceLogError`] if the log cannot be created, opened,
+    /// inspected, read, or decoded.
+    pub fn read_entries_from(
+        &self,
+        offset: u64,
+    ) -> Result<(Vec<NodeTraceLogEntry>, u64), NodeTraceLogError> {
+        ensure_node_trace_log_file(&self.path)?;
+        let mut entries = Vec::new();
+        let end = scan_node_trace_log_entries_from(&self.path, offset, |entry| {
+            entries.push(entry);
+        })?;
+        Ok((entries, end))
     }
 
     /// Returns the newest trace log entry for every key in stable key order.
@@ -355,7 +404,8 @@ impl NodeTraceLog {
 
     fn scan_entries(&self, visit: impl FnMut(NodeTraceLogEntry)) -> Result<(), NodeTraceLogError> {
         ensure_node_trace_log_file(&self.path)?;
-        scan_node_trace_log_entries(&self.path, visit)
+        scan_node_trace_log_entries_from(&self.path, 0, visit)?;
+        Ok(())
     }
 }
 
@@ -547,18 +597,27 @@ fn ensure_node_trace_log_file(path: &Path) -> Result<(), NodeTraceLogError> {
             path: path.to_path_buf(),
             source,
         })?;
+    // Only create and stat the file here; full record-framing validation runs
+    // once at `open` (and per tail read). Scanning the whole log on every append
+    // through this helper made appends quadratic in the number of records.
     file.metadata()
         .map_err(|source| NodeTraceLogError::Metadata {
             path: path.to_path_buf(),
             source,
         })?;
-    scan_node_trace_log_entries(path, |_| {})
+    Ok(())
 }
 
-fn scan_node_trace_log_entries(
+/// Parses trace records from `start_offset` to end of file, returning the file
+/// length at read time.
+///
+/// `start_offset` must be a record boundary (`0` or a length previously returned
+/// by this function); the append-only format keeps earlier offsets valid.
+fn scan_node_trace_log_entries_from(
     path: &Path,
+    start_offset: u64,
     mut visit: impl FnMut(NodeTraceLogEntry),
-) -> Result<(), NodeTraceLogError> {
+) -> Result<u64, NodeTraceLogError> {
     let mut file = fs::OpenOptions::new()
         .read(true)
         .open(path)
@@ -573,7 +632,15 @@ fn scan_node_trace_log_entries(
             source,
         })?
         .len();
-    let mut offset = 0;
+    if start_offset >= len {
+        return Ok(len);
+    }
+    file.seek(SeekFrom::Start(start_offset))
+        .map_err(|source| NodeTraceLogError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let mut offset = start_offset;
     while offset < len {
         let remaining = len - offset;
         if remaining < NODE_TRACE_LOG_RECORD_HEADER_LEN as u64 {
@@ -650,7 +717,7 @@ fn scan_node_trace_log_entries(
         visit(NodeTraceLogEntry::new(key, value_hash, payload));
         offset = payload_end;
     }
-    Ok(())
+    Ok(len)
 }
 
 fn node_trace_log_format_error(path: &Path, source: NodeTraceLogFormatError) -> NodeTraceLogError {

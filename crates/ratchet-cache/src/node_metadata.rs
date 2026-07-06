@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -275,6 +275,89 @@ impl NodeMetadataIndex {
             entries.push(entry);
         })?;
         Ok(entries)
+    }
+
+    /// Returns the current index file length in bytes, or `0` if it is absent.
+    ///
+    /// This is the cheap change-detection primitive for callers maintaining an
+    /// in-memory tail cache: it is a single stat with no directory creation or
+    /// file open, so it stays cheap on the lookup hot path. Record-boundary
+    /// validation is deferred to [`Self::read_entries_from`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeMetadataIndexError`] if the index length cannot be
+    /// inspected for a reason other than the file being absent.
+    pub fn len(&self) -> Result<u64, NodeMetadataIndexError> {
+        match fs::metadata(&self.path) {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(source) => Err(NodeMetadataIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            }),
+        }
+    }
+
+    /// Reads records from byte `offset` to end of file in physical append order.
+    ///
+    /// Returns the decoded records and the byte offset one past the last record
+    /// read (the file length at read time). `offset` must be a record boundary
+    /// (`0` or a previously returned end offset); the append-only fixed-record
+    /// format guarantees earlier offsets stay valid. An `offset` at or past the
+    /// end yields no records.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeMetadataIndexError`] if the index cannot be created,
+    /// opened, inspected, seeked, read, or decoded, or if the byte range from
+    /// `offset` is not a whole number of records.
+    pub fn read_entries_from(
+        &self,
+        offset: u64,
+    ) -> Result<(Vec<NodeMetadataEntry>, u64), NodeMetadataIndexError> {
+        ensure_node_metadata_index_file(&self.path)?;
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| NodeMetadataIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| NodeMetadataIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_node_metadata_index_len(&self.path, len)?;
+        if offset >= len {
+            return Ok((Vec::new(), len));
+        }
+        validate_node_metadata_index_len(&self.path, len - offset)?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|source| NodeMetadataIndexError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        let remaining = (len - offset) as usize;
+        let mut buffer = vec![0; remaining];
+        file.read_exact(&mut buffer)
+            .map_err(|source| NodeMetadataIndexError::Read {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut entries = Vec::with_capacity(remaining / NODE_METADATA_ENTRY_LEN);
+        for chunk in buffer.chunks_exact(NODE_METADATA_ENTRY_LEN) {
+            entries.push(NodeMetadataEntry::decode(chunk).map_err(|source| {
+                NodeMetadataIndexError::Format {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?);
+        }
+        Ok((entries, len))
     }
 
     /// Rewrites the index to the newest entry for every key.
@@ -783,5 +866,51 @@ mod tests {
         ));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn node_metadata_index_read_entries_from_returns_only_the_tail() {
+        let path = temp_path("read-from");
+        let index = NodeMetadataIndex::open(path.clone()).expect("index opens");
+        let first = NodeMetadataEntry::new(metadata_key(NODES, 1), value(1));
+        let second = NodeMetadataEntry::new(metadata_key(NODES, 2), value(2));
+        index.append_entry(first).expect("first entry appends");
+
+        let (head, head_end) = index.read_entries_from(0).expect("full read succeeds");
+        assert_eq!(head, [first]);
+        assert_eq!(head_end, NODE_METADATA_ENTRY_LEN as u64);
+
+        index.append_entry(second).expect("second entry appends");
+        let (tail, tail_end) = index
+            .read_entries_from(head_end)
+            .expect("tail read succeeds");
+        assert_eq!(tail, [second]);
+        assert_eq!(tail_end, (NODE_METADATA_ENTRY_LEN * 2) as u64);
+
+        // A read at the end yields nothing without advancing.
+        let (empty, end) = index
+            .read_entries_from(tail_end)
+            .expect("empty read succeeds");
+        assert!(empty.is_empty());
+        assert_eq!(end, tail_end);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn node_metadata_index_len_reports_absent_file_as_empty() {
+        let path = temp_path("len-absent");
+        let index = NodeMetadataIndex::open(path.clone()).expect("index opens");
+        assert_eq!(index.len().expect("len of empty index"), 0);
+        index
+            .append_entry(NodeMetadataEntry::new(metadata_key(NODES, 1), value(1)))
+            .expect("entry appends");
+        assert_eq!(
+            index.len().expect("len after append"),
+            NODE_METADATA_ENTRY_LEN as u64
+        );
+
+        fs::remove_file(&path).expect("index removes");
+        assert_eq!(index.len().expect("len of removed index"), 0);
     }
 }

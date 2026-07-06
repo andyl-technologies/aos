@@ -68,6 +68,9 @@ impl PersistCache {
             return Err(PersistValueBlobPackRepackError::BlobIndex { source });
         }
         swap_repacked_value_store(&replacements)?;
+        // The value index file was swapped out-of-band, so invalidate the live
+        // handle's in-memory index; the relocated records carry new pack offsets.
+        self.value_index.mark_stale();
         Ok(plan)
     }
 
@@ -187,6 +190,9 @@ impl PersistCache {
             return Err(PersistFileBlobPackRepackError::ParseArtifactIndex { source });
         }
         swap_repacked_file_store(&replacements)?;
+        // The file index file was swapped out-of-band, so invalidate the live
+        // handle's in-memory index; the relocated records carry new pack offsets.
+        self.file_index.mark_stale();
         Ok(plan)
     }
 

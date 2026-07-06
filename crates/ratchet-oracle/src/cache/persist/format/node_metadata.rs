@@ -9,6 +9,7 @@ use ratchet_cache::node_metadata::{
     NodeMetadataIndexError as EngineNodeMetadataIndexError,
     NodeMetadataKey as EngineNodeMetadataKey, NodeMetadataValue as EngineNodeMetadataValue,
 };
+use ratchet_cache::sidecar_index::{LatestIndex, SidecarStatsSnapshot};
 
 /// A stable index key for durable demand-node metadata.
 ///
@@ -348,13 +349,16 @@ fn engine_node_metadata_format_error(
 
 /// A fixed-record index file for durable demand-node metadata.
 ///
-/// This is a simple durable substrate for tests and future cache integration.
-/// It is not the final LMDB/redb metadata engine: writes append one fixed
-/// record at a time, and lookups scan records linearly and return the newest
-/// matching entry.
+/// The newest value per key is held in a shared in-memory
+/// [`LatestIndex`](ratchet_cache::sidecar_index::LatestIndex). Before each read
+/// the wrapper refreshes it from the file, decoding only the newly appended
+/// tail, so lookups are map probes that still observe writes made through other
+/// handles or processes. The on-disk append-only file remains the source of
+/// truth; a rewrite (compaction) marks the map stale so the next read reloads.
 #[derive(Clone, Debug)]
 pub struct PersistNodeMetadataIndex {
     engine: EngineNodeMetadataIndex,
+    index: LatestIndex<PersistNodeMetadataKey, PersistNodeMetadataIndexValue>,
 }
 
 impl PersistNodeMetadataIndex {
@@ -368,7 +372,10 @@ impl PersistNodeMetadataIndex {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistNodeMetadataIndexError> {
         let engine =
             EngineNodeMetadataIndex::open(path.into()).map_err(engine_node_metadata_index_error)?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            index: LatestIndex::new(),
+        })
     }
 
     /// Returns this index file's filesystem path.
@@ -376,7 +383,15 @@ impl PersistNodeMetadataIndex {
         self.engine.path()
     }
 
+    /// Returns a snapshot of the lookup and records-scanned counters.
+    pub fn stats(&self) -> SidecarStatsSnapshot {
+        self.index.stats().snapshot()
+    }
+
     /// Appends one node metadata index entry.
+    ///
+    /// The record is written to the append-only file; the next read folds it
+    /// into the in-memory index through the tail reload.
     ///
     /// # Errors
     ///
@@ -391,23 +406,47 @@ impl PersistNodeMetadataIndex {
             .map_err(engine_node_metadata_index_error)
     }
 
+    /// Refreshes the in-memory index from the file, decoding only new records.
+    ///
+    /// Malformed records surface here as the tail reload decodes them, which is
+    /// why lookups on a corrupt sidecar return a format error.
+    fn refresh(&self) -> Result<(), PersistNodeMetadataIndexError> {
+        let len = self
+            .engine
+            .len()
+            .map_err(engine_node_metadata_index_error)?;
+        let path = self.path().to_path_buf();
+        self.index.refresh_with(len, |from| {
+            let (entries, end) = self
+                .engine
+                .read_entries_from(from)
+                .map_err(engine_node_metadata_index_error)?;
+            let mut pairs = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let entry = engine_node_metadata_entry_to_persist(entry).map_err(|source| {
+                    PersistNodeMetadataIndexError::Format {
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
+                pairs.push((entry.key(), entry.value()));
+            }
+            Ok((pairs, end))
+        })
+    }
+
     /// Looks up the newest node metadata value for `key`.
     ///
     /// # Errors
     ///
     /// Returns [`PersistNodeMetadataIndexError`] if the index cannot be opened,
-    /// read, or decoded.
+    /// read, or decoded during the refresh.
     pub fn lookup(
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<Option<PersistNodeMetadataIndexValue>, PersistNodeMetadataIndexError> {
-        let mut found = None;
-        for entry in self.entries()? {
-            if entry.key() == key {
-                found = Some(entry.value());
-            }
-        }
-        Ok(found)
+        self.refresh()?;
+        Ok(self.index.get(&key))
     }
 
     /// Returns the newest entry for every node metadata key.
@@ -418,15 +457,14 @@ impl PersistNodeMetadataIndex {
     /// # Errors
     ///
     /// Returns [`PersistNodeMetadataIndexError`] if the index cannot be opened,
-    /// read, or decoded.
+    /// read, or decoded during the refresh.
     pub fn latest_entries(
         &self,
     ) -> Result<Vec<PersistNodeMetadataIndexEntry>, PersistNodeMetadataIndexError> {
-        let mut latest = std::collections::BTreeMap::new();
-        for entry in self.entries()? {
-            latest.insert(entry.key(), entry.value());
-        }
-        Ok(latest
+        self.refresh()?;
+        Ok(self
+            .index
+            .latest_pairs()
             .into_iter()
             .map(|(key, value)| PersistNodeMetadataIndexEntry::new(key, value))
             .collect())
@@ -446,27 +484,43 @@ impl PersistNodeMetadataIndex {
     /// Returns [`PersistNodeMetadataIndexError`] if the index cannot be opened,
     /// read, decoded, written, flushed, or renamed into place.
     pub fn compact_latest_entries(&self) -> Result<usize, PersistNodeMetadataIndexError> {
-        let entries = self.latest_entries()?;
-        let entries = entries
-            .iter()
-            .copied()
-            .map(persist_node_metadata_entry_to_engine)
+        self.refresh()?;
+        let entries = self
+            .index
+            .latest_pairs()
+            .into_iter()
+            .map(|(key, value)| {
+                persist_node_metadata_entry_to_engine(PersistNodeMetadataIndexEntry::new(
+                    key, value,
+                ))
+            })
             .collect::<Vec<_>>();
-        self.engine
+        let count = self
+            .engine
             .replace_entries(&entries)
-            .map_err(engine_node_metadata_index_error)
+            .map_err(engine_node_metadata_index_error)?;
+        self.index.mark_stale();
+        Ok(count)
     }
 
-    fn entries(&self) -> Result<Vec<PersistNodeMetadataIndexEntry>, PersistNodeMetadataIndexError> {
-        self.engine
-            .entries()
-            .map_err(engine_node_metadata_index_error)?
-            .into_iter()
-            .map(engine_node_metadata_entry_to_persist)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|source| PersistNodeMetadataIndexError::Format {
-                path: self.path().to_path_buf(),
-                source,
-            })
+    /// Compacts the sidecar only if it has bloated past `factor` times live keys.
+    ///
+    /// Returns the retained entry count when a compaction ran, or `None`
+    /// otherwise. Concurrency requirements match [`Self::compact_latest_entries`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeMetadataIndexError`] if a triggered compaction
+    /// cannot be opened, read, decoded, written, flushed, or renamed into place.
+    pub fn compact_if_bloated(
+        &self,
+        factor: u64,
+    ) -> Result<Option<usize>, PersistNodeMetadataIndexError> {
+        self.refresh()?;
+        if self.index.is_bloated(factor) {
+            Ok(Some(self.compact_latest_entries()?))
+        } else {
+            Ok(None)
+        }
     }
 }

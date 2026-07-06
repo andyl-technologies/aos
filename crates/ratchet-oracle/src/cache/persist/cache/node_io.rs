@@ -139,6 +139,30 @@ impl PersistCache {
         self.node_trace_log.compact_latest_entries()
     }
 
+    /// Compacts node traces only when the log has bloated past the run-boundary
+    /// factor.
+    ///
+    /// This is the run-boundary counterpart to [`Self::compact_node_traces`]: it
+    /// rewrites the append-only log to one record per key only once physical
+    /// records exceed the node sidecar compaction factor times the live keys, so
+    /// warm re-runs that re-record traces cannot grow the log without bound.
+    /// Returns the retained entry count when a compaction ran, or `None`
+    /// otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistNodeTraceLogError`] if the advisory trace lock cannot be
+    /// acquired, if the same-root trace write lock is poisoned, or if a
+    /// triggered compaction cannot be opened, read, decoded, written, flushed,
+    /// or renamed into place.
+    pub fn compact_node_traces_if_bloated(
+        &self,
+    ) -> Result<Option<usize>, PersistNodeTraceLogError> {
+        let (_advisory_guard, _write_guard) = self.lock_node_traces_write()?;
+        self.node_trace_log
+            .compact_if_bloated(NODE_SIDECAR_COMPACTION_FACTOR)
+    }
+
     /// Appends materialization reuse counters for one demand node.
     ///
     /// Existing materialized value-hash metadata for the same node is

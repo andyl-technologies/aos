@@ -7,9 +7,14 @@ use ratchet_cache::blob_index::{
     BlobIndexKey as EngineBlobIndexKey, BlobIndexNamespace,
 };
 use ratchet_cache::blob_pack::{BlobPackHash, BlobPackLocation};
+use ratchet_cache::sidecar_index::{LatestIndex, SidecarStatsSnapshot};
 
 /// A content-addressed immutable blob namespace in the persistent cache.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// The declaration order (`Values` before `Files`) matches the encoded
+/// [`index_tag`](Self::index_tag) order, so deriving [`Ord`] keeps
+/// [`PersistBlobKey`] ordering aligned with encoded-key byte order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PersistBlobStore {
     /// Serialized WHNF values owned by the constructive value store.
     Values,
@@ -35,7 +40,11 @@ impl PersistBlobStore {
 }
 
 /// A typed immutable blob lookup key for the persistent hash-to-offset index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Ordering is `(store, hash)`, which matches the encoded key byte order
+/// (`index_tag` then digest), so an in-memory map keyed on it iterates in the
+/// same stable order the on-disk index uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PersistBlobKey {
     store: PersistBlobStore,
     hash: DurableBlake3Hash,
@@ -404,9 +413,16 @@ fn engine_blob_index_format_error(error: EngineBlobIndexFormatError) -> PersistP
 /// It is not the final LMDB/redb metadata engine: writes append one fixed
 /// record at a time, and lookups scan records linearly and return the newest
 /// matching entry.
+/// The newest location per key is held in a shared in-memory
+/// [`LatestIndex`](ratchet_cache::sidecar_index::LatestIndex), refreshed from the
+/// file before each read by decoding only the appended tail. This keeps lookups
+/// as map probes while staying coherent with writes made through other handles
+/// or processes; a rewrite (compaction or repack) marks the map stale so the
+/// next read reloads.
 #[derive(Clone, Debug)]
 pub struct PersistBlobIndex {
     engine: EngineBlobIndex,
+    index: LatestIndex<PersistBlobKey, PersistBlobLocation>,
 }
 
 impl PersistBlobIndex {
@@ -419,7 +435,10 @@ impl PersistBlobIndex {
     /// partial fixed-width record.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistBlobIndexError> {
         let engine = EngineBlobIndex::open(path.into()).map_err(engine_blob_index_error)?;
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            index: LatestIndex::new(),
+        })
     }
 
     /// Returns this index file's filesystem path.
@@ -427,7 +446,15 @@ impl PersistBlobIndex {
         self.engine.path()
     }
 
+    /// Returns a snapshot of the lookup and records-scanned counters.
+    pub fn stats(&self) -> SidecarStatsSnapshot {
+        self.index.stats().snapshot()
+    }
+
     /// Appends one hash-to-offset index entry.
+    ///
+    /// The record is written to the append-only file; the next read folds it
+    /// into the in-memory index through the tail reload.
     ///
     /// # Errors
     ///
@@ -439,23 +466,44 @@ impl PersistBlobIndex {
             .map_err(engine_blob_index_error)
     }
 
+    /// Refreshes the in-memory index from the file, decoding only new records.
+    ///
+    /// Malformed records surface here as the tail reload decodes them, which is
+    /// why lookups on a corrupt sidecar return a format error.
+    fn refresh(&self) -> Result<(), PersistBlobIndexError> {
+        let len = self.engine.len().map_err(engine_blob_index_error)?;
+        let path = self.path().to_path_buf();
+        self.index.refresh_with(len, |from| {
+            let (entries, end) = self
+                .engine
+                .read_entries_from(from)
+                .map_err(engine_blob_index_error)?;
+            let mut pairs = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let entry = engine_blob_index_entry_to_persist(entry).map_err(|source| {
+                    PersistBlobIndexError::Format {
+                        path: path.clone(),
+                        source,
+                    }
+                })?;
+                pairs.push((entry.key(), entry.location()));
+            }
+            Ok((pairs, end))
+        })
+    }
+
     /// Looks up the newest location for `key`.
     ///
     /// # Errors
     ///
     /// Returns [`PersistBlobIndexError`] if the index cannot be created,
-    /// opened, inspected, read, or decoded.
+    /// opened, inspected, read, or decoded during the refresh.
     pub fn lookup(
         &self,
         key: PersistBlobKey,
     ) -> Result<Option<PersistBlobLocation>, PersistBlobIndexError> {
-        let mut found = None;
-        for entry in self.latest_entries()? {
-            if entry.key() == key {
-                found = Some(entry.location());
-            }
-        }
-        Ok(found)
+        self.refresh()?;
+        Ok(self.index.get(&key))
     }
 
     /// Returns the newest entry for every blob key.
@@ -469,16 +517,13 @@ impl PersistBlobIndex {
     /// Returns [`PersistBlobIndexError`] if the index cannot be created,
     /// opened, inspected, read, or decoded.
     pub fn latest_entries(&self) -> Result<Vec<PersistBlobIndexEntry>, PersistBlobIndexError> {
-        self.engine
-            .latest_entries()
-            .map_err(engine_blob_index_error)?
+        self.refresh()?;
+        Ok(self
+            .index
+            .latest_pairs()
             .into_iter()
-            .map(engine_blob_index_entry_to_persist)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|source| PersistBlobIndexError::Format {
-                path: self.path().to_path_buf(),
-                source,
-            })
+            .map(|(key, location)| PersistBlobIndexEntry::new(key, location))
+            .collect())
     }
 
     /// Rewrites the sidecar to the newest entry for every blob key.
@@ -519,14 +564,29 @@ impl PersistBlobIndex {
         &self,
         entries: &[PersistBlobIndexEntry],
     ) -> Result<usize, PersistBlobIndexError> {
-        let entries = entries
+        let engine_entries = entries
             .iter()
             .copied()
             .map(persist_blob_index_entry_to_engine)
             .collect::<Vec<_>>();
-        self.engine
-            .replace_entries(&entries)
-            .map_err(engine_blob_index_error)
+        let count = self
+            .engine
+            .replace_entries(&engine_entries)
+            .map_err(engine_blob_index_error)?;
+        self.index.mark_stale();
+        Ok(count)
+    }
+
+    /// Invalidates the in-memory index so the next read fully reloads the file.
+    ///
+    /// Callers use this after replacing the backing file out-of-band — for
+    /// example a pack repack that stages a new index at a temporary path and
+    /// swaps it into place with [`ratchet_cache::file_replace::FileReplacementSet`]
+    /// rather than going through [`Self::replace_entries`]. Such a swap can leave
+    /// the file the same length with different record offsets, which the length
+    /// based tail reload would not otherwise detect.
+    pub(in crate::cache::persist) fn mark_stale(&self) {
+        self.index.mark_stale();
     }
 
     /// Writes `entries` exactly to `path`, replacing any stale file there.
