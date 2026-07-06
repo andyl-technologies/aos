@@ -3392,8 +3392,8 @@ GC must be observationally invisible (§8): every item is gated by the different
       direct `zipAttrsWith` grouped value-list allocations preserving
       direct-root live locals and registered transient roots while active
       primop argument roots block dispatch,
-      direct regex `match` capture-list and `split` capture/result-list
-      allocations preserving accumulated result roots,
+      direct regex `match` capture-string/list allocations and `split`
+      capture/result-list allocations preserving accumulated result roots,
       direct `builtins.nixPath` result-list allocations preserving
       accumulated entry roots,
       direct reflected-context outputs-list allocations preserving

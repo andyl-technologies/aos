@@ -2244,6 +2244,9 @@ fn gc_stress_match_capture_list_result_dispatches_permanent_noop_bridge() {
     let mut roots = [local_source];
 
     let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
         .expect("match capture list evaluates under GC stress");
@@ -2281,6 +2284,15 @@ fn gc_stress_match_capture_list_result_dispatches_permanent_noop_bridge() {
             .expect("second capture is a string")
             .bytes(),
         b"b"
+    );
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocList,
+        ],
+        "match should dispatch capture strings before the final capture list"
     );
     let permanent_safepoint = evaluator
         .heap()
