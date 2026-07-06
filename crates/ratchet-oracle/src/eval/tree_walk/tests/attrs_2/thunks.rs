@@ -1271,6 +1271,42 @@ fn projected_shaped_select_site_becomes_megamorphic_after_cap_overflow() {
 }
 
 #[test]
+fn megamorphic_static_select_defaults_stay_slow_after_missing_receivers() {
+    let ir = lower(
+        "let f = x: x.a or 10;
+         in (f { a = 1; })
+          + (f { b = 0; a = 2; })
+          + (f { c = 0; a = 3; })
+          + (f { d = 0; a = 4; })
+          + (f { e = 0; a = 5; })
+          + (f { missing = 0; })
+          + (f { missing = 1; })
+          + (f { a = 6; })",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("megamorphic hit-miss-hit select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(41));
+    assert_eq!(outcome.stats().inline_cache_hits(), 0);
+    assert_eq!(outcome.stats().inline_cache_misses(), 8);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.megamorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.megamorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 6);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 6);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 0);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 6);
+    assert_eq!(counts.shaped_misses, 2);
+}
+
+#[test]
 fn repeated_static_select_defaults_preserve_hit_then_miss_semantics() {
     let ir = lower("let f = x: x.a or 10; in (f { a = 1; }) + (f {})");
 

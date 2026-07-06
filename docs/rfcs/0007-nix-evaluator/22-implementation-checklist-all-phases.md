@@ -9835,6 +9835,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       misses, no monomorphic-fast-hit attribution, and slow-select shaped
       hit/miss counts. This does not cover polymorphic `hasAttr`/`with` probes,
       megamorphic active bridge state, native lowering, or `.drv` parity.
+- [x] Current projected-shaped megamorphic hit-miss-hit `select` canary: a
+      tree-walk static `select` with a default now proves that after one active
+      projected-shaped select site exceeds the polymorphic cap, later present
+      and missing receivers stay on the resolved slow path. The test drives the
+      site megamorphic with five distinct present shapes, then checks repeated
+      missing receivers and a later present receiver produce no cached hits or
+      cached misses, preserve terminal megamorphic site state, and keep
+      slow-select shaped hit/miss telemetry. This does not cover megamorphic
+      `hasAttr`/`with` probes, native lowering, or `.drv` parity.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
