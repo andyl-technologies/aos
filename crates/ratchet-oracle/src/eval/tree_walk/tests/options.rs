@@ -1723,6 +1723,9 @@ fn gc_stress_find_file_path_helper_dispatches_permanent_noop_bridge() {
     let mut roots = [local_source];
 
     evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
             eval.alloc_find_file_path(ir.root, span, b"/tmp/gc-stress-find-file".to_vec())
@@ -1755,6 +1758,11 @@ fn gc_stress_find_file_path_helper_dispatches_permanent_noop_bridge() {
     assert_eq!(
         evaluator.heap().permanent_allocation_safepoints().count(),
         1
+    );
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[RuntimeAllocationEntryPoint::AosAllocString],
+        "findFile path helper should dispatch exactly one permanent path allocation"
     );
     let permanent_safepoint = evaluator
         .heap()
@@ -1946,7 +1954,11 @@ fn assert_gc_stress_root_bool_result_skips_dispatch_with_options(
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
-fn assert_gc_stress_root_path_result_dispatches(source: &str, expected: &[u8]) {
+fn assert_gc_stress_root_path_result_dispatches(
+    source: &str,
+    expected: &[u8],
+    expected_allocation_shape: Option<(u64, &[RuntimeAllocationEntryPoint])>,
+) {
     let ir = lower(source);
     let span = ir.arena.node(ir.root).expect("root exists").span;
     let mut evaluator = TreeWalk::with_options(
@@ -1959,6 +1971,10 @@ fn assert_gc_stress_root_path_result_dispatches(source: &str, expected: &[u8]) {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
         .expect("GC-stress root expression evaluates");
@@ -1985,6 +2001,19 @@ fn assert_gc_stress_root_path_result_dispatches(source: &str, expected: &[u8]) {
             .bytes(),
         expected
     );
+    if let Some((expected_safepoints, expected_dispatches)) = expected_allocation_shape {
+        assert_eq!(
+            evaluator.heap().permanent_allocation_safepoints().count(),
+            permanent_safepoints_before + expected_safepoints,
+            "root path helper evaluation recorded an unexpected permanent safepoint count for {source}"
+        );
+        assert_eq!(
+            &evaluator.gc_stress_permanent_root_allocation_dispatches()
+                [permanent_dispatches_before..],
+            expected_dispatches,
+            "root path helper recorded an unexpected permanent dispatch suffix for {source}"
+        );
+    }
     let permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
@@ -2025,10 +2054,12 @@ fn gc_stress_eval_root_unary_path_result_helpers_dispatch_permanent_noop_bridge(
     assert_gc_stress_root_path_result_dispatches(
         "builtins.dirOf /tmp/gc-stress-root-name",
         b"/tmp",
+        Some((2, &[RuntimeAllocationEntryPoint::AosAllocString])),
     );
     assert_gc_stress_root_path_result_dispatches(
         r#"/tmp/${"gc-stress-interpolated-path"}"#,
         b"/tmp/gc-stress-interpolated-path",
+        Some((2, &[RuntimeAllocationEntryPoint::AosAllocString])),
     );
 }
 
@@ -2590,6 +2621,7 @@ fn gc_stress_eval_root_add_operator_scalar_results_dispatch_permanent_noop_bridg
     assert_gc_stress_root_path_result_dispatches(
         r#"/tmp/gc-stress-root + "/name""#,
         b"/tmp/gc-stress-root/name",
+        None,
     );
 }
 
