@@ -2120,10 +2120,12 @@ pub fn jit_cranelift_tier1_promotion_preflight_for_ir_root(
 ///
 /// This composes tier-up policy with the registered-symbol tier-1 slot path. It
 /// supports the current literal roots, local environment-slot roots that lower
-/// to `aos_env_get` runtime calls, and direct local-slot application roots that
-/// lower to `aos_env_get` plus `aos_apply` runtime calls. Non-promoted results
-/// return the updated slot without lowering, module construction, finalization,
-/// or pointer installation.
+/// to `aos_env_get` runtime calls, direct local-slot application roots that
+/// lower to `aos_env_get` plus `aos_apply` runtime calls, and bounded
+/// local-slot update roots that lower to `aos_env_get`, `aos_force`, and
+/// `aos_update` runtime calls. Non-promoted results return the updated slot
+/// without lowering, module construction, finalization, or pointer
+/// installation.
 ///
 /// # Errors
 ///
@@ -2186,9 +2188,9 @@ pub fn jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candi
 ///
 /// This is the full lowered-IR counterpart to
 /// [`jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates`].
-/// It preserves the arena-only literal, env-slot, and apply roots, and also
-/// admits bounded static attr selections because full IR carries the attr-path
-/// side tables required by `aos_select_ic` lowering.
+/// It preserves the arena-only literal, env-slot, apply, and bounded local-slot
+/// update roots, and also admits bounded static attr selections because full IR
+/// carries the attr-path side tables required by `aos_select_ic` lowering.
 ///
 /// # Errors
 ///
@@ -2256,8 +2258,10 @@ pub fn jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_wi
 /// function-call forcing boundary. Local-slot roots can finalize when the
 /// candidate set contains both `aos_env_get` and `aos_force`; direct local-slot
 /// application roots can finalize when the candidate set contains both
-/// `aos_env_get` and `aos_apply`. Successful promotions install the resulting
-/// opaque code pointer into owned tier-1 slot metadata.
+/// `aos_env_get` and `aos_apply`; bounded local-slot update roots can finalize
+/// when the candidate set contains `aos_env_get`, `aos_force`, and
+/// `aos_update`. Successful promotions install the resulting opaque code
+/// pointer into owned tier-1 slot metadata.
 ///
 /// Non-promoted results return the updated slot without lowering, module
 /// construction, finalization, or pointer installation.
@@ -2323,9 +2327,9 @@ pub fn jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_roo
 ///
 /// This is the full lowered-IR counterpart to
 /// [`jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates`].
-/// It preserves the arena-only literal, forced env-slot, and apply roots, and
-/// additionally admits bounded static attr selections that import
-/// `aos_env_get`, `aos_force`, and `aos_select_ic`.
+/// It preserves the arena-only literal, forced env-slot, apply, and bounded
+/// local-slot update roots, and additionally admits bounded static attr
+/// selections that import `aos_env_get`, `aos_force`, and `aos_select_ic`.
 ///
 /// # Errors
 ///
@@ -3034,7 +3038,7 @@ mod tests {
         EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
         IrInlineCacheSiteId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
         runtime_helper_call_signature, runtime_thunk_call_signature,
-        syntax::{Span, SymbolTable},
+        syntax::{BinOpKind, Span, SymbolTable},
     };
     use ratchet_value::value::Value;
 
@@ -3046,6 +3050,7 @@ mod tests {
             lower_apply_local_slots_ir_thunk_body_artifact, lower_constant_ir_thunk_body_artifact,
             lower_constant_thunk_body_artifact, lower_env_get_ir_thunk_body_artifact,
             lower_forced_env_get_ir_thunk_body_artifact,
+            lower_update_local_slots_ir_thunk_body_artifact,
         },
         module::{JitModuleReadinessError, jit_module_readiness_preflight_for_artifact},
         tier::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpReasons},
@@ -3105,6 +3110,13 @@ mod tests {
             .expect("apply artifact lowers")
     }
 
+    fn update_artifact(left_slot: u32, right_slot: u32) -> JitClifArtifact {
+        let arena = update_arena(left_slot, right_slot);
+
+        lower_update_local_slots_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("update artifact lowers")
+    }
+
     fn apply_arena(function_slot: u32, argument_slot: u32) -> IrArena {
         let arena = IrArena::from_raw_parts(
             vec![
@@ -3138,6 +3150,52 @@ mod tests {
         );
 
         arena
+    }
+
+    fn update_arena(left_slot: u32, right_slot: u32) -> IrArena {
+        IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local { slot: left_slot },
+                ),
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(2, 3),
+                    EffectClass::pure(),
+                    IrData::Local { slot: right_slot },
+                ),
+                IrNode::new(
+                    IrKind::BinOp,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Binary {
+                        op: BinOpKind::Update,
+                        lhs: IrId::new(0),
+                        rhs: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        )
+    }
+
+    fn update_ir(left_slot: u32, right_slot: u32) -> Ir {
+        let arena = update_arena(left_slot, right_slot);
+        let facts = IrFacts::conservative(arena.nodes().len());
+        Ir {
+            root: IrId::new(2),
+            arena,
+            facts,
+            symbols: SymbolTable::new(),
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: Box::new([]),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
     }
 
     fn static_select_ir(slot: u32) -> Ir {
@@ -3249,6 +3307,13 @@ mod tests {
             JitClifArtifactSource::ConstantSmoke,
             function,
         )
+    }
+
+    fn artifact_runtime_import_names(imports: &[JitModuleArtifactRuntimeImport]) -> Vec<&str> {
+        imports
+            .iter()
+            .map(JitModuleArtifactRuntimeImport::symbol_name)
+            .collect()
     }
 
     #[test]
@@ -3611,6 +3676,62 @@ mod tests {
     }
 
     #[test]
+    fn registered_artifact_definition_defines_update_artifact_with_candidates() {
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+            synthetic_address_candidate(
+                "aos_update",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                7,
+            ),
+        ];
+
+        let preflight = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+            update_artifact(4, 6),
+            &candidates,
+        )
+        .expect("registered update artifact definition preflight builds");
+
+        assert_eq!(
+            preflight.defined_function().symbol_name(),
+            "aos.jit.ir_root.2.thunk_body"
+        );
+        assert_eq!(preflight.defined_function().linkage(), Linkage::Export);
+        assert_eq!(
+            artifact_runtime_import_names(preflight.artifact_runtime_imports()),
+            ["aos_env_get", "aos_force", "aos_update"]
+        );
+        assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+        assert!(preflight.imported_symbol_for("aos_force").is_some());
+        assert!(preflight.imported_symbol_for("aos_update").is_some());
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_update")
+                .expect("update helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            7
+        );
+        assert!(
+            preflight
+                .registration_gap_for_symbol("aos_update")
+                .is_none()
+        );
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
     fn registered_artifact_definition_requires_candidates_for_artifact_imports() {
         let Err(error) = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
             env_get_artifact(4),
@@ -3912,6 +4033,66 @@ mod tests {
                 .is_none()
         );
         assert!(preflight.registration_gap_for_symbol("aos_force").is_none());
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn registered_artifact_finalization_finalizes_update_artifact_with_candidates() {
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+            synthetic_address_candidate(
+                "aos_update",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                7,
+            ),
+        ];
+
+        let preflight = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
+            update_artifact(4, 6),
+            &candidates,
+        )
+        .expect("update artifact finalization accepts registered helpers");
+
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.ir_root.2.thunk_body"
+        );
+        assert_ne!(
+            preflight.finalized_function().code_ptr().as_ptr() as usize,
+            0
+        );
+        assert_eq!(
+            preflight
+                .finalized_function()
+                .compiled_code_ptr()
+                .as_non_null(),
+            preflight.finalized_function().code_ptr()
+        );
+        assert_eq!(
+            artifact_runtime_import_names(preflight.artifact_runtime_imports()),
+            ["aos_env_get", "aos_force", "aos_update"]
+        );
+        assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+        assert!(preflight.imported_symbol_for("aos_force").is_some());
+        assert!(preflight.imported_symbol_for("aos_update").is_some());
+        assert!(preflight.registered_symbol_for("aos_env_get").is_some());
+        assert!(preflight.registered_symbol_for("aos_force").is_some());
+        assert!(preflight.registered_symbol_for("aos_update").is_some());
+        assert!(
+            preflight
+                .registration_gap_for_symbol("aos_update")
+                .is_none()
+        );
         assert!(!preflight.is_complete());
         assert!(preflight.owns_encapsulated_module());
     }
@@ -4490,6 +4671,67 @@ mod tests {
     }
 
     #[test]
+    fn registered_tier1_slot_preflight_installs_update_artifact_with_candidates() {
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+            synthetic_address_candidate(
+                "aos_update",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                7,
+            ),
+        ];
+
+        let preflight = jit_cranelift_registered_tier1_slot_preflight_with_candidates(
+            update_artifact(7, 9),
+            &candidates,
+        )
+        .expect("registered tier-1 update slot preflight builds");
+
+        assert_eq!(
+            preflight.finalized_function().symbol_name(),
+            "aos.jit.ir_root.2.thunk_body"
+        );
+        assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+        assert!(preflight.slot().is_tier1_installed());
+        assert_eq!(
+            preflight.slot().tier1_code_ptr(),
+            Some(preflight.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(
+            artifact_runtime_import_names(preflight.finalization().artifact_runtime_imports()),
+            ["aos_env_get", "aos_force", "aos_update"]
+        );
+        assert!(
+            preflight
+                .finalization()
+                .imported_symbol_for("aos_update")
+                .is_some()
+        );
+        assert!(
+            preflight
+                .finalization()
+                .registered_symbol_for("aos_update")
+                .is_some()
+        );
+        assert!(
+            preflight
+                .finalization()
+                .registration_gap_for_symbol("aos_update")
+                .is_none()
+        );
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
     fn registered_tier1_slot_preflight_installs_constant_artifact_with_registration_gaps() {
         let artifact =
             lower_constant_thunk_body_artifact(Value::int(21)).expect("constant artifact lowers");
@@ -4966,6 +5208,70 @@ mod tests {
     }
 
     #[test]
+    fn registered_promotion_preflight_compiles_update_root_with_candidates() {
+        let arena = update_arena(4, 6);
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+            synthetic_address_candidate(
+                "aos_update",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                7,
+            ),
+        ];
+
+        let result =
+            jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+                JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                    DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+                )),
+                TierUpPolicy::default(),
+                TierUpDemandHint::NoMultiUseEvidence,
+                &arena,
+                IrId::new(2),
+                &candidates,
+            )
+            .expect("threshold update root compiles with registered helpers");
+
+        assert!(result.did_compile());
+        assert_eq!(
+            result.decision().reasons(),
+            Some(TierUpReasons::new(true, false))
+        );
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion result owns registered compiled preflight");
+        assert_eq!(
+            promoted.artifact().function_name(),
+            &clif_name_for_ir_root(IrId::new(2))
+        );
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(
+            artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
+            ["aos_env_get", "aos_force", "aos_update"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_update")
+                .is_some()
+        );
+        assert!(result.owns_encapsulated_module());
+    }
+
+    #[test]
     fn registered_promotion_preflight_compiles_wrapped_env_get_root_with_candidate() {
         let arena = IrArena::from_raw_parts(
             vec![
@@ -5215,6 +5521,59 @@ mod tests {
     }
 
     #[test]
+    fn registered_lowered_ir_promotion_preflight_installs_update_root() {
+        let ir = update_ir(9, 11);
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                5,
+            ),
+            synthetic_address_candidate(
+                "aos_update",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                7,
+            ),
+        ];
+
+        let result =
+            jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
+                JitTieredCodeSlot::new(),
+                TierUpPolicy::default(),
+                TierUpDemandHint::MultiUse,
+                &ir,
+                ir.root,
+                &candidates,
+            )
+            .expect("full-IR registered promotion finalizes bounded update");
+
+        assert!(result.did_compile());
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion owns registered tier-1 preflight");
+        assert_eq!(
+            artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
+            ["aos_env_get", "aos_force", "aos_update"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_update")
+                .is_some()
+        );
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+    }
+
+    #[test]
     fn force_aware_registered_promotion_preflight_records_cold_invocation_without_lowering() {
         let arena = IrArena::from_raw_parts(
             vec![IrNode::new(
@@ -5369,6 +5728,69 @@ mod tests {
                 .finalization()
                 .registered_symbol_for("aos_apply")
                 .is_none()
+        );
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+        assert!(result.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn force_aware_registered_lowered_ir_promotion_preflight_installs_update_root() {
+        let ir = update_ir(13, 15);
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                11,
+            ),
+            synthetic_address_candidate(
+                "aos_force",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
+                13,
+            ),
+            synthetic_address_candidate(
+                "aos_update",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
+                17,
+            ),
+        ];
+
+        let result =
+            jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
+                JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                    DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+                )),
+                TierUpPolicy::default(),
+                TierUpDemandHint::NoMultiUseEvidence,
+                &ir,
+                ir.root,
+                &candidates,
+            )
+            .expect("full-IR force-aware promotion finalizes bounded update");
+
+        assert_eq!(
+            result.slot().invocation_counter().invocations(),
+            DEFAULT_TIER1_INVOCATION_THRESHOLD
+        );
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        assert_eq!(
+            result.decision().reasons(),
+            Some(TierUpReasons::new(true, false))
+        );
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion owns registered tier-1 preflight");
+        assert_eq!(
+            artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
+            ["aos_env_get", "aos_force", "aos_update"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_update")
+                .is_some()
         );
         assert_eq!(
             result.slot().tier1_code_ptr(),

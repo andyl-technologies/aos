@@ -10678,13 +10678,14 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       composes explicit native-address candidates with the artifact definition
       path. It calls `JITBuilder::symbol` for declaration-matched candidates,
       declares runtime imports in the same module, rewrites artifact runtime
-      helper imports such as `aos_env_get`, `aos_force`, and `aos_apply` from
+      helper imports such as `aos_env_get`, `aos_force`, `aos_apply`, and `aos_update` from
       AOS user-external names to Cranelift module-local `FuncId` names, and
       defines the artifact body. Tests
       pin env-slot artifact definition with a synthetic `aos_env_get` candidate,
       forced env-slot definition with synthetic `aos_env_get`/`aos_force`
       candidates, direct local-slot apply definition with synthetic
-      `aos_env_get`/`aos_apply` candidates,
+      `aos_env_get`/`aos_apply` candidates, direct local-slot update definition
+      with synthetic `aos_env_get`/`aos_force`/`aos_update` candidates,
       missing-candidate rejection for artifact imports, constant artifact
       definition while unrelated registration gaps remain, exported linkage,
       registered/imported symbol visibility, representative registration gaps,
@@ -10699,8 +10700,9 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       non-null opaque code pointer for the finalized artifact body. Tests pin
       env-slot finalization with a synthetic relocation target for `aos_env_get`,
       forced env-slot finalization with synthetic `aos_env_get` and `aos_force`
-      targets, missing-candidate and wrong-kind candidate rejection for artifact
-      imports, unresolved-import readiness preservation, code-pointer metadata,
+      targets, local-slot update finalization with synthetic `aos_env_get`,
+      `aos_force`, and `aos_update` targets, missing-candidate and wrong-kind
+      candidate rejection for artifact imports, unresolved-import readiness preservation, code-pointer metadata,
       registered/imported symbol visibility, representative registration gaps,
       and encapsulated-module ownership. This finalizes executable memory for
       registered call-bearing artifacts, but still does not use real exported
@@ -10775,8 +10777,9 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `JitCompiledCodePointer`, and keeps the `JITModule` owner beside the slot
       metadata. Tests pin env-slot installation with a synthetic relocation
       target for `aos_env_get`, forced env-slot installation with synthetic
-      `aos_env_get` and `aos_force` targets, constant artifact installation
-      while unrelated registration gaps remain, missing-candidate rejection,
+      `aos_env_get` and `aos_force` targets, local-slot update installation
+      with synthetic `aos_env_get`/`aos_force`/`aos_update` targets, constant
+      artifact installation while unrelated registration gaps remain, missing-candidate rejection,
       slot/current-tier state, pointer equality, registered/imported symbol
       visibility, artifact runtime-import metadata, and module ownership. This
       remains metadata assembly only: it does not publish into evaluator heap
@@ -10807,14 +10810,17 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       Tests pin cold no-compile behavior for unsupported roots, env-slot
       threshold promotion with a synthetic relocation target for `aos_env_get`,
       direct apply threshold promotion with synthetic
-      `aos_env_get`/`aos_apply` targets, wrapped env-slot and wrapped literal
+      `aos_env_get`/`aos_apply` targets, bounded local-slot update threshold
+      promotion with synthetic `aos_env_get`/`aos_force`/`aos_update` targets,
+      wrapped env-slot and wrapped literal
       roots, literal multi-use promotion without runtime candidates, promoted
       missing-candidate failure with slot counter preservation, deferred
       lowering errors, pointer equality, registered/imported symbol metadata,
       module ownership, and the full-IR registered promotion variant finalizing
       bounded static select, static has-attr, and local-slot update roots with
       `aos_env_get`/`aos_force` plus the relevant `aos_select_ic`,
-      `aos_has_attr`, or `aos_update` candidates. This is still safe preflight assembly only: no evaluator heap
+      `aos_has_attr`, or `aos_update` candidates. This is still safe preflight
+      assembly only: no evaluator heap
       thunk is mutated, no atomic thunk-state CAS runs, registered addresses are
       not directly dereferenced or called, no native code pointer is cast or
       called, and generic runtime-call lowering beyond bounded env-slot/apply/
@@ -10834,7 +10840,7 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       with registered/imported helper metadata, wrapped apply promotion without
       an `aos_force` candidate, full-IR static-select promotion with
       `aos_select_ic`, full-IR static-has-attr promotion with `aos_has_attr`,
-      bounded local-slot update promotion with `aos_update`, and
+      full-IR bounded local-slot update promotion with `aos_update`, and
       missing-`aos_force` candidate rejection with the invocation-updated slot
       preserved. This is still a policy/lowering
       handoff: no evaluator heap thunk is mutated, no atomic thunk-state CAS
