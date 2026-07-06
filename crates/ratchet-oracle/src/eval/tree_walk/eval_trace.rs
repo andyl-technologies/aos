@@ -567,38 +567,61 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         value: Value,
-        visited: &mut Vec<(ValueTag, u64)>,
+        visited: &mut Vec<Value>,
     ) -> Result<Value, TreeWalkError> {
-        let value = self.force_value(id, span, value)?;
+        let value = self.with_deep_force_visited_roots(id, span, visited, |eval, _| {
+            eval.force_value(id, span, value)
+        })?;
         let tag = value.tag();
         if !matches!(tag, ValueTag::List | ValueTag::Attrs) {
             return Ok(value);
         }
 
-        let key = (tag, value.payload_bits());
-        if visited.contains(&key) {
-            return Ok(value);
+        let mut roots = [value];
+        self.with_indexed_transient_value_stack_roots(id, span, &mut roots, |eval, slots| {
+            let slot = slots.start;
+            let value = eval
+                .current_transient_value_stack_root(slot)
+                .ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                        span,
+                    )
+                })?;
+            eval.deep_force_container_value(id, span, value, visited)
+        })?;
+        Ok(roots[0])
+    }
+
+    fn deep_force_container_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        visited: &mut Vec<Value>,
+    ) -> Result<(), TreeWalkError> {
+        let tag = value.tag();
+        if Self::deep_force_visited_contains(visited, value) {
+            return Ok(());
         }
         let len = visited.len() + 1;
         visited.try_reserve_exact(1).map_err(|_| {
             TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
         })?;
-        visited.push(key);
+        visited.push(value);
 
         match tag {
             ValueTag::List => {
-                let elements = {
+                let mut elements = {
                     let list = self.heap.get_list(value).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })?;
                     Self::clone_list_elements(id, span, list)?
                 };
-                for element in elements {
-                    self.deep_force_value(id, span, element, visited)?;
-                }
+                self.deep_force_child_values(id, span, &mut elements, visited)?;
             }
             ValueTag::Attrs => {
-                let values = {
+                let mut values = {
                     let attrs = self.heap.get_attrs(value).map_err(|source| {
                         TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                     })?;
@@ -617,14 +640,75 @@ impl TreeWalk {
                     }
                     values
                 };
-                for value in values {
-                    self.deep_force_value(id, span, value, visited)?;
-                }
+                self.deep_force_child_values(id, span, &mut values, visited)?;
             }
             _ => unreachable!("deepSeq only traverses list and attrset values"),
         }
 
-        Ok(value)
+        Ok(())
+    }
+
+    fn deep_force_child_values(
+        &mut self,
+        id: IrId,
+        span: Span,
+        values: &mut [Value],
+        visited: &mut Vec<Value>,
+    ) -> Result<(), TreeWalkError> {
+        self.with_indexed_transient_value_stack_roots(id, span, values, |eval, slots| {
+            eval.with_deep_force_visited_roots(id, span, visited, |eval, visited| {
+                for slot in slots {
+                    let value = eval
+                        .current_transient_value_stack_root(slot)
+                        .ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                                span,
+                            )
+                        })?;
+                    eval.deep_force_value(id, span, value, visited)?;
+                }
+                Ok(())
+            })
+        })
+    }
+
+    /// Publishes the current deep-force visited set as transient roots.
+    ///
+    /// Moving-GC stress can relocate containers that have already been visited
+    /// before a later recursive edge reaches them again.
+    pub(in crate::eval::tree_walk) fn with_deep_force_visited_roots<T>(
+        &mut self,
+        id: IrId,
+        span: Span,
+        visited: &mut Vec<Value>,
+        body: impl FnOnce(&mut Self, &mut Vec<Value>) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        if visited.is_empty() {
+            return body(self, visited);
+        }
+
+        let rooted = visited.len();
+        let mut roots = Vec::new();
+        roots.try_reserve_exact(rooted).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed { id, len: rooted },
+                span,
+            )
+        })?;
+        roots.extend_from_slice(visited);
+        let result =
+            self.with_transient_value_stack_roots(id, span, roots.as_mut_slice(), |eval| {
+                body(eval, visited)
+            });
+        for (visited, root) in visited.iter_mut().take(rooted).zip(roots) {
+            *visited = root;
+        }
+        result
+    }
+
+    fn deep_force_visited_contains(visited: &[Value], value: Value) -> bool {
+        visited.iter().any(|entry| entry.raw_eq(value))
     }
 
     pub(super) fn eval_has_context_primop(

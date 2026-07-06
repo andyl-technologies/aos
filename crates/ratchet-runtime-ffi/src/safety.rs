@@ -386,9 +386,10 @@ mod tests {
         "uns",
         "afe ",
         "ext",
-        "ern \"C\" fn aos_force_deep(_rt: *mut c_void, value: Value) -> Value {"
+        "ern \"C\" fn aos_force_deep(rt: *mut c_void, value: Value) -> Value {"
     );
     const FORCE_DECODER_CALL_LINE: &str = concat!("let forced = ", "uns", "afe {");
+    const FORCE_DEEP_DECODER_CALL_LINE: &str = concat!("let deeply_forced = ", "uns", "afe {");
     const FORCE_CONTEXT_DECODER_LINE: &str = concat!("uns", "afe fn with_native_force_context<R>(");
     const FORCE_CONTEXT_CAST_LINE: &str = concat!(
         "let context = ",
@@ -413,6 +414,16 @@ mod tests {
         "uns",
         "afe { aos_force_deep(rt, heap_expected) };"
     );
+    const DIRECT_FORCE_DEEP_NESTED_TEST_CALL_LINE: &str = concat!(
+        "let deeply_forced = ",
+        "uns",
+        "afe { aos_force_deep(rt, root) };"
+    );
+    const DIRECT_FORCE_DEEP_ATTRSET_TEST_CALL_LINE: &str = concat!(
+        "let attrset_deeply_forced = ",
+        "uns",
+        "afe { aos_force_deep(rt, root) };"
+    );
     const FORCE_BINDING_TEST_CALL_LINE: &str =
         concat!("let actual = ", "uns", "afe { function(rt, expected) };");
     const FORCE_DEEP_BINDING_TEST_CALL_LINE: &str = concat!(
@@ -433,12 +444,10 @@ mod tests {
         concat!("let _ = ", "uns", "afe { aos_force(rt, thunk) };");
     const FORCE_DEEP_MALFORMED_ABORT_TEST_CALL_LINE: &str =
         concat!("let _ = ", "uns", "afe { aos_force_deep(rt, malformed) };");
-    const FORCE_DEEP_THUNK_ABORT_TEST_CALL_LINE: &str =
-        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, thunk) };");
-    const FORCE_DEEP_LIST_ABORT_TEST_CALL_LINE: &str =
-        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, list) };");
-    const FORCE_DEEP_ATTRS_ABORT_TEST_CALL_LINE: &str =
-        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, attrs) };");
+    const FORCE_DEEP_NULL_CONTEXT_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, value) };");
+    const FORCE_DEEP_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE: &str =
+        concat!("let _ = ", "uns", "afe { aos_force_deep(rt, root) };");
     const BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE: &str =
         concat!("uns", "afe { aos_blackhole_check(rt, malformed) };");
     const BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE: &str =
@@ -685,6 +694,7 @@ mod tests {
                 || trimmed == FORCE_FN_LINE
                 || trimmed == FORCE_DEEP_FN_LINE
                 || trimmed == FORCE_DECODER_CALL_LINE
+                || trimmed == FORCE_DEEP_DECODER_CALL_LINE
                 || trimmed == FORCE_CONTEXT_DECODER_LINE
                 || trimmed == FORCE_CONTEXT_CAST_LINE
                 || trimmed == FORCE_CONTEXT_EVAL_LINE
@@ -693,6 +703,8 @@ mod tests {
                 || trimmed == DIRECT_FORCE_THUNK_TEST_CALL_LINE
                 || trimmed == DIRECT_FORCE_DEEP_TEST_CALL_LINE
                 || trimmed == DIRECT_FORCE_DEEP_HEAP_TEST_CALL_LINE
+                || trimmed == DIRECT_FORCE_DEEP_NESTED_TEST_CALL_LINE
+                || trimmed == DIRECT_FORCE_DEEP_ATTRSET_TEST_CALL_LINE
                 || trimmed == FORCE_BINDING_TEST_CALL_LINE
                 || trimmed == FORCE_DEEP_BINDING_TEST_CALL_LINE
                 || trimmed == BLACKHOLE_BINDING_TEST_CALL_LINE
@@ -701,9 +713,8 @@ mod tests {
                 || trimmed == FORCE_NULL_CONTEXT_ABORT_TEST_CALL_LINE
                 || trimmed == FORCE_THUNK_ABORT_TEST_CALL_LINE
                 || trimmed == FORCE_DEEP_MALFORMED_ABORT_TEST_CALL_LINE
-                || trimmed == FORCE_DEEP_THUNK_ABORT_TEST_CALL_LINE
-                || trimmed == FORCE_DEEP_LIST_ABORT_TEST_CALL_LINE
-                || trimmed == FORCE_DEEP_ATTRS_ABORT_TEST_CALL_LINE
+                || trimmed == FORCE_DEEP_NULL_CONTEXT_ABORT_TEST_CALL_LINE
+                || trimmed == FORCE_DEEP_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE
                 || trimmed == BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE
                 || trimmed == BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE
         } else if token == EXTERN_TOKEN {
@@ -1396,6 +1407,11 @@ mod unchecked_cfg;
             "aos_force wrapper call to the decoder must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&force, FORCE_DEEP_DECODER_CALL_LINE),
+            1,
+            "aos_force_deep wrapper call to the decoder must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&force, FORCE_CONTEXT_DECODER_LINE),
             1,
             "raw force context decoder must stay singly reviewed"
@@ -1434,6 +1450,16 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&force, DIRECT_FORCE_DEEP_HEAP_TEST_CALL_LINE),
             1,
             "direct heap-leaf test call of aos_force_deep must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, DIRECT_FORCE_DEEP_NESTED_TEST_CALL_LINE),
+            1,
+            "direct nested-container test call of aos_force_deep must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, DIRECT_FORCE_DEEP_ATTRSET_TEST_CALL_LINE),
+            1,
+            "direct nested-attrset test call of aos_force_deep must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, FORCE_BINDING_TEST_CALL_LINE),
@@ -1476,19 +1502,14 @@ mod unchecked_cfg;
             "force-deep malformed payload abort test call must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&force, FORCE_DEEP_THUNK_ABORT_TEST_CALL_LINE),
+            trimmed_line_occurrences(&force, FORCE_DEEP_NULL_CONTEXT_ABORT_TEST_CALL_LINE),
             1,
-            "force-deep thunk abort test call must stay singly reviewed"
+            "force-deep null-context abort test call must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&force, FORCE_DEEP_LIST_ABORT_TEST_CALL_LINE),
+            trimmed_line_occurrences(&force, FORCE_DEEP_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE),
             1,
-            "force-deep list abort test call must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&force, FORCE_DEEP_ATTRS_ABORT_TEST_CALL_LINE),
-            1,
-            "force-deep attrset abort test call must stay singly reviewed"
+            "force-deep tree-walk error abort test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE),
@@ -1689,6 +1710,11 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &force_lines,
+            FORCE_DEEP_DECODER_CALL_LINE,
+            "force-deep decoder call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
             FORCE_CONTEXT_DECODER_LINE,
             "raw force context decoder must keep a SAFETY comment",
         );
@@ -1721,6 +1747,16 @@ mod unchecked_cfg;
             &force_lines,
             DIRECT_FORCE_DEEP_HEAP_TEST_CALL_LINE,
             "direct force-deep heap-leaf wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            DIRECT_FORCE_DEEP_NESTED_TEST_CALL_LINE,
+            "direct force-deep nested-container wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            DIRECT_FORCE_DEEP_ATTRSET_TEST_CALL_LINE,
+            "direct force-deep nested-attrset wrapper test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,
@@ -1764,18 +1800,13 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &force_lines,
-            FORCE_DEEP_THUNK_ABORT_TEST_CALL_LINE,
-            "force-deep thunk abort test call must keep a SAFETY comment",
+            FORCE_DEEP_NULL_CONTEXT_ABORT_TEST_CALL_LINE,
+            "force-deep null-context abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,
-            FORCE_DEEP_LIST_ABORT_TEST_CALL_LINE,
-            "force-deep list abort test call must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &force_lines,
-            FORCE_DEEP_ATTRS_ABORT_TEST_CALL_LINE,
-            "force-deep attrset abort test call must keep a SAFETY comment",
+            FORCE_DEEP_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE,
+            "force-deep tree-walk error abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,

@@ -354,6 +354,45 @@ fn deep_seq_primop_forces_nested_values_and_returns_second() {
 }
 
 #[test]
+fn deep_seq_primop_preserves_transient_roots_under_gc_stress() {
+    let ir = lower("builtins.deepSeq [ (x: x) (y: y) ] 3");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress deepSeq evaluates list children");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+
+    let ir = lower("builtins.deepSeq { a = x: x; b = y: y; } 3");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress deepSeq evaluates attrset values");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+
+    let ir = lower("let x = [ (y: y) x ]; in builtins.deepSeq x 3");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress deepSeq preserves recursive list identity");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+
+    let ir = lower("let x = { f = y: y; self = x; }; in builtins.deepSeq x 3");
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress deepSeq preserves recursive attrset identity");
+
+    assert_eq!(outcome.value().as_int(), Ok(3));
+}
+
+#[test]
 fn deep_seq_primop_reports_nested_forcing_errors_before_second() {
     let ir = lower("builtins.deepSeq [ (1 / 0) ] (2 / 0)");
     let error = eval_whnf(&ir).expect_err("deepSeq forces list elements first");

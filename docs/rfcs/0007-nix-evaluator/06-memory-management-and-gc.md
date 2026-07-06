@@ -1137,11 +1137,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       allocation-specific blockers for `aos_alloc_*`, environment-access-specific
       blockers for `aos_env_get`, forcing-specific blockers for `aos_blackhole_check` and `aos_force`/`aos_force_deep`,
       write-barrier-specific blockers for `aos_gc_write_barrier`, and earlier helper/builtin candidate gaps in full
-      runtime-symbol order. The process-local runtime-FFI `aos_force` wrapper
-      already decodes a scoped evaluator context and dispatches through the safe
-      tree-walk force helper, but this oracle gate still preserves final
-      forcing-export blockers until exported-wrapper admission and trap transfer
-      exist. This remains safe readiness metadata only: no final
+      runtime-symbol order. The process-local runtime-FFI `aos_force` and
+      `aos_force_deep` wrappers already decode a scoped evaluator context and
+      dispatch through the safe tree-walk force/deep-force helpers; the
+      deep-force helper registers visited containers plus the current container
+      and cloned child values as transient safepoint roots while recursive
+      forcing can allocate. This
+      oracle gate still preserves final forcing-export blockers until
+      exported-wrapper admission and trap transfer exist. This remains safe
+      readiness metadata only: no final
       native-export registration is admitted, no safe Rust callable is treated
       as the final ABI target, no `JITBuilder::symbol` registration occurs, and
       no native trap transfer is implemented.

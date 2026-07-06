@@ -8,6 +8,7 @@
 
 use std::{
     collections::BTreeMap,
+    ops::Range,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     path::PathBuf,
 };
@@ -978,6 +979,20 @@ impl TreeWalk {
         roots: &mut [Value],
         body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
     ) -> Result<T, TreeWalkError> {
+        self.with_indexed_transient_value_stack_roots(id, span, roots, |eval, _| body(eval))
+    }
+
+    /// Runs `body` with access to the active transient-root stack slots.
+    ///
+    /// The passed range indexes into `self` while `body` runs, allowing callers
+    /// that recurse across allocation safepoints to read roots after writeback.
+    pub(in crate::eval::tree_walk) fn with_indexed_transient_value_stack_roots<T>(
+        &mut self,
+        id: IrId,
+        span: Span,
+        roots: &mut [Value],
+        body: impl FnOnce(&mut Self, Range<usize>) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
         let start = self.transient_value_stack_roots.len();
         let end = start.checked_add(roots.len()).ok_or_else(|| {
             TreeWalkError::new(
@@ -998,7 +1013,7 @@ impl TreeWalk {
             })?;
         self.transient_value_stack_roots.extend_from_slice(roots);
 
-        let result = match catch_unwind(AssertUnwindSafe(|| body(self))) {
+        let result = match catch_unwind(AssertUnwindSafe(|| body(self, start..end))) {
             Ok(result) => result,
             Err(payload) => {
                 self.transient_value_stack_roots.truncate(start);
@@ -1012,6 +1027,14 @@ impl TreeWalk {
         }
         self.transient_value_stack_roots.truncate(start);
         result
+    }
+
+    /// Returns the current value stored in one transient-root stack slot.
+    pub(in crate::eval::tree_walk) fn current_transient_value_stack_root(
+        &self,
+        slot: usize,
+    ) -> Option<Value> {
+        self.transient_value_stack_roots.get(slot).copied()
     }
 
     /// Returns transient value-stack roots registered for allocation safepoints.

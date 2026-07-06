@@ -110,7 +110,21 @@ pub fn rust_callable_aos_force(
     eval.force_value(id, span, value)
 }
 
-fn rust_callable_aos_force_deep(
+/// Runs the Rust-callable `aos_force_deep` helper through the tree-walk evaluator.
+///
+/// The helper forces `value` to weak head normal form, recursively forces list
+/// elements and attrset values through the same tree-walk deep-force traversal
+/// used by `builtins.deepSeq`, registers visited containers plus the current
+/// container and cloned child values as transient safepoint roots across
+/// recursive forcing, and returns the original container or leaf [`Value`].
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] when ordinary forcing fails, a recursive
+/// deep-force traversal cannot preserve its visited roots or transient root
+/// storage, a traversed heap payload is malformed or foreign to the evaluator,
+/// or any forced child expression fails.
+pub fn rust_callable_aos_force_deep(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,

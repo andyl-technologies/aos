@@ -4246,6 +4246,52 @@ fn gc_stress_allocation_safepoint_rewrites_registered_transient_value_stack_root
 }
 
 #[test]
+fn gc_stress_allocation_safepoint_rewrites_deep_force_visited_roots() {
+    let ir = lower("x: x");
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let span = Span::new(0, 0);
+    let local_source = evaluator
+        .heap
+        .alloc_lambda(test_lambda_record())
+        .expect("registered local lambda allocates");
+    let local_source_address = gc_address(local_source);
+    let mut visited = vec![local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let allocated: Value = evaluator
+        .with_deep_force_visited_roots(ir.root, span, &mut visited, |eval, _visited| {
+            eval.alloc_tree_walk_thunk(ir.root, span, EvalThunk::new(ir.root))
+        })
+        .expect("GC-stress allocation rewrites deep-force visited roots");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert_ne!(gc_address(visited[0]), local_source_address);
+    assert_eq!(visited[0].tag(), ValueTag::Lambda);
+    assert_eq!(allocated.tag(), ValueTag::Thunk);
+    assert!(!allocated.raw_eq(visited[0]));
+    assert!(has_forwarding_destination(evaluator.heap(), visited[0]));
+    assert!(has_forwarding_destination(evaluator.heap(), allocated));
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(visited[0])
+            .expect("registered visited root destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(allocated)
+            .expect("allocated value destination remains heap-bound"),
+        HeapGeneration::Young
+    );
+}
+
+#[test]
 fn transient_value_stack_roots_restore_after_body_error() {
     let ir = lower("x: x");
     let mut evaluator = TreeWalk::with_options(
