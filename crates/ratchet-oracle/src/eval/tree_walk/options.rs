@@ -621,6 +621,17 @@ impl TreeWalkOptions {
         self.persist_cache_root = None;
     }
 
+    /// Enables or disables persistent value-decode content re-hashing.
+    ///
+    /// When disabled (the default), indexed value decoding trusts the
+    /// content-address key and pack integrity header. When enabled, every
+    /// decoded persistent value is re-hashed and must match its content address.
+    /// This is wired to the `AOS_NIX_CACHE_VERIFY` knob for defensive
+    /// verification of the persistent value store.
+    pub fn set_persist_cache_verify(&mut self, persist_cache_verify: bool) {
+        self.persist_cache_verify = persist_cache_verify;
+    }
+
     /// Enables or disables advisory incremental eval-cache observation.
     ///
     /// This controls in-memory [`crate::cache::EvalCache`] observation and,
@@ -864,6 +875,11 @@ impl TreeWalkOptions {
     /// Returns the configured persistent-cache root directory, if any.
     pub fn persist_cache_root(&self) -> Option<&Path> {
         self.persist_cache_root.as_deref()
+    }
+
+    /// Returns whether persistent value-decode content re-hashing is enabled.
+    pub const fn persist_cache_verify(&self) -> bool {
+        self.persist_cache_verify
     }
 
     /// Returns whether advisory incremental eval-cache observation is enabled.

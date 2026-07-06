@@ -1,4 +1,22 @@
 //! Indexed blob, cached-expression value, and node-linked value operations.
+//!
+//! # Decode verification knob
+//!
+//! Indexed value blobs are content-addressed and the blob pack verifies its
+//! per-record integrity header on every read. Decoding a value therefore trusts
+//! the content address by default and does not recompute the decoded payload's
+//! [`ValueHash`]. Setting [`PersistCache::with_value_decode_verification`] (wired
+//! to the `AOS_NIX_CACHE_VERIFY` environment knob) restores the fully defensive
+//! path that re-hashes every decoded payload and rejects any mismatch.
+//!
+//! # Trace-hit verification
+//!
+//! Trace-verified node hits are established without decoding dependency values.
+//! Only the top-level request decodes its own value; each memo-read dependency
+//! is verified from its metadata value hash, trace record, input revalidation,
+//! and an O(1) value-blob existence probe. Dependencies proven valid this run
+//! are memoized on the handle's run-scoped verified-node table so a shared
+//! dependency is verified once per run rather than once per dependent.
 
 use super::*;
 use std::collections::BTreeSet;
@@ -29,6 +47,37 @@ impl PersistCachedExpressionNodeValueTraceHit {
     /// Consumes this hit into its cached expression payload.
     pub(crate) fn into_value(self) -> CachedExpressionValue {
         self.value
+    }
+}
+
+/// A trace-verified node identity produced during hit verification.
+///
+/// Dependency checks carry only the verified value hash; the top-level request
+/// additionally carries the sorted memo-read dependency keys the caller records
+/// with the decoded hit.
+struct PersistVerifiedNodeTrace {
+    value_hash: ValueHash,
+    memo_read_dependencies: Vec<PersistNodeMetadataKey>,
+}
+
+impl PersistVerifiedNodeTrace {
+    /// Builds a verified dependency identity with no dependency list.
+    fn dependency(value_hash: ValueHash) -> Self {
+        Self {
+            value_hash,
+            memo_read_dependencies: Vec::new(),
+        }
+    }
+
+    /// Builds a verified top-level identity carrying its memo-read dependencies.
+    fn top_level(
+        value_hash: ValueHash,
+        memo_read_dependencies: Vec<PersistNodeMetadataKey>,
+    ) -> Self {
+        Self {
+            value_hash,
+            memo_read_dependencies,
+        }
     }
 }
 
@@ -238,16 +287,17 @@ impl PersistCache {
     ///
     /// Missing index entries return `Ok(None)`. Present entries are read by
     /// `value_hash`, verified by the blob pack, and decoded as a cached
-    /// expression payload. The decoded value is then hashed again and must
-    /// match `value_hash` before being returned for evaluator-local
-    /// rehydration.
+    /// expression payload. When decode verification is enabled the decoded value
+    /// is hashed again and must match `value_hash` before being returned;
+    /// otherwise the content-addressed pack read is trusted and the re-hash is
+    /// skipped (see [`PersistCache::with_value_decode_verification`]).
     ///
     /// # Errors
     ///
     /// Returns [`PersistCachedExpressionValueIndexedLoadError`] if the sidecar
     /// index cannot be read, the indexed blob cannot be verified, the bytes
-    /// are not a supported cached-expression payload, or the decoded payload's
-    /// value hash does not match `value_hash`.
+    /// are not a supported cached-expression payload, or (when verification is
+    /// enabled) the decoded payload's value hash does not match `value_hash`.
     pub fn load_cached_expression_value_indexed(
         &self,
         value_hash: ValueHash,
@@ -258,9 +308,10 @@ impl PersistCache {
     /// Visits a cached expression payload from the indexed `values/` pack.
     ///
     /// Missing index entries return `Ok(None)`. Present entries are mapped,
-    /// verified, decoded, and rehashed before the callback receives a reference
-    /// to the decoded owned value. The callback runs after the mapped payload and
-    /// value-store locks have been released.
+    /// verified, decoded, and (when decode verification is enabled) rehashed
+    /// before the callback receives a reference to the decoded owned value. The
+    /// callback runs after the mapped payload and value-store locks have been
+    /// released.
     ///
     /// # Errors
     ///
@@ -288,21 +339,27 @@ impl PersistCache {
         value_hash: ValueHash,
     ) -> Result<Option<CachedExpressionValue>, PersistCachedExpressionValueIndexedLoadError> {
         let key = PersistBlobKey::for_value(value_hash);
+        let verify = self.value_decode_verification();
         let Some(value) = self
             .read_blob_indexed_mapped_with(key, |payload| {
                 let value = CachedExpressionValue::decode_persistent_payload(payload).map_err(
                     |source| PersistCachedExpressionValueIndexedLoadError::Decode { source },
                 )?;
-                let actual = value.value_hash().map_err(|source| {
-                    PersistCachedExpressionValueIndexedLoadError::Hash { source }
-                })?;
-                if actual != value_hash {
-                    return Err(
-                        PersistCachedExpressionValueIndexedLoadError::ValueHashMismatch {
-                            expected: value_hash,
-                            actual,
-                        },
-                    );
+                // The blob pack is content-addressed and verifies its integrity
+                // header on read, so the structural re-hash is skipped unless the
+                // `AOS_NIX_CACHE_VERIFY` knob asks for the fully defensive path.
+                if verify {
+                    let actual = value.value_hash().map_err(|source| {
+                        PersistCachedExpressionValueIndexedLoadError::Hash { source }
+                    })?;
+                    if actual != value_hash {
+                        return Err(
+                            PersistCachedExpressionValueIndexedLoadError::ValueHashMismatch {
+                                expected: value_hash,
+                                actual,
+                            },
+                        );
+                    }
                 }
                 Ok(value)
             })
@@ -520,94 +577,157 @@ impl PersistCache {
         R: ImpureInputRevalidator + ?Sized,
     {
         let mut active = BTreeSet::new();
-        self.load_cached_expression_node_value_trace_hit_with_revalidation_active(
+        let Some(verified) = self.verify_cached_expression_node_trace_active(
             node_key,
             None,
             revalidator,
             &mut active,
-        )
+        )?
+        else {
+            return Ok(None);
+        };
+        // The top-level request always needs its decoded value; a missing value
+        // blob is an ordinary miss, matching the pre-verification behavior.
+        let Some(value) = self
+            .load_cached_expression_value_indexed(verified.value_hash)
+            .map_err(|source| PersistCachedExpressionNodeValueTraceLoadError::Value { source })?
+        else {
+            return Ok(None);
+        };
+        // A decoded top-level value proves the node and its subtree are a valid
+        // hit this run, so record it for reuse by later dependents.
+        self.remember_verified_node_trace(node_key, verified.value_hash);
+        Ok(Some(PersistCachedExpressionNodeValueTraceHit::new(
+            value,
+            verified.memo_read_dependencies,
+        )))
     }
 
-    fn load_cached_expression_node_value_trace_hit_with_revalidation_active<R>(
+    /// Verifies a node's trace-backed hit without decoding dependency values.
+    ///
+    /// The top-level request (`expected_value_hash` is `None`) returns the
+    /// node's value hash together with its sorted memo-read dependency keys so
+    /// the caller can decode the value. Dependency checks (`expected_value_hash`
+    /// is `Some`) return only the verified value hash and an empty dependency
+    /// list: they establish validity from the O(1) metadata, trace,
+    /// input-revalidation, and blob-existence checks alone and never decode the
+    /// dependency's value. A dependency whose other checks pass but whose value
+    /// blob is absent misses exactly as the previous decode-based path did.
+    ///
+    /// Successful dependency verifications are recorded in the run-scoped
+    /// verified-node memo so a dependency shared by many dependents is verified
+    /// once per run instead of once per dependent.
+    fn verify_cached_expression_node_trace_active<R>(
         &self,
         node_key: PersistNodeMetadataKey,
         expected_value_hash: Option<ValueHash>,
         revalidator: &mut R,
         active: &mut BTreeSet<PersistNodeMetadataKey>,
-    ) -> Result<
-        Option<PersistCachedExpressionNodeValueTraceHit>,
-        PersistCachedExpressionNodeValueTraceLoadError,
-    >
+    ) -> Result<Option<PersistVerifiedNodeTrace>, PersistCachedExpressionNodeValueTraceLoadError>
     where
         R: ImpureInputRevalidator + ?Sized,
     {
+        if let Some(expected) = expected_value_hash {
+            if self.verified_node_trace_is_cached(node_key, expected) {
+                return Ok(Some(PersistVerifiedNodeTrace::dependency(expected)));
+            }
+        }
         if !active.insert(node_key) {
             return Ok(None);
         }
-        let result =
-            (|| {
-                let Some(value_hash) =
-                    self.lookup_node_materialized_value_hash(node_key)
-                        .map_err(|source| {
-                            PersistCachedExpressionNodeValueTraceLoadError::Metadata { source }
-                        })?
-                else {
-                    return Ok(None);
-                };
-                if expected_value_hash.is_some_and(|expected| expected != value_hash) {
-                    return Ok(None);
-                }
-                let Some(trace) = self.lookup_node_trace(node_key).map_err(|source| {
-                    PersistCachedExpressionNodeValueTraceLoadError::Trace { source }
+        let result = (|| {
+            let Some(value_hash) = self
+                .lookup_node_materialized_value_hash(node_key)
+                .map_err(|source| {
+                    PersistCachedExpressionNodeValueTraceLoadError::Metadata { source }
                 })?
-                else {
+            else {
+                return Ok(None);
+            };
+            if expected_value_hash.is_some_and(|expected| expected != value_hash) {
+                return Ok(None);
+            }
+            let Some(trace) = self.lookup_node_trace(node_key).map_err(|source| {
+                PersistCachedExpressionNodeValueTraceLoadError::Trace { source }
+            })?
+            else {
+                return Ok(None);
+            };
+            if trace.value_hash() != value_hash {
+                return Ok(None);
+            }
+            if trace.payload().is_tombstone() {
+                return Ok(None);
+            }
+            if !revalidate_persist_node_trace_payload(trace.payload(), revalidator) {
+                return Ok(None);
+            }
+            for (dependency, dependency_value_hash) in
+                trace.payload().memo_read_dependency_records()
+            {
+                if active.contains(&dependency) {
+                    return Ok(None);
+                }
+                let Some(dependency_value_hash) = dependency_value_hash else {
                     return Ok(None);
                 };
-                if trace.value_hash() != value_hash {
-                    return Ok(None);
-                }
-                if trace.payload().is_tombstone() {
-                    return Ok(None);
-                }
-                if !revalidate_persist_node_trace_payload(trace.payload(), revalidator) {
-                    return Ok(None);
-                }
-                for (dependency, dependency_value_hash) in
-                    trace.payload().memo_read_dependency_records()
-                {
-                    if active.contains(&dependency) {
-                        return Ok(None);
-                    }
-                    let Some(dependency_value_hash) = dependency_value_hash else {
-                        return Ok(None);
-                    };
-                    let dependency_hit = self
-                        .load_cached_expression_node_value_trace_hit_with_revalidation_active(
-                            dependency,
-                            Some(dependency_value_hash),
-                            revalidator,
-                            active,
-                        )?;
-                    if dependency_hit.is_none() {
-                        return Ok(None);
-                    }
-                }
-                let dependencies = trace.payload().memo_read_dependencies().to_vec();
-                let Some(value) = self
-                    .load_cached_expression_value_indexed(value_hash)
-                    .map_err(
-                        |source| PersistCachedExpressionNodeValueTraceLoadError::Value { source },
+                if self
+                    .verify_cached_expression_node_trace_active(
+                        dependency,
+                        Some(dependency_value_hash),
+                        revalidator,
+                        active,
                     )?
-                else {
+                    .is_none()
+                {
                     return Ok(None);
-                };
-                Ok(Some(PersistCachedExpressionNodeValueTraceHit::new(
-                    value,
-                    dependencies,
-                )))
-            })();
+                }
+            }
+            if expected_value_hash.is_some() {
+                // Dependency check: prove the value blob exists without decoding
+                // it. An absent blob is the same miss the decode path produced.
+                if !self.value_blob_is_present(value_hash)? {
+                    return Ok(None);
+                }
+                return Ok(Some(PersistVerifiedNodeTrace::dependency(value_hash)));
+            }
+            let dependencies = trace.payload().memo_read_dependencies().to_vec();
+            Ok(Some(PersistVerifiedNodeTrace::top_level(
+                value_hash,
+                dependencies,
+            )))
+        })();
         active.remove(&node_key);
+        if expected_value_hash.is_some() {
+            if let Ok(Some(verified)) = &result {
+                self.remember_verified_node_trace(node_key, verified.value_hash);
+            }
+        }
         result
+    }
+
+    /// Returns whether an indexed value blob exists for `value_hash`.
+    ///
+    /// This is an O(1) sidecar-index existence probe used to accept dependency
+    /// trace hits without decoding the dependency's value. A missing index entry
+    /// reports `Ok(false)` (an ordinary miss); an index read failure propagates.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistCachedExpressionNodeValueTraceLoadError::Value`] if the
+    /// value blob index cannot be read or decoded.
+    fn value_blob_is_present(
+        &self,
+        value_hash: ValueHash,
+    ) -> Result<bool, PersistCachedExpressionNodeValueTraceLoadError> {
+        let key = PersistBlobKey::for_value(value_hash);
+        self.lookup_blob_location(key)
+            .map(|location| location.is_some())
+            .map_err(|source| PersistCachedExpressionNodeValueTraceLoadError::Value {
+                source: PersistCachedExpressionValueIndexedLoadError::Read {
+                    source: PersistBlobIndexedReadError::Lookup { source },
+                },
+            })
     }
 }
 

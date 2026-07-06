@@ -24,6 +24,7 @@ impl PersistCache {
         &self,
         entry: PersistNodeMetadataIndexEntry,
     ) -> Result<(), PersistNodeMetadataIndexError> {
+        self.evict_verified_node_trace(entry.key());
         let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         self.record_node_metadata_unlocked(entry)
     }
@@ -77,6 +78,7 @@ impl PersistCache {
         value_hash: ValueHash,
         payload: &PersistNodeTracePayload,
     ) -> Result<(), PersistNodeTraceLogError> {
+        self.evict_verified_node_trace(key);
         let (_advisory_guard, _write_guard) = self.lock_node_traces_write()?;
         self.node_trace_log.append_trace(key, value_hash, payload)
     }
@@ -222,6 +224,7 @@ impl PersistCache {
         key: PersistNodeMetadataKey,
         value_hash: ValueHash,
     ) -> Result<(), PersistNodeMetadataIndexError> {
+        self.evict_verified_node_trace(key);
         let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         let value = self
             .lookup_node_metadata_unlocked(key)?
@@ -247,6 +250,7 @@ impl PersistCache {
         &self,
         key: PersistNodeMetadataKey,
     ) -> Result<bool, PersistNodeMetadataIndexError> {
+        self.evict_verified_node_trace(key);
         let (_advisory_guard, _write_guard) = self.lock_node_metadata_write()?;
         let Some(value) = self.lookup_node_metadata_unlocked(key)? else {
             return Ok(false);

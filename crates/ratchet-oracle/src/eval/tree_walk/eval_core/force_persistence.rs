@@ -1093,13 +1093,9 @@ impl TreeWalk {
             identity,
             subject.free_var_value_hashes.iter().copied(),
         );
-        if let Err(error) = persist_cache.record_node_current_demand(key) {
-            tracing::warn!(
-                target: "aos_nix::cache",
-                error = %error,
-                "tree-walk evaluator persistent force demand observation failed"
-            );
-        }
+        // Coalesce the demand observation in memory; it is flushed to the sidecar
+        // once at the run boundary rather than appending a record per hit.
+        persist_cache.buffer_node_current_demand(key);
     }
 
     pub(in crate::eval::tree_walk) fn advance_persist_eval_cache_run_boundary(&mut self) {
@@ -1109,6 +1105,18 @@ impl TreeWalk {
         let Some(persist_cache) = &self.persist_cache else {
             return;
         };
+        // Flush coalesced current-run demand before advancing runs, which carries
+        // current-run demand into the cross-run history.
+        if let Err(error) = persist_cache.flush_buffered_node_demands() {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator persistent force demand buffer flush failed"
+            );
+        }
+        // A new run re-verifies every node against freshly observed impure
+        // inputs, so discard the run-scoped verified-node memo.
+        persist_cache.clear_verified_node_trace_memo();
         if let Err(error) = persist_cache.advance_all_node_materialization_reuse_runs() {
             tracing::warn!(
                 target: "aos_nix::cache",
@@ -1129,7 +1137,10 @@ impl TreeWalk {
         if self.persist_cache.is_none() && !self.persist_cache_open_attempted {
             self.persist_cache_open_attempted = true;
             if let Some(root) = self.options.persist_cache_root().map(Path::to_path_buf) {
-                self.persist_cache = PersistCache::open(root).ok();
+                let verify = self.options.persist_cache_verify();
+                self.persist_cache = PersistCache::open(root)
+                    .ok()
+                    .map(|cache| cache.with_value_decode_verification(verify));
             }
         }
     }

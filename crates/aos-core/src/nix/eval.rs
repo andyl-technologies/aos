@@ -729,6 +729,7 @@ pub struct NixEvalConfig {
     working_dir: Option<PathBuf>,
     home_dir: Option<PathBuf>,
     native_cache_root: Option<PathBuf>,
+    native_cache_verify: bool,
     heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
 }
@@ -851,6 +852,20 @@ impl NixEvalConfig {
     /// its enable switch, but it does not persist demand-graph records yet.
     pub fn native_cache_root(&self) -> Option<&Path> {
         self.native_cache_root.as_deref()
+    }
+
+    /// Returns whether native persistent value-decode re-hashing is enabled.
+    ///
+    /// This defensive check is off by default and enabled through the
+    /// `AOS_NIX_CACHE_VERIFY` environment variable. When off, indexed value
+    /// decoding trusts the content-addressed pack and its integrity headers.
+    pub const fn native_cache_verify(&self) -> bool {
+        self.native_cache_verify
+    }
+
+    /// Enables or disables native persistent value-decode content re-hashing.
+    pub fn set_native_cache_verify(&mut self, native_cache_verify: bool) {
+        self.native_cache_verify = native_cache_verify;
     }
 
     /// Returns the configured native heap high-water budget in bytes, if set.
@@ -1196,6 +1211,7 @@ impl NixEvalConfig {
             working_dir: None,
             home_dir: None,
             native_cache_root: None,
+            native_cache_verify: false,
             heap_memory_budget_bytes: None,
             trace_verbose: false,
         };
@@ -1214,6 +1230,9 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_CACHE") {
             config.set_aos_nix_cache_env_var(value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_CACHE_VERIFY") {
+            config.set_aos_nix_cache_verify_env_var(&value);
         }
         if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
             config.set_aos_nix_max_rss_env_var(value);
@@ -1245,6 +1264,10 @@ impl NixEvalConfig {
             );
             self.clear_native_cache_root();
         }
+    }
+
+    fn set_aos_nix_cache_verify_env_var(&mut self, value: &str) {
+        self.set_native_cache_verify(matches!(value.trim(), "1" | "true"));
     }
 
     fn set_aos_nix_max_rss_env_var(&mut self, value: String) {
@@ -2676,6 +2699,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         options.set_parse_cache_root(cache_root.join("parse"));
         options.set_persist_cache_root(cache_root.join("persist"));
         options.set_eval_cache_enabled(true);
+        options.set_persist_cache_verify(config.native_cache_verify());
     }
     if let Some(max_resident_bytes) = config.heap_memory_budget_bytes() {
         options.set_heap_memory_budget(HeapMemoryBudget::new(max_resident_bytes)?);
@@ -3110,6 +3134,23 @@ mod tests {
         assert_eq!(config.native_cache_root(), Some(Path::new("/aos/cache")));
         config.set_aos_nix_cache_env_var("0".to_owned());
         assert_eq!(config.native_cache_root(), None);
+    }
+
+    #[test]
+    fn eval_config_parses_aos_nix_cache_verify_env_values() {
+        let mut config = NixEvalConfig::new();
+        assert!(
+            !config.native_cache_verify(),
+            "value decode verification is off by default"
+        );
+        config.set_aos_nix_cache_verify_env_var("1");
+        assert!(config.native_cache_verify());
+        config.set_aos_nix_cache_verify_env_var(" true ");
+        assert!(config.native_cache_verify());
+        config.set_aos_nix_cache_verify_env_var("0");
+        assert!(!config.native_cache_verify());
+        config.set_aos_nix_cache_verify_env_var("");
+        assert!(!config.native_cache_verify());
     }
 
     #[test]

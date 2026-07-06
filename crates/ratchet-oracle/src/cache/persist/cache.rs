@@ -16,6 +16,7 @@ mod maintenance_types;
 mod node_demand;
 mod node_io;
 mod reachability;
+mod run_scope;
 mod repack_helpers;
 mod store_io;
 
@@ -38,6 +39,24 @@ use ratchet_cache::root_locks::{
 use repack_helpers::blob_live_root_identity;
 
 /// An opened persistent eval-cache root.
+///
+/// Beyond the on-disk packs and sidecar indexes, a handle carries two
+/// run-scoped in-memory coordination tables shared across clones of the same
+/// opened root:
+///
+/// * a **verified-node memo** ([`Self::verified_node_trace_is_cached`]) that
+///   records `(node key, value hash)` pairs already proven to be valid
+///   trace-verified hits during the current run, so a dependency shared by many
+///   dependents is verified once per run instead of once per dependent; and
+/// * a **pending-demand buffer** ([`Self::buffer_node_current_demand`]) that
+///   coalesces warm-hit demand observations in memory and writes them back once
+///   at the run boundary rather than appending one sidecar record per hit.
+///
+/// Both tables are cleared/flushed at the run boundary
+/// ([`Self::flush_buffered_node_demands`],
+/// [`Self::clear_verified_node_trace_memo`]); the demand buffer additionally
+/// flushes when the last handle to a root is dropped so its coalesced
+/// observations are never silently lost.
 #[derive(Clone, Debug)]
 pub struct PersistCache {
     layout: PersistLayout,
@@ -50,6 +69,37 @@ pub struct PersistCache {
     node_metadata_index: PersistNodeMetadataIndex,
     node_trace_log: PersistNodeTraceLog,
     root_locks: Arc<PersistRootLocks>,
+    /// Whether indexed value decoding re-hashes each decoded payload against its
+    /// content-address key. Off by default; enabled through the
+    /// `AOS_NIX_CACHE_VERIFY` knob for defensive verification.
+    value_decode_verification: bool,
+    /// Run-scoped `(node key, value hash)` pairs already proven valid this run.
+    verified_node_traces: Arc<Mutex<BTreeMap<PersistNodeMetadataKey, ValueHash>>>,
+    /// Run-scoped coalesced current-run demand counts awaiting write-back.
+    pending_node_demands: Arc<Mutex<BTreeMap<PersistNodeMetadataKey, u64>>>,
+}
+
+impl Drop for PersistCache {
+    /// Flushes any coalesced current-run demand observations when the last
+    /// handle to this opened root is dropped.
+    ///
+    /// The run boundary normally flushes the demand buffer, but callers that
+    /// drive the lower-level cache directly (without advancing a run boundary)
+    /// still expect their observed demand to reach disk. Flushing on the final
+    /// handle drop preserves that behavior. Errors are logged rather than
+    /// propagated because a destructor cannot return them.
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.pending_node_demands) != 1 {
+            return;
+        }
+        if let Err(error) = self.flush_buffered_node_demands() {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "persistent eval cache demand buffer flush on drop failed"
+            );
+        }
+    }
 }
 
 /// Compaction fires when a node sidecar's physical record count exceeds this
@@ -329,7 +379,28 @@ impl PersistCache {
             node_metadata_index,
             node_trace_log,
             root_locks,
+            value_decode_verification: false,
+            verified_node_traces: Arc::new(Mutex::new(BTreeMap::new())),
+            pending_node_demands: Arc::new(Mutex::new(BTreeMap::new())),
         })
+    }
+
+    /// Returns this handle with indexed value-decode content re-hashing set.
+    ///
+    /// When `verify` is `false` (the default), indexed cached-expression value
+    /// decoding trusts the content-address key and pack integrity header and
+    /// skips recomputing each decoded payload's [`ValueHash`]. When `verify` is
+    /// `true`, every decoded payload is re-hashed and must match its content
+    /// address, restoring the fully defensive decode path.
+    #[must_use]
+    pub fn with_value_decode_verification(mut self, verify: bool) -> Self {
+        self.value_decode_verification = verify;
+        self
+    }
+
+    /// Returns whether indexed value decoding re-hashes decoded payloads.
+    pub const fn value_decode_verification(&self) -> bool {
+        self.value_decode_verification
     }
 
     #[cfg(test)]
