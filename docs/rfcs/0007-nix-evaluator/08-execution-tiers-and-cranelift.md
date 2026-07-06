@@ -1228,9 +1228,10 @@ harness, never cut for scope.
       module ownership, and the full-IR registered promotion variant finalizing
       bounded static select, static has-attr, and local-slot update roots with
       `aos_env_get`/`aos_force` plus the relevant `aos_select_ic`,
-      `aos_has_attr`, or `aos_update` candidates. This is still safe preflight
-      assembly only: no evaluator heap
-      thunk is mutated, no atomic thunk-state CAS runs, registered addresses are
+      `aos_has_attr`, or `aos_update` candidates. Static select scalar-default
+      roots register both `aos_has_attr` and `aos_select_ic`. This is still
+      safe preflight assembly only: no evaluator heap thunk is mutated, no
+      atomic thunk-state CAS runs, registered addresses are
       not directly dereferenced or called, no native code pointer is cast or
       called, and generic runtime-call lowering beyond bounded env-slot/apply/
       static attr-access/update precursors remains open.
@@ -1248,10 +1249,11 @@ harness, never cut for scope.
       runtime candidates, hot env-slot and wrapped env-slot force-call promotion
       with registered/imported helper metadata, wrapped apply promotion without
       an `aos_force` candidate, full-IR static-select promotion with
-      `aos_select_ic`, full-IR static-has-attr promotion with `aos_has_attr`,
-      full-IR bounded local-slot update promotion with `aos_update`, and
-      missing-`aos_force` candidate rejection with the invocation-updated slot
-      preserved. This is still a policy/lowering
+      `aos_select_ic`, full-IR static-select scalar-default promotion with
+      `aos_has_attr` plus `aos_select_ic`, full-IR static-has-attr promotion
+      with `aos_has_attr`, full-IR bounded local-slot update promotion with
+      `aos_update`, and missing-`aos_force` candidate rejection with the
+      invocation-updated slot preserved. This is still a policy/lowering
       handoff: no evaluator heap thunk is mutated, no atomic thunk-state CAS
       runs, no native code pointer is cast or called, and the `aos_force`,
       `aos_apply`, `aos_select_ic`, `aos_has_attr`, or `aos_update` wrappers
@@ -1285,10 +1287,11 @@ harness, never cut for scope.
       callers and docs. The unsafe allowlist pins the shared decoder and raw
       evaluator casts to exact source lines. Integration tests in
       `ratchet-runtime-ffi/tests/jit_native_wrappers.rs` compile full-IR static
-      has-attr, static select, bounded update, and direct-apply roots through
-      `ratchet-jit`, supply process-local runtime-FFI wrapper addresses for
-      `aos_env_get`/`aos_force` plus the exercised attrset/apply helper, pass
-      live `EvalFrame` values plus one pinned `RuntimeJitContext` per native
+      has-attr, static select including scalar-default branches, bounded
+      update, and direct-apply roots through `ratchet-jit`, supply
+      process-local runtime-FFI wrapper addresses for `aos_env_get`/`aos_force`
+      plus the exercised attrset/apply helper, pass live `EvalFrame` values
+      plus one pinned `RuntimeJitContext` per native
       call, assert exact artifact import/registration metadata, execute native
       code, observe native results, and install tier-1 slot metadata. This
       proves real runtime-FFI force plus attrset-access and apply success paths

@@ -70,6 +70,54 @@ fn static_select_ir(slot: u32) -> Ir {
     }
 }
 
+fn static_select_scalar_default_ir(slot: u32, default_value: i64) -> Ir {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols
+        .intern(b"target")
+        .expect("test symbol table accepts target");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot },
+            ),
+            IrNode::new(
+                IrKind::Select,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::Select {
+                    receiver: IrId::new(0),
+                    path: IrAttrPathId::new(0),
+                    site: IrInlineCacheSiteId::new(11),
+                    default: Some(IrId::new(2)),
+                },
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(9, 11),
+                EffectClass::pure(),
+                IrData::Int(default_value),
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(1),
+        arena,
+        facts,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+            .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
 fn static_has_attr_ir(slot: u32) -> Ir {
     let mut symbols = SymbolTable::new();
     let symbol = symbols
@@ -769,6 +817,55 @@ fn nix_jit_registered_full_ir_promotion_installs_static_select() {
 }
 
 #[test]
+fn nix_jit_registered_full_ir_promotion_installs_static_select_scalar_default() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = static_select_scalar_default_ir(12, 99);
+
+    let promotion = nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir,
+        ir.root,
+    )
+    .expect("full-IR static-select default promotion finalizes with runtime address candidates");
+
+    assert!(promotion.decision().should_promote());
+    assert_eq!(
+        promotion.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(promotion.did_compile());
+    let promoted = promotion
+        .promoted_preflight()
+        .expect("promotion owns registered preflight");
+    assert_eq!(
+        promotion.slot().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"]
+    );
+    for symbol_name in ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"] {
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for(symbol_name)
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for(symbol_name)
+                        .expect("runtime candidate exists")
+                        .address()),
+            "{symbol_name} should be registered from runtime address candidates"
+        );
+    }
+    assert!(promotion.owns_encapsulated_module());
+}
+
+#[test]
 fn nix_jit_registered_full_ir_promotion_installs_static_has_attr() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
@@ -1004,6 +1101,56 @@ fn nix_jit_force_aware_full_ir_install_plan_carries_static_select_pointer_and_mo
                     .expect("select candidate exists")
                     .address())
     );
+    assert!(plan.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_force_aware_full_ir_install_plan_carries_static_select_default_pointer() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = static_select_scalar_default_ir(15, 99);
+
+    let plan = nix_jit_force_aware_registered_tier1_install_plan_for_lowered_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir,
+        ir.root,
+    )
+    .expect("full-IR static-select default install plan finalizes with runtime address candidates");
+
+    assert!(plan.did_compile());
+    assert!(plan.is_ready_for_install());
+    assert_eq!(
+        plan.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(plan.tier1_code_ptr().is_some());
+    let promoted = plan
+        .promoted_preflight()
+        .expect("install plan owns promoted preflight");
+    assert_eq!(
+        plan.tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"]
+    );
+    for symbol_name in ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"] {
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for(symbol_name)
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for(symbol_name)
+                        .expect("runtime candidate exists")
+                        .address()),
+            "{symbol_name} should be registered from runtime address candidates"
+        );
+    }
     assert!(plan.owns_encapsulated_module());
 }
 

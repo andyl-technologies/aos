@@ -411,8 +411,10 @@ pub fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
 /// [`nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root`].
 /// It keeps the existing literal, forced local-slot, and direct local-slot
 /// application behavior, and additionally allows bounded static attr selections
-/// to finalize with runtime-derived `aos_env_get`, `aos_force`, and
-/// `aos_select_ic` candidates.
+/// to finalize with runtime-derived attr-helper candidates. Static select
+/// roots without defaults require `aos_env_get`, `aos_force`, and
+/// `aos_select_ic`; static select roots with scalar defaults also require
+/// `aos_has_attr` for the missing-attribute probe.
 ///
 /// Candidate projection runs only after the policy decision requests tier 1, so
 /// a cold attempt can record its invocation and stay in tier 0 without requiring
@@ -560,9 +562,11 @@ pub fn nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
 /// This composes the full-IR force-aware promotion bridge with the same safe
 /// install handoff object used by the existing force-aware path. Bounded static
 /// attr selections can produce a ready pointer/module-owner plan with registered
-/// `aos_env_get`, `aos_force`, and `aos_select_ic` helper metadata. The plan
-/// still does not mutate evaluator heap state, cast or call the code pointer,
-/// dereference registered helper addresses, or call native code.
+/// `aos_env_get`, `aos_force`, and attr-helper metadata. Default-bearing static
+/// selects additionally carry `aos_has_attr` metadata before the plan reaches
+/// future evaluator-thunk installation. The plan still does not mutate evaluator
+/// heap state, cast or call the code pointer, dereference registered helper
+/// addresses, or call native code.
 ///
 /// # Errors
 ///
