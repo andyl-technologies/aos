@@ -5761,6 +5761,72 @@ fn gc_stress_dynamic_attrs_accumulator_thunk_allocations_publish_accumulated_roo
 }
 
 #[test]
+fn gc_stress_mixed_inherited_attrs_accumulator_thunk_allocations_publish_select_roots() {
+    let ir = lower("{ inherit ({ a = 1; }) a; b = x: x; }");
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+    let default_outcome = eval_whnf_owned(&ir).expect("default mixed inherited attrset evaluates");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress mixed inherited attrset evaluates with local accumulator writebacks");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+    let (selected, ordinary) = {
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("root attrset is heap-owned");
+        (
+            attrs.get(a).expect("inherited attr exists"),
+            attrs.get(b).expect("ordinary attr exists"),
+        )
+    };
+    assert_eq!(selected.tag(), ValueTag::Thunk);
+    let selected_thunk = outcome
+        .heap()
+        .get_thunk(selected)
+        .expect("inherited select is a heap-owned thunk");
+    assert!(matches!(
+        selected_thunk.kind(),
+        EvalThunkKind::Select { .. }
+    ));
+    assert_eq!(ordinary.tag(), ValueTag::Thunk);
+    assert_eq!(
+        outcome
+            .heap()
+            .generation(ordinary)
+            .expect("ordinary attr value generation is known"),
+        HeapGeneration::Young
+    );
+
+    let thunk_values = heap_record_values_with_tag(outcome.heap(), ValueTag::Thunk);
+    assert!(thunk_values.iter().any(|value| value.raw_eq(selected)));
+    assert!(thunk_values.iter().any(|value| value.raw_eq(ordinary)));
+    assert!(heap_record_forwarding_slot_count(outcome.heap(), &thunk_values) >= 1);
+    assert!(
+        outcome.heap().allocation_safepoints().count()
+            > default_outcome.heap().allocation_safepoints().count()
+    );
+    let final_worker_safepoint = outcome
+        .heap()
+        .allocation_safepoints()
+        .last()
+        .expect("ordinary attr thunk allocation safepoint records");
+    assert_eq!(
+        final_worker_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocThunk
+    );
+    assert_eq!(
+        final_worker_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_attrs_accumulator_allocation_node_clears_after_binding_error() {
     let span = Span::new(0, 1);
     let mut symbols = SymbolTable::new();

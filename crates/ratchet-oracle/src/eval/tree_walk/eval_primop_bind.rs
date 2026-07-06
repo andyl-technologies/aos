@@ -723,21 +723,9 @@ impl TreeWalk {
         } else {
             None
         };
-        let admit_attrset_binding_accumulator = {
-            let mut admit = !recursive
-                && active_overrides_symbol.is_none()
-                && self.can_admit_gc_stress_root_accumulator_allocation_safepoints(id);
-            if admit {
-                for binding_index in binding_range.clone() {
-                    let binding = self.current_ir().bindings[binding_index];
-                    if !matches!(self.inherit_source_select(binding.value), Ok(None)) {
-                        admit = false;
-                        break;
-                    }
-                }
-            }
-            admit
-        };
+        let admit_attrset_binding_accumulator = !recursive
+            && active_overrides_symbol.is_none()
+            && self.can_admit_gc_stress_root_accumulator_allocation_safepoints(id);
         let mut inherit_source_thunks = BTreeMap::new();
         let mut entries = Vec::new();
         entries
