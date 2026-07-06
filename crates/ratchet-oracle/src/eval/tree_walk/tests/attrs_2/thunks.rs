@@ -1025,6 +1025,9 @@ fn function_args_records_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 2);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 2);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -2084,6 +2087,42 @@ fn path_surface_projected_shape_preserves_order_and_records_order_parity_telemet
     assert_eq!(nix_path_stats.mismatched, 0);
 
     fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn function_args_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let source = r#"builtins.functionArgs ({ z ? (throw "z"), A, aa ? 1, _, a ? 2 }: A)"#;
+
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({source})")),
+        vec![
+            b"A".to_vec(),
+            b"_".to_vec(),
+            b"a".to_vec(),
+            b"aa".to_vec(),
+            b"z".to_vec(),
+        ],
+    );
+    assert_eq!(
+        eval(&format!(
+            "builtins.attrValues ({source}) == [ false false true true true ]"
+        ))
+        .as_bool(),
+        Ok(true),
+    );
+
+    let ir = lower(source);
+    let outcome = eval_whnf_owned(&ir).expect("functionArgs projected-shape result evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("functionArgs result metadata exists");
+
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
