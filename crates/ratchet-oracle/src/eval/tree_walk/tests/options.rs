@@ -2119,6 +2119,117 @@ fn gc_stress_split_version_empty_list_result_dispatches_permanent_noop_bridge() 
 }
 
 #[test]
+fn gc_stress_split_version_segment_strings_and_result_list_dispatch() {
+    let ir = lower(r#"builtins.splitVersion "1.0pre2""#);
+    let root = *ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let argument = ir
+        .arena
+        .child_slice(args)
+        .expect("primop args exist")
+        .first()
+        .copied()
+        .expect("splitVersion argument exists");
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let input = evaluator
+        .heap
+        .alloc_string(NixString::from_bytes(b"1.0pre2".to_vec()))
+        .expect("splitVersion input string allocates");
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, root.span, &mut roots, |eval| {
+            eval.eval_split_version_primop(ir.root, root.span, argument, argument_span, input)
+        })
+        .expect("splitVersion non-empty list allocates under GC stress");
+    let wrapper_calls_after = evaluator.tree_walk_list_wrapper_calls();
+    evaluator.active_root_eval_node = None;
+
+    assert_eq!(
+        wrapper_calls_after,
+        wrapper_calls_before + 1,
+        "splitVersion result did not route through the tree-walk list wrapper"
+    );
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        !roots[0].raw_eq(local_source),
+        "registered root was not relocated while allocating splitVersion segment strings"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::List);
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(value)
+            .expect("splitVersion list generation is known"),
+        HeapGeneration::Permanent
+    );
+    let list = evaluator
+        .heap()
+        .get_list(value)
+        .expect("splitVersion result is heap-owned");
+    let expected: &[&[u8]] = &[b"1", b"0", b"pre", b"2"];
+    assert_eq!(list.len(), expected.len());
+    for (index, expected) in expected.iter().enumerate() {
+        let element = list.get(index).expect("splitVersion element exists");
+        assert_eq!(
+            evaluator
+                .heap()
+                .get_string(element)
+                .expect("splitVersion segment string is heap-owned")
+                .bytes(),
+            *expected
+        );
+    }
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocList,
+        ],
+        "splitVersion should dispatch segment strings before the final list"
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 5,
+        "splitVersion should allocate exactly four segment strings and the final list under GC stress"
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("splitVersion list allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_match_capture_list_result_dispatches_permanent_noop_bridge() {
     let ir = lower(r#"builtins.match "(a)(b)" "ab""#);
     let span = ir.arena.node(ir.root).expect("root exists").span;

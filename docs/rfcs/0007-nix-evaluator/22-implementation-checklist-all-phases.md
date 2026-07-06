@@ -7596,6 +7596,8 @@ and helps the oracle directly.
       remains blocked,
       direct `splitVersion` empty-list result allocations relocating
       registered transient roots,
+      direct non-empty `splitVersion` segment-string allocations followed by
+      the final list allocation relocating registered transient roots,
       direct list-concat result allocations preserving registered transient
       roots while input composite list roots block dispatch,
       direct `concatLists` list-result allocations preserving registered
