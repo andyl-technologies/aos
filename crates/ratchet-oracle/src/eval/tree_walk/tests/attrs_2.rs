@@ -439,6 +439,44 @@ fn polymorphic_with_var_probe_keeps_shaped_cache_after_missing_scopes() {
 }
 
 #[test]
+fn megamorphic_with_var_probe_stays_slow_after_missing_scopes() {
+    let ir = lower(
+        "let f = x: with { a = 10; }; with x; a;
+         in (f { a = 1; })
+          + (f { b = 0; a = 2; })
+          + (f { c = 0; a = 3; })
+          + (f { d = 0; a = 4; })
+          + (f { e = 0; a = 5; })
+          + (f { missing = 0; })
+          + (f { missing = 1; })
+          + (f { a = 6; })",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("megamorphic hit-miss-hit with-var probe evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(41));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 9);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.flat_select_sites.megamorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_sites.megamorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 8);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 7);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 7);
+    assert_eq!(counts.shaped_misses, 2);
+}
+
+#[test]
 fn repeated_with_var_probe_uses_hamt_inline_cache_for_projected_hamt_scopes() {
     let ir = lower(
         "let base = ((((({ z = 6; } // { a = 1; }) // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; });

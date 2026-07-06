@@ -9854,8 +9854,8 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       scope remains monomorphic. The test checks mirrored hit/miss counters,
       shaped lookup telemetry, terminal polymorphic plus monomorphic site
       states, two resolved inner misses with no cached misses, and
-      slow-select shaped hit/miss counts. This does not cover megamorphic
-      `hasAttr`/`with` probes, native lowering, or `.drv` parity.
+      slow-select shaped hit/miss counts. This individual canary does not cover
+      megamorphic active bridge state, native lowering, or `.drv` parity.
 - [x] Current projected-shaped megamorphic hit-miss-hit `select` canary: a
       tree-walk static `select` with a default now proves that after one active
       projected-shaped select site exceeds the polymorphic cap, later present
@@ -9872,8 +9872,18 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       site megamorphic with five distinct present shapes, then checks repeated
       missing receivers and a later present receiver produce no cached hits or
       cached misses, preserve terminal megamorphic site state, and keep
-      slow-select shaped hit/miss telemetry. This does not cover megamorphic
-      `with` probes, native lowering, or `.drv` parity.
+      slow-select shaped hit/miss telemetry. This individual canary does not
+      cover `with` probes, native lowering, or `.drv` parity.
+- [x] Current projected-shaped megamorphic hit-miss-hit `with` probe canary: a
+      tree-walk `with` chain now proves that after one active inner
+      projected-shaped scope probe exceeds the polymorphic cap, later present
+      and missing inner scopes stay on the resolved slow path while a separate
+      outer fallback scope remains monomorphic. The test drives the inner site
+      megamorphic with five distinct present shapes, then checks repeated
+      missing inner scopes and a later present inner scope produce no cached
+      hits or cached misses for the megamorphic site, preserve terminal
+      megamorphic plus monomorphic site states, and keep slow-select shaped
+      hit/miss telemetry. This does not cover native lowering or `.drv` parity.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
