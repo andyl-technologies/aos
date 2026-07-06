@@ -6,7 +6,7 @@ use crate::cache::{
     ParseFileKey, PersistCache, PersistFileArtifactKey,
 };
 use crate::heap::HeapGeneration;
-use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy};
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 use crate::string::NixString;
 
 #[test]
@@ -151,6 +151,10 @@ fn gc_stress_fetch_git_result_strings_dispatch_with_registered_entry_roots() {
     let mut roots = [local_source];
 
     evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
             eval.alloc_fetch_git_result(ir.root, span, result)
@@ -207,6 +211,50 @@ fn gc_stress_fetch_git_result_strings_dispatch_with_registered_entry_roots() {
         .filter(|entry| entry.value.tag() == ValueTag::String)
         .count();
     assert_eq!(string_attrs, 7);
+    let string_values: Vec<(Vec<u8>, Vec<u8>)> = attrs
+        .iter_source_order()
+        .filter_map(|entry| {
+            (entry.value.tag() == ValueTag::String).then(|| {
+                (
+                    evaluator
+                        .symbols
+                        .resolve(entry.key)
+                        .expect("fetchGit string key resolves")
+                        .to_vec(),
+                    evaluator
+                        .heap()
+                        .get_string(entry.value)
+                        .expect("fetchGit string attr is heap-owned")
+                        .bytes()
+                        .to_vec(),
+                )
+            })
+        })
+        .collect();
+    assert_eq!(
+        string_values,
+        [
+            (b"lastModifiedDate".to_vec(), b"20231114221320".to_vec()),
+            (
+                b"narHash".to_vec(),
+                b"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec()
+            ),
+            (
+                b"outPath".to_vec(),
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec()
+            ),
+            (
+                b"rev".to_vec(),
+                b"0123456789abcdef0123456789abcdef01234567".to_vec()
+            ),
+            (b"shortRev".to_vec(), b"0123456".to_vec()),
+            (
+                b"dirtyRev".to_vec(),
+                b"fedcba9876543210fedcba9876543210fedcba98".to_vec()
+            ),
+            (b"dirtyShortRev".to_vec(), b"fedcba9".to_vec()),
+        ]
+    );
     assert!(attrs.iter_by_symbol().all(|entry| {
         entry.value.tag() != ValueTag::String
             || evaluator
@@ -214,11 +262,33 @@ fn gc_stress_fetch_git_result_strings_dispatch_with_registered_entry_roots() {
                 .generation(entry.value)
                 .is_ok_and(|generation| generation == HeapGeneration::Permanent)
     }));
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+        ],
+        "fetchGit should dispatch metadata strings before final generated-attrset dispatch remains blocked"
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 8,
+        "fetchGit should allocate seven metadata strings and the final attrset under GC stress"
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("fetchGit result allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
