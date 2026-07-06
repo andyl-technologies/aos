@@ -5706,6 +5706,61 @@ fn gc_stress_attrs_accumulator_thunk_allocations_publish_accumulated_roots() {
 }
 
 #[test]
+fn gc_stress_dynamic_attrs_accumulator_thunk_allocations_publish_accumulated_roots() {
+    let ir = lower(r#"{ a = x: x; ${"b"} = y: y; }"#);
+    let a = symbol_for(&ir, b"a");
+    let b = symbol_for(&ir, b"b");
+
+    let outcome = eval_whnf_owned_with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    )
+    .expect("GC-stress dynamic-key attrset evaluates with local accumulator writebacks");
+
+    assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+    let attr_values = {
+        let attrs = outcome
+            .heap()
+            .get_attrs(outcome.value())
+            .expect("root attrset is heap-owned");
+        (
+            attrs.get(a).expect("a exists"),
+            attrs.get(b).expect("b exists"),
+        )
+    };
+    let values = [attr_values.0, attr_values.1];
+    for value in values {
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        assert_eq!(
+            outcome
+                .heap()
+                .generation(value)
+                .expect("attr value generation is known"),
+            HeapGeneration::Young
+        );
+    }
+    let thunk_values = heap_record_values_with_tag(outcome.heap(), ValueTag::Thunk);
+    for value in values {
+        assert!(thunk_values.iter().any(|record| record.raw_eq(value)));
+    }
+    assert!(heap_record_forwarding_slot_count(outcome.heap(), &thunk_values) > values.len());
+    let permanent_safepoint = outcome
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("root dynamic-key attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_attrs_accumulator_allocation_node_clears_after_binding_error() {
     let span = Span::new(0, 1);
     let mut symbols = SymbolTable::new();

@@ -3222,12 +3222,13 @@ GC must be observationally invisible (§8): every item is gated by the different
       scoped accumulator allocation result, so every-safepoint stress can run
       the worker reserved forwarding bridge before the final permanent list
       bridge.
-      Static, non-recursive root attrset binding-value allocations now publish
-      already-built attr entries as transient value-stack roots, keep
-      order-sensitive thunk planning active, suspend only the local
-      GC-stress composite-accumulator block around the current binding value,
-      and admit that value as a scoped accumulator allocation result before the
-      final permanent attrset bridge.
+      Non-recursive root attrset binding-value allocations without inherited
+      source-select sharing now publish already-built attr entries as transient
+      value-stack roots, keep order-sensitive thunk planning active, suspend
+      only the local GC-stress composite-accumulator block around the current
+      binding value after static or dynamic-key evaluation has yielded a
+      symbol, and admit that value as a scoped accumulator allocation result
+      before the final permanent attrset bridge.
       The dispatch uses the same promotion threshold of 2 as the existing
       tree-walk GC-stress bridges and intentionally leaves
       captured-env thunks, synthetic select/apply/builtin
@@ -3235,9 +3236,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       captured-argument primop wrappers,
       nested/direct `eval_node` lambda/primop/string/URI/path/list/attrset allocations,
       recursive/captured-lexical-env root attrsets, worker allocations inside
-      let/lambda, recursive, dynamic-key, inherited-select, and override
-      binding local accumulator assembly, helper-generated symbol strings
-      that can run from primops holding unregistered heap locals, remaining
+      let/lambda, recursive, inherited-select, and override binding local
+      accumulator assembly, dynamic-key expression evaluation before the
+      current binding value is selected, helper-generated symbol strings that
+      can run from primops holding unregistered heap locals, remaining
       non-root helper scalar sites that do not pass the active-root gate,
       originless or cross-module persistent payload replay string/path/list/attr
       fallbacks,
@@ -3252,9 +3254,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       root list child thunk allocations dispatching through the scoped
       local-accumulator result gate and multi-element list assembly relocating
       accumulated transient roots,
-      static root attrset binding-value thunk allocations dispatching through
-      the same scoped local-accumulator result gate and multi-attr assembly
-      relocating accumulated transient roots,
+      static and dynamic-key root attrset binding-value thunk allocations
+      dispatching through the same scoped local-accumulator result gate and
+      multi-attr assembly relocating accumulated transient roots,
       plus root string, URI, and path literals preserving their permanent values
       through the scalar no-op bridge, root-result `baseNameOf`, `dirOf`, and
       `toPath` helper allocations relocating registered transient roots while

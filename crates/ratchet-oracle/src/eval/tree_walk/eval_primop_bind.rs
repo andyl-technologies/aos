@@ -723,17 +723,14 @@ impl TreeWalk {
         } else {
             None
         };
-        let admit_static_attrset_binding_accumulator = {
+        let admit_attrset_binding_accumulator = {
             let mut admit = !recursive
-                && !has_dynamic
                 && active_overrides_symbol.is_none()
                 && self.can_admit_gc_stress_root_accumulator_allocation_safepoints(id);
             if admit {
                 for binding_index in binding_range.clone() {
                     let binding = self.current_ir().bindings[binding_index];
-                    if !matches!(binding.key, IrAttrPathSegment::Static(_))
-                        || !matches!(self.inherit_source_select(binding.value), Ok(None))
-                    {
+                    if !matches!(self.inherit_source_select(binding.value), Ok(None)) {
                         admit = false;
                         break;
                     }
@@ -880,7 +877,7 @@ impl TreeWalk {
                                 &mut inherit_source_thunks,
                             )?
                         }
-                    } else if admit_static_attrset_binding_accumulator {
+                    } else if admit_attrset_binding_accumulator {
                         self.with_attr_entry_value_roots(
                             id,
                             node.span,
