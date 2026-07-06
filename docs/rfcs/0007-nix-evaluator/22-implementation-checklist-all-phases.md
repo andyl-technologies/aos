@@ -7638,8 +7638,9 @@ and helps the oracle directly.
       result roots after later dispatch is blocked,
       direct `builtins.nixPath` result-list allocations preserving
       accumulated entry roots,
-      direct reflected-context outputs-list allocations preserving
-      accumulated output-name roots,
+      direct reflected-context output-name string/list allocations preserving
+      accumulated output-name roots while final generated-attrset dispatch
+      remains blocked,
       direct non-empty `map` list-result allocations preserving registered
       transient roots while mapped apply-thunk fields block dispatch,
       direct non-empty `genList` list-result allocations preserving registered

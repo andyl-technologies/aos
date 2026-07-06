@@ -2482,6 +2482,10 @@ fn gc_stress_reflected_context_outputs_list_preserves_accumulated_outputs() {
     let mut roots = [local_source];
 
     let wrapper_calls_before = evaluator.tree_walk_list_wrapper_calls();
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -2528,6 +2532,33 @@ fn gc_stress_reflected_context_outputs_list_preserves_accumulated_outputs() {
     };
     assert_heap_string_bytes(&evaluator, output_items[0], b"out");
     assert_heap_string_bytes(&evaluator, output_items[1], b"dev");
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        &[
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocString,
+            RuntimeAllocationEntryPoint::AosAllocList,
+        ],
+        "reflected context should dispatch output-name strings and the outputs list but not the final generated attrset"
+    );
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 4,
+        "reflected context should allocate exactly two output strings, the outputs list, and the final attrset under GC stress"
+    );
+    let final_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("reflected context final attrset allocation safepoint records");
+    assert_eq!(
+        final_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        final_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
