@@ -973,6 +973,9 @@ fn partition_records_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 2);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 2);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -1904,6 +1907,31 @@ fn attr_filter_projected_shape_preserves_order_and_records_order_parity_telemetr
         assert_eq!(stats.matched, 1, "{source}");
         assert_eq!(stats.mismatched, 0, "{source}");
     }
+}
+
+#[test]
+fn partition_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let source = "builtins.partition (value: value < 3) [ 3 1 2 4 ]";
+
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({source})")),
+        vec![b"right".to_vec(), b"wrong".to_vec()],
+    );
+    assert_eq!(eval_list_ints(&format!("({source}).right")), vec![1, 2]);
+    assert_eq!(eval_list_ints(&format!("({source}).wrong")), vec![3, 4]);
+
+    let ir = lower(source);
+    let outcome = eval_whnf_owned(&ir).expect("partition projected-shape result evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("partition result metadata exists");
+
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
