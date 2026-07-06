@@ -5867,6 +5867,10 @@ fn gc_stress_zip_attrs_with_symbol_names_preserve_values_lists() {
     evaluator
         .heap
         .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .alloc_zipped_attrs_with(
@@ -5940,6 +5944,31 @@ fn gc_stress_zip_attrs_with_symbol_names_preserve_values_lists() {
         .heap()
         .get_thunk(b_item)
         .expect("remaining zipAttrsWith group tail remains heap-owned");
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 5,
+        "zipAttrsWith should allocate two grouped value lists, two symbol-name strings, and the final attrset"
+    );
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "zipAttrsWith symbol-name safepoints should remain blocked by live composite input roots"
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("zipAttrsWith final attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
     assert!(evaluator.transient_value_stack_roots().is_empty());
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
