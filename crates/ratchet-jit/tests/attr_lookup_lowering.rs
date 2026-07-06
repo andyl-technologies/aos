@@ -7,29 +7,34 @@ use ratchet_core::{
     EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
     IrInlineCacheSiteId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind,
     runtime_helper_call_signature,
-    syntax::{Span, Symbol, SymbolTable},
+    syntax::{BinOpKind, Span, Symbol, SymbolTable},
 };
 use ratchet_jit::{
     AOS_HAS_ATTR_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
-    AOS_SELECT_IC_FUNCTION_INDEX, JitClifSignatureError, JitLowerError, JitRuntimeSymbolAddress,
-    JitRuntimeSymbolAddressCandidate, clif_external_name_for_aos_env_get,
+    AOS_SELECT_IC_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX, JitClifSignatureError, JitLowerError,
+    JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, clif_external_name_for_aos_env_get,
     clif_external_name_for_aos_force, clif_external_name_for_aos_has_attr,
-    clif_external_name_for_aos_select_ic, clif_signature_for_runtime_call,
+    clif_external_name_for_aos_select_ic, clif_external_name_for_aos_update,
+    clif_signature_for_runtime_call,
     jit_cranelift_registered_artifact_definition_preflight_with_candidates,
     jit_module_readiness_preflight_for_artifact,
     lower_has_attr_local_slot_ir_root_thunk_body_artifact, lower_has_attr_local_slot_ir_thunk_body,
     lower_select_local_slot_ir_root_thunk_body_artifact, lower_select_local_slot_ir_thunk_body,
+    lower_update_local_slots_ir_root_thunk_body_artifact, lower_update_local_slots_ir_thunk_body,
 };
 
 #[test]
 fn attr_helper_external_names_use_reserved_namespace_and_indices() {
     let has_attr = clif_external_name_for_aos_has_attr();
     let select_ic = clif_external_name_for_aos_select_ic();
+    let update = clif_external_name_for_aos_update();
 
     assert_eq!(has_attr.namespace, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE);
     assert_eq!(has_attr.index, AOS_HAS_ATTR_FUNCTION_INDEX);
     assert_eq!(select_ic.namespace, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE);
     assert_eq!(select_ic.index, AOS_SELECT_IC_FUNCTION_INDEX);
+    assert_eq!(update.namespace, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE);
+    assert_eq!(update.index, AOS_UPDATE_FUNCTION_INDEX);
 }
 
 #[test]
@@ -86,6 +91,35 @@ fn has_attr_local_slot_ir_thunk_body_imports_env_force_and_has_attr_helpers() {
         helper_signature("aos_has_attr")
     );
     assert_eq!(iconst_words(&function), vec![5, 0, 11]);
+}
+
+#[test]
+fn update_local_slots_ir_thunk_body_imports_env_force_and_update_helpers() {
+    let arena = update_local_slots_arena(5, 6);
+
+    let function =
+        lower_update_local_slots_ir_thunk_body(&arena, IrId::new(2)).expect("update lowers");
+    let env_get_import =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
+    let force_import =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+    let update_import =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_update());
+
+    assert_eq!(function.dfg.ext_funcs.len(), 3);
+    assert_eq!(
+        function.dfg.signatures[env_get_import.1.signature],
+        helper_signature("aos_env_get")
+    );
+    assert_eq!(
+        function.dfg.signatures[force_import.1.signature],
+        helper_signature("aos_force")
+    );
+    assert_eq!(
+        function.dfg.signatures[update_import.1.signature],
+        helper_signature("aos_update")
+    );
+    assert_eq!(iconst_words(&function), vec![5, 6]);
 }
 
 #[test]
@@ -209,6 +243,89 @@ fn has_attr_local_slot_ir_thunk_body_forces_receiver_then_calls_has_attr() {
 }
 
 #[test]
+fn update_local_slots_ir_thunk_body_forces_operands_then_calls_update() {
+    let arena = update_local_slots_arena(7, 8);
+
+    let function =
+        lower_update_local_slots_ir_thunk_body(&arena, IrId::new(2)).expect("update lowers");
+    let (env_get, _) =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
+    let (force, _) =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+    let (update, _) =
+        imported_function_by_user_external_name(&function, clif_external_name_for_aos_update());
+    let calls = call_insts(&function);
+    let entry_values = entry_block_values(&function);
+    let iconsts = iconst_values(&function);
+
+    assert_eq!(calls.len(), 5);
+    assert_eq!(
+        iconsts.iter().map(|(_, word)| *word).collect::<Vec<_>>(),
+        vec![7, 8]
+    );
+    assert_call_target(&function, calls[0], env_get);
+    assert_call_target(&function, calls[1], force);
+    assert_call_target(&function, calls[2], env_get);
+    assert_call_target(&function, calls[3], force);
+    assert_call_target(&function, calls[4], update);
+    assert_eq!(
+        opcodes(&function),
+        vec![
+            Opcode::Iconst,
+            Opcode::Call,
+            Opcode::Call,
+            Opcode::Iconst,
+            Opcode::Call,
+            Opcode::Call,
+            Opcode::Call,
+            Opcode::Return,
+        ]
+    );
+
+    let left_env_get_args = call_args(&function, calls[0]);
+    assert_eq!(left_env_get_args, vec![entry_values[1], iconsts[0].0]);
+    let left_env_get_results = function.dfg.inst_results(calls[0]).to_vec();
+
+    let left_force_args = call_args(&function, calls[1]);
+    assert_eq!(
+        left_force_args,
+        vec![
+            entry_values[0],
+            left_env_get_results[0],
+            left_env_get_results[1],
+        ]
+    );
+    let left_force_results = function.dfg.inst_results(calls[1]).to_vec();
+
+    let right_env_get_args = call_args(&function, calls[2]);
+    assert_eq!(right_env_get_args, vec![entry_values[1], iconsts[1].0]);
+    let right_env_get_results = function.dfg.inst_results(calls[2]).to_vec();
+
+    let right_force_args = call_args(&function, calls[3]);
+    assert_eq!(
+        right_force_args,
+        vec![
+            entry_values[0],
+            right_env_get_results[0],
+            right_env_get_results[1],
+        ]
+    );
+    let right_force_results = function.dfg.inst_results(calls[3]).to_vec();
+
+    let update_args = call_args(&function, calls[4]);
+    assert_eq!(
+        update_args,
+        vec![
+            entry_values[0],
+            left_force_results[0],
+            left_force_results[1],
+            right_force_results[0],
+            right_force_results[1],
+        ]
+    );
+}
+
+#[test]
 fn select_root_artifact_records_runtime_imports() {
     let ir = attr_lookup_ir(AttrLookupFixtureKind::Select, 8, None);
 
@@ -236,6 +353,22 @@ fn has_attr_root_artifact_records_runtime_imports() {
     assert_eq!(
         artifact_import_names(readiness.artifact_runtime_imports()),
         ["aos_env_get", "aos_force", "aos_has_attr"]
+    );
+    assert!(readiness.artifact_runtime_import_gaps().is_empty());
+}
+
+#[test]
+fn update_root_artifact_records_runtime_imports() {
+    let ir = update_local_slots_ir(8, 9);
+
+    let artifact =
+        lower_update_local_slots_ir_root_thunk_body_artifact(&ir).expect("update root lowers");
+    let readiness =
+        jit_module_readiness_preflight_for_artifact(&artifact).expect("update readiness builds");
+
+    assert_eq!(
+        artifact_import_names(readiness.artifact_runtime_imports()),
+        ["aos_env_get", "aos_force", "aos_update"]
     );
     assert!(readiness.artifact_runtime_import_gaps().is_empty());
 }
@@ -274,6 +407,24 @@ fn has_attr_lowerer_accepts_direct_thunk_alloc_wrapper() {
         ["aos_env_get", "aos_force", "aos_has_attr"]
     );
     assert_eq!(iconst_words(artifact.function()), vec![10, 0, 11]);
+}
+
+#[test]
+fn update_lowerer_accepts_direct_thunk_alloc_wrapper() {
+    let ir = wrapped_update_ir(10, 12);
+
+    let artifact =
+        lower_update_local_slots_ir_root_thunk_body_artifact(&ir).expect("wrapped update lowers");
+
+    assert_eq!(
+        artifact_import_names(
+            jit_module_readiness_preflight_for_artifact(&artifact)
+                .expect("update readiness builds")
+                .artifact_runtime_imports(),
+        ),
+        ["aos_env_get", "aos_force", "aos_update"]
+    );
+    assert_eq!(iconst_words(artifact.function()), vec![10, 12]);
 }
 
 #[test]
@@ -328,6 +479,33 @@ fn registered_artifact_definition_rewrites_has_attr_runtime_imports() {
     assert!(preflight.registered_symbol_for("aos_env_get").is_some());
     assert!(preflight.registered_symbol_for("aos_force").is_some());
     assert!(preflight.registered_symbol_for("aos_has_attr").is_some());
+}
+
+#[test]
+fn registered_artifact_definition_rewrites_update_runtime_imports() {
+    let ir = update_local_slots_ir(13, 17);
+    let artifact =
+        lower_update_local_slots_ir_root_thunk_body_artifact(&ir).expect("update root lowers");
+    let preflight = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+        artifact,
+        &[
+            synthetic_candidate("aos_env_get", RuntimeHelperRole::EnvironmentAccess, 0x1000),
+            synthetic_candidate("aos_force", RuntimeHelperRole::ForcingControl, 0x2000),
+            synthetic_candidate("aos_update", RuntimeHelperRole::AttrsetAccess, 0x3000),
+        ],
+    )
+    .expect("registered artifact definition accepts update helper candidates");
+
+    assert_eq!(
+        artifact_import_names(preflight.artifact_runtime_imports()),
+        ["aos_env_get", "aos_force", "aos_update"]
+    );
+    assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+    assert!(preflight.imported_symbol_for("aos_force").is_some());
+    assert!(preflight.imported_symbol_for("aos_update").is_some());
+    assert!(preflight.registered_symbol_for("aos_env_get").is_some());
+    assert!(preflight.registered_symbol_for("aos_force").is_some());
+    assert!(preflight.registered_symbol_for("aos_update").is_some());
 }
 
 #[test]
@@ -420,6 +598,94 @@ fn has_attr_lowering_rejects_unsupported_shapes() {
             receiver,
             kind: IrKind::Int,
         } if receiver == IrId::new(0)
+    ));
+}
+
+#[test]
+fn update_lowering_rejects_unsupported_shapes() {
+    let non_update_arena = binary_local_slots_arena(BinOpKind::Add, 1, 2);
+    let non_local_operand_arena = IrArena::from_raw_parts(
+        vec![
+            local_var_node(1),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::Int(9),
+            ),
+            IrNode::new(
+                IrKind::BinOp,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Binary {
+                    op: BinOpKind::Update,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let missing_operand_arena = IrArena::from_raw_parts(
+        vec![
+            local_var_node(1),
+            IrNode::new(
+                IrKind::BinOp,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Binary {
+                    op: BinOpKind::Update,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(9),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let malformed_payload_arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::BinOp,
+            Span::new(0, 3),
+            EffectClass::pure(),
+            IrData::None,
+        )],
+        Vec::new(),
+    );
+
+    let non_update_error = lower_update_local_slots_ir_thunk_body(&non_update_arena, IrId::new(2))
+        .expect_err("non-update binary operator is rejected");
+    let non_local_operand_error =
+        lower_update_local_slots_ir_thunk_body(&non_local_operand_arena, IrId::new(2))
+            .expect_err("non-local update operand is rejected");
+    let missing_operand_error =
+        lower_update_local_slots_ir_thunk_body(&missing_operand_arena, IrId::new(1))
+            .expect_err("missing update operand is rejected");
+    let malformed_payload_error =
+        lower_update_local_slots_ir_thunk_body(&malformed_payload_arena, IrId::new(0))
+            .expect_err("malformed update payload is rejected");
+
+    assert!(matches!(
+        non_update_error,
+        JitLowerError::UnsupportedUpdateOp { op: BinOpKind::Add }
+    ));
+    assert!(matches!(
+        non_local_operand_error,
+        JitLowerError::UnsupportedUpdateOperand {
+            operand,
+            kind: IrKind::Int,
+        } if operand == IrId::new(1)
+    ));
+    assert!(matches!(
+        missing_operand_error,
+        JitLowerError::MissingUpdateOperand { operand } if operand == IrId::new(9)
+    ));
+    assert!(matches!(
+        malformed_payload_error,
+        JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::BinOp,
+            data: IrData::None,
+            expected: "attr update binary payload",
+        }
     ));
 }
 
@@ -567,6 +833,93 @@ fn wrapped_has_attr_ir(slot: u32) -> Ir {
     ir.root = IrId::new(2);
     ir.facts = IrFacts::conservative(ir.arena.nodes().len());
     ir
+}
+
+fn local_var_node(slot: u32) -> IrNode {
+    IrNode::new(
+        IrKind::LocalVar,
+        Span::new(0, 1),
+        EffectClass::pure(),
+        IrData::Local { slot },
+    )
+}
+
+fn binary_local_slots_arena(op: BinOpKind, left_slot: u32, right_slot: u32) -> IrArena {
+    IrArena::from_raw_parts(
+        vec![
+            local_var_node(left_slot),
+            local_var_node(right_slot),
+            IrNode::new(
+                IrKind::BinOp,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Binary {
+                    op,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+        ],
+        Vec::new(),
+    )
+}
+
+fn update_local_slots_arena(left_slot: u32, right_slot: u32) -> IrArena {
+    binary_local_slots_arena(BinOpKind::Update, left_slot, right_slot)
+}
+
+fn update_local_slots_ir(left_slot: u32, right_slot: u32) -> Ir {
+    let arena = update_local_slots_arena(left_slot, right_slot);
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(2),
+        arena,
+        facts,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
+fn wrapped_update_ir(left_slot: u32, right_slot: u32) -> Ir {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            local_var_node(left_slot),
+            local_var_node(right_slot),
+            IrNode::new(
+                IrKind::BinOp,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Binary {
+                    op: BinOpKind::Update,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+            IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Node(IrId::new(2)),
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(3),
+        arena,
+        facts,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
 }
 
 fn imported_function_by_user_external_name(

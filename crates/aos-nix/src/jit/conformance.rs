@@ -582,7 +582,7 @@ mod tests {
     use ratchet_core::{
         EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts,
         IrInlineCacheSiteId, IrKind, IrNode,
-        syntax::{Span, SymbolTable},
+        syntax::{BinOpKind, Span, SymbolTable},
     };
     use ratchet_jit::{
         DEFAULT_TIER1_INVOCATION_THRESHOLD, JitClifArtifactSource, JitTier, TierUpCounter,
@@ -682,6 +682,48 @@ mod tests {
             with_chains: Box::new([]),
             attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
                 .into_boxed_slice(),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
+    }
+
+    fn update_ir(left_slot: u32, right_slot: u32) -> Ir {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local { slot: left_slot },
+                ),
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(2, 3),
+                    EffectClass::pure(),
+                    IrData::Local { slot: right_slot },
+                ),
+                IrNode::new(
+                    IrKind::BinOp,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Binary {
+                        op: BinOpKind::Update,
+                        lhs: IrId::new(0),
+                        rhs: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let facts = IrFacts::conservative(arena.nodes().len());
+        Ir {
+            root: IrId::new(2),
+            arena,
+            facts,
+            symbols: SymbolTable::new(),
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: Box::new([]),
             bindings: Box::new([]),
             shapes: Box::new([]),
         }
@@ -1122,6 +1164,154 @@ mod tests {
                     == candidate_preflight
                         .address_candidate_for("aos_force")
                         .expect("force candidate exists")
+                        .address())
+        );
+    }
+
+    #[test]
+    fn force_aware_tier1_conformance_readiness_reports_update_publish_gaps() {
+        let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("JIT address candidate preflight builds");
+        let ir = update_ir(12, 13);
+        let thunk = EvalThunk::new(ir.root);
+
+        let readiness = nix_jit_force_aware_tier1_conformance_readiness_for_ir_root(
+            hot_slot(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &ir.arena,
+            ir.root,
+            &thunk,
+        )
+        .expect("force-aware update conformance readiness report builds");
+
+        assert!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .did_compile()
+        );
+        assert_eq!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .slot()
+                .current_tier(),
+            JitTier::Tier1Baseline
+        );
+        assert!(!readiness.is_ready_for_jit_enabled_harness());
+        assert!(!readiness.safe_preconditions_met());
+        assert!(
+            readiness.has_gap(NixJitTier1ConformanceGap::RuntimeSymbolRegistration {
+                missing_count: readiness.runtime_symbol_registration().gaps().len(),
+            })
+        );
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        }));
+        let promoted = readiness
+            .thunk_install_readiness()
+            .install_plan()
+            .promoted_preflight()
+            .expect("readiness owns promoted preflight");
+        let artifact_runtime_imports = promoted
+            .finalization()
+            .artifact_runtime_imports()
+            .iter()
+            .map(|artifact_import| artifact_import.symbol_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            artifact_runtime_imports,
+            ["aos_env_get", "aos_force", "aos_update"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_update")
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for("aos_update")
+                        .expect("update candidate exists")
+                        .address())
+        );
+    }
+
+    #[test]
+    fn tier1_conformance_readiness_reports_update_publish_gaps() {
+        let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("JIT address candidate preflight builds");
+        let ir = update_ir(18, 19);
+        let thunk = EvalThunk::new(ir.root);
+
+        let readiness = nix_jit_tier1_conformance_readiness_for_ir_root(
+            hot_slot(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &ir.arena,
+            ir.root,
+            &thunk,
+        )
+        .expect("update conformance readiness report builds");
+
+        assert!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .did_compile()
+        );
+        assert_eq!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .slot()
+                .current_tier(),
+            JitTier::Tier1Baseline
+        );
+        assert!(!readiness.is_ready_for_jit_enabled_harness());
+        assert!(!readiness.safe_preconditions_met());
+        assert!(
+            readiness.has_gap(NixJitTier1ConformanceGap::RuntimeSymbolRegistration {
+                missing_count: readiness.runtime_symbol_registration().gaps().len(),
+            })
+        );
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        }));
+        let promoted = readiness
+            .thunk_install_readiness()
+            .install_plan()
+            .promoted_preflight()
+            .expect("readiness owns promoted preflight");
+        let artifact_runtime_imports = promoted
+            .finalization()
+            .artifact_runtime_imports()
+            .iter()
+            .map(|artifact_import| artifact_import.symbol_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            artifact_runtime_imports,
+            ["aos_env_get", "aos_force", "aos_update"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_update")
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for("aos_update")
+                        .expect("update candidate exists")
                         .address())
         );
     }

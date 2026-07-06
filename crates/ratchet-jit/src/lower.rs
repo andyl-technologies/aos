@@ -6,7 +6,8 @@
 //! environment-slot read through the `aos_env_get` helper, force that loaded
 //! value through `aos_force`, apply two local-slot values through `aos_apply`,
 //! perform one forced static attr selection through `aos_select_ic`, or test one
-//! forced static attr presence through `aos_has_attr`.
+//! forced static attr presence through `aos_has_attr`, and merge two forced
+//! local-slot attrsets through `aos_update`.
 //! Shape-directed tier-1 selector entrypoints choose among the arena-only
 //! bounded paths before Cranelift module setup. These bodies use the same
 //! two-word `Value` ABI as [`crate::abi`], but they are not placed in a
@@ -23,7 +24,8 @@ use cranelift_codegen::{
 use ratchet_core::{
     BindingLowering, Cardinality, ExprFacts, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData,
     IrId, IrInlineCacheSiteId, IrKind, IrNode, Strictness, ThunkSharing,
-    runtime_helper_call_signature, runtime_thunk_call_signature, syntax::Symbol,
+    runtime_helper_call_signature, runtime_thunk_call_signature,
+    syntax::{BinOpKind, Symbol},
 };
 use ratchet_value::value::Value;
 
@@ -64,11 +66,15 @@ pub const AOS_HAS_ATTR_FUNCTION_INDEX: u32 = 3;
 /// User-external function index reserved for the `aos_select_ic` helper.
 pub const AOS_SELECT_IC_FUNCTION_INDEX: u32 = 4;
 
+/// User-external function index reserved for the `aos_update` helper.
+pub const AOS_UPDATE_FUNCTION_INDEX: u32 = 5;
+
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
 const AOS_HAS_ATTR_SYMBOL: &str = "aos_has_attr";
 const AOS_SELECT_IC_SYMBOL: &str = "aos_select_ic";
+const AOS_UPDATE_SYMBOL: &str = "aos_update";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
 pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
@@ -112,6 +118,14 @@ pub fn clif_external_name_for_aos_select_ic() -> UserExternalName {
     UserExternalName::new(
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_SELECT_IC_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_update`.
+pub fn clif_external_name_for_aos_update() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_UPDATE_FUNCTION_INDEX,
     )
 }
 
@@ -797,14 +811,88 @@ pub fn lower_has_attr_local_slot_ir_root_thunk_body_artifact(
     lower_has_attr_local_slot_ir_thunk_body_artifact(ir, ir.root)
 }
 
+/// Lowers a direct local-slot attr update into a verified thunk CLIF body.
+///
+/// This bounded attr-access precursor accepts a direct [`IrKind::BinOp`] root
+/// carrying [`BinOpKind::Update`], plus one direct [`IrKind::ThunkAlloc`]
+/// wrapper around such an update. Both operands must be direct
+/// [`IrKind::LocalVar`] reads. The generated function imports `aos_env_get`,
+/// `aos_force`, and `aos_update`, loads the left operand from the compiled
+/// thunk `env` parameter, forces it, then loads and forces the right operand
+/// before calling `aos_update(rt, left, right)`. The helper owns the shallow
+/// right-biased merge and attrset type checks.
+///
+/// The returned function remains non-executable CLIF only. It is not placed in a
+/// `JITModule`, linked against native helper addresses, finalized, or called.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `root` is not present in
+/// `arena`. Returns [`JitLowerError::MissingIrBody`] for missing direct thunk
+/// bodies. Returns update-specific unsupported-shape errors when the root, body,
+/// operator, or either operand is outside the current bounded subset. Also
+/// returns runtime ABI signature-conversion and verifier errors for imported
+/// helpers.
+pub fn lower_update_local_slots_ir_thunk_body(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<Function, JitLowerError> {
+    let (left_slot, right_slot) = update_local_slots_for_root(arena, root)?;
+    lower_update_local_slots_thunk_body_with_name(
+        left_slot,
+        right_slot,
+        clif_name_for_ir_root(root),
+    )
+}
+
+/// Lowers a direct local-slot attr update into a non-executable CLIF artifact.
+///
+/// The artifact records the Core IR root id as source metadata and contains the
+/// same verified CLIF function returned by [`lower_update_local_slots_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_update_local_slots_ir_thunk_body`].
+pub fn lower_update_local_slots_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_update_local_slots_ir_thunk_body(arena, root)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
+/// Lowers the root of a lowered IR artifact as a direct local-slot attr update.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_update_local_slots_ir_thunk_body`].
+pub fn lower_update_local_slots_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
+    lower_update_local_slots_ir_thunk_body(&ir.arena, ir.root)
+}
+
+/// Lowers the root local-slot attr update into a non-executable CLIF artifact.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_update_local_slots_ir_root_thunk_body`].
+pub fn lower_update_local_slots_ir_root_thunk_body_artifact(
+    ir: &Ir,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_update_local_slots_ir_thunk_body_artifact(&ir.arena, ir.root)
+}
+
 /// Lowers a currently supported tier-1 IR thunk body.
 ///
-/// This shape-directed selector accepts literal roots, local-slot roots, and
-/// direct local-slot application roots, plus one direct [`IrKind::ThunkAlloc`]
-/// wrapper around any supported shape. Literal roots lower through
-/// [`lower_constant_ir_thunk_body`], local-slot roots lower through
-/// [`lower_env_get_ir_thunk_body`], and direct local-slot applications lower
-/// through [`lower_apply_local_slots_ir_thunk_body`].
+/// This shape-directed selector accepts literal roots, local-slot roots, direct
+/// local-slot application roots, and local-slot attr update roots, plus one
+/// direct [`IrKind::ThunkAlloc`] wrapper around any supported shape. Literal
+/// roots lower through [`lower_constant_ir_thunk_body`], local-slot roots lower
+/// through [`lower_env_get_ir_thunk_body`], direct local-slot applications lower
+/// through [`lower_apply_local_slots_ir_thunk_body`], and local-slot attr
+/// updates lower through [`lower_update_local_slots_ir_thunk_body`].
 /// Static attr selections and static attr presence tests require full
 /// lowered-IR side tables, so they are accepted by
 /// [`lower_tier1_ir_thunk_body_for_ir`] instead of this arena-only entrypoint.
@@ -841,8 +929,9 @@ pub fn lower_tier1_ir_thunk_body_artifact(
 /// Lowers a currently supported full-IR tier-1 thunk body.
 ///
 /// This selector accepts the same arena-only roots as
-/// [`lower_tier1_ir_thunk_body`], and additionally accepts a direct static
-/// attr selection or static attr presence root plus one direct
+/// [`lower_tier1_ir_thunk_body`], including bounded local-slot attr updates,
+/// and additionally accepts a direct static attr selection or static attr
+/// presence root plus one direct
 /// [`IrKind::ThunkAlloc`] wrapper around either shape when it can be validated
 /// against the lowered IR's attr-path side table.
 ///
@@ -882,7 +971,9 @@ pub fn lower_tier1_ir_thunk_body_artifact_for_ir(
 /// roots through [`lower_forced_env_get_ir_thunk_body`] so the loaded value is
 /// forced by `aos_force` before returning. Direct local-slot applications lower
 /// through [`lower_apply_local_slots_ir_thunk_body`] because `aos_apply` owns the
-/// function-call forcing boundary.
+/// function-call forcing boundary. Local-slot attr updates lower through
+/// [`lower_update_local_slots_ir_thunk_body`] because the update lowerer owns
+/// operand forcing before `aos_update`.
 /// Static attr selections and static attr presence tests require full
 /// lowered-IR side tables, so they are accepted by
 /// [`lower_force_aware_tier1_ir_thunk_body_for_ir`] instead of this arena-only
@@ -923,8 +1014,9 @@ pub fn lower_force_aware_tier1_ir_thunk_body_artifact(
 /// Lowers a currently supported full-IR force-aware tier-1 thunk body.
 ///
 /// This selector accepts the same arena-only roots as
-/// [`lower_force_aware_tier1_ir_thunk_body`], and additionally accepts a direct
-/// static attr selection or static attr presence root plus one direct
+/// [`lower_force_aware_tier1_ir_thunk_body`], including bounded local-slot attr
+/// updates, and additionally accepts a direct static attr selection or static
+/// attr presence root plus one direct
 /// [`IrKind::ThunkAlloc`] wrapper around either shape when it can be validated
 /// against the lowered IR's attr-path side table. Static attr access already
 /// forces its receiver before calling `aos_select_ic` or `aos_has_attr`, so it
@@ -1040,6 +1132,33 @@ pub enum JitLowerError {
         /// The unsupported application child id.
         child: IrId,
         /// The unsupported child node kind.
+        kind: IrKind,
+    },
+    /// The requested IR root is not an attr update this precursor can lower.
+    UnsupportedUpdateRoot {
+        /// The unsupported root node kind.
+        kind: IrKind,
+    },
+    /// The direct thunk-allocation body is not an attr update this precursor can lower.
+    UnsupportedUpdateBody {
+        /// The unsupported body node kind.
+        kind: IrKind,
+    },
+    /// A binary operator root was not the attr update operator.
+    UnsupportedUpdateOp {
+        /// The unsupported binary operator.
+        op: BinOpKind,
+    },
+    /// A direct attr update operand was not present in the arena.
+    MissingUpdateOperand {
+        /// The missing update operand id.
+        operand: IrId,
+    },
+    /// A direct attr update operand is not a local-slot read this precursor can lower.
+    UnsupportedUpdateOperand {
+        /// The unsupported update operand id.
+        operand: IrId,
+        /// The unsupported operand node kind.
         kind: IrKind,
     },
     /// The requested IR root is not an attr lookup this precursor can lower.
@@ -1214,6 +1333,36 @@ impl fmt::Display for JitLowerError {
                     "IR apply child {child:?} with kind {kind:?} is not a local-slot read this lowerer can consume"
                 )
             }
+            Self::UnsupportedUpdateRoot { kind } => {
+                write!(
+                    formatter,
+                    "IR root kind {kind:?} is not supported by the local-slot attr-update lowerer"
+                )
+            }
+            Self::UnsupportedUpdateBody { kind } => {
+                write!(
+                    formatter,
+                    "IR thunk body kind {kind:?} is not supported by the local-slot attr-update lowerer"
+                )
+            }
+            Self::UnsupportedUpdateOp { op } => {
+                write!(
+                    formatter,
+                    "IR binary operator {op:?} is not supported by the local-slot attr-update lowerer"
+                )
+            }
+            Self::MissingUpdateOperand { operand } => {
+                write!(
+                    formatter,
+                    "IR attr-update operand {operand:?} is not present in the arena"
+                )
+            }
+            Self::UnsupportedUpdateOperand { operand, kind } => {
+                write!(
+                    formatter,
+                    "IR attr-update operand {operand:?} with kind {kind:?} is not a local-slot read this lowerer can consume"
+                )
+            }
             Self::UnsupportedAttrRoot { kind } => {
                 write!(
                     formatter,
@@ -1319,6 +1468,11 @@ impl Error for JitLowerError {
             | Self::UnsupportedApplyBody { .. }
             | Self::MissingApplyChild { .. }
             | Self::UnsupportedApplyChild { .. }
+            | Self::UnsupportedUpdateRoot { .. }
+            | Self::UnsupportedUpdateBody { .. }
+            | Self::UnsupportedUpdateOp { .. }
+            | Self::MissingUpdateOperand { .. }
+            | Self::UnsupportedUpdateOperand { .. }
             | Self::UnsupportedAttrRoot { .. }
             | Self::UnsupportedAttrBody { .. }
             | Self::MissingAttrReceiver { .. }
@@ -1506,6 +1660,96 @@ fn apply_local_child_slot(arena: &IrArena, child: IrId) -> Result<u32, JitLowerE
             expected: "local slot payload",
         }),
         (kind, _) => Err(JitLowerError::UnsupportedApplyChild { child, kind }),
+    }
+}
+
+fn update_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32), JitLowerError> {
+    let node = arena
+        .node(root)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root })?;
+
+    match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(body)) => {
+            let body = arena
+                .node(body)
+                .copied()
+                .ok_or(JitLowerError::MissingIrBody { body })?;
+            update_local_slots_for_body(arena, body)
+        }
+        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::ThunkAlloc,
+            data,
+            expected: "body node",
+        }),
+        _ => update_local_slots_for_node(arena, node),
+    }
+}
+
+fn update_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(u32, u32), JitLowerError> {
+    match (node.kind, node.data) {
+        (
+            IrKind::BinOp,
+            IrData::Binary {
+                op: BinOpKind::Update,
+                lhs,
+                rhs,
+            },
+        ) => Ok((
+            update_local_operand_slot(arena, lhs)?,
+            update_local_operand_slot(arena, rhs)?,
+        )),
+        (IrKind::BinOp, IrData::Binary { op, .. }) => {
+            Err(JitLowerError::UnsupportedUpdateOp { op })
+        }
+        (IrKind::BinOp, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::BinOp,
+            data,
+            expected: "attr update binary payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedUpdateBody { kind }),
+    }
+}
+
+fn update_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(u32, u32), JitLowerError> {
+    match (node.kind, node.data) {
+        (
+            IrKind::BinOp,
+            IrData::Binary {
+                op: BinOpKind::Update,
+                lhs,
+                rhs,
+            },
+        ) => Ok((
+            update_local_operand_slot(arena, lhs)?,
+            update_local_operand_slot(arena, rhs)?,
+        )),
+        (IrKind::BinOp, IrData::Binary { op, .. }) => {
+            Err(JitLowerError::UnsupportedUpdateOp { op })
+        }
+        (IrKind::BinOp, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::BinOp,
+            data,
+            expected: "attr update binary payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedUpdateRoot { kind }),
+    }
+}
+
+fn update_local_operand_slot(arena: &IrArena, operand: IrId) -> Result<u32, JitLowerError> {
+    let node = arena
+        .node(operand)
+        .copied()
+        .ok_or(JitLowerError::MissingUpdateOperand { operand })?;
+
+    match (node.kind, node.data) {
+        (IrKind::LocalVar, IrData::Local { slot }) => Ok(slot),
+        (IrKind::LocalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::LocalVar,
+            data,
+            expected: "local slot payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedUpdateOperand { operand, kind }),
     }
 }
 
@@ -1778,6 +2022,7 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind(
             }
         },
         IrKind::Apply => lower_apply_local_slots_ir_thunk_body_artifact(arena, root),
+        IrKind::BinOp => lower_update_local_slots_ir_thunk_body_artifact(arena, root),
         kind if is_thunk_body => Err(JitLowerError::UnsupportedIrBody { kind }),
         kind => Err(JitLowerError::UnsupportedIrRoot { kind }),
     }
@@ -1793,6 +2038,7 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind_with_ir(
     match kind {
         IrKind::HasAttr => lower_has_attr_local_slot_ir_thunk_body_artifact(ir, root),
         IrKind::Select => lower_select_local_slot_ir_thunk_body_artifact(ir, root),
+        IrKind::BinOp => lower_update_local_slots_ir_thunk_body_artifact(&ir.arena, root),
         _ => lower_tier1_ir_thunk_body_artifact_for_kind(
             &ir.arena,
             root,
@@ -1855,6 +2101,38 @@ fn lower_apply_local_slots_thunk_body_with_name(
         apply,
         function_slot,
         argument_slot,
+    )?;
+    verify_clif_function(&function)?;
+    Ok(function)
+}
+
+fn lower_update_local_slots_thunk_body_with_name(
+    left_slot: u32,
+    right_slot: u32,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
+    let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(name, signature);
+    let env_get = import_env_get_function(&mut function)?;
+    let force = import_runtime_helper_function(
+        &mut function,
+        AOS_FORCE_SYMBOL,
+        clif_external_name_for_aos_force(),
+    )?;
+    let update = import_runtime_helper_function(
+        &mut function,
+        AOS_UPDATE_SYMBOL,
+        clif_external_name_for_aos_update(),
+    )?;
+    let entry_block = append_entry_block_params(&mut function);
+    emit_update_local_slots_return(
+        &mut function,
+        entry_block,
+        env_get,
+        force,
+        update,
+        left_slot,
+        right_slot,
     )?;
     verify_clif_function(&function)?;
     Ok(function)
@@ -2098,6 +2376,102 @@ fn emit_apply_local_slots_return(
     }
 
     cursor.ins().return_(&apply_results);
+    Ok(())
+}
+
+fn emit_update_local_slots_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    env_get: cranelift_codegen::ir::FuncRef,
+    force: cranelift_codegen::ir::FuncRef,
+    update: cranelift_codegen::ir::FuncRef,
+    left_slot: u32,
+    right_slot: u32,
+) -> Result<(), JitLowerError> {
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let rt = entry_params
+        .first()
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+
+    let left_slot = cursor.ins().iconst(types::I32, i64::from(left_slot));
+    let left_env_get_call = cursor.ins().call(env_get, &[env, left_slot]);
+    let left_env_get_results = cursor.func.dfg.inst_results(left_env_get_call).to_vec();
+
+    if left_env_get_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+            expected: 2,
+            actual: left_env_get_results.len(),
+        });
+    }
+
+    let left_force_call = cursor.ins().call(
+        force,
+        &[rt, left_env_get_results[0], left_env_get_results[1]],
+    );
+    let left_force_results = cursor.func.dfg.inst_results(left_force_call).to_vec();
+
+    if left_force_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_FORCE_SYMBOL,
+            expected: 2,
+            actual: left_force_results.len(),
+        });
+    }
+
+    let right_slot = cursor.ins().iconst(types::I32, i64::from(right_slot));
+    let right_env_get_call = cursor.ins().call(env_get, &[env, right_slot]);
+    let right_env_get_results = cursor.func.dfg.inst_results(right_env_get_call).to_vec();
+
+    if right_env_get_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+            expected: 2,
+            actual: right_env_get_results.len(),
+        });
+    }
+
+    let right_force_call = cursor.ins().call(
+        force,
+        &[rt, right_env_get_results[0], right_env_get_results[1]],
+    );
+    let right_force_results = cursor.func.dfg.inst_results(right_force_call).to_vec();
+
+    if right_force_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_FORCE_SYMBOL,
+            expected: 2,
+            actual: right_force_results.len(),
+        });
+    }
+
+    let update_call = cursor.ins().call(
+        update,
+        &[
+            rt,
+            left_force_results[0],
+            left_force_results[1],
+            right_force_results[0],
+            right_force_results[1],
+        ],
+    );
+    let update_results = cursor.func.dfg.inst_results(update_call).to_vec();
+
+    if update_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_UPDATE_SYMBOL,
+            expected: 2,
+            actual: update_results.len(),
+        });
+    }
+
+    cursor.ins().return_(&update_results);
     Ok(())
 }
 

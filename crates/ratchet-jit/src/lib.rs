@@ -94,11 +94,12 @@ pub use cranelift::{
 pub use lower::{
     AOS_APPLY_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX,
     AOS_HAS_ATTR_FUNCTION_INDEX, AOS_IR_ROOT_FUNCTION_NAMESPACE,
-    AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX, JitLowerError,
-    JitTier1ThunkFactDecision, JitTier1ThunkFactPlan, clif_external_name_for_aos_apply,
-    clif_external_name_for_aos_env_get, clif_external_name_for_aos_force,
-    clif_external_name_for_aos_has_attr, clif_external_name_for_aos_select_ic,
-    clif_name_for_ir_root, jit_tier1_thunk_fact_decision_for_facts, jit_tier1_thunk_fact_plan,
+    AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX,
+    JitLowerError, JitTier1ThunkFactDecision, JitTier1ThunkFactPlan,
+    clif_external_name_for_aos_apply, clif_external_name_for_aos_env_get,
+    clif_external_name_for_aos_force, clif_external_name_for_aos_has_attr,
+    clif_external_name_for_aos_select_ic, clif_external_name_for_aos_update, clif_name_for_ir_root,
+    jit_tier1_thunk_fact_decision_for_facts, jit_tier1_thunk_fact_plan,
     lower_apply_local_slots_ir_root_thunk_body,
     lower_apply_local_slots_ir_root_thunk_body_artifact, lower_apply_local_slots_ir_thunk_body,
     lower_apply_local_slots_ir_thunk_body_artifact, lower_constant_ir_root_thunk_body,
@@ -117,7 +118,9 @@ pub use lower::{
     lower_select_local_slot_ir_root_thunk_body_artifact, lower_select_local_slot_ir_thunk_body,
     lower_select_local_slot_ir_thunk_body_artifact, lower_tier1_ir_thunk_body,
     lower_tier1_ir_thunk_body_artifact, lower_tier1_ir_thunk_body_artifact_for_ir,
-    lower_tier1_ir_thunk_body_for_ir,
+    lower_tier1_ir_thunk_body_for_ir, lower_update_local_slots_ir_root_thunk_body,
+    lower_update_local_slots_ir_root_thunk_body_artifact, lower_update_local_slots_ir_thunk_body,
+    lower_update_local_slots_ir_thunk_body_artifact,
 };
 pub use module::{
     JitModuleArtifactMetadata, JitModuleArtifactRuntimeImport, JitModuleArtifactRuntimeImportGap,

@@ -1,7 +1,7 @@
 use ratchet_core::{
     EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
     IrInlineCacheSiteId, IrKind, IrNode,
-    syntax::{Span, SymbolTable},
+    syntax::{BinOpKind, Span, SymbolTable},
 };
 use ratchet_jit::{
     DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCraneliftRegisteredTier1SlotPreflight, JitTier,
@@ -106,6 +106,48 @@ fn static_has_attr_ir(slot: u32) -> Ir {
         with_chains: Box::new([]),
         attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
             .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
+fn update_ir(left_slot: u32, right_slot: u32) -> Ir {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot: left_slot },
+            ),
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::Local { slot: right_slot },
+            ),
+            IrNode::new(
+                IrKind::BinOp,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Binary {
+                    op: BinOpKind::Update,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(2),
+        arena,
+        facts,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
         bindings: Box::new([]),
         shapes: Box::new([]),
     }
@@ -643,6 +685,55 @@ fn nix_jit_registered_full_ir_promotion_installs_static_has_attr() {
 }
 
 #[test]
+fn nix_jit_registered_promotion_installs_update() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = update_ir(10, 12);
+
+    let promotion = nix_jit_registered_tier1_promotion_preflight_for_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir.arena,
+        ir.root,
+    )
+    .expect("update promotion finalizes with runtime address candidates");
+
+    assert!(promotion.decision().should_promote());
+    assert_eq!(
+        promotion.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(promotion.did_compile());
+    let promoted = promotion
+        .promoted_preflight()
+        .expect("promotion owns registered preflight");
+    assert_eq!(
+        promotion.slot().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_update"]
+    );
+    for symbol_name in ["aos_env_get", "aos_force", "aos_update"] {
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for(symbol_name)
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for(symbol_name)
+                        .expect("runtime candidate exists")
+                        .address()),
+            "{symbol_name} should be registered from runtime address candidates"
+        );
+    }
+    assert!(promotion.owns_encapsulated_module());
+}
+
+#[test]
 fn nix_jit_registered_full_ir_install_plan_carries_static_select_pointer_and_module_owner() {
     let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
         .expect("JIT address candidate preflight builds");
@@ -778,6 +869,53 @@ fn nix_jit_force_aware_full_ir_install_plan_carries_static_select_pointer_and_mo
                 == candidate_preflight
                     .address_candidate_for("aos_select_ic")
                     .expect("select candidate exists")
+                    .address())
+    );
+    assert!(plan.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_force_aware_install_plan_carries_update_pointer_and_module_owner() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = update_ir(14, 15);
+
+    let plan = nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir.arena,
+        ir.root,
+    )
+    .expect("update install plan finalizes with runtime address candidates");
+
+    assert!(plan.did_compile());
+    assert!(plan.is_ready_for_install());
+    assert_eq!(
+        plan.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(plan.tier1_code_ptr().is_some());
+    let promoted = plan
+        .promoted_preflight()
+        .expect("install plan owns promoted preflight");
+    assert_eq!(
+        plan.tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_update"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_update")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_update")
+                    .expect("update candidate exists")
                     .address())
     );
     assert!(plan.owns_encapsulated_module());

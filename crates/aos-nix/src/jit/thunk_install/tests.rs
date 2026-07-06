@@ -3,7 +3,7 @@ use crate::jit::nix_jit_runtime_symbol_address_candidate_preflight;
 use ratchet_core::{
     EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
     IrInlineCacheSiteId, IrKind, IrNode,
-    syntax::{Span, SymbolTable},
+    syntax::{BinOpKind, Span, SymbolTable},
 };
 use ratchet_jit::{
     DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCompiledCodePointer,
@@ -141,6 +141,48 @@ fn static_has_attr_ir(slot: u32) -> Ir {
         with_chains: Box::new([]),
         attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
             .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
+fn update_ir(left_slot: u32, right_slot: u32) -> Ir {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot: left_slot },
+            ),
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::Local { slot: right_slot },
+            ),
+            IrNode::new(
+                IrKind::BinOp,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Binary {
+                    op: BinOpKind::Update,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(2),
+        arena,
+        facts,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
         bindings: Box::new([]),
         shapes: Box::new([]),
     }
@@ -289,6 +331,58 @@ fn force_aware_thunk_install_readiness_reports_future_publish_gaps_for_apply_roo
 }
 
 #[test]
+fn force_aware_thunk_install_readiness_reports_future_publish_gaps_for_update_root() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = update_ir(5, 7);
+    let thunk = EvalThunk::new(ir.root);
+
+    let readiness = nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root(
+        hot_slot(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir.arena,
+        ir.root,
+        &thunk,
+    )
+    .expect("force-aware update readiness report builds");
+
+    assert!(readiness.install_plan().is_ready_for_install());
+    assert!(readiness.safe_preconditions_met());
+    assert!(!readiness.is_ready_for_evaluator_publish());
+    assert_eq!(
+        readiness.gaps(),
+        &[
+            NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+            NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+            NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        ]
+    );
+    let promoted = readiness
+        .install_plan()
+        .promoted_preflight()
+        .expect("readiness owns promoted preflight");
+    assert_eq!(
+        readiness.install_plan().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_update"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_update")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_update")
+                    .expect("update candidate exists")
+                    .address())
+    );
+}
+
+#[test]
 fn thunk_install_readiness_reports_future_publish_gaps_for_ready_suspended_thunk() {
     let arena = local_var_arena(3);
     let thunk = EvalThunk::new(IrId::new(0));
@@ -313,6 +407,58 @@ fn thunk_install_readiness_reports_future_publish_gaps_for_ready_suspended_thunk
             NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
             NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
         ]
+    );
+}
+
+#[test]
+fn thunk_install_readiness_reports_future_publish_gaps_for_update_root() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = update_ir(6, 8);
+    let thunk = EvalThunk::new(ir.root);
+
+    let readiness = nix_jit_registered_tier1_thunk_install_readiness_for_ir_root(
+        hot_slot(),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir.arena,
+        ir.root,
+        &thunk,
+    )
+    .expect("update readiness report builds");
+
+    assert!(readiness.install_plan().is_ready_for_install());
+    assert!(readiness.safe_preconditions_met());
+    assert!(!readiness.is_ready_for_evaluator_publish());
+    assert_eq!(
+        readiness.gaps(),
+        &[
+            NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+            NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+            NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        ]
+    );
+    let promoted = readiness
+        .install_plan()
+        .promoted_preflight()
+        .expect("readiness owns promoted preflight");
+    assert_eq!(
+        readiness.install_plan().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_update"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_update")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_update")
+                    .expect("update candidate exists")
+                    .address())
     );
 }
 
