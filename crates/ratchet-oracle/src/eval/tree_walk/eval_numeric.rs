@@ -112,14 +112,7 @@ impl TreeWalk {
             return Ok(value);
         }
         let attrs = FlatAttrs::empty();
-        let len = attrs.len();
-        let argument = self.alloc_flat_attrs_with_repr_telemetry(
-            id,
-            span,
-            0,
-            attrs,
-            AttrSetConstruction::Dynamic { len },
-        )?;
+        let argument = self.alloc_dynamic_attrs_result_with_order_telemetry(id, span, attrs)?;
         self.apply_lambda_value(id, span, id, value, span, id, argument)
     }
 

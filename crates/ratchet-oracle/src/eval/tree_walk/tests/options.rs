@@ -3976,6 +3976,9 @@ fn gc_stress_formal_set_auto_call_empty_arg_skips_non_attrset_root_dispatch() {
         permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
     );
+    let stats = evaluator.attr_telemetry.order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 

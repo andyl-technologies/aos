@@ -10112,6 +10112,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       only; it does not claim generalized HAMT heap payload iteration, C++
       oracle comparison, full conformance 20-21, or full AOS closure `.drv`
       parity.
+- [x] Current active formal-set auto-call order-parity canary:
+      the synthesized empty argument attrset used by formal-set auto-call now
+      shares the successful dynamic-result order-parity telemetry hook. The
+      existing GC-stress canary still checks that registered transient roots are
+      preserved while composite dispatch remains blocked, and now also checks
+      one matched, zero mismatched empty-attrset allocation telemetry sample.
+      This pins the current helper-level auto-call empty-argument boundary only;
+      it does not claim shaped/HAMT heap payload iteration, C++ oracle
+      comparison, full conformance 20-21, or full AOS closure `.drv` parity.
 - [x] Current active generated trace/context/position order-parity canary:
       `builtins.tryEval`, `builtins.getContext` group and outer attrsets, and
       source-position attrsets from `builtins.unsafeGetAttrPos`/`__curPos` now
@@ -10173,8 +10182,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       results, generated `parseDrvName`/`readDir`/`nixPath` entry results,
       generated `fetchGit`/`fetchTree`/`parseFlakeRef` results, generated
       `derivationStrict` results, reified `builtins` attrsets, `functionArgs`,
-      generated `tryEval`/`getContext`/source-position results, `listToAttrs`,
-      and `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
+      formal-set auto-call empty-argument attrsets, generated
+      `tryEval`/`getContext`/source-position results, `listToAttrs`, and
+      `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
       counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape
