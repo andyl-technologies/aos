@@ -1,13 +1,85 @@
-use ratchet_core::{EffectClass, IrArena, IrData, IrId, IrKind, IrNode, syntax::Span};
+use ratchet_core::{
+    EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
+    IrInlineCacheSiteId, IrKind, IrNode,
+    syntax::{Span, SymbolTable},
+};
 use ratchet_jit::{
-    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, JitTieredCodeSlot, TierUpCounter,
-    TierUpDemandHint, TierUpPolicy,
+    DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCraneliftRegisteredTier1SlotPreflight, JitTier,
+    JitTieredCodeSlot, TierUpCounter, TierUpDemandHint, TierUpPolicy,
     jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
 };
 
 use super::*;
 
 mod apply;
+
+fn minimal_ir(root: IrId, arena: IrArena) -> Ir {
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root,
+        arena,
+        facts,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
+fn static_select_ir(slot: u32) -> Ir {
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols
+        .intern(b"target")
+        .expect("test symbol table accepts target");
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot },
+            ),
+            IrNode::new(
+                IrKind::Select,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::Select {
+                    receiver: IrId::new(0),
+                    path: IrAttrPathId::new(0),
+                    site: IrInlineCacheSiteId::new(11),
+                    default: None,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(1),
+        arena,
+        facts,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+            .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
+fn artifact_runtime_import_names(
+    preflight: &JitCraneliftRegisteredTier1SlotPreflight,
+) -> Vec<&str> {
+    preflight
+        .finalization()
+        .artifact_runtime_imports()
+        .iter()
+        .map(|artifact_import| artifact_import.symbol_name())
+        .collect()
+}
 
 #[test]
 fn jit_runtime_symbol_address_candidates_feed_registered_env_promotion() {
@@ -390,6 +462,188 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_installs_forced_env_
                     .address())
     );
     assert!(promotion.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_registered_full_ir_promotion_keeps_cold_path_before_candidates() {
+    let ir = minimal_ir(
+        IrId::new(0),
+        IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Str,
+                Span::new(0, 5),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        ),
+    );
+
+    let promotion =
+        nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidate_source(
+            JitTieredCodeSlot::new(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &ir,
+            ir.root,
+            || {
+                Err(
+                    NixJitRuntimeSymbolAddressCandidateError::NullHelperAddress {
+                        symbol_name: "aos_select_ic",
+                    },
+                )
+            },
+        )
+        .expect("cold full-IR attempt returns before address candidates are needed");
+
+    assert!(!promotion.did_compile());
+    assert_eq!(promotion.slot().invocation_counter().invocations(), 1);
+    assert_eq!(promotion.slot().current_tier(), JitTier::Tier0Oracle);
+    assert!(promotion.promoted_preflight().is_none());
+    assert!(!promotion.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_registered_full_ir_promotion_installs_static_select() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = static_select_ir(9);
+
+    let promotion = nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir,
+        ir.root,
+    )
+    .expect("full-IR static-select promotion finalizes with runtime address candidates");
+
+    assert!(promotion.decision().should_promote());
+    assert_eq!(
+        promotion.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(promotion.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(promotion.did_compile());
+    let promoted = promotion
+        .promoted_preflight()
+        .expect("promotion owns registered preflight");
+    assert_eq!(
+        promotion.slot().tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_select_ic"]
+    );
+    for symbol_name in ["aos_env_get", "aos_force", "aos_select_ic"] {
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for(symbol_name)
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for(symbol_name)
+                        .expect("runtime candidate exists")
+                        .address()),
+            "{symbol_name} should be registered from runtime address candidates"
+        );
+    }
+    assert!(promotion.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_registered_full_ir_install_plan_carries_static_select_pointer_and_module_owner() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = static_select_ir(11);
+
+    let plan = nix_jit_registered_tier1_install_plan_for_lowered_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir,
+        ir.root,
+    )
+    .expect("full-IR static-select install plan finalizes with runtime address candidates");
+
+    assert!(plan.did_compile());
+    assert!(plan.is_ready_for_install());
+    assert_eq!(
+        plan.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(plan.tier1_code_ptr().is_some());
+    let promoted = plan
+        .promoted_preflight()
+        .expect("install plan owns promoted preflight");
+    assert_eq!(
+        plan.tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_select_ic"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_select_ic")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_select_ic")
+                    .expect("select candidate exists")
+                    .address())
+    );
+    assert!(plan.owns_encapsulated_module());
+}
+
+#[test]
+fn nix_jit_force_aware_full_ir_install_plan_carries_static_select_pointer_and_module_owner() {
+    let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+        .expect("JIT address candidate preflight builds");
+    let ir = static_select_ir(13);
+
+    let plan = nix_jit_force_aware_registered_tier1_install_plan_for_lowered_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        &ir,
+        ir.root,
+    )
+    .expect("full-IR static-select install plan finalizes with runtime address candidates");
+
+    assert!(plan.did_compile());
+    assert!(plan.is_ready_for_install());
+    assert_eq!(
+        plan.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(plan.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(plan.tier1_code_ptr().is_some());
+    let promoted = plan
+        .promoted_preflight()
+        .expect("install plan owns promoted preflight");
+    assert_eq!(
+        plan.tier1_code_ptr(),
+        Some(promoted.finalized_function().compiled_code_ptr())
+    );
+    assert_eq!(
+        artifact_runtime_import_names(promoted),
+        ["aos_env_get", "aos_force", "aos_select_ic"]
+    );
+    assert!(
+        promoted
+            .finalization()
+            .registered_symbol_for("aos_select_ic")
+            .is_some_and(|registered| registered.address()
+                == candidate_preflight
+                    .address_candidate_for("aos_select_ic")
+                    .expect("select candidate exists")
+                    .address())
+    );
+    assert!(plan.owns_encapsulated_module());
 }
 
 #[test]

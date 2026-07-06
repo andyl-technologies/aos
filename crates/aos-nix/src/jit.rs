@@ -12,13 +12,15 @@
 //! `ratchet-jit`'s reviewed no-import thunk-call path only, so it does not
 //! dereference or call registered helper addresses.
 
-use ratchet_core::{IrArena, IrId};
+use ratchet_core::{Ir, IrArena, IrId};
 use ratchet_jit::{
     JitCompiledCodePointer, JitCraneliftRegisteredTier1PromotionPreflight,
     JitCraneliftRegisteredTier1SlotPreflight, JitCraneliftTier1PromotionError, JitTieredCodeSlot,
     TierUpDecision, TierUpDemandHint, TierUpPolicy,
     jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
+    jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates,
     jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates,
+    jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates,
 };
 use thiserror::Error;
 
@@ -32,8 +34,10 @@ pub use conformance::{
     NixJitTier1ConformanceReadiness, NixJitTier1ConformanceReadinessError,
     NixJitTier1ConformanceReadinessResult,
     nix_jit_force_aware_tier1_conformance_readiness_for_ir_root,
+    nix_jit_force_aware_tier1_conformance_readiness_for_lowered_ir_root,
     nix_jit_literal_native_differential_for_ir_root,
     nix_jit_tier1_conformance_readiness_for_ir_root,
+    nix_jit_tier1_conformance_readiness_for_lowered_ir_root,
 };
 pub use runtime_symbols::{
     NixJitPreflightResult, NixJitRuntimeSymbolAddressCandidateError,
@@ -48,7 +52,9 @@ pub use thunk_install::{
     NixJitThunkInstallGap, NixJitThunkInstallReadiness, NixJitThunkInstallReadinessError,
     NixJitThunkInstallReadinessResult, NixJitThunkInstallRequirement,
     nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root,
+    nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_lowered_ir_root,
     nix_jit_registered_tier1_thunk_install_readiness_for_ir_root,
+    nix_jit_registered_tier1_thunk_install_readiness_for_lowered_ir_root,
 };
 
 /// A failure while driving a Nix registered tier-1 promotion preflight.
@@ -315,6 +321,45 @@ pub fn nix_jit_registered_tier1_promotion_preflight_for_ir_root(
     )
 }
 
+/// Drives registered tier-1 promotion for a full lowered IR root.
+///
+/// This is the full-IR counterpart to
+/// [`nix_jit_registered_tier1_promotion_preflight_for_ir_root`]. It preserves
+/// the arena-only bounded root set and additionally lets the JIT selector lower
+/// bounded static attr selections using the lowered IR's attr-path side tables.
+/// Candidate projection remains lazy and runs only after the tier-up policy
+/// requests promotion.
+///
+/// # Errors
+///
+/// Returns [`NixJitRegisteredTier1PromotionError::AddressCandidates`] when
+/// runtime helper addresses cannot be projected into JIT registration metadata.
+/// Returns [`NixJitRegisteredTier1PromotionError::Cranelift`] when policy
+/// requests tier-1 promotion but full-IR lowering, registration, finalization,
+/// or slot installation fails.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates`]
+/// when policy requests promotion.
+pub fn nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+) -> NixJitRegisteredTier1PromotionResult {
+    nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidate_source(
+        slot,
+        policy,
+        demand_hint,
+        ir,
+        root,
+        nix_jit_runtime_symbol_address_candidate_preflight,
+    )
+}
+
 /// Drives force-aware registered tier-1 promotion using runtime address candidates.
 ///
 /// This is the `aos-nix` bridge for the JIT crate's force-aware promotion
@@ -360,6 +405,49 @@ pub fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root(
     )
 }
 
+/// Drives force-aware registered tier-1 promotion for a full lowered IR root.
+///
+/// This is the full-IR counterpart to
+/// [`nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root`].
+/// It keeps the existing literal, forced local-slot, and direct local-slot
+/// application behavior, and additionally allows bounded static attr selections
+/// to finalize with runtime-derived `aos_env_get`, `aos_force`, and
+/// `aos_select_ic` candidates.
+///
+/// Candidate projection runs only after the policy decision requests tier 1, so
+/// a cold attempt can record its invocation and stay in tier 0 without requiring
+/// helper-address metadata.
+///
+/// # Errors
+///
+/// Returns [`NixJitRegisteredTier1PromotionError::AddressCandidates`] when
+/// runtime helper addresses cannot be projected into JIT registration metadata.
+/// Returns [`NixJitRegisteredTier1PromotionError::Cranelift`] when policy
+/// requests tier-1 promotion but full-IR lowering, registration, finalization,
+/// or slot installation fails.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates`]
+/// when policy requests promotion for a finalizable artifact.
+pub fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+) -> NixJitRegisteredTier1PromotionResult {
+    nix_jit_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidate_source(
+        slot,
+        policy,
+        demand_hint,
+        ir,
+        root,
+        nix_jit_runtime_symbol_address_candidate_preflight,
+    )
+}
+
 /// Builds a safe registered tier-1 install plan for an IR root.
 ///
 /// This composes the `aos-nix` registered promotion bridge with a handoff object
@@ -390,6 +478,42 @@ pub fn nix_jit_registered_tier1_install_plan_for_ir_root(
 ) -> NixJitRegisteredTier1InstallPlanResult {
     nix_jit_registered_tier1_promotion_preflight_for_ir_root(slot, policy, demand_hint, arena, root)
         .map(NixJitRegisteredTier1InstallPlan::from_promotion_preflight)
+}
+
+/// Builds a safe registered tier-1 install plan for a full lowered IR root.
+///
+/// This composes the full-IR `aos-nix` registered promotion bridge with the
+/// safe install handoff object used by the arena-only path. Bounded static attr
+/// selections can produce pointer/module-owner metadata when their runtime
+/// helper candidates are available. The plan still does not mutate evaluator
+/// heap state, cast or call the code pointer, dereference registered helper
+/// addresses, or call native code.
+///
+/// # Errors
+///
+/// Returns [`NixJitRegisteredTier1PromotionError`] under the same conditions as
+/// [`nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root`].
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root`] when
+/// policy requests promotion.
+pub fn nix_jit_registered_tier1_install_plan_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+) -> NixJitRegisteredTier1InstallPlanResult {
+    nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root(
+        slot,
+        policy,
+        demand_hint,
+        ir,
+        root,
+    )
+    .map(NixJitRegisteredTier1InstallPlan::from_promotion_preflight)
 }
 
 /// Builds a force-aware safe registered tier-1 install plan for an IR root.
@@ -426,6 +550,42 @@ pub fn nix_jit_force_aware_registered_tier1_install_plan_for_ir_root(
         policy,
         demand_hint,
         arena,
+        root,
+    )
+    .map(NixJitRegisteredTier1InstallPlan::from_promotion_preflight)
+}
+
+/// Builds a force-aware safe registered tier-1 install plan for a full lowered IR root.
+///
+/// This composes the full-IR force-aware promotion bridge with the same safe
+/// install handoff object used by the existing force-aware path. Bounded static
+/// attr selections can produce a ready pointer/module-owner plan with registered
+/// `aos_env_get`, `aos_force`, and `aos_select_ic` helper metadata. The plan
+/// still does not mutate evaluator heap state, cast or call the code pointer,
+/// dereference registered helper addresses, or call native code.
+///
+/// # Errors
+///
+/// Returns [`NixJitRegisteredTier1PromotionError`] under the same conditions as
+/// [`nix_jit_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root`].
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`nix_jit_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root`]
+/// when policy requests promotion for a finalizable artifact.
+pub fn nix_jit_force_aware_registered_tier1_install_plan_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+) -> NixJitRegisteredTier1InstallPlanResult {
+    nix_jit_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root(
+        slot,
+        policy,
+        demand_hint,
+        ir,
         root,
     )
     .map(NixJitRegisteredTier1InstallPlan::from_promotion_preflight)
@@ -504,6 +664,45 @@ fn nix_jit_registered_tier1_promotion_preflight_for_ir_root_with_candidate_sourc
     )
 }
 
+fn nix_jit_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidate_source(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    candidate_source: impl FnOnce() -> NixJitPreflightResult,
+) -> NixJitRegisteredTier1PromotionResult {
+    let mut observed_slot = slot.clone();
+    let decision = observed_slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(
+            JitCraneliftRegisteredTier1PromotionPreflight::StayedInTier {
+                slot: observed_slot,
+                decision,
+            },
+        );
+    }
+
+    let candidates = candidate_source().map_err(|source| {
+        NixJitRegisteredTier1PromotionError::AddressCandidates {
+            slot: observed_slot,
+            decision,
+            source,
+        }
+    })?;
+
+    Ok(
+        jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
+            slot,
+            policy,
+            demand_hint,
+            ir,
+            root,
+            candidates.address_candidates(),
+        )?,
+    )
+}
+
 fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidate_source(
     slot: JitTieredCodeSlot,
     policy: TierUpPolicy,
@@ -537,6 +736,45 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_can
             policy,
             demand_hint,
             arena,
+            root,
+            candidates.address_candidates(),
+        )?,
+    )
+}
+
+fn nix_jit_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidate_source(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    candidate_source: impl FnOnce() -> NixJitPreflightResult,
+) -> NixJitRegisteredTier1PromotionResult {
+    let mut observed_slot = slot.clone();
+    let decision = observed_slot.record_invocation_with_demand_hint(policy, demand_hint);
+    if !decision.should_promote() {
+        return Ok(
+            JitCraneliftRegisteredTier1PromotionPreflight::StayedInTier {
+                slot: observed_slot,
+                decision,
+            },
+        );
+    }
+
+    let candidates = candidate_source().map_err(|source| {
+        NixJitRegisteredTier1PromotionError::AddressCandidates {
+            slot: observed_slot,
+            decision,
+            source,
+        }
+    })?;
+
+    Ok(
+        jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
+            slot,
+            policy,
+            demand_hint,
+            ir,
             root,
             candidates.address_candidates(),
         )?,

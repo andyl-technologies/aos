@@ -1542,15 +1542,18 @@ harness, never cut for scope.
       derives runtime helper address candidates and delegates to the
       registered-symbol Cranelift tier-1 promotion preflight, so env-slot and
       direct local-slot apply roots can promote through the real integration
-      boundary without hand-wired test candidates. Candidate projection runs
-      only after the policy decision requests tier 1. Tests pin cold
-      no-lowering/no-candidate behavior, candidate failure after a promotion
-      decision, threshold promotion of `aos_env_get`, and direct local-slot
-      apply promotion with runtime-FFI-derived `aos_env_get`/`aos_apply`
-      candidates. This remains safe preflight assembly only: no evaluator heap
-      thunk is mutated, no atomic thunk-state CAS runs, no finalized code
-      pointer is cast or called, and no registered helper address is
-      dereferenced or called.
+      boundary without hand-wired test candidates. The full-IR sibling
+      entrypoint also admits bounded static selects using the lowered IR's
+      attr-path side tables. Candidate projection runs only after the policy
+      decision requests tier 1. Tests pin cold no-lowering/no-candidate
+      behavior, candidate failure after a promotion decision, threshold
+      promotion of `aos_env_get`, direct local-slot apply promotion with
+      runtime-FFI-derived `aos_env_get`/`aos_apply` candidates, and full-IR
+      static select promotion with runtime-FFI-derived
+      `aos_env_get`/`aos_force`/`aos_select_ic` candidates. This remains safe
+      preflight assembly only: no evaluator heap thunk is mutated, no atomic
+      thunk-state CAS runs, no finalized code pointer is cast or called, and no
+      registered helper address is dereferenced or called.
 - [x] Current `aos-nix` force-aware registered tier-1 promotion bridge:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_promotion_preflight_for_ir_root()`
       derives the same runtime helper address candidates and delegates to the
@@ -1565,10 +1568,11 @@ harness, never cut for scope.
       bridge can finalize the artifacts and install opaque tier-slot pointer
       metadata while still relying on gated address metadata. Tests pin hot
       forced env-slot and direct apply promotion through runtime-FFI-derived
-      candidates. This remains safe preflight assembly only: no evaluator heap
-      thunk is mutated, no atomic thunk-state CAS runs, no finalized code
-      pointer is cast or called, and no registered helper address is
-      dereferenced or called.
+      candidates, plus full-IR static select install planning through
+      runtime-FFI-derived `aos_select_ic`. This remains safe preflight assembly
+      only: no evaluator heap thunk is mutated, no atomic thunk-state CAS runs,
+      no finalized code pointer is cast or called, and no registered helper
+      address is dereferenced or called.
 - [x] Current `aos-nix` registered tier-1 install-plan handoff:
       `aos_nix::jit::nix_jit_registered_tier1_install_plan_for_ir_root()`
       wraps the registered promotion preflight in an `aos-nix` handoff object
@@ -1576,7 +1580,8 @@ harness, never cut for scope.
       encapsulated Cranelift module backing the opaque tier-1 code pointer.
       Tests pin cold slot preservation, promoted pointer metadata, registered
       `aos_env_get` visibility, direct local-slot apply pointer metadata with
-      registered `aos_env_get`/`aos_apply`, and module ownership. This is still
+      registered `aos_env_get`/`aos_apply`, full-IR install-plan entrypoint
+      availability, and module ownership. This is still
       a safe plan only: no evaluator heap thunk is mutated, no atomic
       thunk-state CAS runs, no code pointer is cast or called, and no registered
       helper address is dereferenced or called; full/native runtime-symbol
@@ -1590,10 +1595,12 @@ harness, never cut for scope.
       environment-slot roots now produce the same safe pointer/module-owner plan
       with registered `aos_env_get` and `aos_force` helper metadata. Direct
       local-slot apply roots also produce a ready pointer/module-owner plan with
-      registered `aos_env_get` and `aos_apply` metadata. This is a safe plan
-      only: no evaluator heap thunk is mutated, no atomic thunk-state CAS runs,
-      no code pointer is cast or called, and no registered helper address is
-      dereferenced or called.
+      registered `aos_env_get` and `aos_apply` metadata. Full-IR static select
+      roots produce the same safe pointer/module-owner plan with registered
+      `aos_env_get`, `aos_force`, and `aos_select_ic` metadata. This is a safe
+      plan only: no evaluator heap thunk is mutated, no atomic thunk-state CAS
+      runs, no code pointer is cast or called, and no registered helper address
+      is dereferenced or called.
 - [x] Current `aos-nix` evaluator-thunk install readiness preflight:
       `aos_nix::jit::nix_jit_registered_tier1_thunk_install_readiness_for_ir_root()`
       composes the registered install-plan handoff with read-only evaluator
@@ -1604,21 +1611,23 @@ harness, never cut for scope.
       dispatch. Tests cover cold no-code reports, a promoted suspended-node
       thunk, a promoted direct local-slot apply suspended-node thunk, non-node
       rejection, IR-root mismatch, same-IR-id module mismatch, missing module
-      ownership for an already-installed slot, and forced-thunk rejection. This
-      remains safe readiness plumbing only: no evaluator heap thunk is mutated,
-      no atomic thunk-state CAS runs, no code pointer is cast or called, and no
-      registered helper address is dereferenced or called; full/native
-      runtime-symbol registration remains open.
+      ownership for an already-installed slot, forced-thunk rejection, and
+      full-IR readiness entrypoint availability. This remains safe readiness
+      plumbing only: no evaluator heap thunk is mutated, no atomic thunk-state
+      CAS runs, no code pointer is cast or called, and no registered helper
+      address is dereferenced or called; full/native runtime-symbol
+      registration remains open.
 - [x] Current `aos-nix` force-aware evaluator-thunk install readiness preflight:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root()`
       composes the force-aware install-plan handoff with the same read-only
       evaluator thunk inspection. Cold roots report the no-code gap, while
       literal, hot local environment-slot, and direct local-slot apply roots
       reach the existing future publication gaps after safe pointer/module-owner
-      metadata is assembled. This remains safe readiness plumbing only: no
-      evaluator heap thunk is mutated, no atomic thunk-state CAS runs, no code
-      pointer is cast or called, and no registered helper address is
-      dereferenced or called.
+      metadata is assembled. Full-IR static select roots now reach those same
+      future publication gaps with registered `aos_select_ic` metadata. This
+      remains safe readiness plumbing only: no evaluator heap thunk is mutated,
+      no atomic thunk-state CAS runs, no code pointer is cast or called, and no
+      registered helper address is dereferenced or called.
 - [x] Current `aos-nix` tier-1 conformance-readiness preflight:
       `aos_nix::jit::nix_jit_tier1_conformance_readiness_for_ir_root()`
       composes the top-level runtime-symbol registration bridge with the
@@ -1629,10 +1638,11 @@ harness, never cut for scope.
       active. Tests pin hot env-slot and direct local-slot apply roots that
       reach tier-1 code-pointer metadata but remain blocked by
       runtime/export/provenance and evaluator publication gaps, plus a cold
-      no-compile root. This is a harness-facing gate report only: it does not
-      run the harness, mutate evaluator heap thunks, perform atomic thunk-state
-      CAS, cast or call code pointers, dereference registered helper addresses,
-      call native code, or prove tier-1 output parity.
+      no-compile root and full-IR conformance entrypoint availability. This is a
+      harness-facing gate report only: it does not run the harness, mutate
+      evaluator heap thunks, perform atomic thunk-state CAS, cast or call code
+      pointers, dereference registered helper addresses, call native code, or
+      prove tier-1 output parity.
 - [x] Current `aos-nix` force-aware tier-1 conformance-readiness preflight:
       `aos_nix::jit::nix_jit_force_aware_tier1_conformance_readiness_for_ir_root()`
       composes the top-level runtime-symbol registration bridge with the
@@ -1640,9 +1650,11 @@ harness, never cut for scope.
       the no-code gap, while literal, hot local environment-slot, and direct
       local-slot apply roots reach the same runtime-symbol and
       evaluator-publication blockers as the existing conformance gate after safe
-      pointer/module-owner metadata is assembled. This remains a harness gate
-      only: no evaluator heap thunk is mutated, no code pointer is cast or
-      called, and no registered helper address is dereferenced or called.
+      pointer/module-owner metadata is assembled. Full-IR static select roots
+      now reach those same blockers with registered `aos_select_ic` metadata.
+      This remains a harness gate only: no evaluator heap thunk is mutated, no
+      code pointer is cast or called, and no registered helper address is
+      dereferenced or called.
 - [x] Current no-publish literal native differential precursor:
       `aos_nix::jit::nix_jit_literal_native_differential_for_ir_root()` lowers
       a supported no-import literal Core-IR root, calls the reviewed native
@@ -1888,13 +1900,15 @@ harness, never cut for scope.
       metadata, imported signature parity, exact call operands, symbol/site
       immediates backed by the IR symbol table, artifact import resolution,
       registered definition with synthetic candidates, full-IR selector
-      selection, full-IR registered promotion/finalization, and native
-      thunk-call execution with synthetic host-ABI candidates, plus rejection
-      of dynamic paths, defaults, and non-local receivers. This is still a
-      bounded static select bridge: no multi-segment paths, dynamic attr paths,
-      `or` defaults, generic receiver lowering, real exported wrapper address
-      execution from `aos-nix`, evaluator heap publication, generic IR
-      traversal, or `HasAttr` lowering is implemented here. `HasAttr`
+      selection, full-IR registered promotion/finalization, `aos-nix` full-IR
+      promotion/install/conformance readiness with runtime-FFI-derived
+      `aos_select_ic` candidates, and native thunk-call execution with
+      synthetic host-ABI candidates, plus rejection of dynamic paths, defaults,
+      and non-local receivers. This is still a bounded static select bridge:
+      no multi-segment paths, dynamic attr paths, `or` defaults, generic
+      receiver lowering, native execution through the `aos-nix` strict
+      registration gate, evaluator heap publication, generic IR traversal, or
+      `HasAttr` lowering is implemented here. `HasAttr`
       remains deferred because its full IR semantics return false for non-attr
       receivers while the current `aos_has_attr` helper expects an already
       forced attrset value.

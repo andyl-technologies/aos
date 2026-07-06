@@ -1,6 +1,6 @@
 //! Safe evaluator-thunk install-readiness reports for JIT tier-1 handoff.
 
-use ratchet_core::{IrArena, IrId};
+use ratchet_core::{Ir, IrArena, IrId};
 use ratchet_jit::{JitTieredCodeSlot, TierUpDemandHint, TierUpPolicy};
 use ratchet_oracle::eval::{EvalModuleId, EvalNodeRef, EvalThunk, ForceError, ThunkState};
 use thiserror::Error;
@@ -8,7 +8,9 @@ use thiserror::Error;
 use super::{
     NixJitRegisteredTier1InstallPlan, NixJitRegisteredTier1PromotionError,
     nix_jit_force_aware_registered_tier1_install_plan_for_ir_root,
+    nix_jit_force_aware_registered_tier1_install_plan_for_lowered_ir_root,
     nix_jit_registered_tier1_install_plan_for_ir_root,
+    nix_jit_registered_tier1_install_plan_for_lowered_ir_root,
 };
 
 /// One condition required before a tier-1 thunk install may publish to the evaluator heap.
@@ -275,6 +277,52 @@ pub fn nix_jit_registered_tier1_thunk_install_readiness_for_ir_root(
     )?)
 }
 
+/// Builds a safe readiness report for publishing full-IR registered tier-1 code into a thunk.
+///
+/// This is the evaluator-facing preflight after
+/// [`super::nix_jit_registered_tier1_install_plan_for_lowered_ir_root`]. It
+/// validates that a target thunk still points at the compiled IR root and is
+/// suspended, then reports the remaining heap-publication gaps. Bounded static
+/// attr selections can satisfy the implemented safe prerequisites through the
+/// full-IR install-plan bridge. This function never mutates evaluator heap
+/// state, performs an atomic thunk-state compare-and-swap, casts or calls a code
+/// pointer, dereferences registered helper addresses, or calls native code.
+///
+/// # Errors
+///
+/// Returns [`NixJitThunkInstallReadinessError::Promotion`] if the underlying
+/// full-IR registered tier-1 install plan cannot be built. Returns
+/// [`NixJitThunkInstallReadinessError::ThunkState`] if the target thunk state
+/// word cannot be decoded.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`super::nix_jit_registered_tier1_install_plan_for_lowered_ir_root`] when
+/// policy requests promotion.
+pub fn nix_jit_registered_tier1_thunk_install_readiness_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    target_thunk: &EvalThunk,
+) -> NixJitThunkInstallReadinessResult {
+    let install_plan = nix_jit_registered_tier1_install_plan_for_lowered_ir_root(
+        slot,
+        policy,
+        demand_hint,
+        ir,
+        root,
+    )?;
+    let expected_body = EvalNodeRef::new(EvalModuleId::ROOT, root);
+    Ok(NixJitThunkInstallReadiness::from_install_plan(
+        install_plan,
+        expected_body,
+        target_thunk,
+    )?)
+}
+
 /// Builds a safe force-aware readiness report for publishing tier-1 code into a thunk.
 ///
 /// This is the evaluator-facing preflight after
@@ -312,6 +360,54 @@ pub fn nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root(
         policy,
         demand_hint,
         arena,
+        root,
+    )?;
+    let expected_body = EvalNodeRef::new(EvalModuleId::ROOT, root);
+    Ok(NixJitThunkInstallReadiness::from_install_plan(
+        install_plan,
+        expected_body,
+        target_thunk,
+    )?)
+}
+
+/// Builds a safe force-aware readiness report for publishing full-IR tier-1 code into a thunk.
+///
+/// This is the evaluator-facing preflight after
+/// [`super::nix_jit_force_aware_registered_tier1_install_plan_for_lowered_ir_root`].
+/// It validates the same read-only target-thunk conditions as the arena-only
+/// force-aware bridge, while sourcing the install plan from the full-IR
+/// force-aware promotion path. Literal, forced local-slot, direct local-slot
+/// apply, and bounded static attr-selection roots can satisfy the implemented
+/// safe prerequisites before the report exposes future evaluator-publish gaps.
+/// It never mutates evaluator heap state, performs an atomic thunk-state
+/// compare-and-swap, casts or calls a code pointer, dereferences registered
+/// helper addresses, or calls native code.
+///
+/// # Errors
+///
+/// Returns [`NixJitThunkInstallReadinessError::Promotion`] if the underlying
+/// full-IR force-aware registered tier-1 install plan cannot be built. Returns
+/// [`NixJitThunkInstallReadinessError::ThunkState`] if the target thunk state
+/// word cannot be decoded.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`super::nix_jit_force_aware_registered_tier1_install_plan_for_lowered_ir_root`]
+/// when policy requests promotion and Cranelift finalizes an artifact.
+pub fn nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    target_thunk: &EvalThunk,
+) -> NixJitThunkInstallReadinessResult {
+    let install_plan = nix_jit_force_aware_registered_tier1_install_plan_for_lowered_ir_root(
+        slot,
+        policy,
+        demand_hint,
+        ir,
         root,
     )?;
     let expected_body = EvalNodeRef::new(EvalModuleId::ROOT, root);

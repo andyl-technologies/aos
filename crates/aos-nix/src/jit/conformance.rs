@@ -5,7 +5,7 @@
 //! prerequisite state for one candidate thunk, plus the first literal-only
 //! native differential sample that keeps evaluator thunk publication disabled.
 
-use ratchet_core::{IrArena, IrData, IrId, IrKind, IrNode};
+use ratchet_core::{Ir, IrArena, IrData, IrId, IrKind, IrNode};
 use ratchet_jit::{
     JitCraneliftNativeCallError, JitCraneliftNativeThunkInvocation, JitLowerError,
     JitTieredCodeSlot, TierUpDemandHint, TierUpPolicy,
@@ -18,7 +18,9 @@ use super::{
     NixJitRuntimeSymbolRegistrationError, NixJitRuntimeSymbolRegistrationPreflight,
     NixJitThunkInstallGap, NixJitThunkInstallReadiness, NixJitThunkInstallReadinessError,
     nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_ir_root,
+    nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_lowered_ir_root,
     nix_jit_registered_tier1_thunk_install_readiness_for_ir_root,
+    nix_jit_registered_tier1_thunk_install_readiness_for_lowered_ir_root,
     nix_jit_runtime_symbol_registration_preflight,
 };
 use crate::eval::EvalThunk;
@@ -286,6 +288,53 @@ pub fn nix_jit_tier1_conformance_readiness_for_ir_root(
     ))
 }
 
+/// Builds a safe JIT-enabled conformance readiness report for one full-IR root.
+///
+/// This function composes the top-level runtime-symbol registration bridge with
+/// the full-IR evaluator-thunk install-readiness report for `root`. It is a
+/// harness-facing gate only: bounded static attr-selection roots can now
+/// finalize and install opaque tier-1 pointer metadata when their helper
+/// candidates are present, but still report the same runtime-symbol and
+/// evaluator publication blockers as other supported roots. Cold roots preserve
+/// the no-code gap.
+///
+/// # Errors
+///
+/// Returns [`NixJitTier1ConformanceReadinessError::RuntimeSymbols`] when
+/// runtime-symbol registration metadata cannot be built. Returns
+/// [`NixJitTier1ConformanceReadinessError::ThunkInstall`] when the full-IR
+/// per-thunk install-readiness report cannot be built.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`nix_jit_registered_tier1_thunk_install_readiness_for_lowered_ir_root`] when
+/// policy requests promotion.
+pub fn nix_jit_tier1_conformance_readiness_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    target_thunk: &EvalThunk,
+) -> NixJitTier1ConformanceReadinessResult {
+    let runtime_symbol_registration = nix_jit_runtime_symbol_registration_preflight()?;
+    let thunk_install_readiness =
+        nix_jit_registered_tier1_thunk_install_readiness_for_lowered_ir_root(
+            slot,
+            policy,
+            demand_hint,
+            ir,
+            root,
+            target_thunk,
+        )?;
+
+    Ok(NixJitTier1ConformanceReadiness::new(
+        runtime_symbol_registration,
+        thunk_install_readiness,
+    ))
+}
+
 /// Builds a safe force-aware JIT-enabled conformance readiness report for one IR root.
 ///
 /// This function composes the top-level runtime-symbol registration bridge with
@@ -323,6 +372,53 @@ pub fn nix_jit_force_aware_tier1_conformance_readiness_for_ir_root(
             policy,
             demand_hint,
             arena,
+            root,
+            target_thunk,
+        )?;
+
+    Ok(NixJitTier1ConformanceReadiness::new(
+        runtime_symbol_registration,
+        thunk_install_readiness,
+    ))
+}
+
+/// Builds a safe force-aware JIT-enabled conformance readiness report for one full-IR root.
+///
+/// This function composes the top-level runtime-symbol registration bridge with
+/// the full-IR force-aware evaluator-thunk install-readiness report for `root`.
+/// It is a harness-facing gate only: bounded static attr-selection roots can
+/// finalize and install opaque tier-1 pointer metadata through
+/// `aos_env_get`/`aos_force`/`aos_select_ic`, but still report the same
+/// runtime-symbol and evaluator publication blockers as other supported roots.
+/// Cold roots preserve the no-code gap.
+///
+/// # Errors
+///
+/// Returns [`NixJitTier1ConformanceReadinessError::RuntimeSymbols`] when
+/// runtime-symbol registration metadata cannot be built. Returns
+/// [`NixJitTier1ConformanceReadinessError::ThunkInstall`] when the full-IR
+/// force-aware per-thunk install-readiness report cannot be built.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_lowered_ir_root`]
+/// when policy requests promotion and Cranelift finalizes an artifact.
+pub fn nix_jit_force_aware_tier1_conformance_readiness_for_lowered_ir_root(
+    slot: JitTieredCodeSlot,
+    policy: TierUpPolicy,
+    demand_hint: TierUpDemandHint,
+    ir: &Ir,
+    root: IrId,
+    target_thunk: &EvalThunk,
+) -> NixJitTier1ConformanceReadinessResult {
+    let runtime_symbol_registration = nix_jit_runtime_symbol_registration_preflight()?;
+    let thunk_install_readiness =
+        nix_jit_force_aware_registered_tier1_thunk_install_readiness_for_lowered_ir_root(
+            slot,
+            policy,
+            demand_hint,
+            ir,
             root,
             target_thunk,
         )?;
@@ -483,7 +579,11 @@ fn push_nonzero_gap(
 mod tests {
     use crate::jit::nix_jit_runtime_symbol_address_candidate_preflight;
 
-    use ratchet_core::{EffectClass, IrData, IrKind, IrNode, syntax::Span};
+    use ratchet_core::{
+        EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts,
+        IrInlineCacheSiteId, IrKind, IrNode,
+        syntax::{Span, SymbolTable},
+    };
     use ratchet_jit::{
         DEFAULT_TIER1_INVOCATION_THRESHOLD, JitClifArtifactSource, JitTier, TierUpCounter,
     };
@@ -502,6 +602,48 @@ mod tests {
             )],
             Vec::new(),
         )
+    }
+
+    fn static_select_ir(slot: u32) -> Ir {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols
+            .intern(b"target")
+            .expect("test symbol table accepts target");
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local { slot },
+                ),
+                IrNode::new(
+                    IrKind::Select,
+                    Span::new(0, 8),
+                    EffectClass::pure(),
+                    IrData::Select {
+                        receiver: IrId::new(0),
+                        path: IrAttrPathId::new(0),
+                        site: IrInlineCacheSiteId::new(11),
+                        default: None,
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let facts = IrFacts::conservative(arena.nodes().len());
+        Ir {
+            root: IrId::new(1),
+            arena,
+            facts,
+            symbols,
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+                .into_boxed_slice(),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
     }
 
     fn string_arena() -> IrArena {
@@ -939,6 +1081,154 @@ mod tests {
                     == candidate_preflight
                         .address_candidate_for("aos_force")
                         .expect("force candidate exists")
+                        .address())
+        );
+    }
+
+    #[test]
+    fn force_aware_tier1_conformance_readiness_reports_static_select_publish_gaps() {
+        let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("JIT address candidate preflight builds");
+        let ir = static_select_ir(14);
+        let thunk = EvalThunk::new(ir.root);
+
+        let readiness = nix_jit_force_aware_tier1_conformance_readiness_for_lowered_ir_root(
+            hot_slot(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &ir,
+            ir.root,
+            &thunk,
+        )
+        .expect("force-aware full-IR static-select conformance readiness report builds");
+
+        assert!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .did_compile()
+        );
+        assert_eq!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .slot()
+                .current_tier(),
+            JitTier::Tier1Baseline
+        );
+        assert!(!readiness.is_ready_for_jit_enabled_harness());
+        assert!(!readiness.safe_preconditions_met());
+        assert!(
+            readiness.has_gap(NixJitTier1ConformanceGap::RuntimeSymbolRegistration {
+                missing_count: readiness.runtime_symbol_registration().gaps().len(),
+            })
+        );
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        }));
+        let promoted = readiness
+            .thunk_install_readiness()
+            .install_plan()
+            .promoted_preflight()
+            .expect("readiness owns promoted preflight");
+        let artifact_runtime_imports = promoted
+            .finalization()
+            .artifact_runtime_imports()
+            .iter()
+            .map(|artifact_import| artifact_import.symbol_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            artifact_runtime_imports,
+            ["aos_env_get", "aos_force", "aos_select_ic"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_select_ic")
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for("aos_select_ic")
+                        .expect("select candidate exists")
+                        .address())
+        );
+    }
+
+    #[test]
+    fn tier1_conformance_readiness_reports_static_select_publish_gaps() {
+        let candidate_preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("JIT address candidate preflight builds");
+        let ir = static_select_ir(15);
+        let thunk = EvalThunk::new(ir.root);
+
+        let readiness = nix_jit_tier1_conformance_readiness_for_lowered_ir_root(
+            hot_slot(),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &ir,
+            ir.root,
+            &thunk,
+        )
+        .expect("full-IR static-select conformance readiness report builds");
+
+        assert!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .did_compile()
+        );
+        assert_eq!(
+            readiness
+                .thunk_install_readiness()
+                .install_plan()
+                .slot()
+                .current_tier(),
+            JitTier::Tier1Baseline
+        );
+        assert!(!readiness.is_ready_for_jit_enabled_harness());
+        assert!(!readiness.safe_preconditions_met());
+        assert!(
+            readiness.has_gap(NixJitTier1ConformanceGap::RuntimeSymbolRegistration {
+                missing_count: readiness.runtime_symbol_registration().gaps().len(),
+            })
+        );
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::EvaluatorThunkTierSlotStorageUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::AtomicThunkStatePublishUnavailable,
+        }));
+        assert!(readiness.has_gap(NixJitTier1ConformanceGap::ThunkInstall {
+            gap: NixJitThunkInstallGap::NativeThunkEntryDispatchUnavailable,
+        }));
+        let promoted = readiness
+            .thunk_install_readiness()
+            .install_plan()
+            .promoted_preflight()
+            .expect("readiness owns promoted preflight");
+        let artifact_runtime_imports = promoted
+            .finalization()
+            .artifact_runtime_imports()
+            .iter()
+            .map(|artifact_import| artifact_import.symbol_name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            artifact_runtime_imports,
+            ["aos_env_get", "aos_force", "aos_select_ic"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_select_ic")
+                .is_some_and(|registered| registered.address()
+                    == candidate_preflight
+                        .address_candidate_for("aos_select_ic")
+                        .expect("select candidate exists")
                         .address())
         );
     }
