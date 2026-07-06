@@ -1689,3 +1689,14 @@ fn nix_jit_full_ir_select_native_call_preflight_reports_plan_source_failure_afte
 
     assert_full_ir_native_call_registration_plan_source_failure(&ir, "aos_select_ic");
 }
+
+#[test]
+fn nix_jit_malformed_full_ir_native_call_preflight_reports_plan_source_failure_before_ir_inspection()
+ {
+    let ir = minimal_ir(
+        IrId::new(99),
+        IrArena::from_raw_parts(Vec::new(), Vec::new()),
+    );
+
+    assert_full_ir_native_call_registration_plan_source_failure(&ir, "aos_env_get");
+}

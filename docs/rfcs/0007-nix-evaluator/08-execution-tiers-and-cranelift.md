@@ -1313,7 +1313,8 @@ harness, never cut for scope.
       visibility while invoked through the full-IR entrypoint, and synthetic
       registration-plan source failure after promotion for arena-root, full-IR
       static-select, direct local-slot apply, static has-attr, and bounded
-      update gates.
+      update gates, including source-error preservation before malformed
+      full-IR inspection.
       This still does not inspect lowered
       IR roots, lower, finalize, or call native code from `aos-nix`, publish
       evaluator thunks, perform atomic thunk-state CAS, run trap transfer,
