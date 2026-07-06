@@ -13,8 +13,9 @@
 //! ratchet_runtime_ffi::env
 //!   aos_env_get success-path wrapper for the frozen `(env, slot) -> Value` ABI
 //! ratchet_runtime_ffi::force
-//!   aos_blackhole_check, aos_force, and aos_force_deep success-path wrappers
-//!   for frozen `(rt, Value)` forcing ABIs
+//!   aos_force context-decoding success-path wrapper plus limited
+//!   aos_blackhole_check/aos_force_deep success-path wrappers for frozen
+//!   `(rt, Value)` forcing ABIs
 //! ratchet_runtime_ffi::apply
 //!   aos_apply trap-only wrapper for the frozen `(rt, Value, Value)` call ABI
 //! ratchet_runtime_ffi::attr

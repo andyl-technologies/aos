@@ -5923,14 +5923,17 @@ and helps the oracle directly.
       returns the copied `Value` by value. Its `force::aos_blackhole_check`
       wrapper defines an unmangled frozen `(rt, Value) -> ()` symbol and returns
       for representation-valid non-thunks, while `force::aos_force` defines an
-      unmangled frozen `(rt, Value) -> Value` symbol and returns already-WHNF
-      values after representation-level payload validation. Its
+      unmangled frozen `(rt, Value) -> Value` symbol, validates the payload,
+      decodes `rt` as a scoped `RuntimeForceContext`, enters the safe tree-walk
+      force bridge, and returns WHNF values for already-strict inputs and
+      evaluator-owned thunks. Its
       `force::aos_force_deep` wrapper defines the same value-returning ABI and
       returns only valid WHNF leaves whose tags do not require recursive list or
       attrset traversal. The forcing wrappers abort for malformed payloads,
-      thunk-tagged values, and, for `aos_force_deep`, list/attrset traversal
-      paths until evaluator blackhole/force protocols are bound to native
-      runtime contexts. Its `apply::aos_apply` wrapper defines an unmangled
+      null scoped contexts, safe tree-walk force errors, and, for
+      `aos_force_deep`, thunk/list/attrset traversal paths until evaluator trap
+      transfer and the remaining specialized protocols exist. Its
+      `apply::aos_apply` wrapper defines an unmangled
       frozen `(rt, Value function, Value arg) -> Value` symbol and aborts for
       every call until runtime-context decoding, active call-root binding,
       call-depth accounting, callable dispatch, trap transfer, and native
@@ -5950,9 +5953,11 @@ and helps the oracle directly.
       dispatch exist. Returning today would be unsound because skipping the
       daemon-generational barrier can lose remembered edges. The apply, forcing,
       barrier, and attrset-access wrappers' safety contracts still require a Rust-valid
-      `Value` tag, and `aos_force`/`aos_force_deep` additionally require live
-      evaluator-owned heap payloads for returned WHNF heap values; invalid tag
-      discriminants are undefined before the wrappers can inspect them.
+      `Value` tag; `aos_force` additionally requires a pinned
+      `RuntimeForceContext` and evaluator-owned heap payloads for forced inputs,
+      while `aos_force_deep` requires live evaluator-owned heap payloads for
+      returned WHNF heap values. Invalid tag discriminants are undefined before
+      the wrappers can inspect them.
       Its `attr::aos_has_attr` and `attr::aos_select_ic` wrappers define
       unmangled frozen `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`
       symbols. They decode `rt` as a scoped `RuntimeAttrAccessContext`, bind the
@@ -5983,10 +5988,11 @@ and helps the oracle directly.
       unsafe-boundary manifest and tests an allowlist/count for every current
       `unsafe`, `extern`, and `no_mangle` source token. This is not the final
       runtime C ABI body: `aos_env_get` invalid pointers, borrow conflicts,
-      and slot errors abort, while `aos_blackhole_check`, `aos_force`, and
-      `aos_force_deep` malformed/thunk slow paths, plus `aos_force_deep`
-      list/attrset traversal paths, abort until trap transfer/runtime-context
-      integration exists; `aos_apply` remains a trap-only body until safe
+      and slot errors abort, while `aos_blackhole_check` malformed/thunk paths,
+      `aos_force` null context and tree-walk error paths, and
+      `aos_force_deep` malformed/thunk/list/attrset traversal paths abort until
+      trap transfer and the remaining runtime integrations exist; `aos_apply`
+      remains a trap-only body until safe
       evaluator apply dispatch can be reached from native runtime context;
       `aos_alloc_*` remains trap-only until safe allocator dispatch and typed
       heap-pointer returns can be reached from native runtime context; and
