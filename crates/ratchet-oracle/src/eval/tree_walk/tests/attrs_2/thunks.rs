@@ -1547,6 +1547,42 @@ fn polymorphic_static_has_attr_keeps_shaped_cache_after_missing_receivers() {
 }
 
 #[test]
+fn megamorphic_static_has_attr_stays_slow_after_missing_receivers() {
+    let ir = lower(
+        "let f = x: x ? a;
+         in (if (f { a = 1; }) then 1 else 0)
+          + (if (f { b = 0; a = 2; }) then 2 else 0)
+          + (if (f { c = 0; a = 3; }) then 3 else 0)
+          + (if (f { d = 0; a = 4; }) then 4 else 0)
+          + (if (f { e = 0; a = 5; }) then 5 else 0)
+          + (if (f { missing = 0; }) then 0 else 10)
+          + (if (f { missing = 1; }) then 0 else 20)
+          + (if (f { a = 6; }) then 6 else 0)",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("megamorphic hit-miss-hit hasAttr evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(51));
+    assert_eq!(outcome.stats().inline_cache_hits(), 0);
+    assert_eq!(outcome.stats().inline_cache_misses(), 8);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.megamorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.megamorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 6);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 6);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 0);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 6);
+    assert_eq!(counts.shaped_misses, 2);
+}
+
+#[test]
 fn repeated_static_has_attr_site_uses_hamt_inline_cache_for_projected_hamt_receivers() {
     let ir = lower(
         "let base = ((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; });

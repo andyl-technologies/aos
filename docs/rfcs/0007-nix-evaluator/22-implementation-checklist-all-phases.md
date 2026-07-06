@@ -9833,8 +9833,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       test checks mirrored hit/miss counters, shaped lookup telemetry,
       terminal polymorphic site state, two resolved misses with no cached
       misses, no monomorphic-fast-hit attribution, and slow-select shaped
-      hit/miss counts. This does not cover polymorphic `hasAttr`/`with` probes,
-      megamorphic active bridge state, native lowering, or `.drv` parity.
+      hit/miss counts. This individual canary does not cover `hasAttr`/`with`
+      probes, megamorphic active bridge state, native lowering, or `.drv`
+      parity.
 - [x] Current projected-shaped polymorphic hit-miss-hit-miss `hasAttr` canary:
       a tree-walk static key-presence probe now proves that one active
       projected-shaped probe site can widen across two present shapes, resolve
@@ -9842,9 +9843,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       polymorphic entries for later cached hits. The test checks mirrored
       hit/miss counters, shaped lookup telemetry, terminal polymorphic site
       state, two resolved misses with no cached misses, no monomorphic-fast-hit
-      attribution, and slow-select shaped hit/miss counts. This does not cover
-      polymorphic `with` probes, megamorphic active bridge state, native
-      lowering, or `.drv` parity.
+      attribution, and slow-select shaped hit/miss counts. This individual
+      canary does not cover `with` probes, megamorphic active bridge state,
+      native lowering, or `.drv` parity.
 - [x] Current projected-shaped polymorphic hit-miss-hit-miss `with` probe
       canary: a tree-walk `with` chain now proves that one active inner
       projected-shaped scope probe can widen across two present shapes, resolve
@@ -9862,8 +9863,17 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       site megamorphic with five distinct present shapes, then checks repeated
       missing receivers and a later present receiver produce no cached hits or
       cached misses, preserve terminal megamorphic site state, and keep
+      slow-select shaped hit/miss telemetry. This individual canary does not
+      cover `hasAttr`/`with` probes, native lowering, or `.drv` parity.
+- [x] Current projected-shaped megamorphic hit-miss-hit `hasAttr` canary: a
+      tree-walk static key-presence probe now proves that after one active
+      projected-shaped probe site exceeds the polymorphic cap, later present
+      and missing receivers stay on the resolved slow path. The test drives the
+      site megamorphic with five distinct present shapes, then checks repeated
+      missing receivers and a later present receiver produce no cached hits or
+      cached misses, preserve terminal megamorphic site state, and keep
       slow-select shaped hit/miss telemetry. This does not cover megamorphic
-      `hasAttr`/`with` probes, native lowering, or `.drv` parity.
+      `with` probes, native lowering, or `.drv` parity.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
