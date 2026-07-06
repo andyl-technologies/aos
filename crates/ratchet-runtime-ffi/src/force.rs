@@ -2,14 +2,12 @@
 //!
 //! Native tier-1 code imports forcing helpers with frozen `(rt, Value)`
 //! signatures. This module supplies the first success-path wrappers for that
-//! ABI: `aos_blackhole_check` returns for representation-valid non-thunks,
-//! `aos_force` decodes a scoped [`RuntimeForceContext`] and dispatches through
-//! the safe tree-walk forcing helper, and `aos_force_deep` decodes the same
-//! context before dispatching through the safe tree-walk deep-force helper.
-//! Malformed payloads and blackhole-protocol values outside ordinary force entry
-//! abort until native trap transfer and the remaining specialized protocols
-//! exist. Callers must still pass a Rust-valid [`Value`]; an invalid tag
-//! discriminant is undefined behavior before these wrappers can inspect it.
+//! ABI: `aos_blackhole_check`, `aos_force`, and `aos_force_deep` decode scoped
+//! [`RuntimeForceContext`] pointers before dispatching through the safe
+//! tree-walk forcing helpers. Malformed payloads and evaluator errors abort
+//! until native trap transfer exists. Callers must still pass a Rust-valid
+//! [`Value`]; an invalid tag discriminant is undefined behavior before these
+//! wrappers can inspect it.
 
 use std::{
     ffi::c_void,
@@ -24,7 +22,7 @@ use ratchet_oracle::{
     eval::tree_walk::TreeWalk,
     runtime::forcing::{
         RuntimeForcingAbiSignature, RuntimeForcingEntryPoint, RuntimeForcingNativeExportBlocker,
-        rust_callable_aos_force, rust_callable_aos_force_deep,
+        rust_callable_aos_blackhole_check, rust_callable_aos_force, rust_callable_aos_force_deep,
     },
     syntax::Span,
     value::Value,
@@ -33,17 +31,16 @@ use ratchet_oracle::{
 /// Native C ABI function pointer shape for `aos_blackhole_check`.
 ///
 /// The function transfers no error state. It aborts instead of unwinding if a
-/// valid [`Value`] carries a malformed payload or must enter the thunk
-/// blackhole protocol; final evaluator runtime-context decoding and trap/error
-/// transfer remain future work.
+/// valid [`Value`] carries a malformed payload or if the safe tree-walk
+/// blackhole helper reports an error. Final evaluator trap/error transfer
+/// remains future work.
 ///
 /// # Safety
 ///
 /// Calls through this pointer must satisfy the same host-ABI obligations
 /// documented on [`aos_blackhole_check`]. The value argument must be a
-/// Rust-valid [`Value`] with a valid tag discriminant. Future blackhole-protocol
-/// checks will require a valid runtime pointer, even though the current wrapper
-/// aborts thunk values before dereferencing `_rt` or the thunk payload.
+/// Rust-valid [`Value`] with a valid tag discriminant. Calls must pass a valid
+/// pinned [`RuntimeForceContext`] runtime pointer.
 pub type RuntimeBlackholeCheckNativeFn = unsafe extern "C" fn(*mut c_void, Value);
 
 /// Native C ABI function pointer shape for value-returning forcing helpers.
@@ -64,11 +61,8 @@ pub type RuntimeBlackholeCheckNativeFn = unsafe extern "C" fn(*mut c_void, Value
 /// [`RuntimeForceContext`] runtime pointer.
 pub type RuntimeForceNativeFn = unsafe extern "C" fn(*mut c_void, Value) -> Value;
 
-const BLACKHOLE_CHECK_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[
-    RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-    RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
-    RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
-];
+const BLACKHOLE_CHECK_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] =
+    &[RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented];
 
 const FORCE_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] =
     &[RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented];
@@ -76,29 +70,46 @@ const FORCE_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] =
 const FORCE_DEEP_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] =
     &[RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented];
 
-/// Checks a representation-valid non-thunk through an unmangled frozen native ABI body.
+/// Checks a value for blackhole re-entry through an unmangled frozen native ABI body.
 ///
 /// This wrapper is the success-path C ABI body for `aos_blackhole_check`. It
-/// accepts the frozen runtime-context pointer plus a by-value [`Value`], returns
-/// immediately when the value has a valid payload and is not a thunk, and aborts
-/// for malformed payloads or thunk-tagged values until the evaluator blackhole
-/// protocol is bound to native runtime contexts.
+/// accepts the frozen runtime-context pointer plus a by-value [`Value`],
+/// validates the representation-level payload, decodes `rt` as a
+/// [`RuntimeForceContext`], checks thunk blackhole state through the safe
+/// tree-walk helper, and returns when no recursive re-entry was detected. It
+/// deliberately does not implement evaluator trap/error transfer: the process
+/// aborts if the pointer is null, the value payload is malformed, or the safe
+/// helper reports an error.
 ///
 /// # Safety
 ///
 /// `value` must be a Rust-valid [`Value`] with a valid tag discriminant before
-/// crossing this ABI boundary. This wrapper only validates representation-level
-/// payload invariants and never dereferences heap payloads on its current
-/// success path. The current thunk path aborts before decoding `_rt` or
-/// dereferencing the thunk payload. The caller must also ensure the host ABI
-/// used to call this function matches the frozen `aos_blackhole_check` runtime
-/// signature.
+/// crossing this ABI boundary. `rt` must be a non-null pointer produced from a
+/// pinned live [`RuntimeForceContext`] whose wrapped evaluator and IR allocation
+/// outlive the call. The context must not move while the pointer is used. The
+/// caller must uphold exclusive mutable access to the wrapped evaluator for the
+/// duration of the call. Any heap payload in `value` must be reachable from
+/// that evaluator. The caller must also ensure the host ABI used to call this
+/// function matches the frozen `aos_blackhole_check` runtime signature.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn aos_blackhole_check(_rt: *mut c_void, value: Value) {
-    if value.validate_payload().is_ok() && !value.is_thunk() {
-        return;
+pub unsafe extern "C" fn aos_blackhole_check(rt: *mut c_void, value: Value) {
+    if value.validate_payload().is_err() {
+        process::abort()
     }
-    process::abort()
+    // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
+    // RuntimeForceContext pointer contract documented on this function.
+    let checked = unsafe {
+        with_native_force_context(rt, |eval, id, span| {
+            aos_blackhole_check_success_path(eval, id, span, value)
+        })
+    };
+    checked
+}
+
+fn aos_blackhole_check_success_path(eval: &mut TreeWalk, id: IrId, span: Span, value: Value) {
+    if rust_callable_aos_blackhole_check(eval, id, span, value).is_err() {
+        process::abort()
+    }
 }
 
 /// Forces a value through an unmangled frozen native ABI body.
@@ -371,12 +382,7 @@ mod tests {
     };
 
     use super::*;
-    use ratchet_oracle::{
-        compile::{IrId, resolve},
-        eval::{EvalHeap, EvalThunk},
-        syntax::parse_str,
-        value::ValueTag,
-    };
+    use ratchet_oracle::{compile::resolve, eval::ForceClaim, syntax::parse_str, value::ValueTag};
 
     const MALFORMED_PAYLOAD_ABORT_CHILD: &str =
         "force::tests::aos_force_native_wrapper_aborts_malformed_payload_child";
@@ -392,8 +398,10 @@ mod tests {
         "force::tests::aos_force_deep_native_wrapper_aborts_on_tree_walk_error_child";
     const BLACKHOLE_MALFORMED_PAYLOAD_ABORT_CHILD: &str =
         "force::tests::aos_blackhole_check_native_wrapper_aborts_malformed_payload_child";
-    const BLACKHOLE_THUNK_ABORT_CHILD: &str =
-        "force::tests::aos_blackhole_check_native_wrapper_aborts_thunk_child";
+    const BLACKHOLE_NULL_CONTEXT_ABORT_CHILD: &str =
+        "force::tests::aos_blackhole_check_native_wrapper_aborts_on_null_context_child";
+    const BLACKHOLE_BLACKHOLED_THUNK_ABORT_CHILD: &str =
+        "force::tests::aos_blackhole_check_native_wrapper_aborts_blackholed_thunk_child";
 
     #[repr(C)]
     struct RawValueForTest {
@@ -429,12 +437,7 @@ mod tests {
         assert!(blackhole.address().is_non_null());
         assert_eq!(
             blackhole.remaining_export_blockers(),
-            [
-                RuntimeForcingNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-                RuntimeForcingNativeExportBlocker::BlackholeProtocolBindingUnimplemented,
-                RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented,
-            ]
-            .as_slice()
+            [RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented].as_slice()
         );
         assert!(!blackhole.is_export_ready());
 
@@ -496,7 +499,9 @@ mod tests {
             let oracle_blockers = binding.entrypoint().native_export_blockers();
             if matches!(
                 binding.entrypoint(),
-                RuntimeForcingEntryPoint::AosForce | RuntimeForcingEntryPoint::AosForceDeep
+                RuntimeForcingEntryPoint::AosBlackholeCheck
+                    | RuntimeForcingEntryPoint::AosForce
+                    | RuntimeForcingEntryPoint::AosForceDeep
             ) {
                 assert_eq!(
                     binding.remaining_export_blockers(),
@@ -524,12 +529,37 @@ mod tests {
 
     #[test]
     fn aos_blackhole_check_native_wrapper_returns_for_non_thunks() {
-        let rt = std::ptr::null_mut();
+        let source = "42";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(RuntimeForceContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
         let value = Value::int(42);
 
-        // SAFETY: The current wrapper success path does not dereference `rt`,
-        // and the value is not a thunk.
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and the value is not a thunk.
         unsafe { aos_blackhole_check(rt, value) };
+    }
+
+    #[test]
+    fn aos_blackhole_check_native_wrapper_returns_for_suspended_thunks() {
+        let source = "[ (1 + 2) ]";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let root = eval.eval_root().expect("list evaluates");
+        let thunk = {
+            let list = eval.heap().get_list(root).expect("root list is heap-owned");
+            list.get(0).expect("element exists")
+        };
+        let mut context = std::pin::pin!(RuntimeForceContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and the suspended thunk belongs
+        // to that evaluator.
+        unsafe { aos_blackhole_check(rt, thunk) };
     }
 
     #[test]
@@ -788,15 +818,20 @@ mod tests {
             .into_iter()
             .find(|binding| binding.entrypoint() == RuntimeForcingEntryPoint::AosBlackholeCheck)
             .expect("blackhole-check wrapper binding exists");
-        let rt = std::ptr::null_mut();
+        let source = "false";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(RuntimeForceContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
         let value = Value::bool(false);
         let RuntimeForcingNativeWrapperFunction::BlackholeCheck(function) = binding.function()
         else {
             panic!("aos_blackhole_check binding must carry a blackhole-check function");
         };
 
-        // SAFETY: The current wrapper success path does not dereference `rt`,
-        // and the value is not a thunk.
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and the value is not a thunk.
         unsafe { function(rt, value) };
     }
 
@@ -836,8 +871,13 @@ mod tests {
     }
 
     #[test]
-    fn aos_blackhole_check_native_wrapper_aborts_thunks() {
-        assert_child_process_aborts(BLACKHOLE_THUNK_ABORT_CHILD);
+    fn aos_blackhole_check_native_wrapper_aborts_on_null_context() {
+        assert_child_process_aborts(BLACKHOLE_NULL_CONTEXT_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_blackhole_check_native_wrapper_aborts_blackholed_thunks() {
+        assert_child_process_aborts(BLACKHOLE_BLACKHOLED_THUNK_ABORT_CHILD);
     }
 
     #[test]
@@ -941,24 +981,65 @@ mod tests {
     #[test]
     #[ignore = "subprocess target for abort behavior"]
     fn aos_blackhole_check_native_wrapper_aborts_malformed_payload_child() {
-        let rt = std::ptr::null_mut();
+        let source = "null";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(RuntimeForceContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
         let malformed = malformed_bool_value();
 
-        // SAFETY: `malformed` has a valid tag discriminant and no heap payload;
-        // its invalid bool payload is the abort behavior under test.
+        // SAFETY: The pinned context and its evaluator are live for the call.
+        // `malformed` has a valid tag discriminant and no heap payload; its
+        // invalid bool payload is the abort behavior under test.
         unsafe { aos_blackhole_check(rt, malformed) };
     }
 
     #[test]
     #[ignore = "subprocess target for abort behavior"]
-    fn aos_blackhole_check_native_wrapper_aborts_thunk_child() {
+    fn aos_blackhole_check_native_wrapper_aborts_on_null_context_child() {
         let rt = std::ptr::null_mut();
-        let (_heap, thunk) = allocated_thunk_value();
+        let bool_value = Value::bool(false);
 
-        // SAFETY: `thunk` is a valid evaluator-owned thunk value. The current
-        // wrapper aborts thunk values before decoding `rt` or dereferencing the
-        // thunk payload.
-        unsafe { aos_blackhole_check(rt, thunk) };
+        // SAFETY: `bool_value` has a valid tag discriminant. The test
+        // deliberately passes a null runtime context to verify abort behavior
+        // before any blackhole check can run.
+        unsafe { aos_blackhole_check(rt, bool_value) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_blackhole_check_native_wrapper_aborts_blackholed_thunk_child() {
+        let source = "[ (1 + 2) ]";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let root = eval.eval_root().expect("list evaluates");
+        let blackholed = {
+            let list = eval.heap().get_list(root).expect("root list is heap-owned");
+            list.get(0).expect("element exists")
+        };
+        let guard = {
+            let thunk = eval
+                .heap()
+                .get_thunk(blackholed)
+                .expect("element is a suspended thunk");
+            let ForceClaim::Claimed(guard) = thunk
+                .cell()
+                .begin_force()
+                .expect("suspended thunk is claimed")
+            else {
+                panic!("expected a claimed suspended thunk");
+            };
+            guard
+        };
+        std::mem::forget(guard);
+        let mut context = std::pin::pin!(RuntimeForceContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: The pinned context is live, `blackholed` belongs to that
+        // evaluator, and the blackhole state is the abort behavior under test.
+        unsafe { aos_blackhole_check(rt, blackholed) };
     }
 
     fn malformed_bool_value() -> Value {
@@ -970,14 +1051,6 @@ mod tests {
         // layout, and the tag discriminant is valid. The malformed inline
         // payload is the abort behavior under test.
         unsafe { std::mem::transmute::<RawValueForTest, Value>(raw) }
-    }
-
-    fn allocated_thunk_value() -> (EvalHeap, Value) {
-        let mut heap = EvalHeap::new();
-        let thunk = heap
-            .alloc_thunk(EvalThunk::new(IrId::new(1)))
-            .expect("test thunk allocates");
-        (heap, thunk)
     }
 
     fn lower_source(source: &str) -> ratchet_oracle::compile::Ir {

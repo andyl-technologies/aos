@@ -1661,20 +1661,22 @@ harness, never cut for scope.
       symbol, decodes a live `EvalFrame` pointer inside a scoped unsafe block,
       reads the slot through the same safe frame API used by the oracle, and
       returns the copied `Value` by value. Its `force::aos_blackhole_check`
-      wrapper defines an unmangled frozen `(rt, Value) -> ()` symbol and returns
-      for representation-valid non-thunks, while `force::aos_force` defines an
-      unmangled frozen `(rt, Value) -> Value` symbol, validates the payload,
-      decodes `rt` as a scoped `RuntimeForceContext`, enters the safe tree-walk
-      force bridge, and returns WHNF values for already-strict inputs and
-      evaluator-owned thunks. Its `force::aos_force_deep` wrapper defines the
+      wrapper defines an unmangled frozen `(rt, Value) -> ()` symbol, validates
+      the payload, decodes `rt` as a scoped `RuntimeForceContext`, enters the
+      safe tree-walk blackhole-check bridge, and returns for non-thunks plus
+      evaluator-owned suspended or forced thunks. Its `force::aos_force` wrapper
+      defines an unmangled frozen `(rt, Value) -> Value` symbol, validates the
+      payload, decodes the same scoped `RuntimeForceContext`, enters the safe
+      tree-walk force bridge, and returns WHNF values for already-strict inputs
+      and evaluator-owned thunks. Its `force::aos_force_deep` wrapper defines the
       same value-returning ABI, decodes the same scoped `RuntimeForceContext`,
       enters the safe tree-walk deep-force bridge, recursively forces list
       elements and attrset values, keeps visited containers plus the current
       container and cloned child values registered as transient safepoint roots
       during recursive forcing, and returns the original container or leaf
       `Value`. The forcing wrappers abort for malformed payloads, null scoped
-      contexts, safe tree-walk force/deep-force errors, and evaluator trap
-      transfer until the remaining specialized protocols exist. Its
+      contexts, safe tree-walk blackhole-check/force/deep-force errors, and
+      evaluator trap transfer until the remaining specialized protocols exist. Its
       `apply::aos_apply` wrapper defines an unmangled
       frozen `(rt, Value function, Value arg) -> Value` symbol and aborts for
       every call until runtime-context decoding, active call-root binding,
@@ -1695,10 +1697,11 @@ harness, never cut for scope.
       dispatch exist. Returning today would be unsound because skipping the
       daemon-generational barrier can lose remembered edges. The apply, forcing,
       barrier, and attrset-access wrappers' safety contracts still require a Rust-valid
-      `Value` tag; `aos_force` and `aos_force_deep` additionally require a
-      pinned `RuntimeForceContext` and evaluator-owned heap payloads for forced
-      inputs and returned heap values. Invalid tag discriminants are undefined
-      before the wrappers can inspect them.
+      `Value` tag; `aos_blackhole_check`, `aos_force`, and `aos_force_deep`
+      additionally require a pinned `RuntimeForceContext` and evaluator-owned
+      heap payloads for checked or forced inputs and returned heap values.
+      Invalid tag discriminants are undefined before the wrappers can inspect
+      them.
       Its `attr::aos_has_attr` and `attr::aos_select_ic` wrappers define
       unmangled frozen `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`
       symbols. They decode `rt` as a scoped `RuntimeAttrAccessContext`, bind the
@@ -1727,10 +1730,11 @@ harness, never cut for scope.
       unsafe-boundary manifest and tests an allowlist/count for every current
       `unsafe`, `extern`, and `no_mangle` source token. This is not the final
       runtime C ABI body: `aos_env_get` invalid pointers, borrow conflicts,
-      and slot errors abort, while `aos_blackhole_check` malformed/thunk paths,
-      `aos_force` null context and tree-walk error paths, and `aos_force_deep`
-      null context and tree-walk deep-force error paths abort until trap
-      transfer and the remaining runtime integrations exist; `aos_apply`
+      and slot errors abort, while `aos_blackhole_check` malformed, null
+      context, and blackholed-thunk paths, `aos_force` null context and
+      tree-walk error paths, and `aos_force_deep` null context and tree-walk
+      deep-force error paths abort until trap transfer and the remaining runtime
+      integrations exist; `aos_apply`
       remains a trap-only body until safe
       evaluator apply dispatch can be reached from native runtime context;
       `aos_alloc_*` remains trap-only until safe allocator dispatch and typed

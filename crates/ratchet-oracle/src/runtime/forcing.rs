@@ -61,7 +61,17 @@ pub const RUNTIME_FORCING_ABI_SIGNATURES: &[RuntimeForcingAbiSignature] = &[
 type RuntimeForceValueFn = fn(&mut TreeWalk, IrId, Span, Value) -> Result<Value, TreeWalkError>;
 type RuntimeBlackholeCheckFn = fn(&mut TreeWalk, IrId, Span, Value) -> Result<(), TreeWalkError>;
 
-fn rust_callable_aos_blackhole_check(
+/// Runs the Rust-callable `aos_blackhole_check` helper through the tree-walk evaluator.
+///
+/// The helper returns for non-thunks and for evaluator-owned thunks whose state
+/// is not [`ThunkState::Blackhole`]. A blackholed thunk is reported as the same
+/// infinite-recursion force error used by ordinary tree-walk forcing.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] when a thunk payload is malformed, the thunk state
+/// word is invalid, or the thunk is currently blackholed.
+pub fn rust_callable_aos_blackhole_check(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,

@@ -372,7 +372,7 @@ mod tests {
         "uns",
         "afe ",
         "ext",
-        "ern \"C\" fn aos_blackhole_check(_rt: *mut c_void, value: Value) {"
+        "ern \"C\" fn aos_blackhole_check(rt: *mut c_void, value: Value) {"
     );
     const FORCE_FN_LINE: &str = concat!(
         "pub ",
@@ -388,6 +388,7 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_force_deep(rt: *mut c_void, value: Value) -> Value {"
     );
+    const BLACKHOLE_DECODER_CALL_LINE: &str = concat!("let checked = ", "uns", "afe {");
     const FORCE_DECODER_CALL_LINE: &str = concat!("let forced = ", "uns", "afe {");
     const FORCE_DEEP_DECODER_CALL_LINE: &str = concat!("let deeply_forced = ", "uns", "afe {");
     const FORCE_CONTEXT_DECODER_LINE: &str = concat!("uns", "afe fn with_native_force_context<R>(");
@@ -400,6 +401,8 @@ mod tests {
         concat!("call(", "uns", "afe { context.eval.as_mut() }, id, span)");
     const DIRECT_BLACKHOLE_TEST_CALL_LINE: &str =
         concat!("uns", "afe { aos_blackhole_check(rt, value) };");
+    const DIRECT_BLACKHOLE_THUNK_TEST_CALL_LINE: &str =
+        concat!("uns", "afe { aos_blackhole_check(rt, thunk) };");
     const DIRECT_FORCE_TEST_CALL_LINE: &str =
         concat!("let actual = ", "uns", "afe { aos_force(rt, expected) };");
     const DIRECT_FORCE_THUNK_TEST_CALL_LINE: &str =
@@ -450,8 +453,10 @@ mod tests {
         concat!("let _ = ", "uns", "afe { aos_force_deep(rt, root) };");
     const BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE: &str =
         concat!("uns", "afe { aos_blackhole_check(rt, malformed) };");
-    const BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE: &str =
-        concat!("uns", "afe { aos_blackhole_check(rt, thunk) };");
+    const BLACKHOLE_NULL_CONTEXT_ABORT_TEST_CALL_LINE: &str =
+        concat!("uns", "afe { aos_blackhole_check(rt, bool_value) };");
+    const BLACKHOLE_BLACKHOLED_ABORT_TEST_CALL_LINE: &str =
+        concat!("uns", "afe { aos_blackhole_check(rt, blackholed) };");
 
     #[test]
     fn discipline_manifest_names_required_controls() {
@@ -693,12 +698,14 @@ mod tests {
                 || trimmed == BLACKHOLE_FN_LINE
                 || trimmed == FORCE_FN_LINE
                 || trimmed == FORCE_DEEP_FN_LINE
+                || trimmed == BLACKHOLE_DECODER_CALL_LINE
                 || trimmed == FORCE_DECODER_CALL_LINE
                 || trimmed == FORCE_DEEP_DECODER_CALL_LINE
                 || trimmed == FORCE_CONTEXT_DECODER_LINE
                 || trimmed == FORCE_CONTEXT_CAST_LINE
                 || trimmed == FORCE_CONTEXT_EVAL_LINE
                 || trimmed == DIRECT_BLACKHOLE_TEST_CALL_LINE
+                || trimmed == DIRECT_BLACKHOLE_THUNK_TEST_CALL_LINE
                 || trimmed == DIRECT_FORCE_TEST_CALL_LINE
                 || trimmed == DIRECT_FORCE_THUNK_TEST_CALL_LINE
                 || trimmed == DIRECT_FORCE_DEEP_TEST_CALL_LINE
@@ -716,7 +723,8 @@ mod tests {
                 || trimmed == FORCE_DEEP_NULL_CONTEXT_ABORT_TEST_CALL_LINE
                 || trimmed == FORCE_DEEP_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE
                 || trimmed == BLACKHOLE_MALFORMED_ABORT_TEST_CALL_LINE
-                || trimmed == BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE
+                || trimmed == BLACKHOLE_NULL_CONTEXT_ABORT_TEST_CALL_LINE
+                || trimmed == BLACKHOLE_BLACKHOLED_ABORT_TEST_CALL_LINE
         } else if token == EXTERN_TOKEN {
             trimmed == BLACKHOLE_FN_TYPE_LINE
                 || trimmed == FORCE_FN_TYPE_LINE
@@ -1402,6 +1410,11 @@ mod unchecked_cfg;
             "aos_force_deep native wrapper must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&force, BLACKHOLE_DECODER_CALL_LINE),
+            1,
+            "aos_blackhole_check wrapper call to the decoder must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&force, FORCE_DECODER_CALL_LINE),
             1,
             "aos_force wrapper call to the decoder must stay singly reviewed"
@@ -1430,6 +1443,11 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&force, DIRECT_BLACKHOLE_TEST_CALL_LINE),
             1,
             "direct test call of aos_blackhole_check must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, DIRECT_BLACKHOLE_THUNK_TEST_CALL_LINE),
+            1,
+            "direct thunk test call of aos_blackhole_check must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&force, DIRECT_FORCE_TEST_CALL_LINE),
@@ -1517,9 +1535,14 @@ mod unchecked_cfg;
             "blackhole malformed payload abort test call must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&force, BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE),
+            trimmed_line_occurrences(&force, BLACKHOLE_NULL_CONTEXT_ABORT_TEST_CALL_LINE),
             1,
-            "blackhole thunk abort test call must stay singly reviewed"
+            "blackhole null-context abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&force, BLACKHOLE_BLACKHOLED_ABORT_TEST_CALL_LINE),
+            1,
+            "blackhole blackholed-thunk abort test call must stay singly reviewed"
         );
     }
 
@@ -1705,6 +1728,11 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &force_lines,
+            BLACKHOLE_DECODER_CALL_LINE,
+            "blackhole decoder call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
             FORCE_DECODER_CALL_LINE,
             "force decoder call must keep a SAFETY comment",
         );
@@ -1732,6 +1760,11 @@ mod unchecked_cfg;
             &force_lines,
             DIRECT_FORCE_TEST_CALL_LINE,
             "direct force wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            DIRECT_BLACKHOLE_THUNK_TEST_CALL_LINE,
+            "direct blackhole thunk wrapper test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,
@@ -1815,8 +1848,13 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &force_lines,
-            BLACKHOLE_THUNK_ABORT_TEST_CALL_LINE,
-            "blackhole thunk abort test call must keep a SAFETY comment",
+            BLACKHOLE_NULL_CONTEXT_ABORT_TEST_CALL_LINE,
+            "blackhole null-context abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &force_lines,
+            BLACKHOLE_BLACKHOLED_ABORT_TEST_CALL_LINE,
+            "blackhole blackholed-thunk abort test call must keep a SAFETY comment",
         );
     }
 
