@@ -3,10 +3,11 @@
 //! This module starts the tier-1 lowering path without executable code. It can
 //! build verified Cranelift [`Function`] values for compiled thunk bodies that
 //! return constant runtime [`Value`] words, perform one bounded local
-//! environment-slot read through the `aos_env_get` helper, or force that loaded
-//! value through `aos_force`. Shape-directed tier-1 selector entrypoints choose
-//! among those bounded paths before Cranelift module setup. These bodies use the
-//! same two-word `Value` ABI as [`crate::abi`], but they are not placed in a
+//! environment-slot read through the `aos_env_get` helper, force that loaded
+//! value through `aos_force`, or apply two local-slot values through
+//! `aos_apply`. Shape-directed tier-1 selector entrypoints choose among those
+//! bounded paths before Cranelift module setup. These bodies use the same
+//! two-word `Value` ABI as [`crate::abi`], but they are not placed in a
 //! `JITModule`, finalized, or called.
 
 use std::{error::Error, fmt};
@@ -51,8 +52,12 @@ pub const AOS_ENV_GET_FUNCTION_INDEX: u32 = 0;
 /// User-external function index reserved for the `aos_force` helper.
 pub const AOS_FORCE_FUNCTION_INDEX: u32 = 1;
 
+/// User-external function index reserved for the `aos_apply` helper.
+pub const AOS_APPLY_FUNCTION_INDEX: u32 = 2;
+
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
+const AOS_APPLY_SYMBOL: &str = "aos_apply";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
 pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
@@ -72,6 +77,14 @@ pub fn clif_external_name_for_aos_force() -> UserExternalName {
     UserExternalName::new(
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_FORCE_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_apply`.
+pub fn clif_external_name_for_aos_apply() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_APPLY_FUNCTION_INDEX,
     )
 }
 
@@ -530,12 +543,93 @@ pub fn lower_forced_env_get_ir_root_thunk_body_artifact(
     lower_forced_env_get_ir_thunk_body_artifact(&ir.arena, ir.root)
 }
 
+/// Lowers a direct local-slot application into a verified compiled-thunk CLIF body.
+///
+/// This bounded call-control precursor accepts a direct [`IrKind::Apply`] root
+/// plus one direct [`IrKind::ThunkAlloc`] wrapper around such an apply. The
+/// application's function and argument children must both be direct
+/// [`IrKind::LocalVar`] reads. The generated function imports `aos_env_get`,
+/// imports `aos_apply`, loads the function and argument values from the compiled
+/// thunk `env` parameter, calls `aos_apply` with the compiled thunk `rt`
+/// parameter, and returns the two runtime `Value` words produced by that helper.
+///
+/// The returned function remains non-executable CLIF only. It is not placed in a
+/// `JITModule`, linked against native helper addresses, finalized, or called.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `root` is not present in
+/// `arena`. Returns [`JitLowerError::UnsupportedApplyRoot`] when the root is not
+/// a supported local-slot application form. Returns
+/// [`JitLowerError::MissingIrBody`] or [`JitLowerError::UnsupportedApplyBody`]
+/// for malformed direct thunk bodies. Returns
+/// [`JitLowerError::MissingApplyChild`],
+/// [`JitLowerError::UnsupportedApplyChild`], or
+/// [`JitLowerError::MismatchedIrNodeData`] when the apply payload or either
+/// direct child is malformed. Also returns runtime ABI signature-conversion and
+/// verifier errors for imported helpers.
+pub fn lower_apply_local_slots_ir_thunk_body(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<Function, JitLowerError> {
+    let (function_slot, argument_slot) = apply_local_slots_for_root(arena, root)?;
+    lower_apply_local_slots_thunk_body_with_name(
+        function_slot,
+        argument_slot,
+        clif_name_for_ir_root(root),
+    )
+}
+
+/// Lowers a direct local-slot application into a non-executable CLIF artifact.
+///
+/// The artifact records the Core IR root id as source metadata and contains the
+/// same verified CLIF function returned by [`lower_apply_local_slots_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_apply_local_slots_ir_thunk_body`].
+pub fn lower_apply_local_slots_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_apply_local_slots_ir_thunk_body(arena, root)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
+/// Lowers the root of a lowered IR artifact as a direct local-slot application.
+///
+/// This delegates to [`lower_apply_local_slots_ir_thunk_body`] using the
+/// artifact's root id and arena.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_apply_local_slots_ir_thunk_body`].
+pub fn lower_apply_local_slots_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
+    lower_apply_local_slots_ir_thunk_body(&ir.arena, ir.root)
+}
+
+/// Lowers the root of a lowered IR artifact as a direct local-slot application artifact.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_apply_local_slots_ir_root_thunk_body`].
+pub fn lower_apply_local_slots_ir_root_thunk_body_artifact(
+    ir: &Ir,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_apply_local_slots_ir_thunk_body_artifact(&ir.arena, ir.root)
+}
+
 /// Lowers a currently supported tier-1 IR thunk body.
 ///
-/// This shape-directed selector accepts literal roots and local-slot roots,
-/// plus one direct [`IrKind::ThunkAlloc`] wrapper around either shape. Literal
-/// roots lower through [`lower_constant_ir_thunk_body`], while local-slot roots
-/// lower through [`lower_env_get_ir_thunk_body`].
+/// This shape-directed selector accepts literal roots, local-slot roots, and
+/// direct local-slot application roots, plus one direct [`IrKind::ThunkAlloc`]
+/// wrapper around any supported shape. Literal roots lower through
+/// [`lower_constant_ir_thunk_body`], local-slot roots lower through
+/// [`lower_env_get_ir_thunk_body`], and direct local-slot applications lower
+/// through [`lower_apply_local_slots_ir_thunk_body`].
 ///
 /// # Errors
 ///
@@ -570,7 +664,9 @@ pub fn lower_tier1_ir_thunk_body_artifact(
 ///
 /// This selector preserves the literal-root lowering path, but lowers local-slot
 /// roots through [`lower_forced_env_get_ir_thunk_body`] so the loaded value is
-/// forced by `aos_force` before returning.
+/// forced by `aos_force` before returning. Direct local-slot applications lower
+/// through [`lower_apply_local_slots_ir_thunk_body`] because `aos_apply` owns the
+/// function-call forcing boundary.
 ///
 /// # Errors
 ///
@@ -658,6 +754,28 @@ pub enum JitLowerError {
     /// The direct thunk-allocation body is not a local-slot read this precursor can lower.
     UnsupportedEnvBody {
         /// The unsupported body node kind.
+        kind: IrKind,
+    },
+    /// The requested IR root is not a local-slot application this precursor can lower.
+    UnsupportedApplyRoot {
+        /// The unsupported root node kind.
+        kind: IrKind,
+    },
+    /// The direct thunk-allocation body is not a local-slot application this precursor can lower.
+    UnsupportedApplyBody {
+        /// The unsupported body node kind.
+        kind: IrKind,
+    },
+    /// A direct application child was not present in the arena.
+    MissingApplyChild {
+        /// The missing application child id.
+        child: IrId,
+    },
+    /// A direct application child is not a local-slot read this precursor can lower.
+    UnsupportedApplyChild {
+        /// The unsupported application child id.
+        child: IrId,
+        /// The unsupported child node kind.
         kind: IrKind,
     },
     /// The requested node is not a thunk allocation fact planning can consume.
@@ -760,6 +878,30 @@ impl fmt::Display for JitLowerError {
                     "IR thunk body kind {kind:?} is not supported by the environment-access lowerer"
                 )
             }
+            Self::UnsupportedApplyRoot { kind } => {
+                write!(
+                    formatter,
+                    "IR root kind {kind:?} is not supported by the direct-apply lowerer"
+                )
+            }
+            Self::UnsupportedApplyBody { kind } => {
+                write!(
+                    formatter,
+                    "IR thunk body kind {kind:?} is not supported by the direct-apply lowerer"
+                )
+            }
+            Self::MissingApplyChild { child } => {
+                write!(
+                    formatter,
+                    "IR apply child {child:?} is not present in the arena"
+                )
+            }
+            Self::UnsupportedApplyChild { child, kind } => {
+                write!(
+                    formatter,
+                    "IR apply child {child:?} with kind {kind:?} is not a local-slot read this lowerer can consume"
+                )
+            }
             Self::UnsupportedThunkFactNode { id, kind } => {
                 write!(
                     formatter,
@@ -812,6 +954,10 @@ impl Error for JitLowerError {
             | Self::UnsupportedIrBody { .. }
             | Self::UnsupportedEnvRoot { .. }
             | Self::UnsupportedEnvBody { .. }
+            | Self::UnsupportedApplyRoot { .. }
+            | Self::UnsupportedApplyBody { .. }
+            | Self::MissingApplyChild { .. }
+            | Self::UnsupportedApplyChild { .. }
             | Self::UnsupportedThunkFactNode { .. }
             | Self::MismatchedIrFactTable { .. }
             | Self::SelfReferentialThunkBody { .. }
@@ -924,6 +1070,76 @@ fn env_slot_for_node(node: IrNode) -> Result<u32, JitLowerError> {
     }
 }
 
+fn apply_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32), JitLowerError> {
+    let node = arena
+        .node(root)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root })?;
+
+    match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(body)) => {
+            let body = arena
+                .node(body)
+                .copied()
+                .ok_or(JitLowerError::MissingIrBody { body })?;
+            apply_local_slots_for_body(arena, body)
+        }
+        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::ThunkAlloc,
+            data,
+            expected: "body node",
+        }),
+        _ => apply_local_slots_for_node(arena, node),
+    }
+}
+
+fn apply_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(u32, u32), JitLowerError> {
+    match (node.kind, node.data) {
+        (IrKind::Apply, IrData::Pair { first, second }) => Ok((
+            apply_local_child_slot(arena, first)?,
+            apply_local_child_slot(arena, second)?,
+        )),
+        (IrKind::Apply, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::Apply,
+            data,
+            expected: "application pair payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedApplyBody { kind }),
+    }
+}
+
+fn apply_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(u32, u32), JitLowerError> {
+    match (node.kind, node.data) {
+        (IrKind::Apply, IrData::Pair { first, second }) => Ok((
+            apply_local_child_slot(arena, first)?,
+            apply_local_child_slot(arena, second)?,
+        )),
+        (IrKind::Apply, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::Apply,
+            data,
+            expected: "application pair payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedApplyRoot { kind }),
+    }
+}
+
+fn apply_local_child_slot(arena: &IrArena, child: IrId) -> Result<u32, JitLowerError> {
+    let node = arena
+        .node(child)
+        .copied()
+        .ok_or(JitLowerError::MissingApplyChild { child })?;
+
+    match (node.kind, node.data) {
+        (IrKind::LocalVar, IrData::Local { slot }) => Ok(slot),
+        (IrKind::LocalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::LocalVar,
+            data,
+            expected: "local slot payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedApplyChild { child, kind }),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Tier1LocalSlotLowering {
     EnvGet,
@@ -986,6 +1202,7 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind(
                 lower_forced_env_get_ir_thunk_body_artifact(arena, root)
             }
         },
+        IrKind::Apply => lower_apply_local_slots_ir_thunk_body_artifact(arena, root),
         kind if is_thunk_body => Err(JitLowerError::UnsupportedIrBody { kind }),
         kind => Err(JitLowerError::UnsupportedIrRoot { kind }),
     }
@@ -1018,6 +1235,32 @@ fn lower_forced_env_get_slot_thunk_body_with_name(
     )?;
     let entry_block = append_entry_block_params(&mut function);
     emit_forced_env_get_return(&mut function, entry_block, env_get, force, slot)?;
+    verify_clif_function(&function)?;
+    Ok(function)
+}
+
+fn lower_apply_local_slots_thunk_body_with_name(
+    function_slot: u32,
+    argument_slot: u32,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
+    let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(name, signature);
+    let env_get = import_env_get_function(&mut function)?;
+    let apply = import_runtime_helper_function(
+        &mut function,
+        AOS_APPLY_SYMBOL,
+        clif_external_name_for_aos_apply(),
+    )?;
+    let entry_block = append_entry_block_params(&mut function);
+    emit_apply_local_slots_return(
+        &mut function,
+        entry_block,
+        env_get,
+        apply,
+        function_slot,
+        argument_slot,
+    )?;
     verify_clif_function(&function)?;
     Ok(function)
 }
@@ -1165,6 +1408,72 @@ fn emit_forced_env_get_return(
     Ok(())
 }
 
+fn emit_apply_local_slots_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    env_get: cranelift_codegen::ir::FuncRef,
+    apply: cranelift_codegen::ir::FuncRef,
+    function_slot: u32,
+    argument_slot: u32,
+) -> Result<(), JitLowerError> {
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let rt = entry_params
+        .first()
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let function_slot = cursor.ins().iconst(types::I32, i64::from(function_slot));
+    let function_env_get_call = cursor.ins().call(env_get, &[env, function_slot]);
+    let function_env_get_results = cursor.func.dfg.inst_results(function_env_get_call).to_vec();
+
+    if function_env_get_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+            expected: 2,
+            actual: function_env_get_results.len(),
+        });
+    }
+
+    let argument_slot = cursor.ins().iconst(types::I32, i64::from(argument_slot));
+    let argument_env_get_call = cursor.ins().call(env_get, &[env, argument_slot]);
+    let argument_env_get_results = cursor.func.dfg.inst_results(argument_env_get_call).to_vec();
+
+    if argument_env_get_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+            expected: 2,
+            actual: argument_env_get_results.len(),
+        });
+    }
+
+    let apply_call = cursor.ins().call(
+        apply,
+        &[
+            rt,
+            function_env_get_results[0],
+            function_env_get_results[1],
+            argument_env_get_results[0],
+            argument_env_get_results[1],
+        ],
+    );
+    let apply_results = cursor.func.dfg.inst_results(apply_call).to_vec();
+
+    if apply_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_APPLY_SYMBOL,
+            expected: 2,
+            actual: apply_results.len(),
+        });
+    }
+
+    cursor.ins().return_(&apply_results);
+    Ok(())
+}
+
 fn verify_clif_function(function: &Function) -> Result<(), JitLowerError> {
     let flags = settings::Flags::new(settings::builder());
     verify_function(function, &flags).map_err(JitLowerError::Verifier)
@@ -1225,6 +1534,14 @@ mod tests {
 
         assert_eq!(name.namespace, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE);
         assert_eq!(name.index, AOS_FORCE_FUNCTION_INDEX);
+    }
+
+    #[test]
+    fn apply_external_name_uses_reserved_namespace_and_index() {
+        let name = clif_external_name_for_aos_apply();
+
+        assert_eq!(name.namespace, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE);
+        assert_eq!(name.index, AOS_APPLY_FUNCTION_INDEX);
     }
 
     #[test]
@@ -2228,6 +2545,342 @@ mod tests {
     }
 
     #[test]
+    fn apply_local_slots_ir_thunk_body_imports_env_get_and_apply_signatures() {
+        let arena = apply_local_slots_arena(2, 5);
+
+        let function = lower_apply_local_slots_ir_thunk_body(&arena, IrId::new(2))
+            .expect("direct local-slot apply lowers");
+        let env_get_import = imported_function_by_user_external_name(
+            &function,
+            clif_external_name_for_aos_env_get(),
+        );
+        let apply_import =
+            imported_function_by_user_external_name(&function, clif_external_name_for_aos_apply());
+        let expected_env_get_signature = clif_signature_for_runtime_call(
+            runtime_helper_call_signature(AOS_ENV_GET_SYMBOL)
+                .expect("env-get helper signature is core-owned"),
+        )
+        .expect("env-get signature lowers to CLIF");
+        let expected_apply_signature = clif_signature_for_runtime_call(
+            runtime_helper_call_signature(AOS_APPLY_SYMBOL)
+                .expect("apply helper signature is core-owned"),
+        )
+        .expect("apply signature lowers to CLIF");
+
+        assert_eq!(
+            function.dfg.signatures[env_get_import.1.signature],
+            expected_env_get_signature
+        );
+        assert_eq!(
+            function.dfg.signatures[apply_import.1.signature],
+            expected_apply_signature
+        );
+    }
+
+    #[test]
+    fn apply_local_slots_ir_thunk_body_reads_function_and_argument_then_calls_apply() {
+        let arena = apply_local_slots_arena(3, 8);
+
+        let function = lower_apply_local_slots_ir_thunk_body(&arena, IrId::new(2))
+            .expect("direct local-slot apply lowers");
+        let (env_get, _) = imported_function_by_user_external_name(
+            &function,
+            clif_external_name_for_aos_env_get(),
+        );
+        let (apply, _) =
+            imported_function_by_user_external_name(&function, clif_external_name_for_aos_apply());
+        let calls = call_insts(&function);
+        assert_eq!(calls.len(), 3);
+        let function_env_get_call = calls[0];
+        let argument_env_get_call = calls[1];
+        let apply_call = calls[2];
+        let InstructionData::Call { func_ref, .. } = function.dfg.insts[function_env_get_call]
+        else {
+            panic!("apply lowerer emits function env-get call first");
+        };
+        assert_eq!(func_ref, env_get);
+        let InstructionData::Call { func_ref, .. } = function.dfg.insts[argument_env_get_call]
+        else {
+            panic!("apply lowerer emits argument env-get call second");
+        };
+        assert_eq!(func_ref, env_get);
+        let InstructionData::Call { func_ref, .. } = function.dfg.insts[apply_call] else {
+            panic!("apply lowerer emits apply call third");
+        };
+        assert_eq!(func_ref, apply);
+
+        assert_eq!(
+            opcodes(&function),
+            vec![
+                Opcode::Iconst,
+                Opcode::Call,
+                Opcode::Iconst,
+                Opcode::Call,
+                Opcode::Call,
+                Opcode::Return,
+            ]
+        );
+        assert_eq!(iconst_words(&function), vec![3, 8]);
+        assert_eq!(
+            function.dfg.inst_args(function_env_get_call)[0],
+            entry_block_values(&function)[1]
+        );
+        assert_eq!(
+            function.dfg.inst_args(argument_env_get_call)[0],
+            entry_block_values(&function)[1]
+        );
+        assert_eq!(
+            function
+                .dfg
+                .value_type(function.dfg.inst_args(function_env_get_call)[1]),
+            types::I32
+        );
+        assert_eq!(
+            function
+                .dfg
+                .value_type(function.dfg.inst_args(argument_env_get_call)[1]),
+            types::I32
+        );
+        assert_eq!(
+            function.dfg.inst_args(apply_call),
+            &[
+                entry_block_values(&function)[0],
+                function.dfg.inst_results(function_env_get_call)[0],
+                function.dfg.inst_results(function_env_get_call)[1],
+                function.dfg.inst_results(argument_env_get_call)[0],
+                function.dfg.inst_results(argument_env_get_call)[1],
+            ]
+        );
+        assert_eq!(
+            return_operands(&function),
+            function.dfg.inst_results(apply_call)
+        );
+        verify_clif_function(&function).expect("apply function verifies independently");
+    }
+
+    #[test]
+    fn apply_local_slots_ir_thunk_body_lowers_direct_apply_thunk_alloc_root() {
+        let arena = apply_local_slots_thunk_arena(13, 21);
+
+        let artifact = lower_apply_local_slots_ir_thunk_body_artifact(&arena, IrId::new(3))
+            .expect("direct apply thunk allocation lowers");
+
+        assert_eq!(artifact.tier(), JitTier::Tier1Baseline);
+        assert_eq!(artifact.kind(), JitClifArtifactKind::ThunkBody);
+        assert_eq!(
+            artifact.source(),
+            JitClifArtifactSource::IrRoot(IrId::new(3))
+        );
+        assert_eq!(
+            artifact.function_name(),
+            &clif_name_for_ir_root(IrId::new(3))
+        );
+        assert_eq!(artifact.function().dfg.ext_funcs.len(), 2);
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_apply(),
+        );
+        assert_eq!(iconst_words(artifact.function()), vec![13, 21]);
+    }
+
+    #[test]
+    fn apply_local_slots_ir_thunk_body_rejects_unsupported_roots_and_bodies() {
+        let root_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            )],
+            Vec::new(),
+        );
+        let body_arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(1, 2),
+                    EffectClass::pure(),
+                    IrData::Int(1),
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 2),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(0)),
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let root_error = lower_apply_local_slots_ir_thunk_body(&root_arena, IrId::new(0))
+            .expect_err("non-apply root is not covered by apply lowering");
+        let body_error = lower_apply_local_slots_ir_thunk_body(&body_arena, IrId::new(1))
+            .expect_err("non-apply thunk body is not covered by apply lowering");
+
+        assert!(
+            matches!(root_error, JitLowerError::UnsupportedApplyRoot { kind } if kind == IrKind::Int)
+        );
+        assert!(
+            matches!(body_error, JitLowerError::UnsupportedApplyBody { kind } if kind == IrKind::Int)
+        );
+    }
+
+    #[test]
+    fn apply_local_slots_ir_thunk_body_rejects_malformed_wrappers() {
+        let missing_body_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Node(IrId::new(9)),
+            )],
+            Vec::new(),
+        );
+        let malformed_wrapper_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::ThunkAlloc,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+
+        let missing_body_error =
+            lower_apply_local_slots_ir_thunk_body(&missing_body_arena, IrId::new(0))
+                .expect_err("missing apply thunk body is rejected");
+        let malformed_wrapper_error =
+            lower_apply_local_slots_ir_thunk_body(&malformed_wrapper_arena, IrId::new(0))
+                .expect_err("apply thunk allocation without body node is malformed");
+
+        assert!(
+            matches!(missing_body_error, JitLowerError::MissingIrBody { body } if body == IrId::new(9))
+        );
+        assert!(matches!(
+            malformed_wrapper_error,
+            JitLowerError::MismatchedIrNodeData {
+                kind: IrKind::ThunkAlloc,
+                data: IrData::None,
+                expected: "body node",
+            }
+        ));
+    }
+
+    #[test]
+    fn apply_local_slots_ir_thunk_body_rejects_malformed_apply_payloads_and_children() {
+        let malformed_payload_arena = IrArena::from_raw_parts(
+            vec![IrNode::new(
+                IrKind::Apply,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::None,
+            )],
+            Vec::new(),
+        );
+        let missing_child_arena = IrArena::from_raw_parts(
+            vec![
+                local_var_node(1),
+                IrNode::new(
+                    IrKind::Apply,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(9),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let unsupported_child_arena = IrArena::from_raw_parts(
+            vec![
+                local_var_node(1),
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(2, 3),
+                    EffectClass::pure(),
+                    IrData::Int(2),
+                ),
+                IrNode::new(
+                    IrKind::Apply,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let malformed_child_arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::None,
+                ),
+                local_var_node(2),
+                IrNode::new(
+                    IrKind::Apply,
+                    Span::new(0, 2),
+                    EffectClass::pure(),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+
+        let malformed_payload_error =
+            lower_apply_local_slots_ir_thunk_body(&malformed_payload_arena, IrId::new(0))
+                .expect_err("apply without pair payload is rejected");
+        let missing_child_error =
+            lower_apply_local_slots_ir_thunk_body(&missing_child_arena, IrId::new(1))
+                .expect_err("apply with missing child is rejected");
+        let unsupported_child_error =
+            lower_apply_local_slots_ir_thunk_body(&unsupported_child_arena, IrId::new(2))
+                .expect_err("apply with non-local child is rejected");
+        let malformed_child_error =
+            lower_apply_local_slots_ir_thunk_body(&malformed_child_arena, IrId::new(2))
+                .expect_err("apply with malformed local child is rejected");
+
+        assert!(matches!(
+            malformed_payload_error,
+            JitLowerError::MismatchedIrNodeData {
+                kind: IrKind::Apply,
+                data: IrData::None,
+                expected: "application pair payload",
+            }
+        ));
+        assert!(
+            matches!(missing_child_error, JitLowerError::MissingApplyChild { child } if child == IrId::new(9))
+        );
+        assert!(matches!(
+            unsupported_child_error,
+            JitLowerError::UnsupportedApplyChild {
+                child,
+                kind: IrKind::Int,
+            } if child == IrId::new(1)
+        ));
+        assert!(matches!(
+            malformed_child_error,
+            JitLowerError::MismatchedIrNodeData {
+                kind: IrKind::LocalVar,
+                data: IrData::None,
+                expected: "local slot payload",
+            }
+        ));
+    }
+
+    #[test]
     fn tier1_ir_thunk_body_artifact_selects_literal_and_env_get_paths() {
         let literal_arena = IrArena::from_raw_parts(
             vec![IrNode::new(
@@ -2284,6 +2937,48 @@ mod tests {
     }
 
     #[test]
+    fn tier1_ir_thunk_body_artifact_selects_apply_path() {
+        let arena = apply_local_slots_arena(41, 43);
+
+        let artifact = lower_tier1_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("tier-1 selector lowers local-slot apply");
+
+        assert_eq!(artifact.function().dfg.ext_funcs.len(), 2);
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_apply(),
+        );
+        assert_eq!(iconst_words(artifact.function()), vec![41, 43]);
+    }
+
+    #[test]
+    fn tier1_ir_thunk_body_artifact_selects_wrapped_apply_path() {
+        let arena = apply_local_slots_thunk_arena(44, 45);
+
+        let artifact = lower_tier1_ir_thunk_body_artifact(&arena, IrId::new(3))
+            .expect("tier-1 selector lowers wrapped local-slot apply");
+
+        assert_eq!(
+            artifact.function_name(),
+            &clif_name_for_ir_root(IrId::new(3))
+        );
+        assert_eq!(artifact.function().dfg.ext_funcs.len(), 2);
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_apply(),
+        );
+        assert_eq!(iconst_words(artifact.function()), vec![44, 45]);
+    }
+
+    #[test]
     fn force_aware_tier1_ir_thunk_body_artifact_preserves_literals_and_forces_local_slots() {
         let literal_arena = IrArena::from_raw_parts(
             vec![IrNode::new(
@@ -2319,6 +3014,48 @@ mod tests {
             clif_external_name_for_aos_force(),
         );
         assert_eq!(iconst_words(local_artifact.function()), vec![31]);
+    }
+
+    #[test]
+    fn force_aware_tier1_ir_thunk_body_artifact_selects_apply_without_extra_force() {
+        let arena = apply_local_slots_arena(47, 53);
+
+        let artifact = lower_force_aware_tier1_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("force-aware selector lowers local-slot apply through apply helper");
+
+        assert_eq!(artifact.function().dfg.ext_funcs.len(), 2);
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_apply(),
+        );
+        assert_eq!(iconst_words(artifact.function()), vec![47, 53]);
+    }
+
+    #[test]
+    fn force_aware_tier1_ir_thunk_body_artifact_selects_wrapped_apply_without_extra_force() {
+        let arena = apply_local_slots_thunk_arena(54, 55);
+
+        let artifact = lower_force_aware_tier1_ir_thunk_body_artifact(&arena, IrId::new(3))
+            .expect("force-aware selector lowers wrapped local-slot apply through apply helper");
+
+        assert_eq!(
+            artifact.function_name(),
+            &clif_name_for_ir_root(IrId::new(3))
+        );
+        assert_eq!(artifact.function().dfg.ext_funcs.len(), 2);
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_apply(),
+        );
+        assert_eq!(iconst_words(artifact.function()), vec![54, 55]);
     }
 
     #[test]
@@ -2535,6 +3272,50 @@ mod tests {
             Span::new(0, 1),
             EffectClass::pure(),
             IrData::Local { slot },
+        )
+    }
+
+    fn apply_local_slots_arena(function_slot: u32, argument_slot: u32) -> IrArena {
+        IrArena::from_raw_parts(
+            vec![
+                local_var_node(function_slot),
+                local_var_node(argument_slot),
+                IrNode::new(
+                    IrKind::Apply,
+                    Span::new(0, 2),
+                    EffectClass::pure(),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        )
+    }
+
+    fn apply_local_slots_thunk_arena(function_slot: u32, argument_slot: u32) -> IrArena {
+        IrArena::from_raw_parts(
+            vec![
+                local_var_node(function_slot),
+                local_var_node(argument_slot),
+                IrNode::new(
+                    IrKind::Apply,
+                    Span::new(1, 3),
+                    EffectClass::pure(),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(1),
+                    },
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(2)),
+                ),
+            ],
+            Vec::new(),
         )
     }
 

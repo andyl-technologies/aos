@@ -14,7 +14,8 @@ use cranelift_codegen::ir::{ExternalName, Function, UserExternalName, UserFuncNa
 use crate::{
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     lower::{
-        AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_APPLY_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX,
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
     },
     symbols::{
         JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError,
@@ -25,6 +26,7 @@ use crate::{
 
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
+const AOS_APPLY_SYMBOL: &str = "aos_apply";
 
 /// Address-free CLIF artifact metadata needed by future module setup.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -447,6 +449,9 @@ fn runtime_symbol_for_external_name(
         (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_FORCE_FUNCTION_INDEX) => {
             Some((AOS_FORCE_SYMBOL, user_external_name))
         }
+        (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_APPLY_FUNCTION_INDEX) => {
+            Some((AOS_APPLY_SYMBOL, user_external_name))
+        }
         _ => None,
     }
 }
@@ -482,8 +487,9 @@ mod tests {
         abi::clif_signature_for_runtime_call,
         artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
         lower::{
-            clif_external_name_for_aos_env_get, clif_external_name_for_aos_force,
-            clif_name_for_ir_root, lower_constant_ir_thunk_body_artifact,
+            clif_external_name_for_aos_apply, clif_external_name_for_aos_env_get,
+            clif_external_name_for_aos_force, clif_name_for_ir_root,
+            lower_apply_local_slots_ir_thunk_body_artifact, lower_constant_ir_thunk_body_artifact,
             lower_constant_thunk_body_artifact, lower_env_get_ir_thunk_body_artifact,
             lower_forced_env_get_ir_thunk_body_artifact,
         },
@@ -649,6 +655,61 @@ mod tests {
         assert!(preflight.artifact_runtime_import_gaps().is_empty());
         assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
         assert!(preflight.declaration_for_symbol("aos_force").is_some());
+    }
+
+    #[test]
+    fn module_readiness_preflight_records_apply_artifact_imports() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local { slot: 2 },
+                ),
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(2, 3),
+                    EffectClass::pure(),
+                    IrData::Local { slot: 5 },
+                ),
+                IrNode::new(
+                    IrKind::Apply,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let artifact = lower_apply_local_slots_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("apply artifact lowers");
+        let preflight = jit_module_readiness_preflight_for_artifact(&artifact)
+            .expect("module preflight builds");
+        let imports = preflight
+            .artifact_runtime_imports()
+            .iter()
+            .map(|artifact_import| {
+                (
+                    artifact_import.symbol_name(),
+                    artifact_import.user_external_name().clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            imports,
+            vec![
+                ("aos_env_get", clif_external_name_for_aos_env_get()),
+                ("aos_apply", clif_external_name_for_aos_apply()),
+            ]
+        );
+        assert!(preflight.artifact_runtime_import_gaps().is_empty());
+        assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
+        assert!(preflight.declaration_for_symbol("aos_apply").is_some());
     }
 
     #[test]

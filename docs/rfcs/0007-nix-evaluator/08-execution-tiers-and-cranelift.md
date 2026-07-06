@@ -1038,12 +1038,14 @@ harness, never cut for scope.
       imported external functions and resolves known AOS runtime-helper
       user-external names back to stable runtime symbols. Env-slot artifacts
       report one required `aos_env_get` import, validate that import's CLIF
-      signature against the runtime-symbol declaration preflight, and surface
+      signature against the runtime-symbol declaration preflight; forced env-slot
+      and direct local-slot apply artifacts also resolve `aos_force` or
+      `aos_apply` imports alongside `aos_env_get`. The preflight surfaces
       explicit import gaps for unknown external names, missing declarations,
       missing import signatures, or signature mismatches. Constant artifacts
       report no artifact-specific imports. Tests pin empty imports for
-      constants, the resolved env-get import namespace/index, declaration
-      parity, malformed-import gap handling, and synthetic complete-plan
+      constants, resolved env-get/force/apply import namespace/index metadata,
+      declaration parity, malformed-import gap handling, and synthetic complete-plan
       preservation. This is address-free dependency metadata only: no
       `JITBuilder::symbol`, native address binding, relocation, finalization, or
       call into the helper occurs here.
@@ -1085,9 +1087,13 @@ harness, never cut for scope.
       composes explicit native-address candidates with the artifact definition
       path. It calls `JITBuilder::symbol` for declaration-matched candidates,
       declares runtime imports in the same module, rewrites artifact runtime
-      helper imports such as `aos_env_get` from AOS user-external names to
-      Cranelift module-local `FuncId` names, and defines the artifact body. Tests
+      helper imports such as `aos_env_get`, `aos_force`, and `aos_apply` from
+      AOS user-external names to Cranelift module-local `FuncId` names, and
+      defines the artifact body. Tests
       pin env-slot artifact definition with a synthetic `aos_env_get` candidate,
+      forced env-slot definition with synthetic `aos_env_get`/`aos_force`
+      candidates, direct local-slot apply definition with synthetic
+      `aos_env_get`/`aos_apply` candidates,
       missing-candidate rejection for artifact imports, constant artifact
       definition while unrelated registration gaps remain, exported linkage,
       registered/imported symbol visibility, representative registration gaps,
@@ -1201,34 +1207,39 @@ harness, never cut for scope.
       `ratchet-jit::cranelift::jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates()`
       records one invocation on an existing `JitTieredCodeSlot`, applies
       `TierUpPolicy`, and only when policy requests tier-1 promotion lowers a
-      currently-supported literal or local env-slot IR root, finalizes it through
-      the registered-symbol path, installs the opaque pointer metadata into the
-      updated slot, and keeps the `JITModule` owner in the promoted result. Tests
-      pin cold no-compile behavior for unsupported roots, env-slot threshold
-      promotion with a synthetic relocation target for `aos_env_get`, wrapped
-      env-slot and wrapped literal roots, literal multi-use promotion without
-      runtime candidates, promoted missing-candidate failure with slot counter
-      preservation, deferred lowering errors, pointer equality,
-      registered/imported symbol metadata, and module ownership. This is still
-      safe preflight assembly only: no evaluator heap thunk is mutated, no atomic
-      thunk-state CAS runs, registered addresses are not directly dereferenced or
-      called, no native code pointer is cast or called, and generic runtime-call
-      lowering beyond the env-slot precursor remains open.
+      currently-supported literal, local env-slot, or direct local-slot apply IR
+      root, finalizes it through the registered-symbol path, installs the opaque
+      pointer metadata into the updated slot, and keeps the `JITModule` owner in
+      the promoted result. Tests pin cold no-compile behavior for unsupported
+      roots, env-slot threshold promotion with a synthetic relocation target for
+      `aos_env_get`, direct apply threshold promotion with synthetic
+      `aos_env_get`/`aos_apply` targets, wrapped env-slot and wrapped literal
+      roots, literal multi-use promotion without runtime candidates, promoted
+      missing-candidate failure with slot counter preservation, deferred
+      lowering errors, pointer equality, registered/imported symbol metadata,
+      and module ownership. This is still safe preflight assembly only: no
+      evaluator heap thunk is mutated, no atomic thunk-state CAS runs,
+      registered addresses are not directly dereferenced or called, no native
+      code pointer is cast or called, and generic runtime-call lowering beyond
+      bounded env-slot/apply precursors remains open.
 - [x] Current force-aware registered promotion precursor:
       `ratchet-jit::cranelift::jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates()`
       records one invocation with the same tier-up policy, preserves the
-      existing literal-root promotion path, and lowers local env-slot roots
-      through the forced env-slot CLIF artifact. Hot local-slot roots therefore
-      require both `aos_env_get` and `aos_force` candidates, finalize through
-      the registered-symbol path, and install opaque pointer metadata into the
-      updated slot. Tests pin cold unsupported-root no-lowering behavior,
-      literal multi-use promotion without runtime candidates, hot env-slot and
-      wrapped env-slot force-call promotion with registered/imported helper
-      metadata, and missing-`aos_force` candidate rejection with the
-      invocation-updated slot preserved. This is still a policy/lowering handoff:
-      no evaluator heap thunk is mutated, no atomic thunk-state CAS runs, no
-      native code pointer is cast or called, and the `aos_force` wrapper is not
-      invoked by this safe promotion path.
+      existing literal-root promotion path, lowers local env-slot roots through
+      the forced env-slot CLIF artifact, and preserves direct local-slot apply
+      roots through the `aos_apply` helper boundary. Hot local-slot roots
+      therefore require both `aos_env_get` and `aos_force` candidates; hot
+      direct local-slot apply roots require both `aos_env_get` and `aos_apply`
+      candidates. Successful roots finalize through the registered-symbol path
+      and install opaque pointer metadata into the updated slot. Tests pin cold
+      unsupported-root no-lowering behavior, literal multi-use promotion without
+      runtime candidates, hot env-slot and wrapped env-slot force-call promotion
+      with registered/imported helper metadata, wrapped apply promotion without
+      an `aos_force` candidate, and missing-`aos_force` candidate rejection with
+      the invocation-updated slot preserved. This is still a policy/lowering
+      handoff: no evaluator heap thunk is mutated, no atomic thunk-state CAS
+      runs, no native code pointer is cast or called, and the `aos_force` or
+      `aos_apply` wrappers are not invoked by this safe promotion path.
 - [x] Current promotion-gated registered native thunk-call precursor:
       `ratchet-jit::cranelift::jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates()`
       records one tier-up invocation, preserves cold no-lowering/no-candidate
@@ -1772,7 +1783,8 @@ harness, never cut for scope.
       lowerer. Tests cover all supported literals plus those rejection cases.
       This is still bounded constant lowering: no generic child traversal,
       environment access, forcing, runtime-symbol calls, branches, applications,
-      `JITModule`, executable buffer, or native call is implemented.
+      beyond the bounded direct local-slot apply precursor, `JITModule`,
+      executable buffer, or native call is implemented.
 - [x] Current whole-IR literal CLIF entrypoint precursor:
       `ratchet-jit::lower::lower_constant_ir_root_thunk_body()` accepts a
       lowered Core `Ir` artifact and lowers its root through the same literal-only
@@ -1787,8 +1799,9 @@ harness, never cut for scope.
       thunk allocation, missing thunk bodies, unsupported thunk body kinds, and
       malformed thunk payloads. This is the first bounded child traversal only:
       the literal path emits no helper calls, and nested/generic traversal,
-      forcing, executable/native runtime-symbol calls, branches, applications,
-      executable buffers, and native calls remain unimplemented.
+      forcing, executable/native runtime-symbol calls, branches, applications
+      beyond the bounded direct local-slot apply precursor, executable buffers,
+      and native calls remain unimplemented.
 - [x] Current local env-slot CLIF precursor:
       `ratchet-jit::lower::lower_env_get_ir_thunk_body()` lowers a direct
       `IrKind::LocalVar` root, plus one direct `ThunkAlloc` wrapper around a
@@ -1801,8 +1814,8 @@ harness, never cut for scope.
       unsupported IR rejection paths. This is the first runtime-helper call
       emitted by the lowerer, but still no `JITModule`, real symbol relocation,
       native helper address, executable buffer, raw pointer call, upvalue frame
-      traversal, force/select/app lowering, or generic IR traversal is
-      implemented.
+      traversal, select lowering, generic/non-local app lowering, or generic IR
+      traversal is implemented.
 - [x] Current forced env-slot CLIF precursor:
       `ratchet-jit::lower::lower_forced_env_get_ir_thunk_body()` lowers the
       same bounded local-slot shapes as the env-get precursor, then emits an
@@ -1821,8 +1834,28 @@ harness, never cut for scope.
       entrypoints remain verified CLIF construction; registered Cranelift
       coverage now reaches opaque executable pointer metadata and safe tier-slot
       installation with synthetic candidates. Real exported wrapper addresses,
-      raw pointer calls, evaluator heap publication, select/app lowering, and
-      generic IR traversal remain unimplemented.
+      raw pointer calls, evaluator heap publication, select lowering,
+      generic/non-local app lowering, and generic IR traversal remain
+      unimplemented.
+- [x] Current direct local-slot apply CLIF precursor:
+      `ratchet-jit::lower::lower_apply_local_slots_ir_thunk_body()` lowers a
+      direct `IrKind::Apply` root, plus one direct `ThunkAlloc` wrapper around
+      that root, when both the function and argument children are direct
+      `IrKind::LocalVar` reads. The generated body imports `aos_env_get` and
+      `aos_apply` through deterministic user-external CLIF metadata, reads both
+      local slots from the compiled thunk `env` parameter, calls
+      `aos_apply(rt, function, argument)`, and returns the helper's two runtime
+      `Value` words. Module-readiness metadata resolves the `aos_apply` import
+      alongside `aos_env_get`, and the registered artifact-definition path can
+      rewrite both helper imports with synthetic candidates. Tests pin helper
+      namespace/index metadata, imported signature parity, call ordering and
+      operands, direct `ThunkAlloc` artifact metadata, normal and force-aware
+      selector coverage, malformed payload and child rejection, readiness import
+      resolution, and registered definition with synthetic candidates. This is
+      still a bounded call-control precursor: no generic expression traversal,
+      non-local function or argument lowering, select/attrset lowering, real
+      exported wrapper addresses, evaluator heap publication, raw pointer call,
+      or native invocation through `aos_apply` is implemented here.
 - [x] Current deterministic IR-root CLIF naming precursor:
       `ratchet-jit::lower::clif_name_for_ir_root()` assigns verified CLIF
       functions lowered from Core IR roots to a reserved Cranelift user-function
@@ -1837,10 +1870,11 @@ harness, never cut for scope.
       `Function` values with tier, thunk-body kind, and source identity
       metadata. The current lowerer exposes artifact-returning variants for the
       constant smoke path, literal IR roots, local env-slot roots, direct
-      `ThunkAlloc` wrappers, and whole-IR root entrypoints. Tests pin
+      local-slot apply roots, direct `ThunkAlloc` wrappers, and whole-IR root
+      entrypoints. Tests pin
       tier-1/kind/source metadata, default constant-body names, direct
-      `ThunkAlloc` root source ids, nonzero whole-artifact roots, env-slot
-      artifact source ids, and extraction of the contained CLIF function. This
+      `ThunkAlloc` root source ids, nonzero whole-artifact roots, env-slot and
+      apply artifact source ids, and extraction of the contained CLIF function. This
       remains address-free CLIF metadata:
       no `JITModule`, executable buffer, function pointer, runtime-symbol
       registration, compiled artifact cache, persistence format, or native call
@@ -1849,15 +1883,17 @@ harness, never cut for scope.
       `ratchet-jit::lower::lower_tier1_ir_thunk_body_artifact()` and
       `lower_force_aware_tier1_ir_thunk_body_artifact()` now own the bounded
       tier-1 root selection used by registered Cranelift promotion paths. The selector
-      accepts literal roots, local-slot roots, and one direct `ThunkAlloc`
-      wrapper around either shape; the force-aware variant preserves literal
-      lowering but lowers local slots through `aos_env_get` plus `aos_force`.
+      accepts literal roots, local-slot roots, direct local-slot apply roots,
+      and one direct `ThunkAlloc` wrapper around those shapes; the force-aware
+      variant preserves literal and apply lowering but lowers local slots through
+      `aos_env_get` plus `aos_force`.
       Tests pin literal no-import selection, env-get-only local selection,
-      forced local selection with both helper imports, wrapped local bodies, and
-      unsupported direct/wrapped shape errors. This is still selector plumbing
-      over bounded lowerers only: no generic IR traversal, applications,
-      selects, attrsets, branches, exported helper wrappers, executable buffer,
-      or native call is implemented by the lowerer itself.
+      forced local selection with both helper imports, direct apply selection,
+      wrapped local bodies, and unsupported direct/wrapped shape errors. This is
+      still selector plumbing over bounded lowerers only: no generic IR
+      traversal, non-local applications, selects, attrsets, branches, exported
+      helper wrappers, executable buffer, or native call is implemented by the
+      lowerer itself.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
 - [x] Current compiled-tier safepoint policy precursor:

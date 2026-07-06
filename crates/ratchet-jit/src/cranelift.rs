@@ -2117,10 +2117,11 @@ pub fn jit_cranelift_tier1_promotion_preflight_for_ir_root(
 /// Records one invocation and compiles a supported registered IR root on promotion.
 ///
 /// This composes tier-up policy with the registered-symbol tier-1 slot path. It
-/// supports the current literal roots plus local environment-slot roots that
-/// lower to `aos_env_get` runtime calls. Non-promoted results return the updated
-/// slot without lowering, module construction, finalization, or pointer
-/// installation.
+/// supports the current literal roots, local environment-slot roots that lower
+/// to `aos_env_get` runtime calls, and direct local-slot application roots that
+/// lower to `aos_env_get` plus `aos_apply` runtime calls. Non-promoted results
+/// return the updated slot without lowering, module construction, finalization,
+/// or pointer installation.
 ///
 /// # Errors
 ///
@@ -2183,9 +2184,13 @@ pub fn jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candi
 ///
 /// This composes tier-up policy with the registered-symbol tier-1 slot path, but
 /// uses the force-call lowerer for local environment-slot roots. Literal roots
-/// still lower through the constant path. Local-slot roots can finalize when the
-/// candidate set contains both `aos_env_get` and `aos_force`, then install the
-/// resulting opaque code pointer into owned tier-1 slot metadata.
+/// still lower through the constant path, and direct local-slot application
+/// roots still lower through the `aos_apply` helper because apply owns the
+/// function-call forcing boundary. Local-slot roots can finalize when the
+/// candidate set contains both `aos_env_get` and `aos_force`; direct local-slot
+/// application roots can finalize when the candidate set contains both
+/// `aos_env_get` and `aos_apply`. Successful promotions install the resulting
+/// opaque code pointer into owned tier-1 slot metadata.
 ///
 /// Non-promoted results return the updated slot without lowering, module
 /// construction, finalization, or pointer installation.
@@ -2651,6 +2656,10 @@ fn runtime_symbol_name_for_user_external_name(
             crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
             crate::lower::AOS_FORCE_FUNCTION_INDEX,
         ) => Some("aos_force"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_APPLY_FUNCTION_INDEX,
+        ) => Some("aos_apply"),
         _ => None,
     }
 }
@@ -2785,8 +2794,9 @@ mod tests {
         abi::clif_signature_for_runtime_call,
         lower::{
             AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, clif_name_for_ir_root,
-            lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body_artifact,
-            lower_env_get_ir_thunk_body_artifact, lower_forced_env_get_ir_thunk_body_artifact,
+            lower_apply_local_slots_ir_thunk_body_artifact, lower_constant_ir_thunk_body_artifact,
+            lower_constant_thunk_body_artifact, lower_env_get_ir_thunk_body_artifact,
+            lower_forced_env_get_ir_thunk_body_artifact,
         },
         module::{JitModuleReadinessError, jit_module_readiness_preflight_for_artifact},
         tier::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpReasons},
@@ -2837,6 +2847,87 @@ mod tests {
 
         lower_forced_env_get_ir_thunk_body_artifact(&arena, IrId::new(0))
             .expect("forced env-get artifact lowers")
+    }
+
+    fn apply_artifact(function_slot: u32, argument_slot: u32) -> JitClifArtifact {
+        let arena = apply_arena(function_slot, argument_slot);
+
+        lower_apply_local_slots_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("apply artifact lowers")
+    }
+
+    fn apply_arena(function_slot: u32, argument_slot: u32) -> IrArena {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local {
+                        slot: function_slot,
+                    },
+                ),
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(2, 3),
+                    EffectClass::pure(),
+                    IrData::Local {
+                        slot: argument_slot,
+                    },
+                ),
+                IrNode::new(
+                    IrKind::Apply,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+
+        arena
+    }
+
+    fn wrapped_apply_arena(function_slot: u32, argument_slot: u32) -> IrArena {
+        IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local {
+                        slot: function_slot,
+                    },
+                ),
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(2, 3),
+                    EffectClass::pure(),
+                    IrData::Local {
+                        slot: argument_slot,
+                    },
+                ),
+                IrNode::new(
+                    IrKind::Apply,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Pair {
+                        first: IrId::new(0),
+                        second: IrId::new(1),
+                    },
+                ),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(2)),
+                ),
+            ],
+            Vec::new(),
+        )
     }
 
     fn artifact_with_unknown_runtime_helper_import() -> JitClifArtifact {
@@ -3160,6 +3251,70 @@ mod tests {
                 .is_none()
         );
         assert!(preflight.registration_gap_for_symbol("aos_force").is_none());
+        assert!(!preflight.is_complete());
+        assert!(preflight.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn registered_artifact_definition_defines_apply_artifact_with_candidates() {
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_apply",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
+                7,
+            ),
+        ];
+
+        let preflight = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
+            apply_artifact(4, 6),
+            &candidates,
+        )
+        .expect("registered apply artifact definition preflight builds");
+
+        assert_eq!(
+            preflight.defined_function().symbol_name(),
+            "aos.jit.ir_root.2.thunk_body"
+        );
+        assert_eq!(preflight.defined_function().linkage(), Linkage::Export);
+        assert_eq!(
+            preflight
+                .artifact_runtime_imports()
+                .iter()
+                .map(|runtime_import| runtime_import.symbol_name())
+                .collect::<Vec<_>>(),
+            ["aos_env_get", "aos_apply"]
+        );
+        assert!(preflight.imported_symbol_for("aos_env_get").is_some());
+        assert!(preflight.imported_symbol_for("aos_apply").is_some());
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_env_get")
+                .expect("env helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            3
+        );
+        assert_eq!(
+            preflight
+                .registered_symbol_for("aos_apply")
+                .expect("apply helper is registered")
+                .address()
+                .as_nonzero_usize()
+                .get(),
+            7
+        );
+        assert!(
+            preflight
+                .registration_gap_for_symbol("aos_env_get")
+                .is_none()
+        );
+        assert!(preflight.registration_gap_for_symbol("aos_apply").is_none());
         assert!(!preflight.is_complete());
         assert!(preflight.owns_encapsulated_module());
     }
@@ -4438,6 +4593,88 @@ mod tests {
     }
 
     #[test]
+    fn registered_promotion_preflight_compiles_apply_root_with_candidates() {
+        let arena = apply_arena(4, 6);
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_apply",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
+                7,
+            ),
+        ];
+
+        let result =
+            jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+                JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                    DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+                )),
+                TierUpPolicy::default(),
+                TierUpDemandHint::NoMultiUseEvidence,
+                &arena,
+                IrId::new(2),
+                &candidates,
+            )
+            .expect("threshold apply root compiles with registered helpers");
+
+        assert!(result.did_compile());
+        assert_eq!(
+            result.decision().reasons(),
+            Some(TierUpReasons::new(true, false))
+        );
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion result owns registered compiled preflight");
+        assert_eq!(
+            promoted.artifact().function_name(),
+            &clif_name_for_ir_root(IrId::new(2))
+        );
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(
+            promoted
+                .finalization()
+                .artifact_runtime_imports()
+                .iter()
+                .map(JitModuleArtifactRuntimeImport::symbol_name)
+                .collect::<Vec<_>>(),
+            ["aos_env_get", "aos_apply"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .imported_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .imported_symbol_for("aos_apply")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_apply")
+                .is_some()
+        );
+        assert!(result.owns_encapsulated_module());
+    }
+
+    #[test]
     fn registered_promotion_preflight_compiles_wrapped_env_get_root_with_candidate() {
         let arena = IrArena::from_raw_parts(
             vec![
@@ -4805,6 +5042,92 @@ mod tests {
                 .is_none()
         );
         assert!(!promoted.finalization().is_complete());
+        assert!(result.owns_encapsulated_module());
+    }
+
+    #[test]
+    fn force_aware_registered_promotion_preflight_preserves_wrapped_apply_helper_boundary() {
+        let arena = wrapped_apply_arena(10, 12);
+        let candidates = [
+            synthetic_address_candidate(
+                "aos_env_get",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+                3,
+            ),
+            synthetic_address_candidate(
+                "aos_apply",
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::CallControl),
+                7,
+            ),
+        ];
+
+        let result =
+            jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
+                JitTieredCodeSlot::new(),
+                TierUpPolicy::default(),
+                TierUpDemandHint::MultiUse,
+                &arena,
+                IrId::new(3),
+                &candidates,
+            )
+            .expect("force-aware wrapped apply promotion finalizes with apply helper");
+
+        assert_eq!(
+            result.decision().reasons(),
+            Some(TierUpReasons::new(false, true))
+        );
+        assert_eq!(result.slot().current_tier(), JitTier::Tier1Baseline);
+        assert!(result.did_compile());
+        let promoted = result
+            .promoted_preflight()
+            .expect("promotion owns registered tier-1 preflight");
+        assert_eq!(
+            promoted.artifact().function_name(),
+            &clif_name_for_ir_root(IrId::new(3))
+        );
+        assert_eq!(
+            result.slot().tier1_code_ptr(),
+            Some(promoted.finalized_function().compiled_code_ptr())
+        );
+        assert_eq!(
+            promoted
+                .finalization()
+                .artifact_runtime_imports()
+                .iter()
+                .map(JitModuleArtifactRuntimeImport::symbol_name)
+                .collect::<Vec<_>>(),
+            ["aos_env_get", "aos_apply"]
+        );
+        assert!(
+            promoted
+                .finalization()
+                .imported_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .imported_symbol_for("aos_apply")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_env_get")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_apply")
+                .is_some()
+        );
+        assert!(
+            promoted
+                .finalization()
+                .registered_symbol_for("aos_force")
+                .is_none()
+        );
         assert!(result.owns_encapsulated_module());
     }
 
