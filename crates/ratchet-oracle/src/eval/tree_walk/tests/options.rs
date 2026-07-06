@@ -8445,9 +8445,24 @@ fn builtin_surface_matches_pinned_flakes_golden_fixture() {
         fixture,
     );
     assert_eq!(
-        eval_list_string_bytes_with_options("builtins.attrNames builtins.builtins", options),
+        eval_list_string_bytes_with_options(
+            "builtins.attrNames builtins.builtins",
+            options.clone()
+        ),
         fixture,
     );
+
+    let outcome =
+        eval_whnf_owned_with_options(&lower("builtins"), options).expect("builtins evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("builtins metadata exists");
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]

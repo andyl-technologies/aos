@@ -10101,6 +10101,17 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       flat-payload generated derivation result boundary only; it does not claim
       shaped/HAMT heap payload iteration, C++ oracle comparison, full
       conformance 20-21, or full AOS closure `.drv` parity.
+- [x] Current active generated builtins-env order-parity canary:
+      reified `builtins` attrsets now share the successful dynamic-result
+      order-parity telemetry hook. The pinned builtins-surface canary checks
+      registry fixture ordering through `builtins.attrNames builtins` and
+      `builtins.attrNames builtins.builtins`, then directly evaluates
+      `builtins` to check projected-shape metadata, the current HAMT-classified
+      representation, and one matched, zero mismatched allocation telemetry
+      sample. This pins the current generated builtins environment boundary
+      only; it does not claim generalized HAMT heap payload iteration, C++
+      oracle comparison, full conformance 20-21, or full AOS closure `.drv`
+      parity.
 - [x] Current active generated trace/context/position order-parity canary:
       `builtins.tryEval`, `builtins.getContext` group and outer attrsets, and
       source-position attrsets from `builtins.unsafeGetAttrPos`/`__curPos` now
@@ -10161,9 +10172,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       allocations plus `partition`, codec-generated `fromJSON`/`fromTOML`
       results, generated `parseDrvName`/`readDir`/`nixPath` entry results,
       generated `fetchGit`/`fetchTree`/`parseFlakeRef` results, generated
-      `derivationStrict` results, `functionArgs`, generated
-      `tryEval`/`getContext`/source-position results, `listToAttrs`, and
-      `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
+      `derivationStrict` results, reified `builtins` attrsets, `functionArgs`,
+      generated `tryEval`/`getContext`/source-position results, `listToAttrs`,
+      and `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
       counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape
