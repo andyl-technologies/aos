@@ -9014,7 +9014,8 @@ nurseries build on the bump arena.
       `parallel_audit_safe_tree_walk_oracle_miri_smoke`,
       `parallel_audit_parallel_tree_walk_miri_smoke`,
       `parallel_audit_parallel_tree_walk_tsan_smoke`, and
-      `parallel_audit_parallel_tree_walk_drv_tsan_smoke`. The same module
+      `parallel_audit_parallel_tree_walk_drv_tsan_smoke`, with the separate
+      standard-worker `.drv` matrix target recorded below. The same module
       provides deterministic smoke functions that lower fixed Nix sources and
       either compare safe raw bytes or run the Chase-Lev raw/`.drv`
       differentials over pinned worker counts. `parallel_runtime_audit_invocations`
@@ -9027,6 +9028,20 @@ nurseries build on the bump arena.
       model the fiber runtime, or close the final lock-free waiter-list audit;
       the Miri/TSan portions of `R-4` remain open until those tools run clean in
       CI.
+- [x] Current standard-worker `.drv` audit-target precursor:
+      `ratchet-oracle::eval::run_parallel_audit_parallel_tree_walk_drv_standard_matrix_smoke`
+      adds a separate ThreadSanitizer command-plan target,
+      `parallel_audit_parallel_tree_walk_drv_standard_matrix_tsan_smoke`, for
+      the Chase-Lev `.drv` differential over the RFC worker-count matrix
+      `{1, 2, 8, N}` where `N` is host available parallelism. The fixed roots
+      force `.drvPath`, `outPath`, immediate derivation attrset lists, and lazy
+      surface attributes before comparing canonical `.drv` collation against the
+      serial tree-walk oracle. The smoke report records the dynamic worker
+      counts returned by the standard matrix so ordinary tests assert the exact
+      `{1, 2, 8, N}` selection. This remains an audit-target and
+      independent-root `.drv` differential precursor only: it does not invoke
+      ThreadSanitizer, run a full derivation closure, cover every lazy package
+      collection shape, or close the final parallel-evaluator parity/R-4 gates.
 
 **Decisions closed/measured.**
 

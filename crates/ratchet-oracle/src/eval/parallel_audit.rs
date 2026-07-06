@@ -20,6 +20,7 @@ use crate::{
         ParallelTreeWalkDifferentialError, ParallelTreeWalkDrvDifferentialError,
         ParallelTreeWalkRoot, TreeWalkError, TreeWalkOptions,
         compare_parallel_tree_walk_drv_outputs_chase_lev_across_worker_counts,
+        compare_parallel_tree_walk_drv_outputs_chase_lev_standard_worker_counts,
         compare_parallel_tree_walk_raw_chase_lev_across_worker_counts, eval_raw_bytes_with_options,
     },
     syntax::parse_str,
@@ -34,7 +35,7 @@ const RUSTFLAGS_ENV: &str = "RUSTFLAGS";
 const TSAN_TARGET: &str = "x86_64-unknown-linux-gnu";
 const TSAN_RUSTFLAGS: &str = "-Z sanitizer=thread";
 
-const PARALLEL_RUNTIME_AUDIT_TARGETS: [ParallelRuntimeAuditTarget; 5] = [
+const PARALLEL_RUNTIME_AUDIT_TARGETS: [ParallelRuntimeAuditTarget; 6] = [
     ParallelRuntimeAuditTarget::new(
         ParallelRuntimeAuditTool::Loom,
         ParallelRuntimeAuditScope::ThunkCasModel,
@@ -65,9 +66,15 @@ const PARALLEL_RUNTIME_AUDIT_TARGETS: [ParallelRuntimeAuditTarget; 5] = [
         "parallel_audit_parallel_tree_walk_drv_tsan_smoke",
         "ThreadSanitizer must cover deterministic .drv collation under the scheduler harness",
     ),
+    ParallelRuntimeAuditTarget::new(
+        ParallelRuntimeAuditTool::ThreadSanitizer,
+        ParallelRuntimeAuditScope::ParallelTreeWalkDrvStandardMatrixHarness,
+        "parallel_audit_parallel_tree_walk_drv_standard_matrix_tsan_smoke",
+        "ThreadSanitizer must cover the RFC standard worker matrix for deterministic .drv collation",
+    ),
 ];
 
-const REQUIRED_AUDIT_TARGETS: [(ParallelRuntimeAuditTool, ParallelRuntimeAuditScope); 5] = [
+const REQUIRED_AUDIT_TARGETS: [(ParallelRuntimeAuditTool, ParallelRuntimeAuditScope); 6] = [
     (
         ParallelRuntimeAuditTool::Loom,
         ParallelRuntimeAuditScope::ThunkCasModel,
@@ -87,6 +94,10 @@ const REQUIRED_AUDIT_TARGETS: [(ParallelRuntimeAuditTool, ParallelRuntimeAuditSc
     (
         ParallelRuntimeAuditTool::ThreadSanitizer,
         ParallelRuntimeAuditScope::ParallelTreeWalkDrvHarness,
+    ),
+    (
+        ParallelRuntimeAuditTool::ThreadSanitizer,
+        ParallelRuntimeAuditScope::ParallelTreeWalkDrvStandardMatrixHarness,
     ),
 ];
 
@@ -118,6 +129,16 @@ const PARALLEL_DRV_CASES: [&str; 2] = [
     r#"derivation { name = "audit-parallel-b"; system = ":"; builder = ":"; }"#,
 ];
 
+const PARALLEL_DRV_STANDARD_MATRIX_CASES: [&str; 4] = [
+    r#"(derivation { name = "audit-parallel-standard-drvpath"; system = ":"; builder = ":"; }).drvPath"#,
+    r#"(derivation { name = "audit-parallel-standard-outpath"; system = ":"; builder = ":"; }).outPath"#,
+    r#"[ (derivation { name = "audit-parallel-standard-list-a"; system = ":"; builder = ":"; }) (derivation { name = "audit-parallel-standard-list-b"; system = ":"; builder = ":"; }) ]"#,
+    r#"let d = derivation { name = "audit-parallel-standard-lazy"; system = ":"; builder = ":"; }; in {
+        type = builtins.foldl' (acc: _: acc) "derivation" [ 1 ];
+        drvPath = builtins.foldl' (acc: _: acc) d.drvPath [ 1 ];
+    }"#,
+];
+
 /// A verification tool required by the parallel runtime audit gate.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ParallelRuntimeAuditTool {
@@ -140,6 +161,8 @@ pub enum ParallelRuntimeAuditScope {
     ParallelTreeWalkRawHarness,
     /// Scheduler-backed `.drv` output collation over a small root set.
     ParallelTreeWalkDrvHarness,
+    /// Scheduler-backed `.drv` output collation over the RFC worker matrix.
+    ParallelTreeWalkDrvStandardMatrixHarness,
 }
 
 /// One cargo test target in the parallel runtime audit matrix.
@@ -387,6 +410,37 @@ pub fn run_parallel_audit_parallel_tree_walk_drv_smoke()
     })
 }
 
+/// Runs the scheduler-backed `.drv` standard-matrix collation smoke target.
+///
+/// # Errors
+///
+/// Returns [`ParallelRuntimeAuditSmokeError`] if a fixed source fails to lower,
+/// if a worker count is invalid, or if the Chase-Lev `.drv` differential over
+/// the RFC standard worker matrix reports a divergence from the serial
+/// tree-walk oracle.
+///
+/// # Panics
+///
+/// Panics if the scheduler-backed differential harness cannot spawn scoped
+/// worker threads.
+pub fn run_parallel_audit_parallel_tree_walk_drv_standard_matrix_smoke()
+-> Result<ParallelRuntimeAuditStandardMatrixSmokeReport, ParallelRuntimeAuditSmokeError> {
+    let roots = lower_roots(PARALLEL_DRV_STANDARD_MATRIX_CASES)?
+        .into_iter()
+        .map(ParallelTreeWalkRoot::expression)
+        .collect::<Vec<_>>();
+    let report = compare_parallel_tree_walk_drv_outputs_chase_lev_standard_worker_counts(
+        roots,
+        TreeWalkOptions::with_parallel_thunk_payloads_enabled(true),
+    )
+    .map_err(ParallelRuntimeAuditSmokeError::ParallelDrv)?;
+    Ok(ParallelRuntimeAuditStandardMatrixSmokeReport {
+        scope: ParallelRuntimeAuditScope::ParallelTreeWalkDrvStandardMatrixHarness,
+        case_count: PARALLEL_DRV_STANDARD_MATRIX_CASES.len(),
+        worker_counts: report.worker_counts().to_vec(),
+    })
+}
+
 fn lower_roots<const N: usize>(
     sources: [&'static str; N],
 ) -> Result<Vec<Ir>, ParallelRuntimeAuditSmokeError> {
@@ -443,6 +497,31 @@ impl ParallelRuntimeAuditSmokeReport {
     /// Returns the worker counts used by parallel smoke targets.
     pub const fn worker_counts(self) -> &'static [usize] {
         self.worker_counts
+    }
+}
+
+/// A successful audit smoke target report for the dynamic RFC worker matrix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParallelRuntimeAuditStandardMatrixSmokeReport {
+    scope: ParallelRuntimeAuditScope,
+    case_count: usize,
+    worker_counts: Vec<usize>,
+}
+
+impl ParallelRuntimeAuditStandardMatrixSmokeReport {
+    /// Returns the scope that was exercised.
+    pub const fn scope(&self) -> ParallelRuntimeAuditScope {
+        self.scope
+    }
+
+    /// Returns the number of fixed cases exercised.
+    pub const fn case_count(&self) -> usize {
+        self.case_count
+    }
+
+    /// Returns the worker counts selected by the RFC standard matrix.
+    pub fn worker_counts(&self) -> &[usize] {
+        &self.worker_counts
     }
 }
 
@@ -666,6 +745,11 @@ mod tests {
                 ParallelRuntimeAuditScope::ParallelTreeWalkDrvHarness,
                 "parallel_audit_parallel_tree_walk_drv_tsan_smoke",
             ),
+            (
+                ParallelRuntimeAuditTool::ThreadSanitizer,
+                ParallelRuntimeAuditScope::ParallelTreeWalkDrvStandardMatrixHarness,
+                "parallel_audit_parallel_tree_walk_drv_standard_matrix_tsan_smoke",
+            ),
         ];
 
         assert_eq!(manifest.target_count(), expected_targets.len());
@@ -792,6 +876,35 @@ mod tests {
             &[(RUSTFLAGS_ENV, TSAN_RUSTFLAGS)]
         );
         assert!(sanitizer_drv.requires_nightly_toolchain());
+
+        let sanitizer_drv_standard_matrix = invocation_for(
+            &invocations,
+            ParallelRuntimeAuditTool::ThreadSanitizer,
+            ParallelRuntimeAuditScope::ParallelTreeWalkDrvStandardMatrixHarness,
+        );
+        assert_eq!(
+            sanitizer_drv_standard_matrix.cargo_args(),
+            &[
+                NIGHTLY_CARGO_ARG,
+                "test",
+                "-Z",
+                "build-std",
+                "--target",
+                TSAN_TARGET,
+                "--manifest-path",
+                AUDIT_MANIFEST_PATH,
+                "-p",
+                AUDIT_PACKAGE,
+                "parallel_audit_parallel_tree_walk_drv_standard_matrix_tsan_smoke",
+                "--",
+                "--nocapture",
+            ]
+        );
+        assert_eq!(
+            sanitizer_drv_standard_matrix.environment(),
+            &[(RUSTFLAGS_ENV, TSAN_RUSTFLAGS)]
+        );
+        assert!(sanitizer_drv_standard_matrix.requires_nightly_toolchain());
     }
 
     fn invocation_for(
@@ -830,7 +943,7 @@ mod tests {
             ParallelRuntimeAuditScope::ParallelTreeWalkRawHarness
         );
         assert_eq!(report.case_count(), PARALLEL_RAW_CASES.len());
-        assert_eq!(report.worker_counts(), AUDIT_WORKER_COUNTS);
+        assert_eq!(report.worker_counts(), &AUDIT_WORKER_COUNTS);
     }
 
     #[test]
@@ -843,7 +956,7 @@ mod tests {
             ParallelRuntimeAuditScope::ParallelTreeWalkRawHarness
         );
         assert_eq!(report.case_count(), PARALLEL_RAW_CASES.len());
-        assert_eq!(report.worker_counts(), AUDIT_WORKER_COUNTS);
+        assert_eq!(report.worker_counts(), &AUDIT_WORKER_COUNTS);
     }
 
     #[test]
@@ -856,6 +969,41 @@ mod tests {
             ParallelRuntimeAuditScope::ParallelTreeWalkDrvHarness
         );
         assert_eq!(report.case_count(), PARALLEL_DRV_CASES.len());
-        assert_eq!(report.worker_counts(), AUDIT_WORKER_COUNTS);
+        assert_eq!(report.worker_counts(), &AUDIT_WORKER_COUNTS);
+    }
+
+    #[test]
+    fn parallel_audit_parallel_tree_walk_drv_standard_matrix_tsan_smoke() {
+        let report = run_parallel_audit_parallel_tree_walk_drv_standard_matrix_smoke()
+            .expect("standard-matrix .drv tree-walk audit smoke passes");
+        let expected_worker_counts = expected_standard_worker_counts_for_test();
+
+        assert_eq!(
+            report.scope(),
+            ParallelRuntimeAuditScope::ParallelTreeWalkDrvStandardMatrixHarness
+        );
+        assert_eq!(
+            report.case_count(),
+            PARALLEL_DRV_STANDARD_MATRIX_CASES.len()
+        );
+        assert_eq!(report.worker_counts(), expected_worker_counts.as_slice());
+    }
+
+    fn expected_standard_worker_counts_for_test() -> Vec<usize> {
+        let mut counts = Vec::with_capacity(4);
+        push_expected_worker_count(&mut counts, 1);
+        push_expected_worker_count(&mut counts, 2);
+        push_expected_worker_count(&mut counts, 8);
+        match std::thread::available_parallelism() {
+            Ok(count) => push_expected_worker_count(&mut counts, count.get()),
+            Err(_) => push_expected_worker_count(&mut counts, 4),
+        }
+        counts
+    }
+
+    fn push_expected_worker_count(counts: &mut Vec<usize>, count: usize) {
+        if counts.iter().all(|existing| *existing != count) {
+            counts.push(count);
+        }
     }
 }
