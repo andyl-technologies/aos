@@ -783,6 +783,33 @@ fn large_dynamic_attrset_heap_metadata_records_hamt_repr() {
 }
 
 #[test]
+fn hamt_classified_update_chain_attr_names_preserve_raw_byte_order() {
+    let attrs_source =
+        "(((({ z = 1; } // { A = 2; }) // { aa = 3; }) // { _ = 4; }) // { a = 5; })";
+    let names_source = format!("builtins.attrNames {attrs_source}");
+
+    assert_eq!(
+        eval_list_string_bytes(&names_source),
+        vec![
+            b"A".to_vec(),
+            b"_".to_vec(),
+            b"a".to_vec(),
+            b"aa".to_vec(),
+            b"z".to_vec(),
+        ],
+    );
+
+    let ir = lower(attrs_source);
+    let outcome = eval_whnf_owned(&ir).expect("HAMT-classified update chain evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("result metadata exists");
+
+    assert_eq!(metadata.repr(), AttrSetReprKind::Hamt);
+}
+
+#[test]
 fn list_to_attrs_records_dynamic_repr_decision() {
     let ir = lower(
         r#"builtins.deepSeq (builtins.listToAttrs [

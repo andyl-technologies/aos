@@ -9989,6 +9989,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       representations, active cached-order consumption by those representations,
       full conformance 20-21, and full AOS closure ordering parity remain open
       (`S-13`).
+- [x] Current active HAMT-classified `attrNames` order canary: a tree-walk
+      `builtins.attrNames` test now checks that a deep `//` update chain whose
+      root heap metadata is classified as `Hamt` still exposes raw-byte
+      lexicographic names through the current active attrset consumer boundary
+      (`A`, `_`, `a`, `aa`, `z`). This pins the active evaluator's ordering
+      surface for HAMT-classified update results before real HAMT heap payloads
+      land; it does not claim native storage, shaped/HAMT payload iteration,
+      non-ASCII ordering beyond the derivationStrict canary above, full
+      conformance 20-21, or full AOS closure `.drv` parity.
 - [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes in-process, byte-neutral counters/snapshots for shape census,
       slow-select hit/miss outcomes by representation, generic/flat/shaped/HAMT
