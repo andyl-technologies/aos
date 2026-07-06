@@ -2,66 +2,96 @@
 //!
 //! Native tier-1 code imports the generic apply helper with the frozen
 //! `(rt, Value function, Value arg) -> Value` signature. This module supplies a
-//! trap-only wrapper for that ABI: `aos_apply` aborts for every call until
-//! runtime-context decoding, active call-root binding, call-depth accounting,
-//! callable dispatch, trap transfer, and native value return materialization
-//! exist. That is the only sound behavior today because the safe evaluator apply
-//! path owns functor, lambda, and partial-application semantics.
+//! success-path wrapper for that ABI: `aos_apply` decodes a scoped
+//! [`RuntimeApplyContext`], roots imported function and argument values through
+//! the safe tree-walk helper, and dispatches lambda, functor, and first-class
+//! primop application. Failures still abort until native trap transfer exists.
 
-use std::{ffi::c_void, process};
+use std::{
+    ffi::c_void,
+    marker::{PhantomData, PhantomPinned},
+    pin::Pin,
+    process,
+    ptr::NonNull,
+};
 
 use ratchet_oracle::{
+    compile::IrId,
+    eval::tree_walk::TreeWalk,
     runtime::apply::{
         RuntimeApplyAbiSignature, RuntimeApplyEntryPoint, RuntimeApplyNativeExportBlocker,
+        rust_callable_aos_apply,
     },
+    syntax::Span,
     value::Value,
 };
 
 /// Native C ABI function pointer shape for `aos_apply`.
 ///
 /// The function returns a by-value [`Value`] and transfers no error state. It
-/// aborts instead of unwinding until the evaluator runtime context can expose
-/// active call roots, call-depth accounting, callable dispatch, and native
-/// value-return materialization to this ABI boundary.
+/// aborts instead of unwinding if the success-path safety contract is violated;
+/// final evaluator trap/error transfer remains future work.
 ///
 /// # Safety
 ///
 /// Calls through this pointer must satisfy the same host-ABI obligations
 /// documented on [`aos_apply`]. The function and argument values must be
-/// Rust-valid [`Value`] instances with valid tag discriminants. The current
-/// trap-only wrapper aborts before decoding `_rt` or inspecting either value;
-/// future callable dispatch will require all three arguments to be valid for
-/// the active evaluator runtime.
+/// Rust-valid [`Value`] instances with valid tag discriminants and heap payloads
+/// reachable from the evaluator encoded by the runtime pointer. Calls must pass
+/// a valid pinned [`RuntimeApplyContext`] runtime pointer.
 pub type RuntimeApplyNativeFn = unsafe extern "C" fn(*mut c_void, Value, Value) -> Value;
 
-const APPLY_REMAINING_EXPORT_BLOCKERS: &[RuntimeApplyNativeExportBlocker] = &[
-    RuntimeApplyNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-    RuntimeApplyNativeExportBlocker::ActiveCallRootBindingUnimplemented,
-    RuntimeApplyNativeExportBlocker::CallDepthAccountingUnimplemented,
-    RuntimeApplyNativeExportBlocker::CallableDispatchBindingUnimplemented,
-    RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented,
-    RuntimeApplyNativeExportBlocker::NativeValueReturnUnmaterialized,
-];
+const APPLY_REMAINING_EXPORT_BLOCKERS: &[RuntimeApplyNativeExportBlocker] =
+    &[RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented];
 
-/// Aborts through the frozen apply native ABI body.
+/// Applies a callable value through the frozen apply native ABI body.
 ///
-/// This wrapper is the trap-only C ABI body for `aos_apply`. It accepts the
+/// This wrapper is the success-path C ABI body for `aos_apply`. It accepts the
 /// frozen runtime-context pointer plus by-value function and argument values,
-/// then aborts until native wrappers can safely enter the evaluator's apply
-/// machinery and return a materialized [`Value`]. Returning today would be
-/// unsound because the wrapper cannot preserve call-depth accounting or
-/// callable dispatch semantics without runtime context.
+/// validates their representation-level payloads, decodes `rt` as a
+/// [`RuntimeApplyContext`], roots the imported values through the safe tree-walk
+/// apply helper, and returns the application result [`Value`]. It deliberately
+/// does not implement evaluator trap/error transfer: the process aborts if the
+/// pointer is null, either value payload is malformed, or the safe helper
+/// reports an error.
 ///
 /// # Safety
 ///
 /// `function` and `argument` must be Rust-valid [`Value`] instances with valid
-/// tag discriminants before crossing this ABI boundary. The current wrapper
-/// aborts before decoding `_rt` or inspecting either value. The caller must also
-/// ensure the host ABI used to call this function matches the frozen `aos_apply`
-/// runtime signature.
+/// tag discriminants before crossing this ABI boundary. `rt` must be a non-null
+/// pointer produced from a pinned live [`RuntimeApplyContext`] whose wrapped
+/// evaluator and IR allocation outlive the call. The context must not move
+/// while the pointer is used. The caller must uphold exclusive mutable access to
+/// the wrapped evaluator for the duration of the call. Any heap payload in
+/// `function` or `argument` must be reachable from that evaluator. The caller
+/// must also ensure the host ABI used to call this function matches the frozen
+/// `aos_apply` runtime signature.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn aos_apply(_rt: *mut c_void, _function: Value, _argument: Value) -> Value {
-    process::abort()
+pub unsafe extern "C" fn aos_apply(rt: *mut c_void, function: Value, argument: Value) -> Value {
+    if function.validate_payload().is_err() || argument.validate_payload().is_err() {
+        process::abort()
+    }
+    // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
+    // RuntimeApplyContext pointer contract documented on this function.
+    let applied = unsafe {
+        with_native_apply_context(rt, |eval, id, span| {
+            aos_apply_success_path(eval, id, span, function, argument)
+        })
+    };
+    applied
+}
+
+fn aos_apply_success_path(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    function: Value,
+    argument: Value,
+) -> Value {
+    match rust_callable_aos_apply(eval, id, span, function, argument) {
+        Ok(value) => value,
+        Err(_) => process::abort(),
+    }
 }
 
 /// Returns metadata for exported apply wrappers in symbol order.
@@ -91,7 +121,7 @@ impl RuntimeApplyNativeWrapperAddress {
     }
 }
 
-/// Metadata for one trap-only apply native wrapper.
+/// Metadata for one apply native wrapper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeApplyNativeWrapperBinding {
     entrypoint: RuntimeApplyEntryPoint,
@@ -137,7 +167,8 @@ impl RuntimeApplyNativeWrapperBinding {
         self.address
     }
 
-    /// Returns blockers that still prevent final native-export registration.
+    /// Returns wrapper-local blockers that still prevent this body from being
+    /// export-ready.
     pub const fn remaining_export_blockers(self) -> &'static [RuntimeApplyNativeExportBlocker] {
         self.remaining_export_blockers
     }
@@ -148,6 +179,62 @@ impl RuntimeApplyNativeWrapperBinding {
     }
 }
 
+/// Scoped tree-walk evaluator context decoded by `aos_apply`.
+///
+/// Native apply wrappers receive an opaque runtime pointer in their frozen C
+/// ABI. This context is the current explicit Rust-side representation for that
+/// pointer: it ties one live [`TreeWalk`] evaluator to the IR node id and source
+/// span used when the safe oracle reports apply failures.
+pub struct RuntimeApplyContext<'eval> {
+    eval: NonNull<TreeWalk>,
+    id: IrId,
+    span: Span,
+    _marker: PhantomData<&'eval mut TreeWalk>,
+    _pinned: PhantomPinned,
+}
+
+impl<'eval> RuntimeApplyContext<'eval> {
+    /// Creates a scoped apply context for native wrapper calls.
+    pub fn new(eval: &'eval mut TreeWalk, id: IrId, span: Span) -> Self {
+        Self {
+            eval: NonNull::from(eval),
+            id,
+            span,
+            _marker: PhantomData,
+            _pinned: PhantomPinned,
+        }
+    }
+
+    /// Returns an opaque runtime pointer suitable for `aos_apply` calls.
+    ///
+    /// The returned pointer is only valid while this pinned context value and
+    /// its borrowed evaluator remain live. Callers must not move or drop the
+    /// pinned context, and must uphold exclusive mutable access to the
+    /// evaluator, while a native wrapper call uses the pointer.
+    pub fn as_mut_ptr(self: Pin<&mut Self>) -> *mut c_void {
+        self.as_ref().get_ref() as *const Self as *mut c_void
+    }
+}
+
+// SAFETY: Callers must pass a live pinned RuntimeApplyContext pointer and
+// uphold exclusive evaluator access for the duration of the callback.
+unsafe fn with_native_apply_context<R>(
+    rt: *mut c_void,
+    call: impl FnOnce(&mut TreeWalk, IrId, Span) -> R,
+) -> R {
+    let Some(rt) = NonNull::new(rt) else {
+        process::abort();
+    };
+    // SAFETY: The caller must provide a live RuntimeApplyContext pointer with
+    // exclusive evaluator access covering this call.
+    let context = unsafe { rt.cast::<RuntimeApplyContext<'static>>().as_mut() };
+    let id = context.id;
+    let span = context.span;
+    // SAFETY: RuntimeApplyContext::new stores a live TreeWalk pointer, and the
+    // native wrapper contract requires exclusive evaluator access.
+    call(unsafe { context.eval.as_mut() }, id, span)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -156,8 +243,25 @@ mod tests {
     };
 
     use super::*;
+    use ratchet_oracle::{
+        compile::resolve, runtime::forcing::rust_callable_aos_force, syntax::parse_str,
+        value::ValueTag,
+    };
 
-    const APPLY_ABORT_CHILD: &str = "apply::tests::aos_apply_native_wrapper_aborts_child";
+    const APPLY_MALFORMED_FUNCTION_ABORT_CHILD: &str =
+        "apply::tests::aos_apply_native_wrapper_aborts_malformed_function_child";
+    const APPLY_MALFORMED_ARGUMENT_ABORT_CHILD: &str =
+        "apply::tests::aos_apply_native_wrapper_aborts_malformed_argument_child";
+    const APPLY_NULL_CONTEXT_ABORT_CHILD: &str =
+        "apply::tests::aos_apply_native_wrapper_aborts_on_null_context_child";
+    const APPLY_TREE_WALK_ERROR_ABORT_CHILD: &str =
+        "apply::tests::aos_apply_native_wrapper_aborts_on_tree_walk_error_child";
+
+    #[repr(C)]
+    struct RawValueForTest {
+        tag: ValueTag,
+        payload: u64,
+    }
 
     #[test]
     fn apply_native_wrapper_binding_preserves_symbol_abi_and_address() {
@@ -182,15 +286,7 @@ mod tests {
         assert!(binding.address().is_non_null());
         assert_eq!(
             binding.remaining_export_blockers(),
-            [
-                RuntimeApplyNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-                RuntimeApplyNativeExportBlocker::ActiveCallRootBindingUnimplemented,
-                RuntimeApplyNativeExportBlocker::CallDepthAccountingUnimplemented,
-                RuntimeApplyNativeExportBlocker::CallableDispatchBindingUnimplemented,
-                RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented,
-                RuntimeApplyNativeExportBlocker::NativeValueReturnUnmaterialized,
-            ]
-            .as_slice()
+            [RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented].as_slice()
         );
         assert!(!binding.is_export_ready());
     }
@@ -203,25 +299,210 @@ mod tests {
             .expect("apply wrapper binding exists");
         let oracle_blockers = RuntimeApplyEntryPoint::AosApply.native_export_blockers();
 
-        assert_eq!(binding.remaining_export_blockers(), &oracle_blockers[1..]);
+        assert_eq!(
+            binding.remaining_export_blockers(),
+            [RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented].as_slice()
+        );
+        for blocker in binding.remaining_export_blockers() {
+            assert!(
+                oracle_blockers.contains(blocker),
+                "runtime-FFI blocker {blocker:?} must remain tracked by oracle"
+            );
+        }
     }
 
     #[test]
-    fn aos_apply_native_wrapper_aborts() {
-        assert_child_process_aborts(APPLY_ABORT_CHILD);
+    fn aos_apply_native_wrapper_applies_lambda_values() {
+        let source = "x: x + 1";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let function = eval.eval_root().expect("lambda evaluates");
+        let mut context = std::pin::pin!(RuntimeApplyContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and `function` belongs to that
+        // evaluator.
+        let actual = unsafe { aos_apply(rt, function, Value::int(41)) };
+
+        drop(context);
+        let forced = rust_callable_aos_force(&mut eval, ir.root, span, actual)
+            .expect("application result forces");
+
+        assert_eq!(forced.as_int(), Ok(42));
+    }
+
+    #[test]
+    fn aos_apply_native_wrapper_applies_attrset_functor_values() {
+        let source = "{ __functor = self: x: x + 2; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let functor = eval.eval_root().expect("functor attrset evaluates");
+        let mut context = std::pin::pin!(RuntimeApplyContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and `functor` belongs to that
+        // evaluator.
+        let functor_actual = unsafe { aos_apply(rt, functor, Value::int(40)) };
+
+        drop(context);
+        let forced = rust_callable_aos_force(&mut eval, ir.root, span, functor_actual)
+            .expect("functor application result forces");
+
+        assert_eq!(forced.as_int(), Ok(42));
+    }
+
+    #[test]
+    fn aos_apply_native_wrapper_applies_first_class_primop_values() {
+        let source = "builtins.add";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let function = eval.eval_root().expect("primop evaluates");
+        let mut context = std::pin::pin!(RuntimeApplyContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and `function` belongs to that
+        // evaluator.
+        let partial = unsafe { aos_apply(rt, function, Value::int(40)) };
+        // SAFETY: The same pinned context remains live and `partial` is the
+        // evaluator-owned result of the first application.
+        let primop_actual = unsafe { aos_apply(rt, partial, Value::int(2)) };
+
+        assert_eq!(primop_actual.as_int(), Ok(42));
+    }
+
+    #[test]
+    fn apply_native_wrapper_binding_function_applies_lambda_values() {
+        let binding = runtime_apply_native_wrapper_bindings()
+            .into_iter()
+            .next()
+            .expect("apply wrapper binding exists");
+        let source = "x: x + 1";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let function = eval.eval_root().expect("lambda evaluates");
+        let mut context = std::pin::pin!(RuntimeApplyContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and `function` belongs to that
+        // evaluator.
+        let binding_actual = unsafe { binding.function()(rt, function, Value::int(41)) };
+
+        drop(context);
+        let forced = rust_callable_aos_force(&mut eval, ir.root, span, binding_actual)
+            .expect("binding application result forces");
+
+        assert_eq!(forced.as_int(), Ok(42));
+    }
+
+    #[test]
+    fn aos_apply_native_wrapper_aborts_malformed_function() {
+        assert_child_process_aborts(APPLY_MALFORMED_FUNCTION_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_apply_native_wrapper_aborts_malformed_argument() {
+        assert_child_process_aborts(APPLY_MALFORMED_ARGUMENT_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_apply_native_wrapper_aborts_on_null_context() {
+        assert_child_process_aborts(APPLY_NULL_CONTEXT_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_apply_native_wrapper_aborts_on_tree_walk_error() {
+        assert_child_process_aborts(APPLY_TREE_WALK_ERROR_ABORT_CHILD);
     }
 
     #[test]
     #[ignore = "subprocess target for abort behavior"]
-    fn aos_apply_native_wrapper_aborts_child() {
+    fn aos_apply_native_wrapper_aborts_malformed_function_child() {
+        let source = "x: x";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(RuntimeApplyContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+        let malformed = malformed_bool_value();
+        let argument = Value::int(1);
+
+        // SAFETY: The pinned context and its evaluator are live for the call.
+        // `malformed` has a valid tag discriminant and no heap payload; its
+        // invalid bool payload is the abort behavior under test.
+        let _ = unsafe { aos_apply(rt, malformed, argument) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_apply_native_wrapper_aborts_malformed_argument_child() {
+        let source = "x: x";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let function = eval.eval_root().expect("lambda evaluates");
+        let mut context = std::pin::pin!(RuntimeApplyContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+        let malformed = malformed_bool_value();
+
+        // SAFETY: The pinned context and its evaluator are live for the call.
+        // `malformed` has a valid tag discriminant and no heap payload; its
+        // invalid bool payload is the abort behavior under test.
+        let _ = unsafe { aos_apply(rt, function, malformed) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_apply_native_wrapper_aborts_on_null_context_child() {
         let rt = std::ptr::null_mut();
         let function = Value::int(1);
         let argument = Value::int(2);
 
         // SAFETY: `function` and `argument` have valid tag discriminants. The
-        // current wrapper is trap-only and aborts before decoding `rt` or
-        // inspecting either value.
+        // test deliberately passes a null runtime context to verify abort
+        // behavior before any apply operation can run.
         let _ = unsafe { aos_apply(rt, function, argument) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_apply_native_wrapper_aborts_on_tree_walk_error_child() {
+        let source = "null";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(RuntimeApplyContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+        let function = Value::int(1);
+
+        // SAFETY: The pinned context is live, and the non-callable function
+        // value is the tree-walk error behavior under test.
+        let _ = unsafe { aos_apply(rt, function, Value::int(2)) };
+    }
+
+    fn malformed_bool_value() -> Value {
+        let raw = RawValueForTest {
+            tag: ValueTag::Bool,
+            payload: 2,
+        };
+        // SAFETY: `RawValueForTest` matches `Value`'s repr(C) tag/payload
+        // layout, and the tag discriminant is valid. The malformed inline
+        // payload is the abort behavior under test.
+        unsafe { std::mem::transmute::<RawValueForTest, Value>(raw) }
+    }
+
+    fn lower_source(source: &str) -> ratchet_oracle::compile::Ir {
+        aos_nix_dialect::nix_lower(
+            resolve(parse_str(source).expect("source parses")).expect("source resolves"),
+        )
+        .expect("source lowers")
     }
 
     fn assert_child_process_aborts(test_name: &str) {

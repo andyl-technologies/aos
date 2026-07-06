@@ -234,12 +234,65 @@ mod tests {
         "uns",
         "afe ",
         "ext",
-        "ern \"C\" fn aos_apply(_rt: *mut c_void, _function: Value, _argument: Value) -> Value {"
+        "ern \"C\" fn aos_apply(rt: *mut c_void, function: Value, argument: Value) -> Value {"
     );
-    const APPLY_ABORT_TEST_CALL_LINE: &str = concat!(
+    const APPLY_DECODER_CALL_LINE: &str = concat!("let applied = ", "uns", "afe {");
+    const APPLY_CONTEXT_DECODER_LINE: &str = concat!("uns", "afe fn with_native_apply_context<R>(");
+    const APPLY_CONTEXT_CAST_LINE: &str = concat!(
+        "let context = ",
+        "uns",
+        "afe { rt.cast::<RuntimeApplyContext<'static>>().as_mut() };"
+    );
+    const APPLY_CONTEXT_EVAL_LINE: &str =
+        concat!("call(", "uns", "afe { context.eval.as_mut() }, id, span)");
+    const APPLY_DIRECT_LAMBDA_TEST_CALL_LINE: &str = concat!(
+        "let actual = ",
+        "uns",
+        "afe { aos_apply(rt, function, Value::int(41)) };"
+    );
+    const APPLY_DIRECT_FUNCTOR_TEST_CALL_LINE: &str = concat!(
+        "let functor_actual = ",
+        "uns",
+        "afe { aos_apply(rt, functor, Value::int(40)) };"
+    );
+    const APPLY_DIRECT_PRIMOP_PARTIAL_TEST_CALL_LINE: &str = concat!(
+        "let partial = ",
+        "uns",
+        "afe { aos_apply(rt, function, Value::int(40)) };"
+    );
+    const APPLY_DIRECT_PRIMOP_RESULT_TEST_CALL_LINE: &str = concat!(
+        "let primop_actual = ",
+        "uns",
+        "afe { aos_apply(rt, partial, Value::int(2)) };"
+    );
+    const APPLY_BINDING_TEST_CALL_LINE: &str = concat!(
+        "let binding_actual = ",
+        "uns",
+        "afe { binding.function()(rt, function, Value::int(41)) };"
+    );
+    const APPLY_MALFORMED_VALUE_TRANSMUTE_LINE: &str = concat!(
+        "uns",
+        "afe { std::mem::transmute::<RawValueForTest, Value>(raw) }"
+    );
+    const APPLY_MALFORMED_FUNCTION_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_apply(rt, malformed, argument) };"
+    );
+    const APPLY_MALFORMED_ARGUMENT_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_apply(rt, function, malformed) };"
+    );
+    const APPLY_NULL_CONTEXT_ABORT_TEST_CALL_LINE: &str = concat!(
         "let _ = ",
         "uns",
         "afe { aos_apply(rt, function, argument) };"
+    );
+    const APPLY_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE: &str = concat!(
+        "let _ = ",
+        "uns",
+        "afe { aos_apply(rt, function, Value::int(2)) };"
     );
     const ATTR_ACCESS_KEYED_FN_TYPE_LINE: &str = concat!(
         "uns",
@@ -666,9 +719,24 @@ mod tests {
             trimmed == APPLY_FN_TYPE_LINE
                 || trimmed == APPLY_EXPORT_ATTR_LINE
                 || trimmed == APPLY_FN_LINE
-                || trimmed == APPLY_ABORT_TEST_CALL_LINE
+                || trimmed == APPLY_DECODER_CALL_LINE
+                || trimmed == APPLY_CONTEXT_DECODER_LINE
+                || trimmed == APPLY_CONTEXT_CAST_LINE
+                || trimmed == APPLY_CONTEXT_EVAL_LINE
+                || trimmed == APPLY_DIRECT_LAMBDA_TEST_CALL_LINE
+                || trimmed == APPLY_DIRECT_FUNCTOR_TEST_CALL_LINE
+                || trimmed == APPLY_DIRECT_PRIMOP_PARTIAL_TEST_CALL_LINE
+                || trimmed == APPLY_DIRECT_PRIMOP_RESULT_TEST_CALL_LINE
+                || trimmed == APPLY_BINDING_TEST_CALL_LINE
+                || trimmed == APPLY_MALFORMED_VALUE_TRANSMUTE_LINE
+                || trimmed == APPLY_MALFORMED_FUNCTION_ABORT_TEST_CALL_LINE
+                || trimmed == APPLY_MALFORMED_ARGUMENT_ABORT_TEST_CALL_LINE
+                || trimmed == APPLY_NULL_CONTEXT_ABORT_TEST_CALL_LINE
+                || trimmed == APPLY_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE
         } else if token == EXTERN_TOKEN {
-            trimmed == APPLY_FN_TYPE_LINE || trimmed == APPLY_FN_LINE
+            trimmed == APPLY_FN_TYPE_LINE
+                || trimmed == APPLY_FN_LINE
+                || trimmed == APPLY_CONTEXT_DECODER_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == APPLY_EXPORT_ATTR_LINE
         } else {
@@ -1235,9 +1303,74 @@ mod unchecked_cfg;
             "aos_apply native wrapper must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&apply, APPLY_ABORT_TEST_CALL_LINE),
+            trimmed_line_occurrences(&apply, APPLY_DECODER_CALL_LINE),
             1,
-            "apply abort test call must stay singly reviewed"
+            "aos_apply wrapper call to the decoder must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_CONTEXT_DECODER_LINE),
+            1,
+            "raw apply context decoder must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_CONTEXT_CAST_LINE),
+            1,
+            "raw apply context cast must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_CONTEXT_EVAL_LINE),
+            1,
+            "raw apply TreeWalk pointer cast must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_DIRECT_LAMBDA_TEST_CALL_LINE),
+            1,
+            "direct lambda test call of aos_apply must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_DIRECT_FUNCTOR_TEST_CALL_LINE),
+            1,
+            "direct functor test call of aos_apply must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_DIRECT_PRIMOP_PARTIAL_TEST_CALL_LINE),
+            1,
+            "direct primop partial test call of aos_apply must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_DIRECT_PRIMOP_RESULT_TEST_CALL_LINE),
+            1,
+            "direct primop result test call of aos_apply must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_BINDING_TEST_CALL_LINE),
+            1,
+            "apply metadata function-pointer test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_MALFORMED_VALUE_TRANSMUTE_LINE),
+            1,
+            "apply malformed Value construction test must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_MALFORMED_FUNCTION_ABORT_TEST_CALL_LINE),
+            1,
+            "apply malformed function abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_MALFORMED_ARGUMENT_ABORT_TEST_CALL_LINE),
+            1,
+            "apply malformed argument abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_NULL_CONTEXT_ABORT_TEST_CALL_LINE),
+            1,
+            "apply null-context abort test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&apply, APPLY_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE),
+            1,
+            "apply tree-walk error abort test call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&attr, ATTR_ACCESS_KEYED_FN_TYPE_LINE),
@@ -1623,8 +1756,73 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &apply_lines,
-            APPLY_ABORT_TEST_CALL_LINE,
-            "apply abort test call must keep a SAFETY comment",
+            APPLY_DECODER_CALL_LINE,
+            "apply decoder call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_CONTEXT_DECODER_LINE,
+            "raw apply context decoder must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_CONTEXT_CAST_LINE,
+            "raw apply context cast must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_CONTEXT_EVAL_LINE,
+            "raw apply TreeWalk pointer cast must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_DIRECT_LAMBDA_TEST_CALL_LINE,
+            "direct apply lambda wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_DIRECT_FUNCTOR_TEST_CALL_LINE,
+            "direct apply functor wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_DIRECT_PRIMOP_PARTIAL_TEST_CALL_LINE,
+            "direct apply primop partial wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_DIRECT_PRIMOP_RESULT_TEST_CALL_LINE,
+            "direct apply primop result wrapper test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_BINDING_TEST_CALL_LINE,
+            "apply metadata function-pointer test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_MALFORMED_VALUE_TRANSMUTE_LINE,
+            "apply malformed Value construction test must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_MALFORMED_FUNCTION_ABORT_TEST_CALL_LINE,
+            "apply malformed function abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_MALFORMED_ARGUMENT_ABORT_TEST_CALL_LINE,
+            "apply malformed argument abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_NULL_CONTEXT_ABORT_TEST_CALL_LINE,
+            "apply null-context abort test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &apply_lines,
+            APPLY_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE,
+            "apply tree-walk error abort test call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &attr_lines,

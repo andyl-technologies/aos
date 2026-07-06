@@ -1037,6 +1037,19 @@ impl TreeWalk {
         self.transient_value_stack_roots.get(slot).copied()
     }
 
+    /// Replaces the current value stored in one transient-root stack slot.
+    pub(in crate::eval::tree_walk) fn set_current_transient_value_stack_root(
+        &mut self,
+        slot: usize,
+        value: Value,
+    ) -> bool {
+        let Some(root) = self.transient_value_stack_roots.get_mut(slot) else {
+            return false;
+        };
+        *root = value;
+        true
+    }
+
     /// Returns transient value-stack roots registered for allocation safepoints.
     #[cfg(test)]
     pub(in crate::eval::tree_walk) fn transient_value_stack_roots(&self) -> &[Value] {

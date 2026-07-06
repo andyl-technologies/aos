@@ -16,7 +16,8 @@
 //!   aos_blackhole_check, aos_force, and aos_force_deep context-decoding
 //!   success-path wrappers for frozen `(rt, Value)` forcing ABIs
 //! ratchet_runtime_ffi::apply
-//!   aos_apply trap-only wrapper for the frozen `(rt, Value, Value)` call ABI
+//!   aos_apply context-decoding success-path wrapper for the frozen
+//!   `(rt, Value, Value)` call ABI
 //! ratchet_runtime_ffi::attr
 //!   aos_has_attr, aos_select_ic, and aos_update success-path wrappers for
 //!   frozen attrset-access ABIs

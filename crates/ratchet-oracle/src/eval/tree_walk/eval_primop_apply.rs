@@ -181,6 +181,7 @@ impl TreeWalk {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_value(
         &mut self,
         id: IrId,
@@ -194,6 +195,60 @@ impl TreeWalk {
         }
         function = self.ensure_applicable_value(id, span, function)?;
         self.apply_lambda_value_with_argument_span(id, span, id, function, span, id, span, argument)
+    }
+
+    pub(crate) fn apply_value_with_transient_roots(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: Value,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let mut roots = [function, argument];
+        self.with_indexed_transient_value_stack_roots(id, span, &mut roots, |eval, slots| {
+            let function_slot = slots.start;
+            let argument_slot = function_slot.checked_add(1).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                )
+            })?;
+            let mut function = eval
+                .current_transient_value_stack_root(function_slot)
+                .ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                        span,
+                    )
+                })?;
+            if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
+                function = eval.force_demanded_value(id, span, function)?;
+                if !eval.set_current_transient_value_stack_root(function_slot, function) {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                        span,
+                    ));
+                }
+            }
+            function = eval.ensure_applicable_value(id, span, function)?;
+            if !eval.set_current_transient_value_stack_root(function_slot, function) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                    span,
+                ));
+            }
+            let argument = eval
+                .current_transient_value_stack_root(argument_slot)
+                .ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::SafepointRootStackLengthOverflow { id },
+                        span,
+                    )
+                })?;
+            eval.apply_lambda_value_with_argument_span(
+                id, span, id, function, span, id, span, argument,
+            )
+        })
     }
 
     pub(super) fn apply_lambda_value(

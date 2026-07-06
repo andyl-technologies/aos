@@ -5914,7 +5914,7 @@ and helps the oracle directly.
       as the final ABI target, no `JITBuilder::symbol` registration occurs, and
       no final native trap transfer, exported PIC dispatch, or standalone native update merge is
       implemented.
-- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep`/attrset success-path wrappers plus `aos_alloc_*`/`aos_apply`/`aos_gc_write_barrier` trap wrappers:
+- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep`/`aos_apply`/attrset success-path wrappers plus `aos_alloc_*`/`aos_gc_write_barrier` trap wrappers:
       `ratchet-runtime-ffi` is the dedicated unsafe runtime ABI boundary so the
       safe `ratchet-oracle` crate can keep `unsafe_code` denied. Its
       `env::aos_env_get` wrapper defines an unmangled frozen `(env, slot) -> Value`
@@ -5936,14 +5936,15 @@ and helps the oracle directly.
       during recursive forcing, and returns the original container or leaf
       `Value`. The forcing wrappers abort for malformed payloads, null scoped
       contexts, safe tree-walk blackhole-check/force/deep-force errors, and
-      evaluator trap transfer until the remaining specialized protocols exist. Its
-      `apply::aos_apply` wrapper defines an unmangled
-      frozen `(rt, Value function, Value arg) -> Value` symbol and aborts for
-      every call until runtime-context decoding, active call-root binding,
-      call-depth accounting, callable dispatch, trap transfer, and native
-      value-return materialization exist. Returning today would be unsound
-      because the wrapper cannot preserve evaluator apply semantics without
-      runtime context. Its `alloc::aos_alloc_*` wrappers define unmangled frozen
+      evaluator trap transfer until the remaining specialized protocols exist.
+      Its `apply::aos_apply` wrapper defines an unmangled frozen
+      `(rt, Value function, Value arg) -> Value` symbol, validates both payloads,
+      decodes `rt` as a scoped `RuntimeApplyContext`, roots imported function
+      and argument values as transient safepoint roots, enters the safe
+      tree-walk apply bridge, and returns results for lambda, attrset-functor,
+      and first-class primop success paths. Null contexts, malformed payloads,
+      and tree-walk apply errors still abort until evaluator trap transfer
+      exists. Its `alloc::aos_alloc_*` wrappers define unmangled frozen
       pointer-returning allocation symbols and abort for every call until
       runtime-context decoding, active allocator extraction, allocation
       safepoints, typed pointer-return materialization, evaluator trap transfer,
@@ -5957,9 +5958,12 @@ and helps the oracle directly.
       dispatch exist. Returning today would be unsound because skipping the
       daemon-generational barrier can lose remembered edges. The apply, forcing,
       barrier, and attrset-access wrappers' safety contracts still require a Rust-valid
-      `Value` tag; `aos_blackhole_check`, `aos_force`, and `aos_force_deep`
-      additionally require a pinned `RuntimeForceContext` and evaluator-owned
-      heap payloads for checked or forced inputs and returned heap values.
+      `Value` tag; `aos_apply` additionally requires a pinned
+      `RuntimeApplyContext` and evaluator-owned heap payloads for function,
+      argument, and returned heap values; `aos_blackhole_check`, `aos_force`,
+      and `aos_force_deep` additionally require a pinned `RuntimeForceContext`
+      and evaluator-owned heap payloads for checked or forced inputs and
+      returned heap values.
       Invalid tag discriminants are undefined before the wrappers can inspect
       them.
       Its `attr::aos_has_attr` and `attr::aos_select_ic` wrappers define
@@ -5980,10 +5984,10 @@ and helps the oracle directly.
       remaining wrapper-local export blockers. The separate oracle native-export
       preflight remains authoritative for full final registration blockers,
       including missing final exported-wrapper admission. Tests call the
-      env/forcing wrappers, attrset wrappers, and metadata function pointers on
+      env/forcing, apply, attrset wrappers, and metadata function pointers on
       their supported success paths, cover
-      subprocess abort paths including the trap-only allocation, apply, and
-      barrier wrappers,
+      subprocess abort paths including the trap-only allocation and barrier
+      wrappers,
       and the `aos-nix` address-candidate bridge now uses these wrapper
       addresses for `aos_alloc_*`, `aos_env_get`, `aos_apply`, `aos_blackhole_check`, `aos_force`,
       `aos_force_deep`, `aos_gc_write_barrier`, `aos_has_attr`, `aos_select_ic`,
@@ -5994,11 +5998,10 @@ and helps the oracle directly.
       runtime C ABI body: `aos_env_get` invalid pointers, borrow conflicts,
       and slot errors abort, while `aos_blackhole_check` malformed, null
       context, and blackholed-thunk paths, `aos_force` null context and
-      tree-walk error paths, and `aos_force_deep` null context and tree-walk
-      deep-force error paths abort until trap transfer and the remaining runtime
-      integrations exist; `aos_apply`
-      remains a trap-only body until safe
-      evaluator apply dispatch can be reached from native runtime context;
+      tree-walk error paths, `aos_force_deep` null context and tree-walk
+      deep-force error paths, and `aos_apply` malformed, null context, and
+      tree-walk apply error paths abort until trap transfer and the remaining
+      runtime integrations exist;
       `aos_alloc_*` remains trap-only until safe allocator dispatch and typed
       heap-pointer returns can be reached from native runtime context; and
       `aos_gc_write_barrier` remains a trap-only body until safe barrier

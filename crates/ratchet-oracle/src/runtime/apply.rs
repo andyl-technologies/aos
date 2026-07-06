@@ -41,14 +41,27 @@ pub const RUNTIME_APPLY_ABI_SIGNATURES: &[RuntimeApplyAbiSignature] =
 type RuntimeApplyValueFn =
     fn(&mut TreeWalk, IrId, Span, Value, Value) -> Result<Value, TreeWalkError>;
 
-fn rust_callable_aos_apply(
+/// Runs the Rust-callable `aos_apply` helper through the tree-walk evaluator.
+///
+/// The helper keeps the imported function and argument values registered as
+/// transient safepoint roots, forces the function when the evaluator's ordinary
+/// apply path demands it, dispatches lambda, functor, and first-class primop
+/// calls, and returns the application result [`Value`].
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] when the function cannot be forced, the forced
+/// value is not callable, argument binding fails, call-depth accounting rejects
+/// the call, callable dispatch fails, or the evaluator cannot preserve imported
+/// function/argument roots across allocation safepoints.
+pub fn rust_callable_aos_apply(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,
     function: Value,
     argument: Value,
 ) -> Result<Value, TreeWalkError> {
-    eval.apply_value(id, span, function, argument)
+    eval.apply_value_with_transient_roots(id, span, function, argument)
 }
 
 /// Returns call-control helper bindings with callable Rust wrapper addresses.
@@ -446,6 +459,8 @@ mod tests {
         RuntimeAbiParameterKind, RuntimeAbiReturnKind, RuntimeHelperRole, resolve,
         runtime_helper_call_signature, runtime_helper_symbols,
     };
+    use crate::eval::tree_walk::TreeWalkOptions;
+    use crate::runtime::alloc::GcStressPolicy;
     use crate::syntax::parse_str;
 
     use super::*;
@@ -790,5 +805,33 @@ mod tests {
             .expect("second primop application succeeds");
 
         assert_eq!(applied.as_int().expect("primop returns an int"), 42);
+    }
+
+    #[test]
+    fn apply_rust_callable_preserves_imported_roots_under_gc_stress() {
+        let source = "{ f = x: builtins.deepSeq x 42; arg = [ (y: y) ]; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = aos_nix_dialect::nix_lower(
+            resolve(parse_str(source).expect("source parses")).expect("source resolves"),
+        )
+        .expect("source lowers");
+        let f = ir.symbols.lookup(b"f").expect("f symbol exists");
+        let arg = ir.symbols.lookup(b"arg").expect("arg symbol exists");
+        let mut eval = TreeWalk::with_options(
+            &ir,
+            TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+        );
+        let root = eval.eval_root().expect("root attrset evaluates");
+        let attrs = eval.heap().get_attrs(root).expect("root is an attrset");
+        let function = attrs.get(f).expect("function attr exists");
+        let argument = attrs.get(arg).expect("argument attr exists");
+
+        let applied = rust_callable_aos_apply(&mut eval, ir.root, span, function, argument)
+            .expect("GC-stress application succeeds");
+        let forced = eval
+            .force_value(ir.root, span, applied)
+            .expect("application result forces");
+
+        assert_eq!(forced.as_int().expect("application returns an int"), 42);
     }
 }
