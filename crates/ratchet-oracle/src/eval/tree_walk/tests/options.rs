@@ -2618,6 +2618,70 @@ fn gc_stress_eval_root_read_dir_empty_attrset_result_skips_primop_composite_disp
 }
 
 #[test]
+fn gc_stress_eval_root_try_eval_result_skips_primop_composite_dispatch() {
+    let ir = lower("builtins.tryEval 7");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| eval.eval_root())
+        .expect("GC-stress tryEval evaluates");
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while generated tryEval attrset dispatch was blocked"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    let success_key = evaluator
+        .symbols
+        .intern(b"success")
+        .expect("success key interns");
+    let value_key = evaluator
+        .symbols
+        .intern(b"value")
+        .expect("value key interns");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("tryEval result is heap-owned");
+    assert_eq!(
+        attrs
+            .get(success_key)
+            .expect("success attr exists")
+            .as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        attrs.get(value_key).expect("value attr exists").as_int(),
+        Ok(7)
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("tryEval result attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_serializer_scalar_results_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches("builtins.toJSON 123", b"123");
     assert_gc_stress_root_string_result_dispatches(
