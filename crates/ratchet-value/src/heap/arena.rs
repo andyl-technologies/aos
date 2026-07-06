@@ -1104,10 +1104,8 @@ mod tests {
 
         // SAFETY: this intentionally invalid marker must be rejected before any
         // arena mutation can invalidate allocations.
-        assert_eq!(
-            unsafe { arena.pop_region_to_mark(invalid) },
-            Err(ArenaError::InvalidRegionMark)
-        );
+        let invalid_pop = unsafe { arena.pop_region_to_mark(invalid) };
+        assert_eq!(invalid_pop, Err(ArenaError::InvalidRegionMark));
         assert_eq!(arena.stats(), before);
     }
 

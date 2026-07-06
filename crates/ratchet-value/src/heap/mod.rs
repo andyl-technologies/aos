@@ -12,6 +12,7 @@ pub mod concurrent_gc;
 pub mod gc;
 pub mod region;
 pub mod resident;
+pub mod safety;
 
 pub use advice::{
     MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_cold,
