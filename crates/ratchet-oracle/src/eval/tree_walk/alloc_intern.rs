@@ -525,7 +525,7 @@ impl TreeWalk {
                 node.span,
             )
         })?;
-        let result = if self.can_admit_gc_stress_list_accumulator_allocation_safepoints(id) {
+        let result = if self.can_admit_gc_stress_root_accumulator_allocation_safepoints(id) {
             (|| {
                 for child in children.iter().copied() {
                     let value = self.with_transient_value_stack_roots(
@@ -700,7 +700,30 @@ impl TreeWalk {
             self.active_composite_accumulator_depth.saturating_sub(1);
     }
 
-    fn with_gc_stress_accumulator_allocation_node<T>(
+    pub(super) fn with_gc_stress_composite_accumulator_suspended<T>(
+        &mut self,
+        body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        let suspended = self.active_composite_accumulator_depth > 0;
+        if suspended {
+            self.end_gc_stress_composite_accumulator();
+        }
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(self))) {
+            Ok(result) => result,
+            Err(payload) => {
+                if suspended {
+                    self.begin_gc_stress_composite_accumulator();
+                }
+                std::panic::resume_unwind(payload);
+            }
+        };
+        if suspended {
+            self.begin_gc_stress_composite_accumulator();
+        }
+        result
+    }
+
+    pub(super) fn with_gc_stress_accumulator_allocation_node<T>(
         &mut self,
         id: IrId,
         body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
@@ -1003,8 +1026,20 @@ impl TreeWalk {
         entries: &mut [AttrEntry],
         string: NixString,
     ) -> Result<Value, TreeWalkError> {
+        self.with_attr_entry_value_roots(id, span, entries, |eval| {
+            eval.alloc_tree_walk_string(id, span, string)
+        })
+    }
+
+    pub(super) fn with_attr_entry_value_roots<T>(
+        &mut self,
+        id: IrId,
+        span: Span,
+        entries: &mut [AttrEntry],
+        body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
         if entries.is_empty() {
-            return self.alloc_tree_walk_string(id, span, string);
+            return body(self);
         }
 
         let mut roots = Vec::new();
@@ -1021,13 +1056,11 @@ impl TreeWalk {
         })?;
         roots.extend(entries.iter().map(|entry| entry.value));
 
-        let value = self.with_transient_value_stack_roots(id, span, &mut roots, |eval| {
-            eval.alloc_tree_walk_string(id, span, string)
-        })?;
+        let result = self.with_transient_value_stack_roots(id, span, &mut roots, body)?;
         for (entry, root) in entries.iter_mut().zip(roots) {
             entry.value = root;
         }
-        Ok(value)
+        Ok(result)
     }
 
     pub(super) fn alloc_tree_walk_path(
@@ -1219,7 +1252,10 @@ impl TreeWalk {
             && self.can_dispatch_gc_stress_ambient_allocation_safepoint()
     }
 
-    fn can_admit_gc_stress_list_accumulator_allocation_safepoints(&self, id: IrId) -> bool {
+    pub(super) fn can_admit_gc_stress_root_accumulator_allocation_safepoints(
+        &self,
+        id: IrId,
+    ) -> bool {
         self.active_root_eval_node == Some(id)
             && self.can_dispatch_gc_stress_ambient_allocation_safepoint()
     }

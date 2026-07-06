@@ -5512,13 +5512,7 @@ fn gc_stress_eval_root_attrs_allocation_dispatches_dirty_card_writeback_bridge()
     );
     let thunk_values = heap_record_values_with_tag(outcome.heap(), ValueTag::Thunk);
     assert!(thunk_values.iter().any(|value| value.raw_eq(attr_value)));
-    assert!(
-        thunk_values
-            .iter()
-            .filter(|value| !value.raw_eq(attr_value))
-            .count()
-            >= 1
-    );
+    assert!(heap_record_forwarding_slot_count(outcome.heap(), &thunk_values) >= 1);
 
     assert!(
         outcome.heap().allocation_safepoints().count()
@@ -5561,7 +5555,7 @@ fn gc_stress_eval_root_attrs_allocation_dispatches_dirty_card_writeback_bridge()
 }
 
 #[test]
-fn gc_stress_attrs_allocation_dispatch_skips_local_accumulator_fields() {
+fn gc_stress_attrs_accumulator_thunk_allocations_publish_accumulated_roots() {
     let ir = lower("{ a = x: x; b = y: y; }");
     let a = symbol_for(&ir, b"a");
     let b = symbol_for(&ir, b"b");
@@ -5570,7 +5564,7 @@ fn gc_stress_attrs_allocation_dispatch_skips_local_accumulator_fields() {
         &ir,
         TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
     )
-    .expect("GC-stress multi-attr attrset evaluates without local accumulator writebacks");
+    .expect("GC-stress multi-attr attrset evaluates with local accumulator writebacks");
 
     assert_eq!(outcome.value().tag(), ValueTag::Attrs);
     let attr_values = {
@@ -5598,13 +5592,7 @@ fn gc_stress_attrs_allocation_dispatch_skips_local_accumulator_fields() {
     for value in values {
         assert!(thunk_values.iter().any(|record| record.raw_eq(value)));
     }
-    assert!(
-        thunk_values
-            .iter()
-            .filter(|record| !values.iter().any(|value| record.raw_eq(*value)))
-            .count()
-            >= values.len()
-    );
+    assert!(heap_record_forwarding_slot_count(outcome.heap(), &thunk_values) > values.len());
     let permanent_safepoint = outcome
         .heap()
         .permanent_allocation_safepoints()
@@ -5619,6 +5607,70 @@ fn gc_stress_attrs_allocation_dispatch_skips_local_accumulator_fields() {
         Some(AllocationGcPollReason::GcStressEverySafepoint)
     );
     assert!(outcome.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_attrs_accumulator_allocation_node_clears_after_binding_error() {
+    let span = Span::new(0, 1);
+    let mut symbols = SymbolTable::new();
+    let a = symbols.intern(b"a").expect("a interns");
+    let b = symbols.intern(b"b").expect("b interns");
+    let body = IrId::new(0);
+    let first_value = IrId::new(1);
+    let error_value = IrId::new(2);
+    let root = IrId::new(3);
+    let ir = manual_ir_with_attr_tables(
+        root,
+        vec![
+            pure_node(IrKind::Int, span, IrData::Int(7)),
+            pure_node(IrKind::ThunkAlloc, span, IrData::Node(body)),
+            pure_node(IrKind::LocalVar, span, IrData::Local { slot: 0 }),
+            pure_node(
+                IrKind::AttrSet,
+                span,
+                IrData::AttrSet {
+                    shape: IrShapeId::new(0),
+                    bindings: IrBindingSlice::new(0, 2),
+                    recursive: false,
+                    has_dynamic: false,
+                    frame: None,
+                },
+            ),
+        ],
+        symbols,
+        vec![
+            IrBinding {
+                key: IrAttrPathSegment::Static(a),
+                position: None,
+                value: first_value,
+            },
+            IrBinding {
+                key: IrAttrPathSegment::Static(b),
+                position: None,
+                value: error_value,
+            },
+        ],
+        vec![IrShape::new(vec![a, b].into_boxed_slice())],
+    );
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+
+    let error = evaluator
+        .eval_root()
+        .expect_err("invalid attr binding reports evaluation error");
+
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::MissingEnvironment { id: error_value }
+    );
+    let thunk_values = heap_record_values_with_tag(evaluator.heap(), ValueTag::Thunk);
+    assert!(heap_record_forwarding_slot_count(evaluator.heap(), &thunk_values) >= 1);
+    assert_eq!(evaluator.active_root_eval_node, None);
+    assert_eq!(evaluator.active_gc_stress_accumulator_allocation_node, None);
+    assert_eq!(evaluator.active_composite_accumulator_depth, 0);
+    assert!(evaluator.transient_value_stack_roots().is_empty());
 }
 
 #[test]

@@ -723,6 +723,24 @@ impl TreeWalk {
         } else {
             None
         };
+        let admit_static_attrset_binding_accumulator = {
+            let mut admit = !recursive
+                && !has_dynamic
+                && active_overrides_symbol.is_none()
+                && self.can_admit_gc_stress_root_accumulator_allocation_safepoints(id);
+            if admit {
+                for binding_index in binding_range.clone() {
+                    let binding = self.current_ir().bindings[binding_index];
+                    if !matches!(binding.key, IrAttrPathSegment::Static(_))
+                        || !matches!(self.inherit_source_select(binding.value), Ok(None))
+                    {
+                        admit = false;
+                        break;
+                    }
+                }
+            }
+            admit
+        };
         let mut inherit_source_thunks = BTreeMap::new();
         let mut entries = Vec::new();
         entries
@@ -862,6 +880,27 @@ impl TreeWalk {
                                 &mut inherit_source_thunks,
                             )?
                         }
+                    } else if admit_static_attrset_binding_accumulator {
+                        self.with_attr_entry_value_roots(
+                            id,
+                            node.span,
+                            entries.as_mut_slice(),
+                            |eval| {
+                                eval.with_gc_stress_composite_accumulator_suspended(|eval| {
+                                    eval.with_gc_stress_accumulator_allocation_node(
+                                        binding.value,
+                                        |eval| {
+                                            eval.eval_attr_binding_value(
+                                                id,
+                                                node.span,
+                                                binding.value,
+                                                &mut inherit_source_thunks,
+                                            )
+                                        },
+                                    )
+                                })
+                            },
+                        )?
                     } else {
                         self.eval_attr_binding_value(
                             id,
