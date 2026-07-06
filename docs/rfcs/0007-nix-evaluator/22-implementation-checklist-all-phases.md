@@ -10874,17 +10874,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       pinned runtime context decoded by force, apply, and attrset-access native
       wrappers, with the older family context names retained as aliases for
       callers and docs. The unsafe allowlist pins the shared decoder and raw
-      evaluator casts to exact source lines. An integration test in
-      `ratchet-runtime-ffi/tests/jit_native_wrappers.rs` compiles a full-IR
-      static has-attr root through `ratchet-jit`, supplies process-local
-      runtime-FFI wrapper addresses for `aos_env_get`, `aos_force`, and
-      `aos_has_attr`, passes one live `EvalFrame` plus one pinned
-      `RuntimeJitContext`, executes native code, observes a native boolean
-      result, and installs tier-1 slot metadata. This proves one real
-      runtime-FFI mixed-helper success path through the registered native call
+      evaluator casts to exact source lines. Integration tests in
+      `ratchet-runtime-ffi/tests/jit_native_wrappers.rs` compile full-IR static
+      has-attr and direct-apply roots through `ratchet-jit`, supply
+      process-local runtime-FFI wrapper addresses for
+      `aos_env_get`/`aos_force`/`aos_has_attr` and
+      `aos_env_get`/`aos_apply`, pass live `EvalFrame` values plus one pinned
+      `RuntimeJitContext` per native call, assert exact artifact
+      import/registration metadata, execute native code, observe native results,
+      and install tier-1 slot metadata. This proves real runtime-FFI force plus
+      attrset-access and apply success paths through the registered native call
       boundary only: final strict exported-symbol admission in `aos-nix`,
       trap/error transfer, evaluator thunk publication, thunk-state CAS,
-      broader mixed-helper coverage, and `.drv` parity remain open.
+      broader helper-family coverage, and `.drv` parity remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling
