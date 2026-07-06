@@ -1,6 +1,7 @@
 //! Tree-walk evaluator tests: fetch tree (part 1).
 
 use super::*;
+use crate::attrs::repr::AttrSetReprKind;
 use crate::cache::{
     DurableBlake3Hash, PARSE_CACHE_SCHEMA_VERSION, ParseCache, ParseCacheFlags, ParseCacheKey,
     ParseFileKey, PersistCache, PersistFileArtifactKey,
@@ -144,6 +145,37 @@ fn fetch_tree_result_records_dynamic_repr_decision() {
         .get_attrs(value)
         .expect("fetchTree result is attrs");
     assert_eq!(attrs.len(), 10);
+    let metadata = evaluator
+        .heap
+        .get_attrs_metadata(value)
+        .expect("fetchTree result metadata exists");
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let lexicographic_keys: Vec<Vec<u8>> = attrs
+        .iter_lexicographic()
+        .map(|entry| {
+            evaluator
+                .symbols
+                .resolve(entry.key)
+                .expect("fetchTree result key resolves")
+                .to_vec()
+        })
+        .collect();
+    assert_eq!(
+        lexicographic_keys,
+        vec![
+            b"dirtyRev".to_vec(),
+            b"dirtyShortRev".to_vec(),
+            b"lastModified".to_vec(),
+            b"lastModifiedDate".to_vec(),
+            b"narHash".to_vec(),
+            b"outPath".to_vec(),
+            b"rev".to_vec(),
+            b"revCount".to_vec(),
+            b"shortRev".to_vec(),
+            b"submodules".to_vec(),
+        ],
+    );
     let snapshot = evaluator
         .attr_telemetry
         .update_merge_snapshot()
@@ -153,6 +185,9 @@ fn fetch_tree_result_records_dynamic_repr_decision() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 1);
+    let stats = evaluator.attr_telemetry.order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]

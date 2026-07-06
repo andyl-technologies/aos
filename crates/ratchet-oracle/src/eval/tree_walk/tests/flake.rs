@@ -1,6 +1,7 @@
 //! Tree-walk evaluator tests: flake.
 
 use super::*;
+use crate::attrs::repr::AttrSetReprKind;
 
 #[test]
 fn configured_cpp_nix_restricted_unresolved_forge_fetch_tree_access_matches_tree_walk() {
@@ -91,16 +92,31 @@ fn parse_flake_ref_parses_github_example() {
 
 #[test]
 fn parse_flake_ref_records_dynamic_repr_decision() {
-    let outcome = eval_whnf_owned(&lower(
-        r#"builtins.parseFlakeRef "github:NixOS/nixpkgs/23.05?dir=lib""#,
-    ))
-    .expect("parseFlakeRef evaluates");
+    let source = r#"builtins.parseFlakeRef "github:NixOS/nixpkgs/23.05?dir=lib""#;
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({source})")),
+        vec![
+            b"dir".to_vec(),
+            b"owner".to_vec(),
+            b"ref".to_vec(),
+            b"repo".to_vec(),
+            b"type".to_vec(),
+        ],
+    );
+
+    let outcome = eval_whnf_owned(&lower(source)).expect("parseFlakeRef evaluates");
 
     let attrs = outcome
         .heap()
         .get_attrs(outcome.value())
         .expect("parseFlakeRef returns attrs");
     assert_eq!(attrs.len(), 5);
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("parseFlakeRef metadata exists");
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
     let snapshot = outcome
         .attr_telemetry()
         .update_merge_snapshot()
@@ -110,6 +126,9 @@ fn parse_flake_ref_records_dynamic_repr_decision() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 1);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
