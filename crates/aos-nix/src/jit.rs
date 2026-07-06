@@ -629,11 +629,12 @@ pub fn nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root(
 ///
 /// This is the full-IR counterpart to
 /// [`nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root`].
-/// It accepts lowered IR and root identity so full-IR callers can use the same
-/// safe `aos-nix` gate that will eventually feed the unsafe registered
-/// native-call boundary. The current implementation still stops before
-/// inspecting the IR, lowering, finalization, code pointer casts, and native
-/// execution: once policy requests promotion, it requires the strict
+/// It accepts lowered IR and root identity so full-IR callers, including
+/// bounded static attr-access and local-slot update roots, can use the same safe
+/// `aos-nix` gate that will eventually feed the unsafe registered native-call
+/// boundary. The current implementation still stops before inspecting the IR,
+/// lowering, finalization, code pointer casts, and native execution: once
+/// policy requests promotion, it requires the strict
 /// [`NixJitRuntimeSymbolRegistrationPlan`] first.
 ///
 /// # Errors
