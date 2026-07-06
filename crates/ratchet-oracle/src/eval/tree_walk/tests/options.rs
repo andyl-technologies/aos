@@ -1,6 +1,7 @@
 //! Tree-walk evaluator tests: options.
 
 use super::*;
+use crate::attrs::repr::AttrSetReprKind;
 use crate::eval::heap::EvalThunkForceStorageMode;
 use crate::eval::heap::{
     EvalHeap, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
@@ -2776,6 +2777,75 @@ fn gc_stress_eval_root_intersect_attrs_result_skips_primop_composite_dispatch() 
         .permanent_allocation_safepoints()
         .last()
         .expect("intersectAttrs result attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
+fn gc_stress_map_attrs_empty_result_allocates_and_skips_primop_composite_dispatch() {
+    let ir = lower("null");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(
+        &ir,
+        TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint()),
+    );
+    let input = evaluator
+        .heap
+        .alloc_attrs_with_repr_metadata(99, AttrSetReprKind::Flat, FlatAttrs::empty())
+        .expect("metadata-distinct empty input attrs allocate");
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.eval_map_attrs_primop_value(
+                ir.root,
+                span,
+                EvalPrimOpArg::new(ir.root, span, Value::int(0)),
+                EvalPrimOpArg::new(ir.root, span, input),
+            )
+        })
+        .expect("GC-stress mapAttrs result allocates");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while generated mapAttrs attrset dispatch was blocked"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.tag(), ValueTag::Attrs);
+    assert!(
+        !value.raw_eq(input),
+        "empty mapAttrs result reused the input attrset instead of allocating"
+    );
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("mapAttrs result is heap-owned");
+    assert_eq!(attrs.len(), 0);
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 1,
+        "mapAttrs result should allocate exactly one permanent attrset"
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("mapAttrs result attrset allocation safepoint records");
     assert_eq!(
         permanent_safepoint.entrypoint(),
         RuntimeAllocationEntryPoint::AosAllocAttrs
