@@ -7559,6 +7559,9 @@ and helps the oracle directly.
       root `tryEval` generated-attrset result allocations preserving
       registered transient roots while primop-result composite dispatch remains
       blocked,
+      root `removeAttrs` and `intersectAttrs` generated-attrset result
+      allocations preserving registered transient roots while primop-result
+      composite dispatch remains blocked,
       root scalar `toJSON` and `toXML` final serializer allocations relocating
       registered transient roots,
       root `appendContext` evaluations preserving registered transient roots
