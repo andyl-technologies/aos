@@ -8152,6 +8152,14 @@ and helps the oracle directly.
 - [ ] Harness stays byte-green under both Tier A and Tier B
       ([20](20-nix-language-conformance.md) + [21](21-builtins-conformance.md)
       unchanged — GC is invisible to `.drv` bytes).
+- [x] Current Tier-A/Tier-B `.drv` surface precursor: the GC conformance target
+      manifest now includes a derivationStrict ATerm-byte smoke that evaluates
+      selected fixed `.drvPath` cases under Tier A and the current Tier-B
+      admission metadata bridge, compares root `.drvPath` raw bytes before and
+      after admission, compares recorded derivation path/ATerm side-table
+      surfaces under Tier A and Tier-B-configured evaluation, and fails if
+      either byte surface changes. This remains a pinned-case precursor only;
+      full closure harness byte-green coverage stays open.
 - [ ] Precise GC passes `miri` / ASan / UBSan on the safe tree.
 
 **Decisions closed/measured.**

@@ -504,6 +504,25 @@ pub(in crate::eval) fn eval_raw_bytes_with_post_render_tier_b_admission(
     Ok((pre_admission, post_admission, admission_report, stats))
 }
 
+/// Evaluates an IR root and returns recorded derivation path/ATerm surfaces.
+///
+/// This forces root-visible derivation attrsets enough for snapshot collection,
+/// but the returned bytes are the evaluator's derivation side-table surfaces,
+/// not a filesystem read of materialized `.drv` files.
+pub(in crate::eval) fn eval_derivation_aterm_surfaces_with_options(
+    ir: &Ir,
+    options: TreeWalkOptions,
+) -> Result<Vec<(String, Vec<u8>)>, TreeWalkError> {
+    let mut evaluator = TreeWalk::with_options(ir, options);
+    let value = evaluator.eval_root()?;
+    evaluator.force_root_derivation_surfaces(value)?;
+    let surfaces = evaluator.derivation_surface_snapshot()?;
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
+    evaluator.advance_persist_eval_cache_run_boundary();
+    Ok(surfaces)
+}
+
 fn render_raw_value_with_evaluator(
     evaluator: &mut TreeWalk,
     ir: &Ir,

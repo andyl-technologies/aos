@@ -753,6 +753,24 @@ impl TreeWalk {
             .collect()
     }
 
+    /// Returns known derivation path and ATerm byte surfaces.
+    pub(crate) fn derivation_surface_snapshot(
+        &self,
+    ) -> Result<Vec<(String, Vec<u8>)>, TreeWalkError> {
+        let mut surfaces = self
+            .known_derivations
+            .iter()
+            .map(|(drv_path, known)| {
+                Ok((
+                    self.store_path_absolute_display(drv_path),
+                    self.known_derivation_aterm_bytes(drv_path, known)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        surfaces.sort();
+        Ok(surfaces)
+    }
+
     pub(super) fn known_derivation_aterm_bytes(
         &self,
         drv_path: &nix_compat::store_path::StorePath<String>,

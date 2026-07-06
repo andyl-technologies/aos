@@ -4,17 +4,20 @@
 //! language conformance surfaces. This module adds a narrow precursor target:
 //! fixed strict raw evaluations are rendered under Tier A, then rendered again
 //! after the current Tier-B transition request has validated and rewritten
-//! heap-record generation metadata. It does not install a precise collector,
-//! run the full language conformance harness, or close the checklist's broad
-//! Tier-A/Tier-B parity gate.
+//! heap-record generation metadata. Fixed derivationStrict cases additionally
+//! compare root `.drvPath` raw bytes before and after admission, plus recorded
+//! derivation path/ATerm side-table surfaces under Tier A and Tier-B-configured
+//! evaluation. It does not install a precise collector, run the full language
+//! conformance harness, or close the checklist's broad Tier-A/Tier-B parity
+//! gate.
 
 use thiserror::Error;
 
 use super::{
     heap::EvalHeapTierBAdmissionReport,
     tree_walk::{
-        EvalStats, TreeWalkError, TreeWalkOptions, eval_raw_bytes_with_options,
-        eval_raw_bytes_with_post_render_tier_b_admission,
+        EvalStats, TreeWalkError, TreeWalkOptions, eval_derivation_aterm_surfaces_with_options,
+        eval_raw_bytes_with_options, eval_raw_bytes_with_post_render_tier_b_admission,
     },
 };
 use crate::{
@@ -27,14 +30,23 @@ const CONFORMANCE_PACKAGE: &str = "ratchet-oracle";
 const CONFORMANCE_MANIFEST_PATH: &str = "crates/Cargo.toml";
 const CARGO_PROGRAM: &str = "cargo";
 
-const GC_CONFORMANCE_TARGETS: [GcConformanceTarget; 1] = [GcConformanceTarget::new(
-    GcConformanceScope::TierATierBRawBytes,
-    "gc_conformance_tier_a_tier_b_raw_bytes_smoke",
-    "Tier-B admission metadata must stay invisible to strict raw bytes for fixed heap-backed cases",
-)];
+const GC_CONFORMANCE_TARGETS: [GcConformanceTarget; 2] = [
+    GcConformanceTarget::new(
+        GcConformanceScope::TierATierBRawBytes,
+        "gc_conformance_tier_a_tier_b_raw_bytes_smoke",
+        "Tier-B admission metadata must stay invisible to strict raw bytes for fixed heap-backed cases",
+    ),
+    GcConformanceTarget::new(
+        GcConformanceScope::TierATierBDerivationAtermBytes,
+        "gc_conformance_tier_a_tier_b_drv_bytes_smoke",
+        "Tier-B metadata must stay invisible to fixed derivationStrict root path bytes and ATerm side-table surfaces",
+    ),
+];
 
-const REQUIRED_GC_CONFORMANCE_TARGETS: [GcConformanceScope; 1] =
-    [GcConformanceScope::TierATierBRawBytes];
+const REQUIRED_GC_CONFORMANCE_TARGETS: [GcConformanceScope; 2] = [
+    GcConformanceScope::TierATierBRawBytes,
+    GcConformanceScope::TierATierBDerivationAtermBytes,
+];
 
 const TIER_A_TIER_B_RAW_CASES: [(&str, &[u8]); 4] = [
     (
@@ -52,11 +64,37 @@ const TIER_A_TIER_B_RAW_CASES: [(&str, &[u8]); 4] = [
     (r#"(x: x) "admitted""#, br#""admitted""#),
 ];
 
+const TIER_A_TIER_B_DRV_CASES: [&str; 2] = [
+    r#"let d = derivationStrict {
+         name = "gc-static";
+         system = "x86_64-linux";
+         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+         args = [ "--flag" ];
+         env = "value";
+       };
+       in d.drvPath"#,
+    r#"let base = derivationStrict {
+         name = "gc-base";
+         system = "x86_64-linux";
+         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+       };
+       downstream = derivationStrict {
+         name = "gc-downstream";
+         system = "x86_64-linux";
+         builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+         args = [ base.drvPath ];
+         baseOut = base.out;
+       };
+       in downstream.drvPath"#,
+];
+
 /// A GC conformance surface covered by a smoke target.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum GcConformanceScope {
     /// Strict raw bytes before and after Tier-B admission metadata updates.
     TierATierBRawBytes,
+    /// Root `.drvPath` bytes and recorded ATerm side-table bytes under Tier B.
+    TierATierBDerivationAtermBytes,
 }
 
 /// One cargo test target in the GC conformance matrix.
@@ -257,6 +295,107 @@ pub fn run_gc_conformance_tier_a_tier_b_raw_bytes_smoke()
     Ok(GcConformanceSmokeReport {
         scope: GcConformanceScope::TierATierBRawBytes,
         case_count: TIER_A_TIER_B_RAW_CASES.len(),
+        checked_surface_count: usize_to_u64(
+            TIER_A_TIER_B_RAW_CASES.len(),
+            "Tier-A/Tier-B raw conformance surfaces",
+        )?,
+        tier_b_admissions: admissions,
+        tier_b_generation_rewrites: generation_rewrites,
+    })
+}
+
+/// Runs the Tier-A/Tier-B derivation byte-surface parity smoke target.
+///
+/// # Errors
+///
+/// Returns [`GcConformanceSmokeError`] if a fixed source fails to lower or
+/// evaluate, if no derivation ATerm side-table bytes are observed, if Tier-A
+/// and Tier-B configured derivation side-table surfaces differ, if root raw
+/// `.drvPath` bytes change, if Tier-B admission does not run, or if generation
+/// rewrites are missing.
+pub fn run_gc_conformance_tier_a_tier_b_drv_bytes_smoke()
+-> Result<GcConformanceSmokeReport, GcConformanceSmokeError> {
+    let mut checked_surface_count = 0u64;
+    let mut admissions = 0u64;
+    let mut generation_rewrites = 0u64;
+
+    for source in TIER_A_TIER_B_DRV_CASES {
+        let ir = lower_conformance_source(source)?;
+        let tier_a_raw =
+            eval_raw_bytes_with_options(&ir, TreeWalkOptions::new()).map_err(|error| {
+                GcConformanceSmokeError::TreeWalk {
+                    input: source,
+                    error: Box::new(error),
+                }
+            })?;
+        let (tier_b_pre_admission_raw, tier_b_post_admission_raw, admission_report, stats) =
+            eval_raw_bytes_with_post_render_tier_b_admission(&ir, tier_b_options()?).map_err(
+                |error| GcConformanceSmokeError::TreeWalk {
+                    input: source,
+                    error: Box::new(error),
+                },
+            )?;
+        if tier_a_raw != tier_b_pre_admission_raw {
+            return Err(GcConformanceSmokeError::TierParityMismatch {
+                input: source,
+                tier_a: tier_a_raw,
+                tier_b: tier_b_pre_admission_raw,
+            });
+        }
+        if tier_b_pre_admission_raw != tier_b_post_admission_raw {
+            return Err(GcConformanceSmokeError::AdmissionRenderMismatch {
+                input: source,
+                pre_admission: tier_b_pre_admission_raw,
+                post_admission: tier_b_post_admission_raw,
+            });
+        }
+
+        let tier_a = eval_derivation_aterm_surfaces_with_options(&ir, TreeWalkOptions::new())
+            .map_err(|error| GcConformanceSmokeError::TreeWalk {
+                input: source,
+                error: Box::new(error),
+            })?;
+        let tier_b_configured = eval_derivation_aterm_surfaces_with_options(&ir, tier_b_options()?)
+            .map_err(|error| GcConformanceSmokeError::TreeWalk {
+                input: source,
+                error: Box::new(error),
+            })?;
+
+        if tier_a.is_empty() || tier_b_configured.is_empty() {
+            return Err(GcConformanceSmokeError::MissingDerivationSurface { input: source });
+        }
+        if tier_a != tier_b_configured {
+            return Err(
+                GcConformanceSmokeError::DerivationConfiguredSurfaceMismatch {
+                    input: source,
+                    tier_a,
+                    tier_b_configured,
+                },
+            );
+        }
+
+        let admission = admission_report
+            .ok_or(GcConformanceSmokeError::MissingTierBAdmission { input: source })?;
+        if admission.generation_rewrites() == 0 {
+            return Err(GcConformanceSmokeError::MissingGenerationRewrite { input: source });
+        }
+        assert_admission_stats_match(source, &admission, &stats)?;
+        checked_surface_count = checked_surface_count.saturating_add(usize_to_u64(
+            tier_b_configured.len(),
+            "Tier-A/Tier-B derivation conformance surfaces",
+        )?);
+        checked_surface_count = checked_surface_count.saturating_add(1);
+        admissions = admissions.saturating_add(1);
+        generation_rewrites = generation_rewrites.saturating_add(usize_to_u64(
+            admission.generation_rewrites(),
+            "Tier-B generation rewrites",
+        )?);
+    }
+
+    Ok(GcConformanceSmokeReport {
+        scope: GcConformanceScope::TierATierBDerivationAtermBytes,
+        case_count: TIER_A_TIER_B_DRV_CASES.len(),
+        checked_surface_count,
         tier_b_admissions: admissions,
         tier_b_generation_rewrites: generation_rewrites,
     })
@@ -529,6 +668,7 @@ impl GcConformanceCaseReport {
 pub struct GcConformanceSmokeReport {
     scope: GcConformanceScope,
     case_count: usize,
+    checked_surface_count: u64,
     tier_b_admissions: u64,
     tier_b_generation_rewrites: u64,
 }
@@ -542,6 +682,11 @@ impl GcConformanceSmokeReport {
     /// Returns the number of fixed cases exercised.
     pub const fn case_count(self) -> usize {
         self.case_count
+    }
+
+    /// Returns how many raw or derivation-byte surfaces were compared.
+    pub const fn checked_surface_count(self) -> u64 {
+        self.checked_surface_count
     }
 
     /// Returns how many fixed cases applied Tier-B admission metadata.
@@ -684,14 +829,32 @@ pub enum GcConformanceSmokeError {
         /// The actual raw bytes.
         actual: Vec<u8>,
     },
-    /// Tier-A and post-admission Tier-B bytes diverged.
+    /// A fixed derivation smoke source recorded no derivation surface.
+    #[error("GC conformance source {input:?} recorded no derivation surfaces")]
+    MissingDerivationSurface {
+        /// The fixed source that recorded no derivation.
+        input: &'static str,
+    },
+    /// Tier-B configuration changed recorded derivation side-table surfaces.
+    #[error(
+        "GC conformance source {input:?} changed derivation side-table surfaces under Tier-B configuration"
+    )]
+    DerivationConfiguredSurfaceMismatch {
+        /// The fixed source that diverged.
+        input: &'static str,
+        /// Tier-A derivation path and ATerm byte surfaces.
+        tier_a: Vec<(String, Vec<u8>)>,
+        /// Tier-B configured derivation path and ATerm byte surfaces.
+        tier_b_configured: Vec<(String, Vec<u8>)>,
+    },
+    /// Tier-A and Tier-B raw bytes diverged.
     #[error("GC conformance source {input:?} diverged between Tier A and Tier B")]
     TierParityMismatch {
         /// The fixed source that diverged.
         input: &'static str,
         /// Tier-A strict raw bytes.
         tier_a: Vec<u8>,
-        /// Tier-B post-admission strict raw bytes.
+        /// Tier-B strict raw bytes at the checked comparison point.
         tier_b: Vec<u8>,
     },
     /// Rendering changed when Tier-B admission metadata was applied.
@@ -819,33 +982,43 @@ mod tests {
     fn gc_conformance_manifest_covers_tier_a_tier_b_raw_bytes() {
         let manifest = validate_gc_conformance_manifest().expect("conformance manifest validates");
 
-        assert_eq!(manifest.target_count(), 1);
-        let target = manifest
+        assert_eq!(manifest.target_count(), 2);
+        let raw_target = manifest
             .target_for(GcConformanceScope::TierATierBRawBytes)
             .expect("Tier-A/Tier-B target is present");
-        assert_eq!(target.package(), CONFORMANCE_PACKAGE);
-        assert_eq!(target.manifest_path(), CONFORMANCE_MANIFEST_PATH);
+        assert_eq!(raw_target.package(), CONFORMANCE_PACKAGE);
+        assert_eq!(raw_target.manifest_path(), CONFORMANCE_MANIFEST_PATH);
         assert_eq!(
-            target.test_filter(),
+            raw_target.test_filter(),
             "gc_conformance_tier_a_tier_b_raw_bytes_smoke"
         );
-        assert!(!target.rationale().is_empty());
+        assert!(!raw_target.rationale().is_empty());
+        let drv_target = manifest
+            .target_for(GcConformanceScope::TierATierBDerivationAtermBytes)
+            .expect("Tier-A/Tier-B derivation target is present");
+        assert_eq!(drv_target.package(), CONFORMANCE_PACKAGE);
+        assert_eq!(drv_target.manifest_path(), CONFORMANCE_MANIFEST_PATH);
+        assert_eq!(
+            drv_target.test_filter(),
+            "gc_conformance_tier_a_tier_b_drv_bytes_smoke"
+        );
+        assert!(!drv_target.rationale().is_empty());
     }
 
     #[test]
     fn gc_conformance_invocations_pin_cargo_test_filters() {
         let invocations = gc_conformance_invocations().expect("conformance invocations validate");
 
-        assert_eq!(invocations.len(), 1);
-        let invocation = invocations
+        assert_eq!(invocations.len(), 2);
+        let raw_invocation = invocations
             .iter()
             .find(|invocation| {
                 invocation.target().scope() == GcConformanceScope::TierATierBRawBytes
             })
             .expect("Tier-A/Tier-B invocation is present");
-        assert_eq!(invocation.cargo_program(), "cargo");
+        assert_eq!(raw_invocation.cargo_program(), "cargo");
         assert_eq!(
-            invocation.cargo_args(),
+            raw_invocation.cargo_args(),
             &[
                 "test",
                 "--manifest-path",
@@ -853,6 +1026,27 @@ mod tests {
                 "-p",
                 CONFORMANCE_PACKAGE,
                 "gc_conformance_tier_a_tier_b_raw_bytes_smoke",
+                "--",
+                "--nocapture",
+            ]
+        );
+
+        let drv_invocation = invocations
+            .iter()
+            .find(|invocation| {
+                invocation.target().scope() == GcConformanceScope::TierATierBDerivationAtermBytes
+            })
+            .expect("Tier-A/Tier-B derivation invocation is present");
+        assert_eq!(drv_invocation.cargo_program(), "cargo");
+        assert_eq!(
+            drv_invocation.cargo_args(),
+            &[
+                "test",
+                "--manifest-path",
+                CONFORMANCE_MANIFEST_PATH,
+                "-p",
+                CONFORMANCE_PACKAGE,
+                "gc_conformance_tier_a_tier_b_drv_bytes_smoke",
                 "--",
                 "--nocapture",
             ]
@@ -867,8 +1061,30 @@ mod tests {
         assert_eq!(report.scope(), GcConformanceScope::TierATierBRawBytes);
         assert_eq!(report.case_count(), TIER_A_TIER_B_RAW_CASES.len());
         assert_eq!(
+            report.checked_surface_count(),
+            TIER_A_TIER_B_RAW_CASES.len() as u64
+        );
+        assert_eq!(
             report.tier_b_admissions(),
             TIER_A_TIER_B_RAW_CASES.len() as u64
+        );
+        assert!(report.tier_b_generation_rewrites() > 0);
+    }
+
+    #[test]
+    fn gc_conformance_tier_a_tier_b_drv_bytes_smoke() {
+        let report = run_gc_conformance_tier_a_tier_b_drv_bytes_smoke()
+            .expect("Tier-A/Tier-B derivation byte conformance smoke passes");
+
+        assert_eq!(
+            report.scope(),
+            GcConformanceScope::TierATierBDerivationAtermBytes
+        );
+        assert_eq!(report.case_count(), TIER_A_TIER_B_DRV_CASES.len());
+        assert!(report.checked_surface_count() >= TIER_A_TIER_B_DRV_CASES.len() as u64);
+        assert_eq!(
+            report.tier_b_admissions(),
+            TIER_A_TIER_B_DRV_CASES.len() as u64
         );
         assert!(report.tier_b_generation_rewrites() > 0);
     }

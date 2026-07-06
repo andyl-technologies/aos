@@ -41,8 +41,8 @@ pub use gc_conformance::{
     GcConformanceLowerStage, GcConformanceManifest, GcConformanceManifestError, GcConformanceScope,
     GcConformanceSmokeError, GcConformanceSmokeReport, GcConformanceTarget, RawRenderMode,
     compare_gc_conformance_tier_a_tier_b_raw_bytes_source, gc_conformance_invocations,
-    gc_conformance_manifest, run_gc_conformance_tier_a_tier_b_raw_bytes_smoke,
-    validate_gc_conformance_manifest,
+    gc_conformance_manifest, run_gc_conformance_tier_a_tier_b_drv_bytes_smoke,
+    run_gc_conformance_tier_a_tier_b_raw_bytes_smoke, validate_gc_conformance_manifest,
 };
 pub use gc_measurement::{
     HeapGcMeasurementId, HeapGcMeasurementInvocation, HeapGcMeasurementLowerStage,
