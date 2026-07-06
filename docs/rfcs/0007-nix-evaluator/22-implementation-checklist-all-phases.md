@@ -7576,6 +7576,8 @@ and helps the oracle directly.
       helper-local transient roots while a scoped active primop function
       argument root is live,
       direct `mapAttrs` symbol-name helper allocations preserving registered
+      transient roots while an unregistered active heap argument remains live,
+      direct `mapAttrs` symbol-name helper allocations preserving registered
       transient roots while nested active primop argument frames block dispatch,
       direct `filter` and `map` empty-input fast-path result routing through
       the tree-walk list wrapper,
@@ -7630,8 +7632,8 @@ and helps the oracle directly.
       bridge, direct `mapAttrs` and `zipAttrsWith` symbol-name allocations
       preserving live function/value/list locals across symbol-name safepoints,
       with `mapAttrs` also relocating registered helper-local roots in the
-      scoped active-function-argument case and skipping when nested active
-      primop argument frames are present,
+      scoped active-function-argument case and skipping when unregistered active
+      heap arguments or nested active primop argument frames are present,
       and context-rewriting helper string allocations preserving their bytes
       while relocating registered transient roots.
       They also cover lazy list-element,
