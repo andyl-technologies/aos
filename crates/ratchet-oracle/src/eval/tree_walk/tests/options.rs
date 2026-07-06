@@ -4269,6 +4269,10 @@ fn gc_stress_alloc_tree_walk_list_skips_active_primop_roots() {
     let mut roots = [local_source];
 
     evaluator.active_root_eval_node = Some(ir.root);
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator
         .push_active_primop_arg_roots(
             ir.root,
@@ -4296,6 +4300,18 @@ fn gc_stress_alloc_tree_walk_list_skips_active_primop_roots() {
         .expect("list wrapper result is heap-owned");
     assert_eq!(list.len(), 1);
     assert_eq!(list.get(0).expect("list value exists").as_int(), Ok(1));
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 1,
+        "list wrapper allocation did not record exactly one permanent safepoint"
+    );
+    assert_eq!(
+        evaluator
+            .gc_stress_permanent_root_allocation_dispatches()
+            .len(),
+        permanent_dispatches_before,
+        "active first-class primop argument roots should block permanent-root list dispatch"
+    );
     let permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
