@@ -7,6 +7,7 @@
 //! later optimized tiers against the tree-walk oracle in test and fuzz builds.
 
 pub mod env;
+pub mod gc_audit;
 pub mod heap;
 pub mod internal_diff;
 pub mod module;
@@ -26,6 +27,13 @@ pub mod tree_walk;
 pub mod whnf_tag;
 
 pub use env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
+pub use gc_audit::{
+    GcSafetyAuditInvocation, GcSafetyAuditLowerStage, GcSafetyAuditManifest,
+    GcSafetyAuditManifestError, GcSafetyAuditScope, GcSafetyAuditSmokeError,
+    GcSafetyAuditSmokeReport, GcSafetyAuditTarget, GcSafetyAuditTool, gc_safety_audit_invocations,
+    gc_safety_audit_manifest, run_gc_safety_audit_gc_stress_smoke,
+    run_gc_safety_audit_safe_tree_walk_smoke, validate_gc_safety_audit_manifest,
+};
 pub use heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
 pub use internal_diff::{
     InternalDiffError, InternalDiffReport, InternalDiffTier, compare_raw_with_oracle,
