@@ -26,3 +26,10 @@ path = "fuzz_targets/internal_diff_raw.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "gc_tier_b_raw"
+path = "fuzz_targets/gc_tier_b_raw.rs"
+test = false
+doc = false
+bench = false

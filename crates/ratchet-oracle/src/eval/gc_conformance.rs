@@ -10,9 +10,12 @@
 
 use thiserror::Error;
 
-use super::tree_walk::{
-    TreeWalkError, TreeWalkOptions, eval_raw_bytes_with_options,
-    eval_raw_bytes_with_post_render_tier_b_admission,
+use super::{
+    heap::EvalHeapTierBAdmissionReport,
+    tree_walk::{
+        EvalStats, TreeWalkError, TreeWalkOptions, eval_raw_bytes_with_options,
+        eval_raw_bytes_with_post_render_tier_b_admission,
+    },
 };
 use crate::{
     compile::{Ir, resolve as resolve_ast},
@@ -259,6 +262,70 @@ pub fn run_gc_conformance_tier_a_tier_b_raw_bytes_smoke()
     })
 }
 
+/// Compares one source under Tier A and post-admission Tier-B raw rendering.
+///
+/// This is the source-level entry point used by the GC fuzz target. It expects
+/// the caller to provide any wrapping needed to force heap allocation. Invalid
+/// sources and ordinary Tier-A evaluation failures are returned distinctly so
+/// fuzz callers can skip inputs that do not reach the conformance surface.
+///
+/// # Errors
+///
+/// Returns [`GcConformanceCaseError`] if the source fails to lower, Tier-A
+/// rendering fails, Tier-B rendering or admission fails, Tier-B admission does
+/// not run, or the rendered bytes or mirrored admission stats diverge.
+pub fn compare_gc_conformance_tier_a_tier_b_raw_bytes_source(
+    source: &str,
+) -> Result<GcConformanceCaseReport, GcConformanceCaseError> {
+    let ir = lower_dynamic_conformance_source(source)?;
+    let tier_a = eval_raw_bytes_with_options(&ir, TreeWalkOptions::new()).map_err(|error| {
+        GcConformanceCaseError::TierA {
+            error: Box::new(error),
+        }
+    })?;
+    let (pre_admission, tier_b, admission_report, stats) =
+        eval_raw_bytes_with_post_render_tier_b_admission(&ir, tier_b_case_options()?).map_err(
+            |error| GcConformanceCaseError::TierB {
+                error: Box::new(error),
+            },
+        )?;
+
+    if tier_a != pre_admission {
+        return Err(GcConformanceCaseError::TierConfiguredRenderMismatch {
+            tier_a,
+            tier_b_pre_admission: pre_admission,
+        });
+    }
+    if pre_admission != tier_b {
+        return Err(GcConformanceCaseError::AdmissionRenderMismatch {
+            pre_admission,
+            post_admission: tier_b,
+        });
+    }
+
+    let admission = admission_report.ok_or(GcConformanceCaseError::MissingTierBAdmission)?;
+    if admission.generation_rewrites() == 0 {
+        return Err(GcConformanceCaseError::MissingGenerationRewrite);
+    }
+    assert_admission_case_stats_match(&admission, &stats)?;
+
+    Ok(GcConformanceCaseReport {
+        raw_bytes: tier_a,
+        tier_b_worker_records: usize_to_u64_case(
+            admission.worker_records(),
+            "Tier-B worker records",
+        )?,
+        tier_b_permanent_shared_records: usize_to_u64_case(
+            admission.permanent_shared_records(),
+            "Tier-B permanent shared records",
+        )?,
+        tier_b_generation_rewrites: usize_to_u64_case(
+            admission.generation_rewrites(),
+            "Tier-B generation rewrites",
+        )?,
+    })
+}
+
 fn assert_raw_eq(
     input: &'static str,
     mode: RawRenderMode,
@@ -279,8 +346,8 @@ fn assert_raw_eq(
 
 fn assert_admission_stats_match(
     input: &'static str,
-    admission: &super::heap::EvalHeapTierBAdmissionReport,
-    stats: &super::tree_walk::EvalStats,
+    admission: &EvalHeapTierBAdmissionReport,
+    stats: &EvalStats,
 ) -> Result<(), GcConformanceSmokeError> {
     assert_stat_matches(
         input,
@@ -306,6 +373,49 @@ fn assert_admission_stats_match(
         )?,
         stats.heap_tier_b_admission_generation_rewrites(),
     )
+}
+
+fn assert_admission_case_stats_match(
+    admission: &EvalHeapTierBAdmissionReport,
+    stats: &EvalStats,
+) -> Result<(), GcConformanceCaseError> {
+    assert_case_stat_matches(
+        "heap_tier_b_admission_worker_records",
+        usize_to_u64_case(admission.worker_records(), "Tier-B worker records")?,
+        stats.heap_tier_b_admission_worker_records(),
+    )?;
+    assert_case_stat_matches(
+        "heap_tier_b_admission_permanent_shared_records",
+        usize_to_u64_case(
+            admission.permanent_shared_records(),
+            "Tier-B permanent shared records",
+        )?,
+        stats.heap_tier_b_admission_permanent_shared_records(),
+    )?;
+    assert_case_stat_matches(
+        "heap_tier_b_admission_generation_rewrites",
+        usize_to_u64_case(
+            admission.generation_rewrites(),
+            "Tier-B generation rewrites",
+        )?,
+        stats.heap_tier_b_admission_generation_rewrites(),
+    )
+}
+
+fn assert_case_stat_matches(
+    metric: &'static str,
+    expected: u64,
+    actual: u64,
+) -> Result<(), GcConformanceCaseError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(GcConformanceCaseError::StatsMismatch {
+            metric,
+            expected,
+            actual,
+        })
+    }
 }
 
 fn assert_stat_matches(
@@ -344,6 +454,21 @@ fn lower_conformance_source(source: &'static str) -> Result<Ir, GcConformanceSmo
     })
 }
 
+fn lower_dynamic_conformance_source(source: &str) -> Result<Ir, GcConformanceCaseError> {
+    let parsed = parse_str(source).map_err(|error| GcConformanceCaseError::Lower {
+        stage: GcConformanceLowerStage::Parse,
+        message: error.to_string(),
+    })?;
+    let resolved = resolve_ast(parsed).map_err(|error| GcConformanceCaseError::Lower {
+        stage: GcConformanceLowerStage::Resolve,
+        message: error.to_string(),
+    })?;
+    aos_nix_dialect::nix_lower(resolved).map_err(|error| GcConformanceCaseError::Lower {
+        stage: GcConformanceLowerStage::Lower,
+        message: error.to_string(),
+    })
+}
+
 fn tier_b_options() -> Result<TreeWalkOptions, GcConformanceSmokeError> {
     let budget = HeapMemoryBudget::new(1)
         .map_err(|_| GcConformanceSmokeError::InvalidMemoryBudget { bytes: 1 })?;
@@ -352,8 +477,51 @@ fn tier_b_options() -> Result<TreeWalkOptions, GcConformanceSmokeError> {
     Ok(options)
 }
 
+fn tier_b_case_options() -> Result<TreeWalkOptions, GcConformanceCaseError> {
+    let budget = HeapMemoryBudget::new(1)
+        .map_err(|_| GcConformanceCaseError::InvalidMemoryBudget { bytes: 1 })?;
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_heap_tier_b_transition_admission_enabled(true);
+    Ok(options)
+}
+
 fn usize_to_u64(value: usize, metric: &'static str) -> Result<u64, GcConformanceSmokeError> {
     u64::try_from(value).map_err(|_| GcConformanceSmokeError::CounterOverflow { metric, value })
+}
+
+fn usize_to_u64_case(value: usize, metric: &'static str) -> Result<u64, GcConformanceCaseError> {
+    u64::try_from(value).map_err(|_| GcConformanceCaseError::CounterOverflow { metric, value })
+}
+
+/// A successful source-level Tier-A/Tier-B conformance comparison.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GcConformanceCaseReport {
+    raw_bytes: Vec<u8>,
+    tier_b_worker_records: u64,
+    tier_b_permanent_shared_records: u64,
+    tier_b_generation_rewrites: u64,
+}
+
+impl GcConformanceCaseReport {
+    /// Returns the strict raw bytes shared by Tier A and post-admission Tier B.
+    pub fn raw_bytes(&self) -> &[u8] {
+        &self.raw_bytes
+    }
+
+    /// Returns worker-domain heap records admitted into Tier B.
+    pub const fn tier_b_worker_records(&self) -> u64 {
+        self.tier_b_worker_records
+    }
+
+    /// Returns permanent-shared heap records preserved during admission.
+    pub const fn tier_b_permanent_shared_records(&self) -> u64 {
+        self.tier_b_permanent_shared_records
+    }
+
+    /// Returns Tier-B admission generation rewrites.
+    pub const fn tier_b_generation_rewrites(&self) -> u64 {
+        self.tier_b_generation_rewrites
+    }
 }
 
 /// A successful GC conformance smoke target report.
@@ -570,6 +738,79 @@ pub enum GcConformanceSmokeError {
     },
 }
 
+/// Errors raised by a source-level Tier-A/Tier-B conformance comparison.
+#[derive(Debug, Error)]
+pub enum GcConformanceCaseError {
+    /// The source failed a frontend stage.
+    #[error("GC conformance source failed {stage:?}: {message}")]
+    Lower {
+        /// The frontend stage that failed.
+        stage: GcConformanceLowerStage,
+        /// A diagnostic message from the frontend.
+        message: String,
+    },
+    /// Tier-A raw rendering failed.
+    #[error("GC conformance Tier-A rendering failed")]
+    TierA {
+        /// The evaluator error.
+        #[source]
+        error: Box<TreeWalkError>,
+    },
+    /// Tier-B configured raw rendering or admission failed.
+    #[error("GC conformance Tier-B rendering failed")]
+    TierB {
+        /// The evaluator error.
+        #[source]
+        error: Box<TreeWalkError>,
+    },
+    /// The fixed Tier-B budget could not be constructed.
+    #[error("GC conformance memory budget {bytes} is invalid")]
+    InvalidMemoryBudget {
+        /// The configured memory-budget byte count.
+        bytes: usize,
+    },
+    /// Tier-B configuration changed bytes before admission metadata was applied.
+    #[error("GC conformance source changed raw bytes before Tier-B admission")]
+    TierConfiguredRenderMismatch {
+        /// Tier-A strict raw bytes.
+        tier_a: Vec<u8>,
+        /// Tier-B configured strict raw bytes before admission metadata.
+        tier_b_pre_admission: Vec<u8>,
+    },
+    /// Rendering changed when Tier-B admission metadata was applied.
+    #[error("GC conformance source changed raw bytes after Tier-B admission")]
+    AdmissionRenderMismatch {
+        /// Strict raw bytes before admission metadata was applied.
+        pre_admission: Vec<u8>,
+        /// Strict raw bytes after admission metadata was applied.
+        post_admission: Vec<u8>,
+    },
+    /// Tier-B configured rendering did not apply admission metadata.
+    #[error("GC conformance source did not record Tier-B admission")]
+    MissingTierBAdmission,
+    /// Tier-B admission did not rewrite generation metadata.
+    #[error("GC conformance source did not rewrite generation metadata")]
+    MissingGenerationRewrite,
+    /// Mirrored stats disagreed with the Tier-B admission report.
+    #[error("GC conformance source reported {metric}={actual}, expected {expected}")]
+    StatsMismatch {
+        /// The metric name.
+        metric: &'static str,
+        /// The value expected from the admission report.
+        expected: u64,
+        /// The value reported by mirrored stats.
+        actual: u64,
+    },
+    /// A metric could not be represented in the case report.
+    #[error("GC conformance metric {metric} value {value} does not fit in u64")]
+    CounterOverflow {
+        /// The metric that overflowed.
+        metric: &'static str,
+        /// The original `usize` value.
+        value: usize,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,6 +870,16 @@ mod tests {
             report.tier_b_admissions(),
             TIER_A_TIER_B_RAW_CASES.len() as u64
         );
+        assert!(report.tier_b_generation_rewrites() > 0);
+    }
+
+    #[test]
+    fn gc_conformance_source_case_compares_tier_a_and_tier_b_bytes() {
+        let report = compare_gc_conformance_tier_a_tier_b_raw_bytes_source("[ ({ a = 1 + 2; }) ]")
+            .expect("source-level conformance case passes");
+
+        assert_eq!(report.raw_bytes(), b"[ { a = 3; } ]");
+        assert!(report.tier_b_worker_records() > 0);
         assert!(report.tier_b_generation_rewrites() > 0);
     }
 }

@@ -10,6 +10,7 @@ raw rendering against the safe tree-walk oracle.
 cargo fuzz run parity_json
 AOS_NIX_ORACLE=/path/to/nix-instantiate cargo fuzz run parity_json
 cargo fuzz run internal_diff_raw
+cargo fuzz run gc_tier_b_raw
 ```
 
 Corpus files beginning with `# aos-nix-fuzz-source` are treated as literal Nix
@@ -52,3 +53,9 @@ The checked-in source seeds are also wired through
 `internal_diff_raw` currently uses a tree-walk mirror candidate so the fuzz
 target and corpus are live before optimized tiers exist. P6/P7 tiers replace
 that mirror candidate with their own `InternalDiffTier` implementation.
+
+`gc_tier_b_raw` wraps generated/source-seed expressions in a heap-backed list,
+then compares strict raw bytes before and after the current Tier-B transition
+admission metadata bridge. Inputs that do not lower or do not evaluate under the
+Tier-A oracle are skipped; Tier-B admission failures or raw-byte changes are
+treated as fuzz findings.

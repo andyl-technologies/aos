@@ -6,7 +6,8 @@ use std::sync::OnceLock;
 
 use aos_nix::compile::{Ir, lower, resolve};
 use aos_nix::eval::{
-    EvalMode, InternalDiffError, InternalDiffTier, TreeWalkError, TreeWalkOptions,
+    EvalMode, GcConformanceCaseError, InternalDiffError, InternalDiffTier, TreeWalkError,
+    TreeWalkOptions, compare_gc_conformance_tier_a_tier_b_raw_bytes_source,
     compare_raw_with_oracle, eval_raw_bytes_with_options,
 };
 use aos_nix::syntax::parse_bytes;
@@ -98,6 +99,32 @@ pub fn fuzz_internal_diff_raw(data: &[u8]) {
             String::from_utf8_lossy(&candidate)
         ),
     }
+}
+
+/// Runs one Tier-A/Tier-B GC raw-byte conformance fuzz case.
+pub fn fuzz_gc_tier_b_raw(data: &[u8]) {
+    let Some(input) = fuzz_input_from_bytes(data) else {
+        return;
+    };
+    let source = input.source;
+    if source.len() > MAX_SOURCE_LEN {
+        return;
+    }
+
+    let wrapped_source = wrap_gc_tier_b_source(&source);
+    match compare_gc_conformance_tier_a_tier_b_raw_bytes_source(&wrapped_source) {
+        Ok(_)
+        | Err(GcConformanceCaseError::Lower { .. })
+        | Err(GcConformanceCaseError::TierA { .. }) => {}
+        Err(error) => panic!(
+            "GC Tier-B raw-byte conformance failed for generated source:\n{wrapped_source}\n\
+             error: {error}"
+        ),
+    }
+}
+
+fn wrap_gc_tier_b_source(source: &str) -> String {
+    format!("[ (\n{source}\n) ]")
 }
 
 /// Returns the Nix source represented by a fuzzer input.
@@ -676,6 +703,20 @@ mod tests {
     fn internal_diff_fuzzer_accepts_source_seed() {
         fuzz_internal_diff_raw(
             b"# aos-nix-fuzz-source\nlet x = 1 + 2; in { value = x; list = [ true \"ok\" ]; }\n",
+        );
+    }
+
+    #[test]
+    fn gc_tier_b_raw_fuzzer_accepts_source_seed() {
+        fuzz_gc_tier_b_raw(
+            b"# aos-nix-fuzz-source\nlet x = { a = 1 + 2; }; in { inherit x; y = [ x ]; }\n",
+        );
+    }
+
+    #[test]
+    fn gc_tier_b_raw_fuzzer_accepts_trailing_line_comment_source_seed() {
+        fuzz_gc_tier_b_raw(
+            b"# aos-nix-fuzz-source\nlet x = { a = 1 + 2; }; in { inherit x; } # trailing comment\n",
         );
     }
 }

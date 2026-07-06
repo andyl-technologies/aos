@@ -37,9 +37,10 @@ pub use gc_audit::{
     run_gc_safety_audit_safe_tree_walk_smoke, validate_gc_safety_audit_manifest,
 };
 pub use gc_conformance::{
-    GcConformanceInvocation, GcConformanceLowerStage, GcConformanceManifest,
-    GcConformanceManifestError, GcConformanceScope, GcConformanceSmokeError,
-    GcConformanceSmokeReport, GcConformanceTarget, RawRenderMode, gc_conformance_invocations,
+    GcConformanceCaseError, GcConformanceCaseReport, GcConformanceInvocation,
+    GcConformanceLowerStage, GcConformanceManifest, GcConformanceManifestError, GcConformanceScope,
+    GcConformanceSmokeError, GcConformanceSmokeReport, GcConformanceTarget, RawRenderMode,
+    compare_gc_conformance_tier_a_tier_b_raw_bytes_source, gc_conformance_invocations,
     gc_conformance_manifest, run_gc_conformance_tier_a_tier_b_raw_bytes_smoke,
     validate_gc_conformance_manifest,
 };
