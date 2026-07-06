@@ -14,7 +14,7 @@
 //! first-class primitive operations, and derivation boundaries.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     ffi::OsStr,
     fmt, fs,
     io::{self, Cursor, Read, Write as _},
@@ -1011,9 +1011,9 @@ pub struct TreeWalk {
     stats: EvalStats,
     attr_telemetry: AttrTelemetry,
     shape_table: Option<ShapeTable>,
-    flat_select_caches: BTreeMap<(u32, u32, usize), FlatSelectCache>,
-    shaped_select_caches: BTreeMap<(u32, u32, usize), ShapedSelectCache>,
-    hamt_select_caches: BTreeMap<(u32, u32, usize), HamtSelectCache>,
+    flat_select_caches: SelectCacheMap<(u32, u32, usize), FlatSelectCache>,
+    shaped_select_caches: SelectCacheMap<(u32, u32, usize), ShapedSelectCache>,
+    hamt_select_caches: SelectCacheMap<(u32, u32, usize), HamtSelectCache>,
     attr_update_node_states: BTreeMap<AttrUpdateTelemetryNodeKey, AttrUpdateTelemetryState>,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
@@ -1033,6 +1033,12 @@ pub struct TreeWalk {
     persist_cache: Option<PersistCache>,
     persist_cache_open_attempted: bool,
     eval_cache: Arc<Mutex<EvalCacheRuntime>>,
+    // Cached "is any forced-expression cache observable" predicate, computed once
+    // at construction. True when the in-memory eval cache runtime is enabled or a
+    // persistent cache root is configured. When false, the per-force force-cache
+    // subject/payload content hashing is pure waste (every observation is a
+    // no-op), so the hot path skips it entirely. See `force_memoized_claimed_thunk`.
+    force_cache_active: bool,
     import_parse_cache_hits: usize,
     import_parse_cache_misses: usize,
     text_store: BTreeMap<Vec<u8>, TextStoreEntry>,
@@ -1051,10 +1057,13 @@ pub struct TreeWalk {
     thunk_resolve_remembered_set: RememberedSet,
     thunk_resolve_card_table: GcCardTable,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
-    lazy_identity_thunks: BTreeSet<u64>,
+    // Keyed by thunk payload bits and used only for membership tests, so an
+    // unordered `HashSet` gives O(1) probes on the per-force hot path.
+    lazy_identity_thunks: HashSet<u64>,
     // Empty-list foldl' returns keep the initial accumulator lazy, but attr consumers
-    // must still demand it when coercing to an attrset.
-    lazy_foldl_initial_thunks: BTreeSet<u64>,
+    // must still demand it when coercing to an attrset. A subset of
+    // `lazy_identity_thunks`, likewise membership-only.
+    lazy_foldl_initial_thunks: HashSet<u64>,
     #[cfg(test)]
     tree_walk_list_wrapper_calls: usize,
     #[cfg(test)]
@@ -1294,6 +1303,8 @@ mod flake_git;
 mod flake_ref;
 mod region;
 mod safepoint_roots;
+mod select_cache_hash;
+use select_cache_hash::SelectCacheMap;
 mod serialize_xml;
 
 pub use safepoint_roots::{

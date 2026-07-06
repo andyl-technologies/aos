@@ -317,6 +317,14 @@ impl TreeWalk {
                 EvalHeapResidentMemoryMode::ProcessResidentSetWithArenaFallback,
             );
         }
+        // Whether any forced-expression cache observation can have an effect. When
+        // false, the per-force subject/payload content hashing is pure waste, so
+        // the force hot path skips it. A poisoned lock means the shared runtime is
+        // unusable (every later cache lock would fail and no-op anyway), so it is
+        // treated as inactive; the cache is advisory, so skipping it never changes
+        // results.
+        let force_cache_active = options.persist_cache_root().is_some()
+            || eval_cache.lock().is_ok_and(|runtime| runtime.is_enabled());
         Self {
             modules: vec![TreeWalkModule::new(
                 ir.clone(),
@@ -334,9 +342,9 @@ impl TreeWalk {
             stats: EvalStats::default(),
             attr_telemetry: AttrTelemetry::new(),
             shape_table: ShapeTable::new().ok(),
-            flat_select_caches: BTreeMap::new(),
-            shaped_select_caches: BTreeMap::new(),
-            hamt_select_caches: BTreeMap::new(),
+            flat_select_caches: SelectCacheMap::default(),
+            shaped_select_caches: SelectCacheMap::default(),
+            hamt_select_caches: SelectCacheMap::default(),
             attr_update_node_states: BTreeMap::new(),
             trace_output: Vec::new(),
             warning_output: Vec::new(),
@@ -356,6 +364,7 @@ impl TreeWalk {
             persist_cache: None,
             persist_cache_open_attempted: false,
             eval_cache,
+            force_cache_active,
             import_parse_cache_hits: 0,
             import_parse_cache_misses: 0,
             text_store: BTreeMap::new(),
@@ -373,8 +382,8 @@ impl TreeWalk {
             suspended_env_roots: Vec::new(),
             thunk_resolve_remembered_set: RememberedSet::new(),
             thunk_resolve_card_table: GcCardTable::default(),
-            lazy_identity_thunks: BTreeSet::new(),
-            lazy_foldl_initial_thunks: BTreeSet::new(),
+            lazy_identity_thunks: HashSet::new(),
+            lazy_foldl_initial_thunks: HashSet::new(),
             #[cfg(test)]
             tree_walk_list_wrapper_calls: 0,
             #[cfg(test)]
@@ -642,8 +651,18 @@ impl TreeWalk {
     }
 
     pub(super) fn unmark_lazy_identity_thunk_payload(&mut self, payload: u64) {
+        // This runs on every thunk force, but both sets are empty in the common
+        // case (no lazy-identity primop is in flight). Skip the lookups entirely
+        // when there is nothing to unmark. `lazy_foldl_initial_thunks` is a subset
+        // of `lazy_identity_thunks`, so an empty identity set implies an empty
+        // foldl set and its remove can be skipped too.
+        if self.lazy_identity_thunks.is_empty() {
+            return;
+        }
         self.lazy_identity_thunks.remove(&payload);
-        self.lazy_foldl_initial_thunks.remove(&payload);
+        if !self.lazy_foldl_initial_thunks.is_empty() {
+            self.lazy_foldl_initial_thunks.remove(&payload);
+        }
     }
 
     pub(super) fn mark_lazy_foldl_initial_thunk(&mut self, value: Value) {

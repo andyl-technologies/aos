@@ -3374,7 +3374,11 @@ impl TreeWalk {
                     span,
                 )
             })?;
-        self.active_force_roots.try_reserve_exact(1).map_err(|_| {
+        // Amortized (doubling) reservation, not `try_reserve_exact`: this stack is
+        // pushed once per thunk force and pop-reused, so exact growth would
+        // reallocate on every push while the stack deepens. Values and the
+        // allocation-failure error are unchanged.
+        self.active_force_roots.try_reserve(1).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::SafepointRootStackAllocationFailed { id, roots },
                 span,
@@ -3399,7 +3403,9 @@ impl TreeWalk {
                     span,
                 )
             })?;
-        self.suspended_env_roots.try_reserve_exact(1).map_err(|_| {
+        // Amortized reservation: this frame stack is reserved once per thunk-body
+        // force, so exact growth would reallocate on every deepening push.
+        self.suspended_env_roots.try_reserve(1).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::SafepointRootStackAllocationFailed { id, roots },
                 span,
@@ -3459,7 +3465,7 @@ impl TreeWalk {
                 )
             })?;
         self.active_primop_arg_roots
-            .try_reserve_exact(args.len())
+            .try_reserve(args.len())
             .map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::SafepointRootStackAllocationFailed {
@@ -3469,14 +3475,12 @@ impl TreeWalk {
                     span,
                 )
             })?;
-        self.active_primop_arg_frames
-            .try_reserve_exact(1)
-            .map_err(|_| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::SafepointRootStackAllocationFailed { id, roots: frames },
-                    span,
-                )
-            })?;
+        self.active_primop_arg_frames.try_reserve(1).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::SafepointRootStackAllocationFailed { id, roots: frames },
+                span,
+            )
+        })?;
 
         let start = self.active_primop_arg_roots.len();
         self.active_primop_arg_roots.extend_from_slice(args);

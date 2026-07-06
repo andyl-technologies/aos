@@ -7,9 +7,7 @@ use crate::eval::{
 };
 #[cfg(test)]
 use crate::runtime::alloc::RuntimeAllocationEntryPoint;
-use crate::runtime::barrier::{
-    runtime_thunk_resolve_write_barrier, runtime_thunk_resolve_write_barrier_with_card_table,
-};
+use crate::runtime::barrier::runtime_thunk_resolve_write_barrier_with_card_table;
 
 const TREE_WALK_GC_STRESS_ALLOCATION_SITE_PROMOTE_AFTER_SURVIVALS: u32 = 2;
 
@@ -1714,6 +1712,19 @@ impl TreeWalk {
         thunk: &EvalThunk,
         guard: ForceGuard<'_>,
     ) -> Result<Value, TreeWalkError> {
+        // When no forced-expression cache is observable, every step below (subject
+        // content hashing, memoization-demand recording, payload hashing on
+        // observation) is a no-op that still pays for the hashes. Skip straight to
+        // the body force. This is behaviorally identical to the cached path with an
+        // always-`Admit` decision and disabled lookup/observe, but avoids the
+        // hashing measured to dominate cache-off evaluation.
+        if !self.force_cache_active {
+            self.increment_thunks_forced();
+            let value = self.eval_thunk_body(id, span, thunk)?;
+            let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
+            self.unmark_lazy_identity_thunk_payload(forced_payload);
+            return Ok(value);
+        }
         let cache_subject =
             self.force_cache_subject_for_thunk(EvalNodeRef::new(self.current_module, id), thunk);
         let memoization_decision = cache_subject
@@ -1894,23 +1905,23 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let tier = self.options.thunk_resolve_barrier_tier();
-        let mut barrier = match tier {
-            GenerationalGcTier::OneShotArena => runtime_thunk_resolve_write_barrier(
-                tier,
-                &self.heap,
-                source_thunk,
-                &mut self.thunk_resolve_remembered_set,
-            ),
-            GenerationalGcTier::DaemonGenerational => {
-                runtime_thunk_resolve_write_barrier_with_card_table(
-                    tier,
-                    &self.heap,
-                    source_thunk,
-                    &mut self.thunk_resolve_remembered_set,
-                    &mut self.thunk_resolve_card_table,
-                )
-            }
+        if tier == GenerationalGcTier::OneShotArena {
+            // Default tier: the one-shot arena barrier is `DisabledThunkResolveBarrier`,
+            // whose `before_publish_forced` is a no-op. `ForceGuard::finish` publishes
+            // with exactly that barrier, so take it directly and skip the vtable
+            // lookup, function-pointer call, and `RuntimeThunkResolveBarrier` enum
+            // construction on the hottest evaluator event.
+            return guard.finish(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
+            });
         }
+        let mut barrier = runtime_thunk_resolve_write_barrier_with_card_table(
+            tier,
+            &self.heap,
+            source_thunk,
+            &mut self.thunk_resolve_remembered_set,
+            &mut self.thunk_resolve_card_table,
+        )
         .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         guard
             .finish_with_barrier(value, &mut barrier)
