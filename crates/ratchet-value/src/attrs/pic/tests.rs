@@ -295,6 +295,112 @@ fn flat_select_cache_specialized_missing_key_keeps_cached_slots() {
 }
 
 #[test]
+fn flat_select_cache_polymorphic_missing_key_keeps_cached_slots() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let key = ids[1];
+    let first = flat_attrs(&symbols, &[key], &[Value::int(1)]);
+    let second = flat_attrs(&symbols, &[ids[0], key], &[Value::int(10), Value::int(2)]);
+    let missing = flat_attrs(&symbols, &[ids[0]], &[Value::int(10)]);
+    let mut cache = FlatSelectCache::new();
+
+    assert_eq!(
+        expect_flat_hit_int(cache.select(&first, key).expect("first flat select"), 1, 0),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(
+        expect_flat_hit_int(
+            cache.select(&second, key).expect("second flat select"),
+            2,
+            1,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::WidenedToPolymorphic { len: 2 },
+        }
+    );
+    assert_eq!(cache.state().entry_count(), 2);
+
+    assert!(matches!(
+        cache
+            .select(&missing, key)
+            .expect("missing key does not update polymorphic flat cache"),
+        FlatSelectOutcome::Missing
+    ));
+    assert_eq!(cache.state().entry_count(), 2);
+
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&first, key)
+                .expect("first flat slot remains cached"),
+            1,
+            0,
+        ),
+        FlatSelectSource::Cached
+    );
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&second, key)
+                .expect("second flat slot remains cached"),
+            2,
+            1,
+        ),
+        FlatSelectSource::Cached
+    );
+}
+
+#[test]
+fn flat_select_cache_megamorphic_missing_key_stays_megamorphic() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let key = ids[1];
+    let first = flat_attrs(&symbols, &[key], &[Value::int(1)]);
+    let second = flat_attrs(&symbols, &[ids[0], key], &[Value::int(10), Value::int(2)]);
+    let missing = flat_attrs(&symbols, &[ids[0]], &[Value::int(10)]);
+    let mut cache = FlatSelectCache::with_cap(1).expect("nonzero cap");
+
+    assert_eq!(
+        expect_flat_hit_int(cache.select(&first, key).expect("first flat select"), 1, 0),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(
+        expect_flat_hit_int(
+            cache.select(&second, key).expect("second flat select"),
+            2,
+            1,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::BecameMegamorphic,
+        }
+    );
+    assert!(cache.state().is_megamorphic());
+
+    assert!(matches!(
+        cache
+            .select(&missing, key)
+            .expect("missing key keeps megamorphic flat cache"),
+        FlatSelectOutcome::Missing
+    ));
+    assert!(cache.state().is_megamorphic());
+
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&first, key)
+                .expect("megamorphic flat cache uses slow path"),
+            1,
+            0,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::AlreadyMegamorphic,
+        }
+    );
+}
+
+#[test]
 fn flat_select_cache_rejects_key_changes() {
     let (symbols, ids) = symbols(&[b"a", b"b"]);
     let attrs = flat_attrs(
@@ -625,6 +731,132 @@ fn shaped_select_cache_specialized_missing_key_keeps_cached_entries() {
             1,
         ),
         ShapedSelectSource::Cached
+    );
+}
+
+#[test]
+fn shaped_select_cache_polymorphic_missing_key_keeps_cached_entries() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let key = ids[1];
+    let mut shape_table = ShapeTable::new().expect("shape table initializes");
+    let first = shaped_attrs(&mut shape_table, &symbols, &[key], &[Value::int(1)]);
+    let second = shaped_attrs(
+        &mut shape_table,
+        &symbols,
+        &[ids[0], key],
+        &[Value::int(10), Value::int(2)],
+    );
+    let missing = shaped_attrs(&mut shape_table, &symbols, &[ids[0]], &[Value::int(10)]);
+    let mut cache = ShapedSelectCache::new();
+
+    assert_eq!(
+        expect_hit_int(
+            cache.select(&first, key).expect("first shaped select"),
+            1,
+            0
+        ),
+        ShapedSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(
+        expect_hit_int(
+            cache.select(&second, key).expect("second shaped select"),
+            2,
+            1,
+        ),
+        ShapedSelectSource::Resolved {
+            update: InlineCacheUpdate::WidenedToPolymorphic { len: 2 },
+        }
+    );
+    assert_eq!(cache.state().entry_count(), 2);
+
+    assert!(matches!(
+        cache
+            .select(&missing, key)
+            .expect("missing key does not update polymorphic shaped cache"),
+        ShapedSelectOutcome::Missing
+    ));
+    assert_eq!(cache.state().entry_count(), 2);
+
+    assert_eq!(
+        expect_hit_int(
+            cache
+                .select(&first, key)
+                .expect("first shaped entry remains cached"),
+            1,
+            0,
+        ),
+        ShapedSelectSource::Cached
+    );
+    assert_eq!(
+        expect_hit_int(
+            cache
+                .select(&second, key)
+                .expect("second shaped entry remains cached"),
+            2,
+            1,
+        ),
+        ShapedSelectSource::Cached
+    );
+}
+
+#[test]
+fn shaped_select_cache_megamorphic_missing_key_stays_megamorphic() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let key = ids[1];
+    let mut shape_table = ShapeTable::new().expect("shape table initializes");
+    let first = shaped_attrs(&mut shape_table, &symbols, &[key], &[Value::int(1)]);
+    let second = shaped_attrs(
+        &mut shape_table,
+        &symbols,
+        &[ids[0], key],
+        &[Value::int(10), Value::int(2)],
+    );
+    let missing = shaped_attrs(&mut shape_table, &symbols, &[ids[0]], &[Value::int(10)]);
+    let mut cache = ShapedSelectCache::with_cap(1).expect("nonzero cap");
+
+    assert_eq!(
+        expect_hit_int(
+            cache.select(&first, key).expect("first shaped select"),
+            1,
+            0
+        ),
+        ShapedSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(
+        expect_hit_int(
+            cache.select(&second, key).expect("second shaped select"),
+            2,
+            1,
+        ),
+        ShapedSelectSource::Resolved {
+            update: InlineCacheUpdate::BecameMegamorphic,
+        }
+    );
+    assert!(cache.state().is_megamorphic());
+
+    assert!(matches!(
+        cache
+            .select(&missing, key)
+            .expect("missing key keeps megamorphic shaped cache"),
+        ShapedSelectOutcome::Missing
+    ));
+    assert!(cache.state().is_megamorphic());
+
+    assert_eq!(
+        expect_hit_int(
+            cache
+                .select(&first, key)
+                .expect("megamorphic shaped cache uses slow path"),
+            1,
+            0,
+        ),
+        ShapedSelectSource::Resolved {
+            update: InlineCacheUpdate::AlreadyMegamorphic,
+        }
     );
 }
 
