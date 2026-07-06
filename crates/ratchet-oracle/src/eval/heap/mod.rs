@@ -40,8 +40,11 @@ use crate::value::{HeapObject, Value, ValueError, ValueTag};
 mod arena;
 mod lambda;
 mod primop;
+mod record_table;
 mod roots;
 mod thunk;
+
+use record_table::HeapRecordTable;
 
 pub use arena::{
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan,
@@ -224,7 +227,7 @@ pub struct EvalHeap {
     resident_memory_mode: EvalHeapResidentMemoryMode,
     memory_budget_poll_count: u64,
     last_memory_budget_action: Option<EvalHeapMemoryBudgetAction>,
-    records: Vec<HeapRecord>,
+    records: HeapRecordTable,
     string_cons: HashConsTable<HotXxh3Hash, Value>,
     path_cons: HashConsTable<HotXxh3Hash, Value>,
     list_cons: HashConsTable<HotXxh3Hash, Value>,

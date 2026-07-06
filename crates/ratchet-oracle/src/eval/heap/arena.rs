@@ -607,7 +607,7 @@ impl EvalHeap {
             resident_memory_mode: EvalHeapResidentMemoryMode::ArenaMappedBytes,
             memory_budget_poll_count: 0,
             last_memory_budget_action: None,
-            records: Vec::new(),
+            records: HeapRecordTable::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
@@ -641,7 +641,7 @@ impl EvalHeap {
             resident_memory_mode: EvalHeapResidentMemoryMode::ArenaMappedBytes,
             memory_budget_poll_count: 0,
             last_memory_budget_action: None,
-            records: Vec::new(),
+            records: HeapRecordTable::new(),
             string_cons: HashConsTable::new(),
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
@@ -2356,7 +2356,9 @@ impl EvalHeap {
                 .try_find(&hash, |value| {
                     let value = *value;
                     let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
-                    let record = Self::record_or_unknown_in(records, ValueTag::String, ptr)?;
+                    let record = records
+                        .find(ptr)
+                        .ok_or_else(|| EvalHeapError::unknown(ValueTag::String, ptr))?;
                     let same_hash = record.structural_hash == Some(hash);
                     let same_string = matches!(
                         &record.object,
@@ -2388,7 +2390,9 @@ impl EvalHeap {
                 .try_find(&hash, |value| {
                     let value = *value;
                     let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
-                    let record = Self::record_or_unknown_in(records, ValueTag::Path, ptr)?;
+                    let record = records
+                        .find(ptr)
+                        .ok_or_else(|| EvalHeapError::unknown(ValueTag::Path, ptr))?;
                     let same_hash = record.structural_hash == Some(hash);
                     let same_path = matches!(
                         &record.object,
@@ -2420,7 +2424,9 @@ impl EvalHeap {
                 .try_find(&hash, |value| {
                     let value = *value;
                     let ptr = value.as_list_ptr().map_err(EvalHeapError::Value)?;
-                    let record = Self::record_or_unknown_in(records, ValueTag::List, ptr)?;
+                    let record = records
+                        .find(ptr)
+                        .ok_or_else(|| EvalHeapError::unknown(ValueTag::List, ptr))?;
                     let same_hash = record.structural_hash == Some(hash);
                     let same_list = matches!(
                         &record.object,
@@ -2453,7 +2459,9 @@ impl EvalHeap {
                 .try_find(&hash, |value| {
                     let value = *value;
                     let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
-                    let record = Self::record_or_unknown_in(records, ValueTag::Attrs, ptr)?;
+                    let record = records
+                        .find(ptr)
+                        .ok_or_else(|| EvalHeapError::unknown(ValueTag::Attrs, ptr))?;
                     let same_hash = record.structural_hash == Some(hash);
                     let same_attrs = matches!(
                         &record.object,
@@ -2541,6 +2549,13 @@ impl EvalHeap {
         );
     }
 
+    /// Linearly resolves `ptr` within an arbitrary record sub-slice.
+    ///
+    /// Whole-table resolution goes through the address-keyed index on
+    /// [`super::HeapRecordTable`] and is `O(1)`; this scan is reserved for the
+    /// bounded reclaimed-record sub-slice examined during a worker-region pop,
+    /// whose length is the popped region size rather than the monotonic record
+    /// count, so a scan is acceptable there.
     fn record_in(records: &[HeapRecord], ptr: NonNull<HeapObject>) -> Option<&HeapRecord> {
         let address = ptr.as_ptr() as usize;
         records
@@ -2756,15 +2771,9 @@ impl EvalHeap {
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
     ) -> Result<&HeapRecord, EvalHeapError> {
-        Self::record_or_unknown_in(&self.records, tag, ptr)
-    }
-
-    fn record_or_unknown_in(
-        records: &[HeapRecord],
-        tag: ValueTag,
-        ptr: NonNull<HeapObject>,
-    ) -> Result<&HeapRecord, EvalHeapError> {
-        Self::record_in(records, ptr).ok_or_else(|| EvalHeapError::unknown(tag, ptr))
+        self.records
+            .find(ptr)
+            .ok_or_else(|| EvalHeapError::unknown(tag, ptr))
     }
 }
 

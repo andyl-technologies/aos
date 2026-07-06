@@ -4497,9 +4497,9 @@ impl EvalHeap {
 
         for write in plan.writes().iter().copied() {
             let _ = self.record_index_for_minor_gc_survivor(write.source())?;
-            let Some(destination_index) = self.records.iter().position(|record| {
-                record.ptr.as_ptr() as usize == write.destination().address_bits()
-            }) else {
+            let Some(destination_index) =
+                self.records.index_of_address(write.destination().address_bits())
+            else {
                 return Err(
                     EvalHeapError::UnknownCollectorPollObjectGenerationDestination {
                         destination: write.destination(),
@@ -4657,9 +4657,9 @@ impl EvalHeap {
                 request,
                 &self.records[source_index],
             )?;
-            let Some(destination_index) = self.records.iter().position(|record| {
-                record.ptr.as_ptr() as usize == request.destination().address_bits()
-            }) else {
+            let Some(destination_index) =
+                self.records.index_of_address(request.destination().address_bits())
+            else {
                 return Err(EvalHeapError::UnknownCollectorPollObjectBodyDestination {
                     destination: request.destination(),
                 });
@@ -6035,9 +6035,10 @@ impl EvalHeap {
         reservation: AllocationCollectorPollMinorGcDestinationRecordReservation,
     ) -> Result<(), EvalHeapError> {
         let source = self.record_for_minor_gc_survivor(reservation.source())?;
-        let Some(destination) = self.records.iter().find(|record| {
-            record.ptr.as_ptr() as usize == reservation.destination().address_bits()
-        }) else {
+        let Some(destination) = self
+            .records
+            .record_at_address(reservation.destination().address_bits())
+        else {
             return Err(EvalHeapError::UnknownCollectorPollObjectBodyDestination {
                 destination: reservation.destination(),
             });
@@ -7197,8 +7198,7 @@ impl EvalHeap {
         role: &'static str,
     ) -> Result<&HeapRecord, EvalHeapError> {
         self.records
-            .iter()
-            .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+            .record_at_address(address.address_bits())
             .ok_or(EvalHeapError::UnknownCollectorPollRememberedEdgeAddress { role, address })
     }
 
@@ -7216,8 +7216,7 @@ impl EvalHeap {
     ) -> Result<usize, EvalHeapError> {
         let record_index = self
             .records
-            .iter()
-            .position(|record| record.ptr.as_ptr() as usize == address.address_bits())
+            .index_of_address(address.address_bits())
             .ok_or(EvalHeapError::UnknownCollectorPollSurvivorAddress { address })?;
         let record = &self.records[record_index];
         if generation_for_record(record) != HeapGeneration::Young {
@@ -7241,8 +7240,7 @@ impl EvalHeap {
         address: GcHeapAddress,
     ) -> Result<usize, EvalHeapError> {
         self.records
-            .iter()
-            .position(|record| record.ptr.as_ptr() as usize == address.address_bits())
+            .index_of_address(address.address_bits())
             .ok_or(EvalHeapError::UnknownCollectorPollReferenceSlotAddress { address })
     }
 
