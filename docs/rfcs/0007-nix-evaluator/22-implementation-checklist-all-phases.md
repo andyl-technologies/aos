@@ -10051,6 +10051,14 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       current flat-payload `listToAttrs` result boundary only; it does not claim
       shaped/HAMT heap payload iteration, C++ oracle comparison, full conformance
       20-21, or full AOS closure `.drv` parity.
+- [x] Current active projected-shape `groupBy` order-parity canary:
+      `builtins.groupBy` now shares the successful dynamic-result order-parity
+      telemetry hook. A tree-walk canary groups adversarial keys, checks result
+      `attrNames`, one grouped bucket length, projected-shape metadata, and one
+      matched, zero mismatched direct-result telemetry sample. This pins the
+      current flat-payload `groupBy` result boundary only; it does not claim
+      shaped/HAMT heap payload iteration, C++ oracle comparison, full conformance
+      20-21, or full AOS closure `.drv` parity.
 - [x] Current attrset telemetry precursor: `ratchet-value::attrs::telemetry`
       exposes in-process, byte-neutral counters/snapshots for shape census,
       slow-select hit/miss outcomes by representation, generic/flat/shaped/HAMT
@@ -10070,7 +10078,7 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       there too. Active `attrNames`/`attrValues` calls now also record
       successful in-process raw-byte order-parity checks, as do successful
       `mapAttrs`, `zipAttrsWith`, `removeAttrs`, and `intersectAttrs` result
-      allocations plus `listToAttrs` results. Cache hits use mirrored
+      allocations plus `listToAttrs` and `groupBy` results. Cache hits use mirrored
       `EvalStats` inline-cache counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape

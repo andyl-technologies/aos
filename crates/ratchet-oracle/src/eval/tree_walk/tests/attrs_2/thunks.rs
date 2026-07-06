@@ -996,6 +996,9 @@ fn group_by_records_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 2);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 2);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
@@ -1936,6 +1939,48 @@ fn list_to_attrs_projected_shape_preserves_order_and_records_order_parity_teleme
         .heap()
         .get_attrs_metadata(outcome.value())
         .expect("listToAttrs result metadata exists");
+
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
+}
+
+#[test]
+fn group_by_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let source = r#"
+        builtins.groupBy
+          (value:
+            if value == "z" then "z"
+            else if value == "A" then "A"
+            else if value == "aa" then "aa"
+            else if value == "_" then "_"
+            else "a")
+          [ "z" "A" "aa" "_" "a" "A" ]
+    "#;
+
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({source})")),
+        vec![
+            b"A".to_vec(),
+            b"_".to_vec(),
+            b"a".to_vec(),
+            b"aa".to_vec(),
+            b"z".to_vec(),
+        ],
+    );
+    assert_eq!(
+        eval(&format!("builtins.length ({source}).A")).as_int(),
+        Ok(2),
+    );
+
+    let ir = lower(source);
+    let outcome = eval_whnf_owned(&ir).expect("groupBy projected-shape result evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("groupBy result metadata exists");
 
     assert!(metadata.projected_shape().is_some());
     assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
