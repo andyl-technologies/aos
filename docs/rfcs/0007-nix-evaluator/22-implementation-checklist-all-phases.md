@@ -9797,6 +9797,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       exits also record terminal shaped/flat/HAMT select-cache site states in
       `attr_telemetry`. This is a tree-walk/Rust-callable bridge over flat
       payloads, not the final native `aos_select_ic` lowering.
+- [x] Current projected-shaped hit-miss-hit select-cache canary: a tree-walk
+      static `select` with a default now proves that, at one active select
+      site, a resolved projected-shaped hit can be followed by a missing
+      receiver without erasing the monomorphic cache entry, and a later receiver
+      with the original projected shape returns through the cached-hit path.
+      The test checks mirrored hit/miss counters, shaped lookup telemetry,
+      terminal monomorphic site state, and slow-select shaped hit/miss counts.
+      This does not cover polymorphic or megamorphic active bridge states,
+      `hasAttr`/`with` probes, native lowering, or `.drv` parity.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie

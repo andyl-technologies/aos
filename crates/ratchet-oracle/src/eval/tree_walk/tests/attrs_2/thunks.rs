@@ -1261,6 +1261,32 @@ fn repeated_static_select_defaults_preserve_hit_then_miss_semantics() {
 }
 
 #[test]
+fn repeated_static_select_defaults_keep_shaped_cache_after_missing_receiver() {
+    let ir = lower("let f = x: x.a or 10; in (f { a = 1; }) + (f { b = 2; }) + (f { a = 3; })");
+
+    let outcome = eval_whnf_owned(&ir).expect("hit-miss-hit default select evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(14));
+    assert_eq!(outcome.stats().inline_cache_hits(), 1);
+    assert_eq!(outcome.stats().inline_cache_misses(), 2);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.monomorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.monomorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 1);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 1);
+    assert_eq!(counts.shaped_misses, 1);
+}
+
+#[test]
 fn repeated_static_select_defaults_preserve_miss_then_hit_semantics() {
     let ir = lower("let f = x: x.a or 10; in (f {}) + (f { a = 2; })");
 
