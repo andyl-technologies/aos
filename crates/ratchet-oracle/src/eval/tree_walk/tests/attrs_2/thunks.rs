@@ -1083,6 +1083,9 @@ fn path_surface_attrsets_record_dynamic_repr_decisions() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 3);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 3);
+    assert_eq!(stats.mismatched, 0);
 
     fs::remove_dir_all(root).expect("temp directory removes");
 }
@@ -1978,6 +1981,109 @@ a = 5
         assert_eq!(stats.matched, 1, "{source}");
         assert_eq!(stats.mismatched, 0, "{source}");
     }
+}
+
+#[test]
+fn path_surface_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let root = unique_temp_dir("path-surface-order");
+    fs::write(root.join("a"), b"regular").expect("regular file writes");
+    fs::create_dir(root.join("_")).expect("underscore directory creates");
+    std::os::unix::fs::symlink(root.join("a"), root.join("0")).expect("symlink creates");
+    fs::create_dir(root.join("aa")).expect("aa directory creates");
+    fs::write(root.join("z"), b"regular").expect("z file writes");
+
+    let parse_source = r#"builtins.parseDrvName "pkg-1.0""#;
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({parse_source})")),
+        vec![b"name".to_vec(), b"version".to_vec()],
+    );
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrValues ({parse_source})")),
+        vec![b"pkg".to_vec(), b"1.0".to_vec()],
+    );
+    let parse_outcome =
+        eval_whnf_owned(&lower(parse_source)).expect("parseDrvName result evaluates");
+    let parse_metadata = parse_outcome
+        .heap()
+        .get_attrs_metadata(parse_outcome.value())
+        .expect("parseDrvName result metadata exists");
+    assert!(parse_metadata.projected_shape().is_some());
+    assert_eq!(parse_metadata.repr(), AttrSetReprKind::Flat);
+    let parse_stats = parse_outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(parse_stats.matched, 1);
+    assert_eq!(parse_stats.mismatched, 0);
+
+    let read_source = format!(
+        "builtins.readDir {}",
+        nix_string_literal(&path_source(&root))
+    );
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({read_source})")),
+        vec![
+            b"0".to_vec(),
+            b"_".to_vec(),
+            b"a".to_vec(),
+            b"aa".to_vec(),
+            b"z".to_vec(),
+        ],
+    );
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrValues ({read_source})")),
+        vec![
+            b"symlink".to_vec(),
+            b"directory".to_vec(),
+            b"regular".to_vec(),
+            b"directory".to_vec(),
+            b"regular".to_vec(),
+        ],
+    );
+    let read_outcome = eval_whnf_owned(&lower(&read_source)).expect("readDir result evaluates");
+    let read_metadata = read_outcome
+        .heap()
+        .get_attrs_metadata(read_outcome.value())
+        .expect("readDir result metadata exists");
+    assert!(read_metadata.projected_shape().is_some());
+    assert_eq!(read_metadata.repr(), AttrSetReprKind::Flat);
+    let read_stats = read_outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(read_stats.matched, 1);
+    assert_eq!(read_stats.mismatched, 0);
+
+    let options = search_path_options(b"pkg", &root);
+    assert_eq!(
+        eval_list_string_bytes_with_options(
+            "builtins.attrNames (builtins.head builtins.nixPath)",
+            options.clone(),
+        ),
+        vec![b"path".to_vec(), b"prefix".to_vec()],
+    );
+    assert_eq!(
+        eval_list_string_bytes_with_options(
+            "builtins.attrValues (builtins.head builtins.nixPath)",
+            options.clone(),
+        ),
+        vec![path_bytes(&root), b"pkg".to_vec()],
+    );
+    let nix_path_ir = lower("builtins.nixPath");
+    let nix_path_outcome =
+        eval_whnf_owned_with_options(&nix_path_ir, options).expect("nixPath result evaluates");
+    let nix_path_entry = {
+        let list = nix_path_outcome
+            .heap()
+            .get_list(nix_path_outcome.value())
+            .expect("nixPath result is a list");
+        list.get(0).expect("nixPath entry exists")
+    };
+    let nix_path_metadata = nix_path_outcome
+        .heap()
+        .get_attrs_metadata(nix_path_entry)
+        .expect("nixPath entry metadata exists");
+    assert!(nix_path_metadata.projected_shape().is_some());
+    assert_eq!(nix_path_metadata.repr(), AttrSetReprKind::Flat);
+    let nix_path_stats = nix_path_outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(nix_path_stats.matched, 1);
+    assert_eq!(nix_path_stats.mismatched, 0);
+
+    fs::remove_dir_all(root).expect("temp directory removes");
 }
 
 #[test]

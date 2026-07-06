@@ -342,19 +342,12 @@ impl TreeWalk {
                 &self.symbols,
             )
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
-            let len = attrs.len();
             let entry_root_start = values.len();
             values.push(path);
             values.push(prefix);
             let attrs =
                 self.with_transient_value_stack_roots(id, span, values.as_mut_slice(), |eval| {
-                    eval.alloc_flat_attrs_with_repr_telemetry(
-                        id,
-                        span,
-                        0,
-                        attrs,
-                        AttrSetConstruction::Dynamic { len },
-                    )
+                    eval.alloc_dynamic_attrs_result_with_order_telemetry(id, span, attrs)
                 })?;
             values.truncate(entry_root_start);
             values.push(attrs);

@@ -344,14 +344,7 @@ impl TreeWalk {
         } else {
             self.mark_impure_input_trace_incomplete();
         }
-        let len = attrs.len();
-        self.alloc_flat_attrs_with_repr_telemetry(
-            id,
-            span,
-            0,
-            attrs,
-            AttrSetConstruction::Dynamic { len },
-        )
+        self.alloc_dynamic_attrs_result_with_order_telemetry(id, span, attrs)
     }
 
     pub(super) fn eval_read_file_primop(
