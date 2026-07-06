@@ -3334,6 +3334,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       and public root `fromJSON "{}"`/`fromTOML ""` result allocations
       preserving registered transient roots while codec-generated attrset
       dispatch remains blocked,
+      helper-level formal-set auto-call empty-argument attrset allocations
+      preserving registered transient roots while non-attrset root dispatch
+      remains blocked,
       direct `splitVersion` empty-list result allocations relocating
       registered transient roots,
       direct list-concat result allocations preserving registered transient

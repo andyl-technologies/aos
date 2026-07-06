@@ -3407,6 +3407,59 @@ fn gc_stress_eval_root_codec_empty_attrset_results_skip_argument_node_dispatch()
 }
 
 #[test]
+fn gc_stress_formal_set_auto_call_empty_arg_skips_non_attrset_root_dispatch() {
+    let ir = lower("{ selected ? 7 }: selected");
+    let span = ir.arena.node(ir.root).expect("root exists").span;
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    let lambda = evaluator.eval_root().expect("formal-set lambda allocates");
+    assert_eq!(lambda.tag(), ValueTag::Lambda);
+    evaluator
+        .heap
+        .set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let local_source = evaluator
+        .heap
+        .alloc_thunk(EvalThunk::new(IrId::new(7)))
+        .expect("registered local thunk allocates");
+    let mut roots = [local_source];
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+
+    evaluator.active_root_eval_node = Some(ir.root);
+    let value = evaluator
+        .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
+            eval.auto_call_formal_set_lambda(ir.root, span, lambda)
+        })
+        .expect("formal-set auto-call evaluates under GC stress");
+    evaluator.active_root_eval_node = None;
+
+    assert!(evaluator.transient_value_stack_roots().is_empty());
+    assert!(
+        roots[0].raw_eq(local_source),
+        "registered root relocated while auto-call empty attrset dispatch was blocked"
+    );
+    assert_eq!(roots[0].tag(), ValueTag::Thunk);
+    assert_eq!(value.as_int(), Ok(7));
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + 1,
+        "formal-set auto-call should record exactly one permanent attrset safepoint"
+    );
+    let permanent_safepoint = evaluator
+        .heap()
+        .permanent_allocation_safepoints()
+        .last()
+        .expect("formal-set auto-call attrset allocation safepoint records");
+    assert_eq!(
+        permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
+    assert_eq!(
+        permanent_safepoint.gc_poll_reason(),
+        Some(AllocationGcPollReason::GcStressEverySafepoint)
+    );
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+#[test]
 fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots() {
     let cases: &[(&str, &[u8])] = &[
         (r#"builtins.concatStringsSep "," [ "a" "b" ]"#, b"a,b"),
