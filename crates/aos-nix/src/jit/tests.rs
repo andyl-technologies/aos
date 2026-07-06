@@ -153,6 +153,51 @@ fn update_ir(left_slot: u32, right_slot: u32) -> Ir {
     }
 }
 
+fn apply_ir(function_slot: u32, argument_slot: u32) -> Ir {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local {
+                    slot: function_slot,
+                },
+            ),
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::Local {
+                    slot: argument_slot,
+                },
+            ),
+            IrNode::new(
+                IrKind::Apply,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Pair {
+                    first: IrId::new(0),
+                    second: IrId::new(1),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(2),
+        arena,
+        facts,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
 fn artifact_runtime_import_names(
     preflight: &JitCraneliftRegisteredTier1SlotPreflight,
 ) -> Vec<&str> {
@@ -162,6 +207,55 @@ fn artifact_runtime_import_names(
         .iter()
         .map(|artifact_import| artifact_import.symbol_name())
         .collect()
+}
+
+fn assert_full_ir_native_call_registration_plan_gap(ir: &Ir, expected_symbols: &[&str]) {
+    let result = nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root(
+        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
+        TierUpPolicy::default(),
+        TierUpDemandHint::NoMultiUseEvidence,
+        ir,
+        ir.root,
+    );
+
+    let Err(error) = result else {
+        panic!("incomplete runtime-symbol gates must not reach full-IR native calls");
+    };
+    assert!(error.decision().should_promote());
+    assert_eq!(
+        error.slot().invocation_counter().invocations(),
+        DEFAULT_TIER1_INVOCATION_THRESHOLD
+    );
+    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
+
+    let NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
+        missing_count,
+        preflight,
+    } = error.runtime_symbol_registration_plan_error()
+    else {
+        panic!("current full-IR native-call gate should fail on incomplete registration metadata");
+    };
+    assert!(*missing_count > 0);
+    assert!(!preflight.is_complete());
+    for symbol_name in expected_symbols {
+        assert!(
+            preflight
+                .address_candidate_preflight()
+                .address_candidate_for(symbol_name)
+                .is_some()
+        );
+        assert!(
+            preflight
+                .address_provenance_gap_for_symbol(symbol_name)
+                .is_none()
+        );
+        assert!(
+            preflight
+                .address_candidate_preflight()
+                .address_provenance_for_symbol(symbol_name)
+                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
+        );
+    }
 }
 
 #[test]
@@ -1447,104 +1541,37 @@ fn nix_jit_registered_native_call_preflight_reports_current_registration_plan_ga
 fn nix_jit_registered_full_ir_native_call_preflight_reports_current_registration_plan_gap() {
     let ir = static_select_ir(19);
 
-    let result = nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root(
-        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
-        TierUpPolicy::default(),
-        TierUpDemandHint::NoMultiUseEvidence,
+    assert_full_ir_native_call_registration_plan_gap(
         &ir,
-        ir.root,
+        &["aos_env_get", "aos_force", "aos_select_ic"],
     );
+}
 
-    let Err(error) = result else {
-        panic!("incomplete runtime-symbol gates must not reach full-IR native calls");
-    };
-    assert!(error.decision().should_promote());
-    assert_eq!(
-        error.slot().invocation_counter().invocations(),
-        DEFAULT_TIER1_INVOCATION_THRESHOLD
+#[test]
+fn nix_jit_registered_full_ir_apply_native_call_preflight_reports_registration_plan_gap() {
+    let ir = apply_ir(17, 19);
+
+    assert_full_ir_native_call_registration_plan_gap(&ir, &["aos_env_get", "aos_apply"]);
+}
+
+#[test]
+fn nix_jit_registered_full_ir_has_attr_native_call_preflight_reports_registration_plan_gap() {
+    let ir = static_has_attr_ir(19);
+
+    assert_full_ir_native_call_registration_plan_gap(
+        &ir,
+        &["aos_env_get", "aos_force", "aos_has_attr"],
     );
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-
-    let NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
-        missing_count,
-        preflight,
-    } = error.runtime_symbol_registration_plan_error()
-    else {
-        panic!("current full-IR native-call gate should fail on incomplete registration metadata");
-    };
-    assert!(*missing_count > 0);
-    assert!(!preflight.is_complete());
-    for symbol_name in ["aos_env_get", "aos_force", "aos_select_ic"] {
-        assert!(
-            preflight
-                .address_candidate_preflight()
-                .address_candidate_for(symbol_name)
-                .is_some()
-        );
-        assert!(
-            preflight
-                .address_provenance_gap_for_symbol(symbol_name)
-                .is_none()
-        );
-        assert!(
-            preflight
-                .address_candidate_preflight()
-                .address_provenance_for_symbol(symbol_name)
-                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
-        );
-    }
 }
 
 #[test]
 fn nix_jit_registered_full_ir_native_call_preflight_reports_update_registration_plan_gap() {
     let ir = update_ir(19, 21);
 
-    let result = nix_jit_force_aware_registered_tier1_native_call_preflight_for_lowered_ir_root(
-        JitTieredCodeSlot::with_counter(TierUpCounter::new(DEFAULT_TIER1_INVOCATION_THRESHOLD - 1)),
-        TierUpPolicy::default(),
-        TierUpDemandHint::NoMultiUseEvidence,
+    assert_full_ir_native_call_registration_plan_gap(
         &ir,
-        ir.root,
+        &["aos_env_get", "aos_force", "aos_update"],
     );
-
-    let Err(error) = result else {
-        panic!("incomplete runtime-symbol gates must not reach update native calls");
-    };
-    assert!(error.decision().should_promote());
-    assert_eq!(
-        error.slot().invocation_counter().invocations(),
-        DEFAULT_TIER1_INVOCATION_THRESHOLD
-    );
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-
-    let NixJitRuntimeSymbolRegistrationPlanError::Incomplete {
-        missing_count,
-        preflight,
-    } = error.runtime_symbol_registration_plan_error()
-    else {
-        panic!("current update native-call gate should fail on incomplete registration metadata");
-    };
-    assert!(*missing_count > 0);
-    assert!(!preflight.is_complete());
-    for symbol_name in ["aos_env_get", "aos_force", "aos_update"] {
-        assert!(
-            preflight
-                .address_candidate_preflight()
-                .address_candidate_for(symbol_name)
-                .is_some()
-        );
-        assert!(
-            preflight
-                .address_provenance_gap_for_symbol(symbol_name)
-                .is_none()
-        );
-        assert!(
-            preflight
-                .address_candidate_preflight()
-                .address_provenance_for_symbol(symbol_name)
-                .is_some_and(NixJitRuntimeSymbolAddressProvenance::is_runtime_ffi_native_wrapper)
-        );
-    }
 }
 
 #[test]
