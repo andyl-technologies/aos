@@ -98,7 +98,9 @@ pub struct EvalTierBTransitionRequest {
 }
 
 impl EvalTierBTransitionRequest {
-    const fn from_memory_budget_action(action: EvalHeapMemoryBudgetAction) -> Option<Self> {
+    pub(in crate::eval::tree_walk) const fn from_memory_budget_action(
+        action: EvalHeapMemoryBudgetAction,
+    ) -> Option<Self> {
         match action {
             EvalHeapMemoryBudgetAction::RequestTierB { decision, report } => {
                 Some(Self { decision, report })
@@ -13586,7 +13588,10 @@ impl EvalStats {
         self.heap_tier_b_admission_generation_rewrites
     }
 
-    fn record_heap_tier_b_admission(&mut self, report: EvalHeapTierBAdmissionReport) {
+    pub(in crate::eval::tree_walk) fn record_heap_tier_b_admission(
+        &mut self,
+        report: EvalHeapTierBAdmissionReport,
+    ) {
         self.heap_tier_b_admission_worker_records = report.worker_records() as u64;
         self.heap_tier_b_admission_permanent_shared_records =
             report.permanent_shared_records() as u64;

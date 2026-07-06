@@ -472,14 +472,95 @@ pub(in crate::eval) fn eval_raw_bytes_with_evaluator_owned(
     mut evaluator: TreeWalk,
 ) -> Result<(Vec<u8>, TreeWalk), TreeWalkError> {
     let value = evaluator.eval_root()?;
-    let span = evaluator.node(ir.root)?.span;
-    let mut out = Vec::new();
-    let mut visited = Vec::new();
-    evaluator.write_raw_value(ir.root, span, ir.root, span, value, &mut out, &mut visited)?;
+    let out = render_raw_value_with_evaluator(&mut evaluator, ir, value)?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();
     Ok((out, evaluator))
+}
+
+pub(in crate::eval) fn eval_raw_bytes_with_post_render_tier_b_admission(
+    ir: &Ir,
+    options: TreeWalkOptions,
+) -> Result<
+    (
+        Vec<u8>,
+        Vec<u8>,
+        Option<EvalHeapTierBAdmissionReport>,
+        EvalStats,
+    ),
+    TreeWalkError,
+> {
+    let mut evaluator = TreeWalk::with_options(ir, options);
+    let value = evaluator.eval_root()?;
+    let pre_admission = render_raw_value_with_evaluator(&mut evaluator, ir, value)?;
+    let span = evaluator.node(ir.root)?.span;
+    let admission_report =
+        apply_raw_tier_b_transition_admission_if_requested(&mut evaluator, ir.root, span)?;
+    let post_admission = render_raw_value_with_evaluator(&mut evaluator, ir, value)?;
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
+    evaluator.advance_persist_eval_cache_run_boundary();
+    Ok((pre_admission, post_admission, admission_report, stats))
+}
+
+fn render_raw_value_with_evaluator(
+    evaluator: &mut TreeWalk,
+    ir: &Ir,
+    value: Value,
+) -> Result<Vec<u8>, TreeWalkError> {
+    let span = evaluator.node(ir.root)?.span;
+    let mut out = Vec::new();
+    let mut visited = Vec::new();
+    evaluator.write_raw_value(ir.root, span, ir.root, span, value, &mut out, &mut visited)?;
+    Ok(out)
+}
+
+fn apply_raw_tier_b_transition_admission_if_requested(
+    evaluator: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+) -> Result<Option<EvalHeapTierBAdmissionReport>, TreeWalkError> {
+    if !evaluator.options.heap_tier_b_transition_admission_enabled() {
+        return Ok(None);
+    }
+    let Some(action) = evaluator.heap.last_memory_budget_action() else {
+        return Ok(None);
+    };
+    let Some(request) = EvalTierBTransitionRequest::from_memory_budget_action(action) else {
+        return Ok(None);
+    };
+
+    let admission = request.admission_plan(&evaluator.heap).map_err(|source| {
+        raw_tier_b_transition_admission_error(
+            id,
+            span,
+            EvalTierBTransitionAdmissionApplyError::Plan(source),
+        )
+    })?;
+    let report = evaluator
+        .heap
+        .apply_tier_b_admission_plan(admission.heap_plan())
+        .map_err(|source| {
+            raw_tier_b_transition_admission_error(
+                id,
+                span,
+                EvalTierBTransitionAdmissionApplyError::Heap(source),
+            )
+        })?;
+    evaluator.stats.record_heap_tier_b_admission(report);
+    Ok(Some(report))
+}
+
+fn raw_tier_b_transition_admission_error(
+    id: IrId,
+    span: Span,
+    source: EvalTierBTransitionAdmissionApplyError,
+) -> TreeWalkError {
+    TreeWalkError::new(
+        TreeWalkErrorKind::TierBTransitionAdmission { id, source },
+        span,
+    )
 }
 
 /// Evaluates an IR root and renders a numeric value like raw `nix-instantiate --eval`.

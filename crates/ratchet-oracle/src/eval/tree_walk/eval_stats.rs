@@ -58,9 +58,13 @@ impl TreeWalk {
             permanent_heap_reserved_bytes: permanent_arena.reserved_bytes as u64,
             permanent_heap_mapped_bytes: permanent_arena.mapped_bytes as u64,
             permanent_heap_used_bytes: permanent_arena.used_bytes as u64,
-            heap_tier_b_admission_worker_records: 0,
-            heap_tier_b_admission_permanent_shared_records: 0,
-            heap_tier_b_admission_generation_rewrites: 0,
+            heap_tier_b_admission_worker_records: self.stats.heap_tier_b_admission_worker_records,
+            heap_tier_b_admission_permanent_shared_records: self
+                .stats
+                .heap_tier_b_admission_permanent_shared_records,
+            heap_tier_b_admission_generation_rewrites: self
+                .stats
+                .heap_tier_b_admission_generation_rewrites,
         }
     }
 

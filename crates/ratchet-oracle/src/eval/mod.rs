@@ -8,6 +8,7 @@
 
 pub mod env;
 pub mod gc_audit;
+pub mod gc_conformance;
 pub mod gc_measurement;
 pub mod heap;
 pub mod internal_diff;
@@ -34,6 +35,13 @@ pub use gc_audit::{
     GcSafetyAuditSmokeReport, GcSafetyAuditTarget, GcSafetyAuditTool, gc_safety_audit_invocations,
     gc_safety_audit_manifest, run_gc_safety_audit_gc_stress_smoke,
     run_gc_safety_audit_safe_tree_walk_smoke, validate_gc_safety_audit_manifest,
+};
+pub use gc_conformance::{
+    GcConformanceInvocation, GcConformanceLowerStage, GcConformanceManifest,
+    GcConformanceManifestError, GcConformanceScope, GcConformanceSmokeError,
+    GcConformanceSmokeReport, GcConformanceTarget, RawRenderMode, gc_conformance_invocations,
+    gc_conformance_manifest, run_gc_conformance_tier_a_tier_b_raw_bytes_smoke,
+    validate_gc_conformance_manifest,
 };
 pub use gc_measurement::{
     HeapGcMeasurementId, HeapGcMeasurementInvocation, HeapGcMeasurementLowerStage,

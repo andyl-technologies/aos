@@ -58,9 +58,9 @@ use super::heap::{
     AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
     AllocationCollectorPollScan, EvalHeap, EvalHeapAttrsMetadata, EvalHeapCheapMemoryAdviceReport,
     EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue, EvalHeapError,
-    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapWorkerRegionPopReport,
-    EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind,
-    HeapAllocationDomain, HeapEdgeSource, PreciseHeapScan,
+    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapTierBAdmissionReport,
+    EvalHeapWorkerRegionPopReport, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
+    EvalThunkKind, HeapAllocationDomain, HeapEdgeSource, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -335,7 +335,6 @@ mod options;
 mod outcome;
 mod toml_normalize;
 mod version;
-pub(in crate::eval) use api::eval_raw_bytes_with_evaluator_owned;
 pub(crate) use api::{
     attr_path_segment_is_list_index, parse_attr_path_list_index,
     parse_attr_path_list_index_diagnostic,
@@ -348,6 +347,9 @@ pub use api::{
     eval_raw_bytes_with_options, eval_raw_bytes_with_options_source, eval_whnf, eval_whnf_owned,
     eval_whnf_owned_with_options, eval_whnf_owned_with_options_and_realizer,
     eval_whnf_owned_with_options_realizer_and_eval_cache, eval_whnf_with_options,
+};
+pub(in crate::eval) use api::{
+    eval_raw_bytes_with_evaluator_owned, eval_raw_bytes_with_post_render_tier_b_admission,
 };
 pub use error_kind::TreeWalkErrorKind;
 pub(crate) use errors::ArithmeticOp;
