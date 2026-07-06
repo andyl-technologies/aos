@@ -10074,6 +10074,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       pins the current flat-payload path-surface result boundary only; it does
       not claim shaped/HAMT heap payload iteration, C++ oracle comparison, full
       conformance 20-21, or full AOS closure `.drv` parity.
+- [x] Current active generated `fetchGit` result order-parity canary:
+      `builtins.fetchGit` result attrsets now share the successful
+      dynamic-result order-parity telemetry hook. The direct result-allocation
+      canary builds full fetchGit metadata without network access and checks
+      projected-shape metadata, lexicographic key iteration, and one matched,
+      zero mismatched direct-result telemetry sample. This pins the current
+      flat-payload `fetchGit` result boundary only; it does not claim
+      shaped/HAMT heap payload iteration, C++ oracle comparison, full
+      conformance 20-21, or full AOS closure `.drv` parity.
 - [x] Current active projected-shape `functionArgs` order-parity canary:
       `builtins.functionArgs` now shares the successful dynamic-result
       order-parity telemetry hook. A tree-walk canary describes adversarial
@@ -10122,8 +10131,9 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `mapAttrs`, `zipAttrsWith`, `removeAttrs`, and `intersectAttrs` result
       allocations plus `partition`, codec-generated `fromJSON`/`fromTOML`
       results, generated `parseDrvName`/`readDir`/`nixPath` entry results,
-      `functionArgs`, `listToAttrs`, and `groupBy` results. Cache hits use
-      mirrored `EvalStats` inline-cache counters while
+      generated `fetchGit` results, `functionArgs`, `listToAttrs`, and
+      `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
+      counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape
       projection separately increments `EvalStats::shape_transitions` for
