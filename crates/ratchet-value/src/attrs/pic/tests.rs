@@ -253,6 +253,48 @@ fn flat_select_cache_missing_key_does_not_update_cache() {
 }
 
 #[test]
+fn flat_select_cache_specialized_missing_key_keeps_cached_slots() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let key = ids[1];
+    let present = flat_attrs(&symbols, &[ids[0], key], &[Value::int(10), Value::int(20)]);
+    let missing = flat_attrs(&symbols, &[ids[0]], &[Value::int(10)]);
+    let mut cache = FlatSelectCache::new();
+
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&present, key)
+                .expect("first flat select resolves"),
+            20,
+            1,
+        ),
+        FlatSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(cache.state().entry_count(), 1);
+
+    assert!(matches!(
+        cache
+            .select(&missing, key)
+            .expect("missing key does not update specialized flat cache"),
+        FlatSelectOutcome::Missing
+    ));
+    assert_eq!(cache.state().entry_count(), 1);
+
+    assert_eq!(
+        expect_flat_hit_int(
+            cache
+                .select(&present, key)
+                .expect("cached flat slot remains usable"),
+            20,
+            1,
+        ),
+        FlatSelectSource::Cached
+    );
+}
+
+#[test]
 fn flat_select_cache_rejects_key_changes() {
     let (symbols, ids) = symbols(&[b"a", b"b"]);
     let attrs = flat_attrs(
@@ -536,6 +578,54 @@ fn shaped_select_cache_missing_key_does_not_update_cache() {
         ShapedSelectOutcome::Missing
     ));
     assert_eq!(cache.state().entry_count(), 0);
+}
+
+#[test]
+fn shaped_select_cache_specialized_missing_key_keeps_cached_entries() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let key = ids[1];
+    let mut shape_table = ShapeTable::new().expect("shape table initializes");
+    let present = shaped_attrs(
+        &mut shape_table,
+        &symbols,
+        &[ids[0], key],
+        &[Value::int(10), Value::int(20)],
+    );
+    let missing = shaped_attrs(&mut shape_table, &symbols, &[ids[0]], &[Value::int(10)]);
+    let mut cache = ShapedSelectCache::new();
+
+    assert_eq!(
+        expect_hit_int(
+            cache
+                .select(&present, key)
+                .expect("first shaped select resolves"),
+            20,
+            1,
+        ),
+        ShapedSelectSource::Resolved {
+            update: InlineCacheUpdate::InstalledMonomorphic,
+        }
+    );
+    assert_eq!(cache.state().entry_count(), 1);
+
+    assert!(matches!(
+        cache
+            .select(&missing, key)
+            .expect("missing key does not update specialized shaped cache"),
+        ShapedSelectOutcome::Missing
+    ));
+    assert_eq!(cache.state().entry_count(), 1);
+
+    assert_eq!(
+        expect_hit_int(
+            cache
+                .select(&present, key)
+                .expect("cached shaped slot remains usable"),
+            20,
+            1,
+        ),
+        ShapedSelectSource::Cached
+    );
 }
 
 #[test]

@@ -9770,6 +9770,13 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       state because flat attrsets have no stable absent slot. Native runtime
       helper dispatch, shaped/HAMT active storage replacement, and `.drv`
       effects remain open.
+- [x] Current specialized missing-key select-cache precursor:
+      `FlatSelectCache` and `ShapedSelectCache` tests now pin that an already
+      specialized cache returns `Missing` for a later attrset without the bound
+      key while preserving the existing monomorphic entry for future hits.
+      This guards the absent-key no-update contract after specialization; it
+      does not add absent-slot caching, native runtime helpers, active shaped
+      storage, or `.drv` parity coverage.
 - [x] Current active projected-shape select/with/runtime-callable IC bridge: the tree-walk
       evaluator keeps per-run flat, shaped, and HAMT select-cache cells keyed by
       module, select-site id, and attr-path segment or with-chain depth. Active flat heap
