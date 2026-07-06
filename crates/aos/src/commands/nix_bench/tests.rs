@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use aos_core::nix::{DrvClosure, NixEval};
 
+use super::analysis::*;
 use super::corpus;
+use super::record::*;
 use super::*;
 
 fn sample(elapsed_seconds: f64, cpu_time: f64, thunks: u64) -> BenchmarkSample {
@@ -64,6 +66,16 @@ fn record_with_context(
     context: BenchmarkContext,
 ) -> BenchmarkRecord {
     let attr = name.rsplit(':').next().unwrap_or(name).to_string();
+    // Mirror each oracle sample's wall time into a native sample so timing-based
+    // assertions exercise the native-gated comparison path.
+    let native_samples: Vec<NativeBenchmarkSample> = samples
+        .iter()
+        .map(|sample| NativeBenchmarkSample {
+            elapsed_seconds: sample.elapsed_seconds,
+            elapsed_nanos: sample.elapsed_nanos,
+            drv_path: sample.drv_path.clone(),
+        })
+        .collect();
     BenchmarkRecord {
         name: name.to_string(),
         file: context.file.clone(),
@@ -74,6 +86,8 @@ fn record_with_context(
         parity: matched_parity("aos-nix"),
         summary: summarize_samples(&samples),
         samples,
+        native_summary: summarize_native_samples(&native_samples),
+        native_samples,
     }
 }
 
