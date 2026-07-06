@@ -831,6 +831,9 @@ fn list_to_attrs_records_dynamic_repr_decision() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 2);
     assert_eq!(snapshot.reasons.small_shape_stable, 1);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
 
     let census = outcome
         .attr_telemetry()
@@ -1898,6 +1901,47 @@ fn attr_filter_projected_shape_preserves_order_and_records_order_parity_telemetr
         assert_eq!(stats.matched, 1, "{source}");
         assert_eq!(stats.mismatched, 0, "{source}");
     }
+}
+
+#[test]
+fn list_to_attrs_projected_shape_preserves_order_and_records_order_parity_telemetry() {
+    let list_source = r#"[
+        { name = "z"; value = 1; }
+        { name = "A"; value = 2; }
+        { name = "aa"; value = 3; }
+        { name = "_"; value = 4; }
+        { name = "a"; value = 5; }
+        { name = "a"; value = 99; }
+    ]"#;
+    let attrs_source = format!("builtins.listToAttrs {list_source}");
+
+    assert_eq!(
+        eval_list_string_bytes(&format!("builtins.attrNames ({attrs_source})")),
+        vec![
+            b"A".to_vec(),
+            b"_".to_vec(),
+            b"a".to_vec(),
+            b"aa".to_vec(),
+            b"z".to_vec(),
+        ],
+    );
+    assert_eq!(
+        eval_list_ints(&format!("builtins.attrValues ({attrs_source})")),
+        vec![2, 4, 5, 3, 1],
+    );
+
+    let ir = lower(&attrs_source);
+    let outcome = eval_whnf_owned(&ir).expect("listToAttrs projected-shape result evaluates");
+    let metadata = outcome
+        .heap()
+        .get_attrs_metadata(outcome.value())
+        .expect("listToAttrs result metadata exists");
+
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let stats = outcome.attr_telemetry().order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]
