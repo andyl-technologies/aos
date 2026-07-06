@@ -10120,9 +10120,9 @@ impl EvalGcStressBoundaryMinorGcCommitPreflights {
     ///
     /// This consumes the preflight bundle so the returned dry-run report retains
     /// the exact metadata that produced the owned reference-writeback,
-    /// destination-storage, and commit applications. It still does not mutate
-    /// live evaluator roots, live heap fields, object headers, remembered-set
-    /// storage, or semispace pages.
+    /// synthetic commit-buffer, and direct owned-storage commit applications. It
+    /// still does not mutate live evaluator roots, live heap fields, object
+    /// headers, remembered-set storage, or semispace pages.
     ///
     /// # Errors
     ///
@@ -10134,11 +10134,14 @@ impl EvalGcStressBoundaryMinorGcCommitPreflights {
     ) -> Result<EvalGcStressBoundaryMinorGcCommitDryRun, EvalHeapError> {
         let reference_writebacks = self.apply_reference_writebacks_to_owned_slots()?;
         let commit_applications = self.apply_commits_to_owned_buffers()?;
+        let owned_storage_commit_applications =
+            self.apply_commits_to_owned_destination_storage()?;
 
         Ok(EvalGcStressBoundaryMinorGcCommitDryRun::new(
             self,
             reference_writebacks,
             commit_applications,
+            owned_storage_commit_applications,
         ))
     }
 }
@@ -10149,6 +10152,7 @@ pub struct EvalGcStressBoundaryMinorGcCommitDryRun {
     preflights: EvalGcStressBoundaryMinorGcCommitPreflights,
     reference_writebacks: EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
     commit_applications: EvalGcStressBoundaryMinorGcCommitApplications,
+    owned_storage_commit_applications: EvalGcStressBoundaryMinorGcOwnedStorageCommitApplications,
 }
 
 impl EvalGcStressBoundaryMinorGcCommitDryRun {
@@ -10156,11 +10160,13 @@ impl EvalGcStressBoundaryMinorGcCommitDryRun {
         preflights: EvalGcStressBoundaryMinorGcCommitPreflights,
         reference_writebacks: EvalGcStressBoundaryMinorGcReferenceWritebackApplications,
         commit_applications: EvalGcStressBoundaryMinorGcCommitApplications,
+        owned_storage_commit_applications: EvalGcStressBoundaryMinorGcOwnedStorageCommitApplications,
     ) -> Self {
         Self {
             preflights,
             reference_writebacks,
             commit_applications,
+            owned_storage_commit_applications,
         }
     }
 
@@ -10191,7 +10197,14 @@ impl EvalGcStressBoundaryMinorGcCommitDryRun {
         &self.commit_applications
     }
 
-    /// Returns aggregate counts for the owned dry-run applications.
+    /// Returns the direct owned destination-storage commit applications.
+    pub const fn owned_storage_commit_applications(
+        &self,
+    ) -> &EvalGcStressBoundaryMinorGcOwnedStorageCommitApplications {
+        &self.owned_storage_commit_applications
+    }
+
+    /// Returns aggregate counts from preflights, writebacks, and synthetic commit applications.
     pub fn summary(&self) -> EvalGcStressBoundaryMinorGcCommitDryRunSummary {
         EvalGcStressBoundaryMinorGcCommitDryRunSummary::from_preflights_and_applications(
             &self.preflights,
@@ -12516,17 +12529,21 @@ impl EvalOutcome {
     ///
     /// This derives boundary commit preflight metadata from the recorded
     /// GC-stress scans, applies reference writebacks into owned slot copies, and
-    /// applies commit plans into owned synthetic byte, forwarding, reference,
-    /// and remembered-set buffers. The returned report carries all three
-    /// artifacts for the exact same worker/permanent-shared partition. It still
-    /// does not mutate live evaluator roots, live heap fields, object headers,
-    /// remembered-set storage, card-table storage, or semispace pages.
+    /// applies commit plans into owned synthetic byte, owned destination-storage,
+    /// forwarding, reference, remembered-set, and card-table buffers. The
+    /// returned report carries preflights, writebacks, synthetic commit
+    /// applications, and direct owned-storage commit applications for the exact
+    /// same worker/permanent-shared partition. It still does not mutate live
+    /// evaluator roots, live heap fields, object headers, remembered-set
+    /// storage, card-table storage, or semispace pages.
     ///
     /// # Errors
     ///
     /// Returns [`EvalHeapError`] if boundary commit preflight derivation fails,
-    /// if any owned dry-run buffer cannot be allocated, or if any owned buffer
-    /// fails validation against the lower-level commit or writeback plans.
+    /// if any owned dry-run buffer or destination storage cannot be allocated,
+    /// if storage-derived relocation metadata cannot be rebuilt, or if any
+    /// owned buffer fails validation against the lower-level commit or writeback
+    /// plans.
     pub fn gc_stress_boundary_minor_gc_commit_dry_run(
         &self,
         promotion_policy: MinorGcPromotionPolicy,

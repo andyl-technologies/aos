@@ -4911,6 +4911,12 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
     assert!(dry_run.preflights().permanent_shared().is_none());
     assert!(dry_run.reference_writebacks().permanent_shared().is_none());
     assert!(dry_run.commit_applications().permanent_shared().is_none());
+    assert!(
+        dry_run
+            .owned_storage_commit_applications()
+            .permanent_shared()
+            .is_none()
+    );
     let summary = dry_run.summary();
     assert_eq!(summary.tiers(), 1);
     assert_eq!(summary.object_copies(), 1);
@@ -5004,6 +5010,47 @@ fn owned_eval_runs_gc_stress_boundary_worker_commit_dry_run() {
         commit_application.references(),
         &[ResolvedValueGeneration::Heap {
             address: nursery_base,
+            generation: HeapGeneration::Young,
+        }]
+    );
+    let owned_storage_commit_application = dry_run
+        .owned_storage_commit_applications()
+        .worker()
+        .expect("worker dry-run owned-storage commit records");
+    assert_eq!(owned_storage_commit_application.report(), commit_report);
+    assert_eq!(
+        owned_storage_commit_application
+            .destination_storage()
+            .copy_report()
+            .object_copies(),
+        commit_report.object_copies()
+    );
+    assert_eq!(
+        owned_storage_commit_application
+            .destination_storage()
+            .nursery_destination_bytes(),
+        object_copy.source_bytes()
+    );
+    assert!(
+        owned_storage_commit_application
+            .destination_storage()
+            .old_destination_bytes()
+            .is_empty()
+    );
+    let owned_storage_forwarded_value = owned_storage_commit_application.forwarding_slots()[0]
+        .forwarded_value()
+        .expect("worker dry-run owned-storage commit installs forwarding");
+    let ResolvedValueGeneration::Heap {
+        address: owned_storage_nursery_base,
+        generation: HeapGeneration::Young,
+    } = owned_storage_forwarded_value
+    else {
+        panic!("worker dry-run owned-storage survivor remains young");
+    };
+    assert_eq!(
+        owned_storage_commit_application.references(),
+        &[ResolvedValueGeneration::Heap {
+            address: owned_storage_nursery_base,
             generation: HeapGeneration::Young,
         }]
     );
@@ -9234,6 +9281,55 @@ fn owned_eval_reports_gc_stress_boundary_promoted_commit_dry_run_bytes() {
     );
     assert!(owned_storage_application.remembered_set().is_empty());
     assert!(owned_storage_application.card_table().is_empty());
+    let dry_run_owned_storage_application = dry_run
+        .owned_storage_commit_applications()
+        .worker()
+        .expect("promoted dry-run owned-storage commit records");
+    assert_eq!(
+        dry_run_owned_storage_application.report(),
+        owned_storage_application.report()
+    );
+    assert_eq!(
+        dry_run_owned_storage_application
+            .destination_storage()
+            .copy_report(),
+        owned_destination_storage.copy_report()
+    );
+    assert!(
+        dry_run_owned_storage_application
+            .destination_storage()
+            .nursery_destination_bytes()
+            .is_empty()
+    );
+    assert_eq!(
+        dry_run_owned_storage_application
+            .destination_storage()
+            .old_destination_bytes(),
+        object_copy.source_bytes()
+    );
+    let dry_run_owned_forwarded_value = dry_run_owned_storage_application.forwarding_slots()[0]
+        .forwarded_value()
+        .expect("promoted dry-run owned-storage commit installs forwarding");
+    let ResolvedValueGeneration::Heap {
+        address: dry_run_owned_old_base,
+        generation: HeapGeneration::Old,
+    } = dry_run_owned_forwarded_value
+    else {
+        panic!("promoted dry-run owned-storage survivor remains old");
+    };
+    assert_eq!(
+        dry_run_owned_storage_application.references(),
+        &[ResolvedValueGeneration::Heap {
+            address: dry_run_owned_old_base,
+            generation: HeapGeneration::Old,
+        }]
+    );
+    assert!(
+        dry_run_owned_storage_application
+            .remembered_set()
+            .is_empty()
+    );
+    assert!(dry_run_owned_storage_application.card_table().is_empty());
 
     let mut destination_outcome = eval_whnf_owned_with_options(
         &ir,
@@ -9326,6 +9422,12 @@ fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
     assert!(dry_run.preflights().worker().is_none());
     assert!(dry_run.reference_writebacks().worker().is_none());
     assert!(dry_run.commit_applications().worker().is_none());
+    assert!(
+        dry_run
+            .owned_storage_commit_applications()
+            .worker()
+            .is_none()
+    );
     let summary = dry_run.summary();
     assert_eq!(summary.tiers(), 1);
     assert_eq!(summary.object_copies(), 0);
@@ -9415,6 +9517,53 @@ fn owned_eval_runs_gc_stress_boundary_permanent_commit_dry_run() {
         }
     )));
     assert!(commit_application.remembered_set().is_empty());
+    let owned_storage_commit_application = dry_run
+        .owned_storage_commit_applications()
+        .permanent_shared()
+        .expect("permanent dry-run owned-storage commit records");
+    assert_eq!(owned_storage_commit_application.report(), commit_report);
+    assert_eq!(
+        owned_storage_commit_application
+            .destination_storage()
+            .copy_report()
+            .object_copies(),
+        0
+    );
+    assert_eq!(
+        owned_storage_commit_application
+            .destination_storage()
+            .nursery_reserved_bytes(),
+        0
+    );
+    assert_eq!(
+        owned_storage_commit_application
+            .destination_storage()
+            .old_reserved_bytes(),
+        0
+    );
+    assert!(
+        owned_storage_commit_application
+            .destination_storage()
+            .nursery_destination_bytes()
+            .is_empty()
+    );
+    assert!(
+        owned_storage_commit_application
+            .destination_storage()
+            .old_destination_bytes()
+            .is_empty()
+    );
+    assert!(
+        owned_storage_commit_application
+            .forwarding_slots()
+            .is_empty()
+    );
+    assert_eq!(
+        owned_storage_commit_application.references(),
+        preflight.reference_buffer()
+    );
+    assert!(owned_storage_commit_application.remembered_set().is_empty());
+    assert!(owned_storage_commit_application.card_table().is_empty());
 
     let live_dirty_source = next_dirty_card_source(outcome.thunk_resolve_card_table());
     outcome

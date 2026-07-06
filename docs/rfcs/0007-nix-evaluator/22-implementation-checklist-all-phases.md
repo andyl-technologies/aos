@@ -6857,15 +6857,18 @@ and helps the oracle directly.
       This remains an owned-storage proof path only; live tree-walk root/heap
       field binding, live object body/header binding, remembered-source field
       mutation, evaluator-owned card-table storage, and semispace page management
-      remain open, and the GC-stress boundary dry run still uses its existing
-      separate owned-buffer application surface.
+      remain open; the GC-stress boundary dry run now also preserves this
+      owned-storage proof alongside its existing synthetic owned-buffer
+      application surface.
 - [x] Current GC-stress boundary commit dry-run precursor:
       `EvalGcStressBoundaryMinorGcCommitPreflights::apply_owned_commit_dry_run`
       consumes the boundary preflight bundle, applies owned reference-writeback
-      buffers, owned synthetic commit buffers, and owned destination-storage
-      byte placement from the same metadata, and returns
+      buffers, owned synthetic commit buffers, owned destination-storage byte
+      placement, and the direct owned-storage commit bridge from the same
+      metadata, and returns
       `EvalGcStressBoundaryMinorGcCommitDryRun` with the preflights, writeback
-      applications, and commit applications preserved together.
+      applications, synthetic commit applications, and direct owned-storage
+      commit applications preserved together.
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run` drives the full
       boundary pipeline from the recorded GC-stress scans in one checked call,
       and `EvalGcStressBoundaryMinorGcCommitDryRun::summary` aggregates per-tier
@@ -6875,7 +6878,8 @@ and helps the oracle directly.
       preflight metadata.
       Tests cover the worker dry-run path, including copy, promotion,
       forwarding, reference-rewrite, owned-buffer byte equality,
-      destination-storage byte placement, and summary counts/bytes;
+      destination-storage byte placement, direct owned-storage commit
+      preservation, and summary counts/bytes;
       permanent-shared empty dry-run partitioning; mixed root/heap-field summary
       aggregation; dirty old-field rescan publication/writeback at the boundary;
       plus the stress-disabled empty path. This remains an owned dry-run
