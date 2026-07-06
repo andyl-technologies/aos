@@ -7568,6 +7568,9 @@ and helps the oracle directly.
       registered transient roots,
       root `appendContext` evaluations preserving registered transient roots
       while interned reflected-context attr roots block dispatch,
+      root no-context `getContext` generated-attrset result allocations
+      preserving registered transient roots while primop-result composite
+      dispatch remains blocked,
       root `concatStringsSep` and `replaceStrings` evaluations preserving
       registered transient roots while interned list roots block dispatch,
       parsed JSON and TOML array-result helper allocations relocating
