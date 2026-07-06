@@ -1,6 +1,7 @@
 //! Tree-walk evaluator tests: derivation 3.
 
 use super::*;
+use crate::attrs::repr::AttrSetReprKind;
 use crate::heap::HeapGeneration;
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
@@ -105,6 +106,26 @@ fn derivation_strict_result_records_dynamic_repr_decision() {
         .get_attrs(value)
         .expect("derivation result is attrs");
     assert_eq!(attrs.len(), 3);
+    let metadata = evaluator
+        .heap
+        .get_attrs_metadata(value)
+        .expect("derivation result metadata exists");
+    assert!(metadata.projected_shape().is_some());
+    assert_eq!(metadata.repr(), AttrSetReprKind::Flat);
+    let lexicographic_keys: Vec<Vec<u8>> = attrs
+        .iter_lexicographic()
+        .map(|entry| {
+            evaluator
+                .symbols
+                .resolve(entry.key)
+                .expect("derivation result key resolves")
+                .to_vec()
+        })
+        .collect();
+    assert_eq!(
+        lexicographic_keys,
+        vec![b"dev".to_vec(), b"drvPath".to_vec(), b"out".to_vec()],
+    );
     let snapshot = evaluator
         .attr_telemetry
         .update_merge_snapshot()
@@ -114,6 +135,9 @@ fn derivation_strict_result_records_dynamic_repr_decision() {
     assert_eq!(snapshot.update_merges, 0);
     assert_eq!(snapshot.reasons.static_literal, 0);
     assert_eq!(snapshot.reasons.small_shape_stable, 1);
+    let stats = evaluator.attr_telemetry.order_parity_stats();
+    assert_eq!(stats.matched, 1);
+    assert_eq!(stats.mismatched, 0);
 }
 
 #[test]

@@ -10092,6 +10092,15 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       This pins the current flat-payload fetchTree/flake-ref result boundary
       only; it does not claim shaped/HAMT heap payload iteration, C++ oracle
       comparison, full conformance 20-21, or full AOS closure `.drv` parity.
+- [x] Current active generated `derivationStrict` result order-parity canary:
+      `builtins.derivationStrict` result attrsets now share the successful
+      dynamic-result order-parity telemetry hook. The direct result-allocation
+      canary builds a multi-output derivation result, checks projected-shape
+      metadata, lexicographic `dev`/`drvPath`/`out` iteration, and one matched,
+      zero mismatched direct-result telemetry sample. This pins the current
+      flat-payload generated derivation result boundary only; it does not claim
+      shaped/HAMT heap payload iteration, C++ oracle comparison, full
+      conformance 20-21, or full AOS closure `.drv` parity.
 - [x] Current active generated trace/context/position order-parity canary:
       `builtins.tryEval`, `builtins.getContext` group and outer attrsets, and
       source-position attrsets from `builtins.unsafeGetAttrPos`/`__curPos` now
@@ -10151,9 +10160,10 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       `mapAttrs`, `zipAttrsWith`, `removeAttrs`, and `intersectAttrs` result
       allocations plus `partition`, codec-generated `fromJSON`/`fromTOML`
       results, generated `parseDrvName`/`readDir`/`nixPath` entry results,
-      generated `fetchGit`/`fetchTree`/`parseFlakeRef` results, `functionArgs`,
-      generated `tryEval`/`getContext`/source-position results, `listToAttrs`,
-      and `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
+      generated `fetchGit`/`fetchTree`/`parseFlakeRef` results, generated
+      `derivationStrict` results, `functionArgs`, generated
+      `tryEval`/`getContext`/source-position results, `listToAttrs`, and
+      `groupBy` results. Cache hits use mirrored `EvalStats` inline-cache
       counters while
       unresolved cache lookups keep representation-specific slow-select
       telemetry; the same successful flat-allocation shape
