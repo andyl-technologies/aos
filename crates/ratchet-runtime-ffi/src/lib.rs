@@ -10,6 +10,8 @@
 //! ```text
 //! ratchet_runtime_ffi::alloc
 //!   aos_alloc_* trap-only wrappers for frozen pointer-returning allocation ABIs
+//! ratchet_runtime_ffi::context
+//!   shared pinned runtime context decoded by mixed-helper native calls
 //! ratchet_runtime_ffi::env
 //!   aos_env_get success-path wrapper for the frozen `(env, slot) -> Value` ABI
 //! ratchet_runtime_ffi::force
@@ -41,6 +43,7 @@ pub mod alloc;
 pub mod apply;
 pub mod attr;
 pub mod barrier;
+pub mod context;
 pub mod env;
 pub mod force;
 pub mod safety;

@@ -4014,6 +4014,7 @@ version = "0.1.0"
 dependencies = [
  "aos-nix-dialect",
  "libc",
+ "ratchet-jit",
  "ratchet-oracle",
 ]
 

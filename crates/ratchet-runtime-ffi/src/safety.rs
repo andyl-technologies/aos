@@ -124,6 +124,18 @@ mod tests {
         "uns",
         "afe { (binding.function())(env, 0) };"
     );
+    const RUNTIME_CONTEXT_DECODER_LINE: &str = concat!(
+        "pub(crate) ",
+        "uns",
+        "afe fn with_native_runtime_context<R>("
+    );
+    const RUNTIME_CONTEXT_CAST_LINE: &str = concat!(
+        "let context = ",
+        "uns",
+        "afe { rt.cast::<RuntimeJitContext<'static>>().as_mut() };"
+    );
+    const RUNTIME_CONTEXT_EVAL_LINE: &str =
+        concat!("call(", "uns", "afe { context.eval.as_mut() }, id, span)");
     const ALLOC_CODE_ENV_FN_TYPE_LINE: &str = concat!(
         "uns",
         "afe ",
@@ -237,14 +249,6 @@ mod tests {
         "ern \"C\" fn aos_apply(rt: *mut c_void, function: Value, argument: Value) -> Value {"
     );
     const APPLY_DECODER_CALL_LINE: &str = concat!("let applied = ", "uns", "afe {");
-    const APPLY_CONTEXT_DECODER_LINE: &str = concat!("uns", "afe fn with_native_apply_context<R>(");
-    const APPLY_CONTEXT_CAST_LINE: &str = concat!(
-        "let context = ",
-        "uns",
-        "afe { rt.cast::<RuntimeApplyContext<'static>>().as_mut() };"
-    );
-    const APPLY_CONTEXT_EVAL_LINE: &str =
-        concat!("call(", "uns", "afe { context.eval.as_mut() }, id, span)");
     const APPLY_DIRECT_LAMBDA_TEST_CALL_LINE: &str = concat!(
         "let actual = ",
         "uns",
@@ -315,15 +319,6 @@ mod tests {
     const ATTR_HAS_ATTR_DECODER_CALL_LINE: &str = concat!("let probed = ", "uns", "afe {");
     const ATTR_SELECT_IC_DECODER_CALL_LINE: &str = concat!("let selected = ", "uns", "afe {");
     const ATTR_UPDATE_DECODER_CALL_LINE: &str = concat!("let updated = ", "uns", "afe {");
-    const ATTR_CONTEXT_DECODER_LINE: &str =
-        concat!("uns", "afe fn with_native_attr_access_context<R>(");
-    const ATTR_CONTEXT_CAST_LINE: &str = concat!(
-        "let context = ",
-        "uns",
-        "afe { rt.cast::<RuntimeAttrAccessContext<'static>>().as_mut() };"
-    );
-    const ATTR_CONTEXT_EVAL_LINE: &str =
-        concat!("call(", "uns", "afe { context.eval.as_mut() }, id, span)");
     const ATTR_UPDATE_FN_LINE: &str = concat!(
         "pub ",
         "uns",
@@ -444,14 +439,6 @@ mod tests {
     const BLACKHOLE_DECODER_CALL_LINE: &str = concat!("let checked = ", "uns", "afe {");
     const FORCE_DECODER_CALL_LINE: &str = concat!("let forced = ", "uns", "afe {");
     const FORCE_DEEP_DECODER_CALL_LINE: &str = concat!("let deeply_forced = ", "uns", "afe {");
-    const FORCE_CONTEXT_DECODER_LINE: &str = concat!("uns", "afe fn with_native_force_context<R>(");
-    const FORCE_CONTEXT_CAST_LINE: &str = concat!(
-        "let context = ",
-        "uns",
-        "afe { rt.cast::<RuntimeForceContext<'static>>().as_mut() };"
-    );
-    const FORCE_CONTEXT_EVAL_LINE: &str =
-        concat!("call(", "uns", "afe { context.eval.as_mut() }, id, span)");
     const DIRECT_BLACKHOLE_TEST_CALL_LINE: &str =
         concat!("uns", "afe { aos_blackhole_check(rt, value) };");
     const DIRECT_BLACKHOLE_THUNK_TEST_CALL_LINE: &str =
@@ -575,6 +562,7 @@ mod tests {
                 let line = raw_lines[line_number];
                 for token in code_tokens(code) {
                     if is_allowed_env_wrapper_token(&source_root, &source_path, line, token)
+                        || is_allowed_runtime_context_token(&source_root, &source_path, line, token)
                         || is_allowed_alloc_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_apply_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_attr_wrapper_token(&source_root, &source_path, line, token)
@@ -700,6 +688,30 @@ mod tests {
         }
     }
 
+    fn is_allowed_runtime_context_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("context.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == UNSAFE_TOKEN {
+            trimmed == RUNTIME_CONTEXT_DECODER_LINE
+                || trimmed == RUNTIME_CONTEXT_CAST_LINE
+                || trimmed == RUNTIME_CONTEXT_EVAL_LINE
+        } else {
+            false
+        }
+    }
+
     fn is_allowed_apply_wrapper_token(
         source_root: &Path,
         source_path: &Path,
@@ -720,9 +732,6 @@ mod tests {
                 || trimmed == APPLY_EXPORT_ATTR_LINE
                 || trimmed == APPLY_FN_LINE
                 || trimmed == APPLY_DECODER_CALL_LINE
-                || trimmed == APPLY_CONTEXT_DECODER_LINE
-                || trimmed == APPLY_CONTEXT_CAST_LINE
-                || trimmed == APPLY_CONTEXT_EVAL_LINE
                 || trimmed == APPLY_DIRECT_LAMBDA_TEST_CALL_LINE
                 || trimmed == APPLY_DIRECT_FUNCTOR_TEST_CALL_LINE
                 || trimmed == APPLY_DIRECT_PRIMOP_PARTIAL_TEST_CALL_LINE
@@ -734,9 +743,7 @@ mod tests {
                 || trimmed == APPLY_NULL_CONTEXT_ABORT_TEST_CALL_LINE
                 || trimmed == APPLY_TREE_WALK_ERROR_ABORT_TEST_CALL_LINE
         } else if token == EXTERN_TOKEN {
-            trimmed == APPLY_FN_TYPE_LINE
-                || trimmed == APPLY_FN_LINE
-                || trimmed == APPLY_CONTEXT_DECODER_LINE
+            trimmed == APPLY_FN_TYPE_LINE || trimmed == APPLY_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == APPLY_EXPORT_ATTR_LINE
         } else {
@@ -769,9 +776,6 @@ mod tests {
                 || trimmed == BLACKHOLE_DECODER_CALL_LINE
                 || trimmed == FORCE_DECODER_CALL_LINE
                 || trimmed == FORCE_DEEP_DECODER_CALL_LINE
-                || trimmed == FORCE_CONTEXT_DECODER_LINE
-                || trimmed == FORCE_CONTEXT_CAST_LINE
-                || trimmed == FORCE_CONTEXT_EVAL_LINE
                 || trimmed == DIRECT_BLACKHOLE_TEST_CALL_LINE
                 || trimmed == DIRECT_BLACKHOLE_THUNK_TEST_CALL_LINE
                 || trimmed == DIRECT_FORCE_TEST_CALL_LINE
@@ -799,7 +803,6 @@ mod tests {
                 || trimmed == BLACKHOLE_FN_LINE
                 || trimmed == FORCE_FN_LINE
                 || trimmed == FORCE_DEEP_FN_LINE
-                || trimmed == FORCE_CONTEXT_DECODER_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == FORCE_EXPORT_ATTR_LINE
         } else {
@@ -831,9 +834,6 @@ mod tests {
                 || trimmed == ATTR_HAS_ATTR_DECODER_CALL_LINE
                 || trimmed == ATTR_SELECT_IC_DECODER_CALL_LINE
                 || trimmed == ATTR_UPDATE_DECODER_CALL_LINE
-                || trimmed == ATTR_CONTEXT_DECODER_LINE
-                || trimmed == ATTR_CONTEXT_CAST_LINE
-                || trimmed == ATTR_CONTEXT_EVAL_LINE
                 || trimmed == ATTR_UPDATE_FN_LINE
                 || trimmed == ATTR_HAS_ATTR_PRESENT_TEST_CALL_LINE
                 || trimmed == ATTR_HAS_ATTR_REPEATED_TEST_CALL_LINE
@@ -1142,6 +1142,8 @@ mod unchecked_cfg;
             .expect("attrset-access FFI source file is readable");
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
+        let context = fs::read_to_string(source_root.join("context.rs"))
+            .expect("shared runtime context FFI source file is readable");
         let barrier = fs::read_to_string(source_root.join("barrier.rs"))
             .expect("write-barrier FFI source file is readable");
         let force =
@@ -1186,6 +1188,21 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&env, BINDING_TEST_CALL_LINE),
             1,
             "metadata function-pointer test call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&context, RUNTIME_CONTEXT_DECODER_LINE),
+            1,
+            "raw shared runtime context decoder must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&context, RUNTIME_CONTEXT_CAST_LINE),
+            1,
+            "raw shared runtime context cast must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&context, RUNTIME_CONTEXT_EVAL_LINE),
+            1,
+            "raw shared runtime TreeWalk pointer cast must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&alloc, ALLOC_CODE_ENV_FN_TYPE_LINE),
@@ -1308,21 +1325,6 @@ mod unchecked_cfg;
             "aos_apply wrapper call to the decoder must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&apply, APPLY_CONTEXT_DECODER_LINE),
-            1,
-            "raw apply context decoder must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&apply, APPLY_CONTEXT_CAST_LINE),
-            1,
-            "raw apply context cast must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&apply, APPLY_CONTEXT_EVAL_LINE),
-            1,
-            "raw apply TreeWalk pointer cast must stay singly reviewed"
-        );
-        assert_eq!(
             trimmed_line_occurrences(&apply, APPLY_DIRECT_LAMBDA_TEST_CALL_LINE),
             1,
             "direct lambda test call of aos_apply must stay singly reviewed"
@@ -1411,21 +1413,6 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&attr, ATTR_UPDATE_DECODER_CALL_LINE),
             1,
             "aos_update wrapper call to the decoder must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&attr, ATTR_CONTEXT_DECODER_LINE),
-            1,
-            "raw attrset-access context decoder must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&attr, ATTR_CONTEXT_CAST_LINE),
-            1,
-            "raw attrset-access context cast must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&attr, ATTR_CONTEXT_EVAL_LINE),
-            1,
-            "raw TreeWalk pointer cast must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&attr, ATTR_UPDATE_FN_LINE),
@@ -1558,21 +1545,6 @@ mod unchecked_cfg;
             "aos_force_deep wrapper call to the decoder must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&force, FORCE_CONTEXT_DECODER_LINE),
-            1,
-            "raw force context decoder must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&force, FORCE_CONTEXT_CAST_LINE),
-            1,
-            "raw force context cast must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&force, FORCE_CONTEXT_EVAL_LINE),
-            1,
-            "raw force TreeWalk pointer cast must stay singly reviewed"
-        );
-        assert_eq!(
             trimmed_line_occurrences(&force, DIRECT_BLACKHOLE_TEST_CALL_LINE),
             1,
             "direct test call of aos_blackhole_check must stay singly reviewed"
@@ -1688,6 +1660,8 @@ mod unchecked_cfg;
             .expect("attrset-access FFI source file is readable");
         let env = fs::read_to_string(source_root.join("env.rs"))
             .expect("environment FFI source file is readable");
+        let context = fs::read_to_string(source_root.join("context.rs"))
+            .expect("shared runtime context FFI source file is readable");
         let barrier = fs::read_to_string(source_root.join("barrier.rs"))
             .expect("write-barrier FFI source file is readable");
         let force =
@@ -1696,6 +1670,7 @@ mod unchecked_cfg;
         let alloc_lines = alloc.lines().collect::<Vec<_>>();
         let attr_lines = attr.lines().collect::<Vec<_>>();
         let lines = env.lines().collect::<Vec<_>>();
+        let context_lines = context.lines().collect::<Vec<_>>();
         let barrier_lines = barrier.lines().collect::<Vec<_>>();
         let force_lines = force.lines().collect::<Vec<_>>();
 
@@ -1718,6 +1693,21 @@ mod unchecked_cfg;
             &lines,
             BINDING_TEST_CALL_LINE,
             "metadata function-pointer test call must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &context_lines,
+            RUNTIME_CONTEXT_DECODER_LINE,
+            "raw shared runtime context decoder must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &context_lines,
+            RUNTIME_CONTEXT_CAST_LINE,
+            "raw shared runtime context cast must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &context_lines,
+            RUNTIME_CONTEXT_EVAL_LINE,
+            "raw shared runtime TreeWalk pointer cast must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &alloc_lines,
@@ -1758,21 +1748,6 @@ mod unchecked_cfg;
             &apply_lines,
             APPLY_DECODER_CALL_LINE,
             "apply decoder call must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &apply_lines,
-            APPLY_CONTEXT_DECODER_LINE,
-            "raw apply context decoder must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &apply_lines,
-            APPLY_CONTEXT_CAST_LINE,
-            "raw apply context cast must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &apply_lines,
-            APPLY_CONTEXT_EVAL_LINE,
-            "raw apply TreeWalk pointer cast must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &apply_lines,
@@ -1838,21 +1813,6 @@ mod unchecked_cfg;
             &attr_lines,
             ATTR_UPDATE_DECODER_CALL_LINE,
             "attrset-update decoder call must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &attr_lines,
-            ATTR_CONTEXT_DECODER_LINE,
-            "raw attrset-access context decoder must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &attr_lines,
-            ATTR_CONTEXT_CAST_LINE,
-            "raw attrset-access context cast must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &attr_lines,
-            ATTR_CONTEXT_EVAL_LINE,
-            "raw TreeWalk pointer cast must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &attr_lines,
@@ -1938,21 +1898,6 @@ mod unchecked_cfg;
             &force_lines,
             FORCE_DEEP_DECODER_CALL_LINE,
             "force-deep decoder call must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &force_lines,
-            FORCE_CONTEXT_DECODER_LINE,
-            "raw force context decoder must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &force_lines,
-            FORCE_CONTEXT_CAST_LINE,
-            "raw force context cast must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &force_lines,
-            FORCE_CONTEXT_EVAL_LINE,
-            "raw force TreeWalk pointer cast must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &force_lines,

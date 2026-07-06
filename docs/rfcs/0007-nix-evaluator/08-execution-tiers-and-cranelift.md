@@ -1163,10 +1163,10 @@ harness, never cut for scope.
       local-slot `aos_update` artifacts, and preserve missing-import rejection
       before native invocation. This
       proves registered helper relocation plus a native thunk call with
-      synthetic host-ABI-matched candidates only: real exported oracle wrappers,
-      evaluator thunk publication, thunk-state CAS, runtime trap transfer, full
-      runtime-symbol registration, and the `.drv` differential harness remain
-      open.
+      synthetic host-ABI-matched candidates only: final exported oracle wrappers
+      admitted by the strict `aos-nix` gate, evaluator thunk publication,
+      thunk-state CAS, runtime trap transfer, full runtime-symbol registration,
+      and the `.drv` differential harness remain open.
 - [x] Current owned Cranelift tier-1 slot preflight:
       `ratchet-jit::cranelift::jit_cranelift_tier1_slot_preflight_for_artifact()`
       composes artifact finalization with a fresh `JitTieredCodeSlot`, installs
@@ -1275,8 +1275,25 @@ harness, never cut for scope.
       missing-`aos_force`, `aos_apply`, `aos_select_ic`, `aos_has_attr`, or
       `aos_update` candidate rejection with the invocation-updated slot
       preserved. This still does not publish
-      evaluator thunks, perform atomic thunk-state CAS, use real exported oracle
-      wrappers, run trap transfer, or prove `.drv` parity.
+      evaluator thunks, perform atomic thunk-state CAS, use final exported
+      oracle wrappers admitted by the strict `aos-nix` gate, run trap transfer,
+      or prove `.drv` parity.
+- [x] Current runtime-FFI shared-context native-wrapper JIT-call precursor:
+      `ratchet-runtime-ffi::context::RuntimeJitContext` is now the single
+      pinned runtime context decoded by force, apply, and attrset-access native
+      wrappers, with the older family context names retained as aliases for
+      callers and docs. The unsafe allowlist pins the shared decoder and raw
+      evaluator casts to exact source lines. An integration test in
+      `ratchet-runtime-ffi/tests/jit_native_wrappers.rs` compiles a full-IR
+      static has-attr root through `ratchet-jit`, supplies process-local
+      runtime-FFI wrapper addresses for `aos_env_get`, `aos_force`, and
+      `aos_has_attr`, passes one live `EvalFrame` plus one pinned
+      `RuntimeJitContext`, executes native code, observes a native boolean
+      result, and installs tier-1 slot metadata. This proves one real
+      runtime-FFI mixed-helper success path through the registered native call
+      boundary only: final strict exported-symbol admission in `aos-nix`,
+      trap/error transfer, evaluator thunk publication, thunk-state CAS,
+      broader mixed-helper coverage, and `.drv` parity remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling
@@ -1296,7 +1313,7 @@ harness, never cut for scope.
       This still does not inspect lowered
       IR roots, lower, finalize, or call native code from `aos-nix`, publish
       evaluator thunks, perform atomic thunk-state CAS, run trap transfer,
-      provide exported C ABI wrappers, or prove `.drv` parity.
+      admit final exported C ABI wrappers, or prove `.drv` parity.
 - [x] Current runtime symbol native-target candidate preflight precursor:
       `runtime_symbol_native_target_candidate_preflight()` consumes the
       ABI-signature preflight, then combines helper Rust-callable availability

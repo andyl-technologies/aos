@@ -7,13 +7,7 @@
 //! the safe tree-walk helper, and dispatches lambda, functor, and first-class
 //! primop application. Failures still abort until native trap transfer exists.
 
-use std::{
-    ffi::c_void,
-    marker::{PhantomData, PhantomPinned},
-    pin::Pin,
-    process,
-    ptr::NonNull,
-};
+use std::{ffi::c_void, process};
 
 use ratchet_oracle::{
     compile::IrId,
@@ -25,6 +19,8 @@ use ratchet_oracle::{
     syntax::Span,
     value::Value,
 };
+
+use crate::context::{RuntimeJitContext, with_native_runtime_context};
 
 /// Native C ABI function pointer shape for `aos_apply`.
 ///
@@ -74,7 +70,7 @@ pub unsafe extern "C" fn aos_apply(rt: *mut c_void, function: Value, argument: V
     // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
     // RuntimeApplyContext pointer contract documented on this function.
     let applied = unsafe {
-        with_native_apply_context(rt, |eval, id, span| {
+        with_native_runtime_context(rt, |eval, id, span| {
             aos_apply_success_path(eval, id, span, function, argument)
         })
     };
@@ -179,61 +175,8 @@ impl RuntimeApplyNativeWrapperBinding {
     }
 }
 
-/// Scoped tree-walk evaluator context decoded by `aos_apply`.
-///
-/// Native apply wrappers receive an opaque runtime pointer in their frozen C
-/// ABI. This context is the current explicit Rust-side representation for that
-/// pointer: it ties one live [`TreeWalk`] evaluator to the IR node id and source
-/// span used when the safe oracle reports apply failures.
-pub struct RuntimeApplyContext<'eval> {
-    eval: NonNull<TreeWalk>,
-    id: IrId,
-    span: Span,
-    _marker: PhantomData<&'eval mut TreeWalk>,
-    _pinned: PhantomPinned,
-}
-
-impl<'eval> RuntimeApplyContext<'eval> {
-    /// Creates a scoped apply context for native wrapper calls.
-    pub fn new(eval: &'eval mut TreeWalk, id: IrId, span: Span) -> Self {
-        Self {
-            eval: NonNull::from(eval),
-            id,
-            span,
-            _marker: PhantomData,
-            _pinned: PhantomPinned,
-        }
-    }
-
-    /// Returns an opaque runtime pointer suitable for `aos_apply` calls.
-    ///
-    /// The returned pointer is only valid while this pinned context value and
-    /// its borrowed evaluator remain live. Callers must not move or drop the
-    /// pinned context, and must uphold exclusive mutable access to the
-    /// evaluator, while a native wrapper call uses the pointer.
-    pub fn as_mut_ptr(self: Pin<&mut Self>) -> *mut c_void {
-        self.as_ref().get_ref() as *const Self as *mut c_void
-    }
-}
-
-// SAFETY: Callers must pass a live pinned RuntimeApplyContext pointer and
-// uphold exclusive evaluator access for the duration of the callback.
-unsafe fn with_native_apply_context<R>(
-    rt: *mut c_void,
-    call: impl FnOnce(&mut TreeWalk, IrId, Span) -> R,
-) -> R {
-    let Some(rt) = NonNull::new(rt) else {
-        process::abort();
-    };
-    // SAFETY: The caller must provide a live RuntimeApplyContext pointer with
-    // exclusive evaluator access covering this call.
-    let context = unsafe { rt.cast::<RuntimeApplyContext<'static>>().as_mut() };
-    let id = context.id;
-    let span = context.span;
-    // SAFETY: RuntimeApplyContext::new stores a live TreeWalk pointer, and the
-    // native wrapper contract requires exclusive evaluator access.
-    call(unsafe { context.eval.as_mut() }, id, span)
-}
+/// Shared runtime context accepted by apply native wrappers.
+pub type RuntimeApplyContext<'eval> = RuntimeJitContext<'eval>;
 
 #[cfg(test)]
 mod tests {
