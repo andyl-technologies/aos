@@ -112,34 +112,49 @@ impl FlatAttrs {
     /// entry count cannot be represented in the `u32` slot permutation. Returns
     /// [`AttrError::AllocationFailed`] if the iteration tables cannot be
     /// reserved.
-    pub fn new(mut entries: Vec<AttrEntry>, symbols: &SymbolTable) -> Result<Self, AttrError> {
+    pub fn new(entries: Vec<AttrEntry>, symbols: &SymbolTable) -> Result<Self, AttrError> {
         let len = entries.len();
         let len_u32 = u32::try_from(len).map_err(|_| AttrError::TooManyEntries { len })?;
 
-        let mut source_keys = Vec::new();
-        source_keys
+        // Sort a permutation of source positions by interned symbol id rather
+        // than the entries themselves. Retaining each binding's construction
+        // position lets the source-order slots fall out of the inverse
+        // permutation directly, replacing the previous per-entry binary search.
+        let mut permutation = Vec::new();
+        permutation
             .try_reserve_exact(len)
             .map_err(|_| AttrError::AllocationFailed { entries: len })?;
-        source_keys.extend(entries.iter().map(|entry| entry.key));
+        permutation.extend(0..len_u32);
+        permutation.sort_unstable_by_key(|&slot| entries[slot as usize].key);
 
-        entries.sort_unstable_by_key(|entry| entry.key);
-        for pair in entries.windows(2) {
-            if pair[0].key == pair[1].key {
-                return Err(AttrError::DuplicateKey { key: pair[0].key });
+        // Duplicate keys are adjacent once ordered by symbol id.
+        for pair in permutation.windows(2) {
+            let key = entries[pair[0] as usize].key;
+            if key == entries[pair[1] as usize].key {
+                return Err(AttrError::DuplicateKey { key });
             }
         }
 
+        // Materialize entries in symbol-id order and, for each source position,
+        // record the storage slot it now occupies (the inverse permutation).
+        let mut sorted = Vec::new();
+        sorted
+            .try_reserve_exact(len)
+            .map_err(|_| AttrError::AllocationFailed { entries: len })?;
         let mut source_order = Vec::new();
         source_order
             .try_reserve_exact(len)
             .map_err(|_| AttrError::AllocationFailed { entries: len })?;
-        for key in source_keys {
-            let slot = entries
-                .binary_search_by_key(&key, |entry| entry.key)
-                .map_err(|_| AttrError::UnknownSymbol { key })?;
-            source_order.push(slot as u32);
+        source_order.resize(len, 0u32);
+        for (storage_slot, &source_slot) in permutation.iter().enumerate() {
+            sorted.push(entries[source_slot as usize]);
+            source_order[source_slot as usize] = storage_slot as u32;
         }
+        let entries = sorted;
 
+        // Symbol-id order and raw-byte lexicographic order differ in general, so
+        // the observable iteration order needs its own permutation sorted by the
+        // symbol table's cached lexicographic ranks.
         let mut sort_ranks = Vec::new();
         sort_ranks
             .try_reserve_exact(len)
@@ -151,12 +166,10 @@ impl FlatAttrs {
             sort_ranks.push(rank);
         }
 
-        let mut iteration_order = Vec::new();
-        iteration_order
-            .try_reserve_exact(len)
-            .map_err(|_| AttrError::AllocationFailed { entries: len })?;
-        for slot in 0..len_u32 {
-            iteration_order.push(slot);
+        // Reuse the scratch permutation buffer for the lexicographic order.
+        let mut iteration_order = permutation;
+        for (slot, value) in iteration_order.iter_mut().enumerate() {
+            *value = slot as u32;
         }
         iteration_order.sort_unstable_by(|left, right| {
             let left = *left as usize;
