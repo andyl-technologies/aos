@@ -8,6 +8,7 @@
 
 pub mod env;
 pub mod gc_audit;
+pub mod gc_measurement;
 pub mod heap;
 pub mod internal_diff;
 pub mod module;
@@ -33,6 +34,15 @@ pub use gc_audit::{
     GcSafetyAuditSmokeReport, GcSafetyAuditTarget, GcSafetyAuditTool, gc_safety_audit_invocations,
     gc_safety_audit_manifest, run_gc_safety_audit_gc_stress_smoke,
     run_gc_safety_audit_safe_tree_walk_smoke, validate_gc_safety_audit_manifest,
+};
+pub use gc_measurement::{
+    HeapGcMeasurementId, HeapGcMeasurementInvocation, HeapGcMeasurementLowerStage,
+    HeapGcMeasurementManifest, HeapGcMeasurementManifestError, HeapGcMeasurementScope,
+    HeapGcMeasurementSmokeError, HeapGcMeasurementSmokeReport, HeapGcMeasurementTarget,
+    heap_gc_measurement_invocations, heap_gc_measurement_manifest,
+    run_heap_gc_measurement_m12_cons_table_sizing_smoke,
+    run_heap_gc_measurement_m14_region_vs_generational_smoke,
+    run_heap_gc_measurement_qg_per_invocation_budget_smoke, validate_heap_gc_measurement_manifest,
 };
 pub use heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
 pub use internal_diff::{
