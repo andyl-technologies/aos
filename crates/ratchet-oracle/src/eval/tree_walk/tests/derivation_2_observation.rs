@@ -339,6 +339,104 @@ fn derivation_strict_aterm_observation_skips_with_scope() {
 }
 
 #[test]
+fn derivation_strict_gc_stress_and_tier_b_admission_report_default_drv_surfaces() {
+    fn evaluate(source: &str, options: TreeWalkOptions) -> EvalOutcome {
+        eval_whnf_owned_with_options(&lower(source), options).expect("derivation graph evaluates")
+    }
+
+    fn root_string_bytes(outcome: &EvalOutcome) -> Vec<u8> {
+        outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("root value is a heap-owned string")
+            .bytes()
+            .to_vec()
+    }
+
+    fn stressed_options() -> TreeWalkOptions {
+        let mut options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+        options.set_heap_memory_budget(HeapMemoryBudget::new(1).expect("budget is non-zero"));
+        options.set_heap_tier_b_transition_admission_enabled(true);
+        options
+    }
+
+    let source = r#"let
+        base = derivationStrict {
+            name = "gc-base";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            __contentAddressed = true;
+            outputHashAlgo = "sha256";
+            outputHashMode = "recursive";
+        };
+        downstream = derivationStrict {
+            name = "gc-downstream";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+            input = base.out;
+            env = base.drvPath;
+        };
+    in downstream.drvPath"#;
+
+    let default = evaluate(source, TreeWalkOptions::new());
+    let stressed = evaluate(source, stressed_options());
+    let admission = stressed
+        .tier_b_transition_admission_report()
+        .expect("stressed run applies Tier-B admission metadata");
+
+    assert_eq!(default.derivations().len(), 2);
+    assert_eq!(root_string_bytes(&stressed), root_string_bytes(&default));
+    assert_eq!(
+        derivation_surfaces(&stressed),
+        derivation_surfaces(&default)
+    );
+    assert_eq!(
+        stressed.heap().allocator_gc_stress_policy(),
+        GcStressPolicy::every_safepoint()
+    );
+    assert_eq!(
+        stressed.heap().permanent_allocator_gc_stress_policy(),
+        GcStressPolicy::every_safepoint()
+    );
+    assert!(
+        stressed.heap().allocation_safepoints().count() > 0,
+        "GC-stress run should poll worker allocation safepoints"
+    );
+    assert!(
+        stressed.heap().permanent_allocation_safepoints().count() > 0,
+        "GC-stress run should poll permanent allocation safepoints"
+    );
+    assert!(
+        stressed
+            .memory_budget_action()
+            .expect("stressed run records memory-budget pressure")
+            .requests_tier_b()
+    );
+    assert!(
+        admission.worker_records() > 0,
+        "Tier-B admission should classify worker records"
+    );
+    assert!(
+        admission.generation_rewrites() > 0,
+        "Tier-B admission should rewrite generation metadata"
+    );
+    assert_eq!(
+        stressed.stats().heap_tier_b_admission_worker_records(),
+        admission.worker_records() as u64
+    );
+    assert_eq!(
+        stressed
+            .stats()
+            .heap_tier_b_admission_permanent_shared_records(),
+        admission.permanent_shared_records() as u64
+    );
+    assert_eq!(
+        stressed.stats().heap_tier_b_admission_generation_rewrites(),
+        admission.generation_rewrites() as u64
+    );
+}
+
+#[test]
 fn internal_cache_hash_canaries_do_not_reach_drv_surfaces() {
     let root = fs::canonicalize(unique_temp_dir("internal-hash-leak-canary-import"))
         .expect("temp directory canonicalizes");
