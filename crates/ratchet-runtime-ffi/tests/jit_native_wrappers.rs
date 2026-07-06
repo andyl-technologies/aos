@@ -152,6 +152,96 @@ fn jit_native_call_executes_select_runtime_ffi_wrapper_with_one_context() {
 }
 
 #[test]
+fn jit_native_call_executes_select_literal_default_branch_with_one_context() {
+    assert_select_literal_default_from_nested_attrset(
+        "{ target = null; nested = { other = 7; }; }",
+        99,
+    );
+}
+
+#[test]
+fn jit_native_call_executes_select_literal_default_present_branch_with_one_context() {
+    assert_select_literal_default_from_nested_attrset(
+        "{ target = null; nested = { target = 42; }; }",
+        42,
+    );
+}
+
+fn assert_select_literal_default_from_nested_attrset(source: &str, expected: i64) {
+    let source_span = Span::new(0, source.len() as u32);
+    let source_ir = lower_source(source);
+    let target_symbol = symbol_for(&source_ir, b"target");
+    let nested_symbol = symbol_for(&source_ir, b"nested");
+    let lowered_ir = static_select_default_ir(0, source_ir.symbols.clone(), target_symbol, 99);
+    let mut eval = TreeWalk::new(&source_ir);
+    let root = eval.eval_root().expect("attrset evaluates");
+    let root_attrs = eval
+        .heap()
+        .get_attrs(root)
+        .expect("root attrset is heap-owned");
+    let nested = root_attrs
+        .get(nested_symbol)
+        .expect("nested attrset exists");
+    let frame = EvalFrame::new(1).expect("frame allocates");
+    frame.set(0, nested).expect("nested attrset capture stores");
+    let candidates =
+        runtime_wrapper_candidates(&["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"]);
+    let mut context = std::pin::pin!(RuntimeJitContext::new(
+        &mut eval,
+        source_ir.root,
+        source_span
+    ));
+    let rt = context.as_mut().as_mut_ptr();
+    let env = Rc::as_ptr(&frame) as *mut std::ffi::c_void;
+
+    // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
+    // by the force and attr wrappers, the environment pointer comes from a live
+    // EvalFrame, all registered candidates are process-local runtime-FFI
+    // wrappers with the frozen host ABI, and the nested attrset value in the
+    // frame belongs to the live evaluator.
+    let preflight = unsafe {
+        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(
+            JitTieredCodeSlot::with_counter(TierUpCounter::new(
+                DEFAULT_TIER1_INVOCATION_THRESHOLD - 1,
+            )),
+            TierUpPolicy::default(),
+            TierUpDemandHint::NoMultiUseEvidence,
+            &lowered_ir,
+            lowered_ir.root,
+            &candidates,
+            rt,
+            env,
+        )
+    }
+    .expect("select literal default executes through JIT");
+
+    assert!(preflight.did_call_native_code());
+    assert_eq!(preflight.slot().current_tier(), JitTier::Tier1Baseline);
+    assert!(preflight.slot().tier1_code_ptr().is_some());
+    assert!(preflight.owns_encapsulated_module());
+    let invocation = preflight
+        .native_invocation()
+        .expect("promoted preflight owns native invocation");
+    assert_eq!(
+        invocation
+            .finalization()
+            .artifact_runtime_imports()
+            .iter()
+            .map(|artifact_import| artifact_import.symbol_name())
+            .collect::<Vec<_>>(),
+        ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"]
+    );
+    assert_imports_registered(
+        invocation.finalization(),
+        &["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"],
+    );
+    let value = preflight
+        .native_value()
+        .expect("promotion path returns native value");
+    assert_eq!(value.as_int(), Ok(expected));
+}
+
+#[test]
 fn jit_native_call_executes_update_runtime_ffi_wrapper_with_one_context() {
     let source = "{ left = { keep = 1; replace = 2; }; right = { replace = 42; add = 7; }; }";
     let source_span = Span::new(0, source.len() as u32);
@@ -405,6 +495,55 @@ fn static_select_ir(slot: u32, symbols: SymbolTable, symbol: Symbol) -> Ir {
                     default: None,
                     site: IrInlineCacheSiteId::new(13),
                 },
+            ),
+        ],
+        Vec::new(),
+    );
+    let facts = IrFacts::conservative(arena.nodes().len());
+    Ir {
+        root: IrId::new(1),
+        arena,
+        facts,
+        symbols,
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+            .into_boxed_slice(),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    }
+}
+
+fn static_select_default_ir(
+    slot: u32,
+    symbols: SymbolTable,
+    symbol: Symbol,
+    default_value: i64,
+) -> Ir {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot },
+            ),
+            IrNode::new(
+                IrKind::Select,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::Select {
+                    receiver: IrId::new(0),
+                    path: IrAttrPathId::new(0),
+                    default: Some(IrId::new(2)),
+                    site: IrInlineCacheSiteId::new(13),
+                },
+            ),
+            IrNode::new(
+                IrKind::Int,
+                Span::new(9, 11),
+                EffectClass::pure(),
+                IrData::Int(default_value),
             ),
         ],
         Vec::new(),

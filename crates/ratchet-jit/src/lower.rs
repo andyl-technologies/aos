@@ -5,7 +5,8 @@
 //! return constant runtime [`Value`] words, perform one bounded local
 //! environment-slot read through the `aos_env_get` helper, force that loaded
 //! value through `aos_force`, apply two local-slot values through `aos_apply`,
-//! perform one forced static attr selection through `aos_select_ic`, or test one
+//! perform one forced static attr selection through `aos_select_ic`, fall back
+//! to a scalar literal `or` default after an `aos_has_attr` probe, test one
 //! forced static attr presence through `aos_has_attr`, and merge two forced
 //! local-slot attrsets through `aos_update`.
 //! Shape-directed tier-1 selector entrypoints choose among the arena-only
@@ -17,7 +18,10 @@ use std::{error::Error, fmt};
 
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
-    ir::{ExtFuncData, ExternalName, Function, InstBuilder, UserExternalName, UserFuncName, types},
+    ir::{
+        ExtFuncData, ExternalName, Function, InstBuilder, UserExternalName, UserFuncName,
+        condcodes::IntCC, types,
+    },
     settings,
     verifier::{VerifierErrors, verify_function},
 };
@@ -667,14 +671,13 @@ pub fn lower_apply_local_slots_ir_root_thunk_body_artifact(
 ///
 /// This bounded attr-access precursor accepts a direct [`IrKind::Select`] root
 /// plus one direct [`IrKind::ThunkAlloc`] wrapper around such a selection. The
-/// receiver must be a direct [`IrKind::LocalVar`] read, the attr path must
-/// contain exactly one static segment, and `or` defaults are intentionally
-/// rejected until the runtime helper boundary owns fallback semantics. The
-/// generated function imports `aos_env_get`, `aos_force`, and `aos_select_ic`,
-/// loads the receiver from the compiled thunk `env` parameter, forces it to
-/// WHNF, calls `aos_select_ic` with the compiled thunk `rt` parameter plus the
-/// static symbol and inline-cache site ids, and returns the two runtime `Value`
-/// words produced by that helper.
+/// receiver must be a direct [`IrKind::LocalVar`] read and the attr path must
+/// contain exactly one static segment. `or` defaults are supported only when
+/// the default expression is in the current scalar literal/default-thunk subset:
+/// `Int`, `Float`, `Bool`, and `Null`. The no-default path imports
+/// `aos_env_get`, `aos_force`, and `aos_select_ic`; the default path also
+/// imports `aos_has_attr`, probes the forced receiver, selects when present,
+/// and otherwise returns the scalar default `Value` words.
 ///
 /// The returned function remains non-executable CLIF only. It is not placed in a
 /// `JITModule`, linked against native helper addresses, finalized, or called.
@@ -1758,9 +1761,10 @@ struct AttrLookup {
     receiver_slot: u32,
     symbol: Symbol,
     site: IrInlineCacheSiteId,
+    default: Option<Value>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum AttrLookupLowering {
     HasAttr,
     SelectIc,
@@ -1839,7 +1843,7 @@ fn attr_lookup_for_node(
                 path,
                 site,
             },
-        ) => attr_lookup(ir, receiver, path, site),
+        ) => attr_lookup(ir, receiver, path, site, None),
         (
             AttrLookupLowering::SelectIc,
             IrData::Select {
@@ -1848,14 +1852,21 @@ fn attr_lookup_for_node(
                 site,
                 default: None,
             },
-        ) => attr_lookup(ir, receiver, path, site),
+        ) => attr_lookup(ir, receiver, path, site, None),
         (
             AttrLookupLowering::SelectIc,
             IrData::Select {
                 default: Some(default),
+                receiver,
+                path,
+                site,
                 ..
             },
-        ) => Err(JitLowerError::UnsupportedSelectDefault { default }),
+        ) => {
+            let default_value = constant_value_for_root(&ir.arena, default)
+                .map_err(|_| JitLowerError::UnsupportedSelectDefault { default })?;
+            attr_lookup(ir, receiver, path, site, Some(default_value))
+        }
         (_, data) => Err(JitLowerError::MismatchedIrNodeData {
             kind: lowering.expected_kind(),
             data,
@@ -1869,11 +1880,13 @@ fn attr_lookup(
     receiver: IrId,
     path: IrAttrPathId,
     site: IrInlineCacheSiteId,
+    default: Option<Value>,
 ) -> Result<AttrLookup, JitLowerError> {
     Ok(AttrLookup {
         receiver_slot: attr_receiver_slot(ir, receiver)?,
         symbol: single_static_attr_path_symbol(ir, path)?,
         site,
+        default,
     })
 }
 
@@ -2151,21 +2164,61 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
-    let attr_helper = import_runtime_helper_function(
-        &mut function,
-        lowering.symbol_name(),
-        lowering.external_name(),
-    )?;
     let entry_block = append_entry_block_params(&mut function);
-    emit_attr_lookup_local_slot_return(
-        &mut function,
-        entry_block,
-        env_get,
-        force,
-        attr_helper,
-        lookup,
-        lowering,
-    )?;
+    if lowering == AttrLookupLowering::SelectIc {
+        if let Some(default_value) = lookup.default {
+            let has_attr = import_runtime_helper_function(
+                &mut function,
+                AOS_HAS_ATTR_SYMBOL,
+                clif_external_name_for_aos_has_attr(),
+            )?;
+            let select_ic = import_runtime_helper_function(
+                &mut function,
+                AOS_SELECT_IC_SYMBOL,
+                clif_external_name_for_aos_select_ic(),
+            )?;
+            emit_attr_select_default_local_slot_return(
+                &mut function,
+                entry_block,
+                env_get,
+                force,
+                has_attr,
+                select_ic,
+                lookup,
+                default_value,
+            )?;
+        } else {
+            let select_ic = import_runtime_helper_function(
+                &mut function,
+                AOS_SELECT_IC_SYMBOL,
+                clif_external_name_for_aos_select_ic(),
+            )?;
+            emit_attr_lookup_local_slot_return(
+                &mut function,
+                entry_block,
+                env_get,
+                force,
+                select_ic,
+                lookup,
+                lowering,
+            )?;
+        }
+    } else {
+        let attr_helper = import_runtime_helper_function(
+            &mut function,
+            lowering.symbol_name(),
+            lowering.external_name(),
+        )?;
+        emit_attr_lookup_local_slot_return(
+            &mut function,
+            entry_block,
+            env_get,
+            force,
+            attr_helper,
+            lookup,
+            lowering,
+        )?;
+    }
     verify_clif_function(&function)?;
     Ok(function)
 }
@@ -2542,6 +2595,116 @@ fn emit_attr_lookup_local_slot_return(
     }
 
     cursor.ins().return_(&attr_results);
+    Ok(())
+}
+
+fn emit_attr_select_default_local_slot_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    env_get: cranelift_codegen::ir::FuncRef,
+    force: cranelift_codegen::ir::FuncRef,
+    has_attr: cranelift_codegen::ir::FuncRef,
+    select_ic: cranelift_codegen::ir::FuncRef,
+    lookup: AttrLookup,
+    default_value: Value,
+) -> Result<(), JitLowerError> {
+    let select_block = function.dfg.make_block();
+    let default_block = function.dfg.make_block();
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let rt = entry_params
+        .first()
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let slot = cursor
+        .ins()
+        .iconst(types::I32, i64::from(lookup.receiver_slot));
+    let env_get_call = cursor.ins().call(env_get, &[env, slot]);
+    let env_get_results = cursor.func.dfg.inst_results(env_get_call).to_vec();
+
+    if env_get_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_ENV_GET_SYMBOL,
+            expected: 2,
+            actual: env_get_results.len(),
+        });
+    }
+
+    let force_call = cursor
+        .ins()
+        .call(force, &[rt, env_get_results[0], env_get_results[1]]);
+    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+
+    if force_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_FORCE_SYMBOL,
+            expected: 2,
+            actual: force_results.len(),
+        });
+    }
+
+    let symbol = cursor
+        .ins()
+        .iconst(types::I32, i64::from(lookup.symbol.as_u32()));
+    let site = cursor
+        .ins()
+        .iconst(types::I32, i64::from(lookup.site.as_u32()));
+    let has_attr_call = cursor.ins().call(
+        has_attr,
+        &[rt, force_results[0], force_results[1], symbol, site],
+    );
+    let has_attr_results = cursor.func.dfg.inst_results(has_attr_call).to_vec();
+
+    if has_attr_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_HAS_ATTR_SYMBOL,
+            expected: 2,
+            actual: has_attr_results.len(),
+        });
+    }
+
+    let is_present = cursor
+        .ins()
+        .icmp_imm(IntCC::NotEqual, has_attr_results[1], 0);
+    cursor
+        .ins()
+        .brif(is_present, select_block, &[], default_block, &[]);
+
+    cursor.insert_block(select_block);
+    let symbol = cursor
+        .ins()
+        .iconst(types::I32, i64::from(lookup.symbol.as_u32()));
+    let site = cursor
+        .ins()
+        .iconst(types::I32, i64::from(lookup.site.as_u32()));
+    let select_call = cursor.ins().call(
+        select_ic,
+        &[rt, force_results[0], force_results[1], symbol, site],
+    );
+    let select_results = cursor.func.dfg.inst_results(select_call).to_vec();
+
+    if select_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_SELECT_IC_SYMBOL,
+            expected: 2,
+            actual: select_results.len(),
+        });
+    }
+    cursor.ins().return_(&select_results);
+
+    cursor.insert_block(default_block);
+    let tag = cursor
+        .ins()
+        .iconst(types::I64, default_value.tag() as u64 as i64);
+    let payload = cursor
+        .ins()
+        .iconst(types::I64, default_value.payload_bits() as i64);
+    cursor.ins().return_(&[tag, payload]);
+
     Ok(())
 }
 
@@ -4177,6 +4340,79 @@ mod tests {
     }
 
     #[test]
+    fn full_ir_tier1_selectors_accept_static_select_literal_defaults() {
+        let ir = static_select_default_ir(66, IrId::new(2), vec![literal_int_node(99)]);
+
+        let artifact = lower_tier1_ir_thunk_body_artifact_for_ir(&ir, ir.root)
+            .expect("full-IR selector lowers static select root with literal default");
+        assert_eq!(artifact.function().dfg.ext_funcs.len(), 4);
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_env_get(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_force(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_has_attr(),
+        );
+        imported_function_by_user_external_name(
+            artifact.function(),
+            clif_external_name_for_aos_select_ic(),
+        );
+        assert!(all_iconst_words(artifact.function()).contains(&(ValueTag::Int as u64)));
+        assert!(all_iconst_words(artifact.function()).contains(&Value::int(99).payload_bits()));
+
+        let wrapped_default_ir = static_select_default_ir(
+            67,
+            IrId::new(3),
+            vec![
+                literal_int_node(99),
+                IrNode::new(
+                    IrKind::ThunkAlloc,
+                    Span::new(12, 14),
+                    EffectClass::pure(),
+                    IrData::Node(IrId::new(2)),
+                ),
+            ],
+        );
+        let force_aware_artifact = lower_force_aware_tier1_ir_thunk_body_artifact_for_ir(
+            &wrapped_default_ir,
+            wrapped_default_ir.root,
+        )
+        .expect("force-aware full-IR selector lowers select with wrapped literal default");
+        assert_eq!(force_aware_artifact.function().dfg.ext_funcs.len(), 4);
+        imported_function_by_user_external_name(
+            force_aware_artifact.function(),
+            clif_external_name_for_aos_has_attr(),
+        );
+        imported_function_by_user_external_name(
+            force_aware_artifact.function(),
+            clif_external_name_for_aos_select_ic(),
+        );
+        assert!(
+            all_iconst_words(force_aware_artifact.function())
+                .contains(&Value::int(99).payload_bits())
+        );
+    }
+
+    #[test]
+    fn full_ir_tier1_selectors_reject_non_literal_select_defaults() {
+        let ir = static_select_default_ir(68, IrId::new(2), vec![local_var_node(69)]);
+
+        let Err(error) = lower_tier1_ir_thunk_body_artifact_for_ir(&ir, ir.root) else {
+            panic!("non-literal select default is outside the bounded lowerer");
+        };
+
+        assert!(matches!(
+            error,
+            JitLowerError::UnsupportedSelectDefault { default } if default == IrId::new(2)
+        ));
+    }
+
+    #[test]
     fn full_ir_tier1_selectors_accept_static_has_attr_roots() {
         let ir = static_has_attr_ir(63);
 
@@ -4490,6 +4726,15 @@ mod tests {
         )
     }
 
+    fn literal_int_node(value: i64) -> IrNode {
+        IrNode::new(
+            IrKind::Int,
+            Span::new(10, 12),
+            EffectClass::pure(),
+            IrData::Int(value),
+        )
+    }
+
     fn apply_local_slots_arena(function_slot: u32, argument_slot: u32) -> IrArena {
         IrArena::from_raw_parts(
             vec![
@@ -4564,6 +4809,42 @@ mod tests {
             ],
             Vec::new(),
         );
+        let facts = IrFacts::conservative(arena.nodes().len());
+        Ir {
+            root: IrId::new(1),
+            arena,
+            facts,
+            symbols,
+            frames: Box::new([]),
+            with_chains: Box::new([]),
+            attr_paths: vec![vec![IrAttrPathSegment::Static(symbol)].into_boxed_slice()]
+                .into_boxed_slice(),
+            bindings: Box::new([]),
+            shapes: Box::new([]),
+        }
+    }
+
+    fn static_select_default_ir(slot: u32, default: IrId, mut default_nodes: Vec<IrNode>) -> Ir {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols
+            .intern(b"target")
+            .expect("fixture symbol table accepts target");
+        let mut nodes = vec![
+            local_var_node(slot),
+            IrNode::new(
+                IrKind::Select,
+                Span::new(0, 8),
+                EffectClass::pure(),
+                IrData::Select {
+                    receiver: IrId::new(0),
+                    path: IrAttrPathId::new(0),
+                    site: IrInlineCacheSiteId::new(11),
+                    default: Some(default),
+                },
+            ),
+        ];
+        nodes.append(&mut default_nodes);
+        let arena = IrArena::from_raw_parts(nodes, Vec::new());
         let facts = IrFacts::conservative(arena.nodes().len());
         Ir {
             root: IrId::new(1),
@@ -4789,6 +5070,21 @@ mod tests {
         iconst_values(function)
             .into_iter()
             .map(|(_value, word)| word)
+            .collect()
+    }
+
+    fn all_iconst_words(function: &Function) -> Vec<u64> {
+        function
+            .layout
+            .blocks()
+            .flat_map(|block| function.layout.block_insts(block))
+            .filter_map(|inst| match function.dfg.insts[inst] {
+                InstructionData::UnaryImm {
+                    opcode: Opcode::Iconst,
+                    imm,
+                } => Some(imm.bits() as u64),
+                _ => None,
+            })
             .collect()
     }
 

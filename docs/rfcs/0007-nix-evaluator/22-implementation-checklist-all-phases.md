@@ -10392,11 +10392,15 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       `lower_update_local_slots_ir_thunk_body()` lowers direct `IrKind::BinOp`
       roots with `BinOpKind::Update`, plus one direct `ThunkAlloc` wrapper
       around that root, when both operands are direct local-slot reads. The
-      generated select/has-attr bodies import
-      `aos_env_get`, `aos_force`, and either `aos_select_ic` or `aos_has_attr`,
-      read the receiver from the compiled thunk `env` parameter, force it to
-      WHNF, pass the static symbol id and inline-cache site id as `i32`
-      immediates, and return the helper's two runtime `Value` words.
+      generated no-default select/has-attr bodies import `aos_env_get`,
+      `aos_force`, and either `aos_select_ic` or `aos_has_attr`, read the
+      receiver from the compiled thunk `env` parameter, force it to WHNF, pass
+      the static symbol id and inline-cache site id as `i32` immediates, and
+      return the helper's two runtime `Value` words. Static select roots with a
+      scalar literal/default-thunk `or` default (`Int`, `Float`, `Bool`, or
+      `Null`) additionally import `aos_has_attr`, probe the forced receiver,
+      select with `aos_select_ic` when present, and return the scalar default
+      `Value` words when absent.
       The generated update body imports `aos_env_get`, `aos_force`, and
       `aos_update`, reads the left then right local slots, forces each operand
       to WHNF in that order, calls `aos_update(rt, left, right)`, and returns
@@ -10412,13 +10416,14 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       full-IR registered promotion/finalization,
       `aos-nix` full-IR promotion/install/conformance readiness with
       runtime-FFI-derived `aos_select_ic`, `aos_has_attr`, and `aos_update`
-      candidates, and
-      native thunk-call execution with synthetic host-ABI candidates, plus
-      rejection of dynamic paths, defaults for select, non-local receivers, and
-      non-local update operands. This is still a bounded static attr-access and
-      local-slot update bridge: no multi-segment paths, dynamic attr paths, `or`
-      defaults, generic receiver/operand lowering, generic update traversal,
-      native execution through the `aos-nix` strict registration gate,
+      candidates, native thunk-call execution with synthetic host-ABI
+      candidates, and runtime-FFI native execution of select scalar-default
+      branches, plus rejection of dynamic paths, non-literal select defaults,
+      non-local receivers, and non-local update operands. This is still a
+      bounded static attr-access and local-slot update bridge: no multi-segment
+      paths, dynamic attr paths, generic/default-expression `or` traversal,
+      generic receiver/operand lowering, generic update traversal, native
+      execution through the `aos-nix` strict registration gate,
       evaluator heap publication, or generic IR traversal is implemented here.
 - [x] Current deterministic IR-root CLIF naming precursor:
       `ratchet-jit::lower::clif_name_for_ir_root()` reserves a Cranelift
