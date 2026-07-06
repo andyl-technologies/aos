@@ -15,6 +15,7 @@ mod cache_io_tests;
 mod format_tests;
 mod layout_tests;
 mod pack_tests;
+mod root_record_tests;
 mod schema_tests;
 
 static TEST_ID: AtomicUsize = AtomicUsize::new(0);

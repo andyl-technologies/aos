@@ -3,6 +3,8 @@
 use super::*;
 
 mod path_policy;
+mod result_fingerprint;
+mod root_cutoff;
 
 // Retains the former crate-visible helper paths, even when no current caller uses them.
 #[allow(unused_imports)]
@@ -885,6 +887,16 @@ impl TreeWalkOptions {
     /// Returns whether advisory incremental eval-cache observation is enabled.
     pub const fn eval_cache_enabled(&self) -> bool {
         self.eval_cache_enabled
+    }
+
+    /// Returns a stable digest over the result-affecting evaluator settings.
+    ///
+    /// The digest folds every option that can change an expression's derivation
+    /// closure but is not otherwise captured by the impure-input trace, for use
+    /// as a component of a durable root-record cutoff key. See the
+    /// `result_fingerprint` module for the exact field set and rationale.
+    pub fn result_affecting_fingerprint(&self) -> [u8; 32] {
+        result_fingerprint::result_affecting_fingerprint(self)
     }
 
     /// Returns the durable materialization costs for forced-expression payloads.

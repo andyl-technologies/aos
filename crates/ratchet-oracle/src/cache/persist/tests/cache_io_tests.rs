@@ -1076,8 +1076,9 @@ fn cache_trace_revalidation_verified_node_memo_evicts_on_dependency_write() {
         .record_node_trace(dependency_key, dependency_value_hash, &dependency_trace)
         .expect("dependency trace records");
 
-    let mut matching =
-        StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(dependency_input.clone())]);
+    let mut matching = StaticRevalidator::new(vec![ImpureInputFingerprint::Cacheable(
+        dependency_input.clone(),
+    )]);
     assert_eq!(
         cache
             .load_cached_expression_node_value_with_trace_revalidation(node_key, &mut matching)
@@ -1123,9 +1124,9 @@ fn cache_trace_revalidation_shared_dependency_verified_once_per_run() {
         .expect("dependency payload hashes");
     let dependency_input = test_read_file_fingerprint(b"/tmp/shared", 7);
     let dependent_trace = |dependency_hash| {
-        PersistNodeTracePayload::from_cacheable_inputs(std::iter::empty::<
-            CacheableInputFingerprint,
-        >())
+        PersistNodeTracePayload::from_cacheable_inputs(
+            std::iter::empty::<CacheableInputFingerprint>(),
+        )
         .expect("dependent trace builds")
         .with_memo_read_dependency_records([(dependency_key, dependency_hash)])
         .expect("dependent trace dependency records")
@@ -1202,10 +1203,7 @@ fn cache_value_decode_verification_knob_round_trips_and_defaults_off() {
     let payload = CachedExpressionValue::immediate(Value::int(42)).expect("payload builds");
     let value_hash = payload.value_hash().expect("payload hashes");
     cache
-        .materialize_cached_expression_value_indexed(
-            &payload,
-            MaterializationDecision::Materialize,
-        )
+        .materialize_cached_expression_value_indexed(&payload, MaterializationDecision::Materialize)
         .expect("value materializes");
 
     // Both the trusting default and the verifying handle decode the same value.

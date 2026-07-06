@@ -19,8 +19,8 @@ use anyhow::Result;
 #[cfg(test)]
 use crate::cache::EvalCache;
 use crate::cache::{
-    CachedParse, EvalCacheRuntime, MaterializationDecision, ParseCache, ParseCacheError,
-    ParseFileKey, PersistCache,
+    CacheableInputFingerprint, CachedParse, EvalCacheRuntime, MaterializationDecision, ParseCache,
+    ParseCacheError, ParseFileKey, PersistCache, PersistRootRecordKey,
 };
 #[cfg(test)]
 use crate::compile::{EffectClass, IrFacts};
@@ -33,7 +33,7 @@ use crate::eval::{
     EvalErrorLabel, EvalMode, EvalOutcome, EvalStats, IfdRealizer, TreeWalkError,
     TreeWalkErrorKind, TreeWalkOptions,
     eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,
-    eval_whnf_owned_with_options_realizer_and_eval_cache,
+    eval_whnf_owned_with_options_realizer_and_eval_cache, revalidate_cacheable_input_trace,
 };
 use crate::runtime::builtins::{
     Builtin, BuiltinAvailability, BuiltinExecution, NativeCliFallbackFeature, StrictUnaryPrimOp,
@@ -541,7 +541,6 @@ impl NixNative {
         file: &Path,
         attr: &str,
     ) -> Result<(NativeDrvClosure, EvalStats)> {
-        let attr_path = attr_path_drv_path_segments(attr)?;
         let mut options = self.file_instantiation_options();
         let file = native_source_file(file, &options)?;
         let source_name = path_bytes(&file)?;
@@ -552,50 +551,46 @@ impl NixNative {
                 source_name_text
             ),
         })?;
-        let diagnostic_source = std::str::from_utf8(&source)
-            .ok()
-            .map(|source| NativeDiagnosticSource::new(source_name_text.as_ref(), source, None));
         let base = file.parent().unwrap_or_else(|| Path::new("/"));
         options.set_path_literal_base(path_bytes(base)?)?;
-        let ir = self.lower_native_source_bytes(
-            &source,
-            Some(source_name_text.to_string()),
-            Some(file.as_path()),
-            None,
-            diagnostic_source,
-        )?;
-        if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &self.options)
-        {
-            return Err(NativeEvalError::Unsupported {
-                feature: feature.to_string(),
-                span: Some(crate::error::SrcSpan {
-                    start: span.start,
-                    end: span.end,
-                }),
+
+        // A root cutoff key is derived only when the durable cutoff is enabled
+        // and a persistent-cache root is configured; the same key drives both a
+        // warm hit and cold-path record writeback.
+        let cutoff_key = (options.root_cutoff_enabled() && options.persist_cache_root().is_some())
+            .then(|| root_cutoff::root_record_key(&file, &source, attr, &options));
+
+        if let Some(key) = cutoff_key {
+            if let Some(closure) = self.load_root_cutoff_closure(&options, key) {
+                if options.root_cutoff_check() {
+                    let (fresh, _, _) =
+                        self.eval_file_attr_closure_full(&file, attr, &options, &source)?;
+                    if fresh != closure {
+                        tracing::error!(
+                            target: "aos_nix::cache",
+                            file = %file.display(),
+                            attr,
+                            "root cutoff closure diverged from a full evaluation"
+                        );
+                        return Err(NativeEvalError::Internal {
+                            message: format!(
+                                "root cutoff closure for {} attr {attr} diverged from a full evaluation",
+                                file.display()
+                            ),
+                        }
+                        .into());
+                    }
+                }
+                return Ok((closure, EvalStats::for_root_cutoff()));
             }
-            .into());
         }
-        let outcome =
-            eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
-                &ir,
-                &attr_path,
-                options,
-                source_name.clone(),
-                source.clone(),
-                self.ifd_realizer.clone(),
-                self.eval_cache.clone(),
-            )
-            .map_err(|error| match diagnostic_source {
-                Some(diagnostic_source) => native_eval_error_with_source_trace(
-                    error,
-                    diagnostic_source,
-                    self.eval_trace_style(),
-                ),
-                None => native_eval_error_with_trace(error, None, self.eval_trace_style()),
-            })?;
-        let stats = *outcome.stats();
-        self.observe_eval_cache(&outcome);
-        Ok((self.native_drv_closure_from_outcome(outcome)?, stats))
+
+        let (closure, stats, cacheable_inputs) =
+            self.eval_file_attr_closure_full(&file, attr, &options, &source)?;
+        if let (Some(key), Some(inputs)) = (cutoff_key, cacheable_inputs) {
+            self.store_root_cutoff(&options, key, &closure, &inputs);
+        }
+        Ok((closure, stats))
     }
 
     fn native_drv_closure_from_outcome(&self, outcome: EvalOutcome) -> Result<NativeDrvClosure> {
@@ -908,6 +903,7 @@ fn native_filesystem_access_denied(mode: EvalMode, path: &[u8]) -> NativeEvalErr
 
 mod error;
 mod fallback;
+mod root_cutoff;
 mod source;
 
 #[cfg(test)]

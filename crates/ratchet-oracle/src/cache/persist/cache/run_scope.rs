@@ -109,9 +109,7 @@ impl PersistCache {
     /// Returns [`PersistNodeMetadataIndexError`] if the advisory metadata lock
     /// cannot be acquired, the same-root metadata write lock is poisoned, or the
     /// sidecar index cannot be opened, read, decoded, written, or flushed.
-    pub(crate) fn flush_buffered_node_demands(
-        &self,
-    ) -> Result<(), PersistNodeMetadataIndexError> {
+    pub(crate) fn flush_buffered_node_demands(&self) -> Result<(), PersistNodeMetadataIndexError> {
         let pending = {
             let mut guard = self
                 .pending_node_demands

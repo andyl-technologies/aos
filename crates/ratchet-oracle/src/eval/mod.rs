@@ -170,6 +170,7 @@ pub use tree_walk::{
     eval_raw_bytes_with_options, eval_raw_bytes_with_options_source, eval_whnf, eval_whnf_owned,
     eval_whnf_owned_with_options, eval_whnf_owned_with_options_and_realizer,
     eval_whnf_owned_with_options_realizer_and_eval_cache, eval_whnf_with_options,
+    revalidate_cacheable_input_trace,
 };
 pub use whnf_tag::{
     CheckedWhnfTagFastPath, WhnfTagFastPath, checked_whnf_tag_fast_path,

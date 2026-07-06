@@ -246,10 +246,10 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use super::HeapRecordTable;
     use super::super::{
         EvalHeap, EvalThunk, HeapAllocationDomain, HeapObjectValue, HeapRecord, HeapRecordLayout,
     };
+    use super::HeapRecordTable;
     use crate::compile::IrId;
     use crate::heap::HeapGeneration;
     use crate::string::NixString;
@@ -326,9 +326,7 @@ mod tests {
             "index resolved the reused address to the stale record"
         );
         // The untouched survivor is unaffected.
-        let survivor = table
-            .record_at_address(0x1000)
-            .expect("survivor resolves");
+        let survivor = table.record_at_address(0x1000).expect("survivor resolves");
         assert_eq!(survivor.last_touch_epoch.get(), 10);
     }
 

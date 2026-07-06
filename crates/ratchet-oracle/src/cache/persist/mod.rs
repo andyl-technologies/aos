@@ -62,6 +62,18 @@ pub const PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN: usize =
 /// The encoded length of a complete parse-artifact index entry.
 pub const PERSIST_PARSE_ARTIFACT_INDEX_ENTRY_LEN: usize =
     PERSIST_PARSE_ARTIFACT_INDEX_KEY_LEN + PERSIST_PARSE_ARTIFACT_INDEX_VALUE_LEN;
+/// The encoded length of a root-record index key.
+pub const PERSIST_ROOT_RECORD_INDEX_KEY_LEN: usize = 33;
+/// The encoded length of a root-record index value.
+pub const PERSIST_ROOT_RECORD_INDEX_VALUE_LEN: usize =
+    PERSIST_BLOB_INDEX_KEY_LEN + PERSIST_BLOB_INDEX_VALUE_LEN;
+/// The encoded length of a complete root-record index entry.
+pub const PERSIST_ROOT_RECORD_INDEX_ENTRY_LEN: usize =
+    PERSIST_ROOT_RECORD_INDEX_KEY_LEN + PERSIST_ROOT_RECORD_INDEX_VALUE_LEN;
+/// The fixed magic bytes at the start of a root-instantiation record payload.
+pub const PERSIST_ROOT_RECORD_PAYLOAD_MAGIC: [u8; 16] = *b"AOS-NIX-ROOTREC0";
+/// The root-instantiation record payload format version.
+pub const PERSIST_ROOT_RECORD_PAYLOAD_VERSION: u32 = 1;
 /// The encoded length of a demand-node metadata index key.
 pub const PERSIST_NODE_METADATA_INDEX_KEY_LEN: usize = 33;
 /// The encoded length of an optional materialized value-hash metadata field.
@@ -98,6 +110,7 @@ const PERSIST_FILE_ARTIFACT_INDEX_TAG: u8 = 3;
 const PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION: &[u8] = b"aos-nix-persist-file-artifact-key-v1";
 const PERSIST_PARSE_ARTIFACT_INDEX_TAG: u8 = 4;
 const PERSIST_NODE_METADATA_INDEX_TAG: u8 = 5;
+const PERSIST_ROOT_RECORD_INDEX_TAG: u8 = 6;
 const PERSIST_NODE_METADATA_VALUE_HASH_NONE_TAG: u8 = 0;
 const PERSIST_NODE_METADATA_VALUE_HASH_PRESENT_TAG: u8 = 1;
 const PERSIST_NODE_METADATA_EXPRESSION_KEY_PERSONALIZATION: &[u8] =
@@ -114,14 +127,14 @@ mod materialization;
 mod pack;
 
 pub use cache::{
-    PersistBlobIndexRebuild, PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry,
-    PersistBlobLiveRoot, PersistBlobLiveRootSource, PersistBlobPackLivenessPlan,
-    PersistBlobPackRepackPlan, PersistBlobPackTrim, PersistBlobPacksRepack,
-    PersistBlobRecordRelocation, PersistCache, PersistCompaction, PersistFileBlobReachabilityPlan,
-    PersistMissingNodeValueRoot, PersistNodeValueRoot, PersistNodeValueRootPlan,
-    PersistStorageMaintenance, PersistStorageMaintenanceAction, PersistStorageMaintenanceOutcome,
-    PersistStorageMaintenancePlan, PersistStorageMaintenancePolicy, PersistStorageRepack,
-    PersistValueBlobReachabilityPlan,
+    HydratedRootInstantiation, PersistBlobIndexRebuild, PersistBlobIndexRebuildPlan,
+    PersistBlobIndexStaleEntry, PersistBlobLiveRoot, PersistBlobLiveRootSource,
+    PersistBlobPackLivenessPlan, PersistBlobPackRepackPlan, PersistBlobPackTrim,
+    PersistBlobPacksRepack, PersistBlobRecordRelocation, PersistCache, PersistCompaction,
+    PersistFileBlobReachabilityPlan, PersistMissingNodeValueRoot, PersistNodeValueRoot,
+    PersistNodeValueRootPlan, PersistStorageMaintenance, PersistStorageMaintenanceAction,
+    PersistStorageMaintenanceOutcome, PersistStorageMaintenancePlan,
+    PersistStorageMaintenancePolicy, PersistStorageRepack, PersistValueBlobReachabilityPlan,
 };
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,
@@ -141,9 +154,10 @@ pub use error::{
     PersistParseArtifactIndexedHydrationError, PersistParseArtifactIndexedWriteError,
     PersistParseArtifactMaterializationError, PersistParseBytesIndexedLoadError,
     PersistParseFileIndexedHydrationError, PersistParseFileIndexedLoadError,
-    PersistParseSourceIndexedLoadError, PersistStorageAutoMaintenanceError,
-    PersistStorageMaintenanceError, PersistStorageMaintenancePlanError, PersistStorageRepackError,
-    PersistValueBlobPackRepackError, PersistValueBlobReachabilityPlanError,
+    PersistParseSourceIndexedLoadError, PersistRootRecordError, PersistRootRecordIndexError,
+    PersistStorageAutoMaintenanceError, PersistStorageMaintenanceError,
+    PersistStorageMaintenancePlanError, PersistStorageRepackError, PersistValueBlobPackRepackError,
+    PersistValueBlobReachabilityPlanError,
 };
 pub use format::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,
@@ -152,7 +166,8 @@ pub use format::{
     PersistNodeMetadataIndex, PersistNodeMetadataIndexEntry, PersistNodeMetadataIndexValue,
     PersistNodeMetadataKey, PersistNodeTraceLog, PersistNodeTraceLogEntry, PersistNodeTracePayload,
     PersistParseArtifactIndex, PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue,
-    PersistParseArtifactKey,
+    PersistParseArtifactKey, PersistRootRecordIndex, PersistRootRecordIndexEntry,
+    PersistRootRecordIndexValue, PersistRootRecordKey, RootInstantiationRecord,
 };
 pub use layout::PersistLayout;
 pub use materialization::{

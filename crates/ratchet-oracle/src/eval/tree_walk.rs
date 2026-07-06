@@ -448,6 +448,8 @@ pub struct TreeWalkOptions {
     persist_cache_root: Option<PathBuf>,
     eval_cache_enabled: bool,
     persist_cache_verify: bool,
+    root_cutoff_enabled: bool,
+    root_cutoff_check: bool,
     force_cache_materialization_costs: MaterializationCosts,
     heap_memory_budget: Option<HeapMemoryBudget>,
     heap_tier_b_transition_admission_enabled: bool,
@@ -487,6 +489,8 @@ impl Default for TreeWalkOptions {
             persist_cache_root: None,
             eval_cache_enabled: false,
             persist_cache_verify: false,
+            root_cutoff_enabled: false,
+            root_cutoff_check: false,
             force_cache_materialization_costs: DEFAULT_FORCE_CACHE_MATERIALIZATION_COSTS,
             heap_memory_budget: None,
             heap_tier_b_transition_admission_enabled: false,
@@ -1309,6 +1313,7 @@ mod select_cache_hash;
 use select_cache_hash::SelectCacheMap;
 mod serialize_xml;
 
+pub use eval_impure_inputs::revalidate_cacheable_input_trace;
 pub use safepoint_roots::{
     TreeWalkSafepointMinorGcReferenceWritebackBufferApplication,
     TreeWalkSafepointMinorGcReferenceWritebackPlan, TreeWalkSafepointMinorGcRootWritebackReport,

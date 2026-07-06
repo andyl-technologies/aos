@@ -46,6 +46,7 @@ impl TreeWalk {
                 .saturating_add(self.import_parse_cache_misses as u64)
                 .saturating_add(self.find_file_cache_misses as u64),
             early_cutoffs: self.stats.early_cutoffs,
+            root_cutoffs: self.stats.root_cutoffs,
             derivation_aterm_path_reuses: self.stats.derivation_aterm_path_reuses,
             static_derivation_output_path_reuses: self.stats.static_derivation_output_path_reuses,
             derivation_hash_calculations: self.stats.derivation_hash_calculations,

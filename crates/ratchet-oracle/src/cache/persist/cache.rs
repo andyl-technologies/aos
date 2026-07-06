@@ -16,9 +16,12 @@ mod maintenance_types;
 mod node_demand;
 mod node_io;
 mod reachability;
-mod run_scope;
 mod repack_helpers;
+mod root_record_io;
+mod run_scope;
 mod store_io;
+
+pub use root_record_io::HydratedRootInstantiation;
 
 pub use maintenance_types::{
     PersistBlobIndexRebuild, PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry,

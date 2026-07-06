@@ -13362,6 +13362,7 @@ pub struct EvalStats {
     pub(crate) cache_hits: u64,
     pub(crate) cache_misses: u64,
     pub(crate) early_cutoffs: u64,
+    pub(crate) root_cutoffs: u64,
     pub(crate) derivation_aterm_path_reuses: u64,
     pub(crate) static_derivation_output_path_reuses: u64,
     pub(crate) derivation_hash_calculations: u64,
@@ -13511,6 +13512,30 @@ impl EvalStats {
     /// Returns the number of incremental-cache early cutoffs.
     pub const fn early_cutoffs(&self) -> u64 {
         self.early_cutoffs
+    }
+
+    /// Returns the number of root-level early cutoffs served without evaluation.
+    ///
+    /// A root cutoff answers an entire `instantiate(file, attr)` request from a
+    /// durable root record after revalidating its transitive impure inputs,
+    /// skipping parse, lowering, and evaluation. This counter is one for a
+    /// closure re-emitted from such a record and zero for a normal evaluation.
+    pub const fn root_cutoffs(&self) -> u64 {
+        self.root_cutoffs
+    }
+
+    /// Returns evaluator counters describing a root-level early cutoff.
+    ///
+    /// The returned stats carry a single [`Self::root_cutoffs`] and are
+    /// otherwise zero, reflecting that no thunks were forced, no heap was
+    /// allocated, and no cache probes were performed because the closure was
+    /// re-emitted from a durable root record without evaluation.
+    #[must_use]
+    pub fn for_root_cutoff() -> Self {
+        Self {
+            root_cutoffs: 1,
+            ..Self::default()
+        }
     }
 
     /// Returns the number of `.drv` paths reused from clean derivation ATerm records.

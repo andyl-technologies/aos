@@ -730,6 +730,8 @@ pub struct NixEvalConfig {
     home_dir: Option<PathBuf>,
     native_cache_root: Option<PathBuf>,
     native_cache_verify: bool,
+    native_root_cutoff: bool,
+    native_root_cutoff_check: bool,
     heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
 }
@@ -866,6 +868,35 @@ impl NixEvalConfig {
     /// Enables or disables native persistent value-decode content re-hashing.
     pub fn set_native_cache_verify(&mut self, native_cache_verify: bool) {
         self.native_cache_verify = native_cache_verify;
+    }
+
+    /// Returns whether native root-level early cutoff is enabled.
+    ///
+    /// Root cutoff is on by default and answers a fully warm
+    /// `instantiate(file, attr)` from a durable record, skipping evaluation. It
+    /// only takes effect when a native cache root is configured, and is disabled
+    /// through the `AOS_NIX_ROOT_CUTOFF=0` kill switch.
+    pub const fn native_root_cutoff(&self) -> bool {
+        self.native_root_cutoff
+    }
+
+    /// Enables or disables native root-level early cutoff.
+    pub fn set_native_root_cutoff(&mut self, native_root_cutoff: bool) {
+        self.native_root_cutoff = native_root_cutoff;
+    }
+
+    /// Returns whether native root-cutoff cross-check mode is enabled.
+    ///
+    /// When enabled, a taken cutoff also runs the full evaluation and asserts a
+    /// byte-identical closure, reporting divergence loudly. This is a hardening
+    /// aid enabled through `AOS_NIX_ROOT_CUTOFF_CHECK=1`.
+    pub const fn native_root_cutoff_check(&self) -> bool {
+        self.native_root_cutoff_check
+    }
+
+    /// Enables or disables native root-cutoff cross-check mode.
+    pub fn set_native_root_cutoff_check(&mut self, native_root_cutoff_check: bool) {
+        self.native_root_cutoff_check = native_root_cutoff_check;
     }
 
     /// Returns the configured native heap high-water budget in bytes, if set.
@@ -1212,6 +1243,8 @@ impl NixEvalConfig {
             home_dir: None,
             native_cache_root: None,
             native_cache_verify: false,
+            native_root_cutoff: true,
+            native_root_cutoff_check: false,
             heap_memory_budget_bytes: None,
             trace_verbose: false,
         };
@@ -1233,6 +1266,12 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_CACHE_VERIFY") {
             config.set_aos_nix_cache_verify_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_ROOT_CUTOFF") {
+            config.set_aos_nix_root_cutoff_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_ROOT_CUTOFF_CHECK") {
+            config.set_aos_nix_root_cutoff_check_env_var(&value);
         }
         if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
             config.set_aos_nix_max_rss_env_var(value);
@@ -1268,6 +1307,16 @@ impl NixEvalConfig {
 
     fn set_aos_nix_cache_verify_env_var(&mut self, value: &str) {
         self.set_native_cache_verify(matches!(value.trim(), "1" | "true"));
+    }
+
+    fn set_aos_nix_root_cutoff_env_var(&mut self, value: &str) {
+        // Root cutoff is on by default; this is a kill switch, so only explicit
+        // falsy values disable it and anything else leaves it enabled.
+        self.set_native_root_cutoff(!matches!(value.trim(), "0" | "false" | "off" | "no"));
+    }
+
+    fn set_aos_nix_root_cutoff_check_env_var(&mut self, value: &str) {
+        self.set_native_root_cutoff_check(matches!(value.trim(), "1" | "true"));
     }
 
     fn set_aos_nix_max_rss_env_var(&mut self, value: String) {
@@ -2700,6 +2749,8 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         options.set_persist_cache_root(cache_root.join("persist"));
         options.set_eval_cache_enabled(true);
         options.set_persist_cache_verify(config.native_cache_verify());
+        options.set_root_cutoff_enabled(config.native_root_cutoff());
+        options.set_root_cutoff_check(config.native_root_cutoff_check());
     }
     if let Some(max_resident_bytes) = config.heap_memory_budget_bytes() {
         options.set_heap_memory_budget(HeapMemoryBudget::new(max_resident_bytes)?);

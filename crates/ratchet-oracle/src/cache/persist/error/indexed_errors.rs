@@ -652,3 +652,64 @@ pub enum PersistError {
         source: PersistNodeTraceLogError,
     },
 }
+
+/// Durable root-instantiation record store or load failed.
+///
+/// Any variant reported to the root-cutoff caller is treated as a cache miss:
+/// the caller silently falls through to a normal evaluation rather than
+/// surfacing the error, so these variants exist for diagnostics and tests.
+#[derive(Debug, Error)]
+pub enum PersistRootRecordError {
+    /// The advisory root-record lock could not be acquired.
+    #[error("failed to acquire persistent root-record advisory lock at {path}")]
+    AdvisoryLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
+    /// A root-record payload could not be encoded from its impure-input trace.
+    #[error("failed to encode persistent root record impure-input trace")]
+    TraceEncode {
+        /// The underlying node-trace payload error.
+        source: PersistNodeTracePayloadError,
+    },
+    /// A record or closure blob could not be appended or indexed.
+    #[error("failed to store persistent root record blob")]
+    Blob {
+        /// The underlying indexed blob write error.
+        source: PersistBlobIndexedWriteError,
+    },
+    /// A record or closure blob location could not be looked up.
+    #[error("failed to look up persistent root record blob")]
+    BlobIndex {
+        /// The underlying blob index error.
+        source: PersistBlobIndexError,
+    },
+    /// A record or closure blob could not be read from the pack.
+    #[error("failed to read persistent root record blob")]
+    BlobPack {
+        /// The underlying blob pack error.
+        source: PersistBlobPackError,
+    },
+    /// The root-record sidecar index could not be opened, read, or written.
+    #[error("failed to access persistent root record index")]
+    Index {
+        /// The underlying root-record index error.
+        source: PersistRootRecordIndexError,
+    },
+    /// A root-record payload could not be decoded.
+    #[error("persistent root record payload is malformed: {source}")]
+    Format {
+        /// The underlying payload format error.
+        source: PersistPackFormatError,
+    },
+    /// The root-record payload directory could not be created.
+    #[error("failed to create persistent root record directory {path:?}")]
+    CreateDir {
+        /// The directory path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+}

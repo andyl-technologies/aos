@@ -16,7 +16,7 @@ pub use format_errors::{
 };
 pub use index_errors::{
     PersistBlobIndexError, PersistFileArtifactIndexError, PersistNodeMetadataIndexError,
-    PersistParseArtifactIndexError,
+    PersistParseArtifactIndexError, PersistRootRecordIndexError,
 };
 pub use indexed_errors::{
     PersistBlobIndexedReadError, PersistBlobIndexedWriteError,
@@ -28,7 +28,7 @@ pub use indexed_errors::{
     PersistParseArtifactHydrationError, PersistParseArtifactIndexedHydrationError,
     PersistParseArtifactIndexedWriteError, PersistParseArtifactMaterializationError,
     PersistParseBytesIndexedLoadError, PersistParseFileIndexedHydrationError,
-    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError,
+    PersistParseFileIndexedLoadError, PersistParseSourceIndexedLoadError, PersistRootRecordError,
 };
 pub use storage_errors::{
     PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError, PersistBlobIndexesRebuildError,

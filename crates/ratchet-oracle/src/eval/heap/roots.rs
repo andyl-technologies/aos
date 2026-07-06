@@ -4497,8 +4497,9 @@ impl EvalHeap {
 
         for write in plan.writes().iter().copied() {
             let _ = self.record_index_for_minor_gc_survivor(write.source())?;
-            let Some(destination_index) =
-                self.records.index_of_address(write.destination().address_bits())
+            let Some(destination_index) = self
+                .records
+                .index_of_address(write.destination().address_bits())
             else {
                 return Err(
                     EvalHeapError::UnknownCollectorPollObjectGenerationDestination {
@@ -4657,8 +4658,9 @@ impl EvalHeap {
                 request,
                 &self.records[source_index],
             )?;
-            let Some(destination_index) =
-                self.records.index_of_address(request.destination().address_bits())
+            let Some(destination_index) = self
+                .records
+                .index_of_address(request.destination().address_bits())
             else {
                 return Err(EvalHeapError::UnknownCollectorPollObjectBodyDestination {
                     destination: request.destination(),

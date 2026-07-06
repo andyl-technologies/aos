@@ -635,68 +635,69 @@ impl PersistCache {
         if !active.insert(node_key) {
             return Ok(None);
         }
-        let result = (|| {
-            let Some(value_hash) = self
-                .lookup_node_materialized_value_hash(node_key)
-                .map_err(|source| {
-                    PersistCachedExpressionNodeValueTraceLoadError::Metadata { source }
-                })?
-            else {
-                return Ok(None);
-            };
-            if expected_value_hash.is_some_and(|expected| expected != value_hash) {
-                return Ok(None);
-            }
-            let Some(trace) = self.lookup_node_trace(node_key).map_err(|source| {
-                PersistCachedExpressionNodeValueTraceLoadError::Trace { source }
-            })?
-            else {
-                return Ok(None);
-            };
-            if trace.value_hash() != value_hash {
-                return Ok(None);
-            }
-            if trace.payload().is_tombstone() {
-                return Ok(None);
-            }
-            if !revalidate_persist_node_trace_payload(trace.payload(), revalidator) {
-                return Ok(None);
-            }
-            for (dependency, dependency_value_hash) in
-                trace.payload().memo_read_dependency_records()
-            {
-                if active.contains(&dependency) {
-                    return Ok(None);
-                }
-                let Some(dependency_value_hash) = dependency_value_hash else {
+        let result =
+            (|| {
+                let Some(value_hash) =
+                    self.lookup_node_materialized_value_hash(node_key)
+                        .map_err(|source| {
+                            PersistCachedExpressionNodeValueTraceLoadError::Metadata { source }
+                        })?
+                else {
                     return Ok(None);
                 };
-                if self
-                    .verify_cached_expression_node_trace_active(
-                        dependency,
-                        Some(dependency_value_hash),
-                        revalidator,
-                        active,
-                    )?
-                    .is_none()
+                if expected_value_hash.is_some_and(|expected| expected != value_hash) {
+                    return Ok(None);
+                }
+                let Some(trace) = self.lookup_node_trace(node_key).map_err(|source| {
+                    PersistCachedExpressionNodeValueTraceLoadError::Trace { source }
+                })?
+                else {
+                    return Ok(None);
+                };
+                if trace.value_hash() != value_hash {
+                    return Ok(None);
+                }
+                if trace.payload().is_tombstone() {
+                    return Ok(None);
+                }
+                if !revalidate_persist_node_trace_payload(trace.payload(), revalidator) {
+                    return Ok(None);
+                }
+                for (dependency, dependency_value_hash) in
+                    trace.payload().memo_read_dependency_records()
                 {
-                    return Ok(None);
+                    if active.contains(&dependency) {
+                        return Ok(None);
+                    }
+                    let Some(dependency_value_hash) = dependency_value_hash else {
+                        return Ok(None);
+                    };
+                    if self
+                        .verify_cached_expression_node_trace_active(
+                            dependency,
+                            Some(dependency_value_hash),
+                            revalidator,
+                            active,
+                        )?
+                        .is_none()
+                    {
+                        return Ok(None);
+                    }
                 }
-            }
-            if expected_value_hash.is_some() {
-                // Dependency check: prove the value blob exists without decoding
-                // it. An absent blob is the same miss the decode path produced.
-                if !self.value_blob_is_present(value_hash)? {
-                    return Ok(None);
+                if expected_value_hash.is_some() {
+                    // Dependency check: prove the value blob exists without decoding
+                    // it. An absent blob is the same miss the decode path produced.
+                    if !self.value_blob_is_present(value_hash)? {
+                        return Ok(None);
+                    }
+                    return Ok(Some(PersistVerifiedNodeTrace::dependency(value_hash)));
                 }
-                return Ok(Some(PersistVerifiedNodeTrace::dependency(value_hash)));
-            }
-            let dependencies = trace.payload().memo_read_dependencies().to_vec();
-            Ok(Some(PersistVerifiedNodeTrace::top_level(
-                value_hash,
-                dependencies,
-            )))
-        })();
+                let dependencies = trace.payload().memo_read_dependencies().to_vec();
+                Ok(Some(PersistVerifiedNodeTrace::top_level(
+                    value_hash,
+                    dependencies,
+                )))
+            })();
         active.remove(&node_key);
         if expected_value_hash.is_some() {
             if let Ok(Some(verified)) = &result {
@@ -723,11 +724,13 @@ impl PersistCache {
         let key = PersistBlobKey::for_value(value_hash);
         self.lookup_blob_location(key)
             .map(|location| location.is_some())
-            .map_err(|source| PersistCachedExpressionNodeValueTraceLoadError::Value {
-                source: PersistCachedExpressionValueIndexedLoadError::Read {
-                    source: PersistBlobIndexedReadError::Lookup { source },
+            .map_err(
+                |source| PersistCachedExpressionNodeValueTraceLoadError::Value {
+                    source: PersistCachedExpressionValueIndexedLoadError::Read {
+                        source: PersistBlobIndexedReadError::Lookup { source },
+                    },
                 },
-            })
+            )
     }
 }
 

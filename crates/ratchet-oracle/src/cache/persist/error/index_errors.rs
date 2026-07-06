@@ -286,3 +286,56 @@ pub enum PersistNodeMetadataIndexError {
         source: PersistPackFormatError,
     },
 }
+
+/// Fixed-record root-instantiation record index operation failed.
+#[derive(Debug, Error)]
+pub enum PersistRootRecordIndexError {
+    /// The index parent directory could not be created.
+    #[error("failed to create persistent root record index parent {path:?}")]
+    CreateParent {
+        /// The parent directory path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be opened.
+    #[error("failed to open persistent root record index {path:?}")]
+    Open {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// Index file metadata could not be read.
+    #[error("failed to read persistent root record index metadata {path:?}")]
+    Metadata {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be read.
+    #[error("failed to read persistent root record index {path:?}")]
+    Read {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be written.
+    #[error("failed to write persistent root record index {path:?}")]
+    Write {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file has malformed fixed-record bytes.
+    #[error("persistent root record index {path:?} has invalid format: {source}")]
+    Format {
+        /// The index file path.
+        path: PathBuf,
+        /// The format error.
+        source: PersistPackFormatError,
+    },
+}

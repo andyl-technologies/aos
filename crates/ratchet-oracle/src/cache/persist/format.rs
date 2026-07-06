@@ -11,6 +11,8 @@ mod file_artifact_index;
 mod node_metadata;
 mod node_trace;
 mod parse_artifact_index;
+mod root_record;
+mod root_record_index;
 
 pub use blob_index::{
     PersistBlobIndex, PersistBlobIndexEntry, PersistBlobKey, PersistBlobLocation,
@@ -28,4 +30,9 @@ pub use node_trace::{PersistNodeTraceLog, PersistNodeTraceLogEntry, PersistNodeT
 pub use parse_artifact_index::{
     PersistParseArtifactIndex, PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue,
     PersistParseArtifactKey,
+};
+pub use root_record::RootInstantiationRecord;
+pub use root_record_index::{
+    PersistRootRecordIndex, PersistRootRecordIndexEntry, PersistRootRecordIndexValue,
+    PersistRootRecordKey,
 };

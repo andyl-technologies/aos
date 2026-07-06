@@ -88,6 +88,33 @@ impl TreeWalk {
     }
 }
 
+/// Re-observes a recorded impure-input trace under the current filesystem state.
+///
+/// Each fingerprint's identity is replayed through a
+/// [`TreeWalkImpureInputRevalidator`] built from `options` and its freshly
+/// observed result hash is compared against the recorded one. The function
+/// returns `true` only when every input still observes an identical result;
+/// any changed input, un-revalidatable identity (for example a path that is no
+/// longer allowed or readable), or empty-vs-present mismatch returns `false`.
+///
+/// This is the `O(inputs)` validation used by root-level early cutoff to decide
+/// whether a durable derivation-closure record may be re-emitted without
+/// re-evaluating the expression.
+pub fn revalidate_cacheable_input_trace(
+    options: &TreeWalkOptions,
+    trace: &[crate::cache::CacheableInputFingerprint],
+) -> bool {
+    let mut revalidator = TreeWalkImpureInputRevalidator::new(options);
+    trace.iter().all(
+        |recorded| match revalidator.revalidate_impure_input(recorded.identity()) {
+            Some(observed) => observed
+                .as_cacheable()
+                .is_some_and(|observed| observed.observation_hash() == recorded.observation_hash()),
+            None => false,
+        },
+    )
+}
+
 impl<'a> TreeWalkImpureInputRevalidator<'a> {
     pub(super) fn new(options: &'a TreeWalkOptions) -> Self {
         Self {

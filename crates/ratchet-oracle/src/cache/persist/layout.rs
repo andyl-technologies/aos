@@ -66,9 +66,24 @@ impl PersistLayout {
         self.locks_dir().join("node-traces.lock")
     }
 
+    /// Returns the advisory lock path for root-record index writes.
+    pub fn root_record_lock_path(&self) -> PathBuf {
+        self.locks_dir().join("root-records.lock")
+    }
+
     /// Returns the mutable node metadata directory.
     pub fn nodes_dir(&self) -> PathBuf {
         self.root.join("nodes")
+    }
+
+    /// Returns the durable root-instantiation record directory.
+    pub fn roots_dir(&self) -> PathBuf {
+        self.root.join("roots")
+    }
+
+    /// Returns the fixed-record root-instantiation record index path.
+    pub fn root_record_index_path(&self) -> PathBuf {
+        self.roots_dir().join("instantiations.index")
     }
 
     /// Returns the durable value store directory.

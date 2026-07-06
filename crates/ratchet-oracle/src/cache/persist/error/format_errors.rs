@@ -47,6 +47,80 @@ pub enum PersistPackFormatError {
         /// The unexpected index tag.
         tag: u8,
     },
+    /// A root-record index key was shorter than the fixed encoded key length.
+    #[error("persistent root record index key has {actual} bytes, expected at least {expected}")]
+    ShortRootRecordIndexKey {
+        /// The required fixed root-record index key length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A root-record index key carried an unexpected index tag.
+    #[error("persistent root record index key has invalid tag {tag}")]
+    InvalidRootRecordIndexTag {
+        /// The unexpected index tag.
+        tag: u8,
+    },
+    /// A root-record index value was shorter than the fixed encoded value length.
+    #[error("persistent root record index value has {actual} bytes, expected at least {expected}")]
+    ShortRootRecordIndexValue {
+        /// The required fixed root-record index value length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A root-record index entry was shorter than the fixed encoded entry length.
+    #[error("persistent root record index entry has {actual} bytes, expected at least {expected}")]
+    ShortRootRecordIndexEntry {
+        /// The required fixed root-record index entry length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A root-record index value pointed at a blob store other than `files/`.
+    #[error("persistent root record index value points at unexpected blob store {store:?}")]
+    InvalidRootRecordBlobStore {
+        /// The unexpected blob store.
+        store: PersistBlobStore,
+    },
+    /// A root-record payload was shorter than a required field boundary.
+    #[error("persistent root record payload has {actual} bytes, expected at least {expected}")]
+    ShortRootRecordPayload {
+        /// The required minimum byte length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A root-record payload carried unexpected magic bytes.
+    #[error("persistent root record payload has invalid magic")]
+    InvalidRootRecordMagic {
+        /// The observed magic bytes.
+        actual: [u8; 16],
+    },
+    /// A root-record payload carried an unsupported format version.
+    #[error("persistent root record payload has unsupported version {version}")]
+    UnsupportedRootRecordVersion {
+        /// The unsupported version marker.
+        version: u32,
+    },
+    /// A root-record payload carried a length field that overflowed the platform.
+    #[error("persistent root record payload length field {len} overflows this platform")]
+    RootRecordLengthOverflow {
+        /// The offending encoded length.
+        len: u64,
+    },
+    /// A root-record payload carried trailing bytes after the final field.
+    #[error("persistent root record payload has {remaining} trailing bytes")]
+    RootRecordTrailingBytes {
+        /// The number of unexpected trailing bytes.
+        remaining: usize,
+    },
+    /// A root-record payload could not reconstruct its embedded impure-input trace.
+    #[error("persistent root record payload has invalid impure-input trace: {source}")]
+    RootRecordTrace {
+        /// The node-trace payload decoding error.
+        source: Box<PersistNodeTracePayloadError>,
+    },
     /// A demand-node metadata index key was shorter than the fixed encoded key length.
     #[error("persistent node metadata index key has {actual} bytes, expected at least {expected}")]
     ShortNodeMetadataIndexKey {

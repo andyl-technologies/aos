@@ -69,15 +69,21 @@ pub(super) fn ensure_payload_dirs(layout: &PersistLayout) -> Result<(), PersistE
         layout.nodes_dir(),
         layout.values_dir(),
         layout.files_dir(),
+        layout.roots_dir(),
     ])
     .ensure_dirs()
     .map_err(engine_owned_path_error_to_persist)
 }
 
 pub(super) fn discard_payload_dirs(layout: &PersistLayout) -> Result<(), PersistError> {
-    OwnedPaths::new([layout.nodes_dir(), layout.values_dir(), layout.files_dir()])
-        .discard_existing()
-        .map_err(engine_owned_path_error_to_persist)
+    OwnedPaths::new([
+        layout.nodes_dir(),
+        layout.values_dir(),
+        layout.files_dir(),
+        layout.roots_dir(),
+    ])
+    .discard_existing()
+    .map_err(engine_owned_path_error_to_persist)
 }
 
 pub(super) fn read_schema_version(layout: &PersistLayout) -> Result<Option<u32>, PersistError> {

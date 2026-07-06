@@ -20,6 +20,7 @@ mod expr_eval;
 mod fallback;
 mod ifd;
 mod instantiate_expr;
+mod root_cutoff_tests;
 mod semantic_edit;
 mod source_errors;
 
