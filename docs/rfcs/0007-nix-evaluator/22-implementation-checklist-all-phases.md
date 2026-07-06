@@ -5494,7 +5494,7 @@ and helps the oracle directly.
       while
       carrying oracle missing bindings for unbound helpers and builtins. The
       bridge now records per-candidate provenance, exposes the runtime-FFI
-      trap-wrapper's remaining native-export blockers on that provenance, and
+      wrapper's remaining wrapper-local native-export blockers on that provenance, and
       exposes helper-role filtered candidate views, including the
       allocation-helper manifest-order subset.
       Tests pin allocation, call-control, attrset-access, environment-access,
@@ -5504,7 +5504,7 @@ and helps the oracle directly.
       and `aos_update`
       runtime-FFI address/provenance, prove the runtime-FFI provenance set
       follows the unified native-wrapper manifest, prove per-family
-      trap-wrapper blockers no longer include the missing final exported wrapper
+      wrapper blockers no longer include the missing final exported wrapper
       blocker, feed
       only the allocation-filtered subset through JIT
       registration, and still cover registered env-slot tier-1 promotion for
@@ -5529,7 +5529,7 @@ and helps the oracle directly.
       registration gaps, and prove registered helper addresses still retain
       native-export blockers while covered helper families have no Rust-callable
       provenance gaps. The
-      runtime-FFI provenance retains the trap-wrapper blocker list, while the
+      runtime-FFI provenance retains the wrapper-local blocker list, while the
       separate native-export preflight still reports missing final exported
       wrappers. This is safe integration preflight
       metadata only: it does not call
@@ -5899,17 +5899,22 @@ and helps the oracle directly.
       symbol-table and inline-cache site binding plus inline-cache dispatch for
       keyed helpers, native shallow-update merge for `aos_update`, evaluator
       trap transfer, and native value-return materialization. The runtime-FFI
-      crate has process-local trap-only attrset-access wrapper addresses for JIT
-      provenance, but those wrappers are not accepted as final native exports by
-      this oracle gate. The aggregate
+      crate has process-local keyed `aos_has_attr`/`aos_select_ic` success-path
+      wrapper addresses for JIT provenance: they decode a scoped
+      `RuntimeAttrAccessContext`, bind the frozen `SymbolId` and
+      `InlineCacheSiteId` words, dispatch through the safe tree-walk
+      select-cache bridge, and return a materialized `Value` on success while
+      aborting until trap transfer exists. `aos_update` remains a trap-only
+      wrapper. These wrappers are not accepted as final native exports by this
+      oracle gate. The aggregate
       `runtime::helpers::runtime_symbol_native_export_preflight()` preserves
       attrset-access-specific blockers for the three frozen symbols in full
       runtime-symbol order. This remains safe readiness metadata only: no final
       native-export registration is admitted, no safe Rust callable is treated
       as the final ABI target, no `JITBuilder::symbol` registration occurs, and
-      no native trap transfer, inline-cache dispatch, or update merge is
+      no final native trap transfer, exported PIC dispatch, or update merge is
       implemented.
-- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep` success-path wrappers plus `aos_alloc_*`/`aos_apply`/`aos_gc_write_barrier`/attrset-access trap wrappers:
+- [x] Current runtime FFI crate and `aos_env_get`/`aos_blackhole_check`/`aos_force`/`aos_force_deep`/keyed attrset success-path wrappers plus `aos_alloc_*`/`aos_apply`/`aos_gc_write_barrier`/`aos_update` trap wrappers:
       `ratchet-runtime-ffi` is the dedicated unsafe runtime ABI boundary so the
       safe `ratchet-oracle` crate can keep `unsafe_code` denied. Its
       `env::aos_env_get` wrapper defines an unmangled frozen `(env, slot) -> Value`
@@ -5950,19 +5955,22 @@ and helps the oracle directly.
       discriminants are undefined before the wrappers can inspect them.
       Its `attr::aos_has_attr` and `attr::aos_select_ic` wrappers define
       unmangled frozen `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value`
-      symbols, while `attr::aos_update` defines an unmangled frozen
-      `(rt, Value left, Value right) -> Value` symbol. All three abort for every
-      call until runtime-context decoding, active attrset-root binding,
-      symbol-table and inline-cache site binding, inline-cache dispatch or
-      update merge, trap transfer, and native value-return materialization
-      exist. Returning today would be unsound because the wrappers cannot
-      preserve checked select/presence errors, inline-cache state, shallow
-      right-biased update semantics, or evaluator trap behavior without runtime
-      context.
+      symbols. They decode `rt` as a scoped `RuntimeAttrAccessContext`, bind the
+      frozen symbol and inline-cache site ids, enter the safe tree-walk
+      select-cache Rust-callable bridge, and return materialized `Value`
+      results for supported presence/select success paths; null contexts and
+      tree-walk errors still abort until evaluator trap transfer exists.
+      `attr::aos_update` defines an unmangled frozen
+      `(rt, Value left, Value right) -> Value` symbol and remains trap-only
+      until runtime-context decoding, active attrset-root binding, update merge,
+      trap transfer, and native value-return materialization exist.
       Metadata exposes each wrapper's typed
       function pointer, process-local address, frozen ABI signature, and
-      remaining export blockers. Tests call the env/forcing wrappers and
-      metadata function pointers on their supported success paths, cover
+      remaining wrapper-local export blockers. The separate oracle native-export
+      preflight remains authoritative for full final registration blockers,
+      including missing final exported-wrapper admission. Tests call the env/forcing wrappers and
+      attrset keyed wrappers and metadata function pointers on their supported
+      success paths, cover
       subprocess abort paths including the trap-only allocation, apply, and
       barrier wrappers,
       and the `aos-nix` address-candidate bridge now uses these wrapper
@@ -5981,10 +5989,11 @@ and helps the oracle directly.
       `aos_alloc_*` remains trap-only until safe allocator dispatch and typed
       heap-pointer returns can be reached from native runtime context; and
       `aos_gc_write_barrier` remains a trap-only body until safe barrier
-      dispatch can be reached from native runtime context; `aos_has_attr`,
-      `aos_select_ic`, and `aos_update` remain trap-only bodies until safe
-      attrset select/presence/update dispatch can be reached from native runtime
-      context. The strict
+      dispatch can be reached from native runtime context; `aos_has_attr` and
+      `aos_select_ic` abort on invalid scoped contexts or tree-walk errors until
+      native trap transfer exists; `aos_update` remains a trap-only body until
+      safe attrset update dispatch can be reached from native runtime context.
+      The strict
       native-export plan still rejects through the aggregate readiness gates, and
       `JITBuilder::symbol` registration/native calls remain gated.
 - [x] Current write-barrier native-export readiness gate:
@@ -9789,8 +9798,12 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       unprojected flat values keep the
       key-validated `FlatSelectCache` fallback; projected-HAMT values use the
       HAMT policy cache described below. Builtin static-select shortcuts,
-      dynamic path segments, native exported keyed helpers, and native storage
-      paths remain on the existing slow dispatcher. Cached shaped/flat/HAMT hits
+      dynamic path segments, final native exported keyed-helper lowering, and
+      native storage paths remain on the existing slow dispatcher. The
+      runtime-FFI `aos_has_attr`/`aos_select_ic` wrappers can enter this same
+      bridge only through an explicit scoped `RuntimeAttrAccessContext`, and
+      still abort on errors until trap transfer/final export admission exists.
+      Cached shaped/flat/HAMT hits
       increment the mirrored inline-cache hit counter; resolved lookups and
       misses increment the inline-cache miss counter and keep
       representation-specific slow-select telemetry; successful `EvalOutcome`

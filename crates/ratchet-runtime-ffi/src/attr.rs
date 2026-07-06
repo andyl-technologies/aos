@@ -3,31 +3,37 @@
 //! Native tier-1 code imports attrset helpers with frozen keyed
 //! `(rt, Value attrs, SymbolId, InlineCacheSiteId) -> Value` and update
 //! `(rt, Value left, Value right) -> Value` signatures. This module supplies
-//! trap-only wrappers for those ABIs: `aos_has_attr`, `aos_select_ic`, and
-//! `aos_update` abort for every call until runtime-context decoding, active
-//! attrset-root binding, symbol-table binding, inline-cache dispatch, update
-//! merge, trap transfer, and native value return materialization exist. That is
-//! the only sound behavior today because the safe evaluator paths own attrset
-//! selection errors, boolean materialization, inline-cache state, and
-//! right-biased merge semantics.
+//! success-path keyed wrappers for `aos_has_attr` and `aos_select_ic` by
+//! decoding `rt` as a scoped [`RuntimeAttrAccessContext`] and dispatching
+//! through the safe tree-walk oracle helpers. Failures still abort until native
+//! trap transfer exists. `aos_update` remains trap-only until the runtime can
+//! expose update merge semantics through this ABI.
 
-use std::{ffi::c_void, process};
+use std::{
+    ffi::c_void,
+    marker::{PhantomData, PhantomPinned},
+    pin::Pin,
+    process,
+    ptr::NonNull,
+};
 
 use ratchet_oracle::{
+    compile::{IrId, IrInlineCacheSiteId},
+    eval::tree_walk::TreeWalk,
     runtime::attr::{
         RuntimeAttrAccessAbiSignature, RuntimeAttrAccessEntryPoint,
-        RuntimeAttrAccessNativeExportBlocker,
+        RuntimeAttrAccessNativeExportBlocker, rust_callable_aos_has_attr,
+        rust_callable_aos_select_ic,
     },
+    syntax::{Span, Symbol},
     value::Value,
 };
 
 /// Native C ABI function pointer shape for keyed attrset-access helpers.
 ///
 /// The function returns a by-value [`Value`] and transfers no error state. It
-/// aborts instead of unwinding until the evaluator runtime context can expose
-/// active attrset roots, symbol-table binding, inline-cache site binding,
-/// inline-cache dispatch, trap transfer, and native value-return materialization
-/// to this ABI boundary.
+/// aborts instead of unwinding if the success-path safety contract is violated;
+/// final evaluator trap/error transfer remains future work.
 ///
 /// # Safety
 ///
@@ -35,10 +41,9 @@ use ratchet_oracle::{
 /// documented on [`aos_has_attr`] and [`aos_select_ic`]. The attrset receiver
 /// must be a Rust-valid [`Value`] with a valid tag discriminant, and `symbol`
 /// plus `site` must use the frozen `u32` ABI representation for the evaluator's
-/// symbol table and inline-cache site ids. The current trap-only wrappers abort
-/// before decoding `_rt`, converting ids, or inspecting `attrs`; future lookup
-/// dispatch will require every argument to be valid for the active evaluator
-/// runtime.
+/// symbol table and inline-cache site ids. The runtime pointer must satisfy the
+/// [`RuntimeAttrAccessContext`] obligations documented on [`aos_has_attr`] and
+/// [`aos_select_ic`].
 pub type RuntimeAttrAccessKeyedNativeFn =
     unsafe extern "C" fn(*mut c_void, Value, u32, u32) -> Value;
 
@@ -59,15 +64,8 @@ pub type RuntimeAttrAccessKeyedNativeFn =
 /// evaluator runtime.
 pub type RuntimeAttrUpdateNativeFn = unsafe extern "C" fn(*mut c_void, Value, Value) -> Value;
 
-const ATTR_ACCESS_KEYED_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[
-    RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
-    RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
-];
+const ATTR_ACCESS_KEYED_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] =
+    &[RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented];
 
 const ATTR_UPDATE_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[
     RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
@@ -77,60 +75,123 @@ const ATTR_UPDATE_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBloc
     RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
 ];
 
-/// Aborts through the frozen keyed attr-presence native ABI body.
+/// Reads the frozen keyed attr-presence native ABI body.
 ///
-/// This wrapper is the trap-only C ABI body for `aos_has_attr`. It accepts the
-/// frozen runtime-context pointer plus by-value attrset receiver, symbol id, and
-/// inline-cache site id, then aborts until native wrappers can safely enter the
-/// evaluator's attr-presence machinery and return a materialized Nix boolean.
-/// Returning today would be unsound because the wrapper cannot preserve checked
-/// attrset selection semantics, inline-cache state, or evaluator trap behavior
-/// without runtime context.
+/// This wrapper is the success-path C ABI body for `aos_has_attr`. It decodes
+/// `rt` as a [`RuntimeAttrAccessContext`], converts `symbol` and `site` through
+/// their frozen `u32` ABI representation, probes `attrs` through the safe
+/// tree-walk select-cache helper, and returns a materialized Nix boolean
+/// [`Value`]. It deliberately does not implement evaluator trap/error transfer:
+/// the process aborts if the pointer is null or the safe helper reports an
+/// error.
 ///
 /// # Safety
 ///
-/// `attrs` must be a Rust-valid [`Value`] with a valid tag discriminant before
-/// crossing this ABI boundary. `symbol` and `site` must use the frozen `u32`
-/// ABI representation for the active evaluator's symbol table and inline-cache
-/// site ids. The current wrapper aborts before decoding `_rt`, converting ids,
-/// or inspecting `attrs`. The caller must also ensure the host ABI used to call
-/// this function matches the frozen `aos_has_attr` runtime signature.
+/// `rt` must be a non-null pointer produced from a pinned live
+/// [`RuntimeAttrAccessContext`] whose wrapped evaluator and IR allocation
+/// outlive the call. The context must not move while the pointer is used. The
+/// caller must uphold exclusive mutable access to the wrapped evaluator for the
+/// duration of the call. `attrs` must be a Rust-valid [`Value`] with a valid tag
+/// discriminant and heap payloads reachable from that evaluator. `symbol` and
+/// `site` must use the frozen `u32` ABI representation for the active
+/// evaluator's symbol table and inline-cache site ids. The caller must also
+/// ensure the host ABI used to call this function matches the frozen
+/// `aos_has_attr` runtime signature.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aos_has_attr(
-    _rt: *mut c_void,
-    _attrs: Value,
-    _symbol: u32,
-    _site: u32,
+    rt: *mut c_void,
+    attrs: Value,
+    symbol: u32,
+    site: u32,
 ) -> Value {
-    process::abort()
+    // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
+    // RuntimeAttrAccessContext pointer contract documented on this function.
+    let probed = unsafe {
+        with_native_attr_access_context(rt, |eval, id, span| {
+            aos_has_attr_success_path(eval, id, span, attrs, symbol, site)
+        })
+    };
+    probed
 }
 
-/// Aborts through the frozen keyed attr-select native ABI body.
+/// Selects through the frozen keyed attr-select native ABI body.
 ///
-/// This wrapper is the trap-only C ABI body for `aos_select_ic`. It accepts the
-/// frozen runtime-context pointer plus by-value attrset receiver, symbol id, and
-/// inline-cache site id, then aborts until native wrappers can safely enter the
-/// evaluator's checked select-cache machinery and return a materialized
-/// [`Value`]. Returning today would be unsound because the wrapper cannot
-/// preserve missing-attribute errors, non-attrset errors, inline-cache state, or
-/// evaluator trap behavior without runtime context.
+/// This wrapper is the success-path C ABI body for `aos_select_ic`. It decodes
+/// `rt` as a [`RuntimeAttrAccessContext`], converts `symbol` and `site` through
+/// their frozen `u32` ABI representation, selects from `attrs` through the safe
+/// tree-walk select-cache helper, and returns the selected [`Value`]. It
+/// deliberately does not implement evaluator trap/error transfer: the process
+/// aborts if the pointer is null or the safe helper reports an error.
 ///
 /// # Safety
 ///
-/// `attrs` must be a Rust-valid [`Value`] with a valid tag discriminant before
-/// crossing this ABI boundary. `symbol` and `site` must use the frozen `u32`
-/// ABI representation for the active evaluator's symbol table and inline-cache
-/// site ids. The current wrapper aborts before decoding `_rt`, converting ids,
-/// or inspecting `attrs`. The caller must also ensure the host ABI used to call
-/// this function matches the frozen `aos_select_ic` runtime signature.
+/// `rt` must be a non-null pointer produced from a pinned live
+/// [`RuntimeAttrAccessContext`] whose wrapped evaluator and IR allocation
+/// outlive the call. The context must not move while the pointer is used. The
+/// caller must uphold exclusive mutable access to the wrapped evaluator for the
+/// duration of the call. `attrs` must be a Rust-valid [`Value`] with a valid tag
+/// discriminant and heap payloads reachable from that evaluator. `symbol` and
+/// `site` must use the frozen `u32` ABI representation for the active
+/// evaluator's symbol table and inline-cache site ids. The caller must also
+/// ensure the host ABI used to call this function matches the frozen
+/// `aos_select_ic` runtime signature.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aos_select_ic(
-    _rt: *mut c_void,
-    _attrs: Value,
-    _symbol: u32,
-    _site: u32,
+    rt: *mut c_void,
+    attrs: Value,
+    symbol: u32,
+    site: u32,
 ) -> Value {
-    process::abort()
+    // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
+    // RuntimeAttrAccessContext pointer contract documented on this function.
+    let selected = unsafe {
+        with_native_attr_access_context(rt, |eval, id, span| {
+            aos_select_ic_success_path(eval, id, span, attrs, symbol, site)
+        })
+    };
+    selected
+}
+
+fn aos_has_attr_success_path(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    attrs: Value,
+    symbol: u32,
+    site: u32,
+) -> Value {
+    match rust_callable_aos_has_attr(
+        eval,
+        id,
+        span,
+        attrs,
+        Symbol::new(symbol),
+        IrInlineCacheSiteId::new(site),
+    ) {
+        Ok(value) => value,
+        Err(_) => process::abort(),
+    }
+}
+
+fn aos_select_ic_success_path(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    attrs: Value,
+    symbol: u32,
+    site: u32,
+) -> Value {
+    match rust_callable_aos_select_ic(
+        eval,
+        id,
+        span,
+        attrs,
+        Symbol::new(symbol),
+        IrInlineCacheSiteId::new(site),
+    ) {
+        Ok(value) => value,
+        Err(_) => process::abort(),
+    }
 }
 
 /// Aborts through the frozen attrset-update native ABI body.
@@ -197,7 +258,7 @@ pub enum RuntimeAttrAccessNativeWrapperFunction {
     Update(RuntimeAttrUpdateNativeFn),
 }
 
-/// Metadata for one trap-only attrset-access native wrapper.
+/// Metadata for one attrset-access native wrapper.
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeAttrAccessNativeWrapperBinding {
     entrypoint: RuntimeAttrAccessEntryPoint,
@@ -265,7 +326,12 @@ impl RuntimeAttrAccessNativeWrapperBinding {
         self.address
     }
 
-    /// Returns blockers that still prevent final native-export registration.
+    /// Returns wrapper-local blockers that still prevent export admission.
+    ///
+    /// This is not the full oracle native-export gate. The oracle gate remains
+    /// authoritative for final registration blockers such as missing final
+    /// exported-wrapper admission; this list tracks the blockers left after
+    /// this process-local wrapper body has been materialized.
     pub const fn remaining_export_blockers(
         self,
     ) -> &'static [RuntimeAttrAccessNativeExportBlocker] {
@@ -278,6 +344,62 @@ impl RuntimeAttrAccessNativeWrapperBinding {
     }
 }
 
+/// Scoped tree-walk evaluator context decoded by keyed attrset-access wrappers.
+///
+/// Native attrset wrappers receive an opaque runtime pointer in their frozen C
+/// ABI. This context is the current explicit Rust-side representation for that
+/// pointer: it ties one live [`TreeWalk`] evaluator to the IR node id and source
+/// span used when the safe oracle reports lookup failures.
+pub struct RuntimeAttrAccessContext<'eval> {
+    eval: NonNull<TreeWalk>,
+    id: IrId,
+    span: Span,
+    _marker: PhantomData<&'eval mut TreeWalk>,
+    _pinned: PhantomPinned,
+}
+
+impl<'eval> RuntimeAttrAccessContext<'eval> {
+    /// Creates a scoped attrset-access context for native keyed wrapper calls.
+    pub fn new(eval: &'eval mut TreeWalk, id: IrId, span: Span) -> Self {
+        Self {
+            eval: NonNull::from(eval),
+            id,
+            span,
+            _marker: PhantomData,
+            _pinned: PhantomPinned,
+        }
+    }
+
+    /// Returns an opaque runtime pointer suitable for keyed attr wrapper calls.
+    ///
+    /// The returned pointer is only valid while this pinned context value and
+    /// its borrowed evaluator remain live. Callers must not move or drop the
+    /// pinned context, and must uphold exclusive mutable access to the
+    /// evaluator, while a native wrapper call uses the pointer.
+    pub fn as_mut_ptr(self: Pin<&mut Self>) -> *mut c_void {
+        self.as_ref().get_ref() as *const Self as *mut c_void
+    }
+}
+
+// SAFETY: Callers must pass a live pinned RuntimeAttrAccessContext pointer and
+// uphold exclusive evaluator access for the duration of the callback.
+unsafe fn with_native_attr_access_context<R>(
+    rt: *mut c_void,
+    call: impl FnOnce(&mut TreeWalk, IrId, Span) -> R,
+) -> R {
+    let Some(rt) = NonNull::new(rt) else {
+        process::abort();
+    };
+    // SAFETY: The caller must provide a live RuntimeAttrAccessContext pointer
+    // with exclusive evaluator access covering this call.
+    let context = unsafe { rt.cast::<RuntimeAttrAccessContext<'static>>().as_mut() };
+    let id = context.id;
+    let span = context.span;
+    // SAFETY: RuntimeAttrAccessContext::new stores a live TreeWalk pointer, and
+    // the native wrapper contract requires exclusive evaluator access.
+    call(unsafe { context.eval.as_mut() }, id, span)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -285,10 +407,16 @@ mod tests {
         process::{Command, ExitStatus},
     };
 
+    use ratchet_oracle::{compile::resolve, syntax::parse_str};
+
     use super::*;
 
     const HAS_ATTR_ABORT_CHILD: &str = "attr::tests::aos_has_attr_native_wrapper_aborts_child";
     const SELECT_IC_ABORT_CHILD: &str = "attr::tests::aos_select_ic_native_wrapper_aborts_child";
+    const HAS_ATTR_ERROR_ABORT_CHILD: &str =
+        "attr::tests::aos_has_attr_native_wrapper_aborts_on_tree_walk_error_child";
+    const SELECT_IC_ERROR_ABORT_CHILD: &str =
+        "attr::tests::aos_select_ic_native_wrapper_aborts_on_tree_walk_error_child";
     const UPDATE_ABORT_CHILD: &str = "attr::tests::aos_update_native_wrapper_aborts_child";
 
     #[test]
@@ -319,16 +447,7 @@ mod tests {
         assert!(has_attr.address().is_non_null());
         assert_eq!(
             has_attr.remaining_export_blockers(),
-            [
-                RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
-            ]
-            .as_slice()
+            [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice()
         );
         assert!(!has_attr.is_export_ready());
 
@@ -355,16 +474,7 @@ mod tests {
         assert!(select_ic.address().is_non_null());
         assert_eq!(
             select_ic.remaining_export_blockers(),
-            [
-                RuntimeAttrAccessNativeExportBlocker::RuntimeContextDecodeUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::ActiveAttrsetRootBindingUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::SymbolTableBindingUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::InlineCacheSiteBindingUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::InlineCacheDispatchUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented,
-                RuntimeAttrAccessNativeExportBlocker::NativeValueReturnUnmaterialized,
-            ]
-            .as_slice()
+            [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice()
         );
         assert!(!select_ic.is_export_ready());
 
@@ -404,23 +514,118 @@ mod tests {
     fn attr_access_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
         for binding in runtime_attr_access_native_wrapper_bindings() {
             let oracle_blockers = binding.entrypoint().native_export_blockers();
-            assert_eq!(
-                binding.remaining_export_blockers(),
-                &oracle_blockers[1..],
-                "{} runtime-FFI blockers extend oracle gate after final admission",
-                binding.symbol_name()
-            );
+            match binding.entrypoint() {
+                RuntimeAttrAccessEntryPoint::AosHasAttr
+                | RuntimeAttrAccessEntryPoint::AosSelectIc => {
+                    assert_eq!(
+                        binding.remaining_export_blockers(),
+                        [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented]
+                            .as_slice(),
+                        "{} runtime-FFI keyed wrapper has one remaining blocker",
+                        binding.symbol_name()
+                    );
+                    for blocker in binding.remaining_export_blockers() {
+                        assert!(
+                            oracle_blockers.contains(blocker),
+                            "{} runtime-FFI blocker {blocker:?} must remain tracked by oracle",
+                            binding.symbol_name()
+                        );
+                    }
+                }
+                RuntimeAttrAccessEntryPoint::AosUpdate => {
+                    assert_eq!(
+                        binding.remaining_export_blockers(),
+                        &oracle_blockers[1..],
+                        "{} runtime-FFI blockers extend oracle gate after final admission",
+                        binding.symbol_name()
+                    );
+                }
+            }
         }
     }
 
     #[test]
-    fn aos_has_attr_native_wrapper_aborts() {
+    fn aos_has_attr_native_wrapper_reports_static_key_presence() {
+        let source = "{ a = 42; nested.z = 0; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut symbols = ir.symbols.clone();
+        let present_key = symbols.intern(b"a").expect("a symbol exists");
+        let missing_key = symbols.intern(b"z").expect("z symbol exists");
+        let mut eval = TreeWalk::new(&ir);
+        let attrs = eval.eval_root().expect("attrset evaluates");
+        let mut context = std::pin::pin!(RuntimeAttrAccessContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: `context` and its evaluator are live for the calls, no other
+        // mutable evaluator borrow is active, and `attrs` belongs to that
+        // evaluator.
+        let present = unsafe { aos_has_attr(rt, attrs, present_key.as_u32(), 7) };
+        // SAFETY: The same context and attrs remain live for this repeated
+        // select-cache probe.
+        let repeated_present = unsafe { aos_has_attr(rt, attrs, present_key.as_u32(), 7) };
+        // SAFETY: The same context and attrs remain live for this missing-key
+        // presence probe.
+        let missing = unsafe { aos_has_attr(rt, attrs, missing_key.as_u32(), 8) };
+
+        assert_eq!(present.as_bool().expect("present result is bool"), true);
+        assert_eq!(
+            repeated_present
+                .as_bool()
+                .expect("repeated present result is bool"),
+            true
+        );
+        assert_eq!(missing.as_bool().expect("missing result is bool"), false);
+        drop(context);
+        assert_eq!(eval.stats().inline_cache_hits(), 1);
+        assert_eq!(eval.stats().inline_cache_misses(), 2);
+    }
+
+    #[test]
+    fn aos_select_ic_native_wrapper_selects_static_attr_values() {
+        let source = "{ a = 42; nested.z = 0; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut symbols = ir.symbols.clone();
+        let key = symbols.intern(b"a").expect("a symbol exists");
+        let mut eval = TreeWalk::new(&ir);
+        let attrs = eval.eval_root().expect("attrset evaluates");
+        let mut context = std::pin::pin!(RuntimeAttrAccessContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: `context` and its evaluator are live for the call, no other
+        // mutable evaluator borrow is active, and `attrs` belongs to that
+        // evaluator.
+        let selected = unsafe { aos_select_ic(rt, attrs, key.as_u32(), 7) };
+        // SAFETY: The same context and attrs remain live for this repeated
+        // select-cache lookup.
+        let repeated = unsafe { aos_select_ic(rt, attrs, key.as_u32(), 7) };
+
+        assert_eq!(selected.as_int().expect("selected value is int"), 42);
+        assert_eq!(repeated.as_int().expect("repeated value is int"), 42);
+        drop(context);
+        assert_eq!(eval.stats().inline_cache_hits(), 1);
+        assert_eq!(eval.stats().inline_cache_misses(), 1);
+    }
+
+    #[test]
+    fn aos_has_attr_native_wrapper_aborts_on_invalid_context() {
         assert_child_process_aborts(HAS_ATTR_ABORT_CHILD);
     }
 
     #[test]
-    fn aos_select_ic_native_wrapper_aborts() {
+    fn aos_select_ic_native_wrapper_aborts_on_invalid_context() {
         assert_child_process_aborts(SELECT_IC_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_has_attr_native_wrapper_aborts_on_tree_walk_error() {
+        assert_child_process_aborts(HAS_ATTR_ERROR_ABORT_CHILD);
+    }
+
+    #[test]
+    fn aos_select_ic_native_wrapper_aborts_on_tree_walk_error() {
+        assert_child_process_aborts(SELECT_IC_ERROR_ABORT_CHILD);
     }
 
     #[test]
@@ -436,9 +641,9 @@ mod tests {
         let symbol = 0;
         let site = 0;
 
-        // SAFETY: `attrs` has a valid tag discriminant. The current wrapper is
-        // trap-only and aborts before decoding `rt`, converting `symbol` or
-        // `site`, or inspecting `attrs`.
+        // SAFETY: `attrs` has a valid tag discriminant. The test deliberately
+        // passes a null runtime context to verify abort behavior before any
+        // attrset lookup can run.
         let _ = unsafe { aos_has_attr(rt, attrs, symbol, site) };
     }
 
@@ -450,10 +655,47 @@ mod tests {
         let symbol = 0;
         let site = 0;
 
-        // SAFETY: `attrs` has a valid tag discriminant. The current wrapper is
-        // trap-only and aborts before decoding `rt`, converting `symbol` or
-        // `site`, or inspecting `attrs`.
+        // SAFETY: `attrs` has a valid tag discriminant. The test deliberately
+        // passes a null runtime context to verify abort behavior before any
+        // attrset lookup can run.
         let _ = unsafe { aos_select_ic(rt, attrs, symbol, site) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_has_attr_native_wrapper_aborts_on_tree_walk_error_child() {
+        let source = "{ a = 42; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut symbols = ir.symbols.clone();
+        let key = symbols.intern(b"a").expect("a symbol exists");
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(RuntimeAttrAccessContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: The pinned context and its evaluator are live for the call,
+        // and this test deliberately passes a non-attrs receiver to verify
+        // tree-walk errors abort instead of unwinding through the FFI boundary.
+        let _ = unsafe { aos_has_attr(rt, Value::int(42), key.as_u32(), 7) };
+    }
+
+    #[test]
+    #[ignore = "subprocess target for abort behavior"]
+    fn aos_select_ic_native_wrapper_aborts_on_tree_walk_error_child() {
+        let source = "{ a = 42; }";
+        let span = Span::new(0, source.len() as u32);
+        let ir = lower_source(source);
+        let mut symbols = ir.symbols.clone();
+        let missing_key = symbols.intern(b"z").expect("z symbol exists");
+        let mut eval = TreeWalk::new(&ir);
+        let attrs = eval.eval_root().expect("attrset evaluates");
+        let mut context = std::pin::pin!(RuntimeAttrAccessContext::new(&mut eval, ir.root, span));
+        let rt = context.as_mut().as_mut_ptr();
+
+        // SAFETY: The pinned context and its evaluator are live for the call,
+        // and `attrs` belongs to that evaluator. The missing key deliberately
+        // forces a tree-walk error to verify FFI abort behavior.
+        let _ = unsafe { aos_select_ic(rt, attrs, missing_key.as_u32(), 7) };
     }
 
     #[test]
@@ -495,5 +737,12 @@ mod tests {
             !status.success(),
             "{test_name} should abort with a non-success status"
         );
+    }
+
+    fn lower_source(source: &str) -> ratchet_oracle::compile::Ir {
+        aos_nix_dialect::nix_lower(
+            resolve(parse_str(source).expect("source parses")).expect("source resolves"),
+        )
+        .expect("source lowers")
     }
 }

@@ -7,4 +7,5 @@ edition = "2024"
 ratchet-oracle = { workspace = true }
 
 [dev-dependencies]
+aos-nix-dialect = { workspace = true }
 libc = { workspace = true }

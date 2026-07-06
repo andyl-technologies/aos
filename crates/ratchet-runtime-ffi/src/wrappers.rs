@@ -40,7 +40,7 @@ pub type RuntimeNativeWrapperManifestResult =
 ///
 /// The returned bindings are process-local C ABI wrapper addresses. They are
 /// not final JIT registrations: each binding still carries its family-specific
-/// remaining export blockers.
+/// remaining wrapper-local export blockers.
 ///
 /// # Errors
 ///
@@ -182,7 +182,11 @@ impl RuntimeNativeWrapperBinding {
         RuntimeNativeWrapperAddress::new(ptr)
     }
 
-    /// Returns family-specific blockers that still prevent final export.
+    /// Returns family-specific wrapper-local blockers still tracked by the wrapper.
+    ///
+    /// These blockers are provenance for process-local runtime-FFI wrapper
+    /// bodies. The oracle native-export gates remain authoritative for final
+    /// registration readiness.
     pub const fn remaining_export_blockers(self) -> RuntimeNativeWrapperBlockers {
         match self {
             Self::Allocation(binding) => {
@@ -223,7 +227,7 @@ impl PartialEq for RuntimeNativeWrapperBinding {
 
 impl Eq for RuntimeNativeWrapperBinding {}
 
-/// Family-specific blockers that still prevent final native export.
+/// Family-specific wrapper-local blockers tracked by runtime-FFI wrappers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeNativeWrapperBlockers {
     /// Allocation helper export blockers.

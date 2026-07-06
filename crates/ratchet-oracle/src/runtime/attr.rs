@@ -95,7 +95,17 @@ type RuntimeSelectIcFn = fn(
 ) -> Result<Value, TreeWalkError>;
 type RuntimeUpdateFn = fn(&mut TreeWalk, IrId, Span, Value, Value) -> Result<Value, TreeWalkError>;
 
-fn rust_callable_aos_has_attr(
+/// Runs the Rust-callable `aos_has_attr` helper through the tree-walk evaluator.
+///
+/// The helper probes `symbol` on `attrs` using the select-cache site identified
+/// by `site`, then returns a materialized Nix boolean [`Value`].
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] when `attrs` is not an attrset value, when the
+/// inline-cache site rejects the keyed probe, or when the evaluator cannot
+/// allocate the resulting boolean value.
+pub fn rust_callable_aos_has_attr(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,
@@ -106,7 +116,17 @@ fn rust_callable_aos_has_attr(
     eval.has_attr_value(id, span, attrs, symbol, site)
 }
 
-fn rust_callable_aos_select_ic(
+/// Runs the Rust-callable `aos_select_ic` helper through the tree-walk evaluator.
+///
+/// The helper selects `symbol` from `attrs` using the select-cache site
+/// identified by `site`, then returns the selected [`Value`].
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] when `attrs` is not an attrset value, when
+/// `symbol` is missing, when the inline-cache site rejects the keyed select, or
+/// when forcing/selection inside the tree-walk evaluator fails.
+pub fn rust_callable_aos_select_ic(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,
