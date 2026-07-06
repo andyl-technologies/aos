@@ -1513,6 +1513,40 @@ fn repeated_static_has_attr_site_keeps_projected_shaped_misses_uncached() {
 }
 
 #[test]
+fn polymorphic_static_has_attr_keeps_shaped_cache_after_missing_receivers() {
+    let ir = lower(
+        "let f = x: x ? b;
+         in (if (f { b = 1; }) then 1 else 0)
+          + (if (f { a = 0; b = 2; }) then 2 else 0)
+          + (if (f { c = 0; }) then 0 else 4)
+          + (if (f { c = 1; }) then 0 else 8)
+          + (if (f { b = 3; }) then 16 else 0)
+          + (if (f { a = 0; b = 4; }) then 32 else 0)",
+    );
+
+    let outcome = eval_whnf_owned(&ir).expect("polymorphic hit-miss-hit-miss hasAttr evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(63));
+    assert_eq!(outcome.stats().inline_cache_hits(), 2);
+    assert_eq!(outcome.stats().inline_cache_misses(), 4);
+    let ic_snapshot = outcome.attr_telemetry().inline_cache_snapshot();
+    assert_eq!(ic_snapshot.flat_select_sites.polymorphic, 0);
+    assert_eq!(ic_snapshot.shaped_select_sites.polymorphic, 1);
+    assert_eq!(ic_snapshot.shaped_select_lookups.hits, 4);
+    assert_eq!(ic_snapshot.shaped_select_lookups.misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_hits, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.resolved_misses, 2);
+    assert_eq!(ic_snapshot.shaped_select_lookups.cached_misses, 0);
+    assert_eq!(ic_snapshot.shaped_select_lookups.monomorphic_fast_hits, 0);
+    let counts = outcome.attr_telemetry().slow_select_snapshot();
+    assert_eq!(counts.flat_hits, 0);
+    assert_eq!(counts.flat_misses, 0);
+    assert_eq!(counts.shaped_hits, 2);
+    assert_eq!(counts.shaped_misses, 2);
+}
+
+#[test]
 fn repeated_static_has_attr_site_uses_hamt_inline_cache_for_projected_hamt_receivers() {
     let ir = lower(
         "let base = ((((({ a = 1; } // { b = 2; }) // { c = 3; }) // { d = 4; }) // { e = 5; }) // { f = 6; });

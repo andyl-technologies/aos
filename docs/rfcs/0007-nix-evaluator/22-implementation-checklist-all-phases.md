@@ -9835,6 +9835,16 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       misses, no monomorphic-fast-hit attribution, and slow-select shaped
       hit/miss counts. This does not cover polymorphic `hasAttr`/`with` probes,
       megamorphic active bridge state, native lowering, or `.drv` parity.
+- [x] Current projected-shaped polymorphic hit-miss-hit-miss `hasAttr` canary:
+      a tree-walk static key-presence probe now proves that one active
+      projected-shaped probe site can widen across two present shapes, resolve
+      repeated missing receivers without caching absence, and reuse both
+      polymorphic entries for later cached hits. The test checks mirrored
+      hit/miss counters, shaped lookup telemetry, terminal polymorphic site
+      state, two resolved misses with no cached misses, no monomorphic-fast-hit
+      attribution, and slow-select shaped hit/miss counts. This does not cover
+      polymorphic `with` probes, megamorphic active bridge state, native
+      lowering, or `.drv` parity.
 - [x] Current projected-shaped megamorphic hit-miss-hit `select` canary: a
       tree-walk static `select` with a default now proves that after one active
       projected-shaped select site exceeds the polymorphic cap, later present
