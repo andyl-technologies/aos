@@ -1398,6 +1398,34 @@ fn gc_stress_eval_root_static_builtin_string_results_dispatch_permanent_noop_bri
 }
 
 #[test]
+fn gc_stress_eval_root_type_of_static_string_results_dispatch_or_skip_composites() {
+    let dispatch_cases: &[(&str, &[u8])] = &[
+        ("builtins.typeOf 1", b"int"),
+        ("builtins.typeOf 1.0", b"float"),
+        ("builtins.typeOf false", b"bool"),
+        ("builtins.typeOf null", b"null"),
+        (r#"builtins.typeOf "x""#, b"string"),
+        ("builtins.typeOf /tmp", b"path"),
+        ("builtins.typeOf (x: x)", b"lambda"),
+        ("builtins.typeOf builtins.length", b"lambda"),
+        ("builtins.typeOf (builtins.map (x: x))", b"lambda"),
+    ];
+
+    for (source, expected) in dispatch_cases {
+        assert_gc_stress_root_string_result_dispatches(source, expected);
+    }
+
+    let skip_cases: &[(&str, &[u8])] = &[
+        ("builtins.typeOf [ 1 ]", b"list"),
+        ("builtins.typeOf { a = 1; }", b"set"),
+    ];
+
+    for (source, expected) in skip_cases {
+        assert_gc_stress_root_string_result_skips_dispatch(source, expected);
+    }
+}
+
+#[test]
 fn gc_stress_alloc_symbol_string_helper_dispatches_permanent_noop_bridge() {
     let ir = lower("{ helperSymbol = 1; }");
     let span = Span::new(0, 0);

@@ -7569,6 +7569,9 @@ and helps the oracle directly.
       root static/ambient builtin string allocations (`nixVersion`, `storeDir`,
       configured `currentSystem`, configured `getEnv`, and pure `getEnv`)
       relocating registered transient roots,
+      root `typeOf` static type-name result allocations relocating registered
+      transient roots for scalar/function/path inputs while preserving them when
+      list/attrset argument roots block dispatch,
       root `appendContext` evaluations preserving registered transient roots
       while interned reflected-context attr roots block dispatch,
       root no-context `getContext` generated-attrset result allocations
