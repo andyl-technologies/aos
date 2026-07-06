@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::heap::HeapGeneration;
-use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy};
+use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
 
 mod context_paths;
 
@@ -24,6 +24,26 @@ fn replay_allocation_subject(id: IrId, salt: &[u8]) -> ForceCacheSubject {
     }
 }
 
+fn assert_replay_permanent_allocation_shape(
+    evaluator: &TreeWalk,
+    permanent_safepoints_before: u64,
+    permanent_dispatches_before: usize,
+    expected_safepoints: u64,
+    expected_dispatches: &[RuntimeAllocationEntryPoint],
+    label: &str,
+) {
+    assert_eq!(
+        evaluator.heap().permanent_allocation_safepoints().count(),
+        permanent_safepoints_before + expected_safepoints,
+        "{label} recorded an unexpected permanent safepoint count"
+    );
+    assert_eq!(
+        &evaluator.gc_stress_permanent_root_allocation_dispatches()[permanent_dispatches_before..],
+        expected_dispatches,
+        "{label} recorded an unexpected permanent dispatch suffix"
+    );
+}
+
 #[test]
 fn gc_stress_context_free_payload_replay_string_dispatches_permanent_noop_bridge() {
     let ir = lower("null");
@@ -40,6 +60,10 @@ fn gc_stress_context_free_payload_replay_string_dispatches_permanent_noop_bridge
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -71,11 +95,23 @@ fn gc_stress_context_free_payload_replay_string_dispatches_permanent_noop_bridge
         .expect("replayed value is a string");
     assert_eq!(string.bytes(), b"cached string");
     assert!(!string.has_context());
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[RuntimeAllocationEntryPoint::AosAllocString],
+        "context-free string payload replay",
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay string allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
@@ -105,6 +141,10 @@ fn gc_stress_context_payload_replay_string_dispatches_permanent_noop_bridge() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -137,11 +177,23 @@ fn gc_stress_context_payload_replay_string_dispatches_permanent_noop_bridge() {
     assert_eq!(string.bytes(), b"context string");
     assert!(string.has_context());
     assert_eq!(string.context(), &context);
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[RuntimeAllocationEntryPoint::AosAllocString],
+        "context string payload replay",
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay context string allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
@@ -165,6 +217,10 @@ fn gc_stress_context_free_payload_replay_path_dispatches_permanent_noop_bridge()
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -196,11 +252,23 @@ fn gc_stress_context_free_payload_replay_path_dispatches_permanent_noop_bridge()
         .expect("replayed value is a path");
     assert_eq!(path.bytes(), b"/tmp/cached-path");
     assert!(!path.has_context());
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[RuntimeAllocationEntryPoint::AosAllocString],
+        "context-free path payload replay",
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay path allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
@@ -230,6 +298,10 @@ fn gc_stress_context_payload_replay_path_dispatches_permanent_noop_bridge() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -262,11 +334,23 @@ fn gc_stress_context_payload_replay_path_dispatches_permanent_noop_bridge() {
     assert_eq!(path.bytes(), b"/nix/store/context-path");
     assert!(path.has_context());
     assert_eq!(path.context(), &context);
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[RuntimeAllocationEntryPoint::AosAllocString],
+        "context path payload replay",
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay context path allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocString
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
@@ -290,6 +374,10 @@ fn gc_stress_empty_payload_replay_list_dispatches_permanent_noop_bridge() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -320,11 +408,23 @@ fn gc_stress_empty_payload_replay_list_dispatches_permanent_noop_bridge() {
         .get_list(value)
         .expect("replayed value is a list");
     assert!(list.is_empty());
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[RuntimeAllocationEntryPoint::AosAllocList],
+        "empty list payload replay",
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay empty list allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
@@ -351,6 +451,10 @@ fn gc_stress_strict_payload_replay_list_dispatches_permanent_noop_bridge() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -389,11 +493,23 @@ fn gc_stress_strict_payload_replay_list_dispatches_permanent_noop_bridge() {
         list.get(1).expect("second list element exists").as_bool(),
         Ok(true)
     );
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[RuntimeAllocationEntryPoint::AosAllocList],
+        "strict list payload replay",
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay strict list allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocList
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
@@ -417,6 +533,10 @@ fn gc_stress_empty_payload_replay_attrs_dispatches_permanent_noop_bridge() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -447,11 +567,23 @@ fn gc_stress_empty_payload_replay_attrs_dispatches_permanent_noop_bridge() {
         .get_attrs(value)
         .expect("replayed value is an attrset");
     assert!(attrs.is_empty());
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[RuntimeAllocationEntryPoint::AosAllocAttrs],
+        "empty attrset payload replay",
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay empty attrs allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
@@ -485,6 +617,10 @@ fn gc_stress_strict_payload_replay_attrs_dispatches_permanent_noop_bridge() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -518,11 +654,23 @@ fn gc_stress_strict_payload_replay_attrs_dispatches_permanent_noop_bridge() {
         .expect("replayed value is an attrset");
     assert_eq!(attrs.get(a).expect("a binding exists").as_int(), Ok(1));
     assert_eq!(attrs.get(b).expect("b binding exists").as_bool(), Ok(true));
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[RuntimeAllocationEntryPoint::AosAllocAttrs],
+        "strict attrset payload replay",
+    );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay strict attrs allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
@@ -546,6 +694,10 @@ fn gc_stress_payload_replay_attrs_skip_non_attrset_origin_dispatch() {
         .expect("registered local thunk allocates");
     let mut roots = [local_source];
 
+    let permanent_safepoints_before = evaluator.heap().permanent_allocation_safepoints().count();
+    let permanent_dispatches_before = evaluator
+        .gc_stress_permanent_root_allocation_dispatches()
+        .len();
     evaluator.active_root_eval_node = Some(ir.root);
     let value = evaluator
         .with_transient_value_stack_roots(ir.root, span, &mut roots, |eval| {
@@ -583,15 +735,23 @@ fn gc_stress_payload_replay_attrs_skip_non_attrset_origin_dispatch() {
         .get_attrs(value)
         .expect("replayed value is an attrset");
     assert!(attrs.is_empty());
-    assert_eq!(
-        evaluator.heap().permanent_allocation_safepoints().count(),
-        1
+    assert_replay_permanent_allocation_shape(
+        &evaluator,
+        permanent_safepoints_before,
+        permanent_dispatches_before,
+        1,
+        &[],
+        "non-attrset-origin attrset payload replay",
     );
     let final_permanent_safepoint = evaluator
         .heap()
         .permanent_allocation_safepoints()
         .last()
         .expect("payload replay attrs allocation safepoint records");
+    assert_eq!(
+        final_permanent_safepoint.entrypoint(),
+        RuntimeAllocationEntryPoint::AosAllocAttrs
+    );
     assert_eq!(
         final_permanent_safepoint.gc_poll_reason(),
         Some(AllocationGcPollReason::GcStressEverySafepoint)
