@@ -16,6 +16,9 @@ use crate::{
     QemuSavevmCompletenessPolicy, QemuSavevmPolicyError,
 };
 
+mod backend_executor;
+pub use backend_executor::QemuBackendRealizationExecutor;
+
 /// An exact QEMU VM snapshot cached for one configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuVmSnapshot {

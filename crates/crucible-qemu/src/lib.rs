@@ -123,11 +123,11 @@ pub use quantum::{
     QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
-    QemuBakedGenesisSnapshot, QemuCachedAncestor, QemuVmBakeExecutor, QemuVmLoadvmAdmissionPolicy,
-    QemuVmRealization, QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
-    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot,
-    bake_qemu_genesis_vm, check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm,
-    resume_qemu_vm, start_qemu_vm,
+    QemuBackendRealizationExecutor, QemuBakedGenesisSnapshot, QemuCachedAncestor,
+    QemuVmBakeExecutor, QemuVmLoadvmAdmissionPolicy, QemuVmRealization, QemuVmRealizationError,
+    QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
+    QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot, bake_qemu_genesis_vm,
+    check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm, start_qemu_vm,
 };
 pub use savevm_policy::{
     QEMU_SAVEVM_FALLBACK_MARKER, QEMU_SAVEVM_PHASE0_S3_CHECK, QemuLoadvmCommandAuthorization,

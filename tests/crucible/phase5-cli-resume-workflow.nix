@@ -18,6 +18,7 @@
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
+  qemuBackendExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/backend_executor.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -333,6 +334,24 @@
       {
         label = "resume QEMU savevm policy";
         needle = "QemuSavevmCompletenessPolicy::default";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/realization/backend_executor.rs" qemuBackendExecutor [
+      {
+        label = "resume QEMU backend realization executor";
+        needle = "struct QemuBackendRealizationExecutor";
+      }
+      {
+        label = "resume QEMU backend exact snapshot test";
+        needle = "qemu_backend_realization_executor_restores_exact_snapshot";
+      }
+      {
+        label = "resume QEMU backend ancestor replay test";
+        needle = "qemu_backend_realization_executor_replays_from_cached_ancestor";
+      }
+      {
+        label = "resume QEMU baked genesis config mismatch regression";
+        needle = "load_baked_genesis(&genesis, &baked)";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [

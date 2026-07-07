@@ -29,7 +29,7 @@ shape-line|crates/crucible-qemu/src/launch.rs|1476
 shape-line|crates/crucible-qemu/src/node.rs|1746
 shape-line|crates/crucible-qemu/src/qmp.rs|879
 shape-line|crates/crucible-qemu/src/quantum.rs|2033
-shape-line|crates/crucible-qemu/src/realization.rs|2319
+shape-line|crates/crucible-qemu/src/realization.rs|2322
 shape-line|crates/crucible-qemu/src/single_vm_fingerprint/types.rs|1425
 shape-line|crates/crucible-qemu/tests/deterministic_launch.rs|1491
 shape-line|crates/crucible-qemu/tests/gate_single_vm_fingerprint.rs|782
