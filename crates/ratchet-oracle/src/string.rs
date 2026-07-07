@@ -103,6 +103,40 @@ impl NixString {
         })
     }
 
+    /// Appends `other`'s bytes and context to this string in place.
+    ///
+    /// This is the accumulator form of [`concat`](Self::concat): rather than
+    /// allocating a fresh result, it grows the receiver's byte buffer (amortized,
+    /// so folding many fragments stays linear rather than re-copying the running
+    /// prefix each step) and folds `other`'s context into the receiver's. When
+    /// `other` carries no context the union is skipped entirely, leaving the
+    /// receiver's context buffer untouched. The observable bytes and context are
+    /// identical to `*self = self.concat(other)?`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NixStringError::StringLengthOverflow`] if the combined byte
+    /// length overflows `usize`, [`NixStringError::ByteAllocationFailed`] if the
+    /// byte buffer cannot grow, or [`NixStringError::ContextAllocationFailed`] /
+    /// [`NixStringError::ContextLengthOverflow`] if the context union fails.
+    pub fn append_in_place(&mut self, other: &Self) -> Result<(), NixStringError> {
+        let additional = other.bytes.len();
+        self.bytes.len().checked_add(additional).ok_or(
+            NixStringError::StringLengthOverflow {
+                left: self.bytes.len(),
+                right: additional,
+            },
+        )?;
+        self.bytes
+            .try_reserve(additional)
+            .map_err(|_| NixStringError::ByteAllocationFailed { len: additional })?;
+        self.bytes.extend_from_slice(&other.bytes);
+        if !other.context.is_empty() {
+            self.context = self.context.union(&other.context)?;
+        }
+        Ok(())
+    }
+
     /// Returns a byte substring while preserving the whole string context.
     ///
     /// `start` and `len` are byte offsets. Out-of-range starts produce an empty
@@ -214,6 +248,39 @@ mod tests {
                 .context()
                 .contains(&output(b"/nix/store/pkg.drv", b"out"))
         );
+    }
+
+    #[test]
+    fn append_in_place_matches_concat() {
+        let cases = [
+            (
+                NixString::from_bytes(b"a".to_vec()),
+                NixString::from_bytes(b"bc".to_vec()),
+            ),
+            (
+                NixString::new(b"x".to_vec(), singleton(opaque(b"/nix/store/l"))),
+                NixString::from_bytes(b"y".to_vec()),
+            ),
+            (
+                NixString::from_bytes(b"x".to_vec()),
+                NixString::new(b"y".to_vec(), singleton(opaque(b"/nix/store/r"))),
+            ),
+            (
+                NixString::new(b"x".to_vec(), singleton(opaque(b"/nix/store/l"))),
+                NixString::new(
+                    b"y".to_vec(),
+                    singleton(output(b"/nix/store/pkg.drv", b"out")),
+                ),
+            ),
+        ];
+        for (left, right) in cases {
+            let expected = left.concat(&right).expect("concat succeeds");
+            let mut accumulator = left;
+            accumulator
+                .append_in_place(&right)
+                .expect("append succeeds");
+            assert_eq!(accumulator, expected);
+        }
     }
 
     #[test]

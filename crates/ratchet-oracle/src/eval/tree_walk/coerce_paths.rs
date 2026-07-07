@@ -698,19 +698,33 @@ impl TreeWalk {
                     return self.alloc_tree_walk_string(id, node.span, NixString::default());
                 };
                 let first_span = self.node(*first)?.span;
-                let mut current = {
+                let first_string = {
                     let value = self.eval_node(*first)?;
                     self.coerce_to_interpolation_string(*first, value, first_span)?
                 };
+                // Accumulate into a Rust-owned string. The running result is then
+                // not a garbage-collectable heap value held across the per-child
+                // `eval_node` (and its safepoints), and its byte buffer grows in
+                // place instead of the pairwise `concat` re-copying the whole
+                // prefix on every fragment. The result is byte-for-byte identical
+                // to the left-associated `concat` fold it replaces.
+                let mut accumulator = self.heap.get_string(first_string).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                })?.clone();
                 for child in rest {
                     let child_span = self.node(*child)?.span;
                     let next = {
                         let value = self.eval_node(*child)?;
                         self.coerce_to_interpolation_string(*child, value, child_span)?
                     };
-                    current = self.concat_strings(id, node, current, next)?;
+                    let next = self.heap.get_string(next).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                    })?;
+                    accumulator.append_in_place(next).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
+                    })?;
                 }
-                Ok(current)
+                self.alloc_tree_walk_string(id, node.span, accumulator)
             }
             IrData::None => self.alloc_tree_walk_string(id, node.span, NixString::default()),
             IrData::Symbol(symbol) => {

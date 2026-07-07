@@ -14,7 +14,7 @@
 //! first-class primitive operations, and derivation boundaries.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsStr,
     fmt, fs,
     io::{self, Cursor, Read, Write as _},
@@ -1043,6 +1043,16 @@ pub struct TreeWalk {
     /// can be memoized; imports under a shared store path would otherwise
     /// re-`lstat` every ancestor component on each resolution.
     import_traceable_nonsymlink_prefixes: HashSet<PathBuf>,
+    /// Memoizes `import` path resolution keyed by the coerced request bytes.
+    ///
+    /// Resolving an `import` argument to its `(target, realpath)` pair requires
+    /// an `fs::metadata` probe (directory promotion to `default.nix`) and an
+    /// `fs::canonicalize` (realpath). The canonicalized realpath is the
+    /// [`import_cache`](Self::import_cache) key, so both syscalls run *before*
+    /// the value cache is consulted and would otherwise repeat on every import
+    /// of an already-evaluated file. The filesystem is immutable for the
+    /// duration of an evaluation, so the resolution is stable and cacheable.
+    import_paths_cache: HashMap<Vec<u8>, (PathBuf, PathBuf)>,
     parse_cache: Option<ParseCache>,
     persist_cache: Option<PersistCache>,
     persist_cache_open_attempted: bool,
