@@ -27,7 +27,14 @@ const ROOT_CUTOFF_KEY_DOMAIN: &[u8] = b"aos-nix-root-cutoff-key";
 /// Increment this whenever the record payload layout, the key composition, or
 /// the revalidation contract changes in a way that must invalidate every record
 /// written by an older binary that shares the same crate version.
-const ROOT_CUTOFF_KEY_FORMAT_VERSION: u32 = 1;
+///
+/// Version history:
+///
+/// * `2` — recorded impure-input traces are canonicalized (sorted and
+///   deduplicated) before writeback, changing the persisted record bytes for
+///   an identical evaluation; records written by version `1` binaries simply
+///   miss under the new keys and are re-recorded on the next cold evaluation.
+const ROOT_CUTOFF_KEY_FORMAT_VERSION: u32 = 2;
 
 /// Computes the durable root-record key for one file-attribute instantiation.
 ///
@@ -244,10 +251,17 @@ impl NixNative {
 
 /// Extracts the fully cacheable impure-input trace of a completed evaluation.
 ///
+/// The extracted trace is canonicalized through
+/// [`crate::eval::canonicalize_cacheable_input_trace`] — sorted into a
+/// deterministic order and deduplicated — so the recorded bytes do not depend
+/// on the force order in which the evaluation happened to observe its inputs.
+///
 /// Returns `None` when the evaluation's impure-input trace is incomplete (so no
-/// durable root record may be written) or when any observed input is
-/// uncacheable, which cannot occur alongside a complete trace but is rejected
-/// defensively so a partial trace is never persisted.
+/// durable root record may be written), when any observed input is uncacheable
+/// (which cannot occur alongside a complete trace but is rejected defensively
+/// so a partial trace is never persisted), or when the same input was observed
+/// with two different results within this evaluation (for example a file that
+/// changed mid-eval), since such a trace could never revalidate.
 fn cacheable_inputs_from_outcome(outcome: &EvalOutcome) -> Option<Vec<CacheableInputFingerprint>> {
     if !outcome.impure_input_trace_complete() {
         return None;
@@ -257,7 +271,7 @@ fn cacheable_inputs_from_outcome(outcome: &EvalOutcome) -> Option<Vec<CacheableI
     for fingerprint in trace {
         inputs.push(fingerprint.as_cacheable()?.clone());
     }
-    Some(inputs)
+    crate::eval::canonicalize_cacheable_input_trace(inputs)
 }
 
 /// Returns a coarse wall-clock run id stamped into new root-cutoff records.

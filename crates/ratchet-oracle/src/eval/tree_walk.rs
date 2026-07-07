@@ -1365,7 +1365,9 @@ use store_validity::StoreValidityChecker;
 mod tier1_publish;
 pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
 
-pub use eval_impure_inputs::revalidate_cacheable_input_trace;
+pub use eval_impure_inputs::{
+    canonicalize_cacheable_input_trace, revalidate_cacheable_input_trace,
+};
 pub use safepoint_roots::{
     TreeWalkSafepointMinorGcReferenceWritebackBufferApplication,
     TreeWalkSafepointMinorGcReferenceWritebackPlan, TreeWalkSafepointMinorGcRootWritebackReport,

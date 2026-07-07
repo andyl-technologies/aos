@@ -115,6 +115,60 @@ pub fn revalidate_cacheable_input_trace(
     )
 }
 
+/// Canonicalizes a complete cacheable impure-input trace for durable recording.
+///
+/// The evaluator appends impure-input observations in force order, so two
+/// evaluations of the same expression may record the same set of observations
+/// in different orders (parallel evaluation makes force order
+/// nondeterministic). This function makes the recorded form order-independent
+/// without changing observation semantics: entries are sorted by input kind,
+/// mode, identity subject, and observation hash, and duplicate observations of
+/// the same input with identical results collapse to one entry.
+///
+/// Returns `None` when the same input identity was observed with two different
+/// results within one evaluation (for example a file that changed mid-eval).
+/// Such a trace can never revalidate — one replay of the input cannot match
+/// both recorded results — so callers must treat it exactly like an incomplete
+/// trace and record nothing.
+///
+/// Per-observation replay through [`revalidate_cacheable_input_trace`] checks
+/// each input independently, so canonicalization never changes revalidation
+/// outcomes.
+pub fn canonicalize_cacheable_input_trace(
+    mut trace: Vec<crate::cache::CacheableInputFingerprint>,
+) -> Option<Vec<crate::cache::CacheableInputFingerprint>> {
+    trace.sort_by(canonical_cacheable_input_order);
+    trace.dedup();
+    // After sorting, observations that share an identity are adjacent; any
+    // surviving adjacent pair with equal identity must differ in observed
+    // result, which makes the trace unsafe to record.
+    let conflicting = trace.windows(2).any(|adjacent| {
+        adjacent[0].identity() == adjacent[1].identity()
+            && adjacent[0].observation_hash() != adjacent[1].observation_hash()
+    });
+    if conflicting { None } else { Some(trace) }
+}
+
+/// Orders cacheable inputs by kind, mode, identity subject, then observation
+/// hash, grouping observations of the same identity adjacently.
+fn canonical_cacheable_input_order(
+    left: &crate::cache::CacheableInputFingerprint,
+    right: &crate::cache::CacheableInputFingerprint,
+) -> std::cmp::Ordering {
+    (
+        left.kind(),
+        left.identity().mode(),
+        left.identity().subject(),
+        left.observation_hash(),
+    )
+        .cmp(&(
+            right.kind(),
+            right.identity().mode(),
+            right.identity().subject(),
+            right.observation_hash(),
+        ))
+}
+
 impl<'a> TreeWalkImpureInputRevalidator<'a> {
     pub(super) fn new(options: &'a TreeWalkOptions) -> Self {
         Self {
@@ -294,5 +348,98 @@ impl ImpureInputRevalidator for TreeWalkImpureInputRevalidator<'_> {
             ImpureInputKind::GetEnv => self.revalidate_get_env(identity),
         }?;
         self.remember(fingerprint)
+    }
+}
+
+#[cfg(test)]
+mod canonicalize_tests {
+    use super::canonicalize_cacheable_input_trace;
+    use crate::cache::{
+        CacheableInputFingerprint, ImpureInputFingerprint, ImpureInputMode, RootInstantiationRecord,
+    };
+
+    fn cacheable(fingerprint: ImpureInputFingerprint) -> CacheableInputFingerprint {
+        fingerprint
+            .as_cacheable()
+            .expect("input is cacheable")
+            .clone()
+    }
+
+    fn sample_observations() -> Vec<CacheableInputFingerprint> {
+        vec![
+            cacheable(ImpureInputFingerprint::import(b"/src/default.nix", b"{ }").expect("hashes")),
+            cacheable(ImpureInputFingerprint::read_file(b"/src/data", b"payload").expect("hashes")),
+            cacheable(
+                ImpureInputFingerprint::get_env(b"HOME", Some(b"/home/user")).expect("hashes"),
+            ),
+            cacheable(ImpureInputFingerprint::path_exists(b"/src/opt", false).expect("hashes")),
+        ]
+    }
+
+    #[test]
+    fn canonical_trace_is_order_independent() {
+        let forward =
+            canonicalize_cacheable_input_trace(sample_observations()).expect("no conflicts");
+        let mut shuffled_input = sample_observations();
+        shuffled_input.reverse();
+        shuffled_input.swap(0, 2);
+        let shuffled =
+            canonicalize_cacheable_input_trace(shuffled_input).expect("no conflicts");
+        assert_eq!(forward, shuffled);
+    }
+
+    #[test]
+    fn canonical_traces_encode_identical_root_records() {
+        let forward =
+            canonicalize_cacheable_input_trace(sample_observations()).expect("no conflicts");
+        let mut reversed_input = sample_observations();
+        reversed_input.reverse();
+        let reversed =
+            canonicalize_cacheable_input_trace(reversed_input).expect("no conflicts");
+
+        let record = |inputs| {
+            RootInstantiationRecord::new(b"/nix/store/root.drv".to_vec(), Vec::new(), inputs, 7)
+                .encode()
+                .expect("record encodes")
+        };
+        assert_eq!(record(forward), record(reversed));
+    }
+
+    #[test]
+    fn identical_duplicate_observations_collapse() {
+        let repeated = cacheable(
+            ImpureInputFingerprint::read_file(b"/src/data", b"payload").expect("hashes"),
+        );
+        let canonical =
+            canonicalize_cacheable_input_trace(vec![repeated.clone(), repeated.clone()])
+                .expect("no conflicts");
+        assert_eq!(canonical, vec![repeated]);
+    }
+
+    #[test]
+    fn conflicting_duplicate_observation_refuses_to_canonicalize() {
+        let before =
+            cacheable(ImpureInputFingerprint::read_file(b"/src/data", b"before").expect("hashes"));
+        let after =
+            cacheable(ImpureInputFingerprint::read_file(b"/src/data", b"after").expect("hashes"));
+        assert_eq!(canonicalize_cacheable_input_trace(vec![before, after]), None);
+    }
+
+    #[test]
+    fn distinct_modes_on_one_subject_are_not_conflicts() {
+        let default_probe =
+            cacheable(ImpureInputFingerprint::path_exists(b"/src/opt", true).expect("hashes"));
+        let directory_probe = cacheable(
+            ImpureInputFingerprint::path_exists_with_mode(
+                b"/src/opt",
+                ImpureInputMode::RequireDirectory,
+                false,
+            )
+            .expect("hashes"),
+        );
+        let canonical =
+            canonicalize_cacheable_input_trace(vec![directory_probe, default_probe])
+                .expect("no conflicts");
+        assert_eq!(canonical.len(), 2);
     }
 }
