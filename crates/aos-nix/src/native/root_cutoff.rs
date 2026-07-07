@@ -119,8 +119,9 @@ impl NixNative {
             }
             .into());
         }
+        let engine = self.tier1_engine_for(&options);
         let outcome =
-            eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache(
+            eval_instantiation_attr_path_owned_with_options_source_realizer_eval_cache_and_engine(
                 &ir,
                 &attr_path,
                 options.clone(),
@@ -128,6 +129,7 @@ impl NixNative {
                 source.to_vec(),
                 self.ifd_realizer.clone(),
                 self.eval_cache.clone(),
+                engine,
             )
             .map_err(|error| match diagnostic_source {
                 Some(diagnostic_source) => native_eval_error_with_source_trace(

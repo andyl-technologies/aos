@@ -25,8 +25,11 @@ use ratchet_jit::{
 use thiserror::Error;
 
 mod conformance;
+mod engine;
 mod runtime_symbols;
 mod thunk_install;
+
+pub use engine::{DEFAULT_TIER1_PROMOTION_THRESHOLD, NixJitTier1Engine};
 
 pub use conformance::{
     BindingProjectionReason, NixJitForcedEnvSlotNativeDifferentialError,

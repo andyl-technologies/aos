@@ -40,6 +40,40 @@ fn native_expression_eval_renders_strict_json() -> Result<()> {
 }
 
 #[test]
+fn native_jit_enabled_eval_dispatches_and_matches_tree_walk() -> Result<()> {
+    // A hot `r = k` binding (forced-local-slot shape) is promoted at the default
+    // threshold and its later instances dispatch native code. The JIT result must
+    // be byte-identical to the plain tree-walk result.
+    let expr = "let g = k: { r = k; }; \
+         in builtins.foldl' (acc: item: acc + item.r) 0 \
+         (builtins.genList (i: g (i + 1)) 40)";
+
+    let (tree_walk_json, _) = NixNative::new(0)?.eval_expr_with_stats(expr)?;
+
+    let mut options = TreeWalkOptions::new();
+    options.set_jit_tier1_publish_enabled(true);
+    let (jit_json, stats) = NixNative::with_options(0, options)?.eval_expr_with_stats(expr)?;
+
+    assert_eq!(
+        jit_json, tree_walk_json,
+        "JIT-enabled result must match the tree walk"
+    );
+    assert!(
+        stats.tier1_promoted() >= 1,
+        "expected a promotion, got {stats:?}"
+    );
+    assert!(
+        stats.tier1_dispatched() >= 1,
+        "expected a dispatch, got promoted={} dispatched={} deopted={}",
+        stats.tier1_promoted(),
+        stats.tier1_dispatched(),
+        stats.tier1_deopted(),
+    );
+
+    Ok(())
+}
+
+#[test]
 fn native_expression_eval_reports_tier_a_heap_stats_without_gc_work() -> Result<()> {
     let native = NixNative::new(0)?;
 

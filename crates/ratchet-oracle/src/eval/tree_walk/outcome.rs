@@ -13386,6 +13386,9 @@ pub struct EvalStats {
     pub(crate) hashcons_hits: u64,
     pub(crate) symbols_interned: u64,
     pub(crate) imports_evaluated: u64,
+    pub(crate) tier1_promoted: u64,
+    pub(crate) tier1_dispatched: u64,
+    pub(crate) tier1_deopted: u64,
 }
 
 impl EvalStats {
@@ -13678,6 +13681,21 @@ impl EvalStats {
     /// number of `import` expressions demonstrates the import cache working.
     pub const fn imports_evaluated(&self) -> u64 {
         self.imports_evaluated
+    }
+
+    /// Returns the number of thunks promoted to tier-1 native code during force.
+    pub const fn tier1_promoted(&self) -> u64 {
+        self.tier1_promoted
+    }
+
+    /// Returns the number of thunk forces served by dispatching tier-1 native code.
+    pub const fn tier1_dispatched(&self) -> u64 {
+        self.tier1_dispatched
+    }
+
+    /// Returns the number of tier-1 dispatch attempts that deoptimized to the tree walk.
+    pub const fn tier1_deopted(&self) -> u64 {
+        self.tier1_deopted
     }
 
     pub(in crate::eval::tree_walk) fn record_heap_tier_b_admission(

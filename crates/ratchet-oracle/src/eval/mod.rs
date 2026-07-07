@@ -161,15 +161,17 @@ pub use thunk_wait::{
 };
 pub use tree_walk::{
     EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,
-    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, OpaqueTier1Slot, TreeWalk,
-    TreeWalkError, TreeWalkErrorKind, TreeWalkOptions, TreeWalkOptionsError,
-    eval_instantiation_attr_path_owned_with_options_and_realizer,
+    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, OpaqueTier1Slot, Tier1Engine,
+    Tier1ForceHook, TreeWalk, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions,
+    TreeWalkOptionsError, eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,
+    eval_instantiation_attr_path_owned_with_options_source_realizer_eval_cache_and_engine,
     eval_number_raw_bytes, eval_number_raw_bytes_with_options, eval_raw_bytes,
     eval_raw_bytes_with_options, eval_raw_bytes_with_options_source, eval_whnf, eval_whnf_owned,
     eval_whnf_owned_with_options, eval_whnf_owned_with_options_and_realizer,
-    eval_whnf_owned_with_options_realizer_and_eval_cache, eval_whnf_with_options,
+    eval_whnf_owned_with_options_realizer_and_eval_cache,
+    eval_whnf_owned_with_options_realizer_eval_cache_and_engine, eval_whnf_with_options,
     revalidate_cacheable_input_trace,
 };
 pub use whnf_tag::{

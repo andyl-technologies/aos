@@ -348,10 +348,12 @@ pub use api::{
     eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,
+    eval_instantiation_attr_path_owned_with_options_source_realizer_eval_cache_and_engine,
     eval_number_raw_bytes, eval_number_raw_bytes_with_options, eval_raw_bytes,
     eval_raw_bytes_with_options, eval_raw_bytes_with_options_source, eval_whnf, eval_whnf_owned,
     eval_whnf_owned_with_options, eval_whnf_owned_with_options_and_realizer,
-    eval_whnf_owned_with_options_realizer_and_eval_cache, eval_whnf_with_options,
+    eval_whnf_owned_with_options_realizer_and_eval_cache,
+    eval_whnf_owned_with_options_realizer_eval_cache_and_engine, eval_whnf_with_options,
 };
 pub use error_kind::TreeWalkErrorKind;
 pub(crate) use errors::ArithmeticOp;
@@ -1099,6 +1101,16 @@ pub struct TreeWalk {
     // bits. Additive and off the force hot path: force never reads it. See
     // `tier1_publish` and `publish_tier1_slot`.
     tier1_publish_slots: HashMap<u64, OpaqueTier1Slot>,
+    // Tier-1 native entries shared across every thunk instance of a def-site,
+    // keyed by `(module_index << 32) | ir_root`. Tier-1 code is compiled per IR
+    // body, so a hot def-site's published entry dispatches for all its instances.
+    // Populated only when a `tier1_engine` promotes a body. See `Tier1Engine`.
+    tier1_def_site_slots: HashMap<u64, OpaqueTier1Slot>,
+    // Optional pluggable tier-1 JIT engine consulted once per claimed serial
+    // force. `None` (the default) leaves the force path byte-for-byte unchanged.
+    // Held by `Rc` so the force path can clone it out and release the field
+    // borrow before handing the engine `&mut self`. See `Tier1Engine`.
+    tier1_engine: Option<Rc<dyn Tier1Engine>>,
     #[cfg(test)]
     tree_walk_list_wrapper_calls: usize,
     #[cfg(test)]
@@ -1344,7 +1356,7 @@ mod serialize_xml;
 mod store_validity;
 use store_validity::StoreValidityChecker;
 mod tier1_publish;
-pub use tier1_publish::OpaqueTier1Slot;
+pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
 
 pub use eval_impure_inputs::revalidate_cacheable_input_trace;
 pub use safepoint_roots::{

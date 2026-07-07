@@ -1670,7 +1670,7 @@ impl TreeWalk {
             }
             ForceClaim::Claimed(guard) => {
                 self.push_active_force_root(id, span, source_thunk)?;
-                let result = self.force_memoized_claimed_thunk(
+                let result = self.force_claimed_thunk_with_tier1(
                     id,
                     span,
                     source_thunk,
@@ -1682,6 +1682,44 @@ impl TreeWalk {
                 result
             }
         }
+    }
+
+    /// Consults the optional tier-1 engine before running the tree-walk body.
+    ///
+    /// When an engine is installed it is asked once whether this claimed thunk
+    /// has published tier-1 native code to dispatch. On a successful dispatch the
+    /// native value is published through the normal
+    /// [`finish_forced_value`](Self::finish_forced_value) path. On a deopt (native
+    /// code trapped or errored) or when the engine declines, evaluation falls
+    /// through to the existing memoized tree-walk body. The engine borrows `&mut
+    /// self`; the shared thunk `Rc` and its [`ForceGuard`] never borrow `self`, so
+    /// the engine is free to re-enter forcing and mutate the heap while dispatching.
+    fn force_claimed_thunk_with_tier1(
+        &mut self,
+        id: IrId,
+        span: Span,
+        source_thunk: Value,
+        forced_payload: u64,
+        thunk: &EvalThunk,
+        guard: ForceGuard<'_>,
+    ) -> Result<Value, TreeWalkError> {
+        if let Some(engine) = self.tier1_engine.clone() {
+            match engine.on_serial_force(self, source_thunk, id, span) {
+                Tier1ForceHook::Dispatched(value) => {
+                    self.increment_tier1_dispatched();
+                    let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
+                    self.unmark_lazy_identity_thunk_payload(forced_payload);
+                    return Ok(value);
+                }
+                Tier1ForceHook::Deopted => self.increment_tier1_deopted(),
+                Tier1ForceHook::Continued { promoted } => {
+                    if promoted {
+                        self.increment_tier1_promoted();
+                    }
+                }
+            }
+        }
+        self.force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard)
     }
 
     fn force_single_entry_thunk_value(

@@ -389,6 +389,8 @@ impl TreeWalk {
             lazy_identity_thunks: HashSet::new(),
             lazy_foldl_initial_thunks: HashSet::new(),
             tier1_publish_slots: HashMap::new(),
+            tier1_def_site_slots: HashMap::new(),
+            tier1_engine: None,
             #[cfg(test)]
             tree_walk_list_wrapper_calls: 0,
             #[cfg(test)]

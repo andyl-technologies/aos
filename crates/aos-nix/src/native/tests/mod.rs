@@ -5,6 +5,7 @@ use crate::cache::{
     DurableBlake3Hash, ParseCache, ParseFileKey, PersistCache, PersistFileArtifactKey,
     PersistNodeMetadataKey,
 };
+use crate::eval::eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache;
 use crate::eval::IfdRealizationError;
 use crate::string::NixString;
 use std::fs;

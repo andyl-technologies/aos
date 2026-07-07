@@ -1,7 +1,7 @@
 //! Process-local shape interning and transition cache.
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::convert::TryFrom;
 use std::sync::Arc;
 

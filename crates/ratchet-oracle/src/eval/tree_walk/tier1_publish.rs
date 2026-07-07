@@ -26,12 +26,64 @@
 
 use std::any::Any;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use crate::compile::{Ir, IrId};
+use crate::eval::module::EvalModuleId;
 use crate::eval::thunk::{ForceError, ThunkState};
+use crate::syntax::Span;
 use crate::value::Value;
 
 use super::TreeWalk;
+
+/// The outcome of consulting a [`Tier1Engine`] at the top of a serial force.
+///
+/// The engine is consulted once when a suspended thunk is claimed for forcing.
+/// It either dispatches published tier-1 native code (whose value replaces the
+/// tree-walk body evaluation), reports a deopt (native code ran but trapped or
+/// errored, so the tree walk must run the body), or reports that it did not
+/// dispatch at all (optionally having promoted and published the thunk for a
+/// later force).
+#[derive(Debug)]
+pub enum Tier1ForceHook {
+    /// Published tier-1 native code produced this forced value; skip the body.
+    Dispatched(Value),
+    /// Native code ran but trapped or errored; deoptimize to the tree-walk body.
+    Deopted,
+    /// No dispatch happened; run the tree-walk body as usual.
+    Continued {
+        /// True when this force compiled and published a tier-1 entry for reuse.
+        promoted: bool,
+    },
+}
+
+/// A pluggable tier-1 JIT engine consulted by the serial force path.
+///
+/// The tree-walk evaluator owns no JIT machinery — the Cranelift lowerer,
+/// finalizer, and native-call boundary live in crates that depend on this one.
+/// Instead the evaluator holds an optional `dyn Tier1Engine` and consults it once
+/// per claimed serial force through [`on_serial_force`](Self::on_serial_force).
+/// A `None` engine (the default) leaves the force path byte-for-byte unchanged.
+///
+/// The engine receives `&mut TreeWalk`, so it may read the thunk's captured
+/// environment, install and publish [`OpaqueTier1Slot`] entries, and re-enter
+/// forcing while dispatching native code. Its counters are surfaced through
+/// [`EvalStats`](crate::eval::EvalStats) by the force path, not the engine.
+pub trait Tier1Engine: fmt::Debug {
+    /// Consulted once when the thunk behind `thunk` is claimed for forcing.
+    ///
+    /// `id` and `span` identify the forced expression for diagnostics. The engine
+    /// returns a [`Tier1ForceHook`] describing whether it produced the forced
+    /// value, deoptimized, or declined to dispatch.
+    fn on_serial_force(
+        &self,
+        eval: &mut TreeWalk,
+        thunk: Value,
+        id: IrId,
+        span: Span,
+    ) -> Tier1ForceHook;
+}
 
 /// The `Empty` state: an entry is installed but not published for dispatch.
 const TIER1_SLOT_EMPTY: u8 = 0;
@@ -122,6 +174,34 @@ impl OpaqueTier1Slot {
 }
 
 impl TreeWalk {
+    /// Installs the pluggable tier-1 JIT engine consulted during serial forcing.
+    ///
+    /// The engine is consulted once per claimed serial force through
+    /// [`Tier1Engine::on_serial_force`]. Installing an engine does not by itself
+    /// change results: dispatch only occurs for thunks whose slots the engine
+    /// has published, and the force path always deoptimizes to the tree-walk
+    /// body when native dispatch traps or errors. Passing a fresh engine
+    /// replaces any previously installed one.
+    pub fn set_tier1_engine(&mut self, engine: Rc<dyn Tier1Engine>) {
+        self.tier1_engine = Some(engine);
+    }
+
+    /// Returns the installed tier-1 JIT engine, if any.
+    pub fn tier1_engine(&self) -> Option<&Rc<dyn Tier1Engine>> {
+        self.tier1_engine.as_ref()
+    }
+
+    /// Returns the lowered IR for `module`, if that module is loaded.
+    ///
+    /// A tier-1 engine uses this to recover the lowered body of a thunk it is
+    /// considering for promotion: the thunk's
+    /// [`body_ref`](crate::eval::EvalThunk::body_ref) names a
+    /// `(module, root)` pair, and the engine lowers `root` against the returned
+    /// IR. Returns `None` when the module index is out of range.
+    pub fn tier1_module_ir(&self, module: EvalModuleId) -> Option<&Ir> {
+        self.modules.get(module.index()).map(|module| &module.ir)
+    }
+
     /// Installs a type-erased tier-1 publish slot for `thunk` without publishing.
     ///
     /// The slot is keyed by the thunk's payload bits and starts `Empty`; it is
@@ -143,6 +223,41 @@ impl TreeWalk {
         }
         self.tier1_publish_slots.insert(key, slot);
         true
+    }
+
+    /// Installs and publishes a tier-1 native entry shared across a def-site.
+    ///
+    /// Unlike the per-instance [`install_tier1_slot`](Self::install_tier1_slot) /
+    /// [`publish_tier1_slot`](Self::publish_tier1_slot) pair — which gate on a
+    /// single thunk still being suspended — a def-site entry is compiled from an
+    /// IR body and is valid for every thunk instance of that body. The engine
+    /// installs it while promoting one (already-claimed) instance, so publication
+    /// is unconditional: the slot is transitioned straight to `Published`.
+    ///
+    /// `def_site` is the caller's `(module, root)` encoding. Returns true when the
+    /// entry was newly installed and published, and false when an entry already
+    /// exists for `def_site` (the existing entry is kept and `slot` is dropped).
+    pub fn install_and_publish_tier1_def_site_slot(
+        &mut self,
+        def_site: u64,
+        slot: OpaqueTier1Slot,
+    ) -> bool {
+        if self.tier1_def_site_slots.contains_key(&def_site) {
+            return false;
+        }
+        // A fresh slot is `Empty`, so this CAS always succeeds; publish before
+        // inserting so a later acquire reader observes the recorded entry.
+        slot.try_publish();
+        self.tier1_def_site_slots.insert(def_site, slot);
+        true
+    }
+
+    /// Returns the published tier-1 entry for `def_site`, if one is installed.
+    ///
+    /// Dispatch consults this for every claimed force whose thunk body names
+    /// `def_site`; the returned slot is always `Published`.
+    pub fn tier1_def_site_slot(&self, def_site: u64) -> Option<&OpaqueTier1Slot> {
+        self.tier1_def_site_slots.get(&def_site)
     }
 
     /// Returns the installed tier-1 publish slot for `thunk`, if any.

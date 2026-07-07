@@ -733,6 +733,7 @@ pub struct NixEvalConfig {
     native_root_cutoff: bool,
     native_root_cutoff_check: bool,
     native_eval_stats: bool,
+    native_jit: bool,
     heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
 }
@@ -869,6 +870,21 @@ impl NixEvalConfig {
     /// Enables or disables native persistent value-decode content re-hashing.
     pub fn set_native_cache_verify(&mut self, native_cache_verify: bool) {
         self.native_cache_verify = native_cache_verify;
+    }
+
+    /// Returns whether the native tier-1 JIT engine is enabled.
+    ///
+    /// Off by default and enabled through the `AOS_NIX_JIT=1` environment
+    /// variable. When on, the native evaluator promotes hot thunk bodies to
+    /// Cranelift tier-1 code and dispatches it, deoptimizing to the tree walk on
+    /// any trap so results are unchanged.
+    pub const fn native_jit(&self) -> bool {
+        self.native_jit
+    }
+
+    /// Enables or disables the native tier-1 JIT engine.
+    pub fn set_native_jit(&mut self, native_jit: bool) {
+        self.native_jit = native_jit;
     }
 
     /// Returns whether native root-level early cutoff is enabled.
@@ -1262,6 +1278,7 @@ impl NixEvalConfig {
             native_root_cutoff: true,
             native_root_cutoff_check: false,
             native_eval_stats: false,
+            native_jit: false,
             heap_memory_budget_bytes: None,
             trace_verbose: false,
         };
@@ -1292,6 +1309,9 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_EVAL_STATS") {
             config.set_aos_nix_eval_stats_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_JIT") {
+            config.set_aos_nix_jit_env_var(&value);
         }
         if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
             config.set_aos_nix_max_rss_env_var(value);
@@ -1327,6 +1347,10 @@ impl NixEvalConfig {
 
     fn set_aos_nix_cache_verify_env_var(&mut self, value: &str) {
         self.set_native_cache_verify(matches!(value.trim(), "1" | "true"));
+    }
+
+    fn set_aos_nix_jit_env_var(&mut self, value: &str) {
+        self.set_native_jit(matches!(value.trim(), "1" | "true"));
     }
 
     fn set_aos_nix_root_cutoff_env_var(&mut self, value: &str) {
@@ -2782,6 +2806,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     }
     options.set_trace_verbose(config.trace_verbose());
     options.set_eval_stats_dump(config.native_eval_stats());
+    options.set_jit_tier1_publish_enabled(config.native_jit());
     Ok(options)
 }
 

@@ -118,6 +118,33 @@ pub fn eval_whnf_owned_with_options_realizer_and_eval_cache(
     eval_whnf_owned_with_evaluator(evaluator, ifd_realizer)
 }
 
+/// Evaluates an IR root to WHNF with caller-owned cache state and a tier-1 engine.
+///
+/// This is the tier-1 JIT variant of
+/// [`eval_whnf_owned_with_options_realizer_and_eval_cache`]. When `engine` is
+/// `Some` it is installed on the evaluator before forcing begins, so hot thunk
+/// bodies are promoted and later instances dispatch native code (subject to the
+/// options' [`jit_tier1_publish_enabled`](TreeWalkOptions::jit_tier1_publish_enabled)
+/// flag). A `None` engine is exactly the non-JIT path.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] under the same conditions as
+/// [`eval_whnf_owned_with_options_realizer_and_eval_cache`].
+pub fn eval_whnf_owned_with_options_realizer_eval_cache_and_engine(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    ifd_realizer: Option<IfdRealizer>,
+    eval_cache: Arc<Mutex<EvalCacheRuntime>>,
+    engine: Option<std::rc::Rc<dyn Tier1Engine>>,
+) -> Result<EvalOutcome, TreeWalkError> {
+    let mut evaluator = TreeWalk::with_options_and_eval_cache(ir, options, eval_cache);
+    if let Some(engine) = engine {
+        evaluator.set_tier1_engine(engine);
+    }
+    eval_whnf_owned_with_evaluator(evaluator, ifd_realizer)
+}
+
 fn eval_whnf_owned_with_evaluator(
     mut evaluator: TreeWalk,
     ifd_realizer: Option<IfdRealizer>,
@@ -232,6 +259,43 @@ pub fn eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_
         source,
         eval_cache,
     );
+    eval_instantiation_attr_path_with_evaluator(ir, attr_path, evaluator, ifd_realizer)
+}
+
+/// Evaluates a source-backed IR root with `-A` semantics, owned cache, and an engine.
+///
+/// This is the tier-1 JIT variant of
+/// [`eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache`].
+/// When `engine` is `Some` it is installed on the evaluator before forcing, so
+/// hot thunk bodies promote and dispatch native code (subject to the options'
+/// [`jit_tier1_publish_enabled`](TreeWalkOptions::jit_tier1_publish_enabled)
+/// flag). A `None` engine is exactly the non-JIT path.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] under the same conditions as
+/// [`eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache`].
+#[allow(clippy::too_many_arguments)]
+pub fn eval_instantiation_attr_path_owned_with_options_source_realizer_eval_cache_and_engine(
+    ir: &Ir,
+    attr_path: &[Vec<u8>],
+    options: TreeWalkOptions,
+    source_name: impl Into<Vec<u8>>,
+    source: impl Into<Vec<u8>>,
+    ifd_realizer: Option<IfdRealizer>,
+    eval_cache: Arc<Mutex<EvalCacheRuntime>>,
+    engine: Option<std::rc::Rc<dyn Tier1Engine>>,
+) -> Result<EvalOutcome, TreeWalkError> {
+    let mut evaluator = TreeWalk::with_options_and_source_and_eval_cache(
+        ir,
+        options,
+        source_name,
+        source,
+        eval_cache,
+    );
+    if let Some(engine) = engine {
+        evaluator.set_tier1_engine(engine);
+    }
     eval_instantiation_attr_path_with_evaluator(ir, attr_path, evaluator, ifd_realizer)
 }
 

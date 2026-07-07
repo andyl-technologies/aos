@@ -12,6 +12,7 @@ use std::fs;
 use std::ops::Range;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -30,11 +31,12 @@ use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
 use crate::eval::tree_walk::{canonicalize_policy_path, normalize_absolute_path_bytes};
 use crate::eval::{
-    EvalErrorLabel, EvalMode, EvalOutcome, EvalStats, IfdRealizer, TreeWalkError,
+    EvalErrorLabel, EvalMode, EvalOutcome, EvalStats, IfdRealizer, Tier1Engine, TreeWalkError,
     TreeWalkErrorKind, TreeWalkOptions,
-    eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,
-    eval_whnf_owned_with_options_realizer_and_eval_cache, revalidate_cacheable_input_trace,
+    eval_instantiation_attr_path_owned_with_options_source_realizer_eval_cache_and_engine,
+    eval_whnf_owned_with_options_realizer_eval_cache_and_engine, revalidate_cacheable_input_trace,
 };
+use crate::jit::NixJitTier1Engine;
 use crate::runtime::builtins::{
     Builtin, BuiltinAvailability, BuiltinExecution, NativeCliFallbackFeature, StrictUnaryPrimOp,
     is_unshadowable_global_name, lookup_builtin,
@@ -750,25 +752,46 @@ impl NixNative {
     }
 
     fn eval_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
-        let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        let options = self.options.clone();
+        let engine = self.tier1_engine_for(&options);
+        let outcome = eval_whnf_owned_with_options_realizer_eval_cache_and_engine(
             ir,
-            self.options.clone(),
+            options,
             self.ifd_realizer.clone(),
             self.eval_cache.clone(),
+            engine,
         )?;
         self.observe_eval_cache(&outcome);
         Ok(outcome)
     }
 
     fn eval_instantiation_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
-        let outcome = eval_whnf_owned_with_options_realizer_and_eval_cache(
+        let options = self.instantiation_options();
+        let engine = self.tier1_engine_for(&options);
+        let outcome = eval_whnf_owned_with_options_realizer_eval_cache_and_engine(
             ir,
-            self.instantiation_options(),
+            options,
             self.ifd_realizer.clone(),
             self.eval_cache.clone(),
+            engine,
         )?;
         self.observe_eval_cache(&outcome);
         Ok(outcome)
+    }
+
+    /// Builds a tier-1 JIT engine when the options enable tier-1 publishing.
+    ///
+    /// Returns `None` when the flag is off (the plain tree-walk path) or when the
+    /// runtime-symbol candidate preflight cannot be built, in which case
+    /// evaluation transparently falls back to the tree walk.
+    fn tier1_engine_for(&self, options: &TreeWalkOptions) -> Option<Rc<dyn Tier1Engine>> {
+        if !options.jit_tier1_publish_enabled() {
+            return None;
+        }
+        match NixJitTier1Engine::new() {
+            Ok(engine) => Some(Rc::new(engine)),
+            Err(_) => None,
+        }
     }
 
     fn instantiation_options(&self) -> TreeWalkOptions {

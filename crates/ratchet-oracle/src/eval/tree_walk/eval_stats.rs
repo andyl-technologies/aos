@@ -75,6 +75,9 @@ impl TreeWalk {
             hashcons_hits: alloc_counters.hashcons_hits(),
             symbols_interned: self.symbols.len() as u64,
             imports_evaluated: self.stats.imports_evaluated,
+            tier1_promoted: self.stats.tier1_promoted,
+            tier1_dispatched: self.stats.tier1_dispatched,
+            tier1_deopted: self.stats.tier1_deopted,
         }
     }
 
@@ -92,6 +95,9 @@ impl TreeWalk {
             gc_pause_us = stats.gc_pause_us(),
             tier_promotions = stats.tier_promotions(),
             deopts = stats.deopts(),
+            tier1_promoted = stats.tier1_promoted(),
+            tier1_dispatched = stats.tier1_dispatched(),
+            tier1_deopted = stats.tier1_deopted(),
             force_cache_hits = stats.force_cache_hits(),
             force_cache_misses = stats.force_cache_misses(),
             force_cache_probes = stats.force_cache_probes(),
@@ -566,6 +572,18 @@ impl TreeWalk {
 
     pub(super) fn increment_thunks_forced(&mut self) {
         self.stats.thunks_forced = self.stats.thunks_forced.saturating_add(1);
+    }
+
+    pub(crate) fn increment_tier1_promoted(&mut self) {
+        self.stats.tier1_promoted = self.stats.tier1_promoted.saturating_add(1);
+    }
+
+    pub(crate) fn increment_tier1_dispatched(&mut self) {
+        self.stats.tier1_dispatched = self.stats.tier1_dispatched.saturating_add(1);
+    }
+
+    pub(crate) fn increment_tier1_deopted(&mut self) {
+        self.stats.tier1_deopted = self.stats.tier1_deopted.saturating_add(1);
     }
 
     pub(super) fn increment_thunk_cache_hits(&mut self) {
