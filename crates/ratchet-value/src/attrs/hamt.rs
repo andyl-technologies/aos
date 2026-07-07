@@ -507,7 +507,111 @@ enum HamtSlot {
     Node(Arc<HamtNode>),
 }
 
+/// Builds the root HAMT node for `entries` in a single bottom-up pass.
+///
+/// `entries` must already be de-duplicated and sorted by key (as
+/// [`HamtAttrs::new`] guarantees). Each node is allocated exactly once, unlike
+/// the per-entry [`insert_into_node`] fold which path-copies and then discards a
+/// fresh `Arc` chain for every key. The resulting trie is identical to that
+/// sequential insertion: a HAMT's shape is fixed by the set of key hashes and is
+/// independent of insertion order, so bulk and incremental construction converge
+/// on the same nodes (a debug-only equivalence check samples this invariant).
 fn build_root(entries: &[AttrEntry]) -> Result<Option<Arc<HamtNode>>, HamtError> {
+    let root = if entries.is_empty() {
+        None
+    } else {
+        Some(build_node(entries, 0)?)
+    };
+    #[cfg(debug_assertions)]
+    if sample_bulk_build_verification() {
+        let sequential = build_root_sequential(entries)?;
+        debug_assert!(
+            roots_structurally_equal(root.as_deref(), sequential.as_deref()),
+            "HAMT bulk build diverged from sequential insertion",
+        );
+    }
+    Ok(root)
+}
+
+/// Builds one HAMT node from `entries` (non-empty, distinct keys) at `shift`.
+///
+/// Entries are partitioned by their 5-bit chunk at this level; each chunk with a
+/// single entry becomes a leaf slot and each chunk with several recurses into a
+/// child node built at the next level. Slots are emitted in ascending bit order,
+/// matching the sparse indexing that [`get_from_node`] relies on.
+///
+/// # Errors
+///
+/// Returns [`HamtError::AllocationFailed`] if scratch or slot storage cannot be
+/// reserved, or [`HamtError::KeyHashCollision`] if two distinct keys share every
+/// chunk through the deepest level (unreachable for distinct 32-bit symbol ids,
+/// which always diverge within the seven available chunks).
+fn build_node(entries: &[AttrEntry], shift: u32) -> Result<Arc<HamtNode>, HamtError> {
+    if entries.len() == 1 {
+        let entry = entries[0];
+        return Ok(Arc::new(HamtNode {
+            bitmap: bit_for(entry.key, shift),
+            slots: Box::new([HamtSlot::Entry(entry)]),
+        }));
+    }
+    if shift > MAX_SHIFT {
+        return Err(HamtError::KeyHashCollision {
+            left: entries[0].key,
+            right: entries[1].key,
+        });
+    }
+
+    let mut bitmap = 0u32;
+    for entry in entries {
+        bitmap |= bit_for(entry.key, shift);
+    }
+    // A scratch buffer sized to the whole input holds each chunk's entries
+    // contiguously so children recurse over sub-slices; its exact reservation
+    // means the per-chunk pushes never reallocate and invalidate a live bucket.
+    let mut scratch: Vec<AttrEntry> = Vec::new();
+    scratch
+        .try_reserve_exact(entries.len())
+        .map_err(|_| HamtError::AllocationFailed {
+            entries: entries.len(),
+        })?;
+    let mut slots: Vec<HamtSlot> = Vec::new();
+    slots
+        .try_reserve_exact(bitmap.count_ones() as usize)
+        .map_err(|_| HamtError::AllocationFailed {
+            entries: entries.len(),
+        })?;
+
+    let mut remaining = bitmap;
+    while remaining != 0 {
+        let bit = remaining & remaining.wrapping_neg();
+        remaining ^= bit;
+        let chunk = bit.trailing_zeros();
+        let start = scratch.len();
+        for entry in entries {
+            if chunk_for(entry.key, shift) == chunk {
+                scratch.push(*entry);
+            }
+        }
+        let bucket = &scratch[start..];
+        if bucket.len() == 1 {
+            slots.push(HamtSlot::Entry(bucket[0]));
+        } else {
+            slots.push(HamtSlot::Node(build_node(bucket, next_shift(shift))?));
+        }
+    }
+
+    Ok(Arc::new(HamtNode {
+        bitmap,
+        slots: slots.into_boxed_slice(),
+    }))
+}
+
+/// Builds the root node by folding `entries` through [`insert_into_node`].
+///
+/// Retained only as the reference the debug-only equivalence check in
+/// [`build_root`] compares [`build_node`] against.
+#[cfg(debug_assertions)]
+fn build_root_sequential(entries: &[AttrEntry]) -> Result<Option<Arc<HamtNode>>, HamtError> {
     let mut root: Option<Arc<HamtNode>> = None;
     for entry in entries {
         root = Some(match &root {
@@ -516,6 +620,42 @@ fn build_root(entries: &[AttrEntry]) -> Result<Option<Arc<HamtNode>>, HamtError>
         });
     }
     Ok(root)
+}
+
+/// Reports whether two optional root nodes are structurally identical.
+#[cfg(debug_assertions)]
+fn roots_structurally_equal(left: Option<&HamtNode>, right: Option<&HamtNode>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => nodes_structurally_equal(left, right),
+        _ => false,
+    }
+}
+
+/// Reports whether two HAMT nodes have identical bitmaps and slot trees.
+#[cfg(debug_assertions)]
+fn nodes_structurally_equal(left: &HamtNode, right: &HamtNode) -> bool {
+    if left.bitmap != right.bitmap || left.slots.len() != right.slots.len() {
+        return false;
+    }
+    left.slots
+        .iter()
+        .zip(right.slots.iter())
+        .all(|(left, right)| match (left, right) {
+            (HamtSlot::Entry(left), HamtSlot::Entry(right)) => raw_entry_eq(left, right),
+            (HamtSlot::Node(left), HamtSlot::Node(right)) => nodes_structurally_equal(left, right),
+            _ => false,
+        })
+}
+
+/// Returns `true` for one in every sixteen calls, throttling the debug-only
+/// bulk/sequential equivalence check so its second construction stays a sampled
+/// cost rather than doubling every attrset build.
+#[cfg(debug_assertions)]
+fn sample_bulk_build_verification() -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed) % 16 == 0
 }
 
 fn single_entry_node(entry: AttrEntry) -> Result<Arc<HamtNode>, HamtError> {

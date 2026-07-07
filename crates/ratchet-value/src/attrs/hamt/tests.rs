@@ -509,3 +509,23 @@ fn flat_duplicate_error_surface_stays_distinct_from_hamt_errors() {
 
     assert_eq!(flat_error, AttrError::DuplicateKey { key: ids[0] });
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn bulk_build_matches_sequential_insertion() {
+    for count in [0usize, 1, 2, 3, 5, 8, 16, 31, 32, 33, 40, 64, 100] {
+        let (_symbols, ids) = many_symbols(count);
+        let mut entries: Vec<AttrEntry> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, &id)| AttrEntry::new(id, Value::int(index as i64)))
+            .collect();
+        entries.sort_unstable_by_key(|entry| entry.key);
+        let bulk = build_root(&entries).expect("bulk build succeeds");
+        let sequential = build_root_sequential(&entries).expect("sequential build succeeds");
+        assert!(
+            roots_structurally_equal(bulk.as_deref(), sequential.as_deref()),
+            "bulk and sequential HAMT construction diverged for {count} entries",
+        );
+    }
+}
