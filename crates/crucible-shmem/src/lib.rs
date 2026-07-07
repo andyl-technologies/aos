@@ -60,14 +60,17 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod abi_header;
+#[cfg(unix)]
+mod mapped_setup_region;
 
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
-#[cfg(unix)]
-use std::os::fd::{AsRawFd, BorrowedFd};
-#[cfg(unix)]
-use std::ptr::NonNull;
 
 pub use abi_header::generated_c_header;
+#[cfg(unix)]
+pub use mapped_setup_region::{
+    MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
+    SetupRegionMapError, mmap_setup_region,
+};
 
 use thiserror::Error;
 
@@ -395,6 +398,14 @@ pub fn validate_setup_region_header(
     snapshot: RegionHeaderSnapshot,
     region_len: u64,
 ) -> Result<ValidatedSetupRegion, RegionSetupValidationError> {
+    validate_setup_region_header_and_layout(snapshot, region_len)
+        .map(|(validated, _layout)| validated)
+}
+
+fn validate_setup_region_header_and_layout(
+    snapshot: RegionHeaderSnapshot,
+    region_len: u64,
+) -> Result<(ValidatedSetupRegion, RegionLayout), RegionSetupValidationError> {
     let minimum_len = REGION_HEADER_SIZE as u64;
     if region_len < minimum_len {
         return Err(RegionSetupValidationError::RegionTooSmall {
@@ -424,117 +435,22 @@ pub fn validate_setup_region_header(
         });
     }
 
-    validate_setup_region_geometry(snapshot, region_len)?;
+    let layout = layout_from_setup_region_geometry(snapshot, region_len)?;
 
-    Ok(ValidatedSetupRegion {
-        region_len,
-        abi_version: snapshot.abi_version,
-    })
-}
-
-/// An owned setup-time `mmap` of the shared-memory region descriptor.
-#[cfg(unix)]
-pub struct MappedSetupRegion {
-    ptr: NonNull<u8>,
-    len: usize,
-    region_len: u64,
-}
-
-#[cfg(unix)]
-impl MappedSetupRegion {
-    /// Returns the mapped length supplied by the control-protocol `Setup` frame.
-    #[must_use]
-    pub const fn region_len(&self) -> u64 {
-        self.region_len
-    }
-
-    /// Returns an acquire snapshot of the mapped region header.
-    #[must_use]
-    pub fn header_snapshot(&self) -> RegionHeaderSnapshot {
-        // SAFETY: `mmap_setup_region` checks the mapping is large enough for
-        // `RegionHeader` and aligned for the ABI before constructing `Self`.
-        let header = unsafe { &*self.ptr.as_ptr().cast::<RegionHeader>() };
-        header.snapshot()
-    }
-
-    /// Validates the mapped header against the current shared-memory ABI.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RegionSetupValidationError`] when the header magic, ABI
-    /// version, or region-size field does not match the setup contract.
-    pub fn validate_header(&self) -> Result<ValidatedSetupRegion, RegionSetupValidationError> {
-        validate_setup_region_header(self.header_snapshot(), self.region_len)
-    }
-}
-
-#[cfg(unix)]
-impl Drop for MappedSetupRegion {
-    fn drop(&mut self) {
-        // SAFETY: `ptr` and `len` were returned by `mmap` and are owned by this
-        // value until `Drop`.
-        unsafe {
-            libc::munmap(self.ptr.as_ptr().cast::<libc::c_void>(), self.len);
-        }
-    }
-}
-
-/// Maps a setup shared-memory descriptor for exactly the `Setup.region_len`.
-///
-/// # Errors
-///
-/// Returns [`SetupRegionMapError`] when `region_len` cannot fit in `usize`, is
-/// too small for a [`RegionHeader`], or when `mmap` fails or returns a mapping
-/// unsuitable for the shared-memory ABI.
-#[cfg(unix)]
-pub fn mmap_setup_region(
-    fd: BorrowedFd<'_>,
-    region_len: u64,
-) -> Result<MappedSetupRegion, SetupRegionMapError> {
-    let len = usize::try_from(region_len)
-        .map_err(|_| SetupRegionMapError::RegionLenTooLarge { region_len })?;
-    let minimum_len = REGION_HEADER_SIZE as u64;
-    if region_len < minimum_len {
-        return Err(SetupRegionMapError::RegionTooSmall {
+    Ok((
+        ValidatedSetupRegion {
             region_len,
-            minimum_len,
-        });
-    }
+            abi_version: snapshot.abi_version,
+        },
+        layout,
+    ))
+}
 
-    // SAFETY: the returned mapping is checked before being wrapped. The fd is
-    // borrowed for the syscall only; the mapping owns the resulting address.
-    let raw = unsafe {
-        libc::mmap(
-            core::ptr::null_mut(),
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            fd.as_raw_fd(),
-            0,
-        )
-    };
-    if raw == libc::MAP_FAILED {
-        return Err(SetupRegionMapError::MmapFailed {
-            errno: last_os_error(),
-        });
-    }
-
-    let Some(ptr) = NonNull::new(raw.cast::<u8>()) else {
-        unmap_setup_region(raw, len);
-        return Err(SetupRegionMapError::NullMapping);
-    };
-    if !(ptr.as_ptr() as usize).is_multiple_of(REGION_HEADER_ALIGN) {
-        unmap_setup_region(raw, len);
-        return Err(SetupRegionMapError::UnalignedMapping {
-            alignment: REGION_HEADER_ALIGN,
-        });
-    }
-
-    Ok(MappedSetupRegion {
-        ptr,
-        len,
-        region_len,
-    })
+fn layout_from_setup_region_header(
+    snapshot: RegionHeaderSnapshot,
+    region_len: u64,
+) -> Result<RegionLayout, RegionSetupValidationError> {
+    validate_setup_region_header_and_layout(snapshot, region_len).map(|(_validated, layout)| layout)
 }
 
 /// A requested shared-memory region shape.
@@ -1267,10 +1183,10 @@ fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutE
     Ok(rings)
 }
 
-fn validate_setup_region_geometry(
+fn layout_from_setup_region_geometry(
     snapshot: RegionHeaderSnapshot,
     region_len: u64,
-) -> Result<(), RegionSetupValidationError> {
+) -> Result<RegionLayout, RegionSetupValidationError> {
     let rings_per_vm = (RESERVED_SLOTS as u32)
         .checked_mul(2)
         .ok_or(RegionSetupValidationError::GeometryOverflow)?;
@@ -1320,7 +1236,7 @@ fn validate_setup_region_geometry(
         });
     }
 
-    Ok(())
+    Ok(layout)
 }
 
 fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
@@ -1534,19 +1450,6 @@ fn preflight_ring_enqueue_capacity(
     } else {
         Ok(())
     }
-}
-
-#[cfg(unix)]
-fn unmap_setup_region(ptr: *mut libc::c_void, len: usize) {
-    // SAFETY: callers pass an address and length returned by `mmap`.
-    unsafe {
-        libc::munmap(ptr, len);
-    }
-}
-
-#[cfg(unix)]
-fn last_os_error() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 fn wake_all_slots_for_control<'a>(
@@ -2928,41 +2831,6 @@ pub enum FrameEntryError {
         len: usize,
         /// The configured frame payload capacity.
         capacity: usize,
-    },
-}
-
-/// An error produced while mapping a setup shared-memory descriptor.
-#[cfg(unix)]
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum SetupRegionMapError {
-    /// The `Setup.region_len` cannot be represented as a process-local mapping length.
-    #[error("setup region length {region_len} cannot fit in usize")]
-    RegionLenTooLarge {
-        /// The rejected `Setup.region_len`.
-        region_len: u64,
-    },
-    /// The `Setup.region_len` is too small to contain a shared-memory header.
-    #[error("setup region length {region_len} is smaller than header size {minimum_len}")]
-    RegionTooSmall {
-        /// The rejected `Setup.region_len`.
-        region_len: u64,
-        /// The minimum mappable length required for the header.
-        minimum_len: u64,
-    },
-    /// The OS rejected the shared-memory `mmap`.
-    #[error("setup region mmap failed with errno {errno}")]
-    MmapFailed {
-        /// Raw OS errno value.
-        errno: i32,
-    },
-    /// The OS returned a null mapping address.
-    #[error("setup region mmap returned a null address")]
-    NullMapping,
-    /// The mapping base is not aligned for [`RegionHeader`].
-    #[error("setup region mmap base is not aligned to {alignment} bytes")]
-    UnalignedMapping {
-        /// Required ABI alignment.
-        alignment: usize,
     },
 }
 
