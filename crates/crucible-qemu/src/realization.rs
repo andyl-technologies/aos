@@ -796,11 +796,12 @@ fn validate_runtime_matches_admission(
     runtime: &RuntimeState,
     admission: QemuLoadvmRealizationAdmission,
 ) -> Result<(), QemuVmRealizationError> {
-    if runtime.id == admission.runtime_hash {
+    let admitted_runtime_hash = admission.runtime_hash();
+    if runtime.id == admitted_runtime_hash {
         Ok(())
     } else {
         Err(QemuVmRealizationError::RuntimeContentMismatch {
-            expected: admission.runtime_hash,
+            expected: admitted_runtime_hash,
             actual: runtime.id,
         })
     }
@@ -1034,21 +1035,7 @@ mod tests {
                 return Err(disabled_loadvm());
             }
 
-            match validation {
-                QemuReplayOracleValidation::Match { runtime_hash } => {
-                    Ok(QemuLoadvmRealizationAdmission { runtime_hash })
-                }
-                QemuReplayOracleValidation::NotRun => {
-                    Err(QemuSavevmPolicyError::ReplayOracleValidationRequired)
-                }
-                QemuReplayOracleValidation::Mismatch {
-                    fat_hash,
-                    thin_hash,
-                } => Err(QemuSavevmPolicyError::ReplayOracleMismatch {
-                    fat_hash,
-                    thin_hash,
-                }),
-            }
+            crate::savevm_policy::validate_loadvm_realized_runtime(validation)
         }
     }
 
@@ -1067,7 +1054,7 @@ mod tests {
             Ok(RuntimeState {
                 id: match self.exact_runtime_override {
                     Some(hash) => hash,
-                    None => admission.runtime_hash,
+                    None => admission.runtime_hash(),
                 },
                 configuration: config.id(),
                 node_blobs: snapshot.checkpoint.node_blobs.clone(),
@@ -1338,9 +1325,7 @@ mod tests {
             &config,
             &snapshot,
             QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-            QemuLoadvmRealizationAdmission {
-                runtime_hash: config.id(),
-            },
+            QemuLoadvmRealizationAdmission::for_test(config.id()),
         )?;
 
         assert_eq!(runtime.scheduler.active_fault_tags.get(&tag), Some(&fault));

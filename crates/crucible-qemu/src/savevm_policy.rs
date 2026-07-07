@@ -98,8 +98,7 @@ impl QemuSavevmCompletenessPolicy {
     ///
     /// Returns [`QemuSavevmPolicyError::LoadvmBranchDisabled`] while the Phase 0
     /// fallback is active. Once a future full S3 gate enables `loadvm`, this
-    /// method also returns validation errors from
-    /// [`validate_loadvm_realized_runtime`].
+    /// method also returns replay-oracle validation errors.
     pub fn accept_loadvm_realized_runtime(
         self,
         validation: QemuReplayOracleValidation,
@@ -152,14 +151,14 @@ impl Default for QemuSavevmCompletenessPolicy {
     }
 }
 
-/// Validates a `loadvm`-realized runtime against its thin replay derivation.
+/// Validates a crate-observed `loadvm` runtime against its thin replay derivation.
 ///
 /// # Errors
 ///
 /// Returns [`QemuSavevmPolicyError::ReplayOracleValidationRequired`] when the
 /// replay oracle was not run, or [`QemuSavevmPolicyError::ReplayOracleMismatch`]
 /// when the fat and thin fingerprints differ.
-pub fn validate_loadvm_realized_runtime(
+pub(crate) fn validate_loadvm_realized_runtime(
     validation: QemuReplayOracleValidation,
 ) -> Result<QemuLoadvmRealizationAdmission, QemuSavevmPolicyError> {
     match validation {
@@ -176,6 +175,52 @@ pub fn validate_loadvm_realized_runtime(
         QemuReplayOracleValidation::Match { runtime_hash } => {
             Ok(QemuLoadvmRealizationAdmission { runtime_hash })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loadvm_runtime_requires_replay_oracle_validation() {
+        assert_eq!(
+            validate_loadvm_realized_runtime(QemuReplayOracleValidation::NotRun),
+            Err(QemuSavevmPolicyError::ReplayOracleValidationRequired)
+        );
+    }
+
+    #[test]
+    fn loadvm_runtime_rejects_replay_oracle_mismatch() {
+        let fat_hash = content_hash_with_byte(0xfa);
+        let thin_hash = content_hash_with_byte(0x7a);
+
+        assert_eq!(
+            validate_loadvm_realized_runtime(QemuReplayOracleValidation::Mismatch {
+                fat_hash,
+                thin_hash,
+            }),
+            Err(QemuSavevmPolicyError::ReplayOracleMismatch {
+                fat_hash,
+                thin_hash,
+            })
+        );
+    }
+
+    #[test]
+    fn loadvm_runtime_accepts_matching_replay_oracle_evidence() {
+        let runtime_hash = content_hash_with_byte(0x42);
+        let admission =
+            validate_loadvm_realized_runtime(QemuReplayOracleValidation::Match { runtime_hash })
+                .unwrap_or_else(|error| {
+                    panic!("matching replay oracle should be accepted: {error}")
+                });
+
+        assert_eq!(admission.runtime_hash(), runtime_hash);
+    }
+
+    fn content_hash_with_byte(byte: u8) -> ContentHash {
+        ContentHash { bytes: [byte; 32] }
     }
 }
 
@@ -265,7 +310,21 @@ pub enum QemuReplayOracleValidation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QemuLoadvmRealizationAdmission {
     /// Shared runtime fingerprint proven by fat/thin replay-oracle equality.
-    pub runtime_hash: ContentHash,
+    runtime_hash: ContentHash,
+}
+
+impl QemuLoadvmRealizationAdmission {
+    /// Returns the runtime fingerprint proven by fat/thin replay-oracle equality.
+    #[must_use]
+    pub const fn runtime_hash(self) -> ContentHash {
+        self.runtime_hash
+    }
+
+    /// Creates an admission token for tests that exercise downstream policy consumers.
+    #[cfg(test)]
+    pub(crate) const fn for_test(runtime_hash: ContentHash) -> Self {
+        Self { runtime_hash }
+    }
 }
 
 /// Policy errors for QEMU `savevm`/`loadvm` realization.

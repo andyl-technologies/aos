@@ -120,6 +120,7 @@ pub use node::{
 #[cfg(target_os = "linux")]
 pub use node_factory::{
     QemuNodeFactoryError, QemuQmpShutdownOnlyControlChannel, build_qemu_node_from_completed_setup,
+    build_qemu_node_from_restored_checkpoint,
 };
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
@@ -145,7 +146,7 @@ pub use savevm_policy::{
     QEMU_SAVEVM_FALLBACK_MARKER, QEMU_SAVEVM_PHASE0_S3_CHECK, QemuLoadvmCommandAuthorization,
     QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission, QemuReplayOracleValidation,
     QemuSavevmCompletenessPolicy, QemuSavevmCompletenessStatus, QemuSavevmFallback,
-    QemuSavevmPolicyError, QemuVmRealizationBranch, validate_loadvm_realized_runtime,
+    QemuSavevmPolicyError, QemuVmRealizationBranch,
 };
 pub use setup_failure::{
     FailedQemuNodeSetup, QemuNodeSetup, QemuSchedulableNodeSetup, QemuSetupAbortError,

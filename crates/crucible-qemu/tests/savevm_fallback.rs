@@ -7,7 +7,6 @@ use crucible_qemu::{
     QEMU_SAVEVM_FALLBACK_MARKER, QEMU_SAVEVM_PHASE0_S3_CHECK, QemuLoadvmCommandPurpose,
     QemuReplayOracleValidation, QemuSavevmCompletenessPolicy, QemuSavevmCompletenessStatus,
     QemuSavevmFallback, QemuSavevmPolicyError, QemuVmRealizationBranch,
-    validate_loadvm_realized_runtime,
 };
 
 #[test]
@@ -67,41 +66,6 @@ fn default_policy_rejects_loadvm_even_with_matching_oracle_evidence() {
         }
         Err(other) => panic!("expected disabled loadvm branch, got {other:?}"),
     }
-}
-
-#[test]
-fn loadvm_runtime_requires_replay_oracle_validation() {
-    assert_eq!(
-        validate_loadvm_realized_runtime(QemuReplayOracleValidation::NotRun),
-        Err(QemuSavevmPolicyError::ReplayOracleValidationRequired)
-    );
-}
-
-#[test]
-fn loadvm_runtime_rejects_replay_oracle_mismatch() {
-    let fat_hash = content_hash_with_byte(0xfa);
-    let thin_hash = content_hash_with_byte(0x7a);
-
-    assert_eq!(
-        validate_loadvm_realized_runtime(QemuReplayOracleValidation::Mismatch {
-            fat_hash,
-            thin_hash,
-        }),
-        Err(QemuSavevmPolicyError::ReplayOracleMismatch {
-            fat_hash,
-            thin_hash,
-        })
-    );
-}
-
-#[test]
-fn loadvm_runtime_accepts_matching_replay_oracle_evidence() {
-    let runtime_hash = content_hash_with_byte(0x42);
-    let admission =
-        validate_loadvm_realized_runtime(QemuReplayOracleValidation::Match { runtime_hash })
-            .unwrap_or_else(|error| panic!("matching replay oracle should be accepted: {error}"));
-
-    assert_eq!(admission.runtime_hash, runtime_hash);
 }
 
 fn content_hash_with_byte(byte: u8) -> ContentHash {
