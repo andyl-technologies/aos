@@ -112,7 +112,13 @@ impl TreeWalk {
         source: &[u8],
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
-        let parsed = parse_bytes_with_symbols(source, self.symbols.clone()).map_err(|error| {
+        // Move the live symbol table into the parser instead of cloning it: the
+        // grown superset becomes the new live table below, so the pre-parse table
+        // is discarded on success and cloning it only to drop it dominated cold
+        // eval. Import parse/scope/lower errors are non-catchable, so aborting
+        // with an emptied `self.symbols` is sound: eval unwinds to the top.
+        let live_symbols = std::mem::take(&mut self.symbols);
+        let parsed = parse_bytes_with_symbols(source, live_symbols).map_err(|error| {
             let span = error.span();
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportParse {
