@@ -45,6 +45,7 @@ mod host_setup;
 mod inertness;
 mod launch;
 mod node;
+mod plugin_control;
 mod qmp;
 mod quantum;
 mod realization;
