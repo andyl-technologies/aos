@@ -100,8 +100,8 @@ pub use launch::{
     NodeIcountShift, QEMU_PLUGIN_CONTROL_FD, QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD,
     QemuGdbstubChannelConfig, QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder,
     QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuVmLaunchConfig,
-    validate_pre_spawn_qemu_launch_args,
+    QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
+    QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
 };
 pub use node::{
     QemuNode, QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,

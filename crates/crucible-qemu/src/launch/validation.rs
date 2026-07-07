@@ -360,8 +360,8 @@ pub enum QemuPreSpawnLaunchValidationError {
 pub fn validate_pre_spawn_qemu_launch_args(
     args: &[String],
 ) -> Result<QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError> {
+    super::control_channels::validate_optional_pre_spawn_qmp_control_endpoint(args)?;
     reject_kvm_and_host_sources(args)?;
-
     let accelerator = unique_option_value(args, "-accel")?.to_owned();
     validate_pre_spawn_accelerator(&accelerator)?;
 
@@ -696,7 +696,7 @@ fn unique_option_value<'a>(
     }
 }
 
-fn option_values<'a>(
+pub(super) fn option_values<'a>(
     args: &'a [String],
     option: &'static str,
 ) -> Result<Vec<&'a str>, QemuPreSpawnLaunchValidationError> {
@@ -731,7 +731,7 @@ fn comma_value<'a>(value: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
-fn unique_comma_value<'a>(
+pub(super) fn unique_comma_value<'a>(
     value: &'a str,
     option: &'static str,
     key: &'static str,
