@@ -1106,6 +1106,12 @@ pub struct TreeWalk {
     // body, so a hot def-site's published entry dispatches for all its instances.
     // Populated only when a `tier1_engine` promotes a body. See `Tier1Engine`.
     tier1_def_site_slots: HashMap<u64, OpaqueTier1Slot>,
+    // Def-sites the tier-1 engine has permanently decided not to dispatch
+    // (blacklisted or gated as delegate-only). Keyed by the def-site body's
+    // `EvalNodeRef` so the force path can consult it with only a cheap
+    // `EvalThunk::body_ref` field read, skipping the engine hook (and its heap
+    // and side-table lookups) for a decided cold def-site's later instances.
+    tier1_skipped_def_sites: HashSet<EvalNodeRef>,
     // Optional pluggable tier-1 JIT engine consulted once per claimed serial
     // force. `None` (the default) leaves the force path byte-for-byte unchanged.
     // Held by `Rc` so the force path can clone it out and release the field

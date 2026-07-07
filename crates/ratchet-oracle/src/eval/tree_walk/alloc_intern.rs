@@ -1704,23 +1704,42 @@ impl TreeWalk {
         guard: ForceGuard<'_>,
     ) -> Result<Value, TreeWalkError> {
         if let Some(engine) = self.tier1_engine.clone() {
-            match engine.on_serial_force(self, source_thunk, id, span) {
-                Tier1ForceHook::Dispatched(value) => {
-                    self.increment_tier1_dispatched();
-                    let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
-                    self.unmark_lazy_identity_thunk_payload(forced_payload);
-                    return Ok(value);
-                }
-                Tier1ForceHook::Deopted => self.increment_tier1_deopted(),
-                Tier1ForceHook::Continued {
-                    promoted,
-                    blacklisted,
-                } => {
-                    if promoted {
-                        self.increment_tier1_promoted();
+            // Fast path: a thunk with no lowerable IR body can never dispatch, and
+            // a def-site the engine has already gated will never dispatch again.
+            // Both are recognized from a cheap `body_ref` field read, so skip the
+            // engine hook (and its heap-record and side-table lookups) entirely.
+            // This is byte-identical to consulting the engine, which would do
+            // nothing for either case, but removes the per-force hook tax from the
+            // common cold-thunk path.
+            let def_site = thunk.body_ref();
+            let consult = match def_site {
+                Some(def_site) => !self.tier1_skipped_def_sites.contains(&def_site),
+                None => false,
+            };
+            if consult {
+                match engine.on_serial_force(self, source_thunk, id, span) {
+                    Tier1ForceHook::Dispatched(value) => {
+                        self.increment_tier1_dispatched();
+                        let value =
+                            self.finish_forced_value(id, span, source_thunk, guard, value)?;
+                        self.unmark_lazy_identity_thunk_payload(forced_payload);
+                        return Ok(value);
                     }
-                    if blacklisted {
-                        self.increment_tier1_blacklisted();
+                    Tier1ForceHook::Deopted => self.increment_tier1_deopted(),
+                    Tier1ForceHook::Continued {
+                        promoted,
+                        blacklisted,
+                        gated,
+                    } => {
+                        if promoted {
+                            self.increment_tier1_promoted();
+                        }
+                        if blacklisted {
+                            self.increment_tier1_blacklisted();
+                        }
+                        if gated && let Some(def_site) = def_site {
+                            self.tier1_skipped_def_sites.insert(def_site);
+                        }
                     }
                 }
             }

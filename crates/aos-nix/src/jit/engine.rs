@@ -250,7 +250,9 @@ impl NixJitTier1Engine {
         {
             let mut state = self.state.borrow_mut();
             if state.blacklist.contains(&key) || state.skipped_delegate.contains(&key) {
-                return PromotionOutcome::none();
+                // Already decided; re-signal `gated` so the tree walk (which skips
+                // consulting a gated def-site) stays consistent if it ever asks.
+                return PromotionOutcome::gated();
             }
             let count = state.counts.entry(key).or_insert(0);
             *count = count.saturating_add(1);
@@ -270,12 +272,13 @@ impl NixJitTier1Engine {
             if let Some(name) = name {
                 *state.skipped_delegate_kinds.entry(name).or_insert(0) += 1;
             }
-            return PromotionOutcome::none();
+            return PromotionOutcome::gated();
         }
         match self.promote(eval, body, key) {
             PromotionResult::Promoted => PromotionOutcome {
                 promoted: true,
                 blacklisted: false,
+                gated: false,
             },
             PromotionResult::Unsupported => {
                 let kind = body_kind_signature(eval, body);
@@ -285,6 +288,7 @@ impl NixJitTier1Engine {
                 PromotionOutcome {
                     promoted: false,
                     blacklisted: true,
+                    gated: true,
                 }
             }
             PromotionResult::Failed => PromotionOutcome::none(),
@@ -494,22 +498,38 @@ impl Tier1Engine for NixJitTier1Engine {
         Tier1ForceHook::Continued {
             promoted: outcome.promoted,
             blacklisted: outcome.blacklisted,
+            gated: outcome.gated,
         }
     }
 }
 
-/// Whether one consulted force promoted its def-site and/or newly blacklisted it.
+/// Whether one consulted force promoted, blacklisted, or permanently gated its
+/// def-site.
 struct PromotionOutcome {
     promoted: bool,
     blacklisted: bool,
+    /// True when the engine has permanently decided not to dispatch this def-site,
+    /// so the tree walk should stop consulting the engine for its instances.
+    gated: bool,
 }
 
 impl PromotionOutcome {
-    /// Neither promoted nor blacklisted (below threshold, no body, or transient fail).
+    /// Neither promoted, blacklisted, nor gated (below threshold, no body, or a
+    /// transient failure that may still succeed on a later force).
     const fn none() -> Self {
         Self {
             promoted: false,
             blacklisted: false,
+            gated: false,
+        }
+    }
+
+    /// The def-site was permanently gated (blacklisted or delegate-only skipped).
+    const fn gated() -> Self {
+        Self {
+            promoted: false,
+            blacklisted: false,
+            gated: true,
         }
     }
 }
@@ -931,6 +951,13 @@ mod tests {
         assert!(
             skipped.iter().any(|(name, _)| name == "mul"),
             "the delegate-only primop def-site must be recorded as skipped, got {skipped:?}"
+        );
+        // Once gated, the tree walk records the def-site and stops consulting the
+        // engine for its later instances (the per-force hook-tax fast path).
+        assert!(
+            eval.tier1_skipped_def_site_count() >= 1,
+            "a gated def-site must be recorded in the tree-walk skip set, got {}",
+            eval.tier1_skipped_def_site_count(),
         );
     }
 

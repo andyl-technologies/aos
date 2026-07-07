@@ -58,6 +58,14 @@ pub enum Tier1ForceHook {
         /// True when this force newly blacklisted the def-site after a failed
         /// tier-1 lowering (the shape is not lowerable and is never retried).
         blacklisted: bool,
+        /// True when the engine has permanently decided not to dispatch this
+        /// def-site (it was blacklisted, or gated as a delegate-only trampoline).
+        ///
+        /// The tree walk records the def-site and stops consulting the engine on
+        /// later forces of its other thunk instances, so a decided cold def-site
+        /// pays the per-force hook cost only until it is decided rather than on
+        /// every force for the rest of the evaluation.
+        gated: bool,
     },
 }
 
@@ -261,6 +269,16 @@ impl TreeWalk {
     /// `def_site`; the returned slot is always `Published`.
     pub fn tier1_def_site_slot(&self, def_site: u64) -> Option<&OpaqueTier1Slot> {
         self.tier1_def_site_slots.get(&def_site)
+    }
+
+    /// Returns the number of def-sites the tier-1 engine has permanently gated.
+    ///
+    /// A gated def-site is one the engine decided never to dispatch (a blacklisted
+    /// unlowerable shape, or a delegate-only trampoline). The serial force path
+    /// records it and stops consulting the engine for that def-site's later thunk
+    /// instances, so this count grows as cold def-sites are decided.
+    pub fn tier1_skipped_def_site_count(&self) -> usize {
+        self.tier1_skipped_def_sites.len()
     }
 
     /// Returns the installed tier-1 publish slot for `thunk`, if any.
