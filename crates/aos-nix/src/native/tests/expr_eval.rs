@@ -40,10 +40,12 @@ fn native_expression_eval_renders_strict_json() -> Result<()> {
 }
 
 #[test]
-fn native_jit_enabled_eval_dispatches_and_matches_tree_walk() -> Result<()> {
-    // A hot `r = k` binding (forced-local-slot shape) is promoted at the default
-    // threshold and its later instances dispatch native code. The JIT result must
-    // be byte-identical to the plain tree-walk result.
+fn native_jit_enabled_eval_gates_and_matches_tree_walk() -> Result<()> {
+    // With the JIT enabled but promotion gated by default (every current tier-1
+    // shape is net-negative on wall time), a hot `r = k` binding is gated rather
+    // than promoted: nothing is compiled or dispatched, yet the result stays
+    // byte-identical to the plain tree walk. Dispatch itself is exercised by the
+    // engine-level differential tests under the force-promote flag.
     let expr = "let g = k: { r = k; }; \
          in builtins.foldl' (acc: item: acc + item.r) 0 \
          (builtins.genList (i: g (i + 1)) 40)";
@@ -58,13 +60,15 @@ fn native_jit_enabled_eval_dispatches_and_matches_tree_walk() -> Result<()> {
         jit_json, tree_walk_json,
         "JIT-enabled result must match the tree walk"
     );
-    assert!(
-        stats.tier1_promoted() >= 1,
-        "expected a promotion, got {stats:?}"
+    assert_eq!(
+        stats.tier1_promoted(),
+        0,
+        "promotion is gated by default, got {stats:?}"
     );
-    assert!(
-        stats.tier1_dispatched() >= 1,
-        "expected a dispatch, got promoted={} dispatched={} deopted={}",
+    assert_eq!(
+        stats.tier1_dispatched(),
+        0,
+        "no dispatch without promotion, got promoted={} dispatched={} deopted={}",
         stats.tier1_promoted(),
         stats.tier1_dispatched(),
         stats.tier1_deopted(),
