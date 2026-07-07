@@ -44,10 +44,13 @@ mod lambda;
 mod primop;
 mod record_table;
 mod roots;
+mod shared_arena;
 mod thunk;
 
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 use record_table::HeapRecordTable;
+
+pub use shared_arena::{SharedHeapArena, SharedHeapError, SharedHeapShard};
 
 pub use arena::{
     EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan,
