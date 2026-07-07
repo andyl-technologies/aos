@@ -63,6 +63,21 @@ pub const DEFAULT_TIER1_PROMOTION_THRESHOLD: u32 = 8;
 pub struct NixJitTier1Engine {
     candidates: Vec<JitRuntimeSymbolAddressCandidate>,
     threshold: u32,
+    /// Whether to record the per-symbol dispatched-primop histogram.
+    ///
+    /// Sampled once from `AOS_NIX_EVAL_STATS` at construction so the dispatch hot
+    /// path pays nothing when stats are off; when on, each dispatched primop is
+    /// counted by builtin name (Phase-B inline-candidate naming).
+    record_dispatched_kinds: bool,
+    /// Whether to promote def-sites whose lowered body only delegates back into
+    /// the tree walk (a pure `aos_primop_call` trampoline).
+    ///
+    /// Off by default: such bodies add native-call and env-snapshot overhead
+    /// without removing any interpretation, so promoting them cannot be a win.
+    /// Forced on by `AOS_NIX_JIT_FORCE_DELEGATE=1` (to exercise the trampoline
+    /// end to end) or by [`NixJitTier1Engine::force_promote_delegates`] (used by
+    /// the delegation differential tests, which must still dispatch a trampoline).
+    promote_delegate_only: bool,
     state: RefCell<EngineState>,
 }
 
@@ -80,6 +95,28 @@ struct EngineState {
     /// families dominate the unsupported def-sites and thus where extending the
     /// tier-1 lowerer would convert the most blacklists into dispatch.
     blacklist_kinds: HashMap<String, u32>,
+    /// Count of dispatched primop calls keyed by builtin name (`add`, `head`, …).
+    ///
+    /// Populated only when [`NixJitTier1Engine::record_dispatched_kinds`] is set.
+    /// Since PrimOp bodies now dispatch rather than blacklist, this is where the
+    /// hot builtins surface — the naming a Phase-B selective-inline pass needs.
+    dispatched_kinds: HashMap<String, u64>,
+    /// Def-sites whose lowered body is a pure delegating trampoline the engine
+    /// declined to promote; kept so they short-circuit like the blacklist and are
+    /// never re-considered.
+    ///
+    /// A delegate-only body (today: an `aos_primop_call` trampoline for a builtin
+    /// with no native inline lowering) performs no native computation of its own,
+    /// so promoting it only adds native-call and env-snapshot overhead to what the
+    /// tree walk already does. Gating these keeps tier-1 promotion to bodies that
+    /// actually run faster once compiled.
+    skipped_delegate: HashSet<u64>,
+    /// Count of def-sites gated out as delegate-only, keyed by builtin name.
+    ///
+    /// Recorded per def-site (at most once each, on the cold promotion path) so a
+    /// run can report which builtins were left delegated — and are thus Phase-B
+    /// inline candidates — rather than promoted.
+    skipped_delegate_kinds: HashMap<String, u32>,
 }
 
 impl std::fmt::Debug for NixJitTier1Engine {
@@ -134,8 +171,23 @@ impl NixJitTier1Engine {
         Ok(Self {
             candidates,
             threshold: threshold.max(1),
+            record_dispatched_kinds: std::env::var("AOS_NIX_EVAL_STATS").as_deref() == Ok("1"),
+            promote_delegate_only: std::env::var("AOS_NIX_JIT_FORCE_DELEGATE").as_deref()
+                == Ok("1"),
             state: RefCell::new(EngineState::default()),
         })
+    }
+
+    /// Forces promotion of delegate-only trampoline bodies on this engine.
+    ///
+    /// The engine otherwise declines to promote a body that only re-enters the
+    /// tree walk (see [`promote_delegate_only`](Self::promote_delegate_only)).
+    /// The primop-delegation differential tests must still dispatch a trampoline,
+    /// so they opt back in through this builder.
+    #[must_use]
+    pub fn force_promote_delegates(mut self) -> Self {
+        self.promote_delegate_only = true;
+        self
     }
 
     /// Attempts to dispatch a published tier-1 entry for `thunk`.
@@ -164,7 +216,19 @@ impl NixJitTier1Engine {
             return Some(Tier1ForceHook::Deopted);
         };
         match run_finalized_native_thunk_call(eval, id, span, &env, &finalization) {
-            Ok(outcome) if !outcome.is_trap() => Some(Tier1ForceHook::Dispatched(outcome.value())),
+            Ok(outcome) if !outcome.is_trap() => {
+                if self.record_dispatched_kinds
+                    && let Some(name) = primop_symbol_name(eval, body)
+                {
+                    *self
+                        .state
+                        .borrow_mut()
+                        .dispatched_kinds
+                        .entry(name)
+                        .or_insert(0) += 1;
+                }
+                Some(Tier1ForceHook::Dispatched(outcome.value()))
+            }
             _ => Some(Tier1ForceHook::Deopted),
         }
     }
@@ -180,7 +244,7 @@ impl NixJitTier1Engine {
         let key = def_site_key(body);
         {
             let mut state = self.state.borrow_mut();
-            if state.blacklist.contains(&key) {
+            if state.blacklist.contains(&key) || state.skipped_delegate.contains(&key) {
                 return PromotionOutcome::none();
             }
             let count = state.counts.entry(key).or_insert(0);
@@ -188,6 +252,20 @@ impl NixJitTier1Engine {
             if *count < self.threshold {
                 return PromotionOutcome::none();
             }
+        }
+        // Decline to promote a body that only delegates back into the tree walk:
+        // its compiled form is native-call plus env-snapshot overhead on top of the
+        // same interpretation, so it can never run faster than forcing it directly.
+        if !self.promote_delegate_only && self.body_is_delegate_only(eval, body) {
+            // Recording is per-def-site (at most once each), not per dispatch, so
+            // it stays on unconditionally rather than gating on the stats flag.
+            let name = primop_symbol_name(eval, body);
+            let mut state = self.state.borrow_mut();
+            state.skipped_delegate.insert(key);
+            if let Some(name) = name {
+                *state.skipped_delegate_kinds.entry(name).or_insert(0) += 1;
+            }
+            return PromotionOutcome::none();
         }
         match self.promote(eval, body, key) {
             PromotionResult::Promoted => PromotionOutcome {
@@ -247,6 +325,41 @@ impl NixJitTier1Engine {
         }
     }
 
+    /// Returns whether a promoted force of `body` would only delegate to the tree walk.
+    ///
+    /// A body is delegate-only when it is a primop trampoline (see
+    /// [`body_is_primop`]) whose builtin has no native tier-1 inline lowering
+    /// (see [`primop_has_native_inline`]). Such a body performs no native
+    /// computation once compiled, so the engine gates it out of promotion. A
+    /// builtin with a native inline (e.g. `stringLength`) is not delegate-only and
+    /// stays eligible; an unresolved primop name is treated as delegate-only.
+    fn body_is_delegate_only(&self, eval: &TreeWalk, body: EvalNodeRef) -> bool {
+        if !body_is_primop(eval, body) {
+            return false;
+        }
+        primop_symbol_name(eval, body)
+            .is_none_or(|name| !primop_has_native_inline(name.as_bytes()))
+    }
+
+    /// Returns the delegate-only builtins gated out of promotion, most frequent first.
+    ///
+    /// Each entry pairs a builtin name with the number of def-sites the engine
+    /// declined to promote because their body only delegates to the tree walk.
+    /// Ties break by name for determinism. Empty unless the engine was built with
+    /// dispatched-kind recording on (`AOS_NIX_EVAL_STATS=1`). These are the
+    /// builtins a Phase-B native-inline pass would need to admit to promote.
+    pub fn skipped_delegate_histogram(&self) -> Vec<(String, u32)> {
+        let mut entries: Vec<(String, u32)> = self
+            .state
+            .borrow()
+            .skipped_delegate_kinds
+            .iter()
+            .map(|(kind, count)| (kind.clone(), *count))
+            .collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries
+    }
+
     /// Returns the blacklist broken down by body-kind signature, most frequent first.
     ///
     /// Each entry pairs a body-kind signature (e.g. `"AttrSet"`, `"BinOp:Concat"`)
@@ -264,6 +377,25 @@ impl NixJitTier1Engine {
         entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         entries
     }
+
+    /// Returns dispatched primop calls by builtin name, most frequent first.
+    ///
+    /// Each entry pairs a builtin name (`add`, `head`, `stringLength`, …) with the
+    /// number of dispatched calls to it. Ties break by name for determinism. Empty
+    /// unless the engine was built with dispatched-kind recording on
+    /// (`AOS_NIX_EVAL_STATS=1`). This names the hot builtins a Phase-B selective
+    /// native-inline pass should target.
+    pub fn dispatched_histogram(&self) -> Vec<(String, u64)> {
+        let mut entries: Vec<(String, u64)> = self
+            .state
+            .borrow()
+            .dispatched_kinds
+            .iter()
+            .map(|(name, count)| (name.clone(), *count))
+            .collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries
+    }
 }
 
 impl Drop for NixJitTier1Engine {
@@ -277,16 +409,33 @@ impl Drop for NixJitTier1Engine {
         if std::env::var("AOS_NIX_EVAL_STATS").as_deref() != Ok("1") {
             return;
         }
-        let histogram = self.blacklist_histogram();
-        if histogram.is_empty() {
-            return;
+        let blacklist = self.blacklist_histogram();
+        if !blacklist.is_empty() {
+            let body = blacklist
+                .iter()
+                .map(|(kind, count)| format!("\"{kind}\":{count}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!("{{\"aos_nix_tier1_blacklist_histogram\":{{{body}}}}}");
         }
-        let body = histogram
-            .iter()
-            .map(|(kind, count)| format!("\"{kind}\":{count}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        eprintln!("{{\"aos_nix_tier1_blacklist_histogram\":{{{body}}}}}");
+        let dispatched = self.dispatched_histogram();
+        if !dispatched.is_empty() {
+            let body = dispatched
+                .iter()
+                .map(|(name, count)| format!("\"{name}\":{count}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!("{{\"aos_nix_tier1_dispatched_histogram\":{{{body}}}}}");
+        }
+        let skipped = self.skipped_delegate_histogram();
+        if !skipped.is_empty() {
+            let body = skipped
+                .iter()
+                .map(|(name, count)| format!("\"{name}\":{count}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!("{{\"aos_nix_tier1_skipped_delegate_histogram\":{{{body}}}}}");
+        }
     }
 }
 
@@ -443,6 +592,45 @@ fn primop_dispatch_needs_dynamic_scopes(eval: &TreeWalk, thunk: Value, body: Eva
     with_nonempty || scoped_nonempty
 }
 
+/// Returns the dispatched primop's builtin name (`add`, `head`, …), if any.
+///
+/// Resolves the primop node's `Symbol` (through at most one `ThunkAlloc`) against
+/// the evaluator-global table via [`TreeWalk::resolve_symbol`] — not the body
+/// module's local IR table — so imported-module builtins name correctly rather
+/// than resolving to `?`.
+fn primop_symbol_name(eval: &TreeWalk, body: EvalNodeRef) -> Option<String> {
+    let ir = eval.tier1_module_ir(body.module())?;
+    let node = ir.arena.node(body.id()).copied()?;
+    let symbol = match (node.kind, node.data) {
+        (IrKind::PrimOp, IrData::PrimOp { symbol, .. }) => symbol,
+        (IrKind::ThunkAlloc, IrData::Node(inner)) => {
+            let inner_node = ir.arena.node(inner).copied()?;
+            match (inner_node.kind, inner_node.data) {
+                (IrKind::PrimOp, IrData::PrimOp { symbol, .. }) => symbol,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    eval.resolve_symbol(symbol)
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// Returns whether a builtin has a native tier-1 inline lowering.
+///
+/// A builtin listed here lowers to native CLIF that computes the result in the
+/// compiled thunk (guarding operand tags and deoptimizing on a mismatch) rather
+/// than delegating to the tree walk through the `aos_primop_call` trampoline, so
+/// it is faster than interpreting and stays eligible for promotion. Every other
+/// builtin lowers to a delegate-only trampoline the engine gates out of promotion.
+///
+/// Only pure, deterministic builtins may appear here: an impure builtin records
+/// its observations inside the tree-walk force, so it must keep delegating to
+/// preserve cutoff soundness (see the RFC-0007 primop lowering design).
+fn primop_has_native_inline(_name: &[u8]) -> bool {
+    false
+}
+
 /// Returns true when `body` (through at most one `ThunkAlloc`) is a primop node.
 fn body_is_primop(eval: &TreeWalk, body: EvalNodeRef) -> bool {
     let Some(ir) = eval.tier1_module_ir(body.module()) else {
@@ -505,7 +693,9 @@ mod tests {
         options.set_jit_tier1_publish_enabled(true);
         let mut eval = TreeWalk::with_options(&ir, options);
         eval.set_tier1_engine(Rc::new(
-            NixJitTier1Engine::with_threshold(threshold).expect("engine builds"),
+            NixJitTier1Engine::with_threshold(threshold)
+                .expect("engine builds")
+                .force_promote_delegates(),
         ));
         let value = eval.eval_root().expect("jit evaluation succeeds");
         let stats = eval.stats();
@@ -518,7 +708,11 @@ mod tests {
         let mut options = TreeWalkOptions::default();
         options.set_jit_tier1_publish_enabled(true);
         let mut eval = TreeWalk::with_options(&ir, options);
-        let engine = Rc::new(NixJitTier1Engine::with_threshold(1).expect("engine builds"));
+        let engine = Rc::new(
+            NixJitTier1Engine::with_threshold(1)
+                .expect("engine builds")
+                .force_promote_delegates(),
+        );
         eval.set_tier1_engine(engine.clone());
         eval.eval_root().expect("jit evaluation succeeds");
         engine.blacklist_histogram()
@@ -629,7 +823,9 @@ mod tests {
         options.set_jit_tier1_publish_enabled(true);
         let mut eval = TreeWalk::with_options(&ir, options);
         eval.set_tier1_engine(Rc::new(
-            NixJitTier1Engine::with_threshold(threshold).expect("engine builds"),
+            NixJitTier1Engine::with_threshold(threshold)
+                .expect("engine builds")
+                .force_promote_delegates(),
         ));
         let value = eval.eval_root().expect("jit evaluation succeeds");
         let trace = eval.impure_input_trace().to_vec();
@@ -650,7 +846,9 @@ mod tests {
         options.set_jit_tier1_publish_enabled(true);
         let mut eval = TreeWalk::with_options(&ir, options);
         eval.set_tier1_engine(Rc::new(
-            NixJitTier1Engine::with_threshold(threshold).expect("engine builds"),
+            NixJitTier1Engine::with_threshold(threshold)
+                .expect("engine builds")
+                .force_promote_delegates(),
         ));
         eval.eval_root()
     }
@@ -684,6 +882,38 @@ mod tests {
         assert!(
             !histogram.iter().any(|(kind, _)| kind == "PrimOp:mul"),
             "the dispatched primop def-site must not be blacklisted, got {histogram:?}"
+        );
+    }
+
+    /// By default the engine declines to promote a delegate-only primop body: it
+    /// records the def-site as skipped, never dispatches it, and the tree walk
+    /// still produces the oracle's result.
+    #[test]
+    fn delegate_only_primop_is_gated_out_of_promotion_by_default() {
+        // Same hot `builtins.mul` primop def-site as the trampoline test, but with
+        // a default engine (delegate promotion off). The body only delegates back
+        // into the tree walk, so it is gated: no promotion, result unchanged.
+        let source = "let g = k: { r = builtins.mul k 2; }; \
+             in builtins.foldl' (acc: item: acc + item.r) 0 \
+             (builtins.genList (i: g (i + 1)) 40)";
+        let oracle = eval_oracle(source);
+
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        let engine = Rc::new(NixJitTier1Engine::with_threshold(1).expect("engine builds"));
+        eval.set_tier1_engine(engine.clone());
+        let native = eval.eval_root().expect("jit evaluation succeeds");
+
+        assert!(
+            oracle.raw_eq(native),
+            "gating a delegate-only primop changed a result: oracle {oracle:?} vs native {native:?}"
+        );
+        let skipped = engine.skipped_delegate_histogram();
+        assert!(
+            skipped.iter().any(|(name, _)| name == "mul"),
+            "the delegate-only primop def-site must be recorded as skipped, got {skipped:?}"
         );
     }
 

@@ -474,6 +474,18 @@ impl TreeWalk {
         &self.impure_input_trace
     }
 
+    /// Resolves a `symbol` to its interned byte name against the evaluator table.
+    ///
+    /// This is the same evaluator-global [`SymbolTable`] `eval_primop` resolves
+    /// primop names against — the one module load remaps PrimOp symbols into — so
+    /// diagnostics that key on a lowered node's `Symbol` (e.g. a tier-1
+    /// dispatched-primop histogram) name imported-module builtins correctly,
+    /// unlike a per-module IR symbol table. Returns [`None`] when `symbol` is not
+    /// interned.
+    pub fn resolve_symbol(&self, symbol: Symbol) -> Option<&[u8]> {
+        self.symbols.resolve(symbol)
+    }
+
     /// Returns whether the impure input trace is complete and cache-usable.
     pub const fn impure_input_trace_complete(&self) -> bool {
         self.impure_input_trace_complete
