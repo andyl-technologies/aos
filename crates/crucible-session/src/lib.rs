@@ -2,13 +2,9 @@
 //!
 //! Spec index: RFC-0010 files 20.
 //!
-//! This L4 crate will drive one live runtime state, accept control requests at
-//! quantum boundaries, and expose the session semantics specified by RFC-0010
-//! file 20. It contains no raw QEMU or shared-memory access.
+//! This L4 crate will drive one live runtime state, accept control requests at quantum boundaries, and expose the session semantics specified by RFC-0010 file 20. It contains no raw QEMU or shared-memory access.
 //!
-//! Module map: the crate root owns [`SessionDriver`], the thin L4 adapter over
-//! the engine [`QuantumLoop`], plus the initial [`Engine`] and [`SessionActor`]
-//! state-machine surface.
+//! Module map: the crate root owns [`SessionDriver`], [`Engine`], and [`SessionActor`]; [`validation`] owns replay and validation DAG adapters.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -54,6 +50,9 @@ pub mod engine {
         verify_example_scenario_runs,
     };
 }
+
+/// Session-owned replay and validation DAG adapters.
+pub mod validation;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -654,8 +653,14 @@ pub type BreakpointId = u64;
 ///
 /// The reply transport is deliberately not part of command equality or hashing:
 /// it routes completion back to the caller, but it is not model state.
+type CommandReplySender<T> = Arc<Mutex<Option<oneshot::Sender<Result<T, SessionError>>>>>;
+
+/// Reply channel carried by commands that return data to their caller.
+///
+/// The reply transport is deliberately not part of command equality or hashing:
+/// it routes completion back to the caller, but it is not model state.
 pub struct CommandReply<T> {
-    inner: Option<Arc<Mutex<Option<oneshot::Sender<Result<T, SessionError>>>>>>,
+    inner: Option<CommandReplySender<T>>,
 }
 
 impl<T> CommandReply<T> {
@@ -912,7 +917,7 @@ pub enum QueryKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryResult {
     /// Complete boundary snapshot.
-    Snapshot(EngineSnapshot),
+    Snapshot(Box<EngineSnapshot>),
     /// Deterministic breakpoint-firing log.
     BreakpointFirings(Vec<BreakpointFiring>),
     /// Compact lifecycle state.
@@ -2528,10 +2533,10 @@ impl Default for SessionReproductionLog {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support {
-    //! Debug-build helpers for integration tests.
+    //! Test-support helpers for integration tests.
 
     use crucible::SchedulerEventLogEntry;
 
@@ -2929,7 +2934,7 @@ impl<L> Engine<L> {
     /// Creates an independent child session from `base` plus divergent decisions.
     ///
     /// The fork is recorded through [`TemporalGraph::fork`], which realizes
-    /// `base` via [`instantiate`], appends the supplied [`Decision`] values with
+    /// `base` via `instantiate`, appends the supplied [`Decision`] values with
     /// the execution-model step operation, and records the branch as a thin
     /// checkpoint. The returned child is a normal paused [`SessionActor`] with
     /// its own mailbox and live snapshot; continuing it advances from the
@@ -3146,8 +3151,8 @@ impl<L> Engine<L> {
 
     fn invalid_transition(&self, command: SessionCommand) -> SessionError {
         SessionError::InvalidTransition {
-            state: self.state.clone(),
-            command,
+            state: Box::new(self.state.clone()),
+            command: Box::new(command),
         }
     }
 
@@ -4069,7 +4074,7 @@ impl<L: QuantumLoop> Engine<L> {
                 }
                 let snapshot = self.snapshot();
                 let result = match kind {
-                    QueryKind::Snapshot => QueryResult::Snapshot(snapshot.clone()),
+                    QueryKind::Snapshot => QueryResult::Snapshot(Box::new(snapshot.clone())),
                     QueryKind::BreakpointFirings => {
                         QueryResult::BreakpointFirings(self.breakpoint_firings.clone())
                     }
@@ -4293,9 +4298,9 @@ pub enum SessionError {
     #[error("session command is invalid in the current engine state")]
     InvalidTransition {
         /// The state that rejected the command.
-        state: EngineState,
+        state: Box<EngineState>,
         /// The command that was rejected.
-        command: SessionCommand,
+        command: Box<SessionCommand>,
     },
     /// A direct engine operation was called in the wrong state.
     #[error("engine operation {operation} is invalid in the current state")]
@@ -4429,32 +4434,32 @@ fn is_recoverable_command_rejection(command: &SessionCommand, error: &SessionErr
 }
 
 fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
-    match error {
+    matches!(
+        error,
         EngineError::CheckpointNotRecorded { .. }
-        | EngineError::MissingBakedGenesis { .. }
-        | EngineError::PlanFaultUnknownNode { .. }
-        | EngineError::PlanFaultUnknownLink { .. }
-        | EngineError::PlanFaultUnknownLinkId { .. }
-        | EngineError::PlanFaultUnknownDevice { .. }
-        | EngineError::PlanHealUnknownTag { .. }
-        | EngineError::PropertyPredicateUnknownNode { .. }
-        | EngineError::PropertyPredicateUnknownAssertion { .. }
-        | EngineError::DebugAttachUnknownNode { .. }
-        | EngineError::DebugTargetResolverFailureNotFound { .. }
-        | EngineError::DebugTimeTravelCoordinateNotFound { .. }
-        | EngineError::DebugTimeTravelUnknownNode { .. }
-        | EngineError::NotImplemented { .. }
-        | EngineError::WorldNodeUnsupportedWorkload { .. }
-        | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
-        | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
-        | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
-        | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
-        | EngineError::PlanFaultUnsupportedParam { .. }
-        | EngineError::DebugBreakpointRequiresAllowMutate { .. }
-        | EngineError::EventLogReplayUnsupported { .. } => true,
-        EngineError::SchedulePrefix(_) => true,
-        _ => false,
-    }
+            | EngineError::MissingBakedGenesis { .. }
+            | EngineError::PlanFaultUnknownNode { .. }
+            | EngineError::PlanFaultUnknownLink { .. }
+            | EngineError::PlanFaultUnknownLinkId { .. }
+            | EngineError::PlanFaultUnknownDevice { .. }
+            | EngineError::PlanHealUnknownTag { .. }
+            | EngineError::PropertyPredicateUnknownNode { .. }
+            | EngineError::PropertyPredicateUnknownAssertion { .. }
+            | EngineError::DebugAttachUnknownNode { .. }
+            | EngineError::DebugTargetResolverFailureNotFound { .. }
+            | EngineError::DebugTimeTravelCoordinateNotFound { .. }
+            | EngineError::DebugTimeTravelUnknownNode { .. }
+            | EngineError::NotImplemented { .. }
+            | EngineError::WorldNodeUnsupportedWorkload { .. }
+            | EngineError::WorldNodeUnsupportedWorkloadConfigTree { .. }
+            | EngineError::WorldNodeUnsupportedWorkloadPattern { .. }
+            | EngineError::WorldNodeUnsupportedWorkloadSpikeMode { .. }
+            | EngineError::WorldNodeUnsupportedWorkloadTimeSource { .. }
+            | EngineError::PlanFaultUnsupportedParam { .. }
+            | EngineError::DebugBreakpointRequiresAllowMutate { .. }
+            | EngineError::EventLogReplayUnsupported { .. }
+            | EngineError::SchedulePrefix(_)
+    )
 }
 
 const fn is_recoverable_scheduler_rejection(error: &SchedulerError) -> bool {
@@ -5204,6 +5209,8 @@ where
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use std::time::Duration;
@@ -6722,7 +6729,7 @@ mod tests {
             panic!("producer quantum should establish a replay boundary: {error}");
         }
         let mut artifact = interactive.control_replay_artifact(initial);
-        artifact.final_snapshot.event_log_len = artifact.final_snapshot.event_log_len + 1;
+        artifact.final_snapshot.event_log_len += 1;
 
         let error = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
             &artifact,
@@ -8116,8 +8123,8 @@ mod tests {
     ) {
         match error {
             SessionError::InvalidTransition { state, command } => {
-                assert_eq!(state, expected_state);
-                assert_eq!(command, expected_command);
+                assert_eq!(*state, expected_state);
+                assert_eq!(*command, expected_command);
             }
             other => panic!("unexpected rejection type: {other}"),
         }
@@ -8136,13 +8143,11 @@ mod tests {
         };
 
         assert_eq!(engine.state(), &EngineState::Loaded);
-        assert!(matches!(
+        assert_rejection_names_state_and_command(
             error,
-            SessionError::InvalidTransition {
-                state: EngineState::Loaded,
-                command: SessionCommand::Continue,
-            }
-        ));
+            EngineState::Loaded,
+            SessionCommand::Continue,
+        );
     }
 
     #[test]
