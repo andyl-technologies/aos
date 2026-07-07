@@ -1,12 +1,14 @@
 //! Process-local shape interning and transition cache.
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
 
 use crate::syntax::{Symbol, SymbolTable};
 
 use super::descriptor::{AttrShape, ShapeError, ShapeTransition};
-use super::ids::ShapeId;
+use super::ids::{ShapeFingerprint, ShapeId};
 
 /// A pointer-identity handle to an interned shape.
 ///
@@ -45,6 +47,12 @@ impl ShapeHandle {
 #[derive(Debug)]
 pub struct ShapeTable {
     records: Vec<ShapeRecord>,
+    /// Maps a shape fingerprint to the ids of every interned record that shares
+    /// it, so [`ShapeTable::intern_shape`] can restrict its structural
+    /// comparison to fingerprint-matching candidates instead of scanning the
+    /// whole record table. Fingerprints collide rarely, so buckets hold one id
+    /// in the common case.
+    by_fingerprint: HashMap<ShapeFingerprint, Vec<u32>>,
 }
 
 impl ShapeTable {
@@ -59,12 +67,22 @@ impl ShapeTable {
         records
             .try_reserve_exact(1)
             .map_err(|_| ShapeError::TableAllocationFailed { shapes: 1 })?;
+        let root = AttrShape::empty();
+        let root_fingerprint = root.fingerprint();
         records.push(ShapeRecord {
-            shape: Arc::new(AttrShape::empty()),
+            shape: Arc::new(root),
             key_bytes_by_symbol: Box::new([]),
             transitions: Vec::new(),
         });
-        Ok(Self { records })
+        let mut by_fingerprint = HashMap::new();
+        by_fingerprint
+            .try_reserve(1)
+            .map_err(|_| ShapeError::TableAllocationFailed { shapes: 1 })?;
+        by_fingerprint.insert(root_fingerprint, vec![0]);
+        Ok(Self {
+            records,
+            by_fingerprint,
+        })
     }
 
     /// Returns the interned empty root shape.
@@ -93,12 +111,15 @@ impl ShapeTable {
         symbols: &SymbolTable,
     ) -> Result<ShapeHandle, ShapeError> {
         let key_bytes = shape_key_bytes(&shape, symbols)?;
-        for (index, record) in self.records.iter().enumerate() {
-            if record.shape.fingerprint() == shape.fingerprint()
-                && record.shape.raw_eq(&shape)
-                && record.key_bytes_by_symbol.as_ref() == key_bytes.as_ref()
-            {
-                return Ok(self.handle_unchecked(ShapeId::new(index as u32)));
+        let fingerprint = shape.fingerprint();
+        if let Some(bucket) = self.by_fingerprint.get(&fingerprint) {
+            for &index in bucket {
+                let record = &self.records[index as usize];
+                if record.shape.raw_eq(&shape)
+                    && record.key_bytes_by_symbol.as_ref() == key_bytes.as_ref()
+                {
+                    return Ok(self.handle_unchecked(ShapeId::new(index)));
+                }
             }
         }
 
@@ -109,12 +130,53 @@ impl ShapeTable {
             .map_err(|_| ShapeError::TableAllocationFailed {
                 shapes: len.saturating_add(1),
             })?;
+        // Record the fingerprint-index slot before mutating `records` so a
+        // failed reservation leaves the table's two halves consistent.
+        self.insert_fingerprint_index(fingerprint, raw, len)?;
         self.records.push(ShapeRecord {
             shape: Arc::new(shape),
             key_bytes_by_symbol: key_bytes,
             transitions: Vec::new(),
         });
         Ok(self.handle_unchecked(ShapeId::new(raw)))
+    }
+
+    /// Records that the shape id `raw` belongs to `fingerprint`'s bucket,
+    /// reserving bucket and table capacity fallibly.
+    ///
+    /// `pending_len` names the record count reported in allocation-failure
+    /// errors so they match the error raised for the parallel `records` push.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError::TableAllocationFailed`] if the index bucket or the
+    /// map cannot reserve storage for the new id.
+    fn insert_fingerprint_index(
+        &mut self,
+        fingerprint: ShapeFingerprint,
+        raw: u32,
+        pending_len: usize,
+    ) -> Result<(), ShapeError> {
+        let fail = || ShapeError::TableAllocationFailed {
+            shapes: pending_len.saturating_add(1),
+        };
+        // Ensure the map can absorb a potential new bucket without an infallible
+        // rehash inside the `Vacant` arm below.
+        self.by_fingerprint.try_reserve(1).map_err(|_| fail())?;
+        match self.by_fingerprint.entry(fingerprint) {
+            Entry::Occupied(mut occupied) => {
+                let bucket = occupied.get_mut();
+                bucket.try_reserve(1).map_err(|_| fail())?;
+                bucket.push(raw);
+            }
+            Entry::Vacant(vacant) => {
+                let mut bucket = Vec::new();
+                bucket.try_reserve_exact(1).map_err(|_| fail())?;
+                bucket.push(raw);
+                vacant.insert(bucket);
+            }
+        }
+        Ok(())
     }
 
     /// Resolves an interned shape id to a handle.

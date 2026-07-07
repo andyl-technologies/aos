@@ -361,6 +361,7 @@ impl TreeWalk {
             find_file_cache_misses: 0,
             known_derivations: BTreeMap::new(),
             import_cache: BTreeMap::new(),
+            import_traceable_nonsymlink_prefixes: HashSet::new(),
             parse_cache,
             persist_cache: None,
             persist_cache_open_attempted: false,

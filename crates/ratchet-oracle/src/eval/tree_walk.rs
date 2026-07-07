@@ -1037,6 +1037,12 @@ pub struct TreeWalk {
     find_file_cache_misses: usize,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
+    /// Path prefixes confirmed to contain no symlink component during
+    /// force-cache traceability checks. The Nix store is immutable for the
+    /// duration of an evaluation, so `symlink_metadata` results are stable and
+    /// can be memoized; imports under a shared store path would otherwise
+    /// re-`lstat` every ancestor component on each resolution.
+    import_traceable_nonsymlink_prefixes: HashSet<PathBuf>,
     parse_cache: Option<ParseCache>,
     persist_cache: Option<PersistCache>,
     persist_cache_open_attempted: bool,

@@ -678,7 +678,7 @@ impl TreeWalk {
         }
         let (target_path, realpath) = self.import_paths(argument, argument_span, &path)?;
         let path_literal_base = Self::import_path_literal_base(&target_path);
-        let trace_import = Self::import_target_is_force_cache_traceable(&target_path);
+        let trace_import = self.import_target_is_force_cache_traceable(&target_path);
         let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
         let import_path = realpath.clone();
         self.load_cached_import(
@@ -743,7 +743,7 @@ impl TreeWalk {
         }
         let (target_path, realpath) = self.import_paths(argument, argument_span, &path)?;
         let path_literal_base = Self::import_path_literal_base(&target_path);
-        let trace_import = Self::import_target_is_force_cache_traceable(&target_path);
+        let trace_import = self.import_target_is_force_cache_traceable(&target_path);
         self.load_and_eval_import(
             id,
             span,
@@ -787,16 +787,24 @@ impl TreeWalk {
             .to_vec()
     }
 
-    fn import_target_is_force_cache_traceable(target: &Path) -> bool {
+    fn import_target_is_force_cache_traceable(&mut self, target: &Path) -> bool {
         let mut prefix = PathBuf::new();
         for component in target.components() {
             prefix.push(component.as_os_str());
+            if self.import_traceable_nonsymlink_prefixes.contains(&prefix) {
+                continue;
+            }
             let Ok(metadata) = fs::symlink_metadata(&prefix) else {
                 return false;
             };
             if metadata.file_type().is_symlink() {
                 return false;
             }
+            // The store is immutable during evaluation, so record this confirmed
+            // non-symlink prefix and skip the `lstat` on every later import that
+            // shares it.
+            self.import_traceable_nonsymlink_prefixes
+                .insert(prefix.clone());
         }
         true
     }
