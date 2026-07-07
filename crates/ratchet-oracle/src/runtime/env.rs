@@ -448,9 +448,18 @@ mod tests {
             .map(RuntimeEnvAccessAbiSignature::symbol_name)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(helper_symbols, BTreeSet::from(["aos_env_get"]));
-        assert_eq!(entrypoint_symbols, helper_symbols);
-        assert_eq!(signature_symbols, helper_symbols);
+        // The core helper inventory carries two EnvironmentAccess helpers:
+        // `aos_env_get` and `aos_upval_get`. Only `aos_env_get` is modeled as an
+        // oracle preflight entrypoint; `aos_upval_get` is wired directly through
+        // the JIT and the runtime-FFI standalone wrapper (like `aos_deopt`), so
+        // the oracle preflight entrypoints are a subset of the env-access helpers.
+        assert_eq!(
+            helper_symbols,
+            BTreeSet::from(["aos_env_get", "aos_upval_get"])
+        );
+        assert_eq!(entrypoint_symbols, BTreeSet::from(["aos_env_get"]));
+        assert_eq!(signature_symbols, entrypoint_symbols);
+        assert!(entrypoint_symbols.is_subset(&helper_symbols));
     }
 
     #[test]

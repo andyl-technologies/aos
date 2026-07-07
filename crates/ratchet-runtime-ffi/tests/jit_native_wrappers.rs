@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, num::NonZeroUsize, rc::Rc};
+use std::{collections::BTreeSet, num::NonZeroUsize};
 
 use ratchet_jit::{
     DEFAULT_TIER1_INVOCATION_THRESHOLD, JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate,
@@ -10,7 +10,7 @@ use ratchet_oracle::{
         EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
         IrInlineCacheSiteId, IrKind, IrNode, RuntimeSymbolKind, resolve,
     },
-    eval::{EvalFrame, tree_walk::TreeWalk},
+    eval::{EvalEnv, EvalFrame, tree_walk::TreeWalk},
     runtime::forcing::rust_callable_aos_force,
     syntax::{BinOpKind, Span, Symbol, SymbolTable, parse_str},
     value::Value,
@@ -35,7 +35,8 @@ fn jit_native_call_executes_mixed_runtime_ffi_wrappers_with_one_context() {
         source_span
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env = Rc::as_ptr(&frame) as *mut std::ffi::c_void;
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
     // by the force and attr wrappers, the environment pointer comes from a live
@@ -102,7 +103,8 @@ fn jit_native_call_executes_select_runtime_ffi_wrapper_with_one_context() {
         source_span
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env = Rc::as_ptr(&frame) as *mut std::ffi::c_void;
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
     // by the force and select wrappers, the environment pointer comes from a
@@ -192,7 +194,8 @@ fn assert_select_literal_default_from_nested_attrset(source: &str, expected: i64
         source_span
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env = Rc::as_ptr(&frame) as *mut std::ffi::c_void;
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
     // by the force and attr wrappers, the environment pointer comes from a live
@@ -272,7 +275,8 @@ fn jit_native_call_executes_update_runtime_ffi_wrapper_with_one_context() {
         source_span
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env = Rc::as_ptr(&frame) as *mut std::ffi::c_void;
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
     // by the force and update wrappers, the environment pointer comes from a live
@@ -360,7 +364,8 @@ fn jit_native_call_executes_apply_runtime_ffi_wrapper_with_one_context() {
         source_span
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env = Rc::as_ptr(&frame) as *mut std::ffi::c_void;
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext used
     // by the apply wrapper, the environment pointer comes from a live EvalFrame,

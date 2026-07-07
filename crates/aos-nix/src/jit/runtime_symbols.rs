@@ -596,6 +596,35 @@ pub fn nix_jit_deopt_address_candidate()
     ))
 }
 
+/// Builds the JIT address candidate for the `aos_upval_get` upvalue-read wrapper.
+///
+/// `aos_upval_get` reads a captured lexical slot from a frame above the innermost
+/// one. Like [`nix_jit_deopt_address_candidate`], it is a standalone
+/// `ratchet-runtime-ffi` wrapper rather than an oracle-modeled env-access helper,
+/// so it does not flow through the oracle rust-callable preflight that drives
+/// [`nix_jit_runtime_symbol_address_candidate_preflight`]. It is registered
+/// directly from its process-local wrapper address so a compiled body importing
+/// `aos_upval_get` can be finalized.
+///
+/// # Errors
+///
+/// Returns [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
+/// if the `aos_upval_get` wrapper reports a null process-local address.
+pub fn nix_jit_upval_get_address_candidate()
+-> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
+    let address = ratchet_runtime_ffi::aos_upval_get_native_wrapper_address();
+    let raw = NonZeroUsize::new(address as usize).ok_or(
+        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
+            symbol_name: "aos_upval_get",
+        },
+    )?;
+    Ok(JitRuntimeSymbolAddressCandidate::new(
+        "aos_upval_get".to_owned(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
+        JitRuntimeSymbolAddress::new(raw),
+    ))
+}
+
 /// Builds JIT runtime-symbol registration readiness from runtime address metadata.
 ///
 /// This top-level integration preflight derives process-local runtime address

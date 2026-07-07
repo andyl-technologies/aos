@@ -113,17 +113,41 @@ mod tests {
     const ENV_GET_DECODER_CALL_LINE: &str = concat!("uns", "afe {");
     const ENV_FRAME_DECODER_LINE: &str = concat!(
         "uns",
-        "afe fn with_native_env_frame<R>(env: *mut c_void, call: impl FnOnce(&EvalFrame) -> R) -> R {"
+        "afe fn with_native_env<R>(env: *mut c_void, call: impl FnOnce(&EvalEnv) -> R) -> R {"
     );
     const ENV_FRAME_CAST_LINE: &str =
-        concat!("call(", "uns", "afe { env.cast::<EvalFrame>().as_ref() })");
+        concat!("call(", "uns", "afe { env.cast::<EvalEnv>().as_ref() })");
     const DIRECT_TEST_CALL_LINE: &str =
-        concat!("let actual = ", "uns", "afe { aos_env_get(env, 1) };");
+        concat!("let actual = ", "uns", "afe { aos_env_get(env_ptr, 1) };");
     const BINDING_TEST_CALL_LINE: &str = concat!(
         "let actual = ",
         "uns",
-        "afe { (binding.function())(env, 0) };"
+        "afe { (binding.function())(env_ptr, 0) };"
     );
+    const UPVAL_GET_FN_TYPE_LINE: &str = concat!(
+        "pub type RuntimeUpvalGetNativeFn = ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, u32, u32) -> Value;"
+    );
+    const UPVAL_GET_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_upval_get(env: *mut c_void, depth: u32, slot: u32) -> Value {"
+    );
+    const UPVAL_GET_DECODER_CALL_LINE: &str = concat!(
+        "uns",
+        "afe { with_native_env(env, |env| upval_frame_slot(env, depth, slot)) }"
+    );
+    const UPVAL_INNERMOST_TEST_CALL_LINE: &str =
+        concat!("let innermost = ", "uns", "afe { aos_upval_get(env_ptr, 0, 0) };");
+    const UPVAL_PARENT_TEST_CALL_LINE: &str =
+        concat!("let parent = ", "uns", "afe { aos_upval_get(env_ptr, 1, 0) };");
+    const UPVAL_BAD_DEPTH_TEST_CALL_LINE: &str =
+        concat!("let value = ", "uns", "afe { aos_upval_get(env_ptr, 5, 0) };");
     const DEOPT_FN_TYPE_LINE: &str = concat!(
         "pub type RuntimeDeoptNativeFn = ",
         "ext",
@@ -641,8 +665,17 @@ mod tests {
                 || trimmed == ENV_FRAME_CAST_LINE
                 || trimmed == DIRECT_TEST_CALL_LINE
                 || trimmed == BINDING_TEST_CALL_LINE
+                || trimmed == UPVAL_GET_FN_TYPE_LINE
+                || trimmed == UPVAL_GET_FN_LINE
+                || trimmed == UPVAL_GET_DECODER_CALL_LINE
+                || trimmed == UPVAL_INNERMOST_TEST_CALL_LINE
+                || trimmed == UPVAL_PARENT_TEST_CALL_LINE
+                || trimmed == UPVAL_BAD_DEPTH_TEST_CALL_LINE
         } else if token == EXTERN_TOKEN {
-            trimmed == ENV_GET_FN_TYPE_LINE || trimmed == ENV_GET_FN_LINE
+            trimmed == ENV_GET_FN_TYPE_LINE
+                || trimmed == ENV_GET_FN_LINE
+                || trimmed == UPVAL_GET_FN_TYPE_LINE
+                || trimmed == UPVAL_GET_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == ENV_GET_EXPORT_ATTR_LINE
         } else {
@@ -1232,8 +1265,8 @@ mod unchecked_cfg;
         );
         assert_eq!(
             trimmed_line_occurrences(&env, ENV_GET_EXPORT_ATTR_LINE),
-            1,
-            "env native wrapper export attribute must stay singly reviewed"
+            2,
+            "the aos_env_get and aos_upval_get export attributes must stay reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&env, ENV_GET_FN_LINE),
@@ -1244,6 +1277,11 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&env, ENV_GET_DECODER_CALL_LINE),
             1,
             "aos_env_get wrapper call to the decoder must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&env, UPVAL_GET_DECODER_CALL_LINE),
+            1,
+            "aos_upval_get wrapper call to the decoder must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&env, ENV_FRAME_DECODER_LINE),

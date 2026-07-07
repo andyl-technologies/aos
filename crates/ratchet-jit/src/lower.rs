@@ -79,6 +79,9 @@ pub const AOS_UPDATE_FUNCTION_INDEX: u32 = 5;
 /// User-external function index reserved for the `aos_deopt` helper.
 pub const AOS_DEOPT_FUNCTION_INDEX: u32 = 6;
 
+/// User-external function index reserved for the `aos_upval_get` helper.
+pub const AOS_UPVAL_GET_FUNCTION_INDEX: u32 = 7;
+
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
@@ -86,6 +89,7 @@ const AOS_HAS_ATTR_SYMBOL: &str = "aos_has_attr";
 const AOS_SELECT_IC_SYMBOL: &str = "aos_select_ic";
 const AOS_UPDATE_SYMBOL: &str = "aos_update";
 const AOS_DEOPT_SYMBOL: &str = "aos_deopt";
+const AOS_UPVAL_GET_SYMBOL: &str = "aos_upval_get";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
 pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
@@ -145,6 +149,14 @@ pub fn clif_external_name_for_aos_deopt() -> UserExternalName {
     UserExternalName::new(
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_DEOPT_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_upval_get`.
+pub fn clif_external_name_for_aos_upval_get() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_UPVAL_GET_FUNCTION_INDEX,
     )
 }
 
@@ -601,6 +613,135 @@ pub fn lower_forced_env_get_ir_root_thunk_body_artifact(
     ir: &Ir,
 ) -> Result<JitClifArtifact, JitLowerError> {
     lower_forced_env_get_ir_thunk_body_artifact(&ir.arena, ir.root)
+}
+
+/// Lowers an upvalue-slot IR root into a verified compiled-thunk CLIF body.
+///
+/// This bounded environment-access precursor accepts a direct
+/// [`IrKind::UpvalVar`] root plus one direct [`IrKind::ThunkAlloc`] wrapper around
+/// an upvalue read. The generated function imports `aos_upval_get` through
+/// deterministic user-external CLIF metadata, passes the compiled thunk `env`
+/// parameter with the upvalue `depth` and `slot` as `i32`, and returns the two
+/// runtime `Value` words produced by that helper call.
+///
+/// The returned function remains non-executable CLIF only. It is not placed in a
+/// `JITModule`, linked against a native helper address, finalized, or called.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`] when `root` is not present in
+/// `arena`. Returns [`JitLowerError::UnsupportedEnvRoot`] when the root is not a
+/// supported upvalue-access form. Returns [`JitLowerError::MissingIrBody`] or
+/// [`JitLowerError::UnsupportedEnvBody`] for malformed direct thunk bodies.
+/// Returns [`JitLowerError::MismatchedIrNodeData`] when a supported root or
+/// wrapper carries the wrong payload shape. Also returns runtime ABI
+/// signature-conversion and verifier errors.
+pub fn lower_upval_get_ir_thunk_body(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<Function, JitLowerError> {
+    let (depth, slot) = upval_depth_slot_for_root(arena, root)?;
+    lower_upval_get_slot_thunk_body_with_name(depth, slot, clif_name_for_ir_root(root))
+}
+
+/// Lowers an upvalue-slot IR root into a non-executable CLIF artifact.
+///
+/// The artifact records the Core IR root id as source metadata and contains the
+/// same verified CLIF function returned by [`lower_upval_get_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_upval_get_ir_thunk_body`].
+pub fn lower_upval_get_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_upval_get_ir_thunk_body(arena, root)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
+/// Lowers the root of a lowered IR artifact as an upvalue-slot access.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_upval_get_ir_thunk_body`].
+pub fn lower_upval_get_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
+    lower_upval_get_ir_thunk_body(&ir.arena, ir.root)
+}
+
+/// Lowers the root of a lowered IR artifact as an upvalue-slot CLIF artifact.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_upval_get_ir_root_thunk_body`].
+pub fn lower_upval_get_ir_root_thunk_body_artifact(
+    ir: &Ir,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_upval_get_ir_thunk_body_artifact(&ir.arena, ir.root)
+}
+
+/// Lowers an upvalue-slot IR root and forces the loaded value in CLIF.
+///
+/// This bounded force-call precursor accepts the same direct [`IrKind::UpvalVar`]
+/// root plus one direct [`IrKind::ThunkAlloc`] wrapper as
+/// [`lower_upval_get_ir_thunk_body`]. The generated function imports
+/// `aos_upval_get`, imports `aos_force`, reads the upvalue slot, passes the
+/// loaded two-word `Value` with the compiled thunk `rt` parameter to `aos_force`,
+/// and returns the forced two-word `Value`.
+///
+/// The returned function remains non-executable CLIF only. It is not placed in a
+/// `JITModule`, linked against native helper addresses, finalized, or called.
+///
+/// # Errors
+///
+/// Returns the same IR-shape errors as [`lower_upval_get_ir_thunk_body`]. Also
+/// returns runtime ABI signature-conversion and verifier errors for either
+/// imported helper.
+pub fn lower_forced_upval_get_ir_thunk_body(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<Function, JitLowerError> {
+    let (depth, slot) = upval_depth_slot_for_root(arena, root)?;
+    lower_forced_upval_get_slot_thunk_body_with_name(depth, slot, clif_name_for_ir_root(root))
+}
+
+/// Lowers a forced upvalue-slot IR root into a non-executable CLIF artifact.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_forced_upval_get_ir_thunk_body`].
+pub fn lower_forced_upval_get_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_forced_upval_get_ir_thunk_body(arena, root)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
+/// Lowers the root of a lowered IR artifact as a forced upvalue-slot access.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_forced_upval_get_ir_thunk_body`].
+pub fn lower_forced_upval_get_ir_root_thunk_body(ir: &Ir) -> Result<Function, JitLowerError> {
+    lower_forced_upval_get_ir_thunk_body(&ir.arena, ir.root)
+}
+
+/// Lowers the root of a lowered IR artifact as a forced upvalue-slot CLIF artifact.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_forced_upval_get_ir_root_thunk_body`].
+pub fn lower_forced_upval_get_ir_root_thunk_body_artifact(
+    ir: &Ir,
+) -> Result<JitClifArtifact, JitLowerError> {
+    lower_forced_upval_get_ir_thunk_body_artifact(&ir.arena, ir.root)
 }
 
 /// Lowers a direct local-slot application into a verified compiled-thunk CLIF body.
@@ -1170,6 +1311,53 @@ fn env_slot_for_node(node: IrNode) -> Result<u32, JitLowerError> {
     }
 }
 
+fn upval_depth_slot_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32), JitLowerError> {
+    let node = arena
+        .node(root)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root })?;
+
+    match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(body)) => {
+            let body = arena
+                .node(body)
+                .copied()
+                .ok_or(JitLowerError::MissingIrBody { body })?;
+            upval_depth_slot_for_body(body)
+        }
+        (IrKind::ThunkAlloc, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::ThunkAlloc,
+            data,
+            expected: "body node",
+        }),
+        _ => upval_depth_slot_for_node(node),
+    }
+}
+
+fn upval_depth_slot_for_body(node: IrNode) -> Result<(u32, u32), JitLowerError> {
+    match (node.kind, node.data) {
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) => Ok((depth, slot)),
+        (IrKind::UpvalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::UpvalVar,
+            data,
+            expected: "upvalue depth/slot payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedEnvBody { kind }),
+    }
+}
+
+fn upval_depth_slot_for_node(node: IrNode) -> Result<(u32, u32), JitLowerError> {
+    match (node.kind, node.data) {
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) => Ok((depth, slot)),
+        (IrKind::UpvalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::UpvalVar,
+            data,
+            expected: "upvalue depth/slot payload",
+        }),
+        (kind, _) => Err(JitLowerError::UnsupportedEnvRoot { kind }),
+    }
+}
+
 fn apply_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32), JitLowerError> {
     let node = arena
         .node(root)
@@ -1608,6 +1796,12 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind(
                 lower_forced_env_get_ir_thunk_body_artifact(arena, root)
             }
         },
+        IrKind::UpvalVar => match local_slot_lowering {
+            Tier1LocalSlotLowering::EnvGet => lower_upval_get_ir_thunk_body_artifact(arena, root),
+            Tier1LocalSlotLowering::ForceEnvGet => {
+                lower_forced_upval_get_ir_thunk_body_artifact(arena, root)
+            }
+        },
         IrKind::Apply => lower_apply_local_slots_ir_thunk_body_artifact(arena, root),
         IrKind::BinOp => arith_tree::lower_binop_ir_thunk_body_artifact(arena, root),
         kind if is_thunk_body => Err(JitLowerError::UnsupportedIrBody { kind }),
@@ -1663,6 +1857,39 @@ fn lower_forced_env_get_slot_thunk_body_with_name(
     )?;
     let entry_block = append_entry_block_params(&mut function);
     emit_forced_env_get_return(&mut function, entry_block, env_get, force, slot)?;
+    verify_clif_function(&function)?;
+    Ok(function)
+}
+
+fn lower_upval_get_slot_thunk_body_with_name(
+    depth: u32,
+    slot: u32,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
+    let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(name, signature);
+    let upval_get = import_upval_get_function(&mut function)?;
+    let entry_block = append_entry_block_params(&mut function);
+    emit_upval_get_return(&mut function, entry_block, upval_get, depth, slot)?;
+    verify_clif_function(&function)?;
+    Ok(function)
+}
+
+fn lower_forced_upval_get_slot_thunk_body_with_name(
+    depth: u32,
+    slot: u32,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
+    let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(name, signature);
+    let upval_get = import_upval_get_function(&mut function)?;
+    let force = import_runtime_helper_function(
+        &mut function,
+        AOS_FORCE_SYMBOL,
+        clif_external_name_for_aos_force(),
+    )?;
+    let entry_block = append_entry_block_params(&mut function);
+    emit_forced_upval_get_return(&mut function, entry_block, upval_get, force, depth, slot)?;
     verify_clif_function(&function)?;
     Ok(function)
 }
@@ -1807,6 +2034,16 @@ fn import_env_get_function(
     )
 }
 
+fn import_upval_get_function(
+    function: &mut Function,
+) -> Result<cranelift_codegen::ir::FuncRef, JitLowerError> {
+    import_runtime_helper_function(
+        function,
+        AOS_UPVAL_GET_SYMBOL,
+        clif_external_name_for_aos_upval_get(),
+    )
+}
+
 fn import_runtime_helper_function(
     function: &mut Function,
     symbol_name: &'static str,
@@ -1926,6 +2163,84 @@ fn emit_forced_env_get_return(
     let force_call = cursor
         .ins()
         .call(force, &[rt, env_get_results[0], env_get_results[1]]);
+    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+
+    if force_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_FORCE_SYMBOL,
+            expected: 2,
+            actual: force_results.len(),
+        });
+    }
+
+    cursor.ins().return_(&force_results);
+    Ok(())
+}
+
+fn emit_upval_get_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    upval_get: cranelift_codegen::ir::FuncRef,
+    depth: u32,
+    slot: u32,
+) -> Result<(), JitLowerError> {
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let depth = cursor.ins().iconst(types::I32, i64::from(depth));
+    let slot = cursor.ins().iconst(types::I32, i64::from(slot));
+    let call = cursor.ins().call(upval_get, &[env, depth, slot]);
+    let results = cursor.func.dfg.inst_results(call).to_vec();
+
+    if results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_UPVAL_GET_SYMBOL,
+            expected: 2,
+            actual: results.len(),
+        });
+    }
+
+    cursor.ins().return_(&results);
+    Ok(())
+}
+
+fn emit_forced_upval_get_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    upval_get: cranelift_codegen::ir::FuncRef,
+    force: cranelift_codegen::ir::FuncRef,
+    depth: u32,
+    slot: u32,
+) -> Result<(), JitLowerError> {
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let rt = entry_params
+        .first()
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let depth = cursor.ins().iconst(types::I32, i64::from(depth));
+    let slot = cursor.ins().iconst(types::I32, i64::from(slot));
+    let upval_get_call = cursor.ins().call(upval_get, &[env, depth, slot]);
+    let upval_get_results = cursor.func.dfg.inst_results(upval_get_call).to_vec();
+
+    if upval_get_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_UPVAL_GET_SYMBOL,
+            expected: 2,
+            actual: upval_get_results.len(),
+        });
+    }
+
+    let force_call = cursor
+        .ins()
+        .call(force, &[rt, upval_get_results[0], upval_get_results[1]]);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
 
     if force_results.len() != 2 {

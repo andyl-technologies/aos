@@ -35,7 +35,7 @@ use ratchet_jit::{
     lower_forced_env_get_ir_thunk_body_artifact,
 };
 use ratchet_oracle::eval::tree_walk::{TreeWalk, TreeWalkError, TreeWalkOptions};
-use ratchet_oracle::eval::{EvalFrame, ForceError, OpaqueTier1Slot};
+use ratchet_oracle::eval::{EvalEnv, EvalFrame, ForceError, OpaqueTier1Slot};
 use ratchet_oracle::runtime::forcing::rust_callable_aos_force;
 use ratchet_runtime_ffi::{RuntimeTrap, run_finalized_native_thunk_call};
 use ratchet_value::value::Value;
@@ -335,6 +335,10 @@ fn native_publish_dispatch(
     frame
         .set(0, thunk)
         .map_err(NixJitForcedEnvSlotNativeDifferentialError::Frame)?;
+    // Dispatch owns the environment snapshot the wrapper decodes; the captured
+    // frame is the innermost frame `aos_env_get` reads its locals from.
+    let env =
+        EvalEnv::capture(&[frame]).map_err(NixJitForcedEnvSlotNativeDifferentialError::Frame)?;
 
     let entry = NixJitTier1DispatchEntry::new(finalization);
     let entry_addr = entry.entry_addr();
@@ -379,7 +383,7 @@ fn native_publish_dispatch(
         &mut eval,
         source_ir.root,
         source_span,
-        &frame,
+        &env,
         &finalization,
     )
     .map_err(NixJitTier1PublishDispatchError::NativeCall)?;

@@ -46,7 +46,7 @@ use ratchet_oracle::runtime::attr::{
 use ratchet_oracle::runtime::forcing::rust_callable_aos_force;
 use ratchet_oracle::{
     compile::resolve,
-    eval::{EvalEnvError, EvalFrame, tree_walk::TreeWalk},
+    eval::{EvalEnv, EvalEnvError, EvalFrame, tree_walk::TreeWalk},
     runtime::apply::rust_callable_aos_apply,
     syntax::parse_str,
 };
@@ -443,7 +443,10 @@ fn run_native(
     for (slot, value) in slots.iter().enumerate() {
         frame.set(slot as u32, *value)?;
     }
-    let outcome = run_registered_native_thunk_call(eval, id, span, &frame, artifact, candidates)
+    // Dispatch owns the environment snapshot the wrapper decodes; the populated
+    // frame is the innermost frame `aos_env_get` reads its locals from.
+    let env = EvalEnv::capture(&[frame])?;
+    let outcome = run_registered_native_thunk_call(eval, id, span, &env, artifact, candidates)
         .map_err(ShapeDifferentialError::NativeCall)?;
     Ok(NativeResult {
         value: outcome.value(),

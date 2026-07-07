@@ -2107,21 +2107,26 @@ mod tests {
             .iter()
             .copied()
             .filter(|symbol| {
-                matches!(
-                    symbol.role(),
-                    RuntimeHelperRole::Allocation
-                        | RuntimeHelperRole::CallControl
-                        | RuntimeHelperRole::EnvironmentAccess
-                        | RuntimeHelperRole::WriteBarrier
-                ) || matches!(
-                    symbol.name(),
-                    "aos_blackhole_check"
-                        | "aos_force"
-                        | "aos_force_deep"
-                        | "aos_has_attr"
-                        | "aos_select_ic"
-                        | "aos_update"
-                )
+                // `aos_upval_get` is an EnvironmentAccess helper, but like
+                // `aos_deopt` it is wired directly through the JIT and the
+                // runtime-FFI standalone wrapper rather than modeled as an oracle
+                // helper binding, so it is not part of `runtime_helper_bindings`.
+                symbol.name() != "aos_upval_get"
+                    && (matches!(
+                        symbol.role(),
+                        RuntimeHelperRole::Allocation
+                            | RuntimeHelperRole::CallControl
+                            | RuntimeHelperRole::EnvironmentAccess
+                            | RuntimeHelperRole::WriteBarrier
+                    ) || matches!(
+                        symbol.name(),
+                        "aos_blackhole_check"
+                            | "aos_force"
+                            | "aos_force_deep"
+                            | "aos_has_attr"
+                            | "aos_select_ic"
+                            | "aos_update"
+                    ))
             })
             .map(|symbol| (symbol.name(), symbol.role()))
             .collect::<Vec<_>>();

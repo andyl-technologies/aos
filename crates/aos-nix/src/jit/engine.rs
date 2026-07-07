@@ -38,13 +38,13 @@ use ratchet_jit::{
     lower_force_aware_tier1_ir_thunk_body_artifact_for_ir,
 };
 use ratchet_oracle::eval::tree_walk::TreeWalk;
-use ratchet_oracle::eval::{EvalFrame, EvalNodeRef, OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
+use ratchet_oracle::eval::{EvalEnv, EvalNodeRef, OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
 use ratchet_runtime_ffi::run_finalized_native_thunk_call;
 use ratchet_value::value::Value;
 
 use crate::jit::{
     NixJitRuntimeSymbolAddressCandidateError, nix_jit_deopt_address_candidate,
-    nix_jit_runtime_symbol_address_candidate_preflight,
+    nix_jit_runtime_symbol_address_candidate_preflight, nix_jit_upval_get_address_candidate,
 };
 
 /// The default per-def-site force count at which a thunk body is promoted.
@@ -122,6 +122,10 @@ impl NixJitTier1Engine {
         // it is registered directly rather than through the oracle-driven preflight.
         let mut candidates = preflight.address_candidates().to_vec();
         candidates.push(nix_jit_deopt_address_candidate()?);
+        // `aos_upval_get` is a JIT/runtime-FFI standalone upvalue-read wrapper, not
+        // an oracle-modeled env-access helper, so it is registered directly like
+        // `aos_deopt` rather than through the oracle-driven preflight.
+        candidates.push(nix_jit_upval_get_address_candidate()?);
         Ok(Self {
             candidates,
             threshold: threshold.max(1),
@@ -143,10 +147,10 @@ impl NixJitTier1Engine {
     ) -> Option<Tier1ForceHook> {
         let key = def_site_key(thunk_body_ref(eval, thunk)?);
         let finalization = published_finalization(eval, key)?;
-        let Some(frame) = dispatch_env_frame(eval, thunk) else {
+        let Some(env) = dispatch_env(eval, thunk) else {
             return Some(Tier1ForceHook::Deopted);
         };
-        match run_finalized_native_thunk_call(eval, id, span, &frame, &finalization) {
+        match run_finalized_native_thunk_call(eval, id, span, &env, &finalization) {
             Ok(outcome) if !outcome.is_trap() => Some(Tier1ForceHook::Dispatched(outcome.value())),
             _ => Some(Tier1ForceHook::Deopted),
         }
@@ -380,19 +384,21 @@ fn published_finalization(
     Some(entry.finalization())
 }
 
-/// Returns the environment frame the tier-1 body reads its locals from.
+/// Returns a dispatch-owned snapshot of the environment the tier-1 body reads.
 ///
-/// The tier-1 lowerer resolves `LocalVar { slot }` against the innermost
-/// environment frame, so dispatch passes the thunk's captured innermost frame. A
-/// body that reads no locals (a constant) ignores the frame; when the capture is
-/// empty an owned zero-slot frame is supplied so such bodies can still dispatch.
-fn dispatch_env_frame(eval: &TreeWalk, thunk: Value) -> Option<Rc<EvalFrame>> {
+/// The tier-1 lowerer resolves `LocalVar { slot }` against the innermost frame
+/// (`aos_env_get`) and `UpvalVar { depth, slot }` against an enclosing frame
+/// (`aos_upval_get`), so dispatch must pass the thunk's full captured frame
+/// stack, not just its innermost frame.
+///
+/// The returned [`EvalEnv`] is an owned clone (a `Box<[Rc<EvalFrame>]>` copy, a
+/// handful of `Rc` bumps at typical depth). Dispatch keeps this clone alive for
+/// the native call so the wrapper decodes a pointer to storage the dispatcher
+/// owns. It must never hand the native call a pointer into the evaluator's live
+/// environment stack, which nested forcing swaps out mid-dispatch.
+fn dispatch_env(eval: &TreeWalk, thunk: Value) -> Option<EvalEnv> {
     let heap_thunk = eval.heap().get_thunk(thunk).ok()?;
-    let env = heap_thunk.env()?;
-    match env.frames().last() {
-        Some(frame) => Some(Rc::clone(frame)),
-        None => EvalFrame::new(0).ok(),
-    }
+    Some(heap_thunk.env()?.clone())
 }
 
 /// Returns the `(module, root)` IR body of `thunk`, if it is a lowered node body.

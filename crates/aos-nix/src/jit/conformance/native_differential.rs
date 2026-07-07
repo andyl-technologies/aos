@@ -30,12 +30,12 @@ use ratchet_core::{
 };
 use ratchet_jit::{
     JitCraneliftNativeCallError, JitLowerError, JitRuntimeSymbolAddressCandidate,
-    lower_forced_env_get_ir_thunk_body_artifact,
+    lower_forced_env_get_ir_thunk_body_artifact, lower_forced_upval_get_ir_thunk_body_artifact,
 };
 use ratchet_oracle::eval::tree_walk::TreeWalkError;
 use ratchet_oracle::{
     compile::resolve,
-    eval::{EvalEnvError, EvalFrame, tree_walk::TreeWalk},
+    eval::{EvalEnv, EvalEnvError, EvalFrame, tree_walk::TreeWalk},
     runtime::forcing::rust_callable_aos_force,
     syntax::parse_str,
 };
@@ -45,6 +45,7 @@ use thiserror::Error;
 
 use crate::jit::{
     NixJitRuntimeSymbolAddressCandidateError, nix_jit_runtime_symbol_address_candidate_preflight,
+    nix_jit_upval_get_address_candidate,
 };
 
 /// The runtime symbols imported by a forced environment-slot artifact, in order.
@@ -242,6 +243,9 @@ fn native_force_binding(
     let thunk = binding_thunk(&mut eval, source_ir, binding)?;
     let frame = EvalFrame::new(1)?;
     frame.set(0, thunk)?;
+    // Dispatch owns the environment snapshot the wrapper decodes; the captured
+    // frame is the innermost (and only) frame `aos_env_get` reads.
+    let env = EvalEnv::capture(&[frame])?;
 
     // The unsafe native-call boundary lives in `ratchet-runtime-ffi`, which pins
     // the runtime context, installs the trap scope, and returns the value plus
@@ -251,7 +255,7 @@ fn native_force_binding(
         &mut eval,
         source_ir.root,
         source_span,
-        &frame,
+        &env,
         artifact,
         &candidates,
     )
@@ -343,6 +347,117 @@ pub(super) fn local_slot_zero_arena() -> IrArena {
         )],
         Vec::new(),
     )
+}
+
+/// Returns the arena holding a single depth-1, slot-0 upvalue read.
+pub(super) fn upval_slot_zero_depth_one_arena() -> IrArena {
+    IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::UpvalVar,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Upval { depth: 1, slot: 0 },
+        )],
+        Vec::new(),
+    )
+}
+
+/// Builds the two registered candidates the forced upvalue artifact imports.
+///
+/// `aos_upval_get` is registered directly from its runtime-FFI standalone wrapper
+/// (like `aos_deopt`), while `aos_force` comes from the shared address-candidate
+/// preflight.
+fn forced_upval_slot_candidates()
+-> Result<Vec<JitRuntimeSymbolAddressCandidate>, NixJitForcedEnvSlotNativeDifferentialError> {
+    let preflight = nix_jit_runtime_symbol_address_candidate_preflight()?;
+    let upval_get = nix_jit_upval_get_address_candidate()?;
+    let force = preflight.address_candidate_for("aos_force").ok_or(
+        NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate {
+            symbol_name: "aos_force",
+        },
+    )?;
+    Ok(vec![
+        JitRuntimeSymbolAddressCandidate::new(
+            upval_get.symbol_name().to_owned(),
+            upval_get.kind(),
+            upval_get.address(),
+        ),
+        JitRuntimeSymbolAddressCandidate::new(
+            force.symbol_name().to_owned(),
+            force.kind(),
+            force.address(),
+        ),
+    ])
+}
+
+/// Runs the compiled depth-1 upvalue-read + force artifact against a live tree walk.
+///
+/// When `include_outer_frame` is true the captured environment has two frames —
+/// an outer frame holding the binding thunk at slot 0 and an innermost dummy
+/// frame — so a depth-1 read resolves the thunk. When it is false the environment
+/// has only the innermost frame, so the depth-1 read walks past the captured
+/// stack and the wrapper transfers a [`RuntimeTrap::Deopt`].
+fn native_force_binding_upval(
+    source_ir: &Ir,
+    binding: &[u8],
+    source_span: Span,
+    include_outer_frame: bool,
+) -> Result<NativeForceResult, NixJitForcedEnvSlotNativeDifferentialError> {
+    let arena = upval_slot_zero_depth_one_arena();
+    let artifact = lower_forced_upval_get_ir_thunk_body_artifact(&arena, IrId::new(0))
+        .map_err(NixJitForcedEnvSlotNativeDifferentialError::LowerArtifact)?;
+    let candidates = forced_upval_slot_candidates()?;
+
+    let mut eval = TreeWalk::new(source_ir);
+    let thunk = binding_thunk(&mut eval, source_ir, binding)?;
+    let inner = EvalFrame::new(1)?;
+    // Dispatch owns the environment snapshot; frames are ordered outermost first.
+    let env = if include_outer_frame {
+        let outer = EvalFrame::new(1)?;
+        outer.set(0, thunk)?;
+        EvalEnv::capture(&[outer, inner])?
+    } else {
+        EvalEnv::capture(&[inner])?
+    };
+
+    let outcome = run_registered_native_thunk_call(
+        &mut eval,
+        source_ir.root,
+        source_span,
+        &env,
+        artifact,
+        &candidates,
+    )
+    .map_err(NixJitForcedEnvSlotNativeDifferentialError::NativeCall)?;
+
+    Ok(NativeForceResult {
+        value: outcome.value(),
+        trap: outcome.into_trap(),
+    })
+}
+
+/// Compiles and runs a forced depth-1 upvalue-slot artifact against a live tree walk.
+///
+/// This mirrors [`nix_jit_forced_env_slot_native_differential`] but places the
+/// binding thunk one frame above the innermost captured frame and reads it
+/// through a compiled `aos_upval_get` + `aos_force` body, proving the native
+/// upvalue read resolves the same value the tree-walk oracle produces.
+///
+/// # Errors
+///
+/// Returns the same error variants as
+/// [`nix_jit_forced_env_slot_native_differential`].
+pub fn nix_jit_forced_upval_slot_native_differential(
+    source: &str,
+    binding: &[u8],
+) -> NixJitForcedEnvSlotNativeDifferentialResult {
+    let source_ir = lower_source(source)?;
+    let source_span = Span::new(0, source.len() as u32);
+
+    let oracle = oracle_force_binding(&source_ir, binding, source_span)?;
+    let native = native_force_binding_upval(&source_ir, binding, source_span, true)?;
+
+    reconcile(oracle, native)
 }
 
 /// Evaluates `source_ir` and returns the suspended thunk for attribute `binding`.
@@ -456,6 +571,35 @@ mod tests {
             native_trap,
             RuntimeTrap::Force(trap_error) if trap_error == oracle_error
         ));
+    }
+
+    #[test]
+    fn forced_upval_slot_native_matches_tree_walk_scalar() {
+        // The binding thunk sits one frame above the innermost captured frame, so
+        // the compiled body reads it through `aos_upval_get(env, 1, 0)` and must
+        // agree with the value the oracle forces directly.
+        let outcome = nix_jit_forced_upval_slot_native_differential("{ v = 40 + 2; }", b"v")
+            .expect("forced upval-slot native differential runs");
+
+        let NixJitForcedEnvSlotNativeOutcome::Value { oracle, native } = outcome else {
+            panic!("expected a value-agreement outcome, got {outcome:?}");
+        };
+        assert_eq!(oracle.as_int(), Ok(42));
+        assert_eq!(native.as_int(), Ok(42));
+        assert!(oracle.raw_eq(native));
+    }
+
+    #[test]
+    fn forced_upval_slot_native_deopts_on_bad_depth() {
+        // With only the innermost frame captured, a depth-1 upvalue read walks
+        // past the captured stack. The wrapper transfers a deopt so the engine can
+        // re-run the body on the tree walk, rather than aborting or miscompiling.
+        let source_ir = lower_source("{ v = 40 + 2; }").expect("source lowers");
+        let source_span = Span::new(0, "{ v = 40 + 2; }".len() as u32);
+        let native = native_force_binding_upval(&source_ir, b"v", source_span, false)
+            .expect("native upval call runs to a deopt");
+
+        assert_eq!(native.trap, Some(RuntimeTrap::Deopt));
     }
 
     #[test]

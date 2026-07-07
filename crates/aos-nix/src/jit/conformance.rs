@@ -32,7 +32,7 @@ mod tier1_publish_dispatch;
 pub use native_differential::{
     BindingProjectionReason, NixJitForcedEnvSlotNativeDifferentialError,
     NixJitForcedEnvSlotNativeDifferentialResult, NixJitForcedEnvSlotNativeOutcome,
-    nix_jit_forced_env_slot_native_differential,
+    nix_jit_forced_env_slot_native_differential, nix_jit_forced_upval_slot_native_differential,
 };
 pub use shape_differential::{
     ShapeDifferentialError, ShapeDifferentialOutcome, ShapeDifferentialResult,

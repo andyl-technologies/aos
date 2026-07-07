@@ -130,6 +130,7 @@ pub const RUNTIME_HELPER_SYMBOLS: &[RuntimeHelperSymbol] = &[
     RuntimeHelperSymbol::new("aos_try_begin", RuntimeHelperRole::ErrorControl),
     RuntimeHelperSymbol::new("aos_try_end", RuntimeHelperRole::ErrorControl),
     RuntimeHelperSymbol::new("aos_update", RuntimeHelperRole::AttrsetAccess),
+    RuntimeHelperSymbol::new("aos_upval_get", RuntimeHelperRole::EnvironmentAccess),
 ];
 
 /// Returns the frozen runtime helper symbol declarations.
@@ -266,6 +267,11 @@ const ENV_GET_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
     RuntimeAbiParameter::new("slot", RuntimeAbiParameterKind::U32),
 ];
+const UPVAL_GET_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+    RuntimeAbiParameter::new("depth", RuntimeAbiParameterKind::U32),
+    RuntimeAbiParameter::new("slot", RuntimeAbiParameterKind::U32),
+];
 const FORCE_VALUE_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("value", RuntimeAbiParameterKind::Value),
@@ -377,6 +383,14 @@ const RUNTIME_ENV_GET_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignatur
     ENV_GET_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_UPVAL_GET_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_upval_get", RuntimeHelperRole::EnvironmentAccess),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    UPVAL_GET_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 const RUNTIME_FORCE_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
         symbol: RuntimeHelperSymbol::new("aos_force", RuntimeHelperRole::ForcingControl),
@@ -470,6 +484,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_SELECT_IC_CALL_SIGNATURE,
     RUNTIME_THROW_CALL_SIGNATURE,
     RUNTIME_UPDATE_CALL_SIGNATURE,
+    RUNTIME_UPVAL_GET_CALL_SIGNATURE,
 ];
 
 /// Returns the by-value runtime value layout assumed by native call metadata.
@@ -517,6 +532,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_has_attr" => Some(RUNTIME_HAS_ATTR_CALL_SIGNATURE),
         "aos_select_ic" => Some(RUNTIME_SELECT_IC_CALL_SIGNATURE),
         "aos_update" => Some(RUNTIME_UPDATE_CALL_SIGNATURE),
+        "aos_upval_get" => Some(RUNTIME_UPVAL_GET_CALL_SIGNATURE),
         "aos_throw" => Some(RUNTIME_THROW_CALL_SIGNATURE),
         _ => None,
     }
@@ -1388,6 +1404,7 @@ mod tests {
                 "aos_select_ic",
                 "aos_throw",
                 "aos_update",
+                "aos_upval_get",
             ])
         );
         for symbol_name in ["aos_try_begin", "aos_try_end"] {
@@ -1664,6 +1681,31 @@ mod tests {
             signature.parameters(),
             &[
                 RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+                RuntimeAbiParameter::new("slot", RuntimeAbiParameterKind::U32),
+            ]
+        );
+        assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
+    }
+
+    #[test]
+    fn upval_get_helper_call_signature_pins_depth_slot_lookup_value_return() {
+        let signature = runtime_helper_call_signature("aos_upval_get")
+            .expect("upval-get signature is core-owned");
+
+        assert_eq!(
+            signature.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new(
+                    "aos_upval_get",
+                    RuntimeHelperRole::EnvironmentAccess,
+                ),
+            }
+        );
+        assert_eq!(
+            signature.parameters(),
+            &[
+                RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+                RuntimeAbiParameter::new("depth", RuntimeAbiParameterKind::U32),
                 RuntimeAbiParameter::new("slot", RuntimeAbiParameterKind::U32),
             ]
         );

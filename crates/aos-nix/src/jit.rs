@@ -43,7 +43,8 @@ pub use conformance::{
     ShapeDifferentialOutcome, ShapeDifferentialResult, nix_jit_apply_native_differential,
     nix_jit_arith_native_differential, nix_jit_force_aware_tier1_conformance_readiness_for_ir_root,
     nix_jit_force_aware_tier1_conformance_readiness_for_lowered_ir_root,
-    nix_jit_forced_env_slot_native_differential, nix_jit_literal_native_differential_for_ir_root,
+    nix_jit_forced_env_slot_native_differential, nix_jit_forced_upval_slot_native_differential,
+    nix_jit_literal_native_differential_for_ir_root,
     nix_jit_static_has_attr_native_differential, nix_jit_static_select_native_differential,
     nix_jit_tier1_conformance_readiness_for_ir_root,
     nix_jit_tier1_conformance_readiness_for_lowered_ir_root,
@@ -57,7 +58,7 @@ pub use runtime_symbols::{
     NixJitRuntimeSymbolRegistrationPlanResult, NixJitRuntimeSymbolRegistrationPreflight,
     NixJitRuntimeSymbolRegistrationResult, nix_jit_deopt_address_candidate,
     nix_jit_runtime_symbol_address_candidate_preflight, nix_jit_runtime_symbol_registration_plan,
-    nix_jit_runtime_symbol_registration_preflight,
+    nix_jit_runtime_symbol_registration_preflight, nix_jit_upval_get_address_candidate,
 };
 pub use thunk_install::{
     NixJitThunkInstallGap, NixJitThunkInstallReadiness, NixJitThunkInstallReadinessError,

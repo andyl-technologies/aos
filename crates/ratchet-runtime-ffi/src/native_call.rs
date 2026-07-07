@@ -19,7 +19,6 @@
 //! through [`run_registered_native_thunk_call`].
 
 use std::ffi::c_void;
-use std::rc::Rc;
 
 use ratchet_jit::{
     JitClifArtifact, JitCraneliftNativeCallError,
@@ -28,7 +27,7 @@ use ratchet_jit::{
     jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates,
 };
 use ratchet_oracle::value::Value;
-use ratchet_oracle::{compile::IrId, eval::EvalFrame, eval::tree_walk::TreeWalk, syntax::Span};
+use ratchet_oracle::{compile::IrId, eval::EvalEnv, eval::tree_walk::TreeWalk, syntax::Span};
 
 use crate::context::RuntimeJitContext;
 use crate::trap::{RuntimeTrap, RuntimeTrapScope};
@@ -92,13 +91,13 @@ pub fn run_registered_native_thunk_call(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,
-    frame: &Rc<EvalFrame>,
+    env: &EvalEnv,
     artifact: JitClifArtifact,
     candidates: &[JitRuntimeSymbolAddressCandidate],
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
     let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
     let rt = context.as_mut().as_mut_ptr();
-    let env = Rc::as_ptr(frame) as *mut c_void;
+    let env = (env as *const EvalEnv) as *mut c_void;
 
     let scope = RuntimeTrapScope::new();
     // SAFETY: `rt` comes from the pinned context over `eval` and `env` from the
@@ -149,12 +148,12 @@ pub fn run_finalized_native_thunk_call(
     eval: &mut TreeWalk,
     id: IrId,
     span: Span,
-    frame: &Rc<EvalFrame>,
+    env: &EvalEnv,
     finalization: &JitCraneliftRegisteredArtifactFinalizationPreflight,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
     let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
     let rt = context.as_mut().as_mut_ptr();
-    let env = Rc::as_ptr(frame) as *mut c_void;
+    let env = (env as *const EvalEnv) as *mut c_void;
 
     let scope = RuntimeTrapScope::new();
     // SAFETY: `rt` comes from the pinned context over `eval` and `env` from the
