@@ -164,6 +164,18 @@
         needle = "resume_qemu_runner";
       }
       {
+        label = "resume local-QEMU proof derivation";
+        needle = "realize_resume_from_savepoint(";
+      }
+      {
+        label = "resume local-QEMU proof summary";
+        needle = "proof.field_summary()";
+      }
+      {
+        label = "resume terminal configuration report";
+        needle = "terminal_configuration: actor_report.final_snapshot.configuration.clone()";
+      }
+      {
         label = "resume remote daemon runner";
         needle = "fn run_remote_resume_workflow";
       }
@@ -378,6 +390,18 @@
       {
         label = "process qemu resume branch";
         needle = "branch=ancestor-replay";
+      }
+      {
+        label = "process qemu resume runtime proof";
+        needle = "runtime=blake3:";
+      }
+      {
+        label = "process qemu resume ancestor proof";
+        needle = "ancestor_configuration=blake3:";
+      }
+      {
+        label = "process qemu resume replay proof";
+        needle = "replayed_decisions=1";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

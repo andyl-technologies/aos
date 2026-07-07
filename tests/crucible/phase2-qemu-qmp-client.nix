@@ -14,6 +14,8 @@
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qmpLib = builtins.readFile ../../crates/crucible-qemu/src/qmp.rs;
+  qmpSnapshotTag = builtins.readFile ../../crates/crucible-qemu/src/qmp/snapshot_tag.rs;
+  qmpSurface = qmpLib + qmpSnapshotTag;
   qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -92,7 +94,7 @@
         needle = "QmpSnapshotTag";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/qmp.rs" qmpLib [
+    ++ failuresFor "crates/crucible-qemu/src/qmp*.rs" qmpSurface [
       {
         label = "typed client";
         needle = "pub struct QmpClient";
@@ -174,7 +176,7 @@
         needle = "use crucible::{Checkpoint, ContentHash}";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/qmp.rs" qmpLib [
+    ++ forbiddenFor "crates/crucible-qemu/src/qmp*.rs" qmpSurface [
       {
         label = "public arbitrary execute path";
         needle = "pub fn " + "execute";

@@ -105,11 +105,66 @@ struct PreparedQemuNodeSetup {
     shmem_hot_path: QemuMappedQuantumShmemHotPath,
 }
 
+/// Runtime inputs shared by cold and warm QEMU node factory paths.
+pub struct QemuNodeFactoryRuntime<A, R> {
+    shmem_config: QemuQuantumShmemConfig,
+    send_authorizer: A,
+    shutdown_policy: QemuShutdownPolicy,
+    async_policy: QemuAsyncDriverPolicy,
+    crash_detector: QemuCrashDetector,
+    host_io_runtime: R,
+}
+
+impl<A, R> QemuNodeFactoryRuntime<A, R> {
+    /// Creates the runtime inputs needed to assemble a scheduler-facing node.
+    #[must_use]
+    pub fn new(
+        shmem_config: QemuQuantumShmemConfig,
+        send_authorizer: A,
+        shutdown_policy: QemuShutdownPolicy,
+        async_policy: QemuAsyncDriverPolicy,
+        crash_detector: QemuCrashDetector,
+        host_io_runtime: R,
+    ) -> Self {
+        Self {
+            shmem_config,
+            send_authorizer,
+            shutdown_policy,
+            async_policy,
+            crash_detector,
+            host_io_runtime,
+        }
+    }
+}
+
+/// Authorized VMState restore inputs for warm QEMU node realization.
+pub struct QemuNodeRestorePlan<'a> {
+    checkpoint: &'a Checkpoint,
+    authorization: QemuLoadvmCommandAuthorization,
+    admission: QemuLoadvmRealizationAdmission,
+}
+
+impl<'a> QemuNodeRestorePlan<'a> {
+    /// Creates a warm-restore plan from the checkpoint and policy proof.
+    #[must_use]
+    pub const fn new(
+        checkpoint: &'a Checkpoint,
+        authorization: QemuLoadvmCommandAuthorization,
+        admission: QemuLoadvmRealizationAdmission,
+    ) -> Self {
+        Self {
+            checkpoint,
+            authorization,
+            admission,
+        }
+    }
+}
+
 /// Builds a scheduler-facing QEMU node from completed Linux setup pieces.
 ///
 /// The caller must provide an already-spawned child, a completed plugin setup,
-/// an already-connected QMP VMState channel, shared-memory hot-path config, and
-/// the runtime policies used by [`QemuNode`]. The returned node owns the plugin
+/// an already-connected QMP VMState channel, and the runtime inputs used by
+/// [`QemuNode`]. The returned node owns the plugin
 /// IPC control channel, a mapped shared-memory hot path, and a QMP shutdown
 /// adapter. Generic backend snapshot/restore operations remain disabled; VMState
 /// save/load must continue to go through the explicit realization-policy API.
@@ -123,18 +178,21 @@ pub fn build_qemu_node_from_completed_setup<S, A, R>(
     child: QemuNodeChild,
     setup: QemuHostPluginSetup,
     qmp: QemuQmpVmStateControlChannel<S>,
-    shmem_config: QemuQuantumShmemConfig,
-    send_authorizer: A,
-    shutdown_policy: QemuShutdownPolicy,
-    async_policy: QemuAsyncDriverPolicy,
-    crash_detector: QemuCrashDetector,
-    host_io_runtime: R,
+    runtime: QemuNodeFactoryRuntime<A, R>,
 ) -> Result<QemuNode, QemuNodeFactoryError>
 where
     S: QmpTimeoutStream + 'static,
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
 {
+    let QemuNodeFactoryRuntime {
+        shmem_config,
+        send_authorizer,
+        shutdown_policy,
+        async_policy,
+        crash_detector,
+        host_io_runtime,
+    } = runtime;
     let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;
     Ok(build_qemu_node_from_prepared_setup(
         child,
@@ -165,21 +223,27 @@ pub fn build_qemu_node_from_restored_checkpoint<S, A, R>(
     child: QemuNodeChild,
     setup: QemuHostPluginSetup,
     mut qmp: QemuQmpVmStateControlChannel<S>,
-    checkpoint: &Checkpoint,
-    authorization: QemuLoadvmCommandAuthorization,
-    admission: QemuLoadvmRealizationAdmission,
-    shmem_config: QemuQuantumShmemConfig,
-    send_authorizer: A,
-    shutdown_policy: QemuShutdownPolicy,
-    async_policy: QemuAsyncDriverPolicy,
-    crash_detector: QemuCrashDetector,
-    host_io_runtime: R,
+    restore: QemuNodeRestorePlan<'_>,
+    runtime: QemuNodeFactoryRuntime<A, R>,
 ) -> Result<QemuNode, QemuNodeFactoryError>
 where
     S: QmpTimeoutStream + 'static,
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
 {
+    let QemuNodeFactoryRuntime {
+        shmem_config,
+        send_authorizer,
+        shutdown_policy,
+        async_policy,
+        crash_detector,
+        host_io_runtime,
+    } = runtime;
+    let QemuNodeRestorePlan {
+        checkpoint,
+        authorization,
+        admission,
+    } = restore;
     let _admitted_runtime_hash = admission.runtime_hash();
     validate_runtime_restore_authorization(authorization)?;
     let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;

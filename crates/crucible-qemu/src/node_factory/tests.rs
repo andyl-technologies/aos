@@ -91,12 +91,7 @@ fn factory_assembles_node_from_completed_setup_with_shutdown_only_qmp() -> Resul
         QemuNodeChild::new(child),
         setup,
         qmp,
-        qemu_config(),
-        AllowAllSends,
-        node_shutdown_policy(),
-        QemuAsyncDriverPolicy::fast_test(),
-        QemuCrashDetector::new("vm-a"),
-        ImmediateRuntime,
+        node_factory_runtime(),
     )?;
 
     assert_eq!(
@@ -157,15 +152,12 @@ fn factory_restores_vmstate_before_reducing_qmp_to_shutdown_only() -> Result<(),
         QemuNodeChild::new(child),
         setup,
         qmp,
-        &checkpoint,
-        QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-        test_admission(),
-        qemu_config(),
-        AllowAllSends,
-        node_shutdown_policy(),
-        QemuAsyncDriverPolicy::fast_test(),
-        QemuCrashDetector::new("vm-a"),
-        ImmediateRuntime,
+        QemuNodeRestorePlan::new(
+            &checkpoint,
+            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
+            test_admission(),
+        ),
+        node_factory_runtime(),
     )?;
 
     assert!(matches!(
@@ -230,15 +222,12 @@ fn factory_rejects_probe_authorization_before_vmstate_restore() -> Result<(), Bo
         QemuNodeChild::new(child),
         setup,
         qmp,
-        &checkpoint,
-        QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe(),
-        test_admission(),
-        qemu_config(),
-        AllowAllSends,
-        node_shutdown_policy(),
-        QemuAsyncDriverPolicy::fast_test(),
-        QemuCrashDetector::new("vm-a"),
-        ImmediateRuntime,
+        QemuNodeRestorePlan::new(
+            &checkpoint,
+            QemuSavevmCompletenessPolicy::phase0_fallback().authorize_loadvm_probe(),
+            test_admission(),
+        ),
+        node_factory_runtime(),
     )
     .err()
     .ok_or("factory should reject probe authorization before VMState restore")?;
@@ -283,15 +272,12 @@ fn factory_rejects_restore_slot_mismatch_before_vmstate_restore() -> Result<(), 
         QemuNodeChild::new(child),
         setup,
         qmp,
-        &checkpoint,
-        QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-        test_admission(),
-        qemu_config_for_slot(1),
-        AllowAllSends,
-        node_shutdown_policy(),
-        QemuAsyncDriverPolicy::fast_test(),
-        QemuCrashDetector::new("vm-a"),
-        ImmediateRuntime,
+        QemuNodeRestorePlan::new(
+            &checkpoint,
+            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
+            test_admission(),
+        ),
+        node_factory_runtime_for_slot(1),
     )
     .err()
     .ok_or("factory should reject mismatched setup and shmem slots before VMState restore")?;
@@ -335,12 +321,7 @@ fn factory_rejects_setup_slot_mismatch_before_binding_hot_path() -> Result<(), B
         QemuNodeChild::new(child),
         setup,
         qmp,
-        qemu_config_for_slot(1),
-        AllowAllSends,
-        node_shutdown_policy(),
-        QemuAsyncDriverPolicy::fast_test(),
-        QemuCrashDetector::new("vm-a"),
-        ImmediateRuntime,
+        node_factory_runtime_for_slot(1),
     )
     .err()
     .ok_or("factory should reject mismatched setup and shmem slots")?;
@@ -458,8 +439,21 @@ fn assert_fd_open(fd: std::os::fd::RawFd) -> Result<(), io::Error> {
     }
 }
 
-fn qemu_config() -> QemuQuantumShmemConfig {
-    qemu_config_for_slot(0)
+fn node_factory_runtime() -> QemuNodeFactoryRuntime<AllowAllSends, ImmediateRuntime> {
+    node_factory_runtime_for_slot(0)
+}
+
+fn node_factory_runtime_for_slot(
+    vm_slot: u32,
+) -> QemuNodeFactoryRuntime<AllowAllSends, ImmediateRuntime> {
+    QemuNodeFactoryRuntime::new(
+        qemu_config_for_slot(vm_slot),
+        AllowAllSends,
+        node_shutdown_policy(),
+        QemuAsyncDriverPolicy::fast_test(),
+        QemuCrashDetector::new("vm-a"),
+        ImmediateRuntime,
+    )
 }
 
 fn qemu_config_for_slot(vm_slot: u32) -> QemuQuantumShmemConfig {
