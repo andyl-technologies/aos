@@ -229,7 +229,9 @@ fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box
     assert!(stdout.contains("checkpoint=blake3:"));
     assert!(stdout.contains("configuration=blake3:"));
     assert!(stdout.contains("status=fat==thin-passed"));
-    assert!(stdout.contains("materialization=resumed-session-savepoint"));
+    assert!(stdout.contains(
+        "materialization=qemu-vm-realization operation=resume branch=ancestor-replay"
+    ));
     assert!(stdout.contains(&format!("qemu_build_id={expected_qemu_build_id}")));
     assert!(stdout.contains("qemu_patch_series=sha256-process-qemu-patch-series"));
     assert!(stdout.contains(&format!("plugin_abi={expected_plugin_abi}")));

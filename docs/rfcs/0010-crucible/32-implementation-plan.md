@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:d68cefcb606ecec8`
+Checklist sync digest: `rfc0010-checklist-v1:8b90e516f3534472`
 
 ## The phase ladder
 
@@ -461,15 +461,20 @@ long-held locks.
   remote boundaries, terminal savepoint replay-oracle validation, and terminal
   remote interactive finalization through stopped snapshot query, actor-owned
   terminal savepoint validation, replay-oracle proof, and stopped-session
-  cleanup, plus explicitly selected local-QEMU resumes through the same
-  resumed-session materialization with resolved QEMU/plugin identity provenance
-  in stdout and the canonical log, and process-level `resume --backend qemu`
-  JSONL output plus replay-oracle validation through marker-resolved QEMU/plugin
-  identity, then runs a direct patched-QEMU QMP `snapshot-load` smoke that proves
-  the load job concludes and QEMU reports `running` after `cont`. Full closure
-  waits for wiring the CLI's selected local-QEMU resume path to a real QEMU
-  realization executor with replay-oracle-admitted materialization instead of
-  only appending QEMU identity to the local-double resume path.
+  cleanup, plus explicitly selected local-QEMU resumes that run the same resumed
+  session workflow and derive a source-savepoint ancestor realization proof.
+  The `crucible-qemu` realization coordinator owns baked-genesis,
+  source-ancestor, and savevm policy branches, while the CLI emits
+  `materialization=qemu-vm-realization`, `operation=resume`, branch, replay
+  count, and resolved QEMU/plugin identity in stdout and the canonical log.
+  process-level `resume --backend qemu` JSONL
+  output checks that proof plus replay-oracle validation through
+  marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
+  QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
+  `running` after `cont`. Full closure waits for
+  connecting the QEMU-layer coordinator to process-backed real-QEMU runtime
+  materialization and replay-oracle admission for exact `loadvm` when policy
+  enables that branch.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,

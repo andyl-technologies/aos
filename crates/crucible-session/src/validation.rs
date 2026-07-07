@@ -7,13 +7,14 @@
 
 use crate::{CheckpointRef, Engine, SessionCommand, SessionError, SessionFork, SessionResume};
 use crucible::{
-    Checkpoint, Configuration, ContentHash, DagStore, Decision, EngineError, GenesisCheckpoint,
-    MaterializationPolicy, MaterializationTrigger, QuantumLoop, ReplayOracleCheck, ScenarioDef,
-    ScenarioDefForm, SearchBudget, SearchFailureOracle, SearchReplayOracleSamplingConfig,
-    SearchStrategy, TemporalGraph, TemporalGraphSampledSearchRun, TemporalGraphSearchRun,
-    TemporalGraphStoreError, TemporalGraphStoreKeys, UnifiedGraphOperationEvidence,
-    UnifiedGraphOperationReport,
+    Checkpoint, Configuration, ContentAddressedBlobRef, ContentHash, DagStore, Decision,
+    EngineError, GenesisCheckpoint, MaterializationPolicy, MaterializationTrigger, QuantumLoop,
+    ReplayOracleCheck, ScenarioDef, ScenarioDefForm, SearchBudget, SearchFailureOracle,
+    SearchReplayOracleSamplingConfig, SearchStrategy, TemporalGraph,
+    TemporalGraphSampledSearchRun, TemporalGraphSearchRun, TemporalGraphStoreError,
+    TemporalGraphStoreKeys, UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, reduce,
 };
+use thiserror::Error;
 
 /// Opaque validation DAG handle owned by the session boundary.
 pub struct ValidationDag {
@@ -22,6 +23,148 @@ pub struct ValidationDag {
 
 /// Error emitted while persisting or replaying a validation DAG.
 pub type ValidationDagStoreError = TemporalGraphStoreError;
+
+/// Errors returned while deriving a resume realization proof.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ResumeRealizationError {
+    /// The source checkpoint does not belong to the source configuration.
+    #[error(
+        "resume source checkpoint {checkpoint:?} belongs to {actual_configuration:?}, not {expected_configuration:?}"
+    )]
+    SourceCheckpointMismatch {
+        /// Source checkpoint content address.
+        checkpoint: ContentHash,
+        /// Configuration recorded in the checkpoint.
+        actual_configuration: ContentHash,
+        /// Expected source configuration.
+        expected_configuration: ContentHash,
+    },
+    /// The source schedule is longer than the target schedule.
+    #[error("resume source schedule length {source_len} exceeds target length {target_len}")]
+    SourceAfterTarget {
+        /// Number of source decisions.
+        source_len: usize,
+        /// Number of target decisions.
+        target_len: usize,
+    },
+    /// The target schedule prefix could not be checked.
+    #[error("resume target schedule prefix check failed: {message}")]
+    SchedulePrefix {
+        /// Deterministic failure detail.
+        message: String,
+    },
+    /// The source configuration is not an ancestor of the target.
+    #[error(
+        "resume source configuration {source_configuration:?} is not an ancestor of target {target:?}"
+    )]
+    SourceNotAncestor {
+        /// Source configuration identity.
+        source_configuration: ContentHash,
+        /// Target configuration identity.
+        target: ContentHash,
+    },
+    /// The target runtime state could not be reduced from the target schedule.
+    #[error("resume target runtime reduction failed: {message}")]
+    RuntimeReduction {
+        /// Deterministic failure detail.
+        message: String,
+    },
+}
+
+/// Stable proof fields emitted for local resume realization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeRealizationProof {
+    operation: &'static str,
+    branch: &'static str,
+    configuration: ContentHash,
+    runtime_state: ContentHash,
+    ancestor_configuration: Option<ContentHash>,
+    checkpoint: Option<ContentHash>,
+    replayed_decisions: usize,
+}
+
+impl ResumeRealizationProof {
+    /// Returns the machine-readable summary fields for stdout and canonical logs.
+    #[must_use]
+    pub fn field_summary(&self) -> String {
+        format!(
+            "materialization=qemu-vm-realization operation={} branch={} configuration={} runtime={} ancestor_configuration={} checkpoint={} replayed_decisions={}",
+            self.operation,
+            self.branch,
+            format_content_hash_ref(self.configuration),
+            format_content_hash_ref(self.runtime_state),
+            format_optional_content_hash_ref(self.ancestor_configuration),
+            format_optional_content_hash_ref(self.checkpoint),
+            self.replayed_decisions
+        )
+    }
+}
+
+/// Derives a resume realization proof from a source savepoint and target.
+///
+/// # Errors
+///
+/// Returns [`ResumeRealizationError`] when the source checkpoint does not match
+/// the source configuration, the source schedule is not a target prefix, or the
+/// target runtime state cannot be reduced.
+pub fn realize_resume_from_savepoint(
+    source_configuration: &Configuration,
+    source_checkpoint: &Checkpoint,
+    target: &Configuration,
+) -> Result<ResumeRealizationProof, ResumeRealizationError> {
+    let source_id = source_configuration.id();
+    if source_checkpoint.configuration != source_id {
+        return Err(ResumeRealizationError::SourceCheckpointMismatch {
+            checkpoint: source_checkpoint.id,
+            actual_configuration: source_checkpoint.configuration,
+            expected_configuration: source_id,
+        });
+    }
+
+    let source_len = source_configuration.schedule.len();
+    let target_len = target.schedule.len();
+    if source_len > target_len {
+        return Err(ResumeRealizationError::SourceAfterTarget {
+            source_len,
+            target_len,
+        });
+    }
+    let prefix =
+        target
+            .schedule
+            .prefix(source_len)
+            .map_err(|error| ResumeRealizationError::SchedulePrefix {
+                message: error.to_string(),
+            })?;
+    if source_configuration.def != target.def || prefix != source_configuration.schedule {
+        return Err(ResumeRealizationError::SourceNotAncestor {
+            source_configuration: source_id,
+            target: target.id(),
+        });
+    }
+
+    let state = reduce(&target.def, &target.schedule).map_err(|error| {
+        ResumeRealizationError::RuntimeReduction {
+            message: error.to_string(),
+        }
+    })?;
+    let replayed_decisions = target_len - source_len;
+    let (branch, ancestor_configuration, checkpoint) = if replayed_decisions == 0 {
+        ("exact-savepoint", None, Some(source_checkpoint.id))
+    } else {
+        ("ancestor-replay", Some(source_id), None)
+    };
+
+    Ok(ResumeRealizationProof {
+        operation: "resume",
+        branch,
+        configuration: target.id(),
+        runtime_state: state.id,
+        ancestor_configuration,
+        checkpoint,
+        replayed_decisions,
+    })
+}
 
 impl ValidationDag {
     /// Creates an empty validation DAG.
@@ -182,6 +325,15 @@ impl ValidationDag {
                 sampling_config,
             )
     }
+}
+
+fn format_content_hash_ref(hash: ContentHash) -> String {
+    ContentAddressedBlobRef::from_hash(hash).to_uri()
+}
+
+fn format_optional_content_hash_ref(hash: Option<ContentHash>) -> String {
+    hash.map(format_content_hash_ref)
+        .unwrap_or_else(|| String::from("none"))
 }
 
 /// Creates an empty validation DAG.

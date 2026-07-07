@@ -1089,16 +1089,20 @@ branch on the verdict without parsing output:
   that terminal materialization. Terminal remote interactive command sequences
   now query the stopped snapshot, validate the actor-materialized terminal
   savepoint, emit the same replay-oracle proof, and clean up the stopped remote
-  session. Explicitly selected local-QEMU resumes now route through the same
-  resumed-session materialization with resolved QEMU/plugin identity provenance
-  in stdout and the canonical log, and process-tests real-binary
+  session. Explicitly selected local-QEMU resumes now run the same resumed
+  session workflow and derive a source-savepoint ancestor realization proof;
+  `crucible-qemu` owns the typed realization coordinator with
+  baked-genesis/source-ancestor evidence and the default savevm policy.
+  Stdout and the canonical log record
+  `materialization=qemu-vm-realization`, `operation=resume`, branch, replay
+  count, runtime/configuration hashes, and resolved QEMU/plugin identity.
+  Process-tests cover real-binary
   `resume --backend qemu` JSONL output plus replay-oracle validation through
   marker-resolved QEMU/plugin identity. The gate also runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
-  `running` after `cont`. Full closure remains blocked on wiring the CLI's
-  selected local-QEMU resume path to a real QEMU realization executor with
-  replay-oracle-admitted materialization instead of only appending QEMU identity
-  to the local-double resume path.
+  `running` after `cont`. Full closure remains blocked on connecting the
+  QEMU-layer coordinator to process-backed real-QEMU runtime materialization and
+  replay-oracle admission for exact `loadvm` when policy enables that branch.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.
