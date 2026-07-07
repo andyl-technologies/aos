@@ -33,7 +33,7 @@ use std::rc::Rc;
 
 use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
 use ratchet_jit::{
-    JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
+    JitClifArtifact, JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
     JitRuntimeSymbolAddressCandidate,
     lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module,
     lower_string_length_inline_ir_thunk_body_artifact,
@@ -70,6 +70,16 @@ pub struct NixJitTier1Engine {
     /// path pays nothing when stats are off; when on, each dispatched primop is
     /// counted by builtin name (Phase-B inline-candidate naming).
     record_dispatched_kinds: bool,
+    /// Whether to estimate and record the profit cost of each gated def-site.
+    ///
+    /// Sampled once from `AOS_NIX_EVAL_STATS` at construction. When on, the gated
+    /// path (the default, promotion off) lowers each gated body once to estimate
+    /// its native-instruction count, building the
+    /// [`gated_cost_histogram`](Self::gated_cost_histogram) that reports whether
+    /// the gated mass contains compound bodies worth profit-promoting. It is a
+    /// measurement-only cost paid once per def-site under the stats flag, never on
+    /// the hot dispatch path and never when stats are off.
+    record_gated_cost: bool,
     /// Whether to promote any def-site at all.
     ///
     /// Off by default, so the tier promotes nothing on the current corpus. Every
@@ -132,6 +142,20 @@ struct EngineState {
     /// run can report the gated mass — which shapes the tier is declining to
     /// promote — for the `AOS_NIX_EVAL_STATS` diagnostics.
     gated_kinds: HashMap<String, u32>,
+    /// Number of gated def-sites whose native-instruction count equals the key.
+    ///
+    /// Populated only when [`NixJitTier1Engine::record_gated_cost`] is set, by
+    /// lowering each gated (lowerable) body once and estimating its cost. This is
+    /// the profit-distribution the profit-promotion heuristic is calibrated
+    /// against: a tail of high native-instruction bodies means today's grammar
+    /// already lowers compound bodies worth promoting.
+    gated_cost_by_native: HashMap<u32, u32>,
+    /// Number of gated def-sites the tier-1 lowerer could lower (so a profit pass
+    /// could promote them). Counted only under `record_gated_cost`.
+    gated_lowerable: u32,
+    /// Number of gated def-sites the tier-1 lowerer could not lower (unsupported
+    /// shape today). Counted only under `record_gated_cost`.
+    gated_unlowerable: u32,
 }
 
 impl std::fmt::Debug for NixJitTier1Engine {
@@ -191,6 +215,7 @@ impl NixJitTier1Engine {
             candidates,
             threshold: threshold.max(1),
             record_dispatched_kinds: std::env::var("AOS_NIX_EVAL_STATS").as_deref() == Ok("1"),
+            record_gated_cost: std::env::var("AOS_NIX_EVAL_STATS").as_deref() == Ok("1"),
             force_promote: std::env::var("AOS_NIX_JIT_FORCE_PROMOTE").as_deref()
                 == Ok("1"),
             context: RefCell::new(None),
@@ -208,6 +233,18 @@ impl NixJitTier1Engine {
     #[must_use]
     pub fn force_promote(mut self) -> Self {
         self.force_promote = true;
+        self
+    }
+
+    /// Enables gated-cost recording without the process-global stats env var.
+    ///
+    /// Mirrors what `AOS_NIX_EVAL_STATS=1` turns on for
+    /// [`gated_cost_histogram`](Self::gated_cost_histogram), so a unit test can
+    /// exercise the profit-distribution measurement deterministically.
+    #[cfg(test)]
+    #[must_use]
+    fn record_gated_cost(mut self) -> Self {
+        self.record_gated_cost = true;
         self
     }
 
@@ -287,9 +324,35 @@ impl NixJitTier1Engine {
         if !self.force_promote {
             // Recording is per-def-site (at most once each), not per dispatch.
             let signature = gated_signature(eval, body);
+            // Under the stats flag, estimate what promoting this body would cost
+            // by lowering it once and censusing its native compute. This is the
+            // profit distribution the profit-promotion heuristic is calibrated on;
+            // it is skipped entirely (no lowering) when stats are off.
+            let gated_cost = if self.record_gated_cost {
+                Some(
+                    self.lower_body_artifact(eval, body)
+                        .map(|artifact| artifact.cost_estimate()),
+                )
+            } else {
+                None
+            };
             let mut state = self.state.borrow_mut();
             state.gated_def_sites.insert(key);
             *state.gated_kinds.entry(signature).or_insert(0) += 1;
+            if let Some(cost) = gated_cost {
+                match cost {
+                    Some(cost) => {
+                        state.gated_lowerable = state.gated_lowerable.saturating_add(1);
+                        *state
+                            .gated_cost_by_native
+                            .entry(cost.native_insts())
+                            .or_insert(0) += 1;
+                    }
+                    None => {
+                        state.gated_unlowerable = state.gated_unlowerable.saturating_add(1);
+                    }
+                }
+            }
             return PromotionOutcome::gated();
         }
         {
@@ -321,19 +384,18 @@ impl NixJitTier1Engine {
         }
     }
 
-    /// Lowers, finalizes, installs, and publishes a tier-1 entry for `body`.
+    /// Lowers `body` to a verified CLIF artifact, if its shape is supported today.
     ///
-    /// The entry is keyed by `def_site` so every thunk instance of the same IR
-    /// body shares it. Installing a def-site entry publishes it unconditionally:
-    /// the promoting instance is mid-force (already claimed), and the entry is
-    /// valid for all future instances regardless of this one's state.
-    fn promote(&self, eval: &mut TreeWalk, body: EvalNodeRef, def_site: u64) -> PromotionResult {
-        // A builtin with a native inline (e.g. `stringLength`) lowers to its
-        // dedicated inline body; every other body uses the shared lowerer (which
-        // routes remaining primops to the delegating trampoline).
-        let inline_builtin =
-            primop_symbol_name(eval, body).is_some_and(|name| primop_has_native_inline(name.as_bytes()));
-        let Some(artifact) = eval.tier1_module_ir(body.module()).and_then(|ir| {
+    /// A builtin with a native inline (e.g. `stringLength`) lowers to its
+    /// dedicated inline body; every other body uses the shared force-aware lowerer
+    /// (which routes remaining primops to the delegating trampoline). Returns
+    /// `None` when the IR is missing or the shape is not lowerable. This is the
+    /// shared lowering both [`promote`](Self::promote) and the gated-cost
+    /// measurement use, so the estimated cost matches what promotion would compile.
+    fn lower_body_artifact(&self, eval: &TreeWalk, body: EvalNodeRef) -> Option<JitClifArtifact> {
+        let inline_builtin = primop_symbol_name(eval, body)
+            .is_some_and(|name| primop_has_native_inline(name.as_bytes()));
+        eval.tier1_module_ir(body.module()).and_then(|ir| {
             if inline_builtin {
                 lower_string_length_inline_ir_thunk_body_artifact(&ir.arena, body.id()).ok()
             } else {
@@ -344,7 +406,17 @@ impl NixJitTier1Engine {
                 )
                 .ok()
             }
-        }) else {
+        })
+    }
+
+    /// Lowers, finalizes, installs, and publishes a tier-1 entry for `body`.
+    ///
+    /// The entry is keyed by `def_site` so every thunk instance of the same IR
+    /// body shares it. Installing a def-site entry publishes it unconditionally:
+    /// the promoting instance is mid-force (already claimed), and the entry is
+    /// valid for all future instances regardless of this one's state.
+    fn promote(&self, eval: &mut TreeWalk, body: EvalNodeRef, def_site: u64) -> PromotionResult {
+        let Some(artifact) = self.lower_body_artifact(eval, body) else {
             // The IR is missing or the shape is not lowerable today; never retry.
             return PromotionResult::Unsupported;
         };
@@ -397,6 +469,47 @@ impl NixJitTier1Engine {
             .collect();
         entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         entries
+    }
+
+    /// Returns the gated-mass profit distribution: native-instruction count to
+    /// def-site count, ascending by native count.
+    ///
+    /// Each entry pairs a native-instruction count (the profit proxy from
+    /// [`ratchet_jit::Tier1BodyCost`]) with the number of lowerable gated
+    /// def-sites having that count. Only populated when the engine was built with
+    /// gated-cost recording on (`AOS_NIX_EVAL_STATS=1`). A tail of high native
+    /// counts means today's grammar already lowers compound bodies whose native
+    /// compute could beat the per-dispatch harness, so a profit-promotion pass has
+    /// candidates. See [`gated_lowerable_count`](Self::gated_lowerable_count) and
+    /// [`gated_unlowerable_count`](Self::gated_unlowerable_count) for the totals.
+    pub fn gated_cost_histogram(&self) -> Vec<(u32, u32)> {
+        let mut entries: Vec<(u32, u32)> = self
+            .state
+            .borrow()
+            .gated_cost_by_native
+            .iter()
+            .map(|(native, count)| (*native, *count))
+            .collect();
+        entries.sort_by_key(|entry| entry.0);
+        entries
+    }
+
+    /// Returns how many gated def-sites the tier-1 lowerer could lower.
+    ///
+    /// Populated only under `AOS_NIX_EVAL_STATS=1`; these are the def-sites a
+    /// profit-promotion pass could consider (their cost is in
+    /// [`gated_cost_histogram`](Self::gated_cost_histogram)).
+    pub fn gated_lowerable_count(&self) -> u32 {
+        self.state.borrow().gated_lowerable
+    }
+
+    /// Returns how many gated def-sites the tier-1 lowerer could not lower.
+    ///
+    /// Populated only under `AOS_NIX_EVAL_STATS=1`; these shapes are outside
+    /// today's tier-1 grammar, so no profit pass can promote them without a
+    /// lowerer extension.
+    pub fn gated_unlowerable_count(&self) -> u32 {
+        self.state.borrow().gated_unlowerable
     }
 
     /// Returns the blacklist broken down by body-kind signature, most frequent first.
@@ -474,6 +587,20 @@ impl Drop for NixJitTier1Engine {
                 .collect::<Vec<_>>()
                 .join(",");
             eprintln!("{{\"aos_nix_tier1_gated_histogram\":{{{body}}}}}");
+        }
+        let gated_cost = self.gated_cost_histogram();
+        if !gated_cost.is_empty() {
+            let native = gated_cost
+                .iter()
+                .map(|(native, count)| format!("\"{native}\":{count}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!(
+                "{{\"aos_nix_tier1_gated_cost_histogram\":\
+                 {{\"lowerable\":{},\"unlowerable\":{},\"native_insts\":{{{native}}}}}}}",
+                self.gated_lowerable_count(),
+                self.gated_unlowerable_count(),
+            );
         }
     }
 }
@@ -1005,6 +1132,55 @@ mod tests {
             eval.tier1_skipped_def_site_count() >= 1,
             "a gated def-site must be recorded in the tree-walk skip set, got {}",
             eval.tier1_skipped_def_site_count(),
+        );
+    }
+
+    /// Under the stats flag the default (gated) engine promotes nothing but still
+    /// lowers each gated body once to record the profit-cost distribution.
+    #[test]
+    fn gated_bodies_record_their_profit_cost_distribution() {
+        // A hot `builtins.mul` primop def-site and an `item.r` select def-site,
+        // among the many gated bodies this program forces.
+        let source = "let g = k: { r = builtins.mul k 2; }; \
+             in builtins.foldl' (acc: item: acc + item.r) 0 \
+             (builtins.genList (i: g (i + 1)) 40)";
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        // Promotion stays off (default gate); only cost recording is on.
+        let engine = Rc::new(
+            NixJitTier1Engine::with_threshold(1)
+                .expect("engine builds")
+                .record_gated_cost(),
+        );
+        eval.set_tier1_engine(engine.clone());
+        eval.eval_root().expect("jit evaluation succeeds");
+
+        assert_eq!(
+            eval.stats().tier1_promoted(),
+            0,
+            "the default gate must promote nothing while recording cost"
+        );
+        assert!(
+            engine.gated_lowerable_count() >= 1,
+            "at least one gated body must be lowerable, got lowerable={} unlowerable={}",
+            engine.gated_lowerable_count(),
+            engine.gated_unlowerable_count(),
+        );
+        let histogram = engine.gated_cost_histogram();
+        assert!(
+            !histogram.is_empty(),
+            "a lowerable gated body must record a cost bucket"
+        );
+        // The histogram is ascending by native-instruction count and every bucket
+        // holds at least one def-site, and their sum equals the lowerable count.
+        assert!(histogram.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+        assert!(histogram.iter().all(|(_, count)| *count >= 1));
+        assert_eq!(
+            histogram.iter().map(|(_, count)| count).sum::<u32>(),
+            engine.gated_lowerable_count(),
+            "every lowerable gated def-site must land in exactly one cost bucket"
         );
     }
 

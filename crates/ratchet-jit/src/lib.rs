@@ -42,6 +42,7 @@
 
 pub mod abi;
 pub mod artifact;
+pub mod cost;
 pub mod cranelift;
 pub mod lower;
 pub mod module;
@@ -56,6 +57,7 @@ pub use abi::{
     JitRuntimeContextPtr, JitThunkFn, clif_signature_for_runtime_call, jit_runtime_abi_inventory,
 };
 pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
+pub use cost::{Tier1BodyCost, estimate_tier1_body_cost};
 pub use cranelift::{
     ACTIVE_CRANELIFT_CODEGEN_VERSION, ACTIVE_CRANELIFT_JIT_VERSION,
     ACTIVE_CRANELIFT_MODULE_VERSION, ACTIVE_CRANELIFT_NATIVE_VERSION,

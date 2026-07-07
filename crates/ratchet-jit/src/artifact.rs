@@ -75,6 +75,16 @@ impl JitClifArtifact {
         &self.function
     }
 
+    /// Returns the lowering-time cost estimate for this body.
+    ///
+    /// This is the profit proxy a promotion policy gates on: it classifies the
+    /// body's CLIF instructions into runtime helper calls (which delegate rather
+    /// than save work) and native compute (which replaces interpreter dispatch).
+    /// See [`crate::cost`] for the model.
+    pub fn cost_estimate(&self) -> crate::cost::Tier1BodyCost {
+        crate::cost::estimate_tier1_body_cost(&self.function)
+    }
+
     /// Returns the Cranelift user-function name for this artifact.
     pub fn function_name(&self) -> &UserFuncName {
         &self.function.name
