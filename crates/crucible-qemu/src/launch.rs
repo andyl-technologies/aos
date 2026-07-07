@@ -5,11 +5,13 @@
 //! QEMU; it validates and serializes the deterministic argument subset that
 //! later supervision code will pass to the child process.
 
+mod control_channels;
 mod entropy;
 mod validation;
 
 use std::fmt;
 
+pub use control_channels::{QemuGdbstubChannelConfig, QemuQmpChannelConfig};
 use crucible::{ContentHash, NodeClockSkew};
 use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
 pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
@@ -391,80 +393,6 @@ impl NodeClockSkewDeclaration {
     }
 }
 
-/// Configuration for the debug-session QEMU gdbstub proxy channel.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuGdbstubChannelConfig {
-    qemu_endpoint: String,
-    operator_listen: String,
-}
-
-impl QemuGdbstubChannelConfig {
-    /// Builds a validated gdbstub proxy channel configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLaunchCommandError`] when either endpoint is empty or
-    /// contains a newline or NUL byte.
-    pub fn new(
-        qemu_endpoint: impl Into<String>,
-        operator_listen: impl Into<String>,
-    ) -> Result<Self, QemuLaunchCommandError> {
-        let config = Self {
-            qemu_endpoint: qemu_endpoint.into(),
-            operator_listen: operator_listen.into(),
-        };
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// Returns the raw endpoint passed to QEMU's `-gdb` option.
-    #[must_use]
-    pub fn qemu_endpoint(&self) -> &str {
-        &self.qemu_endpoint
-    }
-
-    /// Returns the operator-facing `--gdb-listen` endpoint owned by the proxy.
-    #[must_use]
-    pub fn operator_listen(&self) -> &str {
-        &self.operator_listen
-    }
-
-    /// Returns whether Crucible mediates the QEMU gdbstub to the operator endpoint.
-    #[must_use]
-    pub const fn mediated_by_crucible(&self) -> bool {
-        true
-    }
-
-    /// Returns whether the gdbstub channel is outside the scheduler hot path.
-    #[must_use]
-    pub const fn out_of_band(&self) -> bool {
-        true
-    }
-
-    /// Returns whether debugger traffic carries per-quantum timing data.
-    #[must_use]
-    pub const fn carries_per_quantum_timing(&self) -> bool {
-        false
-    }
-
-    /// Returns whether debugger traffic carries guest frame data.
-    #[must_use]
-    pub const fn carries_frame_data(&self) -> bool {
-        false
-    }
-
-    /// Validates the launch/proxy endpoint strings.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QemuLaunchCommandError::InvalidLaunchText`] when an endpoint is
-    /// empty or contains a newline or NUL byte.
-    pub fn validate(&self) -> Result<(), QemuLaunchCommandError> {
-        validate_launch_text("qemu_gdbstub_endpoint", &self.qemu_endpoint)?;
-        validate_launch_text("gdb_listen_endpoint", &self.operator_listen)
-    }
-}
-
 /// A validated QEMU launch command prepared for process spawning.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLaunchCommand {
@@ -472,6 +400,7 @@ pub struct QemuLaunchCommand {
     args: Vec<String>,
     vm_hash_material: String,
     gdbstub: Option<QemuGdbstubChannelConfig>,
+    qmp: Option<QemuQmpChannelConfig>,
 }
 
 impl QemuLaunchCommand {
@@ -499,6 +428,12 @@ impl QemuLaunchCommand {
         self.gdbstub.as_ref()
     }
 
+    /// Returns the optional QMP machine-control channel for this launch.
+    #[must_use]
+    pub const fn qmp_channel(&self) -> Option<&QemuQmpChannelConfig> {
+        self.qmp.as_ref()
+    }
+
     /// Returns canonical material for hashing the complete QEMU command line.
     #[must_use]
     pub fn command_line_hash_material(&self) -> String {
@@ -521,6 +456,7 @@ pub struct QemuLaunchCommandBuilder {
     executable: String,
     plugin: QemuLaunchPluginConfig,
     gdbstub: Option<QemuGdbstubChannelConfig>,
+    qmp: Option<QemuQmpChannelConfig>,
 }
 
 impl QemuLaunchCommandBuilder {
@@ -538,6 +474,7 @@ impl QemuLaunchCommandBuilder {
             executable: executable.into(),
             plugin,
             gdbstub: None,
+            qmp: None,
         }
     }
 
@@ -545,6 +482,13 @@ impl QemuLaunchCommandBuilder {
     #[must_use]
     pub fn with_gdbstub(mut self, gdbstub: QemuGdbstubChannelConfig) -> Self {
         self.gdbstub = Some(gdbstub);
+        self
+    }
+
+    /// Returns a builder that enables the QMP machine-control channel.
+    #[must_use]
+    pub fn with_qmp(mut self, qmp: QemuQmpChannelConfig) -> Self {
+        self.qmp = Some(qmp);
         self
     }
 
@@ -563,11 +507,17 @@ impl QemuLaunchCommandBuilder {
         if let Some(gdbstub) = &self.gdbstub {
             gdbstub.validate()?;
         }
+        if let Some(qmp) = &self.qmp {
+            qmp.validate()?;
+        }
 
         let vm_hash_material = self.vm.launch_hash_material();
         let mut args = self.profile.canonical_qemu_args();
         args.extend(self.vm.qemu_args());
         args.extend(["-plugin".to_owned(), self.plugin.qemu_plugin_argument()]);
+        if let Some(qmp) = &self.qmp {
+            args.extend(["-qmp".to_owned(), qmp.qemu_endpoint()]);
+        }
         if let Some(gdbstub) = &self.gdbstub {
             args.extend(["-gdb".to_owned(), gdbstub.qemu_endpoint().to_owned()]);
         }
@@ -579,6 +529,7 @@ impl QemuLaunchCommandBuilder {
             args,
             vm_hash_material,
             gdbstub: self.gdbstub,
+            qmp: self.qmp,
         })
     }
 }
@@ -905,6 +856,12 @@ pub enum QemuLaunchCommandError {
     #[error("root overlay file name must be stable relative text, got `{file_name}`")]
     InvalidOverlayFileName {
         /// Invalid overlay file name.
+        file_name: String,
+    },
+    /// The QMP socket file name was not a stable relative file name.
+    #[error("QMP socket file name must be stable relative text, got `{file_name}`")]
+    InvalidQmpSocketFileName {
+        /// Invalid socket file name.
         file_name: String,
     },
     /// A plugin path contained a comma, which would be ambiguous in QEMU's plugin option.
