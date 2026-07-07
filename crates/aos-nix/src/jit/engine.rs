@@ -36,6 +36,7 @@ use ratchet_jit::{
     JitCraneliftRegisteredArtifactFinalizationPreflight, JitRuntimeSymbolAddressCandidate,
     jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
     lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module,
+    lower_string_length_inline_ir_thunk_body_artifact,
 };
 use ratchet_oracle::eval::tree_walk::TreeWalk;
 use ratchet_oracle::eval::{EvalEnv, EvalNodeRef, OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
@@ -45,7 +46,7 @@ use ratchet_value::value::Value;
 use crate::jit::{
     NixJitRuntimeSymbolAddressCandidateError, nix_jit_deopt_address_candidate,
     nix_jit_primop_call_address_candidate, nix_jit_runtime_symbol_address_candidate_preflight,
-    nix_jit_upval_get_address_candidate,
+    nix_jit_string_length_address_candidate, nix_jit_upval_get_address_candidate,
 };
 
 /// The default per-def-site force count at which a thunk body is promoted.
@@ -168,6 +169,10 @@ impl NixJitTier1Engine {
         // trampoline that re-enters the tree walk, so it is registered directly
         // like `aos_deopt` rather than through the oracle-driven preflight.
         candidates.push(nix_jit_primop_call_address_candidate()?);
+        // `aos_string_length` is the leaf helper the `stringLength` native inline
+        // body calls to read a forced string's byte length; register it directly
+        // like the other standalone wrappers so an inline body can be finalized.
+        candidates.push(nix_jit_string_length_address_candidate()?);
         Ok(Self {
             candidates,
             threshold: threshold.max(1),
@@ -293,13 +298,22 @@ impl NixJitTier1Engine {
     /// the promoting instance is mid-force (already claimed), and the entry is
     /// valid for all future instances regardless of this one's state.
     fn promote(&self, eval: &mut TreeWalk, body: EvalNodeRef, def_site: u64) -> PromotionResult {
+        // A builtin with a native inline (e.g. `stringLength`) lowers to its
+        // dedicated inline body; every other body uses the shared lowerer (which
+        // routes remaining primops to the delegating trampoline).
+        let inline_builtin =
+            primop_symbol_name(eval, body).is_some_and(|name| primop_has_native_inline(name.as_bytes()));
         let Some(artifact) = eval.tier1_module_ir(body.module()).and_then(|ir| {
-            lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module(
-                ir,
-                body.id(),
-                body.module().as_u32(),
-            )
-            .ok()
+            if inline_builtin {
+                lower_string_length_inline_ir_thunk_body_artifact(&ir.arena, body.id()).ok()
+            } else {
+                lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module(
+                    ir,
+                    body.id(),
+                    body.module().as_u32(),
+                )
+                .ok()
+            }
         }) else {
             // The IR is missing or the shape is not lowerable today; never retry.
             return PromotionResult::Unsupported;
@@ -627,8 +641,11 @@ fn primop_symbol_name(eval: &TreeWalk, body: EvalNodeRef) -> Option<String> {
 /// Only pure, deterministic builtins may appear here: an impure builtin records
 /// its observations inside the tree-walk force, so it must keep delegating to
 /// preserve cutoff soundness (see the RFC-0007 primop lowering design).
-fn primop_has_native_inline(_name: &[u8]) -> bool {
-    false
+fn primop_has_native_inline(name: &[u8]) -> bool {
+    // `stringLength` is pure and deterministic: its inline body forces the
+    // argument and returns its byte length, deoptimizing to the tree walk for any
+    // non-string (coercible) argument.
+    name == b"stringLength"
 }
 
 /// Returns true when `body` (through at most one `ThunkAlloc`) is a primop node.
@@ -914,6 +931,64 @@ mod tests {
         assert!(
             skipped.iter().any(|(name, _)| name == "mul"),
             "the delegate-only primop def-site must be recorded as skipped, got {skipped:?}"
+        );
+    }
+
+    /// A hot `stringLength` def-site promotes to its native inline body and
+    /// dispatches, matching the oracle exactly with no deopts for string arguments.
+    #[test]
+    fn hot_string_length_def_site_dispatches_through_the_native_inline() {
+        // Each `g` builds `{ r = builtins.stringLength s; }` for a string `s`;
+        // summing `item.r` across 40 records forces 40 instances of that one
+        // `stringLength` def-site, so it promotes to the native inline and its
+        // later instances dispatch through `aos_string_length`.
+        let source = "let g = s: { r = builtins.stringLength s; }; \
+             in builtins.foldl' (acc: item: acc + item.r) 0 \
+             (builtins.genList (i: g (builtins.toString i)) 40)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_engine(source, 1);
+
+        assert!(
+            oracle.raw_eq(native),
+            "stringLength inline changed a result: oracle {oracle:?} vs native {native:?}"
+        );
+        assert!(
+            stats.tier1_dispatched() >= 1,
+            "expected stringLength inline dispatch, got promoted={} dispatched={} deopted={}",
+            stats.tier1_promoted(),
+            stats.tier1_dispatched(),
+            stats.tier1_deopted(),
+        );
+        assert_eq!(
+            stats.tier1_deopted(),
+            0,
+            "string arguments must dispatch without deopting, got deopted={}",
+            stats.tier1_deopted(),
+        );
+    }
+
+    /// A `stringLength` inline whose argument is not a string traps in the leaf
+    /// helper and deopts to the tree walk, which reproduces the exact oracle error.
+    #[test]
+    fn string_length_inline_deopts_on_non_string_and_matches_the_oracle_error() {
+        // The first records pass strings, promoting and dispatching the inline;
+        // the last record passes an integer, whose forced value is not a string,
+        // so `aos_string_length` traps, the engine deopts, and the tree walk raises
+        // the identical coercion error.
+        let source = "let g = s: { r = builtins.stringLength s; }; \
+             in builtins.foldl' (acc: item: acc + item.r) 0 \
+             (builtins.genList (i: g (if i < 39 then builtins.toString i else i)) 40)";
+        let oracle = eval_oracle_result(source);
+        let native = eval_with_engine_result(source, 1);
+
+        assert!(
+            oracle.is_err(),
+            "the fixture must error on the integer stringLength, got {oracle:?}"
+        );
+        assert_eq!(
+            format!("{native:?}"),
+            format!("{oracle:?}"),
+            "a deopted stringLength trap must reproduce the oracle error"
         );
     }
 

@@ -654,6 +654,36 @@ pub fn nix_jit_primop_call_address_candidate()
     ))
 }
 
+/// Builds the JIT address candidate for the `aos_string_length` leaf helper.
+///
+/// `aos_string_length` returns the byte length of an already-forced string. Like
+/// [`nix_jit_primop_call_address_candidate`], it is a standalone
+/// `ratchet-runtime-ffi` wrapper rather than an oracle-modeled evaluator helper,
+/// so it is registered directly from its process-local wrapper address so a
+/// compiled `stringLength` inline body importing `aos_string_length` can be
+/// finalized. Unlike the primop trampoline it never re-enters the interpreter's
+/// builtin dispatch; it performs only the same heap length lookup an ordinary
+/// tree-walk `stringLength` does.
+///
+/// # Errors
+///
+/// Returns [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
+/// if the `aos_string_length` wrapper reports a null process-local address.
+pub fn nix_jit_string_length_address_candidate()
+-> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
+    let address = ratchet_runtime_ffi::aos_string_length_native_wrapper_address();
+    let raw = NonZeroUsize::new(address as usize).ok_or(
+        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
+            symbol_name: "aos_string_length",
+        },
+    )?;
+    Ok(JitRuntimeSymbolAddressCandidate::new(
+        "aos_string_length".to_owned(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::PrimopDispatch),
+        JitRuntimeSymbolAddress::new(raw),
+    ))
+}
+
 /// Builds JIT runtime-symbol registration readiness from runtime address metadata.
 ///
 /// This top-level integration preflight derives process-local runtime address

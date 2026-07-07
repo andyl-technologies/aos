@@ -17,7 +17,7 @@ use crate::{
         AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX,
         AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX, AOS_PRIMOP_CALL_FUNCTION_INDEX,
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX,
-        AOS_UPDATE_FUNCTION_INDEX, AOS_UPVAL_GET_FUNCTION_INDEX,
+        AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX, AOS_UPVAL_GET_FUNCTION_INDEX,
     },
     symbols::{
         JitRuntimeSymbolDeclaration, JitRuntimeSymbolDeclarationError,
@@ -35,6 +35,7 @@ const AOS_UPDATE_SYMBOL: &str = "aos_update";
 const AOS_DEOPT_SYMBOL: &str = "aos_deopt";
 const AOS_UPVAL_GET_SYMBOL: &str = "aos_upval_get";
 const AOS_PRIMOP_CALL_SYMBOL: &str = "aos_primop_call";
+const AOS_STRING_LENGTH_SYMBOL: &str = "aos_string_length";
 
 /// Address-free CLIF artifact metadata needed by future module setup.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -477,6 +478,9 @@ fn runtime_symbol_for_external_name(
         }
         (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_PRIMOP_CALL_FUNCTION_INDEX) => {
             Some((AOS_PRIMOP_CALL_SYMBOL, user_external_name))
+        }
+        (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_STRING_LENGTH_FUNCTION_INDEX) => {
+            Some((AOS_STRING_LENGTH_SYMBOL, user_external_name))
         }
         _ => None,
     }

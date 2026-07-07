@@ -62,6 +62,7 @@ pub mod force;
 pub mod native_call;
 pub mod primop;
 pub mod safety;
+pub mod string_length;
 pub mod trap;
 pub mod wrappers;
 
@@ -72,6 +73,9 @@ pub use native_call::{
 };
 pub use primop::{
     RuntimePrimopCallNativeFn, aos_primop_call, aos_primop_call_native_wrapper_address,
+};
+pub use string_length::{
+    RuntimeStringLengthNativeFn, aos_string_length, aos_string_length_native_wrapper_address,
 };
 pub use safety::{
     RUNTIME_FFI_SAFETY_COMMENT_PREFIX, RUNTIME_FFI_UNSAFE_CRATE_LINT,

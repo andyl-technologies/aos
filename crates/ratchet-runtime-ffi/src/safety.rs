@@ -565,6 +565,22 @@ mod tests {
         concat!("uns", "afe fn primop_call_success_path(");
     const PRIMOP_ENV_CAST_LINE: &str =
         concat!("let env = ", "uns", "afe { env.cast::<EvalEnv>().as_ref() };");
+    const STRING_LENGTH_FN_TYPE_LINE: &str = concat!(
+        "pub type RuntimeStringLengthNativeFn = ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, Value) -> Value;"
+    );
+    const STRING_LENGTH_EXPORT_ATTR_LINE: &str = concat!("#[", "uns", "afe(", "no_", "mangle)]");
+    const STRING_LENGTH_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_string_length(rt: *mut c_void, value: Value) -> Value {"
+    );
+    const STRING_LENGTH_DECODER_CALL_LINE: &str = concat!("uns", "afe {");
 
     #[test]
     fn discipline_manifest_names_required_controls() {
@@ -644,6 +660,12 @@ mod tests {
                         || is_allowed_native_call_token(&source_root, &source_path, line, token)
                         || is_allowed_deopt_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_primop_wrapper_token(&source_root, &source_path, line, token)
+                        || is_allowed_string_length_wrapper_token(
+                            &source_root,
+                            &source_path,
+                            line,
+                            token,
+                        )
                     {
                         continue;
                     }
@@ -818,6 +840,35 @@ mod tests {
             trimmed == PRIMOP_CALL_FN_TYPE_LINE || trimmed == PRIMOP_CALL_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == PRIMOP_CALL_EXPORT_ATTR_LINE
+        } else {
+            false
+        }
+    }
+
+    fn is_allowed_string_length_wrapper_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("string_length.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == UNSAFE_TOKEN {
+            trimmed == STRING_LENGTH_FN_TYPE_LINE
+                || trimmed == STRING_LENGTH_EXPORT_ATTR_LINE
+                || trimmed == STRING_LENGTH_FN_LINE
+                || trimmed == STRING_LENGTH_DECODER_CALL_LINE
+        } else if token == EXTERN_TOKEN {
+            trimmed == STRING_LENGTH_FN_TYPE_LINE || trimmed == STRING_LENGTH_FN_LINE
+        } else if token == NO_MANGLE_TOKEN {
+            trimmed == STRING_LENGTH_EXPORT_ATTR_LINE
         } else {
             false
         }

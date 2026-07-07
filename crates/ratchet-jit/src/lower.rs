@@ -85,6 +85,9 @@ pub const AOS_UPVAL_GET_FUNCTION_INDEX: u32 = 7;
 /// User-external function index reserved for the `aos_primop_call` helper.
 pub const AOS_PRIMOP_CALL_FUNCTION_INDEX: u32 = 8;
 
+/// User-external function index reserved for the `aos_string_length` helper.
+pub const AOS_STRING_LENGTH_FUNCTION_INDEX: u32 = 9;
+
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
@@ -94,6 +97,7 @@ const AOS_UPDATE_SYMBOL: &str = "aos_update";
 const AOS_DEOPT_SYMBOL: &str = "aos_deopt";
 const AOS_UPVAL_GET_SYMBOL: &str = "aos_upval_get";
 const AOS_PRIMOP_CALL_SYMBOL: &str = "aos_primop_call";
+const AOS_STRING_LENGTH_SYMBOL: &str = "aos_string_length";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
 pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
@@ -161,6 +165,14 @@ pub fn clif_external_name_for_aos_primop_call() -> UserExternalName {
     UserExternalName::new(
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_PRIMOP_CALL_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_string_length`.
+pub fn clif_external_name_for_aos_string_length() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_STRING_LENGTH_FUNCTION_INDEX,
     )
 }
 
@@ -831,6 +843,94 @@ pub fn lower_primop_call_ir_thunk_body_artifact(
         JitClifArtifactSource::IrRoot(root),
         function,
     ))
+}
+
+/// Lowers a `builtins.stringLength` primop body into a native inline CLIF artifact.
+///
+/// This is the tier-1 inline for `stringLength`: the caller (the engine) has
+/// already resolved the primop node's builtin to `stringLength` against the
+/// evaluator symbol table, so this lowering only extracts the single argument
+/// slot operand and emits native code that loads it, forces it through
+/// `aos_force`, and returns its byte length as an integer [`Value`] through the
+/// leaf `aos_string_length` helper. When the forced argument is not a string the
+/// helper traps and the dispatcher deoptimizes to the tree walk, which reproduces
+/// the coercing `stringLength` semantics exactly.
+///
+/// Only a single [`IrKind::LocalVar`] or [`IrKind::UpvalVar`] argument is
+/// supported; any other argument shape yields an error so the engine leaves the
+/// def-site delegated.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`], [`JitLowerError::MissingIrBody`],
+/// [`JitLowerError::MismatchedIrNodeData`], [`JitLowerError::UnsupportedApplyRoot`],
+/// or [`JitLowerError::UnsupportedApplyChild`] when `root` is not a single-slot
+/// `stringLength` primop body, plus runtime ABI signature-conversion and verifier
+/// errors for the imported helpers.
+pub fn lower_string_length_inline_ir_thunk_body_artifact(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let operand = string_length_operand_for_root(arena, root)?;
+    let function =
+        lower_string_length_inline_thunk_body_with_name(operand, clif_name_for_ir_root(root))?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
+}
+
+/// Returns the single slot-operand argument of a `stringLength` primop `root`.
+///
+/// Unwraps at most one [`IrKind::ThunkAlloc`] wrapper, requires an
+/// [`IrKind::PrimOp`] body with exactly one argument, and requires that argument
+/// to be a [`IrKind::LocalVar`] or [`IrKind::UpvalVar`] read.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingIrNode`], [`JitLowerError::MissingIrBody`],
+/// [`JitLowerError::MismatchedIrNodeData`], [`JitLowerError::UnsupportedApplyRoot`],
+/// or [`JitLowerError::UnsupportedApplyChild`] when the body is not a single-slot
+/// primop.
+fn string_length_operand_for_root(
+    arena: &IrArena,
+    root: IrId,
+) -> Result<Tier1SlotOperand, JitLowerError> {
+    let node = arena
+        .node(root)
+        .copied()
+        .ok_or(JitLowerError::MissingIrNode { root })?;
+    let primop = match (node.kind, node.data) {
+        (IrKind::PrimOp, _) => node,
+        (IrKind::ThunkAlloc, IrData::Node(body)) => arena
+            .node(body)
+            .copied()
+            .ok_or(JitLowerError::MissingIrBody { body })?,
+        (kind, _) => return Err(JitLowerError::UnsupportedApplyRoot { kind }),
+    };
+    let args = match (primop.kind, primop.data) {
+        (IrKind::PrimOp, IrData::PrimOp { args, .. }) => args,
+        (kind, _) => return Err(JitLowerError::UnsupportedApplyRoot { kind }),
+    };
+    if args.len() != 1 {
+        return Err(JitLowerError::UnsupportedApplyRoot {
+            kind: IrKind::PrimOp,
+        });
+    }
+    let arg_id = arena
+        .child_slice(args)
+        .and_then(|children| children.first().copied())
+        .ok_or(JitLowerError::UnsupportedApplyRoot {
+            kind: IrKind::PrimOp,
+        })?;
+    let arg_node = arena
+        .node(arg_id)
+        .copied()
+        .ok_or(JitLowerError::MissingApplyChild { child: arg_id })?;
+    slot_operand_for_operand_node(arg_node).ok_or(JitLowerError::UnsupportedApplyChild {
+        child: arg_id,
+        kind: arg_node.kind,
+    })
 }
 
 /// Lowers a direct local-slot application into a verified compiled-thunk CLIF body.
@@ -2042,6 +2142,34 @@ fn lower_primop_call_thunk_body_with_name(
     Ok(function)
 }
 
+fn lower_string_length_inline_thunk_body_with_name(
+    operand: Tier1SlotOperand,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
+    let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(name, signature);
+    let env_get = import_env_get_function(&mut function)?;
+    let upval_get = maybe_import_upval_get_function(&mut function, [operand])?;
+    let force = import_runtime_helper_function(
+        &mut function,
+        AOS_FORCE_SYMBOL,
+        clif_external_name_for_aos_force(),
+    )?;
+    let string_length = import_string_length_function(&mut function)?;
+    let entry_block = append_entry_block_params(&mut function);
+    emit_string_length_inline_return(
+        &mut function,
+        entry_block,
+        env_get,
+        upval_get,
+        force,
+        string_length,
+        operand,
+    )?;
+    verify_clif_function(&function)?;
+    Ok(function)
+}
+
 fn lower_apply_local_slots_thunk_body_with_name(
     function_operand: Tier1SlotOperand,
     argument_operand: Tier1SlotOperand,
@@ -2211,6 +2339,16 @@ fn import_upval_get_function(
         function,
         AOS_UPVAL_GET_SYMBOL,
         clif_external_name_for_aos_upval_get(),
+    )
+}
+
+fn import_string_length_function(
+    function: &mut Function,
+) -> Result<cranelift_codegen::ir::FuncRef, JitLowerError> {
+    import_runtime_helper_function(
+        function,
+        AOS_STRING_LENGTH_SYMBOL,
+        clif_external_name_for_aos_string_length(),
     )
 }
 
@@ -2472,6 +2610,55 @@ fn emit_primop_call_return(
     }
 
     cursor.ins().return_(&results);
+    Ok(())
+}
+
+fn emit_string_length_inline_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    env_get: cranelift_codegen::ir::FuncRef,
+    upval_get: Option<cranelift_codegen::ir::FuncRef>,
+    force: cranelift_codegen::ir::FuncRef,
+    string_length: cranelift_codegen::ir::FuncRef,
+    operand: Tier1SlotOperand,
+) -> Result<(), JitLowerError> {
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let rt = entry_params
+        .first()
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let argument = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, operand)?;
+
+    let force_call = cursor.ins().call(force, &[rt, argument[0], argument[1]]);
+    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+
+    if force_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_FORCE_SYMBOL,
+            expected: 2,
+            actual: force_results.len(),
+        });
+    }
+
+    let length_call = cursor
+        .ins()
+        .call(string_length, &[rt, force_results[0], force_results[1]]);
+    let length_results = cursor.func.dfg.inst_results(length_call).to_vec();
+
+    if length_results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_STRING_LENGTH_SYMBOL,
+            expected: 2,
+            actual: length_results.len(),
+        });
+    }
+
+    cursor.ins().return_(&length_results);
     Ok(())
 }
 

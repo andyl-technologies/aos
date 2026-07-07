@@ -130,6 +130,7 @@ pub const RUNTIME_HELPER_SYMBOLS: &[RuntimeHelperSymbol] = &[
     RuntimeHelperSymbol::new("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
     RuntimeHelperSymbol::new("aos_primop_call", RuntimeHelperRole::PrimopDispatch),
     RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
+    RuntimeHelperSymbol::new("aos_string_length", RuntimeHelperRole::PrimopDispatch),
     RuntimeHelperSymbol::new("aos_throw", RuntimeHelperRole::ErrorControl),
     RuntimeHelperSymbol::new("aos_try_begin", RuntimeHelperRole::ErrorControl),
     RuntimeHelperSymbol::new("aos_try_end", RuntimeHelperRole::ErrorControl),
@@ -449,6 +450,14 @@ const RUNTIME_PRIMOP_CALL_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSign
     PRIMOP_CALL_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_STRING_LENGTH_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_string_length", RuntimeHelperRole::PrimopDispatch),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    FORCE_VALUE_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 const RUNTIME_THROW_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
         symbol: RuntimeHelperSymbol::new("aos_throw", RuntimeHelperRole::ErrorControl),
@@ -501,6 +510,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_HAS_ATTR_CALL_SIGNATURE,
     RUNTIME_PRIMOP_CALL_CALL_SIGNATURE,
     RUNTIME_SELECT_IC_CALL_SIGNATURE,
+    RUNTIME_STRING_LENGTH_CALL_SIGNATURE,
     RUNTIME_THROW_CALL_SIGNATURE,
     RUNTIME_UPDATE_CALL_SIGNATURE,
     RUNTIME_UPVAL_GET_CALL_SIGNATURE,
@@ -551,6 +561,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_has_attr" => Some(RUNTIME_HAS_ATTR_CALL_SIGNATURE),
         "aos_primop_call" => Some(RUNTIME_PRIMOP_CALL_CALL_SIGNATURE),
         "aos_select_ic" => Some(RUNTIME_SELECT_IC_CALL_SIGNATURE),
+        "aos_string_length" => Some(RUNTIME_STRING_LENGTH_CALL_SIGNATURE),
         "aos_update" => Some(RUNTIME_UPDATE_CALL_SIGNATURE),
         "aos_upval_get" => Some(RUNTIME_UPVAL_GET_CALL_SIGNATURE),
         "aos_throw" => Some(RUNTIME_THROW_CALL_SIGNATURE),
@@ -1423,6 +1434,7 @@ mod tests {
                 "aos_has_attr",
                 "aos_primop_call",
                 "aos_select_ic",
+                "aos_string_length",
                 "aos_throw",
                 "aos_update",
                 "aos_upval_get",

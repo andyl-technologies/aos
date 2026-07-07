@@ -1004,4 +1004,32 @@ impl TreeWalk {
         })?;
         Ok(Value::int(string.len() as i64))
     }
+
+    /// Returns the byte length of an already-forced string `value` as an integer.
+    ///
+    /// This is the Rust-callable behind the `aos_string_length` native tier-1
+    /// helper. Native code inlines `builtins.stringLength` by forcing the argument
+    /// and guarding that it is a string before calling this helper, so `value`
+    /// here is always a forced string; a non-string argument is deoptimized in
+    /// native code and never reaches this method. Unlike
+    /// [`eval_string_length_primop`](Self::eval_string_length_primop) it does not
+    /// coerce (the string-tag guard already established string-ness), which for a
+    /// string value is identical since coercion is the identity there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkError`] with a [`TreeWalkErrorKind::Heap`] source when
+    /// `value` is not a string handle owned by this evaluator's heap.
+    pub fn rust_callable_aos_string_length(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string = self
+            .heap
+            .get_string(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        Ok(Value::int(string.len() as i64))
+    }
 }

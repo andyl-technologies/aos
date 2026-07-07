@@ -2996,6 +2996,10 @@ fn runtime_symbol_name_for_user_external_name(
             crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
             crate::lower::AOS_PRIMOP_CALL_FUNCTION_INDEX,
         ) => Some("aos_primop_call"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_STRING_LENGTH_FUNCTION_INDEX,
+        ) => Some("aos_string_length"),
         _ => None,
     }
 }

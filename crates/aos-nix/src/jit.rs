@@ -59,7 +59,7 @@ pub use runtime_symbols::{
     NixJitRuntimeSymbolRegistrationResult, nix_jit_deopt_address_candidate,
     nix_jit_primop_call_address_candidate, nix_jit_runtime_symbol_address_candidate_preflight,
     nix_jit_runtime_symbol_registration_plan, nix_jit_runtime_symbol_registration_preflight,
-    nix_jit_upval_get_address_candidate,
+    nix_jit_string_length_address_candidate, nix_jit_upval_get_address_candidate,
 };
 pub use thunk_install::{
     NixJitThunkInstallGap, NixJitThunkInstallReadiness, NixJitThunkInstallReadinessError,
