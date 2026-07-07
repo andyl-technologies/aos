@@ -147,7 +147,7 @@ impl TreeWalk {
     fn force_cache_payload_for_ir_node_with_frames(
         &self,
         id: EvalNodeRef,
-        frames: &[Rc<EvalFrame>],
+        frames: &[Arc<EvalFrame>],
         depth: usize,
         seen_thunks: &mut BTreeSet<u64>,
     ) -> Option<CachedExpressionValue> {
@@ -234,7 +234,7 @@ impl TreeWalk {
         &self,
         module_id: EvalModuleId,
         data: IrData,
-        frames: &[Rc<EvalFrame>],
+        frames: &[Arc<EvalFrame>],
         depth: usize,
         seen_thunks: &mut BTreeSet<u64>,
     ) -> Option<CachedExpressionValue> {
@@ -265,7 +265,7 @@ impl TreeWalk {
         &self,
         module_id: EvalModuleId,
         data: IrData,
-        frames: &[Rc<EvalFrame>],
+        frames: &[Arc<EvalFrame>],
         depth: usize,
         seen_thunks: &mut BTreeSet<u64>,
     ) -> Option<CachedExpressionValue> {

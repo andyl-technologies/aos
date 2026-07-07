@@ -1770,7 +1770,7 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            object: HeapObjectValue::Lambda(Rc::new(lambda)),
+            object: HeapObjectValue::Lambda(Arc::new(lambda)),
         });
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
@@ -1803,7 +1803,7 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            object: HeapObjectValue::Primop(Rc::new(primop)),
+            object: HeapObjectValue::Primop(Arc::new(primop)),
         });
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
@@ -1836,7 +1836,7 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            object: HeapObjectValue::Thunk(Rc::new(thunk)),
+            object: HeapObjectValue::Thunk(Arc::new(thunk)),
         });
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
@@ -1891,7 +1891,7 @@ impl EvalHeap {
         let (value, object) = match tag {
             ValueTag::Lambda => (
                 Value::lambda(allocation.ptr),
-                HeapObjectValue::Lambda(Rc::new(EvalLambda::new(
+                HeapObjectValue::Lambda(Arc::new(EvalLambda::new(
                     IrId::new(0),
                     IrId::new(0),
                     FrameId::new(0),
@@ -1900,11 +1900,11 @@ impl EvalHeap {
             ),
             ValueTag::Primop => (
                 Value::primop(allocation.ptr),
-                HeapObjectValue::Primop(Rc::new(EvalPrimOp::new(Symbol::new(0)))),
+                HeapObjectValue::Primop(Arc::new(EvalPrimOp::new(Symbol::new(0)))),
             ),
             ValueTag::Thunk => (
                 Value::thunk(allocation.ptr),
-                HeapObjectValue::Thunk(Rc::new(EvalThunk::new(IrId::new(0)))),
+                HeapObjectValue::Thunk(Arc::new(EvalThunk::new(IrId::new(0)))),
             ),
             tag => {
                 return Err(
@@ -2304,13 +2304,13 @@ impl EvalHeap {
 
     /// Clones the thunk handle so forcing can release the heap borrow before
     /// re-entering evaluation.
-    pub(crate) fn clone_thunk(&self, value: Value) -> Result<Rc<EvalThunk>, EvalHeapError> {
+    pub(crate) fn clone_thunk(&self, value: Value) -> Result<Arc<EvalThunk>, EvalHeapError> {
         let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
         let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
         match &record.object {
             HeapObjectValue::Thunk(thunk) => {
                 self.touch_record(record);
-                Ok(Rc::clone(thunk))
+                Ok(Arc::clone(thunk))
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Thunk,
@@ -2322,13 +2322,13 @@ impl EvalHeap {
 
     /// Clones the lambda handle so application can release the heap borrow
     /// before evaluating the body.
-    pub(crate) fn clone_lambda(&self, value: Value) -> Result<Rc<EvalLambda>, EvalHeapError> {
+    pub(crate) fn clone_lambda(&self, value: Value) -> Result<Arc<EvalLambda>, EvalHeapError> {
         let ptr = value.as_lambda_ptr().map_err(EvalHeapError::Value)?;
         let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
         match &record.object {
             HeapObjectValue::Lambda(lambda) => {
                 self.touch_record(record);
-                Ok(Rc::clone(lambda))
+                Ok(Arc::clone(lambda))
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Lambda,
@@ -2340,13 +2340,13 @@ impl EvalHeap {
 
     /// Clones the builtin handle so application can release the heap borrow
     /// before forcing captured arguments.
-    pub(crate) fn clone_primop(&self, value: Value) -> Result<Rc<EvalPrimOp>, EvalHeapError> {
+    pub(crate) fn clone_primop(&self, value: Value) -> Result<Arc<EvalPrimOp>, EvalHeapError> {
         let ptr = value.as_primop_ptr().map_err(EvalHeapError::Value)?;
         let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
         match &record.object {
             HeapObjectValue::Primop(primop) => {
                 self.touch_record(record);
-                Ok(Rc::clone(primop))
+                Ok(Arc::clone(primop))
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Primop,

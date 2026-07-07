@@ -15,7 +15,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::ptr::NonNull;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::*;
 use crate::eval::EvalWithScope;
@@ -7652,13 +7652,13 @@ fn heap_object_value_raw_eq(left: &HeapObjectValue, right: &HeapObjectValue) -> 
             },
         ) => left_metadata == right_metadata && left_attrs.raw_eq(right_attrs),
         (HeapObjectValue::Lambda(left), HeapObjectValue::Lambda(right)) => {
-            std::rc::Rc::ptr_eq(left, right)
+            Arc::ptr_eq(left, right)
         }
         (HeapObjectValue::Primop(left), HeapObjectValue::Primop(right)) => {
-            std::rc::Rc::ptr_eq(left, right)
+            Arc::ptr_eq(left, right)
         }
         (HeapObjectValue::Thunk(left), HeapObjectValue::Thunk(right)) => {
-            std::rc::Rc::ptr_eq(left, right)
+            Arc::ptr_eq(left, right)
         }
         _ => false,
     }
@@ -7879,7 +7879,7 @@ fn record_owned_heap_field_write_object(
                 return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             };
             *arg = EvalPrimOpArg::new_in_module(arg.module(), arg.id(), arg.span(), replacement);
-            Ok(HeapObjectValue::Primop(Rc::new(EvalPrimOp {
+            Ok(HeapObjectValue::Primop(Arc::new(EvalPrimOp {
                 builtin: primop.builtin(),
                 symbol: primop.symbol(),
                 args,
@@ -7899,7 +7899,7 @@ fn record_owned_heap_field_write_object(
             *scope = EvalWithScope::new(scope.module(), scope.scope(), replacement);
             let with_env = EvalWithEnv::capture(&scopes)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
-            Ok(HeapObjectValue::Lambda(Rc::new(EvalLambda::with_captures(
+            Ok(HeapObjectValue::Lambda(Arc::new(EvalLambda::with_captures(
                 lambda.module(),
                 lambda.pattern(),
                 lambda.body(),
@@ -7923,7 +7923,7 @@ fn record_owned_heap_field_write_object(
             *scope = replacement;
             let scoped_globals = EvalScopedGlobalEnv::capture(&scopes)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
-            Ok(HeapObjectValue::Lambda(Rc::new(EvalLambda::with_captures(
+            Ok(HeapObjectValue::Lambda(Arc::new(EvalLambda::with_captures(
                 lambda.module(),
                 lambda.pattern(),
                 lambda.body(),
@@ -7944,11 +7944,11 @@ fn record_owned_heap_field_write_object(
             }
             let parallel_cell = clone_parallel_thunk_cell_for_heap_field_write(thunk)?;
             if parallel_cell.is_none() {
-                return Ok(HeapObjectValue::Thunk(Rc::new(
+                return Ok(HeapObjectValue::Thunk(Arc::new(
                     EvalThunk::with_forced_cached_result_from(thunk, replacement),
                 )));
             }
-            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk {
+            Ok(HeapObjectValue::Thunk(Arc::new(EvalThunk {
                 kind: thunk.kind().clone(),
                 cell: ThunkCell::forced(replacement),
                 force_storage_mode: thunk.force_storage_mode(),
@@ -7969,7 +7969,7 @@ fn record_owned_heap_field_write_object(
             let parallel_cell = parallel_cell
                 .relocated_forced_value(replacement)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)?;
-            Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk {
+            Ok(HeapObjectValue::Thunk(Arc::new(EvalThunk {
                 kind: thunk.kind().clone(),
                 cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                     .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
@@ -8050,7 +8050,7 @@ fn rebuild_thunk_for_heap_field_write(
     thunk: &EvalThunk,
     kind: EvalThunkKind,
 ) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
-    Ok(HeapObjectValue::Thunk(Rc::new(EvalThunk {
+    Ok(HeapObjectValue::Thunk(Arc::new(EvalThunk {
         kind,
         cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
             .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,

@@ -4,13 +4,21 @@
 //! from the start so the later parallel forcing protocol can extend the same
 //! representation. This module implements only the serial subset:
 //! `Suspended -> Blackhole -> Forced`.
+//!
+//! The cached result is stored in an [`AtomicValueCell`] published under the
+//! state word: the claiming owner writes the result while the cell is
+//! blackholed (it holds the exclusive claim), then release-stores `Forced`.
+//! Readers acquire-load the state word before touching the result, so a
+//! `Forced` observation always sees the matching cached value and the cell is
+//! [`Sync`] for the future shared demand graph. `Forced` is terminal: the
+//! result is never rewritten after publication.
 
-use std::cell::Cell;
 use std::convert::TryFrom;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
+use super::env::AtomicValueCell;
 use crate::value::Value;
 
 const SUSPENDED: u64 = 0;
@@ -171,13 +179,14 @@ impl ThunkResolveBarrier for DisabledThunkResolveBarrier {
 /// A serial, safe thunk state/result cell.
 ///
 /// The heap thunk object stores this cell beside its deferred work and captured
-/// environments. The cached result uses [`Cell`] and is intentionally
-/// single-threaded for the tree-walk oracle; the atomic state word exists now
-/// to preserve the future parallel forcing boundary.
+/// environments. The cached result is stored in an [`AtomicValueCell`] and is
+/// published under the atomic state word (see the module docs), so the cell is
+/// [`Send`] and [`Sync`] while keeping the serial
+/// `Suspended -> Blackhole -> Forced` protocol unchanged.
 #[derive(Debug)]
 pub struct ThunkCell {
     state: AtomicU64,
-    result: Cell<Option<Value>>,
+    result: AtomicValueCell,
 }
 
 impl Default for ThunkCell {
@@ -191,7 +200,7 @@ impl ThunkCell {
     pub const fn new() -> Self {
         Self {
             state: AtomicU64::new(SUSPENDED),
-            result: Cell::new(None),
+            result: AtomicValueCell::empty(),
         }
     }
 
@@ -199,7 +208,7 @@ impl ThunkCell {
     pub(crate) fn forced(value: Value) -> Self {
         Self {
             state: AtomicU64::new(FORCED),
-            result: Cell::new(Some(value)),
+            result: AtomicValueCell::filled(value),
         }
     }
 
@@ -224,10 +233,22 @@ impl ThunkCell {
         if self.state()? != ThunkState::Forced {
             return Ok(None);
         }
-        self.result
-            .get()
+        self.read_result()?
             .map(Some)
             .ok_or(ForceError::MissingForcedValue)
+    }
+
+    /// Reads the raw cached result cell.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ForceError::MissingForcedValue`] if the cell's stored words do
+    /// not decode into a runtime value, which is unreachable through
+    /// [`ThunkCell`]'s own publication path.
+    fn read_result(&self) -> Result<Option<Value>, ForceError> {
+        self.result
+            .load()
+            .map_err(|_| ForceError::MissingForcedValue)
     }
 
     /// Claims a suspended thunk for evaluation.
@@ -262,7 +283,7 @@ impl ThunkCell {
                 }
                 ThunkState::Blackhole => return Err(ForceError::InfiniteRecursion),
                 ThunkState::Forced => {
-                    let value = self.result.get().ok_or(ForceError::MissingForcedValue)?;
+                    let value = self.read_result()?.ok_or(ForceError::MissingForcedValue)?;
                     return Ok(ForceClaim::AlreadyForced(value));
                 }
             }
@@ -289,7 +310,7 @@ impl ThunkCell {
                 actual,
             });
         }
-        self.result.set(Some(value));
+        self.result.store(value);
         self.state.store(FORCED, Ordering::Release);
         Ok(value)
     }
@@ -302,7 +323,7 @@ impl ThunkCell {
                 actual,
             });
         }
-        self.result.set(None);
+        self.result.clear();
         self.state.store(SUSPENDED, Ordering::Release);
         Ok(())
     }

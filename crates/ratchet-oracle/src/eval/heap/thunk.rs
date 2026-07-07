@@ -377,6 +377,34 @@ mod tests {
         assert_eq!(thunk.body(), Some(IrId::new(7)));
     }
 
+    /// The graph-shared heap payload types must be [`Send`] and [`Sync`] so a
+    /// later parallel scheduler can force thunks in one shared demand graph.
+    /// This covers every payload behind [`HeapObjectValue`]: the shared
+    /// `Arc<EvalThunk>` / `Arc<EvalLambda>` / `Arc<EvalPrimOp>` handles (with
+    /// their captured [`EvalEnv`] frames, serial [`ThunkCell`], and parallel
+    /// [`TreeWalkParallelThunkCell`]) plus the by-value string/path/list/attrs
+    /// payloads.
+    #[test]
+    fn heap_payload_graph_types_are_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send_sync::<EvalThunk>();
+        assert_send_sync::<EvalThunkKind>();
+        assert_send_sync::<EvalLambda>();
+        assert_send_sync::<EvalPrimOp>();
+        assert_send_sync::<EvalPrimOpArg>();
+        assert_send_sync::<ThunkCell>();
+        assert_send_sync::<TreeWalkParallelThunkCell>();
+        assert_send_sync::<crate::eval::env::EvalFrame>();
+        assert_send_sync::<EvalEnv>();
+        assert_send_sync::<EvalWithEnv>();
+        assert_send_sync::<EvalScopedGlobalEnv>();
+        assert_send_sync::<HeapObjectValue>();
+        assert_send_sync::<std::sync::Arc<EvalThunk>>();
+        assert_send_sync::<std::sync::Arc<EvalLambda>>();
+        assert_send_sync::<std::sync::Arc<EvalPrimOp>>();
+    }
+
     #[test]
     fn eval_thunk_parallel_payload_cell_preserves_metadata_and_replays_result() {
         let thunk = EvalThunk::with_env(EvalModuleId::ROOT, IrId::new(11), EvalEnv::default())

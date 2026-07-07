@@ -276,7 +276,7 @@ impl TreeWalk {
         id: IrId,
         env: &EvalEnv,
         span: Span,
-    ) -> Result<Vec<Rc<EvalFrame>>, TreeWalkError> {
+    ) -> Result<Vec<Arc<EvalFrame>>, TreeWalkError> {
         let frames = env.frames();
         let mut cloned = Vec::new();
         cloned.try_reserve_exact(frames.len()).map_err(|_| {

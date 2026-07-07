@@ -345,7 +345,7 @@ impl DerefMut for HeapRecordTable {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     use super::super::{
         EvalHeap, EvalThunk, HeapAllocationDomain, HeapObjectValue, HeapRecord, HeapRecordLayout,
@@ -375,7 +375,7 @@ mod tests {
             generation: HeapGeneration::Young,
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch: Cell::new(touch),
-            object: HeapObjectValue::Thunk(Rc::new(EvalThunk::new(IrId::new(0)))),
+            object: HeapObjectValue::Thunk(Arc::new(EvalThunk::new(IrId::new(0)))),
         }
     }
 

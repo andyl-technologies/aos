@@ -274,5 +274,6 @@ mod stats;
 mod strings_1;
 mod strings_2;
 mod strings_3;
+mod sync_safety;
 mod toml;
 mod trace;

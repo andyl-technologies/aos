@@ -990,14 +990,14 @@ struct ActivePrimopArgFrame {
 
 #[derive(Debug)]
 struct SuspendedTreeWalkEnv {
-    env: Vec<Rc<EvalFrame>>,
+    env: Vec<Arc<EvalFrame>>,
     with_scopes: Vec<EvalWithScope>,
     scoped_globals: Vec<Value>,
 }
 
 impl SuspendedTreeWalkEnv {
     fn new(
-        env: Vec<Rc<EvalFrame>>,
+        env: Vec<Arc<EvalFrame>>,
         with_scopes: Vec<EvalWithScope>,
         scoped_globals: Vec<Value>,
     ) -> Self {
@@ -1016,7 +1016,7 @@ pub struct TreeWalk {
     current_module: EvalModuleId,
     symbols: SymbolTable,
     heap: EvalHeap,
-    env: Vec<Rc<EvalFrame>>,
+    env: Vec<Arc<EvalFrame>>,
     with_scopes: Vec<EvalWithScope>,
     scoped_globals: Vec<Value>,
     options: TreeWalkOptions,

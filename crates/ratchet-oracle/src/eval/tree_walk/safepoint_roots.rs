@@ -3416,7 +3416,7 @@ impl TreeWalk {
 
     pub(in crate::eval::tree_walk) fn push_suspended_env_roots(
         &mut self,
-        env: Vec<Rc<EvalFrame>>,
+        env: Vec<Arc<EvalFrame>>,
         with_scopes: Vec<EvalWithScope>,
         scoped_globals: Vec<Value>,
     ) {

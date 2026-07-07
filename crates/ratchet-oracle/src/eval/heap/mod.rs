@@ -9,7 +9,7 @@
 
 use std::cell::Cell;
 use std::ptr::NonNull;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -505,9 +505,9 @@ enum HeapObjectValue {
         metadata: EvalHeapAttrsMetadata,
         attrs: FlatAttrs,
     },
-    Lambda(Rc<EvalLambda>),
-    Primop(Rc<EvalPrimOp>),
-    Thunk(Rc<EvalThunk>),
+    Lambda(Arc<EvalLambda>),
+    Primop(Arc<EvalPrimOp>),
+    Thunk(Arc<EvalThunk>),
 }
 
 impl HeapObjectValue {

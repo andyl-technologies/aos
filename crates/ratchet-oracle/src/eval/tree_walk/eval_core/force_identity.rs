@@ -77,7 +77,7 @@ impl TreeWalk {
     fn inline_free_var_value_hashes_for_frames(
         &self,
         body: EvalNodeRef,
-        frames: &[Rc<EvalFrame>],
+        frames: &[Arc<EvalFrame>],
     ) -> Option<Vec<ValueHash>> {
         if frames.is_empty() {
             return Some(Vec::new());
@@ -262,7 +262,7 @@ impl TreeWalk {
     fn force_cache_static_select_default_value_hashes(
         &self,
         module_id: EvalModuleId,
-        frames: &[Rc<EvalFrame>],
+        frames: &[Arc<EvalFrame>],
         receiver: Value,
         path: IrAttrPathId,
         default: &DefaultSelectDependency,
@@ -312,7 +312,7 @@ impl TreeWalk {
     fn captured_static_select_default_dependencies(
         &self,
         module_id: EvalModuleId,
-        frames: &[Rc<EvalFrame>],
+        frames: &[Arc<EvalFrame>],
         default: &DefaultSelectDependency,
     ) -> Option<BTreeSet<CapturedFreeVariableDependency>> {
         let module = self.modules.get(module_id.index())?;
@@ -328,7 +328,7 @@ impl TreeWalk {
     fn push_captured_free_variable_dependency_hash(
         &self,
         module_id: EvalModuleId,
-        frames: &[Rc<EvalFrame>],
+        frames: &[Arc<EvalFrame>],
         dependency: &CapturedFreeVariableDependency,
         hashes: &mut Vec<ValueHash>,
     ) -> Option<()> {

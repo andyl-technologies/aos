@@ -742,7 +742,7 @@ impl TreeWalk {
                 )
             })?;
         if let Some(frame_values) = &frame_values {
-            self.env.push(Rc::clone(frame_values));
+            self.env.push(Arc::clone(frame_values));
         }
         self.begin_order_sensitive_binding_assembly();
         let result = (|| {
@@ -936,7 +936,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         overrides_symbol: Symbol,
-        frame_values: &Rc<EvalFrame>,
+        frame_values: &Arc<EvalFrame>,
         static_slots: &BTreeMap<Symbol, u32>,
         entries: &mut Vec<AttrEntry>,
     ) -> Result<(), TreeWalkError> {
