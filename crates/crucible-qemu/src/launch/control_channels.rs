@@ -4,6 +4,8 @@
 //! scheduler hot path. The gdbstub channel is operator-mediated debugging, and
 //! QMP is machine control for snapshot and shutdown operations.
 
+use std::path::{Path, PathBuf};
+
 use super::validation::{QemuPreSpawnLaunchValidationError, option_values, unique_comma_value};
 use super::{QemuLaunchCommandError, validate_launch_text};
 
@@ -110,6 +112,17 @@ impl QemuQmpChannelConfig {
     #[must_use]
     pub fn socket_file_name(&self) -> &str {
         &self.socket_file_name
+    }
+
+    /// Resolves the host-side socket path inside a caller-owned run directory.
+    ///
+    /// The launch argument intentionally carries only [`Self::socket_file_name`]
+    /// so volatile host paths do not enter QEMU argv or launch hash material.
+    /// The node factory owns `run_directory` and uses this path to connect the
+    /// typed QMP client after spawn.
+    #[must_use]
+    pub fn socket_path(&self, run_directory: impl AsRef<Path>) -> PathBuf {
+        run_directory.as_ref().join(&self.socket_file_name)
     }
 
     /// Returns the QEMU `-qmp` endpoint string.
