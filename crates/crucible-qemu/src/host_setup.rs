@@ -21,7 +21,7 @@ use crucible_shmem::{
 };
 use thiserror::Error;
 
-use crate::QemuSpawnSetupResources;
+use crate::{QemuNodeChannelError, QemuPluginIpcControlChannel, QemuSpawnSetupResources};
 
 /// Completed host-side setup state for one QEMU plugin node.
 #[derive(Debug)]
@@ -69,6 +69,14 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub fn wake_fd(&self) -> RawFd {
         self.wake_fd.as_raw_fd()
+    }
+}
+
+impl QemuPluginIpcControlChannel for QemuHostPluginSetup {
+    fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.control.host_send_quit().map_err(|source| {
+            QemuNodeChannelError::new("send plugin control Quit", source.to_string())
+        })
     }
 }
 
@@ -274,7 +282,8 @@ mod tests {
         let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let plugin_peer = thread::spawn(move || plugin_peer_complete_setup(plugin_socket));
 
-        let setup = complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+        let mut setup =
+            complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
 
         assert_eq!(
             setup.control_state(),
@@ -301,6 +310,8 @@ mod tests {
         assert_fd_open(setup.shmem_fd())?;
         assert_fd_open(setup.wake_fd())?;
         assert_eq!(read_eventfd_counter(setup.wake_fd())?, EVENTFD_WAKE_PROBE);
+        QemuPluginIpcControlChannel::send_quit(&mut setup)?;
+        assert_eq!(setup.control_state(), ControlLifecycleState::QuitSent);
 
         let plugin_region = match plugin_peer.join() {
             Ok(Ok(region)) => region,
@@ -371,6 +382,9 @@ mod tests {
             .map_err(|error| error.to_string())?;
         plugin
             .enter_run_via_shared_memory()
+            .map_err(|error| error.to_string())?;
+        plugin
+            .plugin_read_run_control_frame()
             .map_err(|error| error.to_string())?;
 
         Ok(validated)
