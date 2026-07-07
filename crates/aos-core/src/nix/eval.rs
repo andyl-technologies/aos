@@ -732,6 +732,7 @@ pub struct NixEvalConfig {
     native_cache_verify: bool,
     native_root_cutoff: bool,
     native_root_cutoff_check: bool,
+    native_eval_stats: bool,
     heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
 }
@@ -897,6 +898,21 @@ impl NixEvalConfig {
     /// Enables or disables native root-cutoff cross-check mode.
     pub fn set_native_root_cutoff_check(&mut self, native_root_cutoff_check: bool) {
         self.native_root_cutoff_check = native_root_cutoff_check;
+    }
+
+    /// Returns whether native evaluation work-volume statistics dumping is enabled.
+    ///
+    /// Off by default and enabled through the `AOS_NIX_EVAL_STATS=1` environment
+    /// variable. When on, the native instantiate path prints the evaluator's
+    /// work counters as a single JSON object to stderr at the end of an
+    /// evaluation, for comparison against C++ Nix's `NIX_SHOW_STATS`.
+    pub const fn native_eval_stats(&self) -> bool {
+        self.native_eval_stats
+    }
+
+    /// Enables or disables native evaluation work-volume statistics dumping.
+    pub fn set_native_eval_stats(&mut self, native_eval_stats: bool) {
+        self.native_eval_stats = native_eval_stats;
     }
 
     /// Returns the configured native heap high-water budget in bytes, if set.
@@ -1245,6 +1261,7 @@ impl NixEvalConfig {
             native_cache_verify: false,
             native_root_cutoff: true,
             native_root_cutoff_check: false,
+            native_eval_stats: false,
             heap_memory_budget_bytes: None,
             trace_verbose: false,
         };
@@ -1272,6 +1289,9 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_ROOT_CUTOFF_CHECK") {
             config.set_aos_nix_root_cutoff_check_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_EVAL_STATS") {
+            config.set_aos_nix_eval_stats_env_var(&value);
         }
         if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
             config.set_aos_nix_max_rss_env_var(value);
@@ -1317,6 +1337,10 @@ impl NixEvalConfig {
 
     fn set_aos_nix_root_cutoff_check_env_var(&mut self, value: &str) {
         self.set_native_root_cutoff_check(matches!(value.trim(), "1" | "true"));
+    }
+
+    fn set_aos_nix_eval_stats_env_var(&mut self, value: &str) {
+        self.set_native_eval_stats(matches!(value.trim(), "1" | "true"));
     }
 
     fn set_aos_nix_max_rss_env_var(&mut self, value: String) {
@@ -2757,6 +2781,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         options.set_heap_tier_b_transition_admission_enabled(true);
     }
     options.set_trace_verbose(config.trace_verbose());
+    options.set_eval_stats_dump(config.native_eval_stats());
     Ok(options)
 }
 

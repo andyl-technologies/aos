@@ -408,6 +408,7 @@ impl NixNative {
             native_eval_error_with_source_trace(error, diagnostic_source, self.eval_trace_style())
         })?;
         let stats = *outcome.stats();
+        self.maybe_dump_eval_stats(&stats);
         Ok((json_string_from_outcome(&outcome)?, stats))
     }
 
@@ -523,6 +524,7 @@ impl NixNative {
                 None => native_eval_error_with_trace(error, source_map, self.eval_trace_style()),
             })?;
         let stats = *outcome.stats();
+        self.maybe_dump_eval_stats(&stats);
         Ok((self.native_drv_closure_from_outcome(outcome)?, stats))
     }
 
@@ -581,7 +583,9 @@ impl NixNative {
                         .into());
                     }
                 }
-                return Ok((closure, EvalStats::for_root_cutoff()));
+                let stats = EvalStats::for_root_cutoff();
+                self.maybe_dump_eval_stats(&stats);
+                return Ok((closure, stats));
             }
         }
 
@@ -590,6 +594,7 @@ impl NixNative {
         if let (Some(key), Some(inputs)) = (cutoff_key, cacheable_inputs) {
             self.store_root_cutoff(&options, key, &closure, &inputs);
         }
+        self.maybe_dump_eval_stats(&stats);
         Ok((closure, stats))
     }
 
@@ -902,6 +907,7 @@ fn native_filesystem_access_denied(mode: EvalMode, path: &[u8]) -> NativeEvalErr
 }
 
 mod error;
+mod eval_stats_dump;
 mod fallback;
 mod root_cutoff;
 mod source;

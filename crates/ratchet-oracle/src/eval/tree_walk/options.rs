@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod eval_stats;
 mod path_policy;
 mod result_fingerprint;
 mod root_cutoff;

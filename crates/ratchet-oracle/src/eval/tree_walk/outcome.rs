@@ -13378,6 +13378,14 @@ pub struct EvalStats {
     pub(crate) heap_tier_b_admission_worker_records: u64,
     pub(crate) heap_tier_b_admission_permanent_shared_records: u64,
     pub(crate) heap_tier_b_admission_generation_rewrites: u64,
+    pub(crate) values_allocated: u64,
+    pub(crate) attrsets_built: u64,
+    pub(crate) attrs_entries_total: u64,
+    pub(crate) function_calls: u64,
+    pub(crate) hashcons_attempts: u64,
+    pub(crate) hashcons_hits: u64,
+    pub(crate) symbols_interned: u64,
+    pub(crate) imports_evaluated: u64,
 }
 
 impl EvalStats {
@@ -13611,6 +13619,65 @@ impl EvalStats {
     /// Returns heap-record generation metadata rewrites from the latest Tier-B admission.
     pub const fn heap_tier_b_admission_generation_rewrites(&self) -> u64 {
         self.heap_tier_b_admission_generation_rewrites
+    }
+
+    /// Returns the number of typed-value heap records allocated.
+    ///
+    /// Counts string, path, list, attribute-set, lambda, builtin, and thunk
+    /// records that materialized a new allocation. Hash-cons reuse is excluded,
+    /// so this is the dedup-reduced boxed-value analog of C++ Nix's `nrValues`.
+    pub const fn values_allocated(&self) -> u64 {
+        self.values_allocated
+    }
+
+    /// Returns the number of attribute-set constructions requested.
+    ///
+    /// Includes requests satisfied by a hash-cons hit, matching the accounting
+    /// of C++ Nix's `nrAttrsets`.
+    pub const fn attrsets_built(&self) -> u64 {
+        self.attrsets_built
+    }
+
+    /// Returns the total attribute entries summed over every attribute-set
+    /// construction, the analog of C++ Nix's `nrAttrsInAttrsets`.
+    pub const fn attrs_entries_total(&self) -> u64 {
+        self.attrs_entries_total
+    }
+
+    /// Returns the number of value-level function applications performed.
+    ///
+    /// Counts every lambda and builtin application routed through the central
+    /// apply path, the analog of C++ Nix's `nrFunctionCalls`. Builtins inlined
+    /// as dedicated IR nodes are evaluated directly and are not counted here.
+    pub const fn function_calls(&self) -> u64 {
+        self.function_calls
+    }
+
+    /// Returns the number of structural-hash lookups against the hash-cons tables.
+    pub const fn hashcons_attempts(&self) -> u64 {
+        self.hashcons_attempts
+    }
+
+    /// Returns the number of hash-cons lookups that reused a canonical value.
+    pub const fn hashcons_hits(&self) -> u64 {
+        self.hashcons_hits
+    }
+
+    /// Returns the number of distinct symbols interned by the evaluation.
+    ///
+    /// This is a gauge of the final symbol-table size, the analog of the symbol
+    /// count C++ Nix reports under `symbols`.
+    pub const fn symbols_interned(&self) -> u64 {
+        self.symbols_interned
+    }
+
+    /// Returns the number of imported files that were evaluated.
+    ///
+    /// Counts import-cache misses: an import whose target was evaluated rather
+    /// than served from the per-evaluation import cache. A value below the total
+    /// number of `import` expressions demonstrates the import cache working.
+    pub const fn imports_evaluated(&self) -> u64 {
+        self.imports_evaluated
     }
 
     pub(in crate::eval::tree_walk) fn record_heap_tier_b_admission(

@@ -607,6 +607,7 @@ impl TreeWalk {
 
         self.import_cache
             .insert(cache_path.clone(), ImportCacheEntry::Evaluating);
+        self.increment_imports_evaluated();
         let trace_cursor = self.impure_input_trace_cursor();
         let result = load(self);
         match result {

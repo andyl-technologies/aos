@@ -286,6 +286,7 @@ impl TreeWalk {
         argument_span: Span,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
+        self.increment_function_calls();
         match function.tag() {
             ValueTag::Lambda => {}
             ValueTag::Primop => {

@@ -37,6 +37,7 @@ use crate::string::NixString;
 use crate::syntax::{Span, Symbol};
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
+mod alloc_counters;
 mod arena;
 mod lambda;
 mod primop;
@@ -44,6 +45,7 @@ mod record_table;
 mod roots;
 mod thunk;
 
+pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 use record_table::HeapRecordTable;
 
 pub use arena::{
@@ -232,6 +234,7 @@ pub struct EvalHeap {
     path_cons: HashConsTable<HotXxh3Hash, Value>,
     list_cons: HashConsTable<HotXxh3Hash, Value>,
     attrs_cons: HashConsTable<HotXxh3Hash, Value>,
+    alloc_counters: EvalHeapAllocationCounters,
 }
 
 impl Default for EvalHeap {

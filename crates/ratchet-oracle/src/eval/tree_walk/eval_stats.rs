@@ -6,6 +6,7 @@ impl TreeWalk {
     pub(super) fn stats_snapshot(&self) -> EvalStats {
         let arena = self.heap.arena_stats();
         let permanent_arena = self.heap.permanent_arena_stats();
+        let alloc_counters = self.heap.allocation_counters();
         EvalStats {
             thunks_forced: self.stats.thunks_forced,
             thunks_allocated: self.stats.thunks_allocated,
@@ -66,6 +67,14 @@ impl TreeWalk {
             heap_tier_b_admission_generation_rewrites: self
                 .stats
                 .heap_tier_b_admission_generation_rewrites,
+            values_allocated: alloc_counters.values_allocated(),
+            attrsets_built: alloc_counters.attrsets_built(),
+            attrs_entries_total: alloc_counters.attrs_entries_total(),
+            function_calls: self.stats.function_calls,
+            hashcons_attempts: alloc_counters.hashcons_attempts(),
+            hashcons_hits: alloc_counters.hashcons_hits(),
+            symbols_interned: self.symbols.len() as u64,
+            imports_evaluated: self.stats.imports_evaluated,
         }
     }
 
@@ -631,6 +640,16 @@ impl TreeWalk {
 
     pub(super) fn increment_early_cutoffs(&mut self) {
         self.stats.early_cutoffs = self.stats.early_cutoffs.saturating_add(1);
+    }
+
+    /// Records one value-level function application (lambda or builtin value).
+    pub(super) fn increment_function_calls(&mut self) {
+        self.stats.function_calls = self.stats.function_calls.saturating_add(1);
+    }
+
+    /// Records that one imported file was evaluated on an import-cache miss.
+    pub(super) fn increment_imports_evaluated(&mut self) {
+        self.stats.imports_evaluated = self.stats.imports_evaluated.saturating_add(1);
     }
 
     pub(super) fn increment_derivation_aterm_path_reuses(&mut self) {

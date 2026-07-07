@@ -612,6 +612,7 @@ impl EvalHeap {
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
+            alloc_counters: EvalHeapAllocationCounters::default(),
         }
     }
 
@@ -646,6 +647,7 @@ impl EvalHeap {
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
+            alloc_counters: EvalHeapAllocationCounters::default(),
         })
     }
 
@@ -788,6 +790,16 @@ impl EvalHeap {
     /// Returns current permanent shared allocation accounting.
     pub fn permanent_arena_stats(&self) -> ArenaStats {
         self.permanent_allocator.stats()
+    }
+
+    /// Returns the typed-value allocation work counters for this heap.
+    ///
+    /// The counters describe how many heap records were pushed, how many
+    /// attribute sets were constructed, and how effective hash-consing was, so
+    /// a native evaluation can be compared work-for-work against C++ Nix's
+    /// `NIX_SHOW_STATS` output.
+    pub(crate) const fn allocation_counters(&self) -> EvalHeapAllocationCounters {
+        self.alloc_counters
     }
 
     /// Captures the current worker-domain heap position for lexical region pop.
@@ -1456,10 +1468,14 @@ impl EvalHeap {
         let hash = string.structural_hash_xxh3();
         let cons_slot = match self.admit_string_cons(hash, &string)? {
             HashConsReservation::Existing(value) => {
+                self.alloc_counters.note_hashcons(true);
                 self.touch_reusable_value(value)?;
                 return Ok(value);
             }
-            HashConsReservation::Vacant(slot) => slot,
+            HashConsReservation::Vacant(slot) => {
+                self.alloc_counters.note_hashcons(false);
+                slot
+            }
         };
         let allocation = match self
             .permanent_allocator
@@ -1495,6 +1511,7 @@ impl EvalHeap {
             object: HeapObjectValue::String(string),
         });
         self.push_string_cons_value(cons_slot, value);
+        self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -1513,10 +1530,14 @@ impl EvalHeap {
         let hash = path.structural_hash_xxh3();
         let cons_slot = match self.admit_path_cons(hash, &path)? {
             HashConsReservation::Existing(value) => {
+                self.alloc_counters.note_hashcons(true);
                 self.touch_reusable_value(value)?;
                 return Ok(value);
             }
-            HashConsReservation::Vacant(slot) => slot,
+            HashConsReservation::Vacant(slot) => {
+                self.alloc_counters.note_hashcons(false);
+                slot
+            }
         };
         let allocation = match self
             .permanent_allocator
@@ -1552,6 +1573,7 @@ impl EvalHeap {
             object: HeapObjectValue::Path(path),
         });
         self.push_path_cons_value(cons_slot, value);
+        self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -1570,10 +1592,14 @@ impl EvalHeap {
         let hash = list_structural_hash(&list);
         let cons_slot = match self.admit_list_cons(hash, &list)? {
             HashConsReservation::Existing(value) => {
+                self.alloc_counters.note_hashcons(true);
                 self.touch_reusable_value(value)?;
                 return Ok(value);
             }
-            HashConsReservation::Vacant(slot) => slot,
+            HashConsReservation::Vacant(slot) => {
+                self.alloc_counters.note_hashcons(false);
+                slot
+            }
         };
         let allocation = match self
             .permanent_allocator
@@ -1609,6 +1635,7 @@ impl EvalHeap {
             object: HeapObjectValue::List(list),
         });
         self.push_list_cons_value(cons_slot, value);
+        self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -1665,6 +1692,7 @@ impl EvalHeap {
         projected_shape: Option<ShapeId>,
         attrs: FlatAttrs,
     ) -> Result<Value, EvalHeapError> {
+        self.alloc_counters.note_attrs_built(attrs.len());
         let metadata = match projected_shape {
             Some(projected_shape) => {
                 EvalHeapAttrsMetadata::with_projected_shape(shape, repr, projected_shape)
@@ -1676,10 +1704,14 @@ impl EvalHeap {
             .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
         let cons_slot = match self.admit_attrs_cons(hash, metadata, &attrs)? {
             HashConsReservation::Existing(value) => {
+                self.alloc_counters.note_hashcons(true);
                 self.touch_reusable_value(value)?;
                 return Ok(value);
             }
-            HashConsReservation::Vacant(slot) => slot,
+            HashConsReservation::Vacant(slot) => {
+                self.alloc_counters.note_hashcons(false);
+                slot
+            }
         };
         let allocation = match self
             .permanent_allocator
@@ -1715,6 +1747,7 @@ impl EvalHeap {
             object: HeapObjectValue::Attrs { metadata, attrs },
         });
         self.push_attrs_cons_value(cons_slot, value);
+        self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -1749,6 +1782,7 @@ impl EvalHeap {
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Lambda(Rc::new(lambda)),
         });
+        self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -1783,6 +1817,7 @@ impl EvalHeap {
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Primop(Rc::new(primop)),
         });
+        self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
@@ -1817,6 +1852,7 @@ impl EvalHeap {
             captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Thunk(Rc::new(thunk)),
         });
+        self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)
     }
