@@ -29,13 +29,15 @@ mod runtime_symbols;
 mod thunk_install;
 
 pub use conformance::{
+    BindingProjectionReason, NixJitForcedEnvSlotNativeDifferentialError,
+    NixJitForcedEnvSlotNativeDifferentialResult, NixJitForcedEnvSlotNativeOutcome,
     NixJitLiteralNativeDifferential, NixJitLiteralNativeDifferentialError,
     NixJitLiteralNativeDifferentialResult, NixJitTier1ConformanceGap,
     NixJitTier1ConformanceReadiness, NixJitTier1ConformanceReadinessError,
     NixJitTier1ConformanceReadinessResult,
     nix_jit_force_aware_tier1_conformance_readiness_for_ir_root,
     nix_jit_force_aware_tier1_conformance_readiness_for_lowered_ir_root,
-    nix_jit_literal_native_differential_for_ir_root,
+    nix_jit_forced_env_slot_native_differential, nix_jit_literal_native_differential_for_ir_root,
     nix_jit_tier1_conformance_readiness_for_ir_root,
     nix_jit_tier1_conformance_readiness_for_lowered_ir_root,
 };

@@ -25,6 +25,14 @@ use super::{
 };
 use crate::eval::EvalThunk;
 
+mod native_differential;
+
+pub use native_differential::{
+    BindingProjectionReason, NixJitForcedEnvSlotNativeDifferentialError,
+    NixJitForcedEnvSlotNativeDifferentialResult, NixJitForcedEnvSlotNativeOutcome,
+    nix_jit_forced_env_slot_native_differential,
+};
+
 /// One condition preventing a JIT-enabled differential harness from running tier 1.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NixJitTier1ConformanceGap {

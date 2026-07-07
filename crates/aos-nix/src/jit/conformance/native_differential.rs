@@ -1,0 +1,483 @@
+//! Helper-calling native differential against a live tree-walk evaluator.
+//!
+//! The literal differential in the parent module compiles no-import constant
+//! thunk bodies and compares them against a safe literal projection. This module
+//! takes the next step: it compiles a *helper-calling* artifact — a local
+//! environment-slot read forced through `aos_env_get` and `aos_force` — links it
+//! against the real process-local runtime-FFI wrappers, and executes it against
+//! a live [`TreeWalk`]-backed [`RuntimeJitContext`]. It then compares the value
+//! (or trap) produced by native code with the value (or error) produced by
+//! forcing the same thunk directly through the tree-walk oracle.
+//!
+//! ```text
+//! source `{ v = 40 + 2; }`, binding `v`
+//!   oracle:  eval -> take `v` thunk -> rust_callable_aos_force -> Ok(42) / Err
+//!   native:  compile env-slot-read+force artifact
+//!            register aos_env_get + aos_force real wrapper addresses
+//!            frame[0] = `v` thunk; rt = RuntimeJitContext(eval)
+//!            RuntimeTrapScope installed
+//!            call compiled thunk(rt, env) -> Value / trap
+//!   verify:  Ok values match, or both sides fail (oracle Err <-> native trap)
+//! ```
+//!
+//! Executing native code that can hit an evaluator error is only safe because a
+//! [`RuntimeTrapScope`] is installed for the call: a forcing failure is
+//! transferred out as a [`RuntimeTrap`] instead of aborting the test process.
+
+use ratchet_core::{
+    EffectClass, Ir, IrArena, IrData, IrId, IrKind, IrNode,
+    syntax::{Span, Symbol},
+};
+use ratchet_jit::{
+    JitCraneliftNativeCallError, JitLowerError, JitRuntimeSymbolAddressCandidate,
+    lower_forced_env_get_ir_thunk_body_artifact,
+};
+use ratchet_oracle::eval::tree_walk::TreeWalkError;
+use ratchet_oracle::{
+    compile::resolve,
+    eval::{EvalEnvError, EvalFrame, tree_walk::TreeWalk},
+    runtime::forcing::rust_callable_aos_force,
+    syntax::parse_str,
+};
+use ratchet_runtime_ffi::{RuntimeTrap, run_registered_native_thunk_call};
+use ratchet_value::value::Value;
+use thiserror::Error;
+
+use crate::jit::{
+    NixJitRuntimeSymbolAddressCandidateError, nix_jit_runtime_symbol_address_candidate_preflight,
+};
+
+/// The runtime symbols imported by a forced environment-slot artifact, in order.
+///
+/// The `aos_env_get` wrapper reads the captured slot and the `aos_force` wrapper
+/// forces the loaded value. Both must be registered with their real wrapper
+/// addresses before the compiled body can call them.
+const FORCED_ENV_SLOT_IMPORTS: [&str; 2] = ["aos_env_get", "aos_force"];
+
+/// The reconciled result of one forced environment-slot native differential.
+///
+/// A run agrees in one of two ways: both sides produce the same value, or both
+/// sides fail (the oracle returns a tree-walk error and native code transfers a
+/// trap). Any other combination is a divergence and is reported as an error.
+#[derive(Clone, Debug)]
+pub enum NixJitForcedEnvSlotNativeOutcome {
+    /// Both sides succeeded and produced representationally equal values.
+    Value {
+        /// The value from forcing the thunk directly through the oracle.
+        oracle: Value,
+        /// The value returned by the compiled native thunk body.
+        native: Value,
+    },
+    /// Both sides failed: the oracle errored and native code transferred a trap.
+    Trap {
+        /// The tree-walk error from forcing the thunk directly through the oracle.
+        oracle_error: TreeWalkError,
+        /// The trap transferred out of the native forcing wrapper.
+        native_trap: RuntimeTrap,
+    },
+}
+
+impl NixJitForcedEnvSlotNativeOutcome {
+    /// Returns true when both sides produced equal values.
+    pub const fn is_value(&self) -> bool {
+        matches!(self, Self::Value { .. })
+    }
+
+    /// Returns true when both sides failed (oracle error and native trap).
+    pub const fn is_trap(&self) -> bool {
+        matches!(self, Self::Trap { .. })
+    }
+}
+
+/// A failure while running a forced environment-slot native differential.
+#[derive(Debug, Error)]
+pub enum NixJitForcedEnvSlotNativeDifferentialError {
+    /// The differential source program could not be parsed, resolved, or lowered.
+    #[error("differential source program could not be lowered: {message}")]
+    SourceProgram {
+        /// The display text of the underlying parse, resolve, or lower error.
+        message: String,
+    },
+
+    /// The named binding could not be projected into a forceable slot thunk.
+    #[error("differential binding could not be projected into a slot thunk: {reason}")]
+    BindingProjection {
+        /// The reason the binding thunk could not be produced.
+        reason: BindingProjectionReason,
+    },
+
+    /// The capture frame could not be allocated or populated.
+    #[error(transparent)]
+    Frame(#[from] EvalEnvError),
+
+    /// The forced environment-slot artifact could not be lowered.
+    #[error("forced environment-slot artifact could not be lowered")]
+    LowerArtifact(#[source] JitLowerError),
+
+    /// The registered runtime-symbol candidates could not be built.
+    #[error("runtime-symbol address candidates could not be built")]
+    Candidates(#[from] NixJitRuntimeSymbolAddressCandidateError),
+
+    /// A required runtime symbol had no address candidate in the preflight.
+    #[error("runtime symbol {symbol_name} has no address candidate")]
+    MissingCandidate {
+        /// The stable runtime symbol name that was missing.
+        symbol_name: &'static str,
+    },
+
+    /// The registered native thunk call failed to finalize or execute.
+    #[error("registered native thunk call failed")]
+    NativeCall(#[source] JitCraneliftNativeCallError),
+
+    /// The oracle and native sides disagreed on success, failure, or value.
+    #[error("native differential diverged from the tree-walk oracle: {reason}")]
+    Divergence {
+        /// A human-readable description of how the two sides diverged.
+        reason: String,
+    },
+}
+
+/// Why a named binding could not be projected into a forceable slot thunk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BindingProjectionReason {
+    /// The differential source root did not evaluate to an attribute set.
+    RootNotAttrs,
+    /// The binding name was not interned in the source program's symbol table.
+    UnknownSymbol,
+    /// The attribute set had no binding with the requested name.
+    MissingBinding,
+}
+
+impl std::fmt::Display for BindingProjectionReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::RootNotAttrs => "source root did not evaluate to an attribute set",
+            Self::UnknownSymbol => "binding name is not interned in the source symbol table",
+            Self::MissingBinding => "attribute set has no binding with that name",
+        };
+        formatter.write_str(text)
+    }
+}
+
+/// Result returned by forced environment-slot native differentials.
+pub type NixJitForcedEnvSlotNativeDifferentialResult =
+    Result<NixJitForcedEnvSlotNativeOutcome, NixJitForcedEnvSlotNativeDifferentialError>;
+
+/// Compiles and runs a forced environment-slot artifact against a live tree walk.
+///
+/// `source` must be an attribute set literal and `binding` names one of its
+/// attributes. The attribute's suspended thunk is placed in environment slot 0
+/// and forced two ways: once directly through the tree-walk oracle
+/// ([`rust_callable_aos_force`]) and once through a compiled `aos_env_get` +
+/// `aos_force` thunk body executed against a live [`RuntimeJitContext`]. The
+/// returned [`NixJitForcedEnvSlotNativeOutcome`] records agreement; disagreement
+/// is a [`NixJitForcedEnvSlotNativeDifferentialError::Divergence`].
+///
+/// The native call runs under an installed [`RuntimeTrapScope`], so a forcing
+/// failure is transferred out as a [`RuntimeTrap`] rather than aborting the
+/// process. This is what makes the error-path differential observable.
+///
+/// # Errors
+///
+/// Returns [`NixJitForcedEnvSlotNativeDifferentialError::SourceProgram`] when the
+/// source cannot be parsed, resolved, or lowered;
+/// [`NixJitForcedEnvSlotNativeDifferentialError::BindingProjection`] when the
+/// named binding is not a forceable attribute thunk;
+/// [`NixJitForcedEnvSlotNativeDifferentialError::Frame`] when the capture frame
+/// cannot be built; [`NixJitForcedEnvSlotNativeDifferentialError::LowerArtifact`]
+/// when the artifact cannot be lowered;
+/// [`NixJitForcedEnvSlotNativeDifferentialError::Candidates`] or
+/// [`NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate`] when the
+/// runtime-symbol candidates cannot be built;
+/// [`NixJitForcedEnvSlotNativeDifferentialError::NativeCall`] when the registered
+/// native thunk call fails to finalize or execute; and
+/// [`NixJitForcedEnvSlotNativeDifferentialError::Divergence`] when the oracle and
+/// native sides disagree.
+///
+/// # Panics
+///
+/// Panics under the same Cranelift finalized-function lookup conditions as
+/// [`jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates`].
+pub fn nix_jit_forced_env_slot_native_differential(
+    source: &str,
+    binding: &[u8],
+) -> NixJitForcedEnvSlotNativeDifferentialResult {
+    let source_ir = lower_source(source)?;
+    let source_span = Span::new(0, source.len() as u32);
+
+    let oracle = oracle_force_binding(&source_ir, binding, source_span)?;
+    let native = native_force_binding(&source_ir, binding, source_span)?;
+
+    reconcile(oracle, native)
+}
+
+/// Forces the named binding thunk directly through the tree-walk oracle.
+fn oracle_force_binding(
+    source_ir: &Ir,
+    binding: &[u8],
+    source_span: Span,
+) -> Result<Result<Value, TreeWalkError>, NixJitForcedEnvSlotNativeDifferentialError> {
+    let mut eval = TreeWalk::new(source_ir);
+    let thunk = binding_thunk(&mut eval, source_ir, binding)?;
+    Ok(rust_callable_aos_force(
+        &mut eval,
+        source_ir.root,
+        source_span,
+        thunk,
+    ))
+}
+
+/// Runs the compiled env-slot-read + force artifact against a live tree walk.
+fn native_force_binding(
+    source_ir: &Ir,
+    binding: &[u8],
+    source_span: Span,
+) -> Result<NativeForceResult, NixJitForcedEnvSlotNativeDifferentialError> {
+    let arena = local_slot_zero_arena();
+    let artifact = lower_forced_env_get_ir_thunk_body_artifact(&arena, IrId::new(0))
+        .map_err(NixJitForcedEnvSlotNativeDifferentialError::LowerArtifact)?;
+    let candidates = forced_env_slot_candidates()?;
+
+    let mut eval = TreeWalk::new(source_ir);
+    let thunk = binding_thunk(&mut eval, source_ir, binding)?;
+    let frame = EvalFrame::new(1)?;
+    frame.set(0, thunk)?;
+
+    // The unsafe native-call boundary lives in `ratchet-runtime-ffi`, which pins
+    // the runtime context, installs the trap scope, and returns the value plus
+    // any transferred trap. This crate forbids `unsafe`, so it drives the call
+    // entirely through that safe primitive.
+    let outcome = run_registered_native_thunk_call(
+        &mut eval,
+        source_ir.root,
+        source_span,
+        &frame,
+        artifact,
+        &candidates,
+    )
+    .map_err(NixJitForcedEnvSlotNativeDifferentialError::NativeCall)?;
+
+    Ok(NativeForceResult {
+        value: outcome.value(),
+        trap: outcome.into_trap(),
+    })
+}
+
+/// The value and trap observed from one native execution of the artifact.
+struct NativeForceResult {
+    value: Value,
+    trap: Option<RuntimeTrap>,
+}
+
+/// Reconciles the oracle force result with the native execution result.
+fn reconcile(
+    oracle: Result<Value, TreeWalkError>,
+    native: NativeForceResult,
+) -> NixJitForcedEnvSlotNativeDifferentialResult {
+    match (oracle, native.trap) {
+        (Ok(oracle_value), None) => {
+            if oracle_value.raw_eq(native.value) {
+                Ok(NixJitForcedEnvSlotNativeOutcome::Value {
+                    oracle: oracle_value,
+                    native: native.value,
+                })
+            } else {
+                Err(NixJitForcedEnvSlotNativeDifferentialError::Divergence {
+                    reason: format!(
+                        "oracle produced {oracle_value:?} but native produced {:?}",
+                        native.value
+                    ),
+                })
+            }
+        }
+        (Err(oracle_error), Some(native_trap)) => Ok(NixJitForcedEnvSlotNativeOutcome::Trap {
+            oracle_error,
+            native_trap,
+        }),
+        (Ok(oracle_value), Some(native_trap)) => {
+            Err(NixJitForcedEnvSlotNativeDifferentialError::Divergence {
+                reason: format!(
+                    "oracle produced {oracle_value:?} but native transferred a trap {native_trap:?}"
+                ),
+            })
+        }
+        (Err(oracle_error), None) => Err(NixJitForcedEnvSlotNativeDifferentialError::Divergence {
+            reason: format!(
+                "oracle failed with {oracle_error:?} but native produced {:?}",
+                native.value
+            ),
+        }),
+    }
+}
+
+/// Builds the two registered candidates the forced artifact imports.
+///
+/// The addresses come from the shared runtime-symbol address-candidate
+/// preflight, which sources `aos_env_get` and `aos_force` from the real
+/// runtime-FFI native wrappers.
+fn forced_env_slot_candidates()
+-> Result<Vec<JitRuntimeSymbolAddressCandidate>, NixJitForcedEnvSlotNativeDifferentialError> {
+    let preflight = nix_jit_runtime_symbol_address_candidate_preflight()?;
+    let mut candidates = Vec::with_capacity(FORCED_ENV_SLOT_IMPORTS.len());
+    for symbol_name in FORCED_ENV_SLOT_IMPORTS {
+        let candidate = preflight
+            .address_candidate_for(symbol_name)
+            .ok_or(NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate { symbol_name })?;
+        candidates.push(JitRuntimeSymbolAddressCandidate::new(
+            candidate.symbol_name().to_owned(),
+            candidate.kind(),
+            candidate.address(),
+        ));
+    }
+    Ok(candidates)
+}
+
+/// Returns the arena holding a single local-slot-0 read for the artifact root.
+fn local_slot_zero_arena() -> IrArena {
+    IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::LocalVar,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Local { slot: 0 },
+        )],
+        Vec::new(),
+    )
+}
+
+/// Evaluates `source_ir` and returns the suspended thunk for attribute `binding`.
+fn binding_thunk(
+    eval: &mut TreeWalk,
+    source_ir: &Ir,
+    binding: &[u8],
+) -> Result<Value, NixJitForcedEnvSlotNativeDifferentialError> {
+    let root = eval.eval_root().map_err(|_| {
+        NixJitForcedEnvSlotNativeDifferentialError::BindingProjection {
+            reason: BindingProjectionReason::RootNotAttrs,
+        }
+    })?;
+    let symbol = binding_symbol(source_ir, binding)?;
+    let attrs = eval.heap().get_attrs(root).map_err(|_| {
+        NixJitForcedEnvSlotNativeDifferentialError::BindingProjection {
+            reason: BindingProjectionReason::RootNotAttrs,
+        }
+    })?;
+    attrs.get(symbol).ok_or(
+        NixJitForcedEnvSlotNativeDifferentialError::BindingProjection {
+            reason: BindingProjectionReason::MissingBinding,
+        },
+    )
+}
+
+/// Resolves the interned symbol for attribute `binding` in the source program.
+fn binding_symbol(
+    source_ir: &Ir,
+    binding: &[u8],
+) -> Result<Symbol, NixJitForcedEnvSlotNativeDifferentialError> {
+    source_ir
+        .symbols
+        .symbols()
+        .iter()
+        .position(|symbol| symbol.as_slice() == binding)
+        .map(|index| Symbol::new(index as u32))
+        .ok_or(
+            NixJitForcedEnvSlotNativeDifferentialError::BindingProjection {
+                reason: BindingProjectionReason::UnknownSymbol,
+            },
+        )
+}
+
+/// Parses, resolves, and lowers a differential source program into Core IR.
+fn lower_source(source: &str) -> Result<Ir, NixJitForcedEnvSlotNativeDifferentialError> {
+    let parsed = parse_str(source).map_err(|error| {
+        NixJitForcedEnvSlotNativeDifferentialError::SourceProgram {
+            message: format!("{error:?}"),
+        }
+    })?;
+    let resolved = resolve(parsed).map_err(|error| {
+        NixJitForcedEnvSlotNativeDifferentialError::SourceProgram {
+            message: format!("{error:?}"),
+        }
+    })?;
+    aos_nix_dialect::nix_lower(resolved).map_err(|error| {
+        NixJitForcedEnvSlotNativeDifferentialError::SourceProgram {
+            message: format!("{error:?}"),
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forced_env_slot_native_matches_tree_walk_scalar() {
+        let outcome = nix_jit_forced_env_slot_native_differential("{ v = 40 + 2; }", b"v")
+            .expect("forced env-slot native differential runs");
+
+        let NixJitForcedEnvSlotNativeOutcome::Value { oracle, native } = outcome else {
+            panic!("expected a value-agreement outcome, got {outcome:?}");
+        };
+        assert_eq!(oracle.as_int(), Ok(42));
+        assert_eq!(native.as_int(), Ok(42));
+        assert!(oracle.raw_eq(native));
+    }
+
+    #[test]
+    fn forced_env_slot_native_matches_tree_walk_bool() {
+        let outcome = nix_jit_forced_env_slot_native_differential("{ v = true && false; }", b"v")
+            .expect("forced env-slot native differential runs");
+
+        assert!(outcome.is_value());
+        let NixJitForcedEnvSlotNativeOutcome::Value { native, .. } = outcome else {
+            panic!("expected a value-agreement outcome, got {outcome:?}");
+        };
+        assert_eq!(native.as_bool(), Ok(false));
+    }
+
+    #[test]
+    fn forced_env_slot_native_transfers_trap_instead_of_aborting() {
+        // Forcing `1 / 0` fails in the tree walk. Because the native call runs
+        // under a RuntimeTrapScope, the forcing wrapper transfers the error out
+        // as a trap instead of aborting this test process.
+        let outcome = nix_jit_forced_env_slot_native_differential("{ v = 1 / 0; }", b"v")
+            .expect("forced env-slot native differential runs to a trap agreement");
+
+        let NixJitForcedEnvSlotNativeOutcome::Trap {
+            oracle_error,
+            native_trap,
+        } = outcome
+        else {
+            panic!("expected a trap-agreement outcome, got {outcome:?}");
+        };
+        // The trap transferred out of native code carries the exact tree-walk
+        // error the oracle produced when forcing the same failing thunk.
+        assert!(matches!(
+            native_trap,
+            RuntimeTrap::Force(trap_error) if trap_error == oracle_error
+        ));
+    }
+
+    #[test]
+    fn forced_env_slot_candidates_report_runtime_ffi_wrapper_with_no_blockers() {
+        let preflight = nix_jit_runtime_symbol_address_candidate_preflight()
+            .expect("address candidate preflight builds");
+
+        for symbol_name in FORCED_ENV_SLOT_IMPORTS {
+            let provenance = preflight
+                .address_provenance_for_symbol(symbol_name)
+                .expect("forced env-slot import has address provenance");
+            assert!(
+                provenance.is_runtime_ffi_native_wrapper(),
+                "{symbol_name} must resolve to a runtime-FFI native wrapper"
+            );
+            let blockers = provenance
+                .runtime_ffi_remaining_export_blockers()
+                .expect("runtime-FFI wrapper provenance carries blockers");
+            assert!(
+                blockers.is_empty(),
+                "{symbol_name} runtime-FFI wrapper must have no remaining blockers"
+            );
+        }
+    }
+}
