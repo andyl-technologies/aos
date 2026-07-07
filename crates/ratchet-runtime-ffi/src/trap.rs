@@ -62,6 +62,9 @@ pub enum RuntimeTrap {
     Env(EvalEnvError),
     /// The call-control wrapper (`aos_apply`) reported a tree-walk evaluator error.
     Apply(TreeWalkError),
+    /// The primop-dispatch wrapper (`aos_primop_call`) reported a tree-walk
+    /// evaluator error while forcing a lowered builtin-call body.
+    Primop(TreeWalkError),
     /// An attrset-access wrapper (`aos_has_attr`, `aos_select_ic`, `aos_update`)
     /// reported a tree-walk evaluator error.
     Attr(TreeWalkError),

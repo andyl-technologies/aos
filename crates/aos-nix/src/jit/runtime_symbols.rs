@@ -625,6 +625,35 @@ pub fn nix_jit_upval_get_address_candidate()
     ))
 }
 
+/// Builds the JIT address candidate for the `aos_primop_call` dispatch trampoline.
+///
+/// `aos_primop_call` re-enters the tree walk to force a lowered `IrKind::PrimOp`
+/// body. Like [`nix_jit_deopt_address_candidate`], it is a standalone
+/// `ratchet-runtime-ffi` trampoline rather than an oracle-modeled evaluator
+/// helper, so it does not flow through the oracle rust-callable preflight that
+/// drives [`nix_jit_runtime_symbol_address_candidate_preflight`]. It is
+/// registered directly from its process-local wrapper address so a compiled body
+/// importing `aos_primop_call` can be finalized.
+///
+/// # Errors
+///
+/// Returns [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
+/// if the `aos_primop_call` wrapper reports a null process-local address.
+pub fn nix_jit_primop_call_address_candidate()
+-> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
+    let address = ratchet_runtime_ffi::aos_primop_call_native_wrapper_address();
+    let raw = NonZeroUsize::new(address as usize).ok_or(
+        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
+            symbol_name: "aos_primop_call",
+        },
+    )?;
+    Ok(JitRuntimeSymbolAddressCandidate::new(
+        "aos_primop_call".to_owned(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::PrimopDispatch),
+        JitRuntimeSymbolAddress::new(raw),
+    ))
+}
+
 /// Builds JIT runtime-symbol registration readiness from runtime address metadata.
 ///
 /// This top-level integration preflight derives process-local runtime address

@@ -1315,6 +1315,7 @@ impl StructuredAttrsJson {
 // items via `use super::*;`.
 mod alloc_intern;
 mod coerce_paths;
+mod tier1_dispatch;
 mod derivation_build;
 mod derivation_serialize;
 mod eval_apply;

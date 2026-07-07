@@ -20,6 +20,9 @@
 //! ratchet_runtime_ffi::apply
 //!   aos_apply context-decoding success-path wrapper for the frozen
 //!   `(rt, Value, Value)` call ABI
+//! ratchet_runtime_ffi::primop
+//!   aos_primop_call context-decoding trampoline for the frozen
+//!   `(rt, env, module_id, node_id)` primop-dispatch ABI
 //! ratchet_runtime_ffi::attr
 //!   aos_has_attr, aos_select_ic, and aos_update success-path wrappers for
 //!   frozen attrset-access ABIs
@@ -57,6 +60,7 @@ pub mod deopt;
 pub mod env;
 pub mod force;
 pub mod native_call;
+pub mod primop;
 pub mod safety;
 pub mod trap;
 pub mod wrappers;
@@ -65,6 +69,9 @@ pub use deopt::{RuntimeDeoptNativeFn, aos_deopt, aos_deopt_native_wrapper_addres
 pub use env::{RuntimeUpvalGetNativeFn, aos_upval_get, aos_upval_get_native_wrapper_address};
 pub use native_call::{
     NativeThunkCallOutcome, run_finalized_native_thunk_call, run_registered_native_thunk_call,
+};
+pub use primop::{
+    RuntimePrimopCallNativeFn, aos_primop_call, aos_primop_call_native_wrapper_address,
 };
 pub use safety::{
     RUNTIME_FFI_SAFETY_COMMENT_PREFIX, RUNTIME_FFI_UNSAFE_CRATE_LINT,

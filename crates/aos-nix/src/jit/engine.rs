@@ -35,7 +35,7 @@ use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
 use ratchet_jit::{
     JitCraneliftRegisteredArtifactFinalizationPreflight, JitRuntimeSymbolAddressCandidate,
     jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
-    lower_force_aware_tier1_ir_thunk_body_artifact_for_ir,
+    lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module,
 };
 use ratchet_oracle::eval::tree_walk::TreeWalk;
 use ratchet_oracle::eval::{EvalEnv, EvalNodeRef, OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
@@ -44,7 +44,8 @@ use ratchet_value::value::Value;
 
 use crate::jit::{
     NixJitRuntimeSymbolAddressCandidateError, nix_jit_deopt_address_candidate,
-    nix_jit_runtime_symbol_address_candidate_preflight, nix_jit_upval_get_address_candidate,
+    nix_jit_primop_call_address_candidate, nix_jit_runtime_symbol_address_candidate_preflight,
+    nix_jit_upval_get_address_candidate,
 };
 
 /// The default per-def-site force count at which a thunk body is promoted.
@@ -126,6 +127,10 @@ impl NixJitTier1Engine {
         // an oracle-modeled env-access helper, so it is registered directly like
         // `aos_deopt` rather than through the oracle-driven preflight.
         candidates.push(nix_jit_upval_get_address_candidate()?);
+        // `aos_primop_call` is a JIT/runtime-FFI standalone primop-dispatch
+        // trampoline that re-enters the tree walk, so it is registered directly
+        // like `aos_deopt` rather than through the oracle-driven preflight.
+        candidates.push(nix_jit_primop_call_address_candidate()?);
         Ok(Self {
             candidates,
             threshold: threshold.max(1),
@@ -145,8 +150,16 @@ impl NixJitTier1Engine {
         id: IrId,
         span: Span,
     ) -> Option<Tier1ForceHook> {
-        let key = def_site_key(thunk_body_ref(eval, thunk)?);
+        let body = thunk_body_ref(eval, thunk)?;
+        let key = def_site_key(body);
         let finalization = published_finalization(eval, key)?;
+        // A primop body's native trampoline forces the primop against the
+        // dispatched lexical env with empty `with`/scoped-import scopes, which is
+        // only faithful when the thunk captured none. A primop thunk that did
+        // capture dynamic scopes falls back to the tree walk.
+        if primop_dispatch_needs_dynamic_scopes(eval, thunk, body) {
+            return Some(Tier1ForceHook::Deopted);
+        }
         let Some(env) = dispatch_env(eval, thunk) else {
             return Some(Tier1ForceHook::Deopted);
         };
@@ -203,7 +216,12 @@ impl NixJitTier1Engine {
     /// valid for all future instances regardless of this one's state.
     fn promote(&self, eval: &mut TreeWalk, body: EvalNodeRef, def_site: u64) -> PromotionResult {
         let Some(artifact) = eval.tier1_module_ir(body.module()).and_then(|ir| {
-            lower_force_aware_tier1_ir_thunk_body_artifact_for_ir(ir, body.id()).ok()
+            lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module(
+                ir,
+                body.id(),
+                body.module().as_u32(),
+            )
+            .ok()
         }) else {
             // The IR is missing or the shape is not lowerable today; never retry.
             return PromotionResult::Unsupported;
@@ -401,6 +419,48 @@ fn dispatch_env(eval: &TreeWalk, thunk: Value) -> Option<EvalEnv> {
     Some(heap_thunk.env()?.clone())
 }
 
+/// Returns true when a primop `body`'s thunk captured dynamic scopes.
+///
+/// The `aos_primop_call` trampoline forces the primop against the dispatched
+/// lexical environment with empty `with`/scoped-import scopes (see
+/// [`ratchet_oracle::eval::TreeWalk::run_lowered_primop_body`]), which reproduces
+/// a tree-walk force only when the thunk captured no such scopes. This guard lets
+/// the dispatcher deoptimize the rare primop thunk that did, keeping every other
+/// dispatched shape (which never consults dynamic scopes) unaffected.
+fn primop_dispatch_needs_dynamic_scopes(eval: &TreeWalk, thunk: Value, body: EvalNodeRef) -> bool {
+    if !body_is_primop(eval, body) {
+        return false;
+    }
+    let Ok(heap_thunk) = eval.heap().get_thunk(thunk) else {
+        return false;
+    };
+    let with_nonempty = heap_thunk
+        .with_scope_env()
+        .is_some_and(|env| !env.scopes().is_empty());
+    let scoped_nonempty = heap_thunk
+        .scoped_global_env()
+        .is_some_and(|env| !env.scopes().is_empty());
+    with_nonempty || scoped_nonempty
+}
+
+/// Returns true when `body` (through at most one `ThunkAlloc`) is a primop node.
+fn body_is_primop(eval: &TreeWalk, body: EvalNodeRef) -> bool {
+    let Some(ir) = eval.tier1_module_ir(body.module()) else {
+        return false;
+    };
+    let Some(node) = ir.arena.node(body.id()).copied() else {
+        return false;
+    };
+    match (node.kind, node.data) {
+        (IrKind::PrimOp, _) => true,
+        (IrKind::ThunkAlloc, IrData::Node(inner)) => ir
+            .arena
+            .node(inner)
+            .is_some_and(|inner_node| inner_node.kind == IrKind::PrimOp),
+        _ => false,
+    }
+}
+
 /// Returns the `(module, root)` IR body of `thunk`, if it is a lowered node body.
 fn thunk_body_ref(eval: &TreeWalk, thunk: Value) -> Option<EvalNodeRef> {
     eval.heap().get_thunk(thunk).ok()?.body_ref()
@@ -416,9 +476,10 @@ mod tests {
     use super::*;
 
     use ratchet_core::Ir;
+    use ratchet_oracle::cache::input::ImpureInputFingerprint;
     use ratchet_oracle::compile::resolve;
     use ratchet_oracle::eval::EvalStats;
-    use ratchet_oracle::eval::tree_walk::TreeWalkOptions;
+    use ratchet_oracle::eval::tree_walk::{TreeWalkError, TreeWalkOptions};
     use ratchet_oracle::syntax::parse_str;
 
     /// Parses, resolves, and lowers a source program into Core IR.
@@ -546,6 +607,143 @@ mod tests {
             stats.tier1_promoted(),
             stats.tier1_dispatched(),
             stats.tier1_deopted(),
+        );
+    }
+
+    /// Evaluates `source` on the oracle, returning the value and impure-input trace.
+    fn eval_oracle_with_trace(source: &str) -> (Value, Vec<ImpureInputFingerprint>) {
+        let ir = lower(source);
+        let mut eval = TreeWalk::new(&ir);
+        let value = eval.eval_root().expect("oracle evaluates");
+        let trace = eval.impure_input_trace().to_vec();
+        (value, trace)
+    }
+
+    /// Evaluates `source` with a tier-1 engine, returning value, trace, and stats.
+    fn eval_with_engine_traced(
+        source: &str,
+        threshold: u32,
+    ) -> (Value, Vec<ImpureInputFingerprint>, EvalStats) {
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        eval.set_tier1_engine(Rc::new(
+            NixJitTier1Engine::with_threshold(threshold).expect("engine builds"),
+        ));
+        let value = eval.eval_root().expect("jit evaluation succeeds");
+        let trace = eval.impure_input_trace().to_vec();
+        let stats = eval.stats();
+        (value, trace, stats)
+    }
+
+    /// Evaluates `source` on the oracle, returning the possibly-failing result.
+    fn eval_oracle_result(source: &str) -> Result<Value, TreeWalkError> {
+        let ir = lower(source);
+        TreeWalk::new(&ir).eval_root()
+    }
+
+    /// Evaluates `source` with a tier-1 engine, returning the possibly-failing result.
+    fn eval_with_engine_result(source: &str, threshold: u32) -> Result<Value, TreeWalkError> {
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        eval.set_tier1_engine(Rc::new(
+            NixJitTier1Engine::with_threshold(threshold).expect("engine builds"),
+        ));
+        eval.eval_root()
+    }
+
+    /// A hot primop def-site promotes and dispatches through `aos_primop_call`,
+    /// producing the same value as the oracle with the primop off the blacklist.
+    #[test]
+    fn hot_primop_def_site_dispatches_through_the_trampoline() {
+        // Each `g` call builds `{ r = builtins.mul k 2; }`, whose `r` binding is a
+        // Node thunk with a PrimOp body. Summing `item.r` across 40 records forces
+        // 40 instances of that one primop def-site, so it promotes and its later
+        // instances dispatch through the trampoline back into the tree walk.
+        let source = "let g = k: { r = builtins.mul k 2; }; \
+             in builtins.foldl' (acc: item: acc + item.r) 0 \
+             (builtins.genList (i: g (i + 1)) 40)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_engine(source, 1);
+
+        assert!(
+            oracle.raw_eq(native),
+            "primop dispatch changed a result: oracle {oracle:?} vs native {native:?}"
+        );
+        assert!(
+            stats.tier1_dispatched() >= 1,
+            "expected primop dispatch, got promoted={} dispatched={} deopted={}",
+            stats.tier1_promoted(),
+            stats.tier1_dispatched(),
+            stats.tier1_deopted(),
+        );
+        let histogram = blacklist_histogram_for(source);
+        assert!(
+            !histogram.iter().any(|(kind, _)| kind == "PrimOp:mul"),
+            "the dispatched primop def-site must not be blacklisted, got {histogram:?}"
+        );
+    }
+
+    /// A dispatched impure primop records the same impure-input trace as the
+    /// oracle, the property force-cache cutoff soundness rests on.
+    #[test]
+    fn dispatched_impure_primop_records_the_same_trace_as_the_oracle() {
+        // `builtins.pathExists` is impure: its tree-walk impl records an impure
+        // input fingerprint. Because the trampoline re-enters the tree walk, a
+        // dispatched `pathExists` runs that same impl and records the identical
+        // trace -- never a native re-implementation that could skip it.
+        let source = "let g = k: { r = builtins.pathExists /nonexistent-aos-jit-primop-probe; }; \
+             in builtins.foldl' (acc: item: acc || item.r) false \
+             (builtins.genList (i: g i) 12)";
+        let (oracle_value, oracle_trace) = eval_oracle_with_trace(source);
+        let (native_value, native_trace, stats) = eval_with_engine_traced(source, 1);
+
+        assert!(
+            oracle_value.raw_eq(native_value),
+            "impure primop dispatch changed a result: oracle {oracle_value:?} vs native {native_value:?}"
+        );
+        assert!(
+            stats.tier1_dispatched() >= 1,
+            "expected impure primop dispatch, got promoted={} dispatched={} deopted={}",
+            stats.tier1_promoted(),
+            stats.tier1_dispatched(),
+            stats.tier1_deopted(),
+        );
+        assert!(
+            !native_trace.is_empty(),
+            "a dispatched impure primop must record impure inputs"
+        );
+        assert_eq!(
+            native_trace, oracle_trace,
+            "a dispatched impure primop must record the same trace as the oracle"
+        );
+    }
+
+    /// A dispatched primop that traps deopts to the tree walk, which reproduces
+    /// the exact error the oracle raises.
+    #[test]
+    fn dispatched_primop_trap_deopts_and_matches_the_oracle_error() {
+        // The `builtins.head k` primop def-site succeeds for the first records --
+        // promoting and dispatching it -- then traps on the empty-list instance.
+        // The trampoline transfers the trap, the engine deopts, and the tree walk
+        // reproduces the exact error, so the JIT and oracle fail identically.
+        let source = "let g = k: { r = builtins.head k; }; \
+             in builtins.foldl' (acc: item: acc + item.r) 0 \
+             (builtins.genList (i: g (if i < 39 then [ i ] else [ ])) 40)";
+        let oracle = eval_oracle_result(source);
+        let native = eval_with_engine_result(source, 1);
+
+        assert!(
+            oracle.is_err(),
+            "the fixture must trap on the empty-list head, got {oracle:?}"
+        );
+        assert_eq!(
+            format!("{native:?}"),
+            format!("{oracle:?}"),
+            "a dispatched primop trap must reproduce the oracle error"
         );
     }
 }

@@ -82,6 +82,9 @@ pub const AOS_DEOPT_FUNCTION_INDEX: u32 = 6;
 /// User-external function index reserved for the `aos_upval_get` helper.
 pub const AOS_UPVAL_GET_FUNCTION_INDEX: u32 = 7;
 
+/// User-external function index reserved for the `aos_primop_call` helper.
+pub const AOS_PRIMOP_CALL_FUNCTION_INDEX: u32 = 8;
+
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
@@ -90,6 +93,7 @@ const AOS_SELECT_IC_SYMBOL: &str = "aos_select_ic";
 const AOS_UPDATE_SYMBOL: &str = "aos_update";
 const AOS_DEOPT_SYMBOL: &str = "aos_deopt";
 const AOS_UPVAL_GET_SYMBOL: &str = "aos_upval_get";
+const AOS_PRIMOP_CALL_SYMBOL: &str = "aos_primop_call";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
 pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
@@ -149,6 +153,14 @@ pub fn clif_external_name_for_aos_deopt() -> UserExternalName {
     UserExternalName::new(
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_DEOPT_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_primop_call`.
+pub fn clif_external_name_for_aos_primop_call() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_PRIMOP_CALL_FUNCTION_INDEX,
     )
 }
 
@@ -742,6 +754,83 @@ pub fn lower_forced_upval_get_ir_root_thunk_body_artifact(
     ir: &Ir,
 ) -> Result<JitClifArtifact, JitLowerError> {
     lower_forced_upval_get_ir_thunk_body_artifact(&ir.arena, ir.root)
+}
+
+/// Lowers a force-aware tier-1 thunk body, dispatching primop bodies natively.
+///
+/// This is the module-aware entry the tier-1 engine uses when it knows the
+/// def-site body's owning `module_id`. When `root` resolves (through at most one
+/// [`IrKind::ThunkAlloc`] wrapper) to an [`IrKind::PrimOp`] body it lowers the
+/// delegating `aos_primop_call` trampoline with the primop node's `module_id`
+/// and node id baked in as `i32` operands; otherwise it defers to the
+/// module-agnostic [`lower_force_aware_tier1_ir_thunk_body_artifact_for_ir`].
+///
+/// The compiled trampoline never re-implements a builtin: it re-enters the tree
+/// walk, which keeps every impure observation on the same trace an ordinary
+/// force would record.
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_primop_call_ir_thunk_body_artifact`] for a
+/// primop body, and the same errors as
+/// [`lower_force_aware_tier1_ir_thunk_body_artifact_for_ir`] otherwise.
+pub fn lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module(
+    ir: &Ir,
+    root: IrId,
+    module_id: u32,
+) -> Result<JitClifArtifact, JitLowerError> {
+    match primop_node_id_for_root(&ir.arena, root) {
+        Some(primop_node) => lower_primop_call_ir_thunk_body_artifact(root, module_id, primop_node),
+        None => lower_force_aware_tier1_ir_thunk_body_artifact_for_ir(ir, root),
+    }
+}
+
+/// Lowers a primop thunk body into a verified `aos_primop_call` CLIF body.
+///
+/// The generated function has the frozen compiled-thunk runtime signature. It
+/// imports `aos_primop_call`, passes the compiled thunk `rt` and `env`
+/// parameters plus the primop `module_id` and `node_id` as `i32` operands, and
+/// returns the two runtime `Value` words produced by that trampoline. `root`
+/// names the CLIF function after the def-site body; `node_id` is the primop node
+/// the trampoline re-enters the tree walk to force.
+///
+/// The returned function remains non-executable CLIF only. It is not placed in a
+/// `JITModule`, linked against a native helper address, finalized, or called.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::MissingEntryBlockParameter`] when the entry block
+/// lacks the runtime or environment parameter, and
+/// [`JitLowerError::InvalidRuntimeCallResultArity`] if the trampoline call does
+/// not yield the two-word runtime `Value`. Also returns runtime ABI
+/// signature-conversion and verifier errors.
+pub fn lower_primop_call_ir_thunk_body(
+    root: IrId,
+    module_id: u32,
+    node_id: IrId,
+) -> Result<Function, JitLowerError> {
+    lower_primop_call_thunk_body_with_name(module_id, node_id, clif_name_for_ir_root(root))
+}
+
+/// Lowers a primop thunk body into a non-executable `aos_primop_call` artifact.
+///
+/// The artifact records the def-site Core IR `root` id as source metadata and
+/// contains the same verified CLIF function returned by
+/// [`lower_primop_call_ir_thunk_body`].
+///
+/// # Errors
+///
+/// Returns the same errors as [`lower_primop_call_ir_thunk_body`].
+pub fn lower_primop_call_ir_thunk_body_artifact(
+    root: IrId,
+    module_id: u32,
+    node_id: IrId,
+) -> Result<JitClifArtifact, JitLowerError> {
+    let function = lower_primop_call_ir_thunk_body(root, module_id, node_id)?;
+    Ok(thunk_body_artifact(
+        JitClifArtifactSource::IrRoot(root),
+        function,
+    ))
 }
 
 /// Lowers a direct local-slot application into a verified compiled-thunk CLIF body.
@@ -1358,6 +1447,24 @@ fn upval_depth_slot_for_node(node: IrNode) -> Result<(u32, u32), JitLowerError> 
     }
 }
 
+/// Returns the primop node id for a def-site body `root`, if it is a primop.
+///
+/// The tier-1 dispatcher hands the lowerer a thunk body node that is either an
+/// [`IrKind::PrimOp`] directly or a single [`IrKind::ThunkAlloc`] wrapping one.
+/// This unwraps at most one `ThunkAlloc` and returns the inner primop node id,
+/// or `None` when the body is any other shape.
+fn primop_node_id_for_root(arena: &IrArena, root: IrId) -> Option<IrId> {
+    let node = arena.node(root).copied()?;
+    match (node.kind, node.data) {
+        (IrKind::PrimOp, _) => Some(root),
+        (IrKind::ThunkAlloc, IrData::Node(body)) => {
+            let body_node = arena.node(body).copied()?;
+            (body_node.kind == IrKind::PrimOp).then_some(body)
+        }
+        _ => None,
+    }
+}
+
 fn apply_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     let node = arena
         .node(root)
@@ -1921,6 +2028,20 @@ fn lower_forced_upval_get_slot_thunk_body_with_name(
     Ok(function)
 }
 
+fn lower_primop_call_thunk_body_with_name(
+    module_id: u32,
+    node_id: IrId,
+    name: UserFuncName,
+) -> Result<Function, JitLowerError> {
+    let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
+    let mut function = Function::with_name_signature(name, signature);
+    let primop_call = import_primop_call_function(&mut function)?;
+    let entry_block = append_entry_block_params(&mut function);
+    emit_primop_call_return(&mut function, entry_block, primop_call, module_id, node_id)?;
+    verify_clif_function(&function)?;
+    Ok(function)
+}
+
 fn lower_apply_local_slots_thunk_body_with_name(
     function_operand: Tier1SlotOperand,
     argument_operand: Tier1SlotOperand,
@@ -2070,6 +2191,16 @@ fn import_env_get_function(
         function,
         AOS_ENV_GET_SYMBOL,
         clif_external_name_for_aos_env_get(),
+    )
+}
+
+fn import_primop_call_function(
+    function: &mut Function,
+) -> Result<cranelift_codegen::ir::FuncRef, JitLowerError> {
+    import_runtime_helper_function(
+        function,
+        AOS_PRIMOP_CALL_SYMBOL,
+        clif_external_name_for_aos_primop_call(),
     )
 }
 
@@ -2307,6 +2438,40 @@ fn emit_forced_upval_get_return(
     }
 
     cursor.ins().return_(&force_results);
+    Ok(())
+}
+
+fn emit_primop_call_return(
+    function: &mut Function,
+    entry_block: cranelift_codegen::ir::Block,
+    primop_call: cranelift_codegen::ir::FuncRef,
+    module_id: u32,
+    node_id: IrId,
+) -> Result<(), JitLowerError> {
+    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
+    let entry_params = cursor.func.dfg.block_params(entry_block);
+    let rt = entry_params
+        .first()
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
+    let env = entry_params
+        .get(1)
+        .copied()
+        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
+    let module_id = cursor.ins().iconst(types::I32, i64::from(module_id));
+    let node_id = cursor.ins().iconst(types::I32, i64::from(node_id.as_u32()));
+    let call = cursor.ins().call(primop_call, &[rt, env, module_id, node_id]);
+    let results = cursor.func.dfg.inst_results(call).to_vec();
+
+    if results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name: AOS_PRIMOP_CALL_SYMBOL,
+            expected: 2,
+            actual: results.len(),
+        });
+    }
+
+    cursor.ins().return_(&results);
     Ok(())
 }
 

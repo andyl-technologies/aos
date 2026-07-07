@@ -142,12 +142,21 @@ mod tests {
         "uns",
         "afe { with_native_env(env, |env| upval_frame_slot(env, depth, slot)) }"
     );
-    const UPVAL_INNERMOST_TEST_CALL_LINE: &str =
-        concat!("let innermost = ", "uns", "afe { aos_upval_get(env_ptr, 0, 0) };");
-    const UPVAL_PARENT_TEST_CALL_LINE: &str =
-        concat!("let parent = ", "uns", "afe { aos_upval_get(env_ptr, 1, 0) };");
-    const UPVAL_BAD_DEPTH_TEST_CALL_LINE: &str =
-        concat!("let value = ", "uns", "afe { aos_upval_get(env_ptr, 5, 0) };");
+    const UPVAL_INNERMOST_TEST_CALL_LINE: &str = concat!(
+        "let innermost = ",
+        "uns",
+        "afe { aos_upval_get(env_ptr, 0, 0) };"
+    );
+    const UPVAL_PARENT_TEST_CALL_LINE: &str = concat!(
+        "let parent = ",
+        "uns",
+        "afe { aos_upval_get(env_ptr, 1, 0) };"
+    );
+    const UPVAL_BAD_DEPTH_TEST_CALL_LINE: &str = concat!(
+        "let value = ",
+        "uns",
+        "afe { aos_upval_get(env_ptr, 5, 0) };"
+    );
     const DEOPT_FN_TYPE_LINE: &str = concat!(
         "pub type RuntimeDeoptNativeFn = ",
         "ext",
@@ -537,6 +546,25 @@ mod tests {
         "uns",
         "afe { jit_cranelift_call_finalized_thunk_entry(finalization, rt, env) };"
     );
+    const PRIMOP_CALL_FN_TYPE_LINE: &str = concat!(
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, *mut c_void, u32, u32) -> Value;"
+    );
+    const PRIMOP_CALL_EXPORT_ATTR_LINE: &str = concat!("#[", "uns", "afe(", "no_", "mangle)]");
+    const PRIMOP_CALL_FN_LINE: &str = concat!(
+        "pub ",
+        "uns",
+        "afe ",
+        "ext",
+        "ern \"C\" fn aos_primop_call("
+    );
+    const PRIMOP_CALL_DECODER_CALL_LINE: &str = concat!("uns", "afe {");
+    const PRIMOP_CALL_SUCCESS_PATH_FN_LINE: &str =
+        concat!("uns", "afe fn primop_call_success_path(");
+    const PRIMOP_ENV_CAST_LINE: &str =
+        concat!("let env = ", "uns", "afe { env.cast::<EvalEnv>().as_ref() };");
 
     #[test]
     fn discipline_manifest_names_required_controls() {
@@ -615,6 +643,7 @@ mod tests {
                         || is_allowed_force_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_native_call_token(&source_root, &source_path, line, token)
                         || is_allowed_deopt_wrapper_token(&source_root, &source_path, line, token)
+                        || is_allowed_primop_wrapper_token(&source_root, &source_path, line, token)
                     {
                         continue;
                     }
@@ -758,6 +787,37 @@ mod tests {
             trimmed == RUNTIME_CONTEXT_DECODER_LINE
                 || trimmed == RUNTIME_CONTEXT_CAST_LINE
                 || trimmed == RUNTIME_CONTEXT_EVAL_LINE
+        } else {
+            false
+        }
+    }
+
+    fn is_allowed_primop_wrapper_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("primop.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == UNSAFE_TOKEN {
+            trimmed == PRIMOP_CALL_FN_TYPE_LINE
+                || trimmed == PRIMOP_CALL_EXPORT_ATTR_LINE
+                || trimmed == PRIMOP_CALL_FN_LINE
+                || trimmed == PRIMOP_CALL_DECODER_CALL_LINE
+                || trimmed == PRIMOP_CALL_SUCCESS_PATH_FN_LINE
+                || trimmed == PRIMOP_ENV_CAST_LINE
+        } else if token == EXTERN_TOKEN {
+            trimmed == PRIMOP_CALL_FN_TYPE_LINE || trimmed == PRIMOP_CALL_FN_LINE
+        } else if token == NO_MANGLE_TOKEN {
+            trimmed == PRIMOP_CALL_EXPORT_ATTR_LINE
         } else {
             false
         }

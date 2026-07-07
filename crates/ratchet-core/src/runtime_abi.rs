@@ -106,6 +106,9 @@ pub enum RuntimeHelperRole {
     AttrsetAccess,
     /// Error helpers own catch-frame and diagnostic control transfer.
     ErrorControl,
+    /// Primop-dispatch helpers delegate a lowered builtin-call body back to the
+    /// interpreter's builtin executor.
+    PrimopDispatch,
 }
 
 /// Stable runtime helper symbols that compiled tiers may reference.
@@ -125,6 +128,7 @@ pub const RUNTIME_HELPER_SYMBOLS: &[RuntimeHelperSymbol] = &[
     RuntimeHelperSymbol::new("aos_force_deep", RuntimeHelperRole::ForcingControl),
     RuntimeHelperSymbol::new("aos_gc_write_barrier", RuntimeHelperRole::WriteBarrier),
     RuntimeHelperSymbol::new("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
+    RuntimeHelperSymbol::new("aos_primop_call", RuntimeHelperRole::PrimopDispatch),
     RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
     RuntimeHelperSymbol::new("aos_throw", RuntimeHelperRole::ErrorControl),
     RuntimeHelperSymbol::new("aos_try_begin", RuntimeHelperRole::ErrorControl),
@@ -289,6 +293,12 @@ const DEOPT_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("deopt_record", RuntimeAbiParameterKind::DeoptRecordPointer),
 ];
+const PRIMOP_CALL_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+    RuntimeAbiParameter::new("module_id", RuntimeAbiParameterKind::U32),
+    RuntimeAbiParameter::new("node_id", RuntimeAbiParameterKind::U32),
+];
 const THROW_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("err", RuntimeAbiParameterKind::ErrorPointer),
@@ -431,6 +441,14 @@ const RUNTIME_DEOPT_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature:
     DEOPT_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
+const RUNTIME_PRIMOP_CALL_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::Helper {
+        symbol: RuntimeHelperSymbol::new("aos_primop_call", RuntimeHelperRole::PrimopDispatch),
+    },
+    RuntimeAbiCallingConvention::ExternC,
+    PRIMOP_CALL_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
 const RUNTIME_THROW_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
     RuntimeCallableKind::Helper {
         symbol: RuntimeHelperSymbol::new("aos_throw", RuntimeHelperRole::ErrorControl),
@@ -481,6 +499,7 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_FORCE_DEEP_CALL_SIGNATURE,
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
     RUNTIME_HAS_ATTR_CALL_SIGNATURE,
+    RUNTIME_PRIMOP_CALL_CALL_SIGNATURE,
     RUNTIME_SELECT_IC_CALL_SIGNATURE,
     RUNTIME_THROW_CALL_SIGNATURE,
     RUNTIME_UPDATE_CALL_SIGNATURE,
@@ -530,6 +549,7 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
         "aos_has_attr" => Some(RUNTIME_HAS_ATTR_CALL_SIGNATURE),
+        "aos_primop_call" => Some(RUNTIME_PRIMOP_CALL_CALL_SIGNATURE),
         "aos_select_ic" => Some(RUNTIME_SELECT_IC_CALL_SIGNATURE),
         "aos_update" => Some(RUNTIME_UPDATE_CALL_SIGNATURE),
         "aos_upval_get" => Some(RUNTIME_UPVAL_GET_CALL_SIGNATURE),
@@ -1401,6 +1421,7 @@ mod tests {
                 "aos_force_deep",
                 "aos_gc_write_barrier",
                 "aos_has_attr",
+                "aos_primop_call",
                 "aos_select_ic",
                 "aos_throw",
                 "aos_update",
@@ -1707,6 +1728,32 @@ mod tests {
                 RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
                 RuntimeAbiParameter::new("depth", RuntimeAbiParameterKind::U32),
                 RuntimeAbiParameter::new("slot", RuntimeAbiParameterKind::U32),
+            ]
+        );
+        assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
+    }
+
+    #[test]
+    fn primop_call_helper_call_signature_pins_rt_env_module_node_value_return() {
+        let signature = runtime_helper_call_signature("aos_primop_call")
+            .expect("primop-call signature is core-owned");
+
+        assert_eq!(
+            signature.callable(),
+            RuntimeCallableKind::Helper {
+                symbol: RuntimeHelperSymbol::new(
+                    "aos_primop_call",
+                    RuntimeHelperRole::PrimopDispatch,
+                ),
+            }
+        );
+        assert_eq!(
+            signature.parameters(),
+            &[
+                RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+                RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+                RuntimeAbiParameter::new("module_id", RuntimeAbiParameterKind::U32),
+                RuntimeAbiParameter::new("node_id", RuntimeAbiParameterKind::U32),
             ]
         );
         assert_eq!(signature.return_kind(), RuntimeAbiReturnKind::Value);
