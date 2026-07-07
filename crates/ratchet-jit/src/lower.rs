@@ -39,6 +39,7 @@ use crate::{
 
 mod arith_tree;
 mod error;
+pub mod interp;
 
 pub use error::JitLowerError;
 

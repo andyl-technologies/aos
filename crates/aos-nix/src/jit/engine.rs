@@ -34,7 +34,7 @@ use std::rc::Rc;
 use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
 use ratchet_jit::{
     JitClifArtifact, JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
-    JitRuntimeSymbolAddressCandidate,
+    JitRuntimeSymbolAddressCandidate, classify_interp_thunk_body,
     lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module,
     lower_string_length_inline_ir_thunk_body_artifact,
 };
@@ -156,6 +156,20 @@ struct EngineState {
     /// Number of gated def-sites the tier-1 lowerer could not lower (unsupported
     /// shape today). Counted only under `record_gated_cost`.
     gated_unlowerable: u32,
+    /// Count of gated interpolation def-sites keyed by fusability signature.
+    ///
+    /// Populated only under `record_gated_cost`. This sizes the fused-Interp
+    /// promotion opportunity: how many of the gated `Interp` bodies are fusable
+    /// (and at what fused node counts) versus complex-child, path-fragment,
+    /// single-child, or empty. See [`ratchet_jit::InterpFusibility`].
+    interp_shape: HashMap<String, u32>,
+    /// Count of interpolation-body child nodes keyed by IR kind.
+    ///
+    /// Populated only under `record_gated_cost`. Breaks down what interpolation
+    /// children actually are (e.g. `Select`, `Apply`, `Str`, `LocalVar`), so the
+    /// dominant `complex-child` classification can be explained — which shapes a
+    /// wider fused grammar would have to force inline to reach real sites.
+    interp_child_kinds: HashMap<String, u32>,
 }
 
 impl std::fmt::Debug for NixJitTier1Engine {
@@ -336,9 +350,23 @@ impl NixJitTier1Engine {
             } else {
                 None
             };
+            // Under the stats flag, also classify Interp bodies by fusability to
+            // size the fused-Interp promotion opportunity (a candidate grammar
+            // extension). This is a static arena inspection, not a lowering.
+            let interp = if self.record_gated_cost {
+                interp_shape_key(eval, body)
+            } else {
+                None
+            };
             let mut state = self.state.borrow_mut();
             state.gated_def_sites.insert(key);
             *state.gated_kinds.entry(signature).or_insert(0) += 1;
+            if let Some((interp_key, child_kinds)) = interp {
+                *state.interp_shape.entry(interp_key).or_insert(0) += 1;
+                for child_kind in child_kinds {
+                    *state.interp_child_kinds.entry(child_kind).or_insert(0) += 1;
+                }
+            }
             if let Some(cost) = gated_cost {
                 match cost {
                     Some(cost) => {
@@ -512,6 +540,46 @@ impl NixJitTier1Engine {
         self.state.borrow().gated_unlowerable
     }
 
+    /// Returns the gated interpolation bodies by fusability signature, most
+    /// frequent first.
+    ///
+    /// Each entry pairs a fusability key (`"fusable:n4"`, `"complex-child"`,
+    /// `"path-fragment"`, `"single"`, `"empty"`) with the number of gated
+    /// `Interp` def-sites of that shape. Ties break by key for determinism. Only
+    /// populated under `AOS_NIX_EVAL_STATS=1`; it sizes the fused-Interp
+    /// promotion opportunity — how many interpolation sites a fused lowering
+    /// could reach and at what part counts.
+    pub fn interp_shape_histogram(&self) -> Vec<(String, u32)> {
+        let mut entries: Vec<(String, u32)> = self
+            .state
+            .borrow()
+            .interp_shape
+            .iter()
+            .map(|(key, count)| (key.clone(), *count))
+            .collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries
+    }
+
+    /// Returns interpolation child-node kinds by count, most frequent first.
+    ///
+    /// Each entry pairs an IR kind name (`"Select"`, `"Apply"`, `"Str"`,
+    /// `"LocalVar"`, …) with how many interpolation children of that kind were
+    /// seen. Only populated under `AOS_NIX_EVAL_STATS=1`; it explains the
+    /// `complex-child` mass by naming the child shapes a wider fused grammar
+    /// would need to force inline.
+    pub fn interp_child_kind_histogram(&self) -> Vec<(String, u32)> {
+        let mut entries: Vec<(String, u32)> = self
+            .state
+            .borrow()
+            .interp_child_kinds
+            .iter()
+            .map(|(key, count)| (key.clone(), *count))
+            .collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries
+    }
+
     /// Returns the blacklist broken down by body-kind signature, most frequent first.
     ///
     /// Each entry pairs a body-kind signature (e.g. `"AttrSet"`, `"BinOp:Concat"`)
@@ -601,6 +669,24 @@ impl Drop for NixJitTier1Engine {
                 self.gated_lowerable_count(),
                 self.gated_unlowerable_count(),
             );
+        }
+        let interp_shape = self.interp_shape_histogram();
+        if !interp_shape.is_empty() {
+            let body = interp_shape
+                .iter()
+                .map(|(key, count)| format!("\"{key}\":{count}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!("{{\"aos_nix_tier1_interp_shape_histogram\":{{{body}}}}}");
+        }
+        let interp_children = self.interp_child_kind_histogram();
+        if !interp_children.is_empty() {
+            let body = interp_children
+                .iter()
+                .map(|(key, count)| format!("\"{key}\":{count}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!("{{\"aos_nix_tier1_interp_child_kind_histogram\":{{{body}}}}}");
         }
     }
 }
@@ -833,6 +919,35 @@ fn gated_signature(eval: &TreeWalk, body: EvalNodeRef) -> String {
     } else {
         body_kind_signature(eval, body)
     }
+}
+
+/// Returns an interpolation `body`'s fusability key and its child-node kinds, if
+/// it is an interpolation.
+///
+/// Resolves the body's module IR and classifies the interpolation shape with
+/// [`classify_interp_thunk_body`], returning `None` for a non-interpolation body
+/// (or missing IR) so only `Interp` def-sites are counted. The second tuple
+/// element is the census of the body's child kinds (empty for the single-child
+/// and empty interpolation forms), used to explain the `complex-child` mass.
+fn interp_shape_key(eval: &TreeWalk, body: EvalNodeRef) -> Option<(String, Vec<String>)> {
+    let ir = eval.tier1_module_ir(body.module())?;
+    let fusibility = classify_interp_thunk_body(&ir.arena, body.id());
+    if fusibility == ratchet_jit::InterpFusibility::NotInterp {
+        return None;
+    }
+    // Census both the direct child kinds and, for each `${expr}` coercion
+    // wrapper, the inner expression kind (prefixed `in>`) — that inner kind is
+    // what a fused grammar would have to force inline.
+    let mut child_kinds: Vec<String> = ratchet_jit::interp_child_kinds(&ir.arena, body.id())
+        .into_iter()
+        .map(|kind| format!("{kind:?}"))
+        .collect();
+    child_kinds.extend(
+        ratchet_jit::interp_child_inner_kinds(&ir.arena, body.id())
+            .into_iter()
+            .map(|kind| format!("in>{kind:?}")),
+    );
+    Some((fusibility.histogram_key(), child_kinds))
 }
 
 /// Returns true when `body` (through at most one `ThunkAlloc`) is a primop node.

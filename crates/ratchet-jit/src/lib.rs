@@ -58,6 +58,9 @@ pub use abi::{
 };
 pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
 pub use cost::{Tier1BodyCost, estimate_tier1_body_cost};
+pub use lower::interp::{
+    InterpFusibility, classify_interp_thunk_body, interp_child_inner_kinds, interp_child_kinds,
+};
 pub use cranelift::{
     ACTIVE_CRANELIFT_CODEGEN_VERSION, ACTIVE_CRANELIFT_JIT_VERSION,
     ACTIVE_CRANELIFT_MODULE_VERSION, ACTIVE_CRANELIFT_NATIVE_VERSION,
