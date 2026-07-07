@@ -4672,13 +4672,14 @@ impl EvalHeap {
             )?;
 
             let source = &self.records[source_index];
+            let source_address = source.ptr.as_ptr() as usize;
             planned.push(CollectorPollObjectBodyWrite {
                 destination_index,
                 object: source.object.clone(),
                 layout: source.layout,
                 structural_hash: source.structural_hash,
-                value_hash: source.value_hash.get(),
-                captured_value_hash: source.captured_value_hash.get(),
+                value_hash: self.records.cold_value_hash(source_address),
+                captured_value_hash: self.records.cold_captured_value_hash(source_address),
             });
             report.record(request);
         }
@@ -4691,14 +4692,14 @@ impl EvalHeap {
         planned: Vec<CollectorPollObjectBodyWrite>,
     ) {
         for write in planned {
+            let address = self.records[write.destination_index].ptr.as_ptr() as usize;
             let destination = &mut self.records[write.destination_index];
             destination.object = write.object;
             destination.layout = write.layout;
             destination.structural_hash = write.structural_hash;
-            destination.value_hash.set(write.value_hash);
-            destination
-                .captured_value_hash
-                .set(write.captured_value_hash);
+            self.records.set_cold_value_hash(address, write.value_hash);
+            self.records
+                .set_cold_captured_value_hash(address, write.captured_value_hash);
         }
     }
 
@@ -5799,11 +5800,11 @@ impl EvalHeap {
         staged: Vec<(usize, HeapObjectValue)>,
     ) {
         for (record_index, object) in staged {
+            let address = self.records[record_index].ptr.as_ptr() as usize;
             let record = &mut self.records[record_index];
             record.object = object;
             record.structural_hash = None;
-            record.value_hash.set(None);
-            record.captured_value_hash.set(None);
+            self.records.clear_cold_hashes(address);
         }
     }
 

@@ -1506,8 +1506,6 @@ impl EvalHeap {
             ),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::String(string),
         });
         self.push_string_cons_value(cons_slot, value);
@@ -1568,8 +1566,6 @@ impl EvalHeap {
             ),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Path(path),
         });
         self.push_path_cons_value(cons_slot, value);
@@ -1630,8 +1626,6 @@ impl EvalHeap {
             ),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::List(list),
         });
         self.push_list_cons_value(cons_slot, value);
@@ -1742,8 +1736,6 @@ impl EvalHeap {
             ),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Attrs { metadata, attrs },
         });
         self.push_attrs_cons_value(cons_slot, value);
@@ -1778,8 +1770,6 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Lambda(Rc::new(lambda)),
         });
         self.alloc_counters.note_value_allocated();
@@ -1813,8 +1803,6 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Primop(Rc::new(primop)),
         });
         self.alloc_counters.note_value_allocated();
@@ -1848,8 +1836,6 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Thunk(Rc::new(thunk)),
         });
         self.alloc_counters.note_value_allocated();
@@ -1939,8 +1925,6 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object,
         });
         self.poll_memory_budget_after_allocation();
@@ -1960,7 +1944,8 @@ impl EvalHeap {
         &self,
         value: Value,
     ) -> Result<Option<ValueHash>, EvalHeapError> {
-        Ok(self.record_for_value(value)?.value_hash.get())
+        let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
+        Ok(self.records.cold_value_hash(address))
     }
 
     /// Stores the canonical value hash for a reusable heap value.
@@ -1983,15 +1968,15 @@ impl EvalHeap {
         value: Value,
         hash: ValueHash,
     ) -> Result<HeapValueHashCacheUpdate, EvalHeapError> {
-        let record = self.record_for_value(value)?;
-        match record.value_hash.get() {
+        let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
+        match self.records.cold_value_hash(address) {
             Some(existing) if existing == hash => Ok(HeapValueHashCacheUpdate::AlreadyPresent),
             Some(existing) => Err(EvalHeapError::ValueHashMismatch {
                 existing,
                 attempted: hash,
             }),
             None => {
-                record.value_hash.set(Some(hash));
+                self.records.set_cold_value_hash(address, Some(hash));
                 Ok(HeapValueHashCacheUpdate::Inserted)
             }
         }
@@ -2010,7 +1995,8 @@ impl EvalHeap {
         &self,
         value: Value,
     ) -> Result<Option<ValueHash>, EvalHeapError> {
-        Ok(self.record_for_value(value)?.captured_value_hash.get())
+        let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
+        Ok(self.records.cold_captured_value_hash(address))
     }
 
     /// Stores the force-capture value hash for a reusable heap value.
@@ -2027,9 +2013,8 @@ impl EvalHeap {
         value: Value,
         hash: ValueHash,
     ) -> Result<(), EvalHeapError> {
-        self.record_for_value(value)?
-            .captured_value_hash
-            .set(Some(hash));
+        let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
+        self.records.set_cold_captured_value_hash(address, Some(hash));
         Ok(())
     }
 

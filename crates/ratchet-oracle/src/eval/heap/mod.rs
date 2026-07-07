@@ -252,8 +252,6 @@ struct HeapRecord {
     generation: HeapGeneration,
     minor_gc_forwarding: Cell<Option<ResolvedValueGeneration>>,
     last_touch_epoch: Cell<u64>,
-    value_hash: Cell<Option<ValueHash>>,
-    captured_value_hash: Cell<Option<ValueHash>>,
     object: HeapObjectValue,
 }
 

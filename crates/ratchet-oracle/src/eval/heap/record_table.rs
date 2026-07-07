@@ -31,12 +31,14 @@
 //! push(r4 @ old &r2 address)          index: { &r0->0, &r1->1, &r4->2 }
 //! ```
 
+use std::cell::RefCell;
 use std::collections::TryReserveError;
 use std::collections::hash_map::{Entry, HashMap};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
+use crate::cache::cutoff::ValueHash;
 use crate::value::HeapObject;
 
 use super::HeapRecord;
@@ -89,6 +91,32 @@ impl Hasher for AddressHasher {
 /// An address-keyed index over the heap record table.
 type AddressIndex = HashMap<usize, u32, BuildHasherDefault<AddressHasher>>;
 
+/// An address-keyed sparse side map of cutoff-cache value hashes.
+type ColdHashMap = HashMap<usize, HeapColdHashes, BuildHasherDefault<AddressHasher>>;
+
+/// The cutoff-cache value hashes optionally attached to one heap record.
+///
+/// These hashes are written only for the small subset of values that become
+/// cutoff-cache subjects (imports and other cacheable impure primop results),
+/// so they live in a sparse side map keyed by record address rather than inline
+/// in every [`HeapRecord`]. Keeping them out of the hot record keeps the record
+/// table dense on the resolution path, which touches only [`HeapRecord::object`]
+/// and never these fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HeapColdHashes {
+    /// The canonical value hash cached for a reusable heap value.
+    value: Option<ValueHash>,
+    /// The force-capture value hash cached for a reusable heap value.
+    captured: Option<ValueHash>,
+}
+
+impl HeapColdHashes {
+    /// Returns `true` when neither hash is present, so the entry can be dropped.
+    const fn is_empty(self) -> bool {
+        self.value.is_none() && self.captured.is_none()
+    }
+}
+
 /// A `Vec<HeapRecord>` paired with an address-keyed index for `O(1)` lookup.
 ///
 /// The table dereferences to `[HeapRecord]`, so all read-only slice operations
@@ -108,6 +136,7 @@ type AddressIndex = HashMap<usize, u32, BuildHasherDefault<AddressHasher>>;
 pub(super) struct HeapRecordTable {
     records: Vec<HeapRecord>,
     index: AddressIndex,
+    cold_hashes: RefCell<ColdHashMap>,
 }
 
 impl HeapRecordTable {
@@ -116,6 +145,7 @@ impl HeapRecordTable {
         Self {
             records: Vec::new(),
             index: AddressIndex::default(),
+            cold_hashes: RefCell::new(ColdHashMap::default()),
         }
     }
 
@@ -156,11 +186,82 @@ impl HeapRecordTable {
         if len >= self.records.len() {
             return;
         }
+        let cold_hashes = self.cold_hashes.get_mut();
         for record in &self.records[len..] {
             let address = record.ptr.as_ptr() as usize;
             self.index.remove(&address);
+            cold_hashes.remove(&address);
         }
         self.records.truncate(len);
+    }
+
+    /// Returns the cached canonical value hash for the record at `address`.
+    ///
+    /// Returns `None` when the address has no record or its record carries no
+    /// cached canonical hash.
+    #[inline]
+    pub(super) fn cold_value_hash(&self, address: usize) -> Option<ValueHash> {
+        self.cold_hashes.borrow().get(&address)?.value
+    }
+
+    /// Returns the cached force-capture value hash for the record at `address`.
+    ///
+    /// Returns `None` when the address has no record or its record carries no
+    /// cached force-capture hash.
+    #[inline]
+    pub(super) fn cold_captured_value_hash(&self, address: usize) -> Option<ValueHash> {
+        self.cold_hashes.borrow().get(&address)?.captured
+    }
+
+    /// Sets (or clears, when `hash` is `None`) the canonical value hash for the
+    /// record at `address`.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `address` does not name a live record, which
+    /// would leak a cold-hash entry past its record's lifetime.
+    pub(super) fn set_cold_value_hash(&self, address: usize, hash: Option<ValueHash>) {
+        debug_assert!(
+            hash.is_none() || self.index.contains_key(&address),
+            "cold value hash written for an address with no live record"
+        );
+        self.write_cold_hash(address, |slot| slot.value = hash);
+    }
+
+    /// Sets (or clears, when `hash` is `None`) the force-capture value hash for
+    /// the record at `address`.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `address` does not name a live record, which
+    /// would leak a cold-hash entry past its record's lifetime.
+    pub(super) fn set_cold_captured_value_hash(&self, address: usize, hash: Option<ValueHash>) {
+        debug_assert!(
+            hash.is_none() || self.index.contains_key(&address),
+            "cold captured value hash written for an address with no live record"
+        );
+        self.write_cold_hash(address, |slot| slot.captured = hash);
+    }
+
+    /// Clears both cached hashes for the record at `address`.
+    ///
+    /// Used by minor-GC field rewrites that reset a relocated record's cached
+    /// hashes before the collector recomputes them.
+    pub(super) fn clear_cold_hashes(&mut self, address: usize) {
+        self.cold_hashes.get_mut().remove(&address);
+    }
+
+    /// Applies `mutate` to the cold-hash entry for `address`, dropping the entry
+    /// when it becomes empty so the map stays sparse.
+    fn write_cold_hash(&self, address: usize, mutate: impl FnOnce(&mut HeapColdHashes)) {
+        let mut cold_hashes = self.cold_hashes.borrow_mut();
+        let mut slot = cold_hashes.get(&address).copied().unwrap_or_default();
+        mutate(&mut slot);
+        if slot.is_empty() {
+            cold_hashes.remove(&address);
+        } else {
+            cold_hashes.insert(address, slot);
+        }
     }
 
     /// Reserves capacity for at least `additional` more records and index
@@ -274,8 +375,6 @@ mod tests {
             generation: HeapGeneration::Young,
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch: Cell::new(touch),
-            value_hash: Cell::new(None),
-            captured_value_hash: Cell::new(None),
             object: HeapObjectValue::Thunk(Rc::new(EvalThunk::new(IrId::new(0)))),
         }
     }
