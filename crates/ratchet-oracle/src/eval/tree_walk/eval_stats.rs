@@ -78,6 +78,7 @@ impl TreeWalk {
             tier1_promoted: self.stats.tier1_promoted,
             tier1_dispatched: self.stats.tier1_dispatched,
             tier1_deopted: self.stats.tier1_deopted,
+            tier1_blacklisted: self.stats.tier1_blacklisted,
         }
     }
 
@@ -98,6 +99,7 @@ impl TreeWalk {
             tier1_promoted = stats.tier1_promoted(),
             tier1_dispatched = stats.tier1_dispatched(),
             tier1_deopted = stats.tier1_deopted(),
+            tier1_blacklisted = stats.tier1_blacklisted(),
             force_cache_hits = stats.force_cache_hits(),
             force_cache_misses = stats.force_cache_misses(),
             force_cache_probes = stats.force_cache_probes(),
@@ -584,6 +586,10 @@ impl TreeWalk {
 
     pub(crate) fn increment_tier1_deopted(&mut self) {
         self.stats.tier1_deopted = self.stats.tier1_deopted.saturating_add(1);
+    }
+
+    pub(crate) fn increment_tier1_blacklisted(&mut self) {
+        self.stats.tier1_blacklisted = self.stats.tier1_blacklisted.saturating_add(1);
     }
 
     pub(super) fn increment_thunk_cache_hits(&mut self) {

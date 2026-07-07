@@ -55,6 +55,9 @@ pub enum Tier1ForceHook {
     Continued {
         /// True when this force compiled and published a tier-1 entry for reuse.
         promoted: bool,
+        /// True when this force newly blacklisted the def-site after a failed
+        /// tier-1 lowering (the shape is not lowerable and is never retried).
+        blacklisted: bool,
     },
 }
 

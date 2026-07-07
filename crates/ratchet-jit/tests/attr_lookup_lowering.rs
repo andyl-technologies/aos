@@ -522,9 +522,11 @@ fn select_lowering_rejects_unsupported_shapes() {
     let dynamic_path_error =
         lower_select_local_slot_ir_thunk_body(&dynamic_path_ir, dynamic_path_ir.root)
             .expect_err("dynamic attr path is rejected");
-    let select_default_error =
-        lower_select_local_slot_ir_thunk_body(&select_default_ir, select_default_ir.root)
-            .expect_err("select default is rejected");
+    // `a.b or default` is now a supported shape: the lowerer emits the
+    // default-carrying select. This previously expected an error and predates
+    // the or-default support.
+    lower_select_local_slot_ir_thunk_body(&select_default_ir, select_default_ir.root)
+        .expect("select with a default lowers");
     let non_local_receiver_error =
         lower_select_local_slot_ir_thunk_body(&non_local_receiver_ir, non_local_receiver_ir.root)
             .expect_err("non-local attr receiver is rejected");
@@ -537,9 +539,6 @@ fn select_lowering_rejects_unsupported_shapes() {
             segment: IrAttrPathSegment::Dynamic(dynamic),
         } if path == IrAttrPathId::new(0) && dynamic == IrId::new(0)
     ));
-    assert!(
-        matches!(select_default_error, JitLowerError::UnsupportedSelectDefault { default } if default == IrId::new(1))
-    );
     assert!(matches!(
         non_local_receiver_error,
         JitLowerError::UnsupportedAttrReceiver {

@@ -14,7 +14,8 @@
 //!  "function_calls":16233,"hashcons_attempts":31044,"hashcons_hits":6143,
 //!  "symbols_interned":4021,"imports_evaluated":37,"root_cutoffs":0,
 //!  "inline_cache_hits":0,"inline_cache_misses":0,
-//!  "tier1_promoted":0,"tier1_dispatched":0,"tier1_deopted":0}}
+//!  "tier1_promoted":0,"tier1_dispatched":0,"tier1_deopted":0,
+//!  "tier1_blacklisted":0}}
 //! ```
 
 use super::*;
@@ -48,7 +49,8 @@ impl NixNative {
 \"inline_cache_misses\":{},\
 \"tier1_promoted\":{},\
 \"tier1_dispatched\":{},\
-\"tier1_deopted\":{}\
+\"tier1_deopted\":{},\
+\"tier1_blacklisted\":{}\
 }}}}",
             stats.thunks_allocated(),
             stats.thunks_forced(),
@@ -66,6 +68,7 @@ impl NixNative {
             stats.tier1_promoted(),
             stats.tier1_dispatched(),
             stats.tier1_deopted(),
+            stats.tier1_blacklisted(),
         );
     }
 }

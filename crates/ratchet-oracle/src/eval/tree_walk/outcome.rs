@@ -13389,6 +13389,7 @@ pub struct EvalStats {
     pub(crate) tier1_promoted: u64,
     pub(crate) tier1_dispatched: u64,
     pub(crate) tier1_deopted: u64,
+    pub(crate) tier1_blacklisted: u64,
 }
 
 impl EvalStats {
@@ -13696,6 +13697,11 @@ impl EvalStats {
     /// Returns the number of tier-1 dispatch attempts that deoptimized to the tree walk.
     pub const fn tier1_deopted(&self) -> u64 {
         self.tier1_deopted
+    }
+
+    /// Returns the number of def-sites blacklisted after a failed tier-1 lowering.
+    pub const fn tier1_blacklisted(&self) -> u64 {
+        self.tier1_blacklisted
     }
 
     pub(in crate::eval::tree_walk) fn record_heap_tier_b_admission(

@@ -1712,9 +1712,15 @@ impl TreeWalk {
                     return Ok(value);
                 }
                 Tier1ForceHook::Deopted => self.increment_tier1_deopted(),
-                Tier1ForceHook::Continued { promoted } => {
+                Tier1ForceHook::Continued {
+                    promoted,
+                    blacklisted,
+                } => {
                     if promoted {
                         self.increment_tier1_promoted();
+                    }
+                    if blacklisted {
+                        self.increment_tier1_blacklisted();
                     }
                 }
             }

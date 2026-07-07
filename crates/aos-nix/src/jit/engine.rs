@@ -142,30 +142,37 @@ impl NixJitTier1Engine {
 
     /// Counts a force of `thunk` and promotes its def-site at the threshold.
     ///
-    /// Returns `true` when this call compiled and published a tier-1 entry.
-    fn count_and_maybe_promote(&self, eval: &mut TreeWalk, thunk: Value) -> bool {
+    /// Returns whether this call published a tier-1 entry (`promoted`) and whether
+    /// it newly blacklisted the def-site after a failed lowering (`blacklisted`).
+    fn count_and_maybe_promote(&self, eval: &mut TreeWalk, thunk: Value) -> PromotionOutcome {
         let Some(body) = thunk_body_ref(eval, thunk) else {
-            return false;
+            return PromotionOutcome::none();
         };
         let key = def_site_key(body);
         {
             let mut state = self.state.borrow_mut();
             if state.blacklist.contains(&key) {
-                return false;
+                return PromotionOutcome::none();
             }
             let count = state.counts.entry(key).or_insert(0);
             *count = count.saturating_add(1);
             if *count < self.threshold {
-                return false;
+                return PromotionOutcome::none();
             }
         }
         match self.promote(eval, body, key) {
-            PromotionResult::Promoted => true,
+            PromotionResult::Promoted => PromotionOutcome {
+                promoted: true,
+                blacklisted: false,
+            },
             PromotionResult::Unsupported => {
                 self.state.borrow_mut().blacklist.insert(key);
-                false
+                PromotionOutcome {
+                    promoted: false,
+                    blacklisted: true,
+                }
             }
-            PromotionResult::Failed => false,
+            PromotionResult::Failed => PromotionOutcome::none(),
         }
     }
 
@@ -215,8 +222,26 @@ impl Tier1Engine for NixJitTier1Engine {
         if let Some(hook) = self.try_dispatch(eval, thunk, id, span) {
             return hook;
         }
+        let outcome = self.count_and_maybe_promote(eval, thunk);
         Tier1ForceHook::Continued {
-            promoted: self.count_and_maybe_promote(eval, thunk),
+            promoted: outcome.promoted,
+            blacklisted: outcome.blacklisted,
+        }
+    }
+}
+
+/// Whether one consulted force promoted its def-site and/or newly blacklisted it.
+struct PromotionOutcome {
+    promoted: bool,
+    blacklisted: bool,
+}
+
+impl PromotionOutcome {
+    /// Neither promoted nor blacklisted (below threshold, no body, or transient fail).
+    const fn none() -> Self {
+        Self {
+            promoted: false,
+            blacklisted: false,
         }
     }
 }
