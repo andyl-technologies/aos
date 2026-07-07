@@ -19,6 +19,8 @@ use thiserror::Error;
 use crate::{QemuLoadvmCommandAuthorization, QemuNodeChannelError};
 
 mod snapshot_tag;
+#[cfg(target_os = "linux")]
+mod unix_socket;
 mod vmstate_control;
 
 pub use snapshot_tag::QmpSnapshotTag;
