@@ -184,6 +184,9 @@ mod tests {
                         "pub unsafe fn jit_cranelift_call_finalized_thunk_entry(",
                     )
                     || trimmed.starts_with(
+                        "pub unsafe fn jit_cranelift_call_context_finalized_thunk_entry(",
+                    )
+                    || trimmed.starts_with(
                         "pub unsafe fn jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(",
                     )
                     || trimmed.starts_with(
@@ -193,6 +196,7 @@ mod tests {
                         == "let value = unsafe { thunk_entry(ptr::null_mut(), ptr::null_mut()) };"
                     || trimmed == "let value = unsafe { thunk_entry(rt, env) };"
                     || trimmed == "let dispatched = unsafe { thunk_entry(rt, env) };"
+                    || trimmed == "let context_dispatched = unsafe { thunk_entry(rt, env) };"
                     || trimmed == "let promotion_gated_registered_native_thunk_invocation = unsafe {"
                     || trimmed
                         == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
@@ -315,6 +319,22 @@ mod tests {
             ),
             1,
             "finalized thunk-entry native call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &cranelift,
+                "pub unsafe fn jit_cranelift_call_context_finalized_thunk_entry(",
+            ),
+            1,
+            "shared-context finalized thunk-entry dispatch entrypoint must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &cranelift,
+                "let context_dispatched = unsafe { thunk_entry(rt, env) };",
+            ),
+            1,
+            "shared-context finalized thunk-entry native call must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(

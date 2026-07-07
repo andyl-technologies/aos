@@ -9,9 +9,9 @@
 //! Each consulted force does one of two things:
 //!
 //! - **Dispatch.** If the forced thunk already has a published
-//!   [`OpaqueTier1Slot`], the engine recovers the finalized artifact, passes the
+//!   [`OpaqueTier1Slot`], the engine recovers the finalized body, passes the
 //!   thunk's captured innermost environment frame as the native `env`, and calls
-//!   [`run_finalized_native_thunk_call`]. A clean return is handed back as
+//!   [`run_context_finalized_native_thunk_call`]. A clean return is handed back as
 //!   [`Tier1ForceHook::Dispatched`]; a trap or any error becomes
 //!   [`Tier1ForceHook::Deopted`] so the evaluator runs the tree-walk body.
 //! - **Promotion.** Otherwise the engine bumps a per-def-site invocation counter
@@ -33,14 +33,14 @@ use std::rc::Rc;
 
 use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
 use ratchet_jit::{
-    JitCraneliftRegisteredArtifactFinalizationPreflight, JitRuntimeSymbolAddressCandidate,
-    jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
+    JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
+    JitRuntimeSymbolAddressCandidate,
     lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module,
     lower_string_length_inline_ir_thunk_body_artifact,
 };
 use ratchet_oracle::eval::tree_walk::TreeWalk;
 use ratchet_oracle::eval::{EvalEnv, EvalNodeRef, OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
-use ratchet_runtime_ffi::run_finalized_native_thunk_call;
+use ratchet_runtime_ffi::run_context_finalized_native_thunk_call;
 use ratchet_value::value::Value;
 
 use crate::jit::{
@@ -83,6 +83,16 @@ pub struct NixJitTier1Engine {
     /// [`NixJitTier1Engine::force_promote`] (used by the dispatch differential
     /// tests, which must still promote and dispatch a body).
     force_promote: bool,
+    /// The shared JIT module every promoted body is finalized into.
+    ///
+    /// Built lazily on the first promotion (from [`candidates`](Self::candidates))
+    /// so a gated run — the default, which promotes nothing — never pays for a
+    /// module. Once built, [`promote`](Self::promote) finalizes each body into it
+    /// rather than allocating a fresh module per body, amortizing the module setup
+    /// across every promotion. It outlives every dispatch entry, and each entry
+    /// also holds a keep-alive handle into it, so a body's finalized code stays
+    /// callable for the engine's whole life.
+    context: RefCell<Option<JitModuleContext>>,
     state: RefCell<EngineState>,
 }
 
@@ -183,6 +193,7 @@ impl NixJitTier1Engine {
             record_dispatched_kinds: std::env::var("AOS_NIX_EVAL_STATS").as_deref() == Ok("1"),
             force_promote: std::env::var("AOS_NIX_JIT_FORCE_PROMOTE").as_deref()
                 == Ok("1"),
+            context: RefCell::new(None),
             state: RefCell::new(EngineState::default()),
         })
     }
@@ -214,7 +225,7 @@ impl NixJitTier1Engine {
     ) -> Option<Tier1ForceHook> {
         let body = thunk_body_ref(eval, thunk)?;
         let key = def_site_key(body);
-        let finalization = published_finalization(eval, key)?;
+        let finalized_body = published_body(eval, key)?;
         // A primop body's native trampoline forces the primop against the
         // dispatched lexical env with empty `with`/scoped-import scopes, which is
         // only faithful when the thunk captured none. A primop thunk that did
@@ -225,7 +236,7 @@ impl NixJitTier1Engine {
         let Some(env) = dispatch_env(eval, thunk) else {
             return Some(Tier1ForceHook::Deopted);
         };
-        match run_finalized_native_thunk_call(eval, id, span, &env, &finalization) {
+        match run_context_finalized_native_thunk_call(eval, id, span, &env, &finalized_body) {
             Ok(outcome) if !outcome.is_trap() => {
                 if self.record_dispatched_kinds
                     && let Some(name) = primop_symbol_name(eval, body)
@@ -337,16 +348,27 @@ impl NixJitTier1Engine {
             // The IR is missing or the shape is not lowerable today; never retry.
             return PromotionResult::Unsupported;
         };
-        let Ok(finalization) =
-            jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
-                artifact,
-                &self.candidates,
-            )
-        else {
-            return PromotionResult::Failed;
+        // Finalize the body into the shared module (built lazily on first use), and
+        // capture a keep-alive handle so the dispatch entry pins the module's code
+        // memory independently of the engine's own `context` slot.
+        let (finalized_body, keep_alive) = {
+            let mut context_slot = self.context.borrow_mut();
+            if context_slot.is_none() {
+                match JitModuleContext::with_candidates(&self.candidates) {
+                    Ok(context) => *context_slot = Some(context),
+                    Err(_) => return PromotionResult::Failed,
+                }
+            }
+            let Some(context) = context_slot.as_ref() else {
+                return PromotionResult::Failed;
+            };
+            match context.define_and_finalize(artifact) {
+                Ok(finalized_body) => (finalized_body, context.keep_alive()),
+                Err(_) => return PromotionResult::Failed,
+            }
         };
 
-        let entry = NixJitTier1DispatchEntry::new(finalization);
+        let entry = NixJitTier1DispatchEntry::new(finalized_body, keep_alive);
         let entry_addr = entry.entry_addr();
         if eval.install_and_publish_tier1_def_site_slot(
             def_site,
@@ -543,45 +565,50 @@ enum PromotionResult {
     Failed,
 }
 
-/// Owns a finalized tier-1 artifact so its native entry stays callable.
+/// Owns a finalized tier-1 body so its native entry stays callable.
 ///
-/// Wrapping the finalization in an [`Rc`] lets the evaluator side-table own the
+/// Wrapping the finalized body in an [`Rc`] lets the evaluator side-table own the
 /// entry type-erased while dispatch clones an independent handle to run the call
-/// without aliasing the mutable evaluator borrow.
+/// without aliasing the mutable evaluator borrow. The body's code lives in the
+/// engine's shared [`JitModuleContext`]; the entry also holds a
+/// [`JitModuleContextKeepAlive`] so that module — and thus the body's code memory —
+/// outlives the entry regardless of engine teardown order.
 struct NixJitTier1DispatchEntry {
-    finalization: Rc<JitCraneliftRegisteredArtifactFinalizationPreflight>,
+    body: Rc<JitModuleContextFinalizedBody>,
+    _keep_alive: JitModuleContextKeepAlive,
 }
 
 impl NixJitTier1DispatchEntry {
-    /// Wraps a finalized artifact as a shareable tier-1 dispatch entry.
-    fn new(finalization: JitCraneliftRegisteredArtifactFinalizationPreflight) -> Self {
+    /// Wraps a finalized body and its module keep-alive as a dispatch entry.
+    fn new(body: JitModuleContextFinalizedBody, keep_alive: JitModuleContextKeepAlive) -> Self {
         Self {
-            finalization: Rc::new(finalization),
+            body: Rc::new(body),
+            _keep_alive: keep_alive,
         }
     }
 
     /// Returns the finalized native entry address the dispatcher calls through.
     fn entry_addr(&self) -> usize {
-        self.finalization.finalized_function().code_ptr().as_ptr() as usize
+        self.body.finalized_function().code_ptr().as_ptr() as usize
     }
 
-    /// Returns an independent shared handle to the finalized artifact.
-    fn finalization(&self) -> Rc<JitCraneliftRegisteredArtifactFinalizationPreflight> {
-        Rc::clone(&self.finalization)
+    /// Returns an independent shared handle to the finalized body.
+    fn body(&self) -> Rc<JitModuleContextFinalizedBody> {
+        Rc::clone(&self.body)
     }
 }
 
-/// Returns the published tier-1 finalization for a def-site key, if any.
-fn published_finalization(
+/// Returns the published tier-1 finalized body for a def-site key, if any.
+fn published_body(
     eval: &TreeWalk,
     def_site: u64,
-) -> Option<Rc<JitCraneliftRegisteredArtifactFinalizationPreflight>> {
+) -> Option<Rc<JitModuleContextFinalizedBody>> {
     let slot = eval.tier1_def_site_slot(def_site)?;
     if !slot.is_published() {
         return None;
     }
     let entry = slot.owner().downcast_ref::<NixJitTier1DispatchEntry>()?;
-    Some(entry.finalization())
+    Some(entry.body())
 }
 
 /// Returns a dispatch-owned snapshot of the environment the tier-1 body reads.

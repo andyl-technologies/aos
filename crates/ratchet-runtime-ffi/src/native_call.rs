@@ -22,7 +22,8 @@ use std::ffi::c_void;
 
 use ratchet_jit::{
     JitClifArtifact, JitCraneliftNativeCallError,
-    JitCraneliftRegisteredArtifactFinalizationPreflight, JitRuntimeSymbolAddressCandidate,
+    JitCraneliftRegisteredArtifactFinalizationPreflight, JitModuleContextFinalizedBody,
+    JitRuntimeSymbolAddressCandidate, jit_cranelift_call_context_finalized_thunk_entry,
     jit_cranelift_call_finalized_thunk_entry,
     jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates,
 };
@@ -161,6 +162,58 @@ pub fn run_finalized_native_thunk_call(
     // wrappers and finalized code alive, and the scope converts a forcing trap.
     let dispatched = unsafe { jit_cranelift_call_finalized_thunk_entry(finalization, rt, env) };
     match dispatched {
+        Ok(value) => {
+            let trap = scope.take_trap();
+            drop(scope);
+            drop(context);
+            Ok(NativeThunkCallOutcome { value, trap })
+        }
+        Err(error) => {
+            drop(scope);
+            Err(error)
+        }
+    }
+}
+
+/// Runs a native thunk body finalized into a shared [`JitModuleContext`].
+///
+/// This mirrors [`run_finalized_native_thunk_call`] but dispatches a body compiled
+/// into a shared module context rather than one that owns its own module. The
+/// batched tier-1 publish path uses it so many promoted bodies share a single
+/// Cranelift module, paying its setup once. The borrowed `body` reads a code
+/// pointer into the shared module, which the caller keeps alive for the call (the
+/// tier-1 engine holds the owning context and each dispatch entry keeps a
+/// keep-alive handle).
+///
+/// Like the other paths, the call runs under a fresh [`RuntimeTrapScope`] so a
+/// forcing evaluator error is returned as a [`NativeThunkCallOutcome`] whose `trap`
+/// is `Some` rather than aborting. `id` and `span` seed the [`RuntimeJitContext`]
+/// the forcing wrappers use to report failures.
+///
+/// [`JitModuleContext`]: ratchet_jit::JitModuleContext
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported native
+/// value ABI, the finalized body is not a thunk body, or the compiled body returns
+/// a value whose payload violates the runtime layout.
+pub fn run_context_finalized_native_thunk_call(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
+    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let rt = context.as_mut().as_mut_ptr();
+    let env = (env as *const EvalEnv) as *mut c_void;
+
+    let scope = RuntimeTrapScope::new();
+    // SAFETY: `rt` comes from the pinned context over `eval` and `env` from the
+    // live `frame`; the caller keeps the shared module context that finalized
+    // `body` alive, so its frozen-ABI wrappers and code stay live for the call.
+    let context_dispatched = unsafe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };
+    match context_dispatched {
         Ok(value) => {
             let trap = scope.take_trap();
             drop(scope);
