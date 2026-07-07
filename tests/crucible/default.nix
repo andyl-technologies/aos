@@ -368,6 +368,7 @@ in rec {
     qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
     qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
+    qemuNodeFactory = import ./phase2-qemu-node-factory.nix {inherit pkgs lib;};
     qemuNodeWrapper = import ./phase2-qemu-node-wrapper.nix {inherit pkgs lib;};
     qemuQmpClient = import ./phase2-qemu-qmp-client.nix {inherit pkgs lib;};
     qemuInjectionContract = import ./phase2-qemu-injection-contract.nix {inherit pkgs lib;};
