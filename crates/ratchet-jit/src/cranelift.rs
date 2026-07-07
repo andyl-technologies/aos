@@ -2982,6 +2982,10 @@ fn runtime_symbol_name_for_user_external_name(
             crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
             crate::lower::AOS_UPDATE_FUNCTION_INDEX,
         ) => Some("aos_update"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_DEOPT_FUNCTION_INDEX,
+        ) => Some("aos_deopt"),
         _ => None,
     }
 }

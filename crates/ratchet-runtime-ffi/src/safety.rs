@@ -124,6 +124,16 @@ mod tests {
         "uns",
         "afe { (binding.function())(env, 0) };"
     );
+    const DEOPT_FN_TYPE_LINE: &str = concat!(
+        "pub type RuntimeDeoptNativeFn = ",
+        "ext",
+        "ern \"C\" fn(*mut c_void, *mut c_void) -> Value;"
+    );
+    const DEOPT_FN_LINE: &str = concat!(
+        "pub ",
+        "ext",
+        "ern \"C\" fn aos_deopt(_rt: *mut c_void, _deopt_record: *mut c_void) -> Value {"
+    );
     const RUNTIME_CONTEXT_DECODER_LINE: &str = concat!(
         "pub(crate) ",
         "uns",
@@ -580,6 +590,7 @@ mod tests {
                         )
                         || is_allowed_force_wrapper_token(&source_root, &source_path, line, token)
                         || is_allowed_native_call_token(&source_root, &source_path, line, token)
+                        || is_allowed_deopt_wrapper_token(&source_root, &source_path, line, token)
                     {
                         continue;
                     }
@@ -834,6 +845,30 @@ mod tests {
         let trimmed = line.trim_start();
         if token == UNSAFE_TOKEN {
             trimmed == NATIVE_CALL_JIT_BOUNDARY_LINE || trimmed == FINALIZED_CALL_JIT_BOUNDARY_LINE
+        } else {
+            false
+        }
+    }
+
+    /// The deopt wrapper carries only `extern "C"` boundary tokens: it decodes no
+    /// pointers, so its body has no `unsafe` and it is not `#[no_mangle]`.
+    fn is_allowed_deopt_wrapper_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("deopt.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == EXTERN_TOKEN {
+            trimmed == DEOPT_FN_TYPE_LINE || trimmed == DEOPT_FN_LINE
         } else {
             false
         }

@@ -567,6 +567,35 @@ pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightRe
     ))
 }
 
+/// Builds the JIT address candidate for the `aos_deopt` deopt trampoline.
+///
+/// Unlike the forcing, environment, apply, and attrset helpers, `aos_deopt` is
+/// not an oracle evaluator helper: it is a JIT-internal deoptimization
+/// trampoline owned entirely by `ratchet-runtime-ffi`. It therefore does not
+/// flow through the oracle rust-callable preflight that drives
+/// [`nix_jit_runtime_symbol_address_candidate_preflight`], and is registered
+/// directly from its process-local wrapper address so a compiled body importing
+/// `aos_deopt` can be finalized.
+///
+/// # Errors
+///
+/// Returns [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
+/// if the `aos_deopt` wrapper reports a null process-local address.
+pub fn nix_jit_deopt_address_candidate()
+-> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
+    let address = ratchet_runtime_ffi::aos_deopt_native_wrapper_address();
+    let raw = NonZeroUsize::new(address as usize).ok_or(
+        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
+            symbol_name: "aos_deopt",
+        },
+    )?;
+    Ok(JitRuntimeSymbolAddressCandidate::new(
+        "aos_deopt".to_owned(),
+        RuntimeSymbolKind::Helper(RuntimeHelperRole::Deoptimization),
+        JitRuntimeSymbolAddress::new(raw),
+    ))
+}
+
 /// Builds JIT runtime-symbol registration readiness from runtime address metadata.
 ///
 /// This top-level integration preflight derives process-local runtime address

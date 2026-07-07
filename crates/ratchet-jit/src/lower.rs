@@ -39,6 +39,8 @@ use crate::{
     tier::JitTier,
 };
 
+mod arith_tree;
+
 /// Cranelift user-function namespace reserved for Core IR root thunks.
 ///
 /// Cranelift treats user function names as caller-owned numeric metadata. The
@@ -73,12 +75,16 @@ pub const AOS_SELECT_IC_FUNCTION_INDEX: u32 = 4;
 /// User-external function index reserved for the `aos_update` helper.
 pub const AOS_UPDATE_FUNCTION_INDEX: u32 = 5;
 
+/// User-external function index reserved for the `aos_deopt` helper.
+pub const AOS_DEOPT_FUNCTION_INDEX: u32 = 6;
+
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
 const AOS_HAS_ATTR_SYMBOL: &str = "aos_has_attr";
 const AOS_SELECT_IC_SYMBOL: &str = "aos_select_ic";
 const AOS_UPDATE_SYMBOL: &str = "aos_update";
+const AOS_DEOPT_SYMBOL: &str = "aos_deopt";
 
 /// Returns the deterministic CLIF user-function name for a Core IR root.
 pub fn clif_name_for_ir_root(root: IrId) -> UserFuncName {
@@ -130,6 +136,14 @@ pub fn clif_external_name_for_aos_update() -> UserExternalName {
     UserExternalName::new(
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
         AOS_UPDATE_FUNCTION_INDEX,
+    )
+}
+
+/// Returns the deterministic CLIF external-function name for `aos_deopt`.
+pub fn clif_external_name_for_aos_deopt() -> UserExternalName {
+    UserExternalName::new(
+        AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+        AOS_DEOPT_FUNCTION_INDEX,
     )
 }
 
@@ -1254,6 +1268,23 @@ pub enum JitLowerError {
         /// The expected payload shape.
         expected: &'static str,
     },
+    /// A binary operator is not one the scalar arithmetic tree lowerer handles.
+    UnsupportedArithOp {
+        /// The unsupported binary operator.
+        op: BinOpKind,
+    },
+    /// A scalar arithmetic tree operand was not present in the arena.
+    MissingArithOperand {
+        /// The missing operand id.
+        operand: IrId,
+    },
+    /// A scalar arithmetic tree operand shape is not lowerable inline.
+    UnsupportedArithOperand {
+        /// The unsupported operand id.
+        operand: IrId,
+        /// The unsupported operand node kind.
+        kind: IrKind,
+    },
 }
 
 impl fmt::Display for JitLowerError {
@@ -1449,6 +1480,18 @@ impl fmt::Display for JitLowerError {
                 formatter,
                 "IR root kind {kind:?} carried incompatible payload {data:?}, expected {expected}"
             ),
+            Self::UnsupportedArithOp { op } => write!(
+                formatter,
+                "IR binary operator {op:?} is not supported by the scalar arithmetic tree lowerer"
+            ),
+            Self::MissingArithOperand { operand } => write!(
+                formatter,
+                "IR arithmetic operand {operand:?} is not present in the arena"
+            ),
+            Self::UnsupportedArithOperand { operand, kind } => write!(
+                formatter,
+                "IR arithmetic operand {operand:?} with kind {kind:?} is not lowerable inline"
+            ),
         }
     }
 }
@@ -1489,7 +1532,10 @@ impl Error for JitLowerError {
             | Self::SelfReferentialThunkBody { .. }
             | Self::MismatchedConstantData { .. }
             | Self::MismatchedBodyConstantData { .. }
-            | Self::MismatchedIrNodeData { .. } => None,
+            | Self::MismatchedIrNodeData { .. }
+            | Self::UnsupportedArithOp { .. }
+            | Self::MissingArithOperand { .. }
+            | Self::UnsupportedArithOperand { .. } => None,
         }
     }
 }
@@ -2035,7 +2081,7 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind(
             }
         },
         IrKind::Apply => lower_apply_local_slots_ir_thunk_body_artifact(arena, root),
-        IrKind::BinOp => lower_update_local_slots_ir_thunk_body_artifact(arena, root),
+        IrKind::BinOp => arith_tree::lower_binop_ir_thunk_body_artifact(arena, root),
         kind if is_thunk_body => Err(JitLowerError::UnsupportedIrBody { kind }),
         kind => Err(JitLowerError::UnsupportedIrRoot { kind }),
     }
@@ -2051,7 +2097,7 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind_with_ir(
     match kind {
         IrKind::HasAttr => lower_has_attr_local_slot_ir_thunk_body_artifact(ir, root),
         IrKind::Select => lower_select_local_slot_ir_thunk_body_artifact(ir, root),
-        IrKind::BinOp => lower_update_local_slots_ir_thunk_body_artifact(&ir.arena, root),
+        IrKind::BinOp => arith_tree::lower_binop_ir_thunk_body_artifact(&ir.arena, root),
         _ => lower_tier1_ir_thunk_body_artifact_for_kind(
             &ir.arena,
             root,

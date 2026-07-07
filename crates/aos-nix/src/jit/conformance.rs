@@ -36,8 +36,9 @@ pub use native_differential::{
 };
 pub use shape_differential::{
     ShapeDifferentialError, ShapeDifferentialOutcome, ShapeDifferentialResult,
-    nix_jit_apply_native_differential, nix_jit_static_has_attr_native_differential,
-    nix_jit_static_select_native_differential, nix_jit_update_native_differential,
+    nix_jit_apply_native_differential, nix_jit_arith_native_differential,
+    nix_jit_static_has_attr_native_differential, nix_jit_static_select_native_differential,
+    nix_jit_update_native_differential,
 };
 pub use tier1_publish_dispatch::{
     NixJitTier1DispatchAgreement, NixJitTier1PublishDispatchConfig,

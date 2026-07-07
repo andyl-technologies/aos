@@ -34,6 +34,7 @@ use ratchet_core::{
 use ratchet_jit::{
     JitClifArtifact, JitCraneliftNativeCallError, JitLowerError, JitRuntimeSymbolAddressCandidate,
     lower_apply_local_slots_ir_root_thunk_body_artifact,
+    lower_force_aware_tier1_ir_thunk_body_artifact,
     lower_has_attr_local_slot_ir_root_thunk_body_artifact,
     lower_select_local_slot_ir_root_thunk_body_artifact,
     lower_update_local_slots_ir_root_thunk_body_artifact,
@@ -54,7 +55,8 @@ use ratchet_value::value::Value;
 use thiserror::Error;
 
 use crate::jit::{
-    NixJitRuntimeSymbolAddressCandidateError, nix_jit_runtime_symbol_address_candidate_preflight,
+    NixJitRuntimeSymbolAddressCandidateError, nix_jit_deopt_address_candidate,
+    nix_jit_runtime_symbol_address_candidate_preflight,
 };
 
 /// The inline-cache site id used by the attribute-access shape fixtures.
@@ -336,6 +338,84 @@ pub fn nix_jit_update_native_differential(
     )
 }
 
+/// Runs a scalar integer arithmetic/comparison differential against the oracle.
+///
+/// `left_src` and `right_src` are Nix expressions captured in slots 0 and 1;
+/// they are combined through the compiled `aos_env_get` + `aos_force` + inline
+/// arithmetic body for `op`. The oracle side evaluates the equivalent
+/// `(left_src) <op> (right_src)` source directly. Integer operands that both
+/// sides evaluate successfully are a value-mode run; an operation the tree walk
+/// errors on (division by zero or the `i64::MIN / -1` overflow) is a trap-mode
+/// run in which the inline guards branch to the deopt trampoline.
+///
+/// Cases where the tree walk succeeds but the inline path must deopt (a
+/// non-integer operand) are intentionally not exercised here: this harness runs
+/// the compiled body directly and treats a native trap as a failure, whereas the
+/// live engine re-runs such a body on the tree walk. Those silent-deopt cases are
+/// covered end to end by the engine-level tests.
+///
+/// # Errors
+///
+/// Returns a [`ShapeDifferentialError`] variant under the same conditions as
+/// [`nix_jit_static_select_native_differential`].
+pub fn nix_jit_arith_native_differential(
+    left_src: &str,
+    right_src: &str,
+    op: BinOpKind,
+) -> ShapeDifferentialResult {
+    let op_text = op_source_text(op);
+    let oracle_source = format!("({left_src}) {op_text} ({right_src})");
+    let oracle_ir = lower_source(&oracle_source)?;
+    let oracle_span = source_span(&oracle_source);
+    let oracle_id = oracle_ir.root;
+    let mut oracle_eval = TreeWalk::new(&oracle_ir);
+    let oracle = match oracle_eval.eval_root() {
+        Ok(value) => rust_callable_aos_force(&mut oracle_eval, oracle_id, oracle_span, value),
+        Err(error) => Err(error),
+    };
+
+    let capture_source = format!("{{ left = ({left_src}); right = ({right_src}); }}");
+    let source_ir = lower_source(&capture_source)?;
+    let span = source_span(&capture_source);
+    let id = source_ir.root;
+    let left_symbol = attr_symbol(&source_ir, b"left")?;
+    let right_symbol = attr_symbol(&source_ir, b"right")?;
+    let shape_ir = arith_ir(op);
+
+    let artifact = lower_force_aware_tier1_ir_thunk_body_artifact(&shape_ir.arena, shape_ir.root)
+        .map_err(ShapeDifferentialError::LowerArtifact)?;
+    let candidates = candidates_for(&["aos_env_get", "aos_force", "aos_deopt"])?;
+    let mut native_eval = TreeWalk::new(&source_ir);
+    let (left, right) = capture_binding_pair(&mut native_eval, left_symbol, right_symbol)?;
+    let native = run_and_force_scalar(
+        &mut native_eval,
+        id,
+        span,
+        &[left, right],
+        artifact,
+        &candidates,
+    )?;
+
+    reconcile_scalar(oracle, native)
+}
+
+/// Returns the Nix source operator text for a supported scalar operator.
+fn op_source_text(op: BinOpKind) -> &'static str {
+    match op {
+        BinOpKind::Add => "+",
+        BinOpKind::Sub => "-",
+        BinOpKind::Mul => "*",
+        BinOpKind::Div => "/",
+        BinOpKind::Lt => "<",
+        BinOpKind::Gt => ">",
+        BinOpKind::Le => "<=",
+        BinOpKind::Ge => ">=",
+        BinOpKind::Eq => "==",
+        BinOpKind::Ne => "!=",
+        _ => "+",
+    }
+}
+
 /// The value and trap observed from one native execution.
 struct NativeResult {
     value: Value,
@@ -548,12 +628,20 @@ fn capture_binding_pair(
 }
 
 /// Builds the registered candidates named by `symbols` from the shared preflight.
+///
+/// `aos_deopt` is a JIT-internal deopt trampoline rather than an oracle helper,
+/// so it is not present in the preflight and is sourced from its dedicated
+/// address candidate.
 fn candidates_for(
     symbols: &[&'static str],
 ) -> Result<Vec<JitRuntimeSymbolAddressCandidate>, ShapeDifferentialError> {
     let preflight = nix_jit_runtime_symbol_address_candidate_preflight()?;
     let mut candidates = Vec::with_capacity(symbols.len());
     for symbol_name in symbols {
+        if *symbol_name == "aos_deopt" {
+            candidates.push(nix_jit_deopt_address_candidate()?);
+            continue;
+        }
         let candidate = preflight
             .address_candidate_for(symbol_name)
             .ok_or(ShapeDifferentialError::MissingCandidate { symbol_name })?;
@@ -742,6 +830,38 @@ fn update_ir() -> Ir {
                 EffectClass::pure(),
                 IrData::Binary {
                     op: BinOpKind::Update,
+                    lhs: IrId::new(0),
+                    rhs: IrId::new(1),
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    binary_slot_ir(arena)
+}
+
+/// Builds the lowered IR for applying `op` to local slot 0 and local slot 1.
+fn arith_ir(op: BinOpKind) -> Ir {
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Local { slot: 0 },
+            ),
+            IrNode::new(
+                IrKind::LocalVar,
+                Span::new(2, 3),
+                EffectClass::pure(),
+                IrData::Local { slot: 1 },
+            ),
+            IrNode::new(
+                IrKind::BinOp,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Binary {
+                    op,
                     lhs: IrId::new(0),
                     rhs: IrId::new(1),
                 },

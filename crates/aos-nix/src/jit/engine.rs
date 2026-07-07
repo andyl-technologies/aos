@@ -43,7 +43,8 @@ use ratchet_runtime_ffi::run_finalized_native_thunk_call;
 use ratchet_value::value::Value;
 
 use crate::jit::{
-    NixJitRuntimeSymbolAddressCandidateError, nix_jit_runtime_symbol_address_candidate_preflight,
+    NixJitRuntimeSymbolAddressCandidateError, nix_jit_deopt_address_candidate,
+    nix_jit_runtime_symbol_address_candidate_preflight,
 };
 
 /// The default per-def-site force count at which a thunk body is promoted.
@@ -110,8 +111,12 @@ impl NixJitTier1Engine {
         threshold: u32,
     ) -> Result<Self, NixJitRuntimeSymbolAddressCandidateError> {
         let preflight = nix_jit_runtime_symbol_address_candidate_preflight()?;
+        // `aos_deopt` is a JIT-internal deopt trampoline, not an oracle helper, so
+        // it is registered directly rather than through the oracle-driven preflight.
+        let mut candidates = preflight.address_candidates().to_vec();
+        candidates.push(nix_jit_deopt_address_candidate()?);
         Ok(Self {
-            candidates: preflight.address_candidates().to_vec(),
+            candidates,
             threshold: threshold.max(1),
             state: RefCell::new(EngineState::default()),
         })
@@ -373,6 +378,17 @@ mod tests {
             "builtins.foldl' (a: b: a + b) 0 [ 1 2 3 4 5 ]",
             "let g = x: x * 2; in g 1 + g 2 + g 3",
             "builtins.length (builtins.genList (i: i + 1) 25)",
+            // Scalar arithmetic tree shapes: nested arithmetic, subtraction, and
+            // integer division exercise the inline `BinOp` lowerer.
+            "let a = 2; b = 3; c = 4; in a * b + c",
+            "let x = 10; y = 3; in x - y",
+            "let a = 20; b = 4; in a / b",
+            "let a = 3; b = 5; in if a < b then a else b",
+            "builtins.foldl' (a: b: a + b * 2) 0 [ 1 2 3 4 5 ]",
+            // Float operands force the inline integer path to deopt to the tree
+            // walk, which must still yield the same float result.
+            "let x = 1.5; in x + x",
+            "let x = 2.0; y = 3; in x * y",
         ];
         for source in sources {
             let oracle = eval_oracle(source);
