@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:e0fe59d7ff0cb6cc`
+Checklist sync digest: `rfc0010-checklist-v1:d68cefcb606ecec8`
 
 ## The phase ladder
 
@@ -465,8 +465,11 @@ long-held locks.
   resumed-session materialization with resolved QEMU/plugin identity provenance
   in stdout and the canonical log, and process-level `resume --backend qemu`
   JSONL output plus replay-oracle validation through marker-resolved QEMU/plugin
-  identity; full closure waits for backend-executed real-QEMU resume coverage
-  and full replay-oracle coverage across those runners.
+  identity, then runs a direct patched-QEMU QMP `snapshot-load` smoke that proves
+  the load job concludes and QEMU reports `running` after `cont`. Full closure
+  waits for wiring the CLI's selected local-QEMU resume path to a real QEMU
+  realization executor with replay-oracle-admitted materialization instead of
+  only appending QEMU identity to the local-double resume path.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,
