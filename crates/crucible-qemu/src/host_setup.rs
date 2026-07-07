@@ -7,7 +7,7 @@
 //! before deterministic guest execution.
 
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use crucible_protocol::{
@@ -63,6 +63,12 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub fn shmem_fd(&self) -> RawFd {
         self.shmem_fd.as_raw_fd()
+    }
+
+    /// Borrows the retained host shared-memory descriptor.
+    #[must_use]
+    pub fn shmem_as_fd(&self) -> BorrowedFd<'_> {
+        self.shmem_fd.as_fd()
     }
 
     /// Returns the retained host wake event descriptor.
