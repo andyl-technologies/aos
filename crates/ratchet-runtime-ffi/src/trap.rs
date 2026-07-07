@@ -60,6 +60,11 @@ pub enum RuntimeTrap {
     Force(TreeWalkError),
     /// The environment-access wrapper (`aos_env_get`) reported a frame error.
     Env(EvalEnvError),
+    /// The call-control wrapper (`aos_apply`) reported a tree-walk evaluator error.
+    Apply(TreeWalkError),
+    /// An attrset-access wrapper (`aos_has_attr`, `aos_select_ic`, `aos_update`)
+    /// reported a tree-walk evaluator error.
+    Attr(TreeWalkError),
 }
 
 /// Per-thread trap state guarded by [`RuntimeTrapScope`].

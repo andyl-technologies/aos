@@ -5,8 +5,9 @@
 //! `(rt, Value left, Value right) -> Value` signatures. This module supplies
 //! success-path wrappers for `aos_has_attr`, `aos_select_ic`, and `aos_update`
 //! by decoding `rt` as a scoped [`RuntimeAttrAccessContext`] and dispatching
-//! through the safe tree-walk oracle helpers. Failures still abort until native
-//! trap transfer exists.
+//! through the safe tree-walk oracle helpers. An evaluator error is transferred
+//! through [`crate::trap::RuntimeTrapScope`] instead of aborting when a scope is
+//! active; a null pointer or malformed payload still aborts.
 
 use std::{ffi::c_void, process};
 
@@ -23,12 +24,16 @@ use ratchet_oracle::{
 };
 
 use crate::context::{RuntimeJitContext, with_native_runtime_context};
+use crate::trap::{RuntimeTrap, record_runtime_trap, runtime_trap_sentinel_value};
 
 /// Native C ABI function pointer shape for keyed attrset-access helpers.
 ///
-/// The function returns a by-value [`Value`] and transfers no error state. It
-/// aborts instead of unwinding if the success-path safety contract is violated;
-/// final evaluator trap/error transfer remains future work.
+/// The function returns a by-value [`Value`] and never unwinds across the ABI
+/// boundary. An attrset-access evaluator error is transferred through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// runtime pointer or malformed payload always aborts as a safety-contract
+/// violation.
 ///
 /// # Safety
 ///
@@ -44,9 +49,12 @@ pub type RuntimeAttrAccessKeyedNativeFn =
 
 /// Native C ABI function pointer shape for `aos_update`.
 ///
-/// The function returns a by-value [`Value`] and transfers no error state. It
-/// aborts instead of unwinding if the success-path safety contract is violated;
-/// final evaluator trap/error transfer remains future work.
+/// The function returns a by-value [`Value`] and never unwinds across the ABI
+/// boundary. An attrset-access evaluator error is transferred through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// runtime pointer or malformed payload always aborts as a safety-contract
+/// violation.
 ///
 /// # Safety
 ///
@@ -56,11 +64,12 @@ pub type RuntimeAttrAccessKeyedNativeFn =
 /// from the evaluator encoded by the runtime pointer.
 pub type RuntimeAttrUpdateNativeFn = unsafe extern "C" fn(*mut c_void, Value, Value) -> Value;
 
-const ATTR_ACCESS_KEYED_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] =
-    &[RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented];
+// Trap transfer is implemented for the attrset-access wrappers, so no
+// wrapper-local blocker remains. The oracle native-export gate stays
+// authoritative for final admission (it still tracks `MissingFinalExportedWrapper`).
+const ATTR_ACCESS_KEYED_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[];
 
-const ATTR_UPDATE_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] =
-    &[RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented];
+const ATTR_UPDATE_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBlocker] = &[];
 
 /// Reads the frozen keyed attr-presence native ABI body.
 ///
@@ -69,9 +78,10 @@ const ATTR_UPDATE_REMAINING_EXPORT_BLOCKERS: &[RuntimeAttrAccessNativeExportBloc
 /// their frozen `u32` ABI representation, probes `attrs` through the safe
 /// tree-walk select-cache helper, and returns a materialized Nix boolean
 /// [`Value`]. Non-attr receivers return false, matching single-key IR
-/// `HasAttr` semantics. It deliberately does not implement evaluator trap/error
-/// transfer: the process aborts if the pointer is null or the safe helper
-/// reports an error.
+/// `HasAttr` semantics. An evaluator error is recorded through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// pointer always aborts as a safety-contract violation.
 ///
 /// # Safety
 ///
@@ -107,9 +117,11 @@ pub unsafe extern "C" fn aos_has_attr(
 /// This wrapper is the success-path C ABI body for `aos_select_ic`. It decodes
 /// `rt` as a [`RuntimeAttrAccessContext`], converts `symbol` and `site` through
 /// their frozen `u32` ABI representation, selects from `attrs` through the safe
-/// tree-walk select-cache helper, and returns the selected [`Value`]. It
-/// deliberately does not implement evaluator trap/error transfer: the process
-/// aborts if the pointer is null or the safe helper reports an error.
+/// tree-walk select-cache helper, and returns the selected [`Value`]. An
+/// evaluator error is recorded through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// pointer always aborts as a safety-contract violation.
 ///
 /// # Safety
 ///
@@ -157,7 +169,10 @@ fn aos_has_attr_success_path(
         IrInlineCacheSiteId::new(site),
     ) {
         Ok(value) => value,
-        Err(_) => process::abort(),
+        Err(error) => {
+            record_runtime_trap(RuntimeTrap::Attr(error));
+            runtime_trap_sentinel_value()
+        }
     }
 }
 
@@ -178,7 +193,10 @@ fn aos_select_ic_success_path(
         IrInlineCacheSiteId::new(site),
     ) {
         Ok(value) => value,
-        Err(_) => process::abort(),
+        Err(error) => {
+            record_runtime_trap(RuntimeTrap::Attr(error));
+            runtime_trap_sentinel_value()
+        }
     }
 }
 
@@ -187,9 +205,10 @@ fn aos_select_ic_success_path(
 /// This wrapper is the success-path C ABI body for `aos_update`. It decodes
 /// `rt` as a [`RuntimeAttrAccessContext`], shallowly merges `left` and `right`
 /// through the safe tree-walk update helper, and returns the merged attrset
-/// [`Value`]. It deliberately does not implement evaluator trap/error transfer:
-/// the process aborts if the pointer is null or the safe helper reports an
-/// error.
+/// [`Value`]. An evaluator error is recorded through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// pointer always aborts as a safety-contract violation.
 ///
 /// # Safety
 ///
@@ -222,7 +241,10 @@ fn aos_update_success_path(
 ) -> Value {
     match rust_callable_aos_update(eval, id, span, left, right) {
         Ok(value) => value,
-        Err(_) => process::abort(),
+        Err(error) => {
+            record_runtime_trap(RuntimeTrap::Attr(error));
+            runtime_trap_sentinel_value()
+        }
     }
 }
 
@@ -406,11 +428,8 @@ mod tests {
             aos_has_attr as RuntimeAttrAccessKeyedNativeFn as *mut c_void
         );
         assert!(has_attr.address().is_non_null());
-        assert_eq!(
-            has_attr.remaining_export_blockers(),
-            [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice()
-        );
-        assert!(!has_attr.is_export_ready());
+        assert!(has_attr.remaining_export_blockers().is_empty());
+        assert!(has_attr.is_export_ready());
 
         let select_ic = bindings[1];
         assert_eq!(
@@ -433,11 +452,8 @@ mod tests {
             aos_select_ic as RuntimeAttrAccessKeyedNativeFn as *mut c_void
         );
         assert!(select_ic.address().is_non_null());
-        assert_eq!(
-            select_ic.remaining_export_blockers(),
-            [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice()
-        );
-        assert!(!select_ic.is_export_ready());
+        assert!(select_ic.remaining_export_blockers().is_empty());
+        assert!(select_ic.is_export_ready());
 
         let update = bindings[2];
         assert_eq!(update.entrypoint(), RuntimeAttrAccessEntryPoint::AosUpdate);
@@ -457,30 +473,36 @@ mod tests {
             aos_update as RuntimeAttrUpdateNativeFn as *mut c_void
         );
         assert!(update.address().is_non_null());
-        assert_eq!(
-            update.remaining_export_blockers(),
-            [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice()
-        );
-        assert!(!update.is_export_ready());
+        assert!(update.remaining_export_blockers().is_empty());
+        assert!(update.is_export_ready());
     }
 
     #[test]
-    fn attr_access_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+    fn attr_access_native_wrapper_blockers_are_clear_while_oracle_gate_remains() {
         for binding in runtime_attr_access_native_wrapper_bindings() {
             let oracle_blockers = binding.entrypoint().native_export_blockers();
-            assert_eq!(
-                binding.remaining_export_blockers(),
-                [RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice(),
-                "{} runtime-FFI wrapper has one remaining blocker",
+
+            // Trap transfer is implemented, so the wrapper carries no remaining
+            // wrapper-local blocker, while the oracle native-export gate is
+            // unchanged and remains authoritative for final admission.
+            assert!(
+                binding.remaining_export_blockers().is_empty(),
+                "{} runtime-FFI wrapper has no remaining wrapper-local blocker",
                 binding.symbol_name()
             );
-            for blocker in binding.remaining_export_blockers() {
-                assert!(
-                    oracle_blockers.contains(blocker),
-                    "{} runtime-FFI blocker {blocker:?} must remain tracked by oracle",
-                    binding.symbol_name()
-                );
-            }
+            assert!(binding.is_export_ready());
+            assert!(
+                oracle_blockers
+                    .contains(&RuntimeAttrAccessNativeExportBlocker::MissingFinalExportedWrapper),
+                "{} oracle export gate still tracks final admission",
+                binding.symbol_name()
+            );
+            assert!(
+                oracle_blockers
+                    .contains(&RuntimeAttrAccessNativeExportBlocker::TrapTransferUnimplemented),
+                "{} oracle export gate is unchanged by wrapper trap transfer",
+                binding.symbol_name()
+            );
         }
     }
 

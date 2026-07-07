@@ -21,12 +21,16 @@ use ratchet_oracle::{
 };
 
 use crate::context::{RuntimeJitContext, with_native_runtime_context};
+use crate::trap::{RuntimeTrap, record_runtime_trap, runtime_trap_sentinel_value};
 
 /// Native C ABI function pointer shape for `aos_apply`.
 ///
-/// The function returns a by-value [`Value`] and transfers no error state. It
-/// aborts instead of unwinding if the success-path safety contract is violated;
-/// final evaluator trap/error transfer remains future work.
+/// The function returns a by-value [`Value`] and never unwinds across the ABI
+/// boundary. A call-control evaluator error is transferred through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// runtime pointer or malformed payload always aborts as a safety-contract
+/// violation.
 ///
 /// # Safety
 ///
@@ -37,8 +41,10 @@ use crate::context::{RuntimeJitContext, with_native_runtime_context};
 /// a valid pinned [`RuntimeApplyContext`] runtime pointer.
 pub type RuntimeApplyNativeFn = unsafe extern "C" fn(*mut c_void, Value, Value) -> Value;
 
-const APPLY_REMAINING_EXPORT_BLOCKERS: &[RuntimeApplyNativeExportBlocker] =
-    &[RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented];
+// Trap transfer is implemented for the apply wrapper, so no wrapper-local
+// blocker remains. The oracle native-export gate stays authoritative for final
+// admission (it still tracks `MissingFinalExportedWrapper` and the rest).
+const APPLY_REMAINING_EXPORT_BLOCKERS: &[RuntimeApplyNativeExportBlocker] = &[];
 
 /// Applies a callable value through the frozen apply native ABI body.
 ///
@@ -46,10 +52,12 @@ const APPLY_REMAINING_EXPORT_BLOCKERS: &[RuntimeApplyNativeExportBlocker] =
 /// frozen runtime-context pointer plus by-value function and argument values,
 /// validates their representation-level payloads, decodes `rt` as a
 /// [`RuntimeApplyContext`], roots the imported values through the safe tree-walk
-/// apply helper, and returns the application result [`Value`]. It deliberately
-/// does not implement evaluator trap/error transfer: the process aborts if the
-/// pointer is null, either value payload is malformed, or the safe helper
-/// reports an error.
+/// apply helper, and returns the application result [`Value`]. A call-control
+/// evaluator error is recorded through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// pointer or malformed value payload always aborts as a safety-contract
+/// violation.
 ///
 /// # Safety
 ///
@@ -86,7 +94,10 @@ fn aos_apply_success_path(
 ) -> Value {
     match rust_callable_aos_apply(eval, id, span, function, argument) {
         Ok(value) => value,
-        Err(_) => process::abort(),
+        Err(error) => {
+            record_runtime_trap(RuntimeTrap::Apply(error));
+            runtime_trap_sentinel_value()
+        }
     }
 }
 
@@ -227,31 +238,29 @@ mod tests {
             aos_apply as RuntimeApplyNativeFn as *mut c_void
         );
         assert!(binding.address().is_non_null());
-        assert_eq!(
-            binding.remaining_export_blockers(),
-            [RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented].as_slice()
-        );
-        assert!(!binding.is_export_ready());
+        assert!(binding.remaining_export_blockers().is_empty());
+        assert!(binding.is_export_ready());
     }
 
     #[test]
-    fn apply_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+    fn apply_native_wrapper_blockers_are_clear_while_oracle_gate_remains() {
         let binding = runtime_apply_native_wrapper_bindings()
             .into_iter()
             .next()
             .expect("apply wrapper binding exists");
         let oracle_blockers = RuntimeApplyEntryPoint::AosApply.native_export_blockers();
 
-        assert_eq!(
-            binding.remaining_export_blockers(),
-            [RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented].as_slice()
+        // Trap transfer is implemented, so the wrapper carries no remaining
+        // wrapper-local blocker, while the oracle native-export gate is
+        // unchanged and remains authoritative for final admission.
+        assert!(binding.remaining_export_blockers().is_empty());
+        assert!(binding.is_export_ready());
+        assert!(
+            oracle_blockers.contains(&RuntimeApplyNativeExportBlocker::MissingFinalExportedWrapper)
         );
-        for blocker in binding.remaining_export_blockers() {
-            assert!(
-                oracle_blockers.contains(blocker),
-                "runtime-FFI blocker {blocker:?} must remain tracked by oracle"
-            );
-        }
+        assert!(
+            oracle_blockers.contains(&RuntimeApplyNativeExportBlocker::TrapTransferUnimplemented)
+        );
     }
 
     #[test]

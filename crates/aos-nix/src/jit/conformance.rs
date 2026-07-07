@@ -26,11 +26,17 @@ use super::{
 use crate::eval::EvalThunk;
 
 mod native_differential;
+mod shape_differential;
 
 pub use native_differential::{
     BindingProjectionReason, NixJitForcedEnvSlotNativeDifferentialError,
     NixJitForcedEnvSlotNativeDifferentialResult, NixJitForcedEnvSlotNativeOutcome,
     nix_jit_forced_env_slot_native_differential,
+};
+pub use shape_differential::{
+    ShapeDifferentialError, ShapeDifferentialOutcome, ShapeDifferentialResult,
+    nix_jit_apply_native_differential, nix_jit_static_has_attr_native_differential,
+    nix_jit_static_select_native_differential, nix_jit_update_native_differential,
 };
 
 /// One condition preventing a JIT-enabled differential harness from running tier 1.

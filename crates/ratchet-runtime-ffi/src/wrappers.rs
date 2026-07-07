@@ -336,14 +336,18 @@ mod tests {
         let core_helper_roles = core_helper_roles_by_symbol();
 
         assert!(bindings.iter().copied().all(|binding| {
-            // The forcing and environment-access families implement trap
-            // transfer, so their wrapper-local blocker lists are empty and they
-            // report as export-ready. The remaining families still carry
-            // wrapper-local blockers. No family carries the final-export gate,
-            // which stays owned by the oracle native-export preflight.
+            // The forcing, environment-access, call-control, and attrset-access
+            // families implement trap transfer, so their wrapper-local blocker
+            // lists are empty and they report as export-ready. The allocation and
+            // write-barrier families still carry wrapper-local blockers. No family
+            // carries the final-export gate, which stays owned by the oracle
+            // native-export preflight.
             let trap_transfer_done = matches!(
                 binding.role(),
-                RuntimeHelperRole::ForcingControl | RuntimeHelperRole::EnvironmentAccess
+                RuntimeHelperRole::ForcingControl
+                    | RuntimeHelperRole::EnvironmentAccess
+                    | RuntimeHelperRole::CallControl
+                    | RuntimeHelperRole::AttrsetAccess
             );
             binding.address().is_non_null()
                 && binding.is_export_ready() == trap_transfer_done

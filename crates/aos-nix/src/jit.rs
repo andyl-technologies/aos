@@ -34,12 +34,14 @@ pub use conformance::{
     NixJitLiteralNativeDifferential, NixJitLiteralNativeDifferentialError,
     NixJitLiteralNativeDifferentialResult, NixJitTier1ConformanceGap,
     NixJitTier1ConformanceReadiness, NixJitTier1ConformanceReadinessError,
-    NixJitTier1ConformanceReadinessResult,
+    NixJitTier1ConformanceReadinessResult, ShapeDifferentialError, ShapeDifferentialOutcome,
+    ShapeDifferentialResult, nix_jit_apply_native_differential,
     nix_jit_force_aware_tier1_conformance_readiness_for_ir_root,
     nix_jit_force_aware_tier1_conformance_readiness_for_lowered_ir_root,
     nix_jit_forced_env_slot_native_differential, nix_jit_literal_native_differential_for_ir_root,
+    nix_jit_static_has_attr_native_differential, nix_jit_static_select_native_differential,
     nix_jit_tier1_conformance_readiness_for_ir_root,
-    nix_jit_tier1_conformance_readiness_for_lowered_ir_root,
+    nix_jit_tier1_conformance_readiness_for_lowered_ir_root, nix_jit_update_native_differential,
 };
 pub use runtime_symbols::{
     NixJitPreflightResult, NixJitRuntimeSymbolAddressCandidateError,
