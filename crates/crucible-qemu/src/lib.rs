@@ -21,7 +21,8 @@
 //! owns the bounded host-I/O bridge between
 //! synchronous scheduler node steps and real-time child I/O; `crash_detection`
 //! owns typed crashed-node status classification; `node` owns the
-//! scheduler-facing one-child/three-channel QEMU wrapper; `quantum` owns the
+//! scheduler-facing one-child/three-channel QEMU wrapper; `node_factory` owns
+//! the Linux post-setup node composition boundary; `quantum` owns the
 //! per-quantum shared-memory hot path; `qmp` owns the minimal typed QMP client;
 //! `realization` owns the start/resume/fork instantiate branch coordinator; and
 //! `savevm_policy` owns the conservative thin-replay fallback for incomplete
@@ -47,6 +48,8 @@ mod launch;
 #[cfg(unix)]
 mod mapped_quantum;
 mod node;
+#[cfg(target_os = "linux")]
+mod node_factory;
 mod plugin_control;
 mod qmp;
 mod quantum;
@@ -113,6 +116,10 @@ pub use node::{
     QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState, QemuNodeLifecycleState,
     QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuQmpMachineControlChannel,
     QemuShmemHotPathChannel,
+};
+#[cfg(target_os = "linux")]
+pub use node_factory::{
+    QemuNodeFactoryError, QemuQmpShutdownOnlyControlChannel, build_qemu_node_from_completed_setup,
 };
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
