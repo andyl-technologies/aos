@@ -223,10 +223,10 @@ mod tests {
     };
 
     use super::*;
+    use crate::savevm_policy::validate_loadvm_realized_runtime;
     use crate::{
         QemuCachedAncestor, QemuReplayOracleValidation, QemuSavevmPolicyError,
         QemuVmLoadvmAdmissionPolicy, QemuVmRealizationStore, resume_qemu_vm,
-        validate_loadvm_realized_runtime,
     };
 
     type SharedLog = Rc<RefCell<Vec<RealizationCall>>>;
