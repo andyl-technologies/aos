@@ -6,7 +6,7 @@
 confinement	crates/crucible-api/src/server.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	2
 confinement	crates/crucible-api/src/streaming.rs	nondeterministic select	select!	; package `crucible-api` is not a host-nondeterminism boundary	1
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	Backend		152
-confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	Configuration		106
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	Configuration		108
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	ControlClient		54
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	Decision		88
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	QuantumLoop		10
@@ -20,7 +20,7 @@ confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/sess
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	crucible_session		34
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaches API/session route	drive_quantum		8
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	Backend		76
-confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	Configuration		53
+confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	Configuration		54
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	Decision		44
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	QuantumLoop		5
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	QuantumOutcome		4

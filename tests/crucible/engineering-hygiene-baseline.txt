@@ -86,7 +86,8 @@ shape-line|crates/crucible-api/src/rpc_abi.rs|681
 shape-line|crates/crucible-api/src/server.rs|1712
 shape-line|crates/crucible-api/src/streaming.rs|1266
 shape-line|crates/crucible-api/tests/gate_control_client.rs|4655
-shape-line|crates/crucible-cli/src/main.rs|13818
+shape-line|crates/crucible-cli/src/main.rs|27385
+shape-line|crates/crucible-cli/tests/machine_readable.rs|1348
 shape-line|crates/crucible-harness/src/adversarial.rs|1265
 shape-line|crates/crucible-harness/src/e2e.rs|1305
 shape-line|crates/crucible-harness/src/phase_plan.rs|1379

@@ -37,9 +37,9 @@ use crucible_session::engine::{
     QuantumOutcome as QOut, QuantumRequest as QReq, SchedulerError as QErr,
 };
 use crucible_session::validation::{
-    ValidationDag, ValidationDagStoreError, empty_validation_dag,
+    ResumeRealizationProof, ValidationDag, ValidationDagStoreError, empty_validation_dag,
     fork_session_from_validation_base, fork_session_from_validation_checkpoint,
-    resume_session_from_validation_dag,
+    realize_resume_from_savepoint, resume_session_from_validation_dag,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointId, BreakpointSpec, CheckpointRef, CommandReply,
@@ -5475,6 +5475,7 @@ struct ResumeWorkflowReport {
     run: RunWorkflowReport,
     source_checkpoint: crucible::ContentHash,
     resumed_configuration: crucible::ContentHash,
+    terminal_configuration: crucible::Configuration,
     scenario_label: String,
     terminal_oracle: SavepointOracleProof,
 }
@@ -6091,12 +6092,14 @@ fn run_local_double_resume_workflow(
     } else {
         ResumeInteractiveCommandDriver::Preparsed(&[])
     };
-    run_local_double_resume_workflow_with_driver(
+    let (_evidence, report) =
+        run_local_resume_workflow_report_with_driver(resume_plan, interactive_driver)?;
+    finish_resume_workflow_outcome(
         thin_plan,
         backend_plan,
         ergonomics_plan,
         resume_plan,
-        interactive_driver,
+        report,
     )
 }
 
@@ -6106,19 +6109,39 @@ fn run_local_qemu_resume_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     resume_plan: &ResumeInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
-    let mut outcome =
-        run_local_double_resume_workflow(thin_plan, backend_plan, ergonomics_plan, resume_plan)?;
-    append_local_qemu_resume_identity(&mut outcome, backend_plan)?;
+    let interactive_driver = if matches!(resume_plan.execution_mode, RunExecutionMode::Interactive)
+    {
+        ResumeInteractiveCommandDriver::Stdin
+    } else {
+        ResumeInteractiveCommandDriver::Preparsed(&[])
+    };
+    let (evidence, report) =
+        run_local_resume_workflow_report_with_driver(resume_plan, interactive_driver)?;
+    let proof = realize_resume_from_savepoint(
+        &evidence.configuration,
+        &evidence.checkpoint,
+        &report.terminal_configuration,
+    )
+    .map_err(|error| {
+        CliError::Identity(format!(
+            "local QEMU resume realization proof failed: {error}"
+        ))
+    })?;
+    let mut outcome = finish_resume_workflow_outcome(
+        thin_plan,
+        backend_plan,
+        ergonomics_plan,
+        resume_plan,
+        report,
+    )?;
+    append_local_qemu_resume_identity(&mut outcome, backend_plan, &proof)?;
     Ok(outcome)
 }
 
-fn run_local_double_resume_workflow_with_driver(
-    thin_plan: &CliThinWrapperPlan,
-    backend_plan: &BackendSelectionPlan,
-    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+fn run_local_resume_workflow_report_with_driver(
     resume_plan: &ResumeInvocationPlan,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
-) -> Result<BackendCommandOutcome, CliError> {
+) -> Result<(ResumeHandleEvidence, ResumeWorkflowReport), CliError> {
     let evidence = resume_handle_evidence(resume_plan)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -6128,6 +6151,19 @@ fn run_local_double_resume_workflow_with_driver(
         evidence.clone(),
         interactive_driver,
     ))?;
+    Ok((evidence, report))
+}
+
+#[cfg(test)]
+fn run_local_double_resume_workflow_with_driver(
+    thin_plan: &CliThinWrapperPlan,
+    backend_plan: &BackendSelectionPlan,
+    ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
+    resume_plan: &ResumeInvocationPlan,
+    interactive_driver: ResumeInteractiveCommandDriver<'_>,
+) -> Result<BackendCommandOutcome, CliError> {
+    let (_evidence, report) =
+        run_local_resume_workflow_report_with_driver(resume_plan, interactive_driver)?;
     finish_resume_workflow_outcome(
         thin_plan,
         backend_plan,
@@ -6494,6 +6530,7 @@ where
         },
         source_checkpoint: evidence.checkpoint.id,
         resumed_configuration: resumed.configuration,
+        terminal_configuration: snapshot.configuration.clone(),
         scenario_label: resume_plan.savepoint.label(),
         terminal_oracle,
     })
@@ -7340,6 +7377,7 @@ async fn run_resumed_savepoint_actor_with_driver_async(
         },
         source_checkpoint,
         resumed_configuration,
+        terminal_configuration: actor_report.final_snapshot.configuration.clone(),
         scenario_label: plan.savepoint.label(),
         terminal_oracle,
     })
@@ -8374,6 +8412,7 @@ fn append_local_qemu_save_identity(
 fn append_local_qemu_resume_identity(
     outcome: &mut BackendCommandOutcome,
     backend_plan: &BackendSelectionPlan,
+    proof: &ResumeRealizationProof,
 ) -> Result<(), CliError> {
     let Some(ResolvedLocalBackend::Qemu {
         qemu_build_id,
@@ -8387,8 +8426,9 @@ fn append_local_qemu_resume_identity(
             "local QEMU resume requires a resolved QEMU backend identity",
         ));
     };
+    let proof_summary = proof.field_summary();
     outcome.stdout.push(format!(
-        "resume-qemu-runner\tmaterialization=qemu-vm-realization operation=resume branch=ancestor-replay checkpoint=none replayed_decisions=1\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
+        "resume-qemu-runner\t{proof_summary}\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
     ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
@@ -8396,7 +8436,7 @@ fn append_local_qemu_resume_identity(
         node: String::from("qemu"),
         kind: String::from("resume_qemu_runner"),
         summary: format!(
-            "materialization=qemu-vm-realization operation=resume branch=ancestor-replay checkpoint=none replayed_decisions=1 qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
+            "{proof_summary} qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);

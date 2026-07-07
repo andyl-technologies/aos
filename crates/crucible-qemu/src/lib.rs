@@ -119,7 +119,8 @@ pub use node::{
 };
 #[cfg(target_os = "linux")]
 pub use node_factory::{
-    QemuNodeFactoryError, QemuQmpShutdownOnlyControlChannel, build_qemu_node_from_completed_setup,
+    QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestorePlan,
+    QemuQmpShutdownOnlyControlChannel, build_qemu_node_from_completed_setup,
     build_qemu_node_from_restored_checkpoint,
 };
 pub use qmp::{
