@@ -26,11 +26,12 @@
 
 use ratchet_core::{
     EffectClass, Ir, IrArena, IrData, IrId, IrKind, IrNode,
-    syntax::{Span, Symbol},
+    syntax::{BinOpKind, Span, Symbol},
 };
 use ratchet_jit::{
     JitCraneliftNativeCallError, JitLowerError, JitRuntimeSymbolAddressCandidate,
     lower_forced_env_get_ir_thunk_body_artifact, lower_forced_upval_get_ir_thunk_body_artifact,
+    lower_tier1_ir_thunk_body_artifact,
 };
 use ratchet_oracle::eval::tree_walk::TreeWalkError;
 use ratchet_oracle::{
@@ -44,8 +45,8 @@ use ratchet_value::value::Value;
 use thiserror::Error;
 
 use crate::jit::{
-    NixJitRuntimeSymbolAddressCandidateError, nix_jit_runtime_symbol_address_candidate_preflight,
-    nix_jit_upval_get_address_candidate,
+    NixJitRuntimeSymbolAddressCandidateError, nix_jit_deopt_address_candidate,
+    nix_jit_runtime_symbol_address_candidate_preflight, nix_jit_upval_get_address_candidate,
 };
 
 /// The runtime symbols imported by a forced environment-slot artifact, in order.
@@ -600,6 +601,84 @@ mod tests {
             .expect("native upval call runs to a deopt");
 
         assert_eq!(native.trap, Some(RuntimeTrap::Deopt));
+    }
+
+    #[test]
+    fn upvalue_operand_arith_native_computes_through_aos_upval_get() {
+        // Body: `upval(depth 1, slot 0) + 1`. The upvalue holds 41 one frame above
+        // the innermost, so the compiled arithmetic — which loads the operand via
+        // aos_upval_get, forces it, and adds inline — must produce 42. This
+        // exercises the widened operand path (an upvalue operand inside a shape)
+        // on executed machine code, not just lowering.
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::UpvalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Upval { depth: 1, slot: 0 },
+                ),
+                IrNode::new(
+                    IrKind::Int,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Int(1),
+                ),
+                IrNode::new(
+                    IrKind::BinOp,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Binary {
+                        op: BinOpKind::Add,
+                        lhs: IrId::new(0),
+                        rhs: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let artifact = lower_tier1_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("upvalue-operand arithmetic lowers");
+
+        let preflight =
+            nix_jit_runtime_symbol_address_candidate_preflight().expect("preflight builds");
+        let mut candidates = Vec::new();
+        for symbol in ["aos_env_get", "aos_force"] {
+            let candidate = preflight
+                .address_candidate_for(symbol)
+                .unwrap_or_else(|| panic!("{symbol} candidate exists"));
+            candidates.push(JitRuntimeSymbolAddressCandidate::new(
+                candidate.symbol_name().to_owned(),
+                candidate.kind(),
+                candidate.address(),
+            ));
+        }
+        candidates.push(nix_jit_upval_get_address_candidate().expect("upval candidate builds"));
+        candidates.push(nix_jit_deopt_address_candidate().expect("deopt candidate builds"));
+
+        let source_ir = lower_source("1").expect("trivial source lowers");
+        let mut eval = TreeWalk::new(&source_ir);
+        let outer = EvalFrame::new(1).expect("outer frame allocates");
+        outer.set(0, Value::int(41)).expect("outer slot stores");
+        let inner = EvalFrame::new(1).expect("inner frame allocates");
+        let env = EvalEnv::capture(&[outer, inner]).expect("env captures");
+
+        let outcome = run_registered_native_thunk_call(
+            &mut eval,
+            source_ir.root,
+            Span::new(0, 1),
+            &env,
+            artifact,
+            &candidates,
+        )
+        .expect("native arithmetic call runs");
+
+        assert!(
+            outcome.trap().is_none(),
+            "unexpected trap: {:?}",
+            outcome.trap()
+        );
+        assert_eq!(outcome.value().as_int(), Ok(42));
     }
 
     #[test]

@@ -45,10 +45,10 @@ use ratchet_core::{
 };
 
 use super::{
-    AOS_DEOPT_SYMBOL, AOS_ENV_GET_SYMBOL, AOS_FORCE_SYMBOL, JitLowerError,
+    AOS_DEOPT_SYMBOL, AOS_ENV_GET_SYMBOL, AOS_FORCE_SYMBOL, AOS_UPVAL_GET_SYMBOL, JitLowerError,
     append_entry_block_params, clif_external_name_for_aos_deopt, clif_external_name_for_aos_force,
     clif_name_for_ir_root, import_env_get_function, import_runtime_helper_function,
-    thunk_body_artifact, verify_clif_function,
+    import_upval_get_function, thunk_body_artifact, verify_clif_function,
 };
 use crate::{
     abi::clif_signature_for_runtime_call,
@@ -104,6 +104,11 @@ fn classify(op: BinOpKind) -> Option<ArithKind> {
 struct ArithCtx {
     /// Imported `aos_env_get` helper for local-slot loads.
     env_get: cranelift_codegen::ir::FuncRef,
+    /// Imported `aos_upval_get` helper for upvalue-slot loads.
+    ///
+    /// `None` when the operand tree reads no upvalue, so a pure local-slot
+    /// arithmetic body declares no `aos_upval_get` import.
+    upval_get: Option<cranelift_codegen::ir::FuncRef>,
     /// Imported `aos_force` helper (forces loaded local-slot values to WHNF).
     force: cranelift_codegen::ir::FuncRef,
     /// Imported `aos_deopt` helper called by the shared deopt block.
@@ -209,6 +214,12 @@ fn build_arith_function(
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
     let mut function = Function::with_name_signature(clif_name_for_ir_root(root), signature);
     let env_get = import_env_get_function(&mut function)?;
+    let (op, lhs, rhs) = binop_operands(arena, binop_id)?;
+    let upval_get = if arith_tree_reads_upval(arena, lhs) || arith_tree_reads_upval(arena, rhs) {
+        Some(import_upval_get_function(&mut function)?)
+    } else {
+        None
+    };
     let force = import_runtime_helper_function(
         &mut function,
         AOS_FORCE_SYMBOL,
@@ -222,8 +233,6 @@ fn build_arith_function(
     let entry_block = append_entry_block_params(&mut function);
     let deopt = function.dfg.make_block();
 
-    let (op, lhs, rhs) = binop_operands(arena, binop_id)?;
-
     let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(entry_block);
     let params = cursor.func.dfg.block_params(entry_block);
     let rt = params
@@ -236,6 +245,7 @@ fn build_arith_function(
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
     let ctx = ArithCtx {
         env_get,
+        upval_get,
         force,
         deopt_fn,
         rt,
@@ -290,10 +300,46 @@ fn emit_operand(
             )?;
             Ok((forced[0], forced[1]))
         }
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) => {
+            let upval_get =
+                ctx.upval_get
+                    .ok_or(JitLowerError::MissingRuntimeHelperSignature {
+                        symbol_name: AOS_UPVAL_GET_SYMBOL,
+                    })?;
+            let depth = cursor.ins().iconst(types::I32, i64::from(depth));
+            let slot = cursor.ins().iconst(types::I32, i64::from(slot));
+            let loaded = call2(cursor, upval_get, &[ctx.env, depth, slot], AOS_UPVAL_GET_SYMBOL)?;
+            let forced = call2(
+                cursor,
+                ctx.force,
+                &[ctx.rt, loaded[0], loaded[1]],
+                AOS_FORCE_SYMBOL,
+            )?;
+            Ok((forced[0], forced[1]))
+        }
         (IrKind::BinOp, IrData::Binary { op, lhs, rhs }) => {
             emit_binop(cursor, arena, ctx, op, lhs, rhs)
         }
         (kind, _) => Err(JitLowerError::UnsupportedArithOperand { operand: id, kind }),
+    }
+}
+
+/// Returns true when any leaf of the operand subtree rooted at `id` is an upvalue.
+///
+/// Walks the same integer-arithmetic grammar [`emit_operand`] accepts (literals,
+/// slot reads, nested binary operators). Used to decide whether the arithmetic
+/// body needs to import `aos_upval_get`, so a pure local-slot tree declares no
+/// upvalue import.
+fn arith_tree_reads_upval(arena: &IrArena, id: IrId) -> bool {
+    let Some(node) = arena.node(id).copied() else {
+        return false;
+    };
+    match (node.kind, node.data) {
+        (IrKind::UpvalVar, _) => true,
+        (IrKind::BinOp, IrData::Binary { lhs, rhs, .. }) => {
+            arith_tree_reads_upval(arena, lhs) || arith_tree_reads_upval(arena, rhs)
+        }
+        _ => false,
     }
 }
 
@@ -441,6 +487,16 @@ mod tests {
         )
     }
 
+    /// Builds an `UpvalVar` node reading `slot` from `depth` frames up.
+    fn upval(depth: u32, slot: u32) -> IrNode {
+        IrNode::new(
+            IrKind::UpvalVar,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::Upval { depth, slot },
+        )
+    }
+
     /// Builds an integer-literal node.
     fn int(value: i64) -> IrNode {
         IrNode::new(
@@ -513,6 +569,24 @@ mod tests {
                 JitClifArtifactSource::IrRoot(IrId::new(2))
             );
         }
+    }
+
+    /// An arithmetic operand reading an upvalue lowers to a verified artifact.
+    #[test]
+    fn upvalue_operand_arith_lowers_to_verified_artifact() {
+        // 0:upval(depth 1, slot 0)  1:int 1  2:(upval + 1)
+        let arena = arena(vec![upval(1, 0), int(1), binop(BinOpKind::Add, 0, 1)]);
+        lower_binop_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("upvalue-operand arithmetic lowers");
+    }
+
+    /// A mixed local/upvalue arithmetic tree lowers to a verified artifact.
+    #[test]
+    fn mixed_local_and_upvalue_operand_arith_lowers() {
+        // 0:local(0)  1:upval(depth 2, slot 1)  2:(local + upval)
+        let arena = arena(vec![local(0), upval(2, 1), binop(BinOpKind::Mul, 0, 1)]);
+        lower_binop_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("mixed local/upvalue arithmetic lowers");
     }
 
     /// A nested arithmetic tree `(a * b) + c` lowers to a verified artifact.

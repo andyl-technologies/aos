@@ -773,10 +773,10 @@ pub fn lower_apply_local_slots_ir_thunk_body(
     arena: &IrArena,
     root: IrId,
 ) -> Result<Function, JitLowerError> {
-    let (function_slot, argument_slot) = apply_local_slots_for_root(arena, root)?;
+    let (function_operand, argument_operand) = apply_local_slots_for_root(arena, root)?;
     lower_apply_local_slots_thunk_body_with_name(
-        function_slot,
-        argument_slot,
+        function_operand,
+        argument_operand,
         clif_name_for_ir_root(root),
     )
 }
@@ -996,10 +996,10 @@ pub fn lower_update_local_slots_ir_thunk_body(
     arena: &IrArena,
     root: IrId,
 ) -> Result<Function, JitLowerError> {
-    let (left_slot, right_slot) = update_local_slots_for_root(arena, root)?;
+    let (left_operand, right_operand) = update_local_slots_for_root(arena, root)?;
     lower_update_local_slots_thunk_body_with_name(
-        left_slot,
-        right_slot,
+        left_operand,
+        right_operand,
         clif_name_for_ir_root(root),
     )
 }
@@ -1358,7 +1358,7 @@ fn upval_depth_slot_for_node(node: IrNode) -> Result<(u32, u32), JitLowerError> 
     }
 }
 
-fn apply_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32), JitLowerError> {
+fn apply_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     let node = arena
         .node(root)
         .copied()
@@ -1381,7 +1381,7 @@ fn apply_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32),
     }
 }
 
-fn apply_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(u32, u32), JitLowerError> {
+fn apply_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     match (node.kind, node.data) {
         (IrKind::Apply, IrData::Pair { first, second }) => Ok((
             apply_local_child_slot(arena, first)?,
@@ -1396,7 +1396,7 @@ fn apply_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(u32, u32
     }
 }
 
-fn apply_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(u32, u32), JitLowerError> {
+fn apply_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     match (node.kind, node.data) {
         (IrKind::Apply, IrData::Pair { first, second }) => Ok((
             apply_local_child_slot(arena, first)?,
@@ -1411,24 +1411,32 @@ fn apply_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(u32, u32
     }
 }
 
-fn apply_local_child_slot(arena: &IrArena, child: IrId) -> Result<u32, JitLowerError> {
+fn apply_local_child_slot(arena: &IrArena, child: IrId) -> Result<Tier1SlotOperand, JitLowerError> {
     let node = arena
         .node(child)
         .copied()
         .ok_or(JitLowerError::MissingApplyChild { child })?;
 
     match (node.kind, node.data) {
-        (IrKind::LocalVar, IrData::Local { slot }) => Ok(slot),
+        (IrKind::LocalVar, IrData::Local { slot }) => Ok(Tier1SlotOperand::Local { slot }),
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) => {
+            Ok(Tier1SlotOperand::Upval { depth, slot })
+        }
         (IrKind::LocalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
             kind: IrKind::LocalVar,
             data,
             expected: "local slot payload",
         }),
+        (IrKind::UpvalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::UpvalVar,
+            data,
+            expected: "upvalue depth/slot payload",
+        }),
         (kind, _) => Err(JitLowerError::UnsupportedApplyChild { child, kind }),
     }
 }
 
-fn update_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32), JitLowerError> {
+fn update_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     let node = arena
         .node(root)
         .copied()
@@ -1451,7 +1459,7 @@ fn update_local_slots_for_root(arena: &IrArena, root: IrId) -> Result<(u32, u32)
     }
 }
 
-fn update_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(u32, u32), JitLowerError> {
+fn update_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     match (node.kind, node.data) {
         (
             IrKind::BinOp,
@@ -1476,7 +1484,7 @@ fn update_local_slots_for_body(arena: &IrArena, node: IrNode) -> Result<(u32, u3
     }
 }
 
-fn update_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(u32, u32), JitLowerError> {
+fn update_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(Tier1SlotOperand, Tier1SlotOperand), JitLowerError> {
     match (node.kind, node.data) {
         (
             IrKind::BinOp,
@@ -1501,18 +1509,29 @@ fn update_local_slots_for_node(arena: &IrArena, node: IrNode) -> Result<(u32, u3
     }
 }
 
-fn update_local_operand_slot(arena: &IrArena, operand: IrId) -> Result<u32, JitLowerError> {
+fn update_local_operand_slot(
+    arena: &IrArena,
+    operand: IrId,
+) -> Result<Tier1SlotOperand, JitLowerError> {
     let node = arena
         .node(operand)
         .copied()
         .ok_or(JitLowerError::MissingUpdateOperand { operand })?;
 
     match (node.kind, node.data) {
-        (IrKind::LocalVar, IrData::Local { slot }) => Ok(slot),
+        (IrKind::LocalVar, IrData::Local { slot }) => Ok(Tier1SlotOperand::Local { slot }),
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) => {
+            Ok(Tier1SlotOperand::Upval { depth, slot })
+        }
         (IrKind::LocalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
             kind: IrKind::LocalVar,
             data,
             expected: "local slot payload",
+        }),
+        (IrKind::UpvalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::UpvalVar,
+            data,
+            expected: "upvalue depth/slot payload",
         }),
         (kind, _) => Err(JitLowerError::UnsupportedUpdateOperand { operand, kind }),
     }
@@ -1520,7 +1539,7 @@ fn update_local_operand_slot(arena: &IrArena, operand: IrId) -> Result<u32, JitL
 
 #[derive(Clone, Copy)]
 struct AttrLookup {
-    receiver_slot: u32,
+    receiver: Tier1SlotOperand,
     symbol: Symbol,
     site: IrInlineCacheSiteId,
     default: Option<Value>,
@@ -1645,14 +1664,14 @@ fn attr_lookup(
     default: Option<Value>,
 ) -> Result<AttrLookup, JitLowerError> {
     Ok(AttrLookup {
-        receiver_slot: attr_receiver_slot(ir, receiver)?,
+        receiver: attr_receiver_slot(ir, receiver)?,
         symbol: single_static_attr_path_symbol(ir, path)?,
         site,
         default,
     })
 }
 
-fn attr_receiver_slot(ir: &Ir, receiver: IrId) -> Result<u32, JitLowerError> {
+fn attr_receiver_slot(ir: &Ir, receiver: IrId) -> Result<Tier1SlotOperand, JitLowerError> {
     let node = ir
         .arena
         .node(receiver)
@@ -1660,11 +1679,19 @@ fn attr_receiver_slot(ir: &Ir, receiver: IrId) -> Result<u32, JitLowerError> {
         .ok_or(JitLowerError::MissingAttrReceiver { receiver })?;
 
     match (node.kind, node.data) {
-        (IrKind::LocalVar, IrData::Local { slot }) => Ok(slot),
+        (IrKind::LocalVar, IrData::Local { slot }) => Ok(Tier1SlotOperand::Local { slot }),
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) => {
+            Ok(Tier1SlotOperand::Upval { depth, slot })
+        }
         (IrKind::LocalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
             kind: IrKind::LocalVar,
             data,
             expected: "local slot payload",
+        }),
+        (IrKind::UpvalVar, data) => Err(JitLowerError::MismatchedIrNodeData {
+            kind: IrKind::UpvalVar,
+            data,
+            expected: "upvalue depth/slot payload",
         }),
         (kind, _) => Err(JitLowerError::UnsupportedAttrReceiver { receiver, kind }),
     }
@@ -1895,13 +1922,17 @@ fn lower_forced_upval_get_slot_thunk_body_with_name(
 }
 
 fn lower_apply_local_slots_thunk_body_with_name(
-    function_slot: u32,
-    argument_slot: u32,
+    function_operand: Tier1SlotOperand,
+    argument_operand: Tier1SlotOperand,
     name: UserFuncName,
 ) -> Result<Function, JitLowerError> {
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
     let mut function = Function::with_name_signature(name, signature);
     let env_get = import_env_get_function(&mut function)?;
+    let upval_get = maybe_import_upval_get_function(
+        &mut function,
+        [function_operand, argument_operand],
+    )?;
     let apply = import_runtime_helper_function(
         &mut function,
         AOS_APPLY_SYMBOL,
@@ -1912,22 +1943,25 @@ fn lower_apply_local_slots_thunk_body_with_name(
         &mut function,
         entry_block,
         env_get,
+        upval_get,
         apply,
-        function_slot,
-        argument_slot,
+        function_operand,
+        argument_operand,
     )?;
     verify_clif_function(&function)?;
     Ok(function)
 }
 
 fn lower_update_local_slots_thunk_body_with_name(
-    left_slot: u32,
-    right_slot: u32,
+    left_operand: Tier1SlotOperand,
+    right_operand: Tier1SlotOperand,
     name: UserFuncName,
 ) -> Result<Function, JitLowerError> {
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
     let mut function = Function::with_name_signature(name, signature);
     let env_get = import_env_get_function(&mut function)?;
+    let upval_get =
+        maybe_import_upval_get_function(&mut function, [left_operand, right_operand])?;
     let force = import_runtime_helper_function(
         &mut function,
         AOS_FORCE_SYMBOL,
@@ -1943,10 +1977,11 @@ fn lower_update_local_slots_thunk_body_with_name(
         &mut function,
         entry_block,
         env_get,
+        upval_get,
         force,
         update,
-        left_slot,
-        right_slot,
+        left_operand,
+        right_operand,
     )?;
     verify_clif_function(&function)?;
     Ok(function)
@@ -1960,6 +1995,7 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
     let mut function = Function::with_name_signature(name, signature);
     let env_get = import_env_get_function(&mut function)?;
+    let upval_get = maybe_import_upval_get_function(&mut function, [lookup.receiver])?;
     let force = import_runtime_helper_function(
         &mut function,
         AOS_FORCE_SYMBOL,
@@ -1982,6 +2018,7 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
                 &mut function,
                 entry_block,
                 env_get,
+                upval_get,
                 force,
                 has_attr,
                 select_ic,
@@ -1998,6 +2035,7 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
                 &mut function,
                 entry_block,
                 env_get,
+                upval_get,
                 force,
                 select_ic,
                 lookup,
@@ -2014,6 +2052,7 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
             &mut function,
             entry_block,
             env_get,
+            upval_get,
             force,
             attr_helper,
             lookup,
@@ -2042,6 +2081,22 @@ fn import_upval_get_function(
         AOS_UPVAL_GET_SYMBOL,
         clif_external_name_for_aos_upval_get(),
     )
+}
+
+/// Imports `aos_upval_get` only when at least one `operand` reads an upvalue.
+///
+/// Keeping the import conditional means a body whose operands are all local
+/// reads declares no `aos_upval_get` import, so its module import set and
+/// finalized code stay byte-identical to the pre-upvalue operand lowering.
+fn maybe_import_upval_get_function(
+    function: &mut Function,
+    operands: impl IntoIterator<Item = Tier1SlotOperand>,
+) -> Result<Option<cranelift_codegen::ir::FuncRef>, JitLowerError> {
+    if operands.into_iter().any(Tier1SlotOperand::is_upval) {
+        Ok(Some(import_upval_get_function(function)?))
+    } else {
+        Ok(None)
+    }
 }
 
 fn import_runtime_helper_function(
@@ -2255,13 +2310,100 @@ fn emit_forced_upval_get_return(
     Ok(())
 }
 
+/// A tier-1 lowerable operand: a lexical slot read resolved at run time.
+///
+/// A [`Tier1SlotOperand::Local`] reads the innermost captured frame through
+/// `aos_env_get(env, slot)`; a [`Tier1SlotOperand::Upval`] reads a frame `depth`
+/// levels above through `aos_upval_get(env, depth, slot)`. The apply, update,
+/// select, and arithmetic shapes accept either operand form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tier1SlotOperand {
+    /// A slot in the innermost captured frame.
+    Local {
+        /// The frame slot index.
+        slot: u32,
+    },
+    /// A slot `depth` frames above the innermost captured frame.
+    Upval {
+        /// The number of parent frames to walk.
+        depth: u32,
+        /// The slot inside the target frame.
+        slot: u32,
+    },
+}
+
+impl Tier1SlotOperand {
+    /// Returns true when this operand needs the `aos_upval_get` helper.
+    const fn is_upval(self) -> bool {
+        matches!(self, Self::Upval { .. })
+    }
+}
+
+/// Returns the operand form for a direct local or upvalue slot-read node.
+///
+/// Returns `None` for any other node kind, so a caller can map the miss to its
+/// shape-specific unsupported-operand error.
+fn slot_operand_for_operand_node(node: IrNode) -> Option<Tier1SlotOperand> {
+    match (node.kind, node.data) {
+        (IrKind::LocalVar, IrData::Local { slot }) => Some(Tier1SlotOperand::Local { slot }),
+        (IrKind::UpvalVar, IrData::Upval { depth, slot }) => {
+            Some(Tier1SlotOperand::Upval { depth, slot })
+        }
+        _ => None,
+    }
+}
+
+/// Emits the runtime load of `operand`'s two `Value` words from `env`.
+///
+/// A [`Tier1SlotOperand::Local`] lowers to an `aos_env_get(env, slot)` call and a
+/// [`Tier1SlotOperand::Upval`] to an `aos_upval_get(env, depth, slot)` call.
+/// `upval_get` must be `Some` whenever an [`Tier1SlotOperand::Upval`] is emitted;
+/// the caller imports it only when an operand needs it, so a `None` here is a
+/// caller invariant violation and lowers to a helper-signature error (a safe
+/// blacklist), never a miscompilation.
+fn emit_slot_operand_load(
+    cursor: &mut FuncCursor,
+    env: cranelift_codegen::ir::Value,
+    env_get: cranelift_codegen::ir::FuncRef,
+    upval_get: Option<cranelift_codegen::ir::FuncRef>,
+    operand: Tier1SlotOperand,
+) -> Result<[cranelift_codegen::ir::Value; 2], JitLowerError> {
+    let (helper, symbol_name, args) = match operand {
+        Tier1SlotOperand::Local { slot } => {
+            let slot = cursor.ins().iconst(types::I32, i64::from(slot));
+            (env_get, AOS_ENV_GET_SYMBOL, vec![env, slot])
+        }
+        Tier1SlotOperand::Upval { depth, slot } => {
+            let upval_get = upval_get.ok_or(JitLowerError::MissingRuntimeHelperSignature {
+                symbol_name: AOS_UPVAL_GET_SYMBOL,
+            })?;
+            let depth = cursor.ins().iconst(types::I32, i64::from(depth));
+            let slot = cursor.ins().iconst(types::I32, i64::from(slot));
+            (upval_get, AOS_UPVAL_GET_SYMBOL, vec![env, depth, slot])
+        }
+    };
+    let call = cursor.ins().call(helper, &args);
+    let results = cursor.func.dfg.inst_results(call).to_vec();
+
+    if results.len() != 2 {
+        return Err(JitLowerError::InvalidRuntimeCallResultArity {
+            symbol_name,
+            expected: 2,
+            actual: results.len(),
+        });
+    }
+
+    Ok([results[0], results[1]])
+}
+
 fn emit_apply_local_slots_return(
     function: &mut Function,
     entry_block: cranelift_codegen::ir::Block,
     env_get: cranelift_codegen::ir::FuncRef,
+    upval_get: Option<cranelift_codegen::ir::FuncRef>,
     apply: cranelift_codegen::ir::FuncRef,
-    function_slot: u32,
-    argument_slot: u32,
+    function_operand: Tier1SlotOperand,
+    argument_operand: Tier1SlotOperand,
 ) -> Result<(), JitLowerError> {
     let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
     let entry_params = cursor.func.dfg.block_params(entry_block);
@@ -2273,38 +2415,17 @@ fn emit_apply_local_slots_return(
         .get(1)
         .copied()
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
-    let function_slot = cursor.ins().iconst(types::I32, i64::from(function_slot));
-    let function_env_get_call = cursor.ins().call(env_get, &[env, function_slot]);
-    let function_env_get_results = cursor.func.dfg.inst_results(function_env_get_call).to_vec();
-
-    if function_env_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: function_env_get_results.len(),
-        });
-    }
-
-    let argument_slot = cursor.ins().iconst(types::I32, i64::from(argument_slot));
-    let argument_env_get_call = cursor.ins().call(env_get, &[env, argument_slot]);
-    let argument_env_get_results = cursor.func.dfg.inst_results(argument_env_get_call).to_vec();
-
-    if argument_env_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: argument_env_get_results.len(),
-        });
-    }
+    let function_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, function_operand)?;
+    let argument_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, argument_operand)?;
 
     let apply_call = cursor.ins().call(
         apply,
         &[
             rt,
-            function_env_get_results[0],
-            function_env_get_results[1],
-            argument_env_get_results[0],
-            argument_env_get_results[1],
+            function_value[0],
+            function_value[1],
+            argument_value[0],
+            argument_value[1],
         ],
     );
     let apply_results = cursor.func.dfg.inst_results(apply_call).to_vec();
@@ -2325,10 +2446,11 @@ fn emit_update_local_slots_return(
     function: &mut Function,
     entry_block: cranelift_codegen::ir::Block,
     env_get: cranelift_codegen::ir::FuncRef,
+    upval_get: Option<cranelift_codegen::ir::FuncRef>,
     force: cranelift_codegen::ir::FuncRef,
     update: cranelift_codegen::ir::FuncRef,
-    left_slot: u32,
-    right_slot: u32,
+    left_operand: Tier1SlotOperand,
+    right_operand: Tier1SlotOperand,
 ) -> Result<(), JitLowerError> {
     let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
     let entry_params = cursor.func.dfg.block_params(entry_block);
@@ -2341,22 +2463,11 @@ fn emit_update_local_slots_return(
         .copied()
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
 
-    let left_slot = cursor.ins().iconst(types::I32, i64::from(left_slot));
-    let left_env_get_call = cursor.ins().call(env_get, &[env, left_slot]);
-    let left_env_get_results = cursor.func.dfg.inst_results(left_env_get_call).to_vec();
+    let left_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, left_operand)?;
 
-    if left_env_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: left_env_get_results.len(),
-        });
-    }
-
-    let left_force_call = cursor.ins().call(
-        force,
-        &[rt, left_env_get_results[0], left_env_get_results[1]],
-    );
+    let left_force_call = cursor
+        .ins()
+        .call(force, &[rt, left_value[0], left_value[1]]);
     let left_force_results = cursor.func.dfg.inst_results(left_force_call).to_vec();
 
     if left_force_results.len() != 2 {
@@ -2367,22 +2478,11 @@ fn emit_update_local_slots_return(
         });
     }
 
-    let right_slot = cursor.ins().iconst(types::I32, i64::from(right_slot));
-    let right_env_get_call = cursor.ins().call(env_get, &[env, right_slot]);
-    let right_env_get_results = cursor.func.dfg.inst_results(right_env_get_call).to_vec();
+    let right_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, right_operand)?;
 
-    if right_env_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: right_env_get_results.len(),
-        });
-    }
-
-    let right_force_call = cursor.ins().call(
-        force,
-        &[rt, right_env_get_results[0], right_env_get_results[1]],
-    );
+    let right_force_call = cursor
+        .ins()
+        .call(force, &[rt, right_value[0], right_value[1]]);
     let right_force_results = cursor.func.dfg.inst_results(right_force_call).to_vec();
 
     if right_force_results.len() != 2 {
@@ -2421,6 +2521,7 @@ fn emit_attr_lookup_local_slot_return(
     function: &mut Function,
     entry_block: cranelift_codegen::ir::Block,
     env_get: cranelift_codegen::ir::FuncRef,
+    upval_get: Option<cranelift_codegen::ir::FuncRef>,
     force: cranelift_codegen::ir::FuncRef,
     attr_helper: cranelift_codegen::ir::FuncRef,
     lookup: AttrLookup,
@@ -2436,23 +2537,12 @@ fn emit_attr_lookup_local_slot_return(
         .get(1)
         .copied()
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
-    let slot = cursor
-        .ins()
-        .iconst(types::I32, i64::from(lookup.receiver_slot));
-    let env_get_call = cursor.ins().call(env_get, &[env, slot]);
-    let env_get_results = cursor.func.dfg.inst_results(env_get_call).to_vec();
-
-    if env_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: env_get_results.len(),
-        });
-    }
+    let receiver_value =
+        emit_slot_operand_load(&mut cursor, env, env_get, upval_get, lookup.receiver)?;
 
     let force_call = cursor
         .ins()
-        .call(force, &[rt, env_get_results[0], env_get_results[1]]);
+        .call(force, &[rt, receiver_value[0], receiver_value[1]]);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
 
     if force_results.len() != 2 {
@@ -2491,6 +2581,7 @@ fn emit_attr_select_default_local_slot_return(
     function: &mut Function,
     entry_block: cranelift_codegen::ir::Block,
     env_get: cranelift_codegen::ir::FuncRef,
+    upval_get: Option<cranelift_codegen::ir::FuncRef>,
     force: cranelift_codegen::ir::FuncRef,
     has_attr: cranelift_codegen::ir::FuncRef,
     select_ic: cranelift_codegen::ir::FuncRef,
@@ -2509,23 +2600,12 @@ fn emit_attr_select_default_local_slot_return(
         .get(1)
         .copied()
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
-    let slot = cursor
-        .ins()
-        .iconst(types::I32, i64::from(lookup.receiver_slot));
-    let env_get_call = cursor.ins().call(env_get, &[env, slot]);
-    let env_get_results = cursor.func.dfg.inst_results(env_get_call).to_vec();
-
-    if env_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: env_get_results.len(),
-        });
-    }
+    let receiver_value =
+        emit_slot_operand_load(&mut cursor, env, env_get, upval_get, lookup.receiver)?;
 
     let force_call = cursor
         .ins()
-        .call(force, &[rt, env_get_results[0], env_get_results[1]]);
+        .call(force, &[rt, receiver_value[0], receiver_value[1]]);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
 
     if force_results.len() != 2 {
