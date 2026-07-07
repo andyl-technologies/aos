@@ -2522,14 +2522,14 @@ fn parse_query_result_line(line: Option<&str>) -> Result<Option<QueryResult>, Co
                 ),
                 schedule,
             };
-            Ok(Some(QueryResult::Snapshot(EngineSnapshot {
+            Ok(Some(QueryResult::Snapshot(Box::new(EngineSnapshot {
                 state,
                 configuration,
                 terminal_savepoint,
                 frontier,
                 event_log_len,
                 quanta,
-            })))
+            }))))
         }
         kind => Err(rpc_decode(format!("unknown query result kind `{kind}`"))),
     }
