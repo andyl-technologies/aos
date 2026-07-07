@@ -767,7 +767,11 @@ impl TreeWalk {
         // is still re-checked on every resolution (a cheap in-memory, no-I/O check).
         if let Some((target, realpath)) = self.import_paths_cache.get(path) {
             let resolved = (target.clone(), realpath.clone());
-            self.check_filesystem_path_access(argument, argument_span, resolved.0.as_os_str().as_bytes())?;
+            self.check_filesystem_path_access(
+                argument,
+                argument_span,
+                resolved.0.as_os_str().as_bytes(),
+            )?;
             return Ok(resolved);
         }
         let target = self.import_target_path(argument, argument_span, path)?;

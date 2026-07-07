@@ -711,6 +711,16 @@ impl TreeWalkOptions {
         self.parallel_thunk_payloads_enabled = enabled;
     }
 
+    /// Enables or disables publishing promoted tier-1 native entries for dispatch.
+    ///
+    /// When disabled (the default), `publish_tier1_slot` is a no-op and installed
+    /// tier-1 slots are never transitioned to `Published`, so the force path
+    /// behaves identically to an evaluator with no side-table. The flag gates
+    /// only the publish step; installing and looking up slots are unaffected.
+    pub fn set_jit_tier1_publish_enabled(&mut self, enabled: bool) {
+        self.jit_tier1_publish_enabled = enabled;
+    }
+
     /// Replaces the active worker id used for parallel thunk sidecar claims.
     ///
     /// The id is observable only through the parallel thunk protocol. The
@@ -933,6 +943,11 @@ impl TreeWalkOptions {
     /// Returns whether newly allocated thunks receive parallel payload cells.
     pub const fn parallel_thunk_payloads_enabled(&self) -> bool {
         self.parallel_thunk_payloads_enabled
+    }
+
+    /// Returns whether promoted tier-1 native entries may be published for dispatch.
+    pub const fn jit_tier1_publish_enabled(&self) -> bool {
+        self.jit_tier1_publish_enabled
     }
 
     /// Returns the active worker id for parallel thunk sidecar claims.

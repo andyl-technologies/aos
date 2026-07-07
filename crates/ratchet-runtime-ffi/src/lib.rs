@@ -60,7 +60,9 @@ pub mod safety;
 pub mod trap;
 pub mod wrappers;
 
-pub use native_call::{NativeThunkCallOutcome, run_registered_native_thunk_call};
+pub use native_call::{
+    NativeThunkCallOutcome, run_finalized_native_thunk_call, run_registered_native_thunk_call,
+};
 pub use safety::{
     RUNTIME_FFI_SAFETY_COMMENT_PREFIX, RUNTIME_FFI_UNSAFE_CRATE_LINT,
     RuntimeFfiInnateUnsafeOperation, RuntimeFfiUnsafeDiscipline, runtime_ffi_unsafe_discipline,

@@ -2014,7 +2014,8 @@ impl EvalHeap {
         hash: ValueHash,
     ) -> Result<(), EvalHeapError> {
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
-        self.records.set_cold_captured_value_hash(address, Some(hash));
+        self.records
+            .set_cold_captured_value_hash(address, Some(hash));
         Ok(())
     }
 

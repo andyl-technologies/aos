@@ -161,8 +161,8 @@ pub use thunk_wait::{
 };
 pub use tree_walk::{
     EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,
-    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, TreeWalk, TreeWalkError,
-    TreeWalkErrorKind, TreeWalkOptions, TreeWalkOptionsError,
+    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, OpaqueTier1Slot, TreeWalk,
+    TreeWalkError, TreeWalkErrorKind, TreeWalkOptions, TreeWalkOptionsError,
     eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_realizer_and_eval_cache,

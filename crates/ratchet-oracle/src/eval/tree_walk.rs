@@ -458,6 +458,7 @@ pub struct TreeWalkOptions {
     gc_stress_policy: GcStressPolicy,
     thunk_resolve_barrier_tier: GenerationalGcTier,
     parallel_thunk_payloads_enabled: bool,
+    jit_tier1_publish_enabled: bool,
     parallel_thunk_worker_id: ParallelThunkWorkerId,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -500,6 +501,7 @@ impl Default for TreeWalkOptions {
             gc_stress_policy: GcStressPolicy::disabled(),
             thunk_resolve_barrier_tier: GenerationalGcTier::OneShotArena,
             parallel_thunk_payloads_enabled: false,
+            jit_tier1_publish_enabled: false,
             parallel_thunk_worker_id: ParallelThunkWorkerId::FIRST,
             heap_cheap_memory_advice_min_idle_epochs: None,
             flake_ref_resolutions: BTreeMap::new(),
@@ -1093,6 +1095,10 @@ pub struct TreeWalk {
     // must still demand it when coercing to an attrset. A subset of
     // `lazy_identity_thunks`, likewise membership-only.
     lazy_foldl_initial_thunks: HashSet<u64>,
+    // Type-erased tier-1 native-entry publish side-table, keyed by thunk payload
+    // bits. Additive and off the force hot path: force never reads it. See
+    // `tier1_publish` and `publish_tier1_slot`.
+    tier1_publish_slots: HashMap<u64, OpaqueTier1Slot>,
     #[cfg(test)]
     tree_walk_list_wrapper_calls: usize,
     #[cfg(test)]
@@ -1337,6 +1343,8 @@ use select_cache_hash::SelectCacheMap;
 mod serialize_xml;
 mod store_validity;
 use store_validity::StoreValidityChecker;
+mod tier1_publish;
+pub use tier1_publish::OpaqueTier1Slot;
 
 pub use eval_impure_inputs::revalidate_cacheable_input_trace;
 pub use safepoint_roots::{

@@ -52,7 +52,7 @@ use crate::jit::{
 /// The `aos_env_get` wrapper reads the captured slot and the `aos_force` wrapper
 /// forces the loaded value. Both must be registered with their real wrapper
 /// addresses before the compiled body can call them.
-const FORCED_ENV_SLOT_IMPORTS: [&str; 2] = ["aos_env_get", "aos_force"];
+pub(super) const FORCED_ENV_SLOT_IMPORTS: [&str; 2] = ["aos_env_get", "aos_force"];
 
 /// The reconciled result of one forced environment-slot native differential.
 ///
@@ -315,7 +315,7 @@ fn reconcile(
 /// The addresses come from the shared runtime-symbol address-candidate
 /// preflight, which sources `aos_env_get` and `aos_force` from the real
 /// runtime-FFI native wrappers.
-fn forced_env_slot_candidates()
+pub(super) fn forced_env_slot_candidates()
 -> Result<Vec<JitRuntimeSymbolAddressCandidate>, NixJitForcedEnvSlotNativeDifferentialError> {
     let preflight = nix_jit_runtime_symbol_address_candidate_preflight()?;
     let mut candidates = Vec::with_capacity(FORCED_ENV_SLOT_IMPORTS.len());
@@ -333,7 +333,7 @@ fn forced_env_slot_candidates()
 }
 
 /// Returns the arena holding a single local-slot-0 read for the artifact root.
-fn local_slot_zero_arena() -> IrArena {
+pub(super) fn local_slot_zero_arena() -> IrArena {
     IrArena::from_raw_parts(
         vec![IrNode::new(
             IrKind::LocalVar,
@@ -346,7 +346,7 @@ fn local_slot_zero_arena() -> IrArena {
 }
 
 /// Evaluates `source_ir` and returns the suspended thunk for attribute `binding`.
-fn binding_thunk(
+pub(super) fn binding_thunk(
     eval: &mut TreeWalk,
     source_ir: &Ir,
     binding: &[u8],
@@ -388,7 +388,7 @@ fn binding_symbol(
 }
 
 /// Parses, resolves, and lowers a differential source program into Core IR.
-fn lower_source(source: &str) -> Result<Ir, NixJitForcedEnvSlotNativeDifferentialError> {
+pub(super) fn lower_source(source: &str) -> Result<Ir, NixJitForcedEnvSlotNativeDifferentialError> {
     let parsed = parse_str(source).map_err(|error| {
         NixJitForcedEnvSlotNativeDifferentialError::SourceProgram {
             message: format!("{error:?}"),

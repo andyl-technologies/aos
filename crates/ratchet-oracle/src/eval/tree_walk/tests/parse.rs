@@ -841,11 +841,14 @@ fn try_eval_caught_import_failure_keeps_symbol_table_intact() {
     // catches: the imported file parses (its symbols are adopted into the live
     // table) and then throws, so evaluation continues and later attribute
     // lookups (`good.freshA`, `good.freshB`) still resolve against that table.
-    let root =
-        fs::canonicalize(unique_temp_dir("import-tryeval-symbols")).expect("temp dir canonicalizes");
+    let root = fs::canonicalize(unique_temp_dir("import-tryeval-symbols"))
+        .expect("temp dir canonicalizes");
     // A file that parses and interns its own symbols, then throws at evaluation.
-    fs::write(root.join("bad.nix"), b"let boomSym = 1; in builtins.throw \"boom\"")
-        .expect("bad import writes");
+    fs::write(
+        root.join("bad.nix"),
+        b"let boomSym = 1; in builtins.throw \"boom\"",
+    )
+    .expect("bad import writes");
     // A file whose symbols are interned only after the failed import is caught.
     fs::write(root.join("good.nix"), b"{ freshA = 3; freshB = 4; }").expect("good import writes");
 

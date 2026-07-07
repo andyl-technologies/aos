@@ -27,6 +27,7 @@ use crate::eval::EvalThunk;
 
 mod native_differential;
 mod shape_differential;
+mod tier1_publish_dispatch;
 
 pub use native_differential::{
     BindingProjectionReason, NixJitForcedEnvSlotNativeDifferentialError,
@@ -37,6 +38,11 @@ pub use shape_differential::{
     ShapeDifferentialError, ShapeDifferentialOutcome, ShapeDifferentialResult,
     nix_jit_apply_native_differential, nix_jit_static_has_attr_native_differential,
     nix_jit_static_select_native_differential, nix_jit_update_native_differential,
+};
+pub use tier1_publish_dispatch::{
+    NixJitTier1DispatchAgreement, NixJitTier1PublishDispatchConfig,
+    NixJitTier1PublishDispatchError, NixJitTier1PublishDispatchOutcome,
+    NixJitTier1PublishDispatchResult, nix_jit_tier1_forced_env_slot_publish_dispatch,
 };
 
 /// One condition preventing a JIT-enabled differential harness from running tier 1.

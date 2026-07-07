@@ -672,7 +672,10 @@ impl TreeWalk {
         self.fetch_tarball_store_path_matches_digest(id, span, store_path, expected_digest)
     }
 
-    pub(super) fn can_trust_existing_fetch_tarball_store_path(&mut self, store_path: &[u8]) -> bool {
+    pub(super) fn can_trust_existing_fetch_tarball_store_path(
+        &mut self,
+        store_path: &[u8],
+    ) -> bool {
         self.should_query_default_nix_store_for_fetch_tarball_path(store_path)
             && self.nix_store_reports_valid_path(store_path)
     }

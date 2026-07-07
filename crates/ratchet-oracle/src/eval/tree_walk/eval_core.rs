@@ -388,6 +388,7 @@ impl TreeWalk {
             thunk_resolve_card_table: GcCardTable::default(),
             lazy_identity_thunks: HashSet::new(),
             lazy_foldl_initial_thunks: HashSet::new(),
+            tier1_publish_slots: HashMap::new(),
             #[cfg(test)]
             tree_walk_list_wrapper_calls: 0,
             #[cfg(test)]

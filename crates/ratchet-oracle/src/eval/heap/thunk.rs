@@ -159,7 +159,9 @@ impl EvalThunk {
     pub(crate) fn with_parallel_payload_cell(mut self, dropped_claim_error: TreeWalkError) -> Self {
         if self.force_storage_mode == EvalThunkForceStorageMode::Serial {
             self.force_storage_mode = EvalThunkForceStorageMode::SerialWithParallelPayload;
-            self.parallel_cell = Some(Box::new(TreeWalkParallelThunkCell::new(dropped_claim_error)));
+            self.parallel_cell = Some(Box::new(TreeWalkParallelThunkCell::new(
+                dropped_claim_error,
+            )));
         }
         self
     }

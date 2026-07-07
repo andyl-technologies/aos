@@ -708,9 +708,13 @@ impl TreeWalk {
                 // place instead of the pairwise `concat` re-copying the whole
                 // prefix on every fragment. The result is byte-for-byte identical
                 // to the left-associated `concat` fold it replaces.
-                let mut accumulator = self.heap.get_string(first_string).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
-                })?.clone();
+                let mut accumulator = self
+                    .heap
+                    .get_string(first_string)
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                    })?
+                    .clone();
                 for child in rest {
                     let child_span = self.node(*child)?.span;
                     let next = {

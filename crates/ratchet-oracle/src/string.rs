@@ -121,12 +121,13 @@ impl NixString {
     /// [`NixStringError::ContextLengthOverflow`] if the context union fails.
     pub fn append_in_place(&mut self, other: &Self) -> Result<(), NixStringError> {
         let additional = other.bytes.len();
-        self.bytes.len().checked_add(additional).ok_or(
-            NixStringError::StringLengthOverflow {
+        self.bytes
+            .len()
+            .checked_add(additional)
+            .ok_or(NixStringError::StringLengthOverflow {
                 left: self.bytes.len(),
                 right: additional,
-            },
-        )?;
+            })?;
         self.bytes
             .try_reserve(additional)
             .map_err(|_| NixStringError::ByteAllocationFailed { len: additional })?;
