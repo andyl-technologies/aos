@@ -19,7 +19,11 @@ use crucible_shmem::{
 };
 
 #[cfg(unix)]
-use crucible_shmem::{SetupRegionMapError, mmap_setup_region};
+use crucible_shmem::{
+    MappedSetupRegion, MappedSetupRegionAccessError, SetupRegionMapError, mmap_setup_region,
+};
+#[cfg(unix)]
+use std::io::Write;
 #[cfg(unix)]
 use std::os::fd::AsFd;
 #[cfg(unix)]
@@ -259,6 +263,63 @@ fn mmap_setup_region_rejects_lengths_smaller_than_header() {
     );
 }
 
+#[test]
+#[cfg(unix)]
+fn mmap_setup_region_exposes_node_slot_and_distinct_directed_rings() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+
+    let view = match mapped.node_directed_ring_pair_mut(
+        0,
+        SLOT_NET_ROUTER as u32,
+        0,
+        0,
+        SLOT_NET_ROUTER as u32,
+    ) {
+        Ok(view) => view,
+        Err(error) => panic!("mapped node/ring view should bind: {error}"),
+    };
+    assert_eq!(view.node_slot.snapshot().kind, KIND_VM);
+    assert_eq!(view.first.descriptor.src_slot, SLOT_NET_ROUTER as u32);
+    assert_eq!(view.first.descriptor.dst_slot, 0);
+    assert_eq!(view.second.descriptor.src_slot, 0);
+    assert_eq!(view.second.descriptor.dst_slot, SLOT_NET_ROUTER as u32);
+
+    let frame = match FrameEntry::new(11, 0, 1, b"packet") {
+        Ok(frame) => frame,
+        Err(error) => panic!("valid frame should build: {error}"),
+    };
+    if let Err(error) = view.second.header.enqueue(view.second.entries, &frame) {
+        panic!("mapped outbound ring should accept frame: {error}");
+    }
+    assert_eq!(
+        view.second.header.peek(view.second.entries),
+        Ok(Some(frame.clone()))
+    );
+    assert_eq!(view.first.header.peek(view.first.entries), Ok(None));
+}
+
+#[test]
+#[cfg(unix)]
+fn mmap_setup_region_rejects_duplicate_mutable_directed_ring_view() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+
+    assert_eq!(
+        mapped
+            .node_directed_ring_pair_mut(0, 0, SLOT_NET_ROUTER as u32, 0, SLOT_NET_ROUTER as u32,)
+            .map(|view| view.first.descriptor)
+            .err(),
+        Some(MappedSetupRegionAccessError::DuplicateDirectedRing { ring_index: 0 })
+    );
+}
+
 fn valid_snapshot() -> (RegionLayout, RegionHeaderSnapshot) {
     let layout = match RegionLayout::for_config(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY, 3)) {
         Ok(layout) => layout,
@@ -334,4 +395,24 @@ fn temp_region_file() -> std::fs::File {
 #[cfg(unix)]
 fn unique_temp_suffix() -> u64 {
     NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(unix)]
+fn mapped_region_from_allocation(allocation: &RegionAllocation) -> MappedSetupRegion {
+    let layout = allocation.layout();
+    let bytes = match allocation.setup_region_bytes() {
+        Ok(bytes) => bytes,
+        Err(error) => panic!("setup-region bytes should serialize: {error}"),
+    };
+    let mut temp = temp_region_file();
+    if let Err(error) = temp.set_len(layout.region_size) {
+        panic!("failed to size temporary setup region: {error}");
+    }
+    if let Err(error) = temp.write_all(&bytes) {
+        panic!("failed to write temporary setup region: {error}");
+    }
+    match mmap_setup_region(temp.as_fd(), layout.region_size) {
+        Ok(mapped) => mapped,
+        Err(error) => panic!("setup region mmap should succeed: {error}"),
+    }
 }
