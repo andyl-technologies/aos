@@ -157,8 +157,13 @@ pub struct EvalThunk {
     kind: EvalThunkKind,
     cell: ThunkCell,
     force_storage_mode: EvalThunkForceStorageMode,
+    /// The evaluator-native parallel payload cell, attached only when parallel
+    /// thunk payloads are enabled. It is boxed because the cell is large (~648
+    /// bytes) and absent on the serial tree-walk path that allocates the vast
+    /// majority of thunks; keeping it out of line shrinks the common-case
+    /// `EvalThunk` roughly six-fold and avoids paying for the cell per thunk.
     #[allow(dead_code)]
-    parallel_cell: Option<TreeWalkParallelThunkCell>,
+    parallel_cell: Option<Box<TreeWalkParallelThunkCell>>,
 }
 
 /// The force-storage cells currently attached to an [`EvalThunk`].

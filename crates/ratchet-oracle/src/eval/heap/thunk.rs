@@ -159,7 +159,7 @@ impl EvalThunk {
     pub(crate) fn with_parallel_payload_cell(mut self, dropped_claim_error: TreeWalkError) -> Self {
         if self.force_storage_mode == EvalThunkForceStorageMode::Serial {
             self.force_storage_mode = EvalThunkForceStorageMode::SerialWithParallelPayload;
-            self.parallel_cell = Some(TreeWalkParallelThunkCell::new(dropped_claim_error));
+            self.parallel_cell = Some(Box::new(TreeWalkParallelThunkCell::new(dropped_claim_error)));
         }
         self
     }
@@ -247,8 +247,8 @@ impl EvalThunk {
     ///
     /// This accessor is crate-internal so heap scanning, relocation, and future
     /// scheduler wiring can preserve the serial-cell authority boundary.
-    pub(crate) const fn parallel_payload_cell(&self) -> Option<&TreeWalkParallelThunkCell> {
-        self.parallel_cell.as_ref()
+    pub(crate) fn parallel_payload_cell(&self) -> Option<&TreeWalkParallelThunkCell> {
+        self.parallel_cell.as_deref()
     }
 }
 

@@ -7974,7 +7974,7 @@ fn record_owned_heap_field_write_object(
                 cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
                     .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
                 force_storage_mode: thunk.force_storage_mode(),
-                parallel_cell: Some(parallel_cell),
+                parallel_cell: Some(Box::new(parallel_cell)),
             })))
         }
         (HeapObjectValue::Thunk(thunk), source) => {
@@ -8035,11 +8035,12 @@ fn clone_serial_thunk_cell_for_heap_field_write(cell: &ThunkCell) -> Result<Thun
 
 fn clone_parallel_thunk_cell_for_heap_field_write(
     thunk: &EvalThunk,
-) -> Result<Option<TreeWalkParallelThunkCell>, RecordOwnedHeapFieldWriteObjectError> {
+) -> Result<Option<Box<TreeWalkParallelThunkCell>>, RecordOwnedHeapFieldWriteObjectError> {
     thunk
         .parallel_payload_cell()
         .map(|cell| {
             cell.clone_for_relocation()
+                .map(Box::new)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)
         })
         .transpose()
