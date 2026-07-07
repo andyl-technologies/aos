@@ -836,6 +836,43 @@ fn parse_cached_import_remap_preserves_analysis_facts() {
 }
 
 #[test]
+fn try_eval_caught_import_failure_keeps_symbol_table_intact() {
+    // The live symbol table must survive a failed import that `builtins.tryEval`
+    // catches: the imported file parses (its symbols are adopted into the live
+    // table) and then throws, so evaluation continues and later attribute
+    // lookups (`good.freshA`, `good.freshB`) still resolve against that table.
+    let root =
+        fs::canonicalize(unique_temp_dir("import-tryeval-symbols")).expect("temp dir canonicalizes");
+    // A file that parses and interns its own symbols, then throws at evaluation.
+    fs::write(root.join("bad.nix"), b"let boomSym = 1; in builtins.throw \"boom\"")
+        .expect("bad import writes");
+    // A file whose symbols are interned only after the failed import is caught.
+    fs::write(root.join("good.nix"), b"{ freshA = 3; freshB = 4; }").expect("good import writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    let ir = lower(concat!(
+        "let caught = ! (builtins.tryEval (import ./bad.nix)).success;\n",
+        "    good = import ./good.nix;\n",
+        "in (if caught then 7 else 0) + good.freshA + good.freshB"
+    ));
+
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    assert_eq!(
+        evaluator
+            .eval_root()
+            .expect("evaluation continues past the caught import failure")
+            .as_int()
+            .expect("result is int"),
+        14
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn parse_cached_import_remaps_lowered_builtin_symbols() {
     let root = fs::canonicalize(unique_temp_dir("import-parse-cache-builtins"))
         .expect("temp directory canonicalizes");

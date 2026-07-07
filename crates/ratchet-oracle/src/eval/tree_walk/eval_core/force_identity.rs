@@ -1185,7 +1185,7 @@ impl TreeWalk {
 
     pub(super) fn cache_identity_for_node(&self, body: EvalNodeRef) -> Option<CacheExprIdentity> {
         let module = self.modules.get(body.module().index())?;
-        if !Self::subtree_is_speculable(&module.ir, body.id()) {
+        if !Self::subtree_is_speculable(&module.ir, &self.symbols, body.id()) {
             return None;
         }
         Self::cache_expression_identity_for_node(module, body.id())
@@ -1204,7 +1204,7 @@ impl TreeWalk {
         {
             return Self::cache_expression_identity_for_node(module, body.id());
         }
-        if !Self::subtree_is_force_lookup_safe(&module.ir, body.id()) {
+        if !Self::subtree_is_force_lookup_safe(&module.ir, &self.symbols, body.id()) {
             return None;
         }
         Self::cache_expression_identity_for_node(module, body.id())
@@ -1223,7 +1223,7 @@ impl TreeWalk {
         {
             return Self::cache_expression_identity_for_node(module, body.id());
         }
-        if !Self::subtree_is_force_observation_safe(&module.ir, body.id()) {
+        if !Self::subtree_is_force_observation_safe(&module.ir, &self.symbols, body.id()) {
             return None;
         }
         Self::cache_expression_identity_for_node(module, body.id())
@@ -1339,7 +1339,7 @@ impl TreeWalk {
         ))
     }
 
-    fn subtree_is_speculable(ir: &Ir, root: IrId) -> bool {
+    fn subtree_is_speculable(ir: &Ir, symbols: &SymbolTable, root: IrId) -> bool {
         let mut visited = BTreeSet::new();
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
@@ -1352,7 +1352,7 @@ impl TreeWalk {
             if !node.effect.is_speculable() {
                 return false;
             }
-            if !Self::node_is_force_cache_lookup_safe(ir, node) {
+            if !Self::node_is_force_cache_lookup_safe(symbols, node) {
                 return false;
             }
             if !Self::push_ir_children(ir, node, &mut stack) {
@@ -1388,14 +1388,14 @@ impl TreeWalk {
         )
     }
 
-    fn node_is_force_cache_lookup_safe(ir: &Ir, node: &IrNode) -> bool {
+    fn node_is_force_cache_lookup_safe(symbols: &SymbolTable, node: &IrNode) -> bool {
         if node.kind == IrKind::BuiltinAttr {
-            return Self::builtin_attr_is_force_cache_lookup_safe(ir, node);
+            return Self::builtin_attr_is_force_cache_lookup_safe(symbols, node);
         }
         Self::node_kind_is_force_cache_safe(node.kind)
     }
 
-    fn subtree_is_force_lookup_safe(ir: &Ir, root: IrId) -> bool {
+    fn subtree_is_force_lookup_safe(ir: &Ir, symbols: &SymbolTable, root: IrId) -> bool {
         let mut visited = BTreeSet::new();
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
@@ -1405,7 +1405,7 @@ impl TreeWalk {
             let Some(node) = ir.arena.node(id) else {
                 return false;
             };
-            if !Self::node_is_force_lookup_safe(ir, node) {
+            if !Self::node_is_force_lookup_safe(ir, symbols, node) {
                 return false;
             }
             if !Self::push_ir_children(ir, node, &mut stack) {
@@ -1415,9 +1415,9 @@ impl TreeWalk {
         true
     }
 
-    fn node_is_force_lookup_safe(ir: &Ir, node: &IrNode) -> bool {
+    fn node_is_force_lookup_safe(ir: &Ir, symbols: &SymbolTable, node: &IrNode) -> bool {
         if node.kind == IrKind::BuiltinAttr {
-            return Self::builtin_attr_is_force_cache_lookup_safe(ir, node);
+            return Self::builtin_attr_is_force_cache_lookup_safe(symbols, node);
         }
         if node.kind == IrKind::SearchPath {
             return Self::search_path_has_cacheable_origin(ir, node);
@@ -1425,10 +1425,11 @@ impl TreeWalk {
         if node.effect.is_speculable() {
             return Self::node_kind_is_force_cache_safe(node.kind);
         }
-        node.kind == IrKind::PrimOp && Self::primop_has_cacheable_impure_input_trace(ir, node)
+        node.kind == IrKind::PrimOp
+            && Self::primop_has_cacheable_impure_input_trace(ir, symbols, node)
     }
 
-    fn subtree_is_force_observation_safe(ir: &Ir, root: IrId) -> bool {
+    fn subtree_is_force_observation_safe(ir: &Ir, symbols: &SymbolTable, root: IrId) -> bool {
         let mut visited = BTreeSet::new();
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
@@ -1438,7 +1439,7 @@ impl TreeWalk {
             let Some(node) = ir.arena.node(id) else {
                 return false;
             };
-            if !Self::node_is_force_observation_safe(ir, node) {
+            if !Self::node_is_force_observation_safe(ir, symbols, node) {
                 return false;
             }
             if !Self::push_ir_children(ir, node, &mut stack) {
@@ -1448,9 +1449,9 @@ impl TreeWalk {
         true
     }
 
-    fn node_is_force_observation_safe(ir: &Ir, node: &IrNode) -> bool {
+    fn node_is_force_observation_safe(ir: &Ir, symbols: &SymbolTable, node: &IrNode) -> bool {
         if node.kind == IrKind::BuiltinAttr {
-            return Self::builtin_attr_is_force_cache_observation_safe(ir, node);
+            return Self::builtin_attr_is_force_cache_observation_safe(symbols, node);
         }
         if node.kind == IrKind::SearchPath {
             return Self::search_path_has_cacheable_origin(ir, node);
@@ -1458,28 +1459,36 @@ impl TreeWalk {
         if node.effect.is_speculable() {
             return Self::node_kind_is_force_observation_safe(node.kind);
         }
-        node.kind == IrKind::PrimOp && Self::primop_has_cacheable_impure_input_trace(ir, node)
+        node.kind == IrKind::PrimOp
+            && Self::primop_has_cacheable_impure_input_trace(ir, symbols, node)
     }
 
     fn node_kind_is_force_observation_safe(kind: IrKind) -> bool {
         Self::node_kind_is_force_cache_safe(kind)
     }
 
-    pub(super) fn builtin_attr_execution(ir: &Ir, node: &IrNode) -> Option<BuiltinExecution> {
+    pub(super) fn builtin_attr_execution(
+        symbols: &SymbolTable,
+        node: &IrNode,
+    ) -> Option<BuiltinExecution> {
         let IrData::Symbol(symbol) = node.data else {
             return None;
         };
-        let builtin = lookup_builtin_by_symbol(&ir.symbols, symbol)?;
+        debug_assert!(
+            symbols.resolve(symbol).is_some(),
+            "force-cache builtin symbol is absent from the live symbol table"
+        );
+        let builtin = lookup_builtin_by_symbol(symbols, symbol)?;
         Some(builtin.execution())
     }
 
-    fn builtin_attr_is_force_cache_lookup_safe(ir: &Ir, node: &IrNode) -> bool {
-        Self::builtin_attr_execution(ir, node)
+    fn builtin_attr_is_force_cache_lookup_safe(symbols: &SymbolTable, node: &IrNode) -> bool {
+        Self::builtin_attr_execution(symbols, node)
             .is_some_and(Self::builtin_execution_is_force_cache_lookup_safe)
     }
 
-    fn builtin_attr_is_force_cache_observation_safe(ir: &Ir, node: &IrNode) -> bool {
-        Self::builtin_attr_execution(ir, node)
+    fn builtin_attr_is_force_cache_observation_safe(symbols: &SymbolTable, node: &IrNode) -> bool {
+        Self::builtin_attr_execution(symbols, node)
             .is_some_and(Self::builtin_execution_is_force_cache_observation_safe)
     }
 
@@ -1577,7 +1586,11 @@ impl TreeWalk {
             let IrAttrPathSegment::Static(symbol) = segment else {
                 return None;
             };
-            let name = module.ir.symbols.resolve(symbol)?;
+            debug_assert!(
+                self.symbols.resolve(symbol).is_some(),
+                "force-cache select symbol is absent from the live symbol table"
+            );
+            let name = self.symbols.resolve(symbol)?;
             Self::update_cache_identity_chunk(&mut hasher, name)?;
         }
         Some(CacheExprIdentity::new(
@@ -1586,12 +1599,22 @@ impl TreeWalk {
         ))
     }
 
-    fn primop_has_cacheable_impure_input_trace(ir: &Ir, node: &IrNode) -> bool {
+    fn primop_has_cacheable_impure_input_trace(
+        ir: &Ir,
+        symbols: &SymbolTable,
+        node: &IrNode,
+    ) -> bool {
         let IrData::PrimOp { symbol, .. } = node.data else {
             return false;
         };
-        match ir.symbols.resolve(symbol) {
-            Some(b"findFile") => Self::primop_find_file_has_cacheable_search_path_arg(ir, node),
+        debug_assert!(
+            symbols.resolve(symbol).is_some(),
+            "force-cache primop symbol is absent from the live symbol table"
+        );
+        match symbols.resolve(symbol) {
+            Some(b"findFile") => {
+                Self::primop_find_file_has_cacheable_search_path_arg(ir, symbols, node)
+            }
             Some(
                 b"import" | b"getEnv" | b"hashFile" | b"pathExists" | b"readDir" | b"readFile"
                 | b"readFileType",
@@ -1600,7 +1623,11 @@ impl TreeWalk {
         }
     }
 
-    fn primop_find_file_has_cacheable_search_path_arg(ir: &Ir, node: &IrNode) -> bool {
+    fn primop_find_file_has_cacheable_search_path_arg(
+        ir: &Ir,
+        symbols: &SymbolTable,
+        node: &IrNode,
+    ) -> bool {
         let IrData::PrimOp { args, .. } = node.data else {
             return false;
         };
@@ -1614,13 +1641,13 @@ impl TreeWalk {
             return false;
         };
         first_arg.kind == IrKind::List
-            || Self::node_is_builtin_nix_path_attr(ir, first_arg)
+            || Self::node_is_builtin_nix_path_attr(symbols, first_arg)
             || Self::node_is_captured_search_path_value(first_arg)
     }
 
-    fn node_is_builtin_nix_path_attr(ir: &Ir, node: &IrNode) -> bool {
+    fn node_is_builtin_nix_path_attr(symbols: &SymbolTable, node: &IrNode) -> bool {
         node.kind == IrKind::BuiltinAttr
-            && Self::builtin_attr_execution(ir, node) == Some(BuiltinExecution::NixPathValue)
+            && Self::builtin_attr_execution(symbols, node) == Some(BuiltinExecution::NixPathValue)
     }
 
     fn search_path_has_cacheable_origin(ir: &Ir, node: &IrNode) -> bool {

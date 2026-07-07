@@ -100,8 +100,12 @@ impl TreeWalk {
                 let IrData::Symbol(symbol) = node.data else {
                     return None;
                 };
-                let module = self.modules.get(module_id.index())?;
-                let bytes = module.ir.symbols.resolve(symbol)?;
+                self.modules.get(module_id.index())?;
+                debug_assert!(
+                    self.symbols.resolve(symbol).is_some(),
+                    "force-cache payload symbol is absent from the live symbol table"
+                );
+                let bytes = self.symbols.resolve(symbol)?;
                 Some(CachedExpressionValue::context_free_string(
                     try_clone_bytes(bytes).ok()?,
                 ))
@@ -110,8 +114,12 @@ impl TreeWalk {
                 let IrData::Symbol(symbol) = node.data else {
                     return None;
                 };
-                let module = self.modules.get(module_id.index())?;
-                let bytes = module.ir.symbols.resolve(symbol)?;
+                self.modules.get(module_id.index())?;
+                debug_assert!(
+                    self.symbols.resolve(symbol).is_some(),
+                    "force-cache payload symbol is absent from the live symbol table"
+                );
+                let bytes = self.symbols.resolve(symbol)?;
                 let path = self
                     .path_literal_bytes_for_module_node(module_id, node_id, node.span, bytes)
                     .ok()?;
@@ -284,7 +292,11 @@ impl TreeWalk {
                 let IrAttrPathSegment::Static(symbol) = binding.key else {
                     return None;
                 };
-                let name = try_clone_bytes(module.ir.symbols.resolve(symbol)?).ok()?;
+                debug_assert!(
+                    self.symbols.resolve(symbol).is_some(),
+                    "force-cache payload symbol is absent from the live symbol table"
+                );
+                let name = try_clone_bytes(self.symbols.resolve(symbol)?).ok()?;
                 let position = binding
                     .position
                     .map(|span| AttrPosition::new(module_id.as_u32(), span));
@@ -391,7 +403,11 @@ impl TreeWalk {
                 let IrAttrPathSegment::Static(symbol) = binding.key else {
                     return None;
                 };
-                let name = try_clone_bytes(module.ir.symbols.resolve(symbol)?).ok()?;
+                debug_assert!(
+                    self.symbols.resolve(symbol).is_some(),
+                    "force-cache payload symbol is absent from the live symbol table"
+                );
+                let name = try_clone_bytes(self.symbols.resolve(symbol)?).ok()?;
                 let position = binding
                     .position
                     .map(|span| AttrPosition::new(module_id.as_u32(), span));

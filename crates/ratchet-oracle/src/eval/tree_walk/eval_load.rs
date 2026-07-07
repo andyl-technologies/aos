@@ -141,7 +141,7 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
-        let ir = if global_scope.is_scoped() {
+        let mut ir = if global_scope.is_scoped() {
             nix_lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
         } else {
             nix_lower(resolved)
@@ -158,6 +158,9 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        // Adopt the freshly lowered symbol table as the live table without a
+        // clone; the module keeps the emptied husk and reads `self.symbols`.
+        self.symbols = std::mem::take(&mut ir.symbols);
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }
 
@@ -172,7 +175,12 @@ impl TreeWalk {
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
         self.reserve_suspended_env_root_frame(id, span)?;
-        self.symbols = ir.symbols.clone();
+        // The live symbol table (`self.symbols`) has already been advanced to the
+        // superset covering this module's symbols by the caller: the fresh-parse
+        // path moves the lowered table in with `mem::take`, and the cached-import
+        // path interns directly into it during remapping. The module therefore
+        // stores an empty per-module table and every runtime symbol lookup reads
+        // `self.symbols` instead, avoiding a per-import clone of the whole table.
         let root = ir.root;
         let module =
             self.push_module(id, span, ir, base.to_vec(), path.to_vec(), source.to_vec())?;
@@ -200,7 +208,6 @@ impl TreeWalk {
         path: &[u8],
         ir: Ir,
     ) -> Result<Ir, TreeWalkError> {
-        let mut symbols = self.symbols.clone();
         let mut symbol_map = Vec::new();
         symbol_map
             .try_reserve_exact(ir.symbols.len())
@@ -214,8 +221,12 @@ impl TreeWalk {
                     argument_span,
                 )
             })?;
+        // Intern the cached file-local symbols directly into the live table
+        // rather than cloning it first. Interning is append-only, so ids stay
+        // stable; if a later step fails, the extra symbols left in the live
+        // table are harmless and never invalidate previously interned ids.
         for bytes in ir.symbols.symbols() {
-            let symbol = symbols.intern(bytes).map_err(|source| {
+            let symbol = self.symbols.intern(bytes).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::ImportScope {
                         id: argument,
@@ -351,7 +362,9 @@ impl TreeWalk {
             root: ir.root,
             arena: IrArena::from_raw_parts(nodes, ir.arena.child_pool().to_vec()),
             facts: ir.facts,
-            symbols,
+            // The remapped symbols now live in `self.symbols`; the module reads
+            // that live table, so its per-module table is intentionally empty.
+            symbols: SymbolTable::new(),
             frames: ir.frames,
             with_chains: ir.with_chains,
             attr_paths: attr_paths.into_boxed_slice(),

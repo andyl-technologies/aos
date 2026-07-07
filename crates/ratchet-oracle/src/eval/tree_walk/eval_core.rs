@@ -1063,17 +1063,19 @@ impl TreeWalk {
             EvalThunkKind::BuiltinAttr { builtin, .. } => {
                 builtin.execution() == BuiltinExecution::NixPathValue
             }
-            EvalThunkKind::Node { body, .. } => self
-                .modules
-                .get(body.module().index())
-                .is_some_and(|module| {
-                    let Some(node) = module.ir.arena.node(body.id()) else {
-                        return false;
-                    };
-                    node.kind == IrKind::BuiltinAttr
-                        && Self::builtin_attr_execution(&module.ir, node)
-                            == Some(BuiltinExecution::NixPathValue)
-                }),
+            EvalThunkKind::Node { body, .. } => {
+                let symbols = &self.symbols;
+                self.modules
+                    .get(body.module().index())
+                    .is_some_and(|module| {
+                        let Some(node) = module.ir.arena.node(body.id()) else {
+                            return false;
+                        };
+                        node.kind == IrKind::BuiltinAttr
+                            && Self::builtin_attr_execution(symbols, node)
+                                == Some(BuiltinExecution::NixPathValue)
+                    })
+            }
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. } => false,
