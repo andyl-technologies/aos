@@ -112,9 +112,9 @@ pub use node::{
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
     QMP_JOB_QUERY_LIMIT, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND,
-    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QmpClient, QmpCommandComplete,
-    QmpCommandKind, QmpError, QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpSnapshotTag,
-    QmpTimeoutStream,
+    QMP_SNAPSHOT_SAVE_COMMAND, QMP_SNAPSHOT_VMSTATE_DEVICE, QemuQmpVmStateControlChannel,
+    QmpClient, QmpCommandComplete, QmpCommandKind, QmpError, QmpGreeting, QmpIoTimeoutPolicy,
+    QmpJobPollPolicy, QmpSnapshotTag, QmpTimeoutStream,
 };
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuDueInboundFrame, QemuInboundFrame,
