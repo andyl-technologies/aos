@@ -15,6 +15,7 @@
 //! unsafe boundary when the caller supplies host-ABI-matched native candidates.
 
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, mem,
@@ -24,6 +25,7 @@ use std::{
 use cranelift_codegen::{
     CodegenError, Context,
     ir::{ExternalName, Function, UserExternalName},
+    isa::OwnedTargetIsa,
     settings::{self, Configurable, SetError},
 };
 use cranelift_jit::{JITBuilder, JITModule};
@@ -3097,16 +3099,45 @@ fn require_supported_native_value_abi() -> Result<(), JitCraneliftNativeCallErro
 }
 
 fn native_jit_builder() -> Result<JITBuilder, JitCraneliftModuleSetupError> {
-    let mut flag_builder = settings::builder();
-    flag_builder.set("use_colocated_libcalls", "false")?;
-    flag_builder.set("is_pic", "false")?;
-    let isa_builder = cranelift_native::builder()
-        .map_err(|message| JitCraneliftModuleSetupError::UnsupportedHost { message })?;
-    let isa = isa_builder.finish(settings::Flags::new(flag_builder))?;
     Ok(JITBuilder::with_isa(
-        isa,
+        cached_native_isa()?,
         cranelift_module::default_libcall_names(),
     ))
+}
+
+thread_local! {
+    /// Per-thread cache of the finished native [`OwnedTargetIsa`].
+    ///
+    /// Building a target ISA runs host-CPU feature detection and finishes a fresh
+    /// `TargetIsa`, which dominates per-module JIT setup. The ISA is immutable and
+    /// shareable (an `Arc`), and every tier-1 module uses the same host ISA and
+    /// flags, so it is built once per thread and cloned for each module builder,
+    /// amortizing that setup across all promotions.
+    static NATIVE_TARGET_ISA: RefCell<Option<OwnedTargetIsa>> = const { RefCell::new(None) };
+}
+
+/// Returns the cached native target ISA, building and caching it on first use.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftModuleSetupError::UnsupportedHost`] when Cranelift cannot
+/// detect the host CPU, [`JitCraneliftModuleSetupError::Settings`] if a required
+/// flag is rejected, and [`JitCraneliftModuleSetupError::TargetIsa`] if the ISA
+/// cannot be finished for the host.
+fn cached_native_isa() -> Result<OwnedTargetIsa, JitCraneliftModuleSetupError> {
+    NATIVE_TARGET_ISA.with(|cell| {
+        if let Some(isa) = cell.borrow().as_ref() {
+            return Ok(isa.clone());
+        }
+        let mut flag_builder = settings::builder();
+        flag_builder.set("use_colocated_libcalls", "false")?;
+        flag_builder.set("is_pic", "false")?;
+        let isa_builder = cranelift_native::builder()
+            .map_err(|message| JitCraneliftModuleSetupError::UnsupportedHost { message })?;
+        let isa = isa_builder.finish(settings::Flags::new(flag_builder))?;
+        *cell.borrow_mut() = Some(isa.clone());
+        Ok(isa)
+    })
 }
 
 #[cfg(test)]
