@@ -72,6 +72,10 @@
         label = "T-CLI-10 process qemu resume progress";
         needle = "process-tests real-binary\n  `resume --backend qemu` JSONL";
       }
+      {
+        label = "T-CLI-10 QMP snapshot-load smoke progress";
+        needle = "QMP `snapshot-load` smoke";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -85,6 +89,10 @@
       {
         label = "phase5 CLI process qemu resume progress";
         needle = "process-level `resume --backend qemu`\n  JSONL output plus replay-oracle validation";
+      }
+      {
+        label = "phase5 CLI QMP snapshot-load smoke progress";
+        needle = "QMP `snapshot-load` smoke";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -328,8 +336,11 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.jq
+        pkgs.qemu-crucible
         pkgs.rust
         pkgs.sed
+        pkgs.socat
       ];
 
       ATTR_PATH = attrPath;
@@ -387,6 +398,240 @@ in
               -p crucible-cli \
               cli_resume_qemu_process_jsonl_reports_identity_and_oracle \
               -- --test-threads=1
+
+            qemu_pid=""
+            qmp_socket="$TMPDIR/cli-resume-qemu-qmp.sock"
+            vmstate="$TMPDIR/cli-resume-qemu-vmstate.qcow2"
+            qemu_stderr="$TMPDIR/cli-resume-qemu.stderr"
+            rm -f "$qmp_socket" "$vmstate" "$qemu_stderr"
+
+            cleanup_cli_resume_qemu() {
+              if [ -n "$qemu_pid" ]; then
+                kill "$qemu_pid" 2>/dev/null || true
+                wait "$qemu_pid" 2>/dev/null || true
+                qemu_pid=""
+              fi
+            }
+
+            fail_cli_resume_qemu() {
+              echo "FAIL: $*" >&2
+              if [ -s "$qemu_stderr" ]; then
+                cat "$qemu_stderr" >&2
+              fi
+              cleanup_cli_resume_qemu
+              exit 1
+            }
+
+            trap cleanup_cli_resume_qemu EXIT
+
+            wait_for_cli_resume_qemu_socket() {
+              waited=0
+              while [ "$waited" -lt 600 ]; do
+                if [ -S "$qmp_socket" ]; then
+                  return 0
+                fi
+                sleep 0.1
+                waited=$((waited + 1))
+              done
+              return 1
+            }
+
+            qmp_cli_resume_exchange() {
+              socket="$1"
+              request="$2"
+              response="$3"
+              response_err="$response.err"
+
+              {
+                sleep 0.1
+                printf '{"execute":"qmp_capabilities"}\r\n'
+                sleep 0.1
+                printf '%s\r\n' "$request"
+                sleep 0.25
+              } | socat -T 10 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+            }
+
+            qmp_cli_resume_cmd() {
+              socket="$1"
+              request="$2"
+              response="$3"
+              response_err="$response.err"
+              attempts=0
+
+              while [ "$attempts" -lt 20 ]; do
+                qmp_cli_resume_exchange "$socket" "$request" "$response"
+
+                if [ ! -s "$response" ]; then
+                  attempts=$((attempts + 1))
+                  sleep 0.25
+                  continue
+                fi
+
+                if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+                  cat "$response" >&2
+                  return 1
+                fi
+                if jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null; then
+                  return 0
+                fi
+
+                attempts=$((attempts + 1))
+                sleep 0.25
+              done
+
+              if [ -s "$response" ]; then
+                cat "$response" >&2
+              else
+                cat "$response_err" >&2 || true
+              fi
+              return 1
+            }
+
+            qmp_cli_resume_job_started() {
+              socket="$1"
+              job="$2"
+              response="$3.probe"
+
+              if ! qmp_cli_resume_cmd "$socket" '{"execute":"query-jobs"}' "$response"; then
+                return 1
+              fi
+              if jq -e -s --arg job "$job" '
+                ([.[] | select(has("return"))][-1].return // [])[]
+                | select(.id == $job)
+                | has("error")
+              ' "$response" >/dev/null; then
+                cat "$response" >&2
+                return 1
+              fi
+              jq -e -s --arg job "$job" '
+                any((([.[] | select(has("return"))][-1].return // [])[]); .id == $job)
+              ' "$response" >/dev/null
+            }
+
+            qmp_cli_resume_job_cmd() {
+              socket="$1"
+              request="$2"
+              response="$3"
+              job="$4"
+              response_err="$response.err"
+              attempts=0
+
+              while [ "$attempts" -lt 20 ]; do
+                qmp_cli_resume_exchange "$socket" "$request" "$response"
+
+                if [ -s "$response" ]; then
+                  if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+                    cat "$response" >&2
+                    return 1
+                  fi
+                  if jq -e -s --arg job "$job" '
+                    ([.[] | select(has("return"))] | length >= 2)
+                    or any(.[]; .event == "JOB_STATUS_CHANGE" and .data.id == $job)
+                  ' "$response" >/dev/null; then
+                    return 0
+                  fi
+                fi
+
+                if qmp_cli_resume_job_started "$socket" "$job" "$response"; then
+                  return 0
+                fi
+
+                attempts=$((attempts + 1))
+                sleep 0.25
+              done
+
+              if [ -s "$response" ]; then
+                cat "$response" >&2
+              else
+                cat "$response_err" >&2 || true
+              fi
+              return 1
+            }
+
+            wait_for_cli_resume_qemu_job() {
+              socket="$1"
+              job="$2"
+              waited=0
+              while [ "$waited" -lt 600 ]; do
+                if qmp_cli_resume_cmd "$socket" '{"execute":"query-jobs"}' "$TMPDIR/qmp-cli-resume-jobs.json"; then
+                  if jq -e -s --arg job "$job" '
+                    [.[] | select(has("return"))][-1].return[]
+                    | select(.id == $job)
+                    | has("error")
+                  ' "$TMPDIR/qmp-cli-resume-jobs.json" >/dev/null; then
+                    cat "$TMPDIR/qmp-cli-resume-jobs.json" >&2
+                    return 1
+                  fi
+                  if jq -e -s --arg job "$job" '
+                    [.[] | select(has("return"))][-1].return[]
+                    | select(.id == $job)
+                    | .status == "concluded"
+                  ' "$TMPDIR/qmp-cli-resume-jobs.json" >/dev/null; then
+                    return 0
+                  fi
+                fi
+                sleep 0.25
+                waited=$((waited + 1))
+              done
+              return 1
+            }
+
+            "${pkgs.qemu-crucible}/bin/qemu-img" create -f qcow2 "$vmstate" 32M >/dev/null
+            timeout 120 "${pkgs.qemu-crucible}/bin/qemu-system-x86_64" \
+              -nodefaults \
+              -no-user-config \
+              -display none \
+              -monitor none \
+              -machine q35 \
+              -accel tcg,thread=single \
+              -cpu qemu64,-rdrand,-rdseed \
+              -m 256 \
+              -smp 1 \
+              -rtc base=2026-01-01T00:00:00,clock=vm \
+              -seed 0x0010c10a \
+              -qmp "unix:$qmp_socket,server=on,wait=off" \
+              -blockdev driver=file,filename="$vmstate",node-name=vmfile \
+              -blockdev driver=qcow2,file=vmfile,node-name=vmstate \
+              -S \
+              -no-shutdown \
+              -no-reboot \
+              2> "$qemu_stderr" &
+            qemu_pid="$!"
+
+            wait_for_cli_resume_qemu_socket || fail_cli_resume_qemu "patched QEMU QMP socket did not appear"
+            qmp_cli_resume_job_cmd \
+              "$qmp_socket" \
+              '{"execute":"snapshot-save","arguments":{"job-id":"cli-resume-qemu-save","tag":"cli-resume-qemu-savepoint","vmstate":"vmstate","devices":["vmstate"]}}' \
+              "$TMPDIR/qmp-cli-resume-snapshot-save.json" \
+              "cli-resume-qemu-save" \
+              || fail_cli_resume_qemu "patched QEMU snapshot-save command failed"
+            wait_for_cli_resume_qemu_job "$qmp_socket" "cli-resume-qemu-save" \
+              || fail_cli_resume_qemu "patched QEMU snapshot-save job did not conclude"
+            qmp_cli_resume_job_cmd \
+              "$qmp_socket" \
+              '{"execute":"snapshot-load","arguments":{"job-id":"cli-resume-qemu-load","tag":"cli-resume-qemu-savepoint","vmstate":"vmstate","devices":["vmstate"]}}' \
+              "$TMPDIR/qmp-cli-resume-snapshot-load.json" \
+              "cli-resume-qemu-load" \
+              || fail_cli_resume_qemu "patched QEMU snapshot-load command failed"
+            wait_for_cli_resume_qemu_job "$qmp_socket" "cli-resume-qemu-load" \
+              || fail_cli_resume_qemu "patched QEMU snapshot-load job did not conclude"
+            qmp_cli_resume_cmd "$qmp_socket" '{"execute":"cont"}' "$TMPDIR/qmp-cli-resume-cont.json" \
+              || fail_cli_resume_qemu "patched QEMU cont command failed"
+            qmp_cli_resume_cmd "$qmp_socket" '{"execute":"query-status"}' "$TMPDIR/qmp-cli-resume-status.json" \
+              || fail_cli_resume_qemu "patched QEMU status query failed"
+            jq -e -s '[.[] | select(has("return"))][-1].return.status == "running"' \
+              "$TMPDIR/qmp-cli-resume-status.json" >/dev/null \
+              || fail_cli_resume_qemu "patched QEMU did not report running after snapshot-load and cont"
+            qmp_cli_resume_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-cli-resume-quit.json" >/dev/null 2>&1 || true
+            wait "$qemu_pid" || fail_cli_resume_qemu "patched QEMU exited unsuccessfully after snapshot-load"
+            qemu_pid=""
+
+            cat > "$TMPDIR/cli-resume-qemu-snapshot.result" <<'RESULT'
+            snapshot-save=concluded
+            snapshot-load=concluded
+            qmp-cont-status=running
+            qmp_snapshot_load_smoke=job-concluded-and-running
+            RESULT
           '';
         }
         {
@@ -394,6 +639,11 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
+            grep -q '^snapshot-save=concluded$' "$TMPDIR/cli-resume-qemu-snapshot.result"
+            grep -q '^snapshot-load=concluded$' "$TMPDIR/cli-resume-qemu-snapshot.result"
+            grep -q '^qmp-cont-status=running$' "$TMPDIR/cli-resume-qemu-snapshot.result"
+            grep -q '^qmp_snapshot_load_smoke=job-concluded-and-running$' "$TMPDIR/cli-resume-qemu-snapshot.result"
+            cp "$TMPDIR/cli-resume-qemu-snapshot.result" "$out/qemu-snapshot-load.result"
             cat > "$out/result" <<'RESULT'
             PASS
             check=$ATTR_PATH
@@ -401,6 +651,7 @@ in
             component=crucible-cli
             contract=resume-workflow-progress
             process_qemu_resume=marker-resolved-jsonl-oracle
+            qmp_snapshot_load_smoke=job-concluded-and-running
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

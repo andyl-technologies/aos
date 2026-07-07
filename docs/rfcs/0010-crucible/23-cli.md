@@ -1093,9 +1093,12 @@ branch on the verdict without parsing output:
   resumed-session materialization with resolved QEMU/plugin identity provenance
   in stdout and the canonical log, and process-tests real-binary
   `resume --backend qemu` JSONL output plus replay-oracle validation through
-  marker-resolved QEMU/plugin identity. Full closure remains blocked on
-  backend-executed real-QEMU resume coverage and full replay-oracle coverage
-  across those runners.
+  marker-resolved QEMU/plugin identity. The gate also runs a direct patched-QEMU
+  QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
+  `running` after `cont`. Full closure remains blocked on wiring the CLI's
+  selected local-QEMU resume path to a real QEMU realization executor with
+  replay-oracle-admitted materialization instead of only appending QEMU identity
+  to the local-double resume path.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.
