@@ -261,6 +261,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with parallel evaluation mode configured.
+    pub fn with_parallel_workers(workers: Option<std::num::NonZeroUsize>) -> Self {
+        let mut options = Self::default();
+        options.set_parallel_workers(workers);
+        options
+    }
+
     /// Creates evaluator options with post-evaluation cheap heap advice for owned outcomes.
     pub fn with_heap_cheap_memory_advice_min_idle_epochs(min_idle_epochs: u64) -> Self {
         let mut options = Self::default();
@@ -711,6 +718,28 @@ impl TreeWalkOptions {
         self.parallel_thunk_payloads_enabled = enabled;
     }
 
+    /// Configures parallel evaluation mode with a target worker count.
+    ///
+    /// `Some(n)` turns parallel mode on: newly allocated thunks carry parallel
+    /// payload cells bound to the evaluator's shared cycle registry, so `n`
+    /// worker evaluators can force overlapping thunks of one shared demand
+    /// graph through the claim/park protocol. `None` (the default) is the
+    /// serial evaluator with zero thunk-storage overhead.
+    ///
+    /// The count records the requested fan-out for scheduler integration; a
+    /// single evaluator running with `Some(n)` still forces serially with one
+    /// worker id and produces identical results. Parallel mode also implies:
+    ///
+    /// - the tier-1 JIT engine is not installed (`AOS_NIX_JIT` is ignored);
+    /// - minor GC stays quiesced: the production evaluator never runs minor
+    ///   collections (arenas grow monotonically for the eval's lifetime), and
+    ///   GC-stress polling must not be combined with parallel mode. Claimed
+    ///   parallel cells refuse relocation writebacks, which turns any such
+    ///   combination into an explicit error instead of a data race.
+    pub fn set_parallel_workers(&mut self, workers: Option<std::num::NonZeroUsize>) {
+        self.parallel_workers = workers;
+    }
+
     /// Enables or disables publishing promoted tier-1 native entries for dispatch.
     ///
     /// When disabled (the default), `publish_tier1_slot` is a no-op and installed
@@ -941,8 +970,16 @@ impl TreeWalkOptions {
     }
 
     /// Returns whether newly allocated thunks receive parallel payload cells.
+    ///
+    /// This is true when the storage flag is set explicitly or when parallel
+    /// evaluation mode is configured through [`Self::set_parallel_workers`].
     pub const fn parallel_thunk_payloads_enabled(&self) -> bool {
-        self.parallel_thunk_payloads_enabled
+        self.parallel_thunk_payloads_enabled || self.parallel_workers.is_some()
+    }
+
+    /// Returns the configured parallel evaluation worker count, if enabled.
+    pub const fn parallel_workers(&self) -> Option<std::num::NonZeroUsize> {
+        self.parallel_workers
     }
 
     /// Returns whether promoted tier-1 native entries may be published for dispatch.

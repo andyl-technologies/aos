@@ -20,7 +20,7 @@
 
 use std::{
     convert::Infallible,
-    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
 };
 
 use thiserror::Error;
@@ -30,17 +30,27 @@ use super::thunk_cas::{
     ParallelThunkState, ParallelThunkStateError, ParallelThunkStateWord,
     ParallelThunkTerminalState, ParallelThunkWorkerId,
 };
+use super::thunk_registry::{ParallelForceCycleRegistry, ParallelForceWaitRegistration};
 
 /// A thunk CAS state word paired with safe waiter notification.
 ///
 /// This is a correctness precursor for tests and future evaluator wiring. It is
 /// not the final lock-free waiter-list representation and does not perform
 /// work stealing before parking.
+///
+/// A cell may carry a shared [`ParallelForceCycleRegistry`]. When present, a
+/// waiter registers its wait edge (and walks the cross-worker owner chain)
+/// before parking, and terminal publication purges the cell's edges inside the
+/// registry critical section; see the `thunk_registry` module docs for the
+/// protocol. Cells without a registry keep the original park-unconditionally
+/// behavior, which is only deadlock-free while a single worker forces the
+/// graph.
 #[derive(Debug)]
 pub struct ParallelThunkWaitCell {
     state: ParallelThunkStateWord,
     waiters: Mutex<ParallelThunkWaitState>,
     terminal_ready: Condvar,
+    cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
 }
 
 impl Default for ParallelThunkWaitCell {
@@ -52,29 +62,60 @@ impl Default for ParallelThunkWaitCell {
 impl ParallelThunkWaitCell {
     /// Creates a suspended wait cell with no registered waiters.
     pub fn new() -> Self {
+        Self::with_cycle_registry(None)
+    }
+
+    /// Creates a suspended wait cell bound to a shared cycle registry.
+    ///
+    /// Every cell of one shared demand graph must be bound to the same
+    /// registry instance for cross-worker deadlock-cycle detection to see all
+    /// wait edges.
+    pub fn with_cycle_registry(cycle_registry: Option<Arc<ParallelForceCycleRegistry>>) -> Self {
         Self {
             state: ParallelThunkStateWord::new(),
             waiters: Mutex::new(ParallelThunkWaitState::default()),
             terminal_ready: Condvar::new(),
+            cycle_registry,
         }
     }
 
     /// Creates a forced wait cell for relocating an already-terminal payload.
-    pub(crate) fn forced_for_relocation() -> Self {
+    pub(crate) fn forced_for_relocation(
+        cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
+    ) -> Self {
         Self {
             state: ParallelThunkStateWord::forced_for_relocation(),
             waiters: Mutex::new(ParallelThunkWaitState::default()),
             terminal_ready: Condvar::new(),
+            cycle_registry,
         }
     }
 
     /// Creates a failed wait cell for relocating an already-terminal payload.
-    pub(crate) fn failed_for_relocation() -> Self {
+    pub(crate) fn failed_for_relocation(
+        cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
+    ) -> Self {
         Self {
             state: ParallelThunkStateWord::failed_for_relocation(),
             waiters: Mutex::new(ParallelThunkWaitState::default()),
             terminal_ready: Condvar::new(),
+            cycle_registry,
         }
+    }
+
+    /// Returns the shared cycle registry this cell is bound to, if any.
+    pub(crate) fn cycle_registry(&self) -> Option<&Arc<ParallelForceCycleRegistry>> {
+        self.cycle_registry.as_ref()
+    }
+
+    /// Returns this cell's identity key in the shared cycle registry.
+    ///
+    /// The cell address is stable for the lifetime of the owning heap record:
+    /// parallel cells live behind a `Box` inside an `Arc`-shared thunk record,
+    /// and relocation writebacks refuse to clone a claimed cell, so a key is
+    /// never observed for a moved cell while claims or waits reference it.
+    fn cycle_registry_key(&self) -> usize {
+        std::ptr::from_ref(self) as usize
     }
 
     /// Loads the current state with acquire ordering.
@@ -279,9 +320,41 @@ impl ParallelThunkWaitCell {
                 Ok(Some((ParallelThunkWait::SelfCycle { owner }, false)))
             }
             ParallelThunkAwait::Awaited { owner, .. } => {
+                if let Some(registry) = &self.cycle_registry {
+                    // The registry lock is taken while holding the waiter
+                    // mutex; publishers never nest the two (they release the
+                    // registry lock before notifying), so this ordering is
+                    // deadlock-free. The state re-read runs under the registry
+                    // lock, making the decision race-free against concurrent
+                    // terminal publication.
+                    match registry.register_parked_waiter(
+                        worker,
+                        self.cycle_registry_key(),
+                        || self.state.state(),
+                    )? {
+                        ParallelForceWaitRegistration::Cycle { owner }
+                        | ParallelForceWaitRegistration::SelfOwned { owner } => {
+                            // Parking would deadlock: the owner chain leads
+                            // back to this worker. Surface the same outcome as
+                            // direct same-worker re-entry so the evaluator
+                            // raises its serial infinite-recursion error.
+                            return Ok(Some((ParallelThunkWait::SelfCycle { owner }, false)));
+                        }
+                        ParallelForceWaitRegistration::Registered
+                        | ParallelForceWaitRegistration::Terminal
+                        | ParallelForceWaitRegistration::Unclaimed => {
+                            // Terminal/unclaimed re-reads fall through to the
+                            // wait loop, whose pre-sleep state check returns
+                            // (or retries) immediately without sleeping.
+                        }
+                    }
+                }
                 waiters.wait_registrations = waiters.wait_registrations.saturating_add(1);
-                self.wait_until_terminal(waiters, worker, owner)
-                    .map(|result| Some((result, true)))
+                let result = self.wait_until_terminal(waiters, worker, owner);
+                if let Some(registry) = &self.cycle_registry {
+                    registry.deregister_waiter(worker, self.cycle_registry_key());
+                }
+                result.map(|result| Some((result, true)))
             }
         }
     }
@@ -326,6 +399,19 @@ impl ParallelThunkWaitCell {
                     ));
                 }
             }
+        }
+    }
+
+    /// Runs a terminal state-word transition inside the cycle-registry
+    /// critical section, purging this cell's recorded wait edges first.
+    ///
+    /// Without a bound registry this is a plain call to `publish`. The purge
+    /// plus in-lock publication is what keeps registered wait edges pointing
+    /// only at live claims; see the `thunk_registry` module docs.
+    fn publish_with_cycle_purge<R>(&self, publish: impl FnOnce() -> R) -> R {
+        match &self.cycle_registry {
+            Some(registry) => registry.publish_purged(self.cycle_registry_key(), publish),
+            None => publish(),
         }
     }
 
@@ -406,9 +492,14 @@ pub enum ParallelThunkWait<'a> {
     Claimed(ParallelThunkWaitGuard<'a>),
     /// The thunk has reached a terminal state.
     Terminal(ParallelThunkTerminalState),
-    /// The same worker re-entered a thunk it already owns.
+    /// Forcing this thunk closes an ownership cycle back to the caller.
+    ///
+    /// This covers direct same-worker re-entry and, for cells bound to a
+    /// [`ParallelForceCycleRegistry`], transitive cross-worker wait cycles
+    /// detected before parking. Both are the evaluation-cycle condition that
+    /// serial forcing reports as infinite recursion.
     SelfCycle {
-        /// The worker that owns the recursive force.
+        /// The worker that owns the claim on the directly awaited thunk.
         owner: ParallelThunkWorkerId,
     },
 }
@@ -484,15 +575,16 @@ impl ParallelThunkWaitGuard<'_> {
     /// during notification so already-published terminal states still wake
     /// registered waiters.
     pub fn publish_forced(mut self) -> Result<ParallelThunkPublish, ParallelThunkWaitError> {
+        let cell = self.cell;
         let guard = self.take_guard()?;
-        let report = match guard.publish_forced() {
+        let report = match cell.publish_with_cycle_purge(|| guard.publish_forced()) {
             Ok(report) => report,
             Err(error) => {
-                self.cell.notify_waiters();
+                cell.notify_waiters();
                 return Err(ParallelThunkWaitError::State(error));
             }
         };
-        self.cell.notify_after_publish(report)?;
+        cell.notify_after_publish(report)?;
         Ok(report)
     }
 
@@ -506,15 +598,16 @@ impl ParallelThunkWaitGuard<'_> {
     /// during notification so already-published terminal states still wake
     /// registered waiters.
     pub fn publish_failed(mut self) -> Result<ParallelThunkPublish, ParallelThunkWaitError> {
+        let cell = self.cell;
         let guard = self.take_guard()?;
-        let report = match guard.publish_failed() {
+        let report = match cell.publish_with_cycle_purge(|| guard.publish_failed()) {
             Ok(report) => report,
             Err(error) => {
-                self.cell.notify_waiters();
+                cell.notify_waiters();
                 return Err(ParallelThunkWaitError::State(error));
             }
         };
-        self.cell.notify_after_publish(report)?;
+        cell.notify_after_publish(report)?;
         Ok(report)
     }
 
@@ -528,7 +621,10 @@ impl ParallelThunkWaitGuard<'_> {
 impl Drop for ParallelThunkWaitGuard<'_> {
     fn drop(&mut self) {
         if let Some(guard) = self.guard.take() {
-            drop(guard);
+            // Dropping the inner CAS guard publishes `Failed`; route that
+            // terminal transition through the registry purge so the cycle
+            // registry invariant holds on the unwind path too.
+            self.cell.publish_with_cycle_purge(|| drop(guard));
             self.cell.notify_waiters();
         }
     }

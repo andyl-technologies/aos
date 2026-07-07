@@ -13550,6 +13550,158 @@ impl EvalStats {
         }
     }
 
+    /// Accumulates another evaluator's counters into this one.
+    ///
+    /// Parallel evaluation keeps per-worker [`EvalStats`] and merges them into
+    /// one report after all workers join. Every field is combined with
+    /// saturating addition: event counters sum naturally, and the heap gauge
+    /// fields (`heap_*`/`permanent_heap_*`) become the total across all worker
+    /// heaps, which is the meaningful resident-footprint figure for one shared
+    /// evaluation. The destructuring is exhaustive so a newly added counter
+    /// cannot be silently dropped from the merge.
+    pub fn merge_from(&mut self, other: &Self) {
+        let Self {
+            thunks_forced,
+            thunks_allocated,
+            thunks_elided,
+            thunk_cache_hits,
+            inline_cache_hits,
+            inline_cache_misses,
+            shape_transitions,
+            gc_bytes,
+            gc_pause_us,
+            tier_promotions,
+            deopts,
+            force_cache_hits,
+            force_cache_misses,
+            force_cache_memoization_admits,
+            force_cache_memoization_bypasses,
+            force_cache_materialization_materializes,
+            force_cache_materialization_keeps_in_memory,
+            source_thunk_region_plan_decisions,
+            source_thunk_region_plan_lexical_subregion_decisions,
+            source_thunk_region_plan_conservative_fallbacks,
+            cache_hits,
+            cache_misses,
+            early_cutoffs,
+            root_cutoffs,
+            derivation_aterm_path_reuses,
+            static_derivation_output_path_reuses,
+            derivation_hash_calculations,
+            derivation_text_path_calculations,
+            heap_chunks,
+            heap_reserved_bytes,
+            heap_mapped_bytes,
+            heap_used_bytes,
+            permanent_heap_chunks,
+            permanent_heap_reserved_bytes,
+            permanent_heap_mapped_bytes,
+            permanent_heap_used_bytes,
+            heap_tier_b_admission_worker_records,
+            heap_tier_b_admission_permanent_shared_records,
+            heap_tier_b_admission_generation_rewrites,
+            values_allocated,
+            attrsets_built,
+            attrs_entries_total,
+            function_calls,
+            hashcons_attempts,
+            hashcons_hits,
+            symbols_interned,
+            imports_evaluated,
+            tier1_promoted,
+            tier1_dispatched,
+            tier1_deopted,
+            tier1_blacklisted,
+        } = *other;
+        self.thunks_forced = self.thunks_forced.saturating_add(thunks_forced);
+        self.thunks_allocated = self.thunks_allocated.saturating_add(thunks_allocated);
+        self.thunks_elided = self.thunks_elided.saturating_add(thunks_elided);
+        self.thunk_cache_hits = self.thunk_cache_hits.saturating_add(thunk_cache_hits);
+        self.inline_cache_hits = self.inline_cache_hits.saturating_add(inline_cache_hits);
+        self.inline_cache_misses = self.inline_cache_misses.saturating_add(inline_cache_misses);
+        self.shape_transitions = self.shape_transitions.saturating_add(shape_transitions);
+        self.gc_bytes = self.gc_bytes.saturating_add(gc_bytes);
+        self.gc_pause_us = self.gc_pause_us.saturating_add(gc_pause_us);
+        self.tier_promotions = self.tier_promotions.saturating_add(tier_promotions);
+        self.deopts = self.deopts.saturating_add(deopts);
+        self.force_cache_hits = self.force_cache_hits.saturating_add(force_cache_hits);
+        self.force_cache_misses = self.force_cache_misses.saturating_add(force_cache_misses);
+        self.force_cache_memoization_admits = self
+            .force_cache_memoization_admits
+            .saturating_add(force_cache_memoization_admits);
+        self.force_cache_memoization_bypasses = self
+            .force_cache_memoization_bypasses
+            .saturating_add(force_cache_memoization_bypasses);
+        self.force_cache_materialization_materializes = self
+            .force_cache_materialization_materializes
+            .saturating_add(force_cache_materialization_materializes);
+        self.force_cache_materialization_keeps_in_memory = self
+            .force_cache_materialization_keeps_in_memory
+            .saturating_add(force_cache_materialization_keeps_in_memory);
+        self.source_thunk_region_plan_decisions = self
+            .source_thunk_region_plan_decisions
+            .saturating_add(source_thunk_region_plan_decisions);
+        self.source_thunk_region_plan_lexical_subregion_decisions = self
+            .source_thunk_region_plan_lexical_subregion_decisions
+            .saturating_add(source_thunk_region_plan_lexical_subregion_decisions);
+        self.source_thunk_region_plan_conservative_fallbacks = self
+            .source_thunk_region_plan_conservative_fallbacks
+            .saturating_add(source_thunk_region_plan_conservative_fallbacks);
+        self.cache_hits = self.cache_hits.saturating_add(cache_hits);
+        self.cache_misses = self.cache_misses.saturating_add(cache_misses);
+        self.early_cutoffs = self.early_cutoffs.saturating_add(early_cutoffs);
+        self.root_cutoffs = self.root_cutoffs.saturating_add(root_cutoffs);
+        self.derivation_aterm_path_reuses = self
+            .derivation_aterm_path_reuses
+            .saturating_add(derivation_aterm_path_reuses);
+        self.static_derivation_output_path_reuses = self
+            .static_derivation_output_path_reuses
+            .saturating_add(static_derivation_output_path_reuses);
+        self.derivation_hash_calculations = self
+            .derivation_hash_calculations
+            .saturating_add(derivation_hash_calculations);
+        self.derivation_text_path_calculations = self
+            .derivation_text_path_calculations
+            .saturating_add(derivation_text_path_calculations);
+        self.heap_chunks = self.heap_chunks.saturating_add(heap_chunks);
+        self.heap_reserved_bytes = self.heap_reserved_bytes.saturating_add(heap_reserved_bytes);
+        self.heap_mapped_bytes = self.heap_mapped_bytes.saturating_add(heap_mapped_bytes);
+        self.heap_used_bytes = self.heap_used_bytes.saturating_add(heap_used_bytes);
+        self.permanent_heap_chunks = self
+            .permanent_heap_chunks
+            .saturating_add(permanent_heap_chunks);
+        self.permanent_heap_reserved_bytes = self
+            .permanent_heap_reserved_bytes
+            .saturating_add(permanent_heap_reserved_bytes);
+        self.permanent_heap_mapped_bytes = self
+            .permanent_heap_mapped_bytes
+            .saturating_add(permanent_heap_mapped_bytes);
+        self.permanent_heap_used_bytes = self
+            .permanent_heap_used_bytes
+            .saturating_add(permanent_heap_used_bytes);
+        self.heap_tier_b_admission_worker_records = self
+            .heap_tier_b_admission_worker_records
+            .saturating_add(heap_tier_b_admission_worker_records);
+        self.heap_tier_b_admission_permanent_shared_records = self
+            .heap_tier_b_admission_permanent_shared_records
+            .saturating_add(heap_tier_b_admission_permanent_shared_records);
+        self.heap_tier_b_admission_generation_rewrites = self
+            .heap_tier_b_admission_generation_rewrites
+            .saturating_add(heap_tier_b_admission_generation_rewrites);
+        self.values_allocated = self.values_allocated.saturating_add(values_allocated);
+        self.attrsets_built = self.attrsets_built.saturating_add(attrsets_built);
+        self.attrs_entries_total = self.attrs_entries_total.saturating_add(attrs_entries_total);
+        self.function_calls = self.function_calls.saturating_add(function_calls);
+        self.hashcons_attempts = self.hashcons_attempts.saturating_add(hashcons_attempts);
+        self.hashcons_hits = self.hashcons_hits.saturating_add(hashcons_hits);
+        self.symbols_interned = self.symbols_interned.saturating_add(symbols_interned);
+        self.imports_evaluated = self.imports_evaluated.saturating_add(imports_evaluated);
+        self.tier1_promoted = self.tier1_promoted.saturating_add(tier1_promoted);
+        self.tier1_dispatched = self.tier1_dispatched.saturating_add(tier1_dispatched);
+        self.tier1_deopted = self.tier1_deopted.saturating_add(tier1_deopted);
+        self.tier1_blacklisted = self.tier1_blacklisted.saturating_add(tier1_blacklisted);
+    }
+
     /// Returns the number of `.drv` paths reused from clean derivation ATerm records.
     pub const fn derivation_aterm_path_reuses(&self) -> u64 {
         self.derivation_aterm_path_reuses

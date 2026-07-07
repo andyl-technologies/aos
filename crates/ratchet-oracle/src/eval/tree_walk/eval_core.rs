@@ -310,7 +310,21 @@ impl TreeWalk {
         } else {
             EvalHeap::new()
         };
-        heap.set_gc_stress_policy(options.gc_stress_policy());
+        // Parallel evaluation quiesces minor GC: production evaluation never
+        // runs minor collections (arenas grow monotonically for the eval's
+        // lifetime), and the GC-stress test machinery must not relocate
+        // records while other workers may hold claims on their parallel
+        // cells. Serial-mode GC behavior is unchanged.
+        let gc_stress_policy = if options.parallel_workers().is_some() {
+            debug_assert!(
+                options.gc_stress_policy() == GcStressPolicy::disabled(),
+                "parallel evaluation mode quiesces GC-stress minor collections"
+            );
+            GcStressPolicy::disabled()
+        } else {
+            options.gc_stress_policy()
+        };
+        heap.set_gc_stress_policy(gc_stress_policy);
         if let Some(heap_memory_budget) = options.heap_memory_budget() {
             heap.set_memory_budget(heap_memory_budget);
             heap.set_resident_memory_mode(
@@ -326,6 +340,12 @@ impl TreeWalk {
         let force_cache_active = options.persist_cache_root().is_some()
             || eval_cache.lock().is_ok_and(|runtime| runtime.is_enabled());
         let store_validity_checker = StoreValidityChecker::for_store_dir(options.store_dir());
+        // Parallel forcing allocates a cross-worker wait registry per
+        // evaluator; workers sharing one demand graph replace it with one
+        // shared instance through `set_parallel_force_registry`.
+        let parallel_force_registry = options
+            .parallel_thunk_payloads_enabled()
+            .then(|| Arc::new(ParallelForceCycleRegistry::new()));
         Self {
             modules: vec![TreeWalkModule::new(
                 ir.clone(),
@@ -392,6 +412,7 @@ impl TreeWalk {
             tier1_def_site_slots: HashMap::new(),
             tier1_skipped_def_sites: HashSet::new(),
             tier1_engine: None,
+            parallel_force_registry,
             #[cfg(test)]
             tree_walk_list_wrapper_calls: 0,
             #[cfg(test)]
@@ -448,6 +469,26 @@ impl TreeWalk {
     /// Returns the worker id configured for parallel thunk sidecar claims.
     pub(crate) const fn parallel_thunk_worker_id(&self) -> ParallelThunkWorkerId {
         self.options.parallel_thunk_worker_id()
+    }
+
+    /// Returns the cross-worker wait registry used for parallel forcing.
+    ///
+    /// The registry is present exactly when parallel thunk payloads are
+    /// enabled. Worker evaluators sharing one demand graph must expose the
+    /// same registry instance; see [`TreeWalk::set_parallel_force_registry`].
+    pub fn parallel_force_registry(&self) -> Option<&Arc<ParallelForceCycleRegistry>> {
+        self.parallel_force_registry.as_ref()
+    }
+
+    /// Replaces the cross-worker wait registry used for parallel forcing.
+    ///
+    /// Call this on every worker evaluator of one shared demand graph with a
+    /// single shared registry instance before any thunks are allocated:
+    /// parallel cells capture the registry at allocation time, so cells
+    /// allocated earlier keep the evaluator's previous registry and their wait
+    /// edges would be invisible to the shared cycle walk.
+    pub fn set_parallel_force_registry(&mut self, registry: Arc<ParallelForceCycleRegistry>) {
+        self.parallel_force_registry = Some(registry);
     }
 
     /// Returns the remembered set populated by thunk-resolution write barriers.

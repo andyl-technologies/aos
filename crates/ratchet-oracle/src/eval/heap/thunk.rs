@@ -156,11 +156,20 @@ impl EvalThunk {
     /// boundary for future scheduler wiring and starts in the suspended state.
     /// It is intentionally crate-internal while serial `ThunkCell` forcing
     /// remains authoritative and scheduler integration is incomplete.
-    pub(crate) fn with_parallel_payload_cell(mut self, dropped_claim_error: TreeWalkError) -> Self {
+    ///
+    /// `cycle_registry` binds the cell to the evaluator's shared cross-worker
+    /// wait registry so waiters detect deadlock cycles before parking; all
+    /// cells of one shared demand graph must share the same registry.
+    pub(crate) fn with_parallel_payload_cell(
+        mut self,
+        dropped_claim_error: TreeWalkError,
+        cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
+    ) -> Self {
         if self.force_storage_mode == EvalThunkForceStorageMode::Serial {
             self.force_storage_mode = EvalThunkForceStorageMode::SerialWithParallelPayload;
-            self.parallel_cell = Some(Box::new(TreeWalkParallelThunkCell::new(
+            self.parallel_cell = Some(Box::new(TreeWalkParallelThunkCell::with_cycle_registry(
                 dropped_claim_error,
+                cycle_registry,
             )));
         }
         self
@@ -342,7 +351,7 @@ mod tests {
 
     #[test]
     fn eval_thunk_forced_cached_result_remains_serial_storage() {
-        let thunk = EvalThunk::new(IrId::new(7)).with_parallel_payload_cell(tree_walk_error(99));
+        let thunk = EvalThunk::new(IrId::new(7)).with_parallel_payload_cell(tree_walk_error(99), None);
         let forced = EvalThunk::with_forced_cached_result_from(&thunk, Value::int(42));
 
         assert_eq!(
@@ -366,7 +375,7 @@ mod tests {
     fn eval_thunk_single_entry_storage_skips_parallel_payload_cell() {
         let thunk = EvalThunk::new(IrId::new(7))
             .into_single_entry()
-            .with_parallel_payload_cell(tree_walk_error(99));
+            .with_parallel_payload_cell(tree_walk_error(99), None);
 
         assert_eq!(
             thunk.force_storage_mode(),
@@ -408,7 +417,7 @@ mod tests {
     #[test]
     fn eval_thunk_parallel_payload_cell_preserves_metadata_and_replays_result() {
         let thunk = EvalThunk::with_env(EvalModuleId::ROOT, IrId::new(11), EvalEnv::default())
-            .with_parallel_payload_cell(tree_walk_error(99));
+            .with_parallel_payload_cell(tree_walk_error(99), None);
 
         assert_eq!(
             thunk.force_storage_mode(),

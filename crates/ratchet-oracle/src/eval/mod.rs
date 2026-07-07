@@ -17,6 +17,7 @@ pub mod parallel;
 pub mod parallel_audit;
 pub mod parallel_chase_lev;
 pub mod parallel_failure;
+pub mod parallel_force;
 pub mod parallel_heap;
 pub mod parallel_output;
 pub mod parallel_tree_walk;
@@ -24,6 +25,7 @@ pub mod thunk;
 pub mod thunk_cas;
 pub mod thunk_lowering;
 pub mod thunk_payload;
+pub mod thunk_registry;
 pub mod thunk_wait;
 pub mod tree_walk;
 pub mod whnf_tag;
@@ -91,6 +93,11 @@ pub use parallel_failure::{
     execute_parallel_top_level_fallible_chase_lev_with_worker,
     execute_parallel_top_level_fallible_with_worker,
 };
+pub use parallel_force::{
+    ParallelSharedForceError, ParallelSharedForceWorkerReport, ParallelSharedGraphBody,
+    ParallelSharedGraphForcer, force_shared_parallel_roots, infinite_recursion_error,
+    shared_parallel_thunk_cells,
+};
 pub use parallel_heap::{
     ParallelHashConsCandidate, ParallelHashConsMerge, ParallelHashConsMergeDecision,
     ParallelHashConsMergeError, ParallelHashConsMergeOutcome, ParallelNurseryOwnershipError,
@@ -154,6 +161,7 @@ pub use thunk_payload::{
     TreeWalkParallelThunkForceWorkOutcome, TreeWalkParallelThunkGuard, TreeWalkParallelThunkWait,
     TreeWalkParallelThunkWorkWait,
 };
+pub use thunk_registry::{ParallelForceCycleRegistry, ParallelForceWaitRegistration};
 pub use thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkReadyWorkWaitError,
     ParallelThunkWait, ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWaitGuard,

@@ -66,6 +66,7 @@ use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
 use super::thunk_cas::ParallelThunkWorkerId;
 use super::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
+use super::thunk_registry::ParallelForceCycleRegistry;
 use super::whnf_tag::{WhnfTagFastPath, classify_whnf_tag_fast_path};
 use crate::attrs::{
     AttrEntry, AttrError, AttrPosition, FlatAttrs,
@@ -460,6 +461,7 @@ pub struct TreeWalkOptions {
     gc_stress_policy: GcStressPolicy,
     thunk_resolve_barrier_tier: GenerationalGcTier,
     parallel_thunk_payloads_enabled: bool,
+    parallel_workers: Option<std::num::NonZeroUsize>,
     jit_tier1_publish_enabled: bool,
     parallel_thunk_worker_id: ParallelThunkWorkerId,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
@@ -503,6 +505,7 @@ impl Default for TreeWalkOptions {
             gc_stress_policy: GcStressPolicy::disabled(),
             thunk_resolve_barrier_tier: GenerationalGcTier::OneShotArena,
             parallel_thunk_payloads_enabled: false,
+            parallel_workers: None,
             jit_tier1_publish_enabled: false,
             parallel_thunk_worker_id: ParallelThunkWorkerId::FIRST,
             heap_cheap_memory_advice_min_idle_epochs: None,
@@ -1117,6 +1120,12 @@ pub struct TreeWalk {
     // Held by `Rc` so the force path can clone it out and release the field
     // borrow before handing the engine `&mut self`. See `Tier1Engine`.
     tier1_engine: Option<Rc<dyn Tier1Engine>>,
+    // Shared cross-worker wait registry for parallel thunk forcing. Present
+    // exactly when parallel thunk payloads are enabled; every parallel cell
+    // allocated by this evaluator is bound to it so waiters can detect
+    // cross-worker deadlock cycles before parking. Workers sharing one demand
+    // graph must share one registry (see `set_parallel_force_registry`).
+    parallel_force_registry: Option<Arc<ParallelForceCycleRegistry>>,
     #[cfg(test)]
     tree_walk_list_wrapper_calls: usize,
     #[cfg(test)]

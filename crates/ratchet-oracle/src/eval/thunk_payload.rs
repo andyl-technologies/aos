@@ -11,7 +11,7 @@
 
 use std::{
     convert::Infallible,
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use thiserror::Error;
@@ -23,6 +23,7 @@ use super::parallel::{
     ParallelReadyWorkParkReadinessError, ParallelReadyWorkPoll,
 };
 use super::thunk_cas::{ParallelThunkPublish, ParallelThunkTerminalState, ParallelThunkWorkerId};
+use super::thunk_registry::ParallelForceCycleRegistry;
 use super::thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkReadyWorkWaitError,
     ParallelThunkWait, ParallelThunkWaitCell, ParallelThunkWaitError, ParallelThunkWaitGuard,
@@ -76,8 +77,20 @@ impl<T: Clone, E: Clone> ParallelThunkPayloadCell<T, E> {
     /// `dropped_claim_error` is published as the captured failure when an owner
     /// guard is dropped without explicitly publishing a forced value or error.
     pub fn new(dropped_claim_error: E) -> Self {
+        Self::with_cycle_registry(dropped_claim_error, None)
+    }
+
+    /// Creates a suspended payload cell bound to a shared cycle registry.
+    ///
+    /// Every cell of one shared demand graph must be bound to the same
+    /// registry instance so cross-worker wait cycles are detected before a
+    /// waiter parks. See the `thunk_registry` module docs.
+    pub fn with_cycle_registry(
+        dropped_claim_error: E,
+        cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
+    ) -> Self {
         Self {
-            wait_cell: ParallelThunkWaitCell::new(),
+            wait_cell: ParallelThunkWaitCell::with_cycle_registry(cycle_registry),
             payload: Mutex::new(None),
             dropped_claim_error,
         }
@@ -180,9 +193,10 @@ impl<T: Clone, E: Clone> ParallelThunkPayloadCell<T, E> {
     /// observed without a matching terminal payload.
     pub(crate) fn clone_for_relocation(&self) -> Result<Self, ParallelThunkPayloadError> {
         match self.state()? {
-            ParallelThunkTerminalStatus::Suspended => {
-                Ok(Self::new(self.dropped_claim_error.clone()))
-            }
+            ParallelThunkTerminalStatus::Suspended => Ok(Self::with_cycle_registry(
+                self.dropped_claim_error.clone(),
+                self.wait_cell.cycle_registry().cloned(),
+            )),
             ParallelThunkTerminalStatus::Claimed => Err(
                 ParallelThunkPayloadError::RelocationRequiresIdleOrTerminalPayload {
                     status: ParallelThunkTerminalStatus::Claimed,
@@ -383,7 +397,7 @@ impl<T: Clone, E: Clone> ParallelThunkPayloadCell<T, E> {
 
     fn forced_for_relocation(value: T, dropped_claim_error: E) -> Self {
         Self {
-            wait_cell: ParallelThunkWaitCell::forced_for_relocation(),
+            wait_cell: ParallelThunkWaitCell::forced_for_relocation(None),
             payload: Mutex::new(Some(ParallelThunkTerminalPayload::Forced(value))),
             dropped_claim_error,
         }
@@ -391,7 +405,7 @@ impl<T: Clone, E: Clone> ParallelThunkPayloadCell<T, E> {
 
     fn failed_for_relocation(error: E, dropped_claim_error: E) -> Self {
         Self {
-            wait_cell: ParallelThunkWaitCell::failed_for_relocation(),
+            wait_cell: ParallelThunkWaitCell::failed_for_relocation(None),
             payload: Mutex::new(Some(ParallelThunkTerminalPayload::Failed(error))),
             dropped_claim_error,
         }
@@ -660,8 +674,24 @@ impl TreeWalkParallelThunkCell {
     /// `dropped_claim_error` is stored as the captured evaluator failure when a
     /// claimed thunk guard is dropped without publishing a value or error.
     pub fn new(dropped_claim_error: TreeWalkError) -> Self {
+        Self::with_cycle_registry(dropped_claim_error, None)
+    }
+
+    /// Creates a suspended tree-walk payload cell bound to a cycle registry.
+    ///
+    /// Every parallel cell of one shared demand graph must share the same
+    /// registry instance so a waiter about to park can walk the cross-worker
+    /// owner chain and raise infinite recursion instead of deadlocking. See
+    /// the `thunk_registry` module docs for the protocol.
+    pub fn with_cycle_registry(
+        dropped_claim_error: TreeWalkError,
+        cycle_registry: Option<Arc<ParallelForceCycleRegistry>>,
+    ) -> Self {
         Self {
-            payload_cell: ParallelThunkPayloadCell::new(dropped_claim_error),
+            payload_cell: ParallelThunkPayloadCell::with_cycle_registry(
+                dropped_claim_error,
+                cycle_registry,
+            ),
         }
     }
 
@@ -1068,9 +1098,14 @@ impl TreeWalkParallelThunkCell {
 pub enum TreeWalkParallelThunkForceOutcome {
     /// The thunk has reached a terminal evaluator result.
     Ready(Result<Value, TreeWalkError>),
-    /// The same worker re-entered a thunk it already owns.
+    /// Forcing this thunk closes an ownership cycle back to the caller.
+    ///
+    /// This covers direct same-worker re-entry and, for cells bound to a
+    /// shared [`ParallelForceCycleRegistry`], transitive cross-worker wait
+    /// cycles detected before parking. The evaluator maps both to its serial
+    /// infinite-recursion error.
     SelfCycle {
-        /// The worker that owns the recursive force.
+        /// The worker that owns the claim on the directly awaited thunk.
         owner: ParallelThunkWorkerId,
     },
 }

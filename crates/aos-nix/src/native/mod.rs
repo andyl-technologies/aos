@@ -781,10 +781,15 @@ impl NixNative {
 
     /// Builds a tier-1 JIT engine when the options enable tier-1 publishing.
     ///
-    /// Returns `None` when the flag is off (the plain tree-walk path) or when the
+    /// Returns `None` when the flag is off (the plain tree-walk path), when
+    /// parallel evaluation mode is configured (the engine is worker-affine, so
+    /// `AOS_NIX_JIT` is ignored under `AOS_NIX_PARALLEL`), or when the
     /// runtime-symbol candidate preflight cannot be built, in which case
     /// evaluation transparently falls back to the tree walk.
     fn tier1_engine_for(&self, options: &TreeWalkOptions) -> Option<Rc<dyn Tier1Engine>> {
+        if options.parallel_workers().is_some() {
+            return None;
+        }
         if !options.jit_tier1_publish_enabled() {
             return None;
         }

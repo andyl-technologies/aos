@@ -734,6 +734,7 @@ pub struct NixEvalConfig {
     native_root_cutoff_check: bool,
     native_eval_stats: bool,
     native_jit: bool,
+    native_parallel_workers: Option<std::num::NonZeroUsize>,
     heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
 }
@@ -885,6 +886,23 @@ impl NixEvalConfig {
     /// Enables or disables the native tier-1 JIT engine.
     pub fn set_native_jit(&mut self, native_jit: bool) {
         self.native_jit = native_jit;
+    }
+
+    /// Returns the native parallel evaluation worker count, if enabled.
+    ///
+    /// Off by default and enabled through the `AOS_NIX_PARALLEL=<n>`
+    /// environment variable. When set, native evaluation runs in parallel
+    /// mode: thunks carry parallel claim/park cells bound to a shared
+    /// cross-worker wait registry. The count records the requested fan-out for
+    /// scheduler integration; evaluation results are unchanged. Parallel mode
+    /// ignores `AOS_NIX_JIT` (the tier-1 engine is worker-affine).
+    pub const fn native_parallel_workers(&self) -> Option<std::num::NonZeroUsize> {
+        self.native_parallel_workers
+    }
+
+    /// Enables or disables native parallel evaluation mode.
+    pub fn set_native_parallel_workers(&mut self, workers: Option<std::num::NonZeroUsize>) {
+        self.native_parallel_workers = workers;
     }
 
     /// Returns whether native root-level early cutoff is enabled.
@@ -1279,6 +1297,7 @@ impl NixEvalConfig {
             native_root_cutoff_check: false,
             native_eval_stats: false,
             native_jit: false,
+            native_parallel_workers: None,
             heap_memory_budget_bytes: None,
             trace_verbose: false,
         };
@@ -1312,6 +1331,9 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_JIT") {
             config.set_aos_nix_jit_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_PARALLEL") {
+            config.set_aos_nix_parallel_env_var(&value);
         }
         if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
             config.set_aos_nix_max_rss_env_var(value);
@@ -1351,6 +1373,33 @@ impl NixEvalConfig {
 
     fn set_aos_nix_jit_env_var(&mut self, value: &str) {
         self.set_native_jit(matches!(value.trim(), "1" | "true"));
+    }
+
+    fn set_aos_nix_parallel_env_var(&mut self, value: &str) {
+        let trimmed = value.trim();
+        if matches!(trimmed, "" | "0" | "false" | "off" | "no") {
+            self.set_native_parallel_workers(None);
+            return;
+        }
+        match trimmed.parse::<std::num::NonZeroUsize>() {
+            Ok(workers) => {
+                if self.native_jit() {
+                    tracing::warn!(
+                        workers = workers.get(),
+                        "AOS_NIX_JIT is ignored under AOS_NIX_PARALLEL; the tier-1 engine is worker-affine"
+                    );
+                }
+                self.set_native_parallel_workers(Some(workers));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_PARALLEL value; disabling native parallel evaluation"
+                );
+                self.set_native_parallel_workers(None);
+            }
+        }
     }
 
     fn set_aos_nix_root_cutoff_env_var(&mut self, value: &str) {
@@ -2807,6 +2856,12 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     options.set_trace_verbose(config.trace_verbose());
     options.set_eval_stats_dump(config.native_eval_stats());
     options.set_jit_tier1_publish_enabled(config.native_jit());
+    // Parallel mode overrides the JIT flag: the tier-1 engine is worker-affine
+    // and is never installed when parallel workers are configured.
+    options.set_parallel_workers(config.native_parallel_workers());
+    if config.native_parallel_workers().is_some() {
+        options.set_jit_tier1_publish_enabled(false);
+    }
     Ok(options)
 }
 
@@ -4947,5 +5002,48 @@ mod tests {
         assert!(logged.contains("/aos/default.nix"), "{logged}");
         assert!(logged.contains("pkgs.hello"), "{logged}");
         assert!(logged.contains("drv=/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root.drv"));
+    }
+
+    #[test]
+    fn aos_nix_parallel_env_var_parses_worker_counts() {
+        let mut config = NixEvalConfig::new();
+        assert_eq!(config.native_parallel_workers(), None);
+
+        config.set_aos_nix_parallel_env_var("4");
+        assert_eq!(
+            config.native_parallel_workers().map(|count| count.get()),
+            Some(4)
+        );
+
+        // Falsy and invalid values disable parallel mode.
+        for value in ["0", "off", "false", "no", "", "  ", "not-a-number"] {
+            config.set_aos_nix_parallel_env_var("2");
+            config.set_aos_nix_parallel_env_var(value);
+            assert_eq!(
+                config.native_parallel_workers(),
+                None,
+                "value {value:?} must disable parallel mode"
+            );
+        }
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn parallel_mode_options_disable_tier1_publishing() {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Pure);
+        config.set_native_jit(true);
+        config.set_native_parallel_workers(std::num::NonZeroUsize::new(4));
+
+        let options = tree_walk_options_from_config(&config).expect("options build");
+
+        assert_eq!(
+            options.parallel_workers().map(|count| count.get()),
+            Some(4)
+        );
+        assert!(
+            !options.jit_tier1_publish_enabled(),
+            "AOS_NIX_JIT must be ignored under AOS_NIX_PARALLEL"
+        );
     }
 }

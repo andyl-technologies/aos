@@ -1547,10 +1547,10 @@ impl TreeWalk {
         thunk: EvalThunk,
     ) -> EvalThunk {
         if self.options.parallel_thunk_payloads_enabled() {
-            thunk.with_parallel_payload_cell(TreeWalkError::new(
-                TreeWalkErrorKind::ParallelThunkClaimDropped { id },
-                span,
-            ))
+            thunk.with_parallel_payload_cell(
+                TreeWalkError::new(TreeWalkErrorKind::ParallelThunkClaimDropped { id }, span),
+                self.parallel_force_registry.clone(),
+            )
         } else {
             thunk
         }

@@ -7772,7 +7772,7 @@ fn collector_poll_minor_gc_direct_heap_field_writes_preserve_parallel_payload_on
                 IrId::new(5),
                 argument,
             )
-            .with_parallel_payload_cell(tree_walk_error(99)),
+            .with_parallel_payload_cell(tree_walk_error(99), None),
         )
         .expect("parent apply thunk allocates");
     set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
@@ -8304,7 +8304,7 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_parallel_thunk_paylo
         .alloc_thunk(EvalThunk::new(IrId::new(2)))
         .expect("parallel payload destination thunk allocates");
     let parent = heap
-        .alloc_thunk(EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99)))
+        .alloc_thunk(EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99), None))
         .expect("parent thunk allocates");
     let parent_destination = heap
         .alloc_thunk(EvalThunk::new(IrId::new(4)))
@@ -8374,7 +8374,7 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_parallel_thunk_paylo
         .alloc_thunk(EvalThunk::new(IrId::new(2)))
         .expect("parallel payload destination thunk allocates");
     let parent = heap
-        .alloc_thunk(EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99)))
+        .alloc_thunk(EvalThunk::new(IrId::new(3)).with_parallel_payload_cell(tree_walk_error(99), None))
         .expect("parent thunk allocates");
     set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
     set_heap_generation(&mut heap, parent, HeapGeneration::Old);
@@ -11185,7 +11185,7 @@ fn precise_root_scan_reports_parallel_thunk_payload_value() {
     let thunk = heap
         .alloc_thunk(
             EvalThunk::with_env(EvalModuleId::ROOT, IrId::new(9), env)
-                .with_parallel_payload_cell(tree_walk_error(99)),
+                .with_parallel_payload_cell(tree_walk_error(99), None),
         )
         .expect("thunk allocates");
     let thunk_record = heap.clone_thunk(thunk).expect("thunk handle clones");

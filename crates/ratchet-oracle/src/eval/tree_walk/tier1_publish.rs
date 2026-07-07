@@ -193,7 +193,19 @@ impl TreeWalk {
     /// has published, and the force path always deoptimizes to the tree-walk
     /// body when native dispatch traps or errors. Passing a fresh engine
     /// replaces any previously installed one.
+    ///
+    /// Parallel evaluation mode refuses the engine: tier-1 state is `Rc`-held
+    /// and worker-affine, so when [`TreeWalkOptions::parallel_workers`] is
+    /// configured the install is ignored and forcing stays on the tree-walk
+    /// body path (`AOS_NIX_JIT` is ignored under `AOS_NIX_PARALLEL`).
     pub fn set_tier1_engine(&mut self, engine: Rc<dyn Tier1Engine>) {
+        if self.options.parallel_workers().is_some() {
+            debug_assert!(
+                self.tier1_engine.is_none(),
+                "parallel evaluation mode must not carry a tier-1 engine"
+            );
+            return;
+        }
         self.tier1_engine = Some(engine);
     }
 

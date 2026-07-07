@@ -17,6 +17,7 @@ use super::env::{EvalEnv, EvalEnvError, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceError, ThunkCell};
 use super::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
+use super::thunk_registry::ParallelForceCycleRegistry;
 use super::tree_walk::TreeWalkError;
 use crate::attrs::{AttrError, FlatAttrs, repr::AttrSetReprKind, shape::ShapeId};
 use crate::cache::{HotXxh3Hash, ValueHash};
