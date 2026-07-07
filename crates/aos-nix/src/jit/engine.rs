@@ -31,7 +31,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use ratchet_core::{IrId, syntax::Span};
+use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
 use ratchet_jit::{
     JitCraneliftRegisteredArtifactFinalizationPreflight, JitRuntimeSymbolAddressCandidate,
     jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
@@ -72,6 +72,13 @@ struct EngineState {
     counts: HashMap<u64, u32>,
     /// Def-sites whose bodies the lowerer rejected; never retried.
     blacklist: HashSet<u64>,
+    /// Count of newly blacklisted def-sites keyed by their body-kind signature.
+    ///
+    /// This is a diagnostic breakdown of the blacklist by IR shape (e.g.
+    /// `"AttrSet"`, `"BinOp:Concat"`, `"Apply"`) so a run can report which shape
+    /// families dominate the unsupported def-sites and thus where extending the
+    /// tier-1 lowerer would convert the most blacklists into dispatch.
+    blacklist_kinds: HashMap<String, u32>,
 }
 
 impl std::fmt::Debug for NixJitTier1Engine {
@@ -171,7 +178,10 @@ impl NixJitTier1Engine {
                 blacklisted: false,
             },
             PromotionResult::Unsupported => {
-                self.state.borrow_mut().blacklist.insert(key);
+                let kind = body_kind_signature(eval, body);
+                let mut state = self.state.borrow_mut();
+                state.blacklist.insert(key);
+                *state.blacklist_kinds.entry(kind).or_insert(0) += 1;
                 PromotionOutcome {
                     promoted: false,
                     blacklisted: true,
@@ -213,6 +223,74 @@ impl NixJitTier1Engine {
         } else {
             PromotionResult::Failed
         }
+    }
+
+    /// Returns the blacklist broken down by body-kind signature, most frequent first.
+    ///
+    /// Each entry pairs a body-kind signature (e.g. `"AttrSet"`, `"BinOp:Concat"`)
+    /// with the number of distinct def-sites of that shape the lowerer rejected.
+    /// Ties break by signature so the ordering is deterministic. This is a
+    /// diagnostic view of where the unsupported tier-1 mass lives.
+    pub fn blacklist_histogram(&self) -> Vec<(String, u32)> {
+        let mut entries: Vec<(String, u32)> = self
+            .state
+            .borrow()
+            .blacklist_kinds
+            .iter()
+            .map(|(kind, count)| (kind.clone(), *count))
+            .collect();
+        entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        entries
+    }
+}
+
+impl Drop for NixJitTier1Engine {
+    /// Dumps the blacklist-by-kind histogram to stderr when stats dumping is on.
+    ///
+    /// Gated on `AOS_NIX_EVAL_STATS=1` (read directly here because the engine is
+    /// not handed the tree-walk options), this emits a single JSON object beside
+    /// the evaluator's [`maybe_dump_eval_stats`](crate::native) output so a run
+    /// can be told what the blacklisted def-sites are made of.
+    fn drop(&mut self) {
+        if std::env::var("AOS_NIX_EVAL_STATS").as_deref() != Ok("1") {
+            return;
+        }
+        let histogram = self.blacklist_histogram();
+        if histogram.is_empty() {
+            return;
+        }
+        let body = histogram
+            .iter()
+            .map(|(kind, count)| format!("\"{kind}\":{count}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        eprintln!("{{\"aos_nix_tier1_blacklist_histogram\":{{{body}}}}}");
+    }
+}
+
+/// Returns a diagnostic body-kind signature for a blacklisted def-site body.
+///
+/// The tier-1 lowerer unwraps a single [`IrKind::ThunkAlloc`] before matching on
+/// the body shape, so this reports the inner body kind. A binary operator is
+/// further qualified by its operator (e.g. `"BinOp:Concat"`), since the lowerer
+/// routes operators to different shapes. Absent IR resolves to `"unknown"`.
+fn body_kind_signature(eval: &TreeWalk, body: EvalNodeRef) -> String {
+    let Some(ir) = eval.tier1_module_ir(body.module()) else {
+        return "unknown".to_owned();
+    };
+    let Some(node) = ir.arena.node(body.id()).copied() else {
+        return "unknown".to_owned();
+    };
+    let (kind, data) = match (node.kind, node.data) {
+        (IrKind::ThunkAlloc, IrData::Node(inner)) => match ir.arena.node(inner).copied() {
+            Some(inner_node) => (inner_node.kind, inner_node.data),
+            None => (node.kind, node.data),
+        },
+        _ => (node.kind, node.data),
+    };
+    match (kind, data) {
+        (IrKind::BinOp, IrData::Binary { op, .. }) => format!("BinOp:{op:?}"),
+        _ => format!("{kind:?}"),
     }
 }
 
@@ -365,6 +443,37 @@ mod tests {
         let value = eval.eval_root().expect("jit evaluation succeeds");
         let stats = eval.stats();
         (value, stats)
+    }
+
+    /// Evaluates `source` at threshold 1 and returns the engine's blacklist histogram.
+    fn blacklist_histogram_for(source: &str) -> Vec<(String, u32)> {
+        let ir = lower(source);
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        let engine = Rc::new(NixJitTier1Engine::with_threshold(1).expect("engine builds"));
+        eval.set_tier1_engine(engine.clone());
+        eval.eval_root().expect("jit evaluation succeeds");
+        engine.blacklist_histogram()
+    }
+
+    /// A run that forces unsupported shapes records them in the blacklist histogram.
+    #[test]
+    fn blacklist_histogram_records_unsupported_body_kinds() {
+        // The `acc ++ [ x ]` accumulator and the `[ x ]` list construction are
+        // shapes the tier-1 lowerer does not support, so forcing them blacklists
+        // those def-sites and records their kinds.
+        let histogram = blacklist_histogram_for(
+            "builtins.foldl' (acc: x: acc ++ [ x ]) [ ] (builtins.genList (i: i) 8)",
+        );
+
+        assert!(
+            !histogram.is_empty(),
+            "expected blacklisted shapes to be recorded, got {histogram:?}"
+        );
+        // Counts are positive and the histogram is sorted most-frequent first.
+        assert!(histogram.iter().all(|(_, count)| *count >= 1));
+        assert!(histogram.windows(2).all(|pair| pair[0].1 >= pair[1].1));
     }
 
     /// The engine never changes a scalar result, at any promotion threshold.
