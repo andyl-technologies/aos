@@ -672,9 +672,9 @@ impl TreeWalk {
         self.fetch_tarball_store_path_matches_digest(id, span, store_path, expected_digest)
     }
 
-    pub(super) fn can_trust_existing_fetch_tarball_store_path(&self, store_path: &[u8]) -> bool {
+    pub(super) fn can_trust_existing_fetch_tarball_store_path(&mut self, store_path: &[u8]) -> bool {
         self.should_query_default_nix_store_for_fetch_tarball_path(store_path)
-            && Self::nix_store_reports_valid_path(store_path)
+            && self.nix_store_reports_valid_path(store_path)
     }
 
     pub(super) fn should_query_default_nix_store_for_fetch_tarball_path(
@@ -685,7 +685,24 @@ impl TreeWalk {
             && is_valid_store_path(store_path, DEFAULT_STORE_DIR)
     }
 
-    pub(super) fn nix_store_reports_valid_path(store_path: &[u8]) -> bool {
+    /// Reports whether the default Nix store considers `store_path` valid.
+    ///
+    /// Consults the in-process [`StoreValidityChecker`] (a read-only SQLite read
+    /// of the store path database, memoized per run). When the database cannot be
+    /// read the checker falls back to [`Self::nix_store_subprocess_reports_valid_path`],
+    /// preserving the historical `nix-store --check-validity` behavior.
+    pub(super) fn nix_store_reports_valid_path(&mut self, store_path: &[u8]) -> bool {
+        // Split the borrow: the checker needs `&mut`, and the fallback is a free
+        // function so it captures nothing from `self`.
+        let checker = &mut self.store_validity_checker;
+        checker.is_valid(store_path, Self::nix_store_subprocess_reports_valid_path)
+    }
+
+    /// Reports store path validity by spawning `nix-store --check-validity`.
+    ///
+    /// This is the fallback used when the in-process path database read is
+    /// unavailable; it reproduces the evaluator's original behavior exactly.
+    fn nix_store_subprocess_reports_valid_path(store_path: &[u8]) -> bool {
         let Ok(path) = std::str::from_utf8(store_path) else {
             return false;
         };

@@ -1050,6 +1050,11 @@ pub struct TreeWalk {
     import_parse_cache_hits: usize,
     import_parse_cache_misses: usize,
     text_store: BTreeMap<Vec<u8>, TextStoreEntry>,
+    // In-process replacement for `nix-store --check-validity` subprocess spawns
+    // during forced fetches: a lazily-opened read-only SQLite reader of the store
+    // path database plus a per-run memo. Falls back to the subprocess when the
+    // database cannot be read. See `store_validity`.
+    store_validity_checker: StoreValidityChecker,
     ifd_realizer: Option<IfdRealizer>,
     call_depth: usize,
     order_sensitive_binding_depth: usize,
@@ -1314,6 +1319,8 @@ mod safepoint_roots;
 mod select_cache_hash;
 use select_cache_hash::SelectCacheMap;
 mod serialize_xml;
+mod store_validity;
+use store_validity::StoreValidityChecker;
 
 pub use eval_impure_inputs::revalidate_cacheable_input_trace;
 pub use safepoint_roots::{

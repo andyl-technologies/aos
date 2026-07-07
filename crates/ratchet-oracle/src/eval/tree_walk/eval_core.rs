@@ -325,6 +325,7 @@ impl TreeWalk {
         // results.
         let force_cache_active = options.persist_cache_root().is_some()
             || eval_cache.lock().is_ok_and(|runtime| runtime.is_enabled());
+        let store_validity_checker = StoreValidityChecker::for_store_dir(options.store_dir());
         Self {
             modules: vec![TreeWalkModule::new(
                 ir.clone(),
@@ -368,6 +369,7 @@ impl TreeWalk {
             import_parse_cache_hits: 0,
             import_parse_cache_misses: 0,
             text_store: BTreeMap::new(),
+            store_validity_checker,
             ifd_realizer: None,
             call_depth: 0,
             order_sensitive_binding_depth: 0,

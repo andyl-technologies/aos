@@ -267,7 +267,7 @@ fn fetch_tarball_primop_sniffs_extensionless_archives() {
 
 #[test]
 fn fetch_tarball_reuse_trusts_only_default_nix_store_paths() {
-    let default_eval = TreeWalk::new(&lower("null"));
+    let mut default_eval = TreeWalk::new(&lower("null"));
     assert!(
         default_eval.should_query_default_nix_store_for_fetch_tarball_path(
             b"/nix/store/00000000000000000000000000000000-source"
