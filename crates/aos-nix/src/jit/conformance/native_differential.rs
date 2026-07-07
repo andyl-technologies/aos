@@ -26,12 +26,11 @@
 
 use ratchet_core::{
     EffectClass, Ir, IrArena, IrData, IrId, IrKind, IrNode,
-    syntax::{BinOpKind, Span, Symbol},
+    syntax::{Span, Symbol},
 };
 use ratchet_jit::{
     JitCraneliftNativeCallError, JitLowerError, JitRuntimeSymbolAddressCandidate,
     lower_forced_env_get_ir_thunk_body_artifact, lower_forced_upval_get_ir_thunk_body_artifact,
-    lower_tier1_ir_thunk_body_artifact,
 };
 use ratchet_oracle::eval::tree_walk::TreeWalkError;
 use ratchet_oracle::{
@@ -45,7 +44,7 @@ use ratchet_value::value::Value;
 use thiserror::Error;
 
 use crate::jit::{
-    NixJitRuntimeSymbolAddressCandidateError, nix_jit_deopt_address_candidate,
+    NixJitRuntimeSymbolAddressCandidateError,
     nix_jit_runtime_symbol_address_candidate_preflight, nix_jit_upval_get_address_candidate,
 };
 
@@ -525,6 +524,11 @@ pub(super) fn lower_source(source: &str) -> Result<Ir, NixJitForcedEnvSlotNative
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ratchet_core::syntax::BinOpKind;
+    use ratchet_jit::lower_tier1_ir_thunk_body_artifact;
+
+    use crate::jit::nix_jit_deopt_address_candidate;
 
     #[test]
     fn forced_env_slot_native_matches_tree_walk_scalar() {
