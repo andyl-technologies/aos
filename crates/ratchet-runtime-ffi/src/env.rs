@@ -18,11 +18,16 @@ use ratchet_oracle::{
     value::Value,
 };
 
+use crate::trap::{RuntimeTrap, record_runtime_trap, runtime_trap_sentinel_value};
+
 /// Native C ABI function pointer shape for `aos_env_get`.
 ///
-/// The function returns a by-value [`Value`] and transfers no error state. It
-/// aborts instead of unwinding if the success-path safety contract is violated;
-/// final evaluator trap/error transfer remains future work.
+/// The function returns a by-value [`Value`] and never unwinds across the ABI
+/// boundary. A frame-access evaluator error (an out-of-bounds slot or borrow
+/// conflict) is transferred through the active [`crate::trap::RuntimeTrapScope`]
+/// and the wrapper returns [`runtime_trap_sentinel_value`]; outside a scope that
+/// error aborts. A null environment pointer always aborts as a safety-contract
+/// violation.
 ///
 /// # Safety
 ///
@@ -30,16 +35,21 @@ use ratchet_oracle::{
 /// slot-bounds, and host-ABI obligations documented on [`aos_env_get`].
 pub type RuntimeEnvGetNativeFn = unsafe extern "C" fn(*mut c_void, u32) -> Value;
 
-const ENV_ACCESS_REMAINING_EXPORT_BLOCKERS: &[RuntimeEnvAccessNativeExportBlocker] =
-    &[RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented];
+// Trap transfer is implemented for the environment-access wrapper, so no
+// wrapper-local blocker remains. The oracle native-export gate still tracks
+// `MissingFinalExportedWrapper`; that is cleared only when `aos-nix` formally
+// admits the export, not here.
+const ENV_ACCESS_REMAINING_EXPORT_BLOCKERS: &[RuntimeEnvAccessNativeExportBlocker] = &[];
 
 /// Reads one captured environment slot through an unmangled frozen native ABI body.
 ///
 /// This wrapper is the success-path C ABI body for `aos_env_get`. It decodes the
 /// opaque environment pointer as an [`EvalFrame`], reads `slot` through the same
 /// safe frame API used by the tree-walk oracle, and returns the copied [`Value`]
-/// by value. It deliberately does not implement evaluator trap/error transfer:
-/// the process aborts if the pointer is null or the slot read fails.
+/// by value. A frame-access error is recorded through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// environment pointer always aborts as a safety-contract violation.
 ///
 /// # Safety
 ///
@@ -55,7 +65,10 @@ pub unsafe extern "C" fn aos_env_get(env: *mut c_void, slot: u32) -> Value {
     unsafe {
         with_native_env_frame(env, |frame| match frame.get(slot) {
             Ok(value) => value,
-            Err(_) => process::abort(),
+            Err(error) => {
+                record_runtime_trap(RuntimeTrap::Env(error));
+                runtime_trap_sentinel_value()
+            }
         })
     }
 }
@@ -176,15 +189,12 @@ mod tests {
             aos_env_get as RuntimeEnvGetNativeFn as *mut c_void
         );
         assert!(binding.address().is_non_null());
-        assert_eq!(
-            binding.remaining_export_blockers(),
-            [RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented].as_slice()
-        );
-        assert!(!binding.is_export_ready());
+        assert!(binding.remaining_export_blockers().is_empty());
+        assert!(binding.is_export_ready());
     }
 
     #[test]
-    fn env_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+    fn env_native_wrapper_blockers_are_clear_while_oracle_gate_remains() {
         let binding = runtime_env_access_native_wrapper_bindings()
             .into_iter()
             .next()
@@ -195,8 +205,12 @@ mod tests {
             RuntimeEnvAccessNativeExportBlocker::TrapTransferUnimplemented,
         ];
 
+        // Trap transfer is implemented, so the wrapper carries no remaining
+        // wrapper-local blocker, while the oracle native-export gate is
+        // unchanged and remains authoritative for final admission.
         assert_eq!(oracle_blockers, expected_oracle_blockers.as_slice());
-        assert_eq!(binding.remaining_export_blockers(), &oracle_blockers[1..]);
+        assert!(binding.remaining_export_blockers().is_empty());
+        assert!(binding.is_export_ready());
     }
 
     #[test]

@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ratchet-jit = { workspace = true }
 ratchet-oracle = { workspace = true }
 
 [dev-dependencies]
 aos-nix-dialect = { workspace = true }
 libc = { workspace = true }
-ratchet-jit = { workspace = true }

@@ -1,13 +1,18 @@
 //! Forcing C ABI wrappers.
 //!
 //! Native tier-1 code imports forcing helpers with frozen `(rt, Value)`
-//! signatures. This module supplies the first success-path wrappers for that
-//! ABI: `aos_blackhole_check`, `aos_force`, and `aos_force_deep` decode scoped
+//! signatures. This module supplies the wrappers for that ABI:
+//! `aos_blackhole_check`, `aos_force`, and `aos_force_deep` decode scoped
 //! [`RuntimeForceContext`] pointers before dispatching through the safe
-//! tree-walk forcing helpers. Malformed payloads and evaluator errors abort
-//! until native trap transfer exists. Callers must still pass a Rust-valid
-//! [`Value`]; an invalid tag discriminant is undefined behavior before these
-//! wrappers can inspect it.
+//! tree-walk forcing helpers. An evaluator error transfers back to the caller
+//! through [`crate::trap::RuntimeTrapScope`]: the wrapper records the error and
+//! returns [`runtime_trap_sentinel_value`], so a caller that installed a scope
+//! can observe the failing force instead of the process aborting. Outside a
+//! scope, [`record_runtime_trap`] falls back to aborting. Representation-level
+//! faults still abort unconditionally: a null runtime pointer or a malformed
+//! payload is a safety-contract violation, not a recoverable evaluator error.
+//! Callers must still pass a Rust-valid [`Value`]; an invalid tag discriminant
+//! is undefined behavior before these wrappers can inspect it.
 
 use std::{ffi::c_void, process};
 
@@ -23,13 +28,14 @@ use ratchet_oracle::{
 };
 
 use crate::context::{RuntimeJitContext, with_native_runtime_context};
+use crate::trap::{RuntimeTrap, record_runtime_trap, runtime_trap_sentinel_value};
 
 /// Native C ABI function pointer shape for `aos_blackhole_check`.
 ///
-/// The function transfers no error state. It aborts instead of unwinding if a
-/// valid [`Value`] carries a malformed payload or if the safe tree-walk
-/// blackhole helper reports an error. Final evaluator trap/error transfer
-/// remains future work.
+/// The function never unwinds across the ABI boundary. A blackhole re-entry
+/// error is transferred through the active [`crate::trap::RuntimeTrapScope`]
+/// when one is installed, and otherwise aborts. A malformed payload or null
+/// runtime pointer always aborts as a safety-contract violation.
 ///
 /// # Safety
 ///
@@ -41,11 +47,12 @@ pub type RuntimeBlackholeCheckNativeFn = unsafe extern "C" fn(*mut c_void, Value
 
 /// Native C ABI function pointer shape for value-returning forcing helpers.
 ///
-/// The function returns a by-value [`Value`] and transfers no error state. It
-/// aborts instead of unwinding if a valid [`Value`] carries a malformed payload
-/// or if the wrapper being called reaches a forcing/deep-force path that still
-/// lacks runtime support. Final evaluator trap/error transfer remains future
-/// work.
+/// The function returns a by-value [`Value`] and never unwinds across the ABI
+/// boundary. A forcing evaluator error is transferred through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope the error aborts. A
+/// malformed payload or null runtime pointer always aborts as a safety-contract
+/// violation.
 ///
 /// # Safety
 ///
@@ -57,14 +64,15 @@ pub type RuntimeBlackholeCheckNativeFn = unsafe extern "C" fn(*mut c_void, Value
 /// [`RuntimeForceContext`] runtime pointer.
 pub type RuntimeForceNativeFn = unsafe extern "C" fn(*mut c_void, Value) -> Value;
 
-const BLACKHOLE_CHECK_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] =
-    &[RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented];
+// Trap transfer is implemented for the forcing wrappers, so no wrapper-local
+// blocker remains. The oracle native-export gate still tracks
+// `MissingFinalExportedWrapper` and the other final-admission blockers; those
+// are cleared only when `aos-nix` formally admits the export, not here.
+const BLACKHOLE_CHECK_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[];
 
-const FORCE_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] =
-    &[RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented];
+const FORCE_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[];
 
-const FORCE_DEEP_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] =
-    &[RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented];
+const FORCE_DEEP_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker] = &[];
 
 /// Checks a value for blackhole re-entry through an unmangled frozen native ABI body.
 ///
@@ -72,10 +80,11 @@ const FORCE_DEEP_REMAINING_EXPORT_BLOCKERS: &[RuntimeForcingNativeExportBlocker]
 /// accepts the frozen runtime-context pointer plus a by-value [`Value`],
 /// validates the representation-level payload, decodes `rt` as a
 /// [`RuntimeForceContext`], checks thunk blackhole state through the safe
-/// tree-walk helper, and returns when no recursive re-entry was detected. It
-/// deliberately does not implement evaluator trap/error transfer: the process
-/// aborts if the pointer is null, the value payload is malformed, or the safe
-/// helper reports an error.
+/// tree-walk helper, and returns when no recursive re-entry was detected. A
+/// blackhole re-entry error is recorded through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns; outside a scope
+/// that error aborts. A null pointer or malformed value payload always aborts
+/// as a safety-contract violation.
 ///
 /// # Safety
 ///
@@ -103,8 +112,8 @@ pub unsafe extern "C" fn aos_blackhole_check(rt: *mut c_void, value: Value) {
 }
 
 fn aos_blackhole_check_success_path(eval: &mut TreeWalk, id: IrId, span: Span, value: Value) {
-    if rust_callable_aos_blackhole_check(eval, id, span, value).is_err() {
-        process::abort()
+    if let Err(error) = rust_callable_aos_blackhole_check(eval, id, span, value) {
+        record_runtime_trap(RuntimeTrap::Force(error));
     }
 }
 
@@ -114,9 +123,11 @@ fn aos_blackhole_check_success_path(eval: &mut TreeWalk, id: IrId, span: Span, v
 /// frozen runtime-context pointer plus a by-value [`Value`], validates the
 /// representation-level payload, decodes `rt` as a [`RuntimeForceContext`],
 /// forces thunks through the safe tree-walk force helper, and returns weak head
-/// normal form. It deliberately does not implement evaluator trap/error
-/// transfer: the process aborts if the pointer is null, the value payload is
-/// malformed, or the safe helper reports an error.
+/// normal form. A forcing evaluator error is recorded through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// pointer or malformed value payload always aborts as a safety-contract
+/// violation.
 ///
 /// # Safety
 ///
@@ -146,7 +157,10 @@ pub unsafe extern "C" fn aos_force(rt: *mut c_void, value: Value) -> Value {
 fn aos_force_success_path(eval: &mut TreeWalk, id: IrId, span: Span, value: Value) -> Value {
     match rust_callable_aos_force(eval, id, span, value) {
         Ok(value) => value,
-        Err(_) => process::abort(),
+        Err(error) => {
+            record_runtime_trap(RuntimeTrap::Force(error));
+            runtime_trap_sentinel_value()
+        }
     }
 }
 
@@ -157,9 +171,11 @@ fn aos_force_success_path(eval: &mut TreeWalk, id: IrId, span: Span, value: Valu
 /// representation-level payload, decodes `rt` as a [`RuntimeForceContext`],
 /// recursively forces list elements and attrset values through the safe
 /// tree-walk deep-force helper, and returns the original container or leaf
-/// [`Value`]. It deliberately does not implement evaluator trap/error transfer:
-/// the process aborts if the pointer is null, the value payload is malformed,
-/// or the safe helper reports an error.
+/// [`Value`]. A deep-force evaluator error is recorded through the active
+/// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
+/// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
+/// pointer or malformed value payload always aborts as a safety-contract
+/// violation.
 ///
 /// # Safety
 ///
@@ -189,7 +205,10 @@ pub unsafe extern "C" fn aos_force_deep(rt: *mut c_void, value: Value) -> Value 
 fn aos_force_deep_success_path(eval: &mut TreeWalk, id: IrId, span: Span, value: Value) -> Value {
     match rust_callable_aos_force_deep(eval, id, span, value) {
         Ok(value) => value,
-        Err(_) => process::abort(),
+        Err(error) => {
+            record_runtime_trap(RuntimeTrap::Force(error));
+            runtime_trap_sentinel_value()
+        }
     }
 }
 
@@ -378,11 +397,8 @@ mod tests {
             aos_blackhole_check as RuntimeBlackholeCheckNativeFn as *mut c_void
         );
         assert!(blackhole.address().is_non_null());
-        assert_eq!(
-            blackhole.remaining_export_blockers(),
-            [RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented].as_slice()
-        );
-        assert!(!blackhole.is_export_ready());
+        assert!(blackhole.remaining_export_blockers().is_empty());
+        assert!(blackhole.is_export_ready());
 
         let force = bindings[1];
         assert_eq!(force.entrypoint(), RuntimeForcingEntryPoint::AosForce);
@@ -402,11 +418,8 @@ mod tests {
             aos_force as RuntimeForceNativeFn as *mut c_void
         );
         assert!(force.address().is_non_null());
-        assert_eq!(
-            force.remaining_export_blockers(),
-            [RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented].as_slice()
-        );
-        assert!(!force.is_export_ready());
+        assert!(force.remaining_export_blockers().is_empty());
+        assert!(force.is_export_ready());
 
         let force_deep = bindings[2];
         assert_eq!(
@@ -429,44 +442,40 @@ mod tests {
             aos_force_deep as RuntimeForceNativeFn as *mut c_void
         );
         assert!(force_deep.address().is_non_null());
-        assert_eq!(
-            force_deep.remaining_export_blockers(),
-            [RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented].as_slice()
-        );
-        assert!(!force_deep.is_export_ready());
+        assert!(force_deep.remaining_export_blockers().is_empty());
+        assert!(force_deep.is_export_ready());
     }
 
     #[test]
-    fn force_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
+    fn force_native_wrapper_blockers_are_clear_while_oracle_gate_remains() {
         for binding in runtime_forcing_native_wrapper_bindings() {
             let oracle_blockers = binding.entrypoint().native_export_blockers();
-            if matches!(
-                binding.entrypoint(),
-                RuntimeForcingEntryPoint::AosBlackholeCheck
-                    | RuntimeForcingEntryPoint::AosForce
-                    | RuntimeForcingEntryPoint::AosForceDeep
-            ) {
-                assert_eq!(
-                    binding.remaining_export_blockers(),
-                    [RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented].as_slice(),
-                    "{} runtime-FFI wrapper has one remaining blocker",
-                    binding.symbol_name()
-                );
-                for blocker in binding.remaining_export_blockers() {
-                    assert!(
-                        oracle_blockers.contains(blocker),
-                        "{} runtime-FFI blocker {blocker:?} must remain tracked by oracle",
-                        binding.symbol_name()
-                    );
-                }
-            } else {
-                assert_eq!(
-                    binding.remaining_export_blockers(),
-                    &oracle_blockers[1..],
-                    "{} runtime-FFI blockers extend oracle gate after final admission",
-                    binding.symbol_name()
-                );
-            }
+
+            // Trap transfer is implemented, so the wrapper carries no remaining
+            // wrapper-local blocker and reports as export-ready.
+            assert!(
+                binding.remaining_export_blockers().is_empty(),
+                "{} runtime-FFI wrapper has no remaining wrapper-local blocker",
+                binding.symbol_name()
+            );
+            assert!(binding.is_export_ready());
+
+            // The oracle native-export gate is authoritative for final
+            // admission and is unchanged by wrapper trap transfer: it still
+            // tracks the missing final exported wrapper and the trap-transfer
+            // obligation until `aos-nix` formally admits the export.
+            assert!(
+                oracle_blockers
+                    .contains(&RuntimeForcingNativeExportBlocker::MissingFinalExportedWrapper),
+                "{} oracle export gate still tracks final admission",
+                binding.symbol_name()
+            );
+            assert!(
+                oracle_blockers
+                    .contains(&RuntimeForcingNativeExportBlocker::TrapTransferUnimplemented),
+                "{} oracle export gate is unchanged by wrapper trap transfer",
+                binding.symbol_name()
+            );
         }
     }
 

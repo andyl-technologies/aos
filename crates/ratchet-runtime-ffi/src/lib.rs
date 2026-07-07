@@ -28,14 +28,23 @@
 //!   `(rt, thunk, Value)` write-barrier ABI
 //! ratchet_runtime_ffi::wrappers
 //!   unified process-local native-wrapper manifest in runtime-symbol order
+//! ratchet_runtime_ffi::trap
+//!   scoped thread-local trap sink that transfers evaluator errors out of
+//!   forcing and environment-access wrappers instead of aborting
+//! ratchet_runtime_ffi::native_call
+//!   safe orchestration of a registered native thunk call: pins the runtime
+//!   context, installs a trap scope, and wraps the one unsafe jit call boundary
 //! ratchet_runtime_ffi::safety
 //!   unsafe-boundary manifest and source-token allowlist
 //! ```
 //!
-//! The wrappers here are not yet sufficient for final JIT registration. They
-//! cover success-path ABI shape and process-local address metadata for focused
-//! tests, while evaluator trap/error transfer remains an explicit blocker before
-//! `aos-nix` can treat these symbols as complete native exports.
+//! The forcing and environment-access wrappers now transfer evaluator errors
+//! through [`trap::RuntimeTrapScope`] instead of aborting, so a caller that
+//! installs a scope can observe a failing evaluation. The allocation,
+//! call-control, attrset-access, and write-barrier wrappers still cover only
+//! success-path ABI shape and process-local address metadata; their evaluator
+//! trap/error transfer remains an explicit blocker before `aos-nix` can treat
+//! those symbols as complete native exports.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -46,10 +55,14 @@ pub mod barrier;
 pub mod context;
 pub mod env;
 pub mod force;
+pub mod native_call;
 pub mod safety;
+pub mod trap;
 pub mod wrappers;
 
+pub use native_call::{NativeThunkCallOutcome, run_registered_native_thunk_call};
 pub use safety::{
     RUNTIME_FFI_SAFETY_COMMENT_PREFIX, RUNTIME_FFI_UNSAFE_CRATE_LINT,
     RuntimeFfiInnateUnsafeOperation, RuntimeFfiUnsafeDiscipline, runtime_ffi_unsafe_discipline,
 };
+pub use trap::{RuntimeTrap, RuntimeTrapScope, runtime_trap_sentinel_value};

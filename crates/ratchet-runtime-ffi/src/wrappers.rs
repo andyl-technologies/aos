@@ -336,9 +336,18 @@ mod tests {
         let core_helper_roles = core_helper_roles_by_symbol();
 
         assert!(bindings.iter().copied().all(|binding| {
+            // The forcing and environment-access families implement trap
+            // transfer, so their wrapper-local blocker lists are empty and they
+            // report as export-ready. The remaining families still carry
+            // wrapper-local blockers. No family carries the final-export gate,
+            // which stays owned by the oracle native-export preflight.
+            let trap_transfer_done = matches!(
+                binding.role(),
+                RuntimeHelperRole::ForcingControl | RuntimeHelperRole::EnvironmentAccess
+            );
             binding.address().is_non_null()
-                && !binding.is_export_ready()
-                && !binding.remaining_export_blockers().is_empty()
+                && binding.is_export_ready() == trap_transfer_done
+                && binding.remaining_export_blockers().is_empty() == trap_transfer_done
                 && !binding
                     .remaining_export_blockers()
                     .contains_final_exported_wrapper_blocker()
@@ -363,7 +372,7 @@ mod tests {
         assert!(bindings.iter().copied().any(|binding| {
             binding.symbol_name() == "aos_env_get"
                 && binding.role() == RuntimeHelperRole::EnvironmentAccess
-                && binding.remaining_export_blockers().len() == 1
+                && binding.remaining_export_blockers().is_empty()
         }));
     }
 

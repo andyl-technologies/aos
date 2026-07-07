@@ -497,6 +497,7 @@ mod tests {
         concat!("uns", "afe { aos_blackhole_check(rt, bool_value) };");
     const BLACKHOLE_BLACKHOLED_ABORT_TEST_CALL_LINE: &str =
         concat!("uns", "afe { aos_blackhole_check(rt, blackholed) };");
+    const NATIVE_CALL_JIT_BOUNDARY_LINE: &str = concat!("let call = ", "uns", "afe {");
 
     #[test]
     fn discipline_manifest_names_required_controls() {
@@ -573,6 +574,7 @@ mod tests {
                             token,
                         )
                         || is_allowed_force_wrapper_token(&source_root, &source_path, line, token)
+                        || is_allowed_native_call_token(&source_root, &source_path, line, token)
                     {
                         continue;
                     }
@@ -805,6 +807,28 @@ mod tests {
                 || trimmed == FORCE_DEEP_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
             trimmed == FORCE_EXPORT_ATTR_LINE
+        } else {
+            false
+        }
+    }
+
+    fn is_allowed_native_call_token(
+        source_root: &Path,
+        source_path: &Path,
+        line: &str,
+        token: &str,
+    ) -> bool {
+        if !is_unsafe_boundary_token(token) {
+            return false;
+        }
+
+        if source_path != source_root.join("native_call.rs") {
+            return false;
+        }
+
+        let trimmed = line.trim_start();
+        if token == UNSAFE_TOKEN {
+            trimmed == NATIVE_CALL_JIT_BOUNDARY_LINE
         } else {
             false
         }
@@ -1148,7 +1172,14 @@ mod unchecked_cfg;
             .expect("write-barrier FFI source file is readable");
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
+        let native_call = fs::read_to_string(source_root.join("native_call.rs"))
+            .expect("native-call FFI source file is readable");
 
+        assert_eq!(
+            trimmed_line_occurrences(&native_call, NATIVE_CALL_JIT_BOUNDARY_LINE),
+            1,
+            "registered native thunk-call jit boundary must stay singly reviewed"
+        );
         assert_eq!(
             trimmed_line_occurrences(&env, ENV_GET_FN_TYPE_LINE),
             1,
@@ -1666,6 +1697,8 @@ mod unchecked_cfg;
             .expect("write-barrier FFI source file is readable");
         let force =
             fs::read_to_string(source_root.join("force.rs")).expect("force FFI source is readable");
+        let native_call = fs::read_to_string(source_root.join("native_call.rs"))
+            .expect("native-call FFI source file is readable");
         let apply_lines = apply.lines().collect::<Vec<_>>();
         let alloc_lines = alloc.lines().collect::<Vec<_>>();
         let attr_lines = attr.lines().collect::<Vec<_>>();
@@ -1673,7 +1706,13 @@ mod unchecked_cfg;
         let context_lines = context.lines().collect::<Vec<_>>();
         let barrier_lines = barrier.lines().collect::<Vec<_>>();
         let force_lines = force.lines().collect::<Vec<_>>();
+        let native_call_lines = native_call.lines().collect::<Vec<_>>();
 
+        assert_has_safety_comment_before(
+            &native_call_lines,
+            NATIVE_CALL_JIT_BOUNDARY_LINE,
+            "registered native thunk-call jit boundary must keep a SAFETY comment",
+        );
         assert_has_safety_comment_before(
             &lines,
             ENV_GET_DECODER_CALL_LINE,
