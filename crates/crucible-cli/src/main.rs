@@ -1,16 +1,15 @@
 //! `crucible` is the CLI entry point for the Crucible control plane.
-//!
 //! Spec index: RFC-0010 files 23.
+//! This L4 binary crate will remain a thin client over `crucible-api` and `crucible-session` as specified by RFC-0010 file 23.
 //!
-//! This L4 binary crate will remain a thin client over `crucible-api` and
-//! `crucible-session` as specified by RFC-0010 file 23.
-//!
-//! Module map: the binary root owns argument dispatch only; future command
-//! modules will remain transport clients over the session and API crates.
+//! Module map: the binary root owns argument dispatch only; future command modules will remain transport clients over the session and API crates.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+
+#[macro_use]
+mod quantum_loop_method;
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::error::Error;
@@ -31,23 +30,33 @@ use crucible_api::{
     ResumeSessionRequest, RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
     serve_lifecycle_http2_with_mode_until_shutdown,
 };
-use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 use crucible_session::engine as crucible_model;
+#[cfg(test)]
+use crucible_session::engine::QuantumLoop as EngineLoop;
+use crucible_session::engine::{
+    QuantumOutcome as QOut, QuantumRequest as QReq, SchedulerError as QErr,
+};
+use crucible_session::validation::{
+    ValidationDag, ValidationDagStoreError, empty_validation_dag,
+    fork_session_from_validation_base, fork_session_from_validation_checkpoint,
+    resume_session_from_validation_dag,
+};
 use crucible_session::{
-    BreakpointDisposition, BreakpointId, BreakpointSpec, CheckpointRef, CommandReply, Engine,
-    LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind, QueryResult,
-    SessionCommand, SessionCommandKind, StepMode,
+    BreakpointDisposition, BreakpointId, BreakpointSpec, CheckpointRef, CommandReply,
+    EngineSnapshot, LiveSnapshot, LiveSnapshotView, LiveStateKind, OutcomeKind, QueryKind,
+    QueryResult, SessionCommand, SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
         FindingReproductionArtifact, GenesisCheckpoint, MaterializationPolicy,
         MaterializationTrigger, MemoryDagStore, OverrideDecision, RecordedAssertionLog, Schedule,
         SchedulingPoint, SearchDiscoveredFailure, SearchFailureOracle,
-        SearchRetainedLogAssertionEvidence, SimDuration, TemporalGraph, TemporalGraphStoreError,
-        VirtualTime,
+        SearchRetainedLogAssertionEvidence, SimDuration, VirtualTime,
     },
 };
+#[cfg(test)]
+use crucible_session::{BreakpointFiring, EngineState, Outcome};
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
@@ -72,6 +81,9 @@ const CRUCIBLE_AOS_PLUGIN_ENV: &str = "CRUCIBLE_AOS_PLUGIN";
 const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_SELFTEST_RUNS: usize = 5;
+// Mirrored from `crucible-protocol` and checked by CLI tests so the control
+// plane does not depend on the guest-host protocol crate at runtime.
+const GUEST_HOST_CONTROL_PROTOCOL_VERSION: u32 = 1;
 #[cfg(test)]
 const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
 #[cfg(test)]
@@ -1694,6 +1706,8 @@ struct CliNodeTemplateToml {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::large_enum_variant)]
 enum ResumeSavepointRef {
     CheckpointHash(crucible::ContentHash),
     Handle {
@@ -1851,6 +1865,8 @@ impl VerifyInvocationPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::large_enum_variant)]
 enum VerifyMode {
     RunScenario { scenario: RunScenarioRef },
     CompareArtifacts { left: PathBuf, right: PathBuf },
@@ -2012,16 +2028,15 @@ impl SimBackendLifecycleLoop {
 }
 
 #[cfg(test)]
-impl crucible::QuantumLoop for SimBackendLifecycleLoop {
-    fn drive_quantum(
-        &mut self,
-        request: crucible::QuantumRequest,
-    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
-        self.quanta = self.quanta.saturating_add(1);
-        let frontier = crucible::VirtualTime { ticks: self.quanta };
-        crucible::SimulationBackend::step_to(&mut self.backend, frontier)?;
-        let event_log_entries = vec![self.diagnostic_entry(frontier)];
-        self.event_log_events = self
+impl EngineLoop for SimBackendLifecycleLoop {
+    impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
+        loop_state.quanta = loop_state.quanta.saturating_add(1);
+        let frontier = crucible::VirtualTime {
+            ticks: loop_state.quanta,
+        };
+        crucible::SimulationBackend::step_to(&mut loop_state.backend, frontier)?;
+        let event_log_entries = vec![loop_state.diagnostic_entry(frontier)];
+        loop_state.event_log_events = loop_state
             .event_log_events
             .saturating_add(event_log_entries.len() as u64);
         Ok(crucible::QuantumOutcome {
@@ -2037,11 +2052,11 @@ impl crucible::QuantumLoop for SimBackendLifecycleLoop {
             event_log_offset: crucible::EventLogOffset::new(
                 Default::default(),
                 0,
-                self.event_log_events,
+                loop_state.event_log_events,
             ),
             scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
         })
-    }
+    });
 
     fn sample_fingerprint(
         &mut self,
@@ -2060,12 +2075,12 @@ fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocatio
     if args.max_quanta == Some(0) {
         return Err(usage_error("--max-quanta must be greater than zero"));
     }
-    if let Some(duration) = &args.max_virtual_time {
-        if parse_run_duration_budget_ticks(duration).is_none() {
-            return Err(usage_error(
-                "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
-            ));
-        }
+    if let Some(duration) = &args.max_virtual_time
+        && parse_run_duration_budget_ticks(duration).is_none()
+    {
+        return Err(usage_error(
+            "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
+        ));
     }
     let terminal_condition = RunTerminalCondition::from_arg(args.until);
     if terminal_condition == RunTerminalCondition::VirtualTime && args.max_virtual_time.is_none() {
@@ -2302,12 +2317,12 @@ fn plan_resume_invocation(
     store_root: &Path,
 ) -> Result<ResumeInvocationPlan, CliError> {
     let savepoint = resolve_resume_savepoint(args.savepoint.as_deref())?;
-    if let Some(duration) = &args.max_virtual_time {
-        if parse_run_duration_budget_ticks(duration).is_none() {
-            return Err(usage_error(
-                "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
-            ));
-        }
+    if let Some(duration) = &args.max_virtual_time
+        && parse_run_duration_budget_ticks(duration).is_none()
+    {
+        return Err(usage_error(
+            "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
+        ));
     }
     let terminal_condition = RunTerminalCondition::from_arg(args.until);
     if terminal_condition == RunTerminalCondition::VirtualTime && args.max_virtual_time.is_none() {
@@ -2371,12 +2386,12 @@ fn plan_fork_invocation(
         .iter()
         .map(|raw| parse_fork_decision_override(raw))
         .collect::<Result<Vec<_>, _>>()?;
-    if let Some(duration) = &args.max_virtual_time {
-        if parse_run_duration_budget_ticks(duration).is_none() {
-            return Err(usage_error(
-                "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
-            ));
-        }
+    if let Some(duration) = &args.max_virtual_time
+        && parse_run_duration_budget_ticks(duration).is_none()
+    {
+        return Err(usage_error(
+            "--max-virtual-time must be a non-empty duration like 10ms, 5s, or 100ticks",
+        ));
     }
     let terminal_condition = RunTerminalCondition::from_arg(args.until);
     if terminal_condition == RunTerminalCondition::VirtualTime && args.max_virtual_time.is_none() {
@@ -2715,7 +2730,7 @@ fn load_search_retained_evidence_toml(
         .chain(terminal_quiescence_by_configuration.keys())
         .copied()
         .collect::<BTreeSet<_>>();
-    Ok(configurations
+    configurations
         .into_iter()
         .map(|configuration| {
             let entries = entries_by_configuration
@@ -2743,7 +2758,7 @@ fn load_search_retained_evidence_toml(
             }
             Ok((configuration, evidence))
         })
-        .collect::<Result<_, CliError>>()?)
+        .collect::<Result<_, CliError>>()
 }
 
 fn push_search_retained_guest_marker_entry(
@@ -3012,7 +3027,7 @@ fn load_stored_fuzz_family(
 }
 
 fn load_fuzz_family_toml(label: &str, text: &str) -> Result<crucible::ScenarioFamily, CliError> {
-    let authored = toml::from_str::<CliScenarioFamilyToml>(&text).map_err(|error| {
+    let authored = toml::from_str::<CliScenarioFamilyToml>(text).map_err(|error| {
         backend_error(format!(
             "family {label} is not valid scenario-family TOML: {error}"
         ))
@@ -3538,7 +3553,7 @@ fn plan_verify_invocation(
     args: &VerifyArgs,
     store_root: &Path,
 ) -> Result<VerifyInvocationPlan, CliError> {
-    if args.compare.len() != 0 && args.compare.len() != 2 {
+    if !args.compare.is_empty() && args.compare.len() != 2 {
         return Err(usage_error("--compare requires exactly two artifacts"));
     }
     let mode = if args.compare.is_empty() {
@@ -4026,7 +4041,7 @@ fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
             | Commands::Fuzz(_)
     )
     .then_some(SeedResolutionMode::FreshRunIdentity)
-    .unwrap_or_else(|| match command {
+    .unwrap_or(match command {
         Commands::Resume(_) | Commands::Replay(_) => SeedResolutionMode::ArtifactOrSavepointOwned,
         Commands::Selftest(_)
         | Commands::Triage(_)
@@ -4869,7 +4884,7 @@ fn validate_readable_file_artifact(label: &'static str, path: &Path) -> Result<(
 fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
     CliError::Backend(reason.into())
 }
-
+// The session boundary re-exports the ABI derived from `crucible_shmem::ABI_VERSION`.
 fn required_qemu_plugin_abi() -> String {
     shmem_abi_label_for_version(&crucible::SHMEM_ABI_VERSION.to_string())
 }
@@ -4879,7 +4894,7 @@ fn shmem_abi_label_for_version(version: &str) -> String {
 }
 
 fn current_guest_host_protocol_version() -> String {
-    CONTROL_PROTOCOL_VERSION.to_string()
+    GUEST_HOST_CONTROL_PROTOCOL_VERSION.to_string()
 }
 
 fn current_rpc_abi_version() -> String {
@@ -5032,10 +5047,10 @@ fn read_plugin_build_marker(plugin: &Path) -> Result<PluginBuildMarker, CliError
 fn qemu_build_marker_paths(qemu: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(parent) = qemu.parent() {
-        if parent.file_name().and_then(|name| name.to_str()) == Some("bin") {
-            if let Some(root) = parent.parent() {
-                paths.push(root.join("share/aos/crucible/qemu-build-identity.env"));
-            }
+        if parent.file_name().and_then(|name| name.to_str()) == Some("bin")
+            && let Some(root) = parent.parent()
+        {
+            paths.push(root.join("share/aos/crucible/qemu-build-identity.env"));
         }
         paths.push(parent.join("qemu-build-identity.env"));
     }
@@ -5045,10 +5060,10 @@ fn qemu_build_marker_paths(qemu: &Path) -> Vec<PathBuf> {
 fn plugin_build_marker_paths(plugin: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(parent) = plugin.parent() {
-        if parent.file_name().and_then(|name| name.to_str()) == Some("lib") {
-            if let Some(root) = parent.parent() {
-                paths.push(root.join("nix-support/crucible-qemu-plugin-build-info"));
-            }
+        if parent.file_name().and_then(|name| name.to_str()) == Some("lib")
+            && let Some(root) = parent.parent()
+        {
+            paths.push(root.join("nix-support/crucible-qemu-plugin-build-info"));
         }
         paths.push(parent.join("crucible-qemu-plugin-build-info"));
     }
@@ -5237,6 +5252,8 @@ struct BackendCommandOutcomeProjection {
 }
 
 trait BackendCommandRunner {
+    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+    #[allow(clippy::too_many_arguments)]
     fn run_local(
         &mut self,
         backend: &ResolvedLocalBackend,
@@ -5248,6 +5265,8 @@ trait BackendCommandRunner {
         save_plan: Option<&SaveInvocationPlan>,
     ) -> Result<BackendCommandOutcome, CliError>;
 
+    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+    #[allow(clippy::too_many_arguments)]
     fn run_remote(
         &mut self,
         daemon: &str,
@@ -5758,19 +5777,18 @@ impl SaveRecordingLifecycleLoop {
 }
 
 impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
-    fn drive_quantum(
-        &mut self,
-        request: crucible::QuantumRequest,
-    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+    impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
         let previous = request.configuration.clone();
-        self.quanta = self.quanta.saturating_add(1);
-        let frontier = crucible::VirtualTime { ticks: self.quanta };
+        loop_state.quanta = loop_state.quanta.saturating_add(1);
+        let frontier = crucible::VirtualTime {
+            ticks: loop_state.quanta,
+        };
         let mut event_log_entries = Vec::new();
-        let diagnostic_sequence = self.next_event_log_sequence();
-        let diagnostic = self.diagnostic_entry(diagnostic_sequence, frontier);
-        self.record_entry(&mut event_log_entries, diagnostic);
-        self.record_scenario_guest_markers(frontier, &mut event_log_entries);
-        self.record_scenario_assertion_events(&mut event_log_entries)?;
+        let diagnostic_sequence = loop_state.next_event_log_sequence();
+        let diagnostic = loop_state.diagnostic_entry(diagnostic_sequence, frontier);
+        loop_state.record_entry(&mut event_log_entries, diagnostic);
+        loop_state.record_scenario_guest_markers(frontier, &mut event_log_entries);
+        loop_state.record_scenario_assertion_events(&mut event_log_entries)?;
         let decision = crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
             at: frontier,
             order: Vec::new(),
@@ -5795,11 +5813,11 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
             event_log_offset: crucible::EventLogOffset::new(
                 Default::default(),
                 0,
-                self.event_log_events,
+                loop_state.event_log_events,
             ),
             scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
         })
-    }
+    });
 
     fn sample_fingerprint(
         &mut self,
@@ -5884,28 +5902,25 @@ impl ResumeRecordingLifecycleLoop {
 }
 
 impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
-    fn drive_quantum(
-        &mut self,
-        request: crucible::QuantumRequest,
-    ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
-        self.frontier = self.frontier.saturating_add(1);
+    impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
+        loop_state.frontier = loop_state.frontier.saturating_add(1);
         let frontier = VirtualTime {
-            ticks: self.frontier,
+            ticks: loop_state.frontier,
         };
         let mut event_log_entries = Vec::new();
-        if !self.fixture_emitted {
-            if let Some(entry) = self.selector_fixture_entry(frontier) {
+        if !loop_state.fixture_emitted {
+            if let Some(entry) = loop_state.selector_fixture_entry(frontier) {
                 event_log_entries.push(entry);
-                self.event_log_events = self.event_log_events.saturating_add(1);
+                loop_state.event_log_events = loop_state.event_log_events.saturating_add(1);
             }
-            self.fixture_emitted = true;
+            loop_state.fixture_emitted = true;
         }
-        let decision = if let Some(seed) = self.post_fork_seed {
+        let decision = if let Some(seed) = loop_state.post_fork_seed {
             let stream = crucible::RngStreamId::new(
                 "crucible.cli.fork.reseed",
-                format!("post-fork-{}", self.post_fork_draws),
+                format!("post-fork-{}", loop_state.post_fork_draws),
             );
-            self.post_fork_draws = self.post_fork_draws.saturating_add(1);
+            loop_state.post_fork_draws = loop_state.post_fork_draws.saturating_add(1);
             crucible::Decision::RngDraw(crucible::RngDecision {
                 value: seed.stream_seed(&stream),
                 stream,
@@ -5937,11 +5952,11 @@ impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
             event_log_offset: crucible::EventLogOffset::new(
                 Default::default(),
                 0,
-                self.event_log_events,
+                loop_state.event_log_events,
             ),
             scheduler_quiescence: Some(crucible::SchedulerQuiescence::default()),
         })
-    }
+    });
 
     fn sample_fingerprint(
         &mut self,
@@ -6379,7 +6394,7 @@ where
     )
     .await?;
     let mut snapshot = match snapshot_response.query_result {
-        Some(QueryResult::Snapshot(snapshot)) => snapshot,
+        Some(QueryResult::Snapshot(snapshot)) => *snapshot,
         Some(other) => {
             return Err(backend_error(format!(
                 "remote resume boundary snapshot returned unexpected query payload: {other:?}"
@@ -6504,6 +6519,8 @@ fn remote_resume_observed_outcome(
     }
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 async fn drive_remote_resume_interactive_commands<C>(
     client: &C,
     session: SessionRef,
@@ -6585,6 +6602,8 @@ where
     .await
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 async fn drive_remote_resume_interactive_command_reader<R, W, C>(
     client: &C,
     session: SessionRef,
@@ -7123,8 +7142,7 @@ enum ResumeInteractiveCommandDriver<'a> {
     Stdin,
 }
 
-type ResumeCommandReply<T> =
-    tokio::sync::oneshot::Receiver<Result<T, crucible_session::SessionError>>;
+type ResumeCommandReply<T> = oneshot::Receiver<Result<T, crucible_session::SessionError>>;
 
 async fn run_resumed_savepoint_actor_with_driver_async(
     plan: &ResumeInvocationPlan,
@@ -7141,21 +7159,19 @@ async fn run_resumed_savepoint_actor_with_driver_async(
             })?;
     }
     let genesis = crucible::Configuration::genesis(evidence.scenario.clone());
-    let mut parent = Engine::new(
+    let resumed = resume_session_from_validation_dag(
         genesis,
         graph,
         ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
-    );
-    let resumed = parent
-        .resume_session_from_checkpoint(evidence.checkpoint.id, resumed_loop)
-        .map_err(|error| {
-            backend_error(format!("resume checkpoint instantiation failed: {error}"))
-        })?;
+        evidence.checkpoint.id,
+        resumed_loop,
+    )
+    .map_err(|error| backend_error(format!("resume checkpoint instantiation failed: {error}")))?;
     let source_checkpoint = resumed.checkpoint;
     let resumed_configuration = resumed.configuration.id();
     let live = resumed.session_actor.live_snapshot();
     let sender = resumed.session_sender.clone();
-    let actor_task = tokio::spawn(async move { resumed.session_actor.run().await });
+    let actor_task = tokio::task::spawn(async move { resumed.session_actor.run().await });
     let mut acknowledged_commands = Vec::new();
     let mut state_updates = vec![format!("{:?}", live.read().state_kind).to_ascii_lowercase()];
     let mut watch_statuses = Vec::new();
@@ -7346,38 +7362,38 @@ async fn run_forked_savepoint_actor_with_driver_async(
             })?;
     }
     let genesis = crucible::Configuration::genesis(evidence.scenario.clone());
-    let mut parent = Engine::new(
-        genesis,
-        graph,
-        ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
-    );
-    parent
-        .apply_command(SessionCommand::Start)
-        .map_err(|error| backend_error(format!("fork parent instantiation failed: {error}")))?;
     let fork = if fork_decisions.is_empty() {
-        parent
-            .fork_child_from_checkpoint(
-                CheckpointRef::Checkpoint(evidence.checkpoint.id),
-                child_loop,
-            )
-            .map_err(|error| {
-                backend_error(format!(
-                    "fork child checkpoint instantiation failed: {error}"
-                ))
-            })?
+        fork_session_from_validation_checkpoint(
+            genesis,
+            graph,
+            ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
+            CheckpointRef::Checkpoint(evidence.checkpoint.id),
+            child_loop,
+        )
+        .map_err(|error| {
+            backend_error(format!(
+                "fork child checkpoint instantiation failed: {error}"
+            ))
+        })?
     } else {
-        parent
-            .fork_child(&evidence.configuration, fork_decisions, child_loop)
-            .map_err(|error| {
-                backend_error(format!("fork child override instantiation failed: {error}"))
-            })?
+        fork_session_from_validation_base(
+            genesis,
+            graph,
+            ResumeRecordingLifecycleLoop::new(evidence.checkpoint.virtual_time),
+            &evidence.configuration,
+            fork_decisions,
+            child_loop,
+        )
+        .map_err(|error| {
+            backend_error(format!("fork child override instantiation failed: {error}"))
+        })?
     };
     let source_checkpoint = fork.record.from_checkpoint;
     let branch_checkpoint = fork.record.branch_checkpoint;
     let branch_configuration = fork.branch_configuration.id();
     let live = fork.child_actor.live_snapshot();
     let sender = fork.child_sender.clone();
-    let actor_task = tokio::spawn(async move { fork.child_actor.run().await });
+    let actor_task = tokio::task::spawn(async move { fork.child_actor.run().await });
     let mut acknowledged_commands = Vec::new();
     let mut state_updates = vec![format!("{:?}", live.read().state_kind).to_ascii_lowercase()];
     let mut watch_statuses = Vec::new();
@@ -9720,11 +9736,8 @@ where
         signal = &mut shutdown => {
             signal?;
             let _ = shutdown_sender.send(());
-            match tokio::time::timeout(SERVE_SHUTDOWN_DRAIN_TIMEOUT, server).await {
-                Ok(result) => {
-                    result.map_err(|error| serve_error(format!("serve backend error: {error}")))?;
-                }
-                Err(_) => {}
+            if let Ok(result) = tokio::time::timeout(SERVE_SHUTDOWN_DRAIN_TIMEOUT, server).await {
+                result.map_err(|error| serve_error(format!("serve backend error: {error}")))?;
             }
             Ok(())
         }
@@ -9891,7 +9904,7 @@ where
     )
     .await?;
     let snapshot = match snapshot_response.query_result {
-        Some(QueryResult::Snapshot(snapshot)) => snapshot,
+        Some(QueryResult::Snapshot(snapshot)) => *snapshot,
         Some(other) => {
             return Err(save_backend_error(format!(
                 "save boundary snapshot returned unexpected query payload: {other:?}"
@@ -9954,16 +9967,15 @@ where
         .sessions
         .into_iter()
         .find(|summary| summary.session == created.session);
-    if let Some(summary) = &stopped {
-        if let Some(terminal) = summary.terminal_savepoint {
-            if terminal != oracle.fat_checkpoint {
-                return Err(CliError::Identity(format!(
-                    "save terminal checkpoint {} did not match validated checkpoint {}",
-                    format_content_hash_ref(terminal),
-                    format_content_hash_ref(oracle.fat_checkpoint)
-                )));
-            }
-        }
+    if let Some(summary) = &stopped
+        && let Some(terminal) = summary.terminal_savepoint
+        && terminal != oracle.fat_checkpoint
+    {
+        return Err(CliError::Identity(format!(
+            "save terminal checkpoint {} did not match validated checkpoint {}",
+            format_content_hash_ref(terminal),
+            format_content_hash_ref(oracle.fat_checkpoint)
+        )));
     }
 
     let final_state = match save_plan.at {
@@ -10120,7 +10132,7 @@ where
     )
     .await?;
     let snapshot = match snapshot_response.query_result {
-        Some(QueryResult::Snapshot(snapshot)) => snapshot,
+        Some(QueryResult::Snapshot(snapshot)) => *snapshot,
         Some(other) => {
             return Err(save_backend_error(format!(
                 "remote save boundary snapshot returned unexpected query payload: {other:?}"
@@ -10171,7 +10183,7 @@ where
     )
     .await?;
     let confirmed_snapshot = match confirmed_snapshot_response.query_result {
-        Some(QueryResult::Snapshot(snapshot)) => snapshot,
+        Some(QueryResult::Snapshot(snapshot)) => *snapshot,
         Some(other) => {
             return Err(save_backend_error(format!(
                 "remote savepoint confirmation snapshot returned unexpected query payload: {other:?}"
@@ -10526,7 +10538,7 @@ fn validate_savepoint_checkpoint(
 
 fn validate_resume_terminal_savepoint(
     evidence: &ResumeHandleEvidence,
-    final_snapshot: &crucible_session::EngineSnapshot,
+    final_snapshot: &EngineSnapshot,
 ) -> Result<SavepointOracleProof, CliError> {
     let checkpoint = final_snapshot.terminal_savepoint.as_ref().ok_or_else(|| {
         backend_error("resume completed without a terminal savepoint for replay-oracle validation")
@@ -10627,7 +10639,7 @@ fn validate_resume_terminal_source_ancestor(
 }
 
 fn validate_resume_replay_anchor(
-    graph: &TemporalGraph,
+    graph: &ValidationDag,
     evidence: &ResumeHandleEvidence,
     final_configuration: &crucible::Configuration,
 ) -> Result<(), CliError> {
@@ -10765,7 +10777,7 @@ fn validate_checkpoint_metadata(
     Ok(())
 }
 
-fn save_validation_graph(scenario: &crucible::ScenarioDef) -> Result<TemporalGraph, CliError> {
+fn save_validation_graph(scenario: &crucible::ScenarioDef) -> Result<ValidationDag, CliError> {
     let genesis = crucible::Configuration::genesis(scenario.clone());
     let checkpoint = Checkpoint::from_recorded_configuration(
         &genesis,
@@ -10778,17 +10790,17 @@ fn save_validation_graph(scenario: &crucible::ScenarioDef) -> Result<TemporalGra
     .map_err(|error| {
         CliError::Identity(format!("save genesis checkpoint setup failed: {error}"))
     })?;
-    TemporalGraph::empty()
+    empty_validation_dag()
         .with_baked_genesis(scenario, GenesisCheckpoint { checkpoint })
         .map_err(|error| CliError::Identity(format!("save validation graph setup failed: {error}")))
 }
 
-fn save_temporal_graph_error(error: TemporalGraphStoreError) -> CliError {
+fn save_temporal_graph_error(error: ValidationDagStoreError) -> CliError {
     match error {
-        TemporalGraphStoreError::Engine { operation, source } => CliError::Identity(format!(
+        ValidationDagStoreError::Engine { operation, source } => CliError::Identity(format!(
             "save temporal graph {operation} failed replay-oracle validation: {source}"
         )),
-        TemporalGraphStoreError::Store { source, .. } => CliError::Store(source),
+        ValidationDagStoreError::Store { source, .. } => CliError::Store(source),
     }
 }
 
@@ -11076,6 +11088,8 @@ fn cli_stream_command(command: SessionCommandKind) -> Result<SessionCommand, Cli
     })
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 async fn observe_run_final_state<C>(
     client: &C,
     control: &mut crucible_api::ClientControlStream,
@@ -11335,6 +11349,8 @@ async fn observe_next_state_update(
     }
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 async fn stop_budget_timed_out_session<C>(
     client: &C,
     control: &crucible_api::ClientControlStream,
@@ -11818,21 +11834,21 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 }
                 return Ok(());
             }
-            if backend_plan.target == BackendExecutionTarget::RemoteDaemon {
-                if let Some(daemon) = backend_plan.daemon.as_deref() {
-                    let outcome = run_remote_resume_workflow(
-                        daemon,
-                        &thin_plan,
-                        &backend_plan,
-                        ergonomics_plan.as_ref(),
-                        resume_plan,
-                    )?;
-                    emit_backend_command_output(cli, &outcome)?;
-                    if outcome.status.is_non_passing() {
-                        return Err(CliError::Outcome(outcome.status));
-                    }
-                    return Ok(());
+            if backend_plan.target == BackendExecutionTarget::RemoteDaemon
+                && let Some(daemon) = backend_plan.daemon.as_deref()
+            {
+                let outcome = run_remote_resume_workflow(
+                    daemon,
+                    &thin_plan,
+                    &backend_plan,
+                    ergonomics_plan.as_ref(),
+                    resume_plan,
+                )?;
+                emit_backend_command_output(cli, &outcome)?;
+                if outcome.status.is_non_passing() {
+                    return Err(CliError::Outcome(outcome.status));
                 }
+                return Ok(());
             }
             return Err(unsupported_resume_backend_error(resume_plan));
         }
@@ -11949,15 +11965,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Commands::Replay(args) => {
             let report = replay_reproduction_artifact(cli, args)?;
             emit_replay_report_output(cli, &report)?;
-            if let Some(check) = &report.check {
-                if let Some(mismatch) = &check.mismatch {
-                    return Err(replay_check_mismatch_error(check, mismatch));
-                }
+            if let Some(check) = &report.check
+                && let Some(mismatch) = &check.mismatch
+            {
+                return Err(replay_check_mismatch_error(check, mismatch));
             }
-            if let Some(bisect) = &report.bisect {
-                if let Some(divergence) = &bisect.divergence {
-                    return Err(replay_bisect_error(&report.path, bisect, divergence));
-                }
+            if let Some(bisect) = &report.bisect
+                && let Some(divergence) = &bisect.divergence
+            {
+                return Err(replay_bisect_error(&report.path, bisect, divergence));
             }
             Ok(())
         }
@@ -12127,7 +12143,7 @@ fn default_run_store_root(cli: &Cli) -> PathBuf {
 fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
     let mut requested = match args.gates.as_deref() {
         Some(raw) => raw.split(',').map(str::trim).collect::<Vec<_>>(),
-        None => BUILT_IN_CORPUS_SELFTEST_GATES.iter().copied().collect(),
+        None => BUILT_IN_CORPUS_SELFTEST_GATES.to_vec(),
     };
     if args.gates.is_none() && args.with_qemu {
         requested.extend(REAL_QEMU_SELFTEST_GATES.iter().copied());
@@ -12775,7 +12791,7 @@ fn run_local_double_search_workflow_with_graph(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &SearchDriverPlan,
     root: &crucible::Configuration,
-    graph: &mut TemporalGraph,
+    graph: &mut ValidationDag,
 ) -> Result<BackendCommandOutcome, CliError> {
     let empty_failure_oracle = SearchFailureOracle::none();
     let assertion_discovery_run = graph
@@ -12883,13 +12899,15 @@ where
     merged
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn run_local_double_search_workflow_with_graph_and_failure_oracle(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &SearchDriverPlan,
     root: &crucible::Configuration,
-    graph: &mut TemporalGraph,
+    graph: &mut ValidationDag,
     failure_oracle: &SearchFailureOracle,
     failure_oracle_label: &str,
 ) -> Result<BackendCommandOutcome, CliError> {
@@ -14517,7 +14535,7 @@ fn parse_triage_property_finding_evidence(
     let assertion = crucible::AssertionId::from_name(required_field(fields, "assertion")?);
     let discovery_signature_assertion = fields
         .get("discovery_signature.assertion")
-        .map(|value| crucible::AssertionId::from_name(value));
+        .map(crucible::AssertionId::from_name);
     let message = required_field(fields, "message")?.to_owned();
     let quantifier = parse_assertion_quantifier(required_field(fields, "quantifier")?)?;
     let event_kind = required_field(fields, "event_kind")?.to_owned();
@@ -15044,13 +15062,13 @@ fn replay_component_payload_bytes(
             store.root().display()
         ))
     })?;
-    if let Some(payload) = embedded {
-        if payload.bytes != bytes {
-            return Err(artifact_error(format!(
-                "component `{}` inline payload does not match DAG store object {}",
-                component.name, component.store_uri
-            )));
-        }
+    if let Some(payload) = embedded
+        && payload.bytes != bytes
+    {
+        return Err(artifact_error(format!(
+            "component `{}` inline payload does not match DAG store object {}",
+            component.name, component.store_uri
+        )));
     }
     Ok(Some(bytes))
 }
@@ -15086,12 +15104,12 @@ fn verify_replay_identity(actual: &CliIdentity, expected: &CliIdentity) -> Resul
 
 fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliError> {
     let backend_plan = plan_backend_selection(cli)?;
-    if let Some(plan) = backend_plan.as_ref() {
-        if plan.target == BackendExecutionTarget::RemoteDaemon {
-            return Err(CliError::Identity(
-                "remote daemon replay cannot validate reproduction artifacts without producer build provenance; run replay without --daemon or select a local backend".to_string(),
-            ));
-        }
+    if let Some(plan) = backend_plan.as_ref()
+        && plan.target == BackendExecutionTarget::RemoteDaemon
+    {
+        return Err(CliError::Identity(
+            "remote daemon replay cannot validate reproduction artifacts without producer build provenance; run replay without --daemon or select a local backend".to_string(),
+        ));
     }
     let resolved_backend = backend_plan
         .as_ref()
@@ -15862,7 +15880,7 @@ fn parse_usize(line_index: usize, tag: &str, value: &str) -> Result<usize, CliEr
 }
 
 fn parse_hex_bytes(line_index: usize, tag: &str, value: &str) -> Result<Vec<u8>, CliError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(artifact_line_error(
             line_index,
             tag,
@@ -16635,6 +16653,8 @@ fn backend_error(reason: impl Into<String>) -> CliError {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use std::error::Error;
 
@@ -17123,11 +17143,10 @@ finding.0.detail=synthetic signed finding evidence
 
     fn search_frontier_graph(
         scenario: &::crucible::ScenarioDefForm,
-    ) -> Result<::crucible::TemporalGraph, Box<dyn Error>> {
+    ) -> Result<ValidationDag, Box<dyn Error>> {
         let baked =
             baked_with_search_frontier_choices(scenario.world(), search_frontier_decisions())?;
-        Ok(::crucible::TemporalGraph::empty()
-            .with_baked_genesis(&scenario.scenario_def(), baked)?)
+        Ok(empty_validation_dag().with_baked_genesis(&scenario.scenario_def(), baked)?)
     }
 
     fn baked_with_search_frontier_choices(
@@ -19585,7 +19604,12 @@ finding.0.detail=synthetic signed finding evidence
         let valid_firing =
             save_selector_test_firing(7, predicate.clone(), BreakpointDisposition::Suspend, 2, 2);
 
-        validate_save_selector_firing(&selector, 7, &boundary, &[valid_firing.clone()])?;
+        validate_save_selector_firing(
+            &selector,
+            7,
+            &boundary,
+            std::slice::from_ref(&valid_firing),
+        )?;
 
         let error = validate_save_selector_firing(&selector, 7, &boundary, &[])
             .expect_err("missing breakpoint firing must fail");
@@ -19685,8 +19709,8 @@ finding.0.detail=synthetic signed finding evidence
         disposition: BreakpointDisposition,
         frontier: u64,
         quanta: u64,
-    ) -> crucible_session::BreakpointFiring {
-        crucible_session::BreakpointFiring {
+    ) -> BreakpointFiring {
+        BreakpointFiring {
             sequence: 0,
             id,
             predicate,
@@ -20077,9 +20101,9 @@ finding.0.detail=synthetic signed finding evidence
         };
         let final_checkpoint =
             checkpoint_for_resume_configuration(&final_configuration, VirtualTime { ticks: 1 })?;
-        let snapshot = crucible_session::EngineSnapshot {
-            state: crucible_session::EngineState::Stopped {
-                outcome: crucible_session::Outcome::Passed,
+        let snapshot = EngineSnapshot {
+            state: EngineState::Stopped {
+                outcome: Outcome::Passed,
             },
             configuration: final_configuration,
             terminal_savepoint: Some(final_checkpoint),
@@ -24158,13 +24182,12 @@ quiescent = false
                 "sim-backend-loop",
             ));
 
-        crucible::QuantumLoop::drive_quantum(
-            &mut loop_impl,
-            crucible::QuantumRequest {
-                configuration,
-                control: Vec::new(),
-            },
-        )?;
+        let mut driver = crucible_session::SessionDriver::new(loop_impl);
+        driver.drive_quantum/* session-boundary call */(crucible::QuantumRequest {
+            configuration,
+            control: Vec::new(),
+        })?;
+        let mut loop_impl = driver.into_inner();
         let after = crucible::QuantumLoop::sample_fingerprint(&mut loop_impl, node)?;
 
         assert_eq!(before.at.ticks, 0);
