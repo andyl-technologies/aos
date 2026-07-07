@@ -8388,7 +8388,7 @@ fn append_local_qemu_resume_identity(
         ));
     };
     outcome.stdout.push(format!(
-        "resume-qemu-runner\tmaterialization=resumed-session-savepoint\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
+        "resume-qemu-runner\tmaterialization=qemu-vm-realization operation=resume branch=ancestor-replay checkpoint=none replayed_decisions=1\tqemu_build_id={qemu_build_id}\tqemu_patch_series={qemu_patch_series_hash}\tplugin_abi={plugin_abi}\tshmem_abi={shmem_abi_version}"
     ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
@@ -8396,7 +8396,7 @@ fn append_local_qemu_resume_identity(
         node: String::from("qemu"),
         kind: String::from("resume_qemu_runner"),
         summary: format!(
-            "materialization=resumed-session-savepoint qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
+            "materialization=qemu-vm-realization operation=resume branch=ancestor-replay checkpoint=none replayed_decisions=1 qemu_build_id={qemu_build_id} qemu_patch_series={qemu_patch_series_hash} plugin_abi={plugin_abi} shmem_abi={shmem_abi_version}"
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);

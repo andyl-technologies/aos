@@ -16,6 +16,8 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
+  sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
+  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -65,12 +67,16 @@
         needle = "replay-oracle-validating";
       }
       {
-        label = "T-CLI-10 local-QEMU resume routing progress";
-        needle = "Explicitly selected local-QEMU resumes now route through the same\n  resumed-session materialization";
+        label = "T-CLI-10 local-QEMU realization coordinator progress";
+        needle = "`crucible-qemu` owns the typed realization coordinator";
+      }
+      {
+        label = "T-CLI-10 local-QEMU realization proof progress";
+        needle = "`materialization=qemu-vm-realization`, `operation=resume`, branch";
       }
       {
         label = "T-CLI-10 process qemu resume progress";
-        needle = "process-tests real-binary\n  `resume --backend qemu` JSONL";
+        needle = "Process-tests cover real-binary\n  `resume --backend qemu` JSONL";
       }
       {
         label = "T-CLI-10 QMP snapshot-load smoke progress";
@@ -83,12 +89,16 @@
         needle = "`T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently";
       }
       {
-        label = "phase5 CLI resume local-QEMU progress";
-        needle = "explicitly selected local-QEMU resumes through the same\n  resumed-session materialization";
+        label = "phase5 CLI resume local-QEMU coordinator progress";
+        needle = "`crucible-qemu` realization coordinator owns";
+      }
+      {
+        label = "phase5 CLI resume local-QEMU realization proof progress";
+        needle = "`materialization=qemu-vm-realization`, `operation=resume`, branch";
       }
       {
         label = "phase5 CLI process qemu resume progress";
-        needle = "process-level `resume --backend qemu`\n  JSONL output plus replay-oracle validation";
+        needle = "process-level `resume --backend qemu` JSONL\n  output checks that proof plus replay-oracle validation";
       }
       {
         label = "phase5 CLI QMP snapshot-load smoke progress";
@@ -145,7 +155,7 @@
         needle = "fn run_local_qemu_resume_workflow";
       }
       {
-        label = "resume local-QEMU identity output";
+        label = "resume local-QEMU realization output";
         needle = "resume-qemu-runner";
       }
       {
@@ -297,6 +307,34 @@
         needle = "cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact";
       }
     ]
+    ++ failuresFor "crates/crucible-session/src/validation.rs" sessionValidation [
+      {
+        label = "resume realization proof";
+        needle = "struct ResumeRealizationProof";
+      }
+      {
+        label = "resume realization proof derivation";
+        needle = "realize_resume_from_savepoint";
+      }
+      {
+        label = "resume ancestor replay branch";
+        needle = "ancestor-replay";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
+      {
+        label = "resume QEMU realization coordinator";
+        needle = "pub fn resume_qemu_vm";
+      }
+      {
+        label = "resume QEMU ancestor replay branch";
+        needle = "QemuVmRealizationKind::AncestorReplay";
+      }
+      {
+        label = "resume QEMU savevm policy";
+        needle = "QemuSavevmCompletenessPolicy::default";
+      }
+    ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
         label = "process qemu resume JSONL regression";
@@ -316,7 +354,11 @@
       }
       {
         label = "process qemu resume materialization";
-        needle = "materialization=resumed-session-savepoint";
+        needle = "materialization=qemu-vm-realization";
+      }
+      {
+        label = "process qemu resume branch";
+        needle = "branch=ancestor-replay";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
