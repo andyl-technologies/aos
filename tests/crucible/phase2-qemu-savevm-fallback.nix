@@ -135,12 +135,18 @@
         needle = "QemuSavevmCompletenessPolicy";
       }
       {
-        label = "validation export";
-        needle = "validate_loadvm_realized_runtime";
+        label = "admission proof export";
+        needle = "QemuLoadvmRealizationAdmission";
       }
       {
         label = "loadvm command authorization export";
         needle = "QemuLoadvmCommandAuthorization";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+      {
+        label = "standalone validation export";
+        needle = "validate_loadvm_realized_runtime";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
@@ -211,8 +217,8 @@
         needle = "ReplayOracleMismatch";
       }
       {
-        label = "standalone validation guard";
-        needle = "pub fn validate_loadvm_realized_runtime";
+        label = "crate-private validation guard";
+        needle = "pub(crate) fn validate_loadvm_realized_runtime";
       }
       {
         label = "policy admission guard";
@@ -237,6 +243,18 @@
       {
         label = "runtime realization purpose";
         needle = "RuntimeRealization";
+      }
+      {
+        label = "oracle required unit test";
+        needle = "loadvm_runtime_requires_replay_oracle_validation";
+      }
+      {
+        label = "oracle mismatch unit test";
+        needle = "loadvm_runtime_rejects_replay_oracle_mismatch";
+      }
+      {
+        label = "oracle match unit test";
+        needle = "loadvm_runtime_accepts_matching_replay_oracle_evidence";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu/src/savevm_policy.rs" savevmPolicy [
@@ -265,18 +283,6 @@
       {
         label = "probe-only loadvm authorization test";
         needle = "phase0_policy_authorizes_only_probe_loadvm_commands";
-      }
-      {
-        label = "oracle required test";
-        needle = "loadvm_runtime_requires_replay_oracle_validation";
-      }
-      {
-        label = "oracle mismatch test";
-        needle = "loadvm_runtime_rejects_replay_oracle_mismatch";
-      }
-      {
-        label = "oracle match test";
-        needle = "loadvm_runtime_accepts_matching_replay_oracle_evidence";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -341,8 +347,17 @@ in
               -p crucible-qemu \
               --test savevm_fallback \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-qemu-savevm-fallback-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              savevm_policy \
+              -- --test-threads=1
             if grep -R -n '\.loadvm[[:space:]]*(' crates/*/src \
               | grep -v '^crates/crucible-qemu/src/qmp.rs:' \
+              | grep -v '^crates/crucible-qemu/src/qmp/vmstate_control.rs:' \
               | grep -v '^crates/crucible-qemu/src/savevm_policy.rs:' \
               > "$TMPDIR/production-loadvm-calls.txt"; then
               cat "$TMPDIR/production-loadvm-calls.txt" >&2
@@ -351,6 +366,7 @@ in
             fi
             if grep -R -n -E 'QmpClient::loadvm[[:space:]]*\(|QMP_SNAPSHOT_LOAD_COMMAND|snapshot-load' \
               crates/*/src \
+              | grep -v '^crates/crucible-qemu/src/node_factory/tests.rs:' \
               | grep -v '^crates/crucible-qemu/src/qmp.rs:' \
               | grep -v '^crates/crucible-qemu/src/lib.rs:' \
               > "$TMPDIR/production-loadvm-calls.txt"; then
@@ -359,9 +375,11 @@ in
               exit 1
             fi
             if grep -R -n 'authorize_loadvm_probe' crates/*/src crates/*/tests \
+              | grep -v '^crates/crucible-qemu/src/node_factory/tests.rs:' \
               | grep -v '^crates/crucible-qemu/src/savevm_policy.rs:' \
               | grep -v '^crates/crucible-qemu/src/realization.rs:' \
               | grep -v '^crates/crucible-qemu/tests/qmp.rs:' \
+              | grep -v '^crates/crucible-qemu/tests/qmp_vmstate_control.rs:' \
               | grep -v '^crates/crucible-qemu/tests/savevm_fallback.rs:' \
               > "$TMPDIR/loadvm-probe-authorization-uses.txt"; then
               cat "$TMPDIR/loadvm-probe-authorization-uses.txt" >&2
@@ -382,7 +400,7 @@ in
             check_scope=task-level-pass-with-fallback
             related_gates=gate:replay-oracle
             upstream_spike=checks.crucible.phase0.s3SavevmLoadvm
-            rust_test=crucible-qemu::savevm_fallback
+            rust_test=crucible-qemu::savevm_fallback,crucible-qemu::savevm_policy
             s3_status=pass-with-fallback
             thin_checkpoint_default=true
             fat_snapshot_default=false
