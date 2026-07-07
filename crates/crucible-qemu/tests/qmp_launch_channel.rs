@@ -30,6 +30,10 @@ fn qmp_channel_adds_stable_unix_socket_to_launch_command() {
     assert!(qmp.out_of_band());
     assert!(!qmp.carries_per_quantum_timing());
     assert!(!qmp.carries_frame_data());
+    assert_eq!(
+        qmp.socket_path("/var/run/crucible-node-7"),
+        std::path::PathBuf::from("/var/run/crucible-node-7/crucible-qmp.sock")
+    );
     assert!(
         command
             .args()
