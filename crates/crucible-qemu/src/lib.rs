@@ -44,6 +44,8 @@ mod gdbstub_proxy;
 mod host_setup;
 mod inertness;
 mod launch;
+#[cfg(unix)]
+mod mapped_quantum;
 mod node;
 mod plugin_control;
 mod qmp;
@@ -104,6 +106,8 @@ pub use launch::{
     QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
     QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
 };
+#[cfg(unix)]
+pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
 pub use node::{
     QemuNode, QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,
     QemuNodeEmittedFrame, QemuNodeError, QemuNodeIdleState, QemuNodeLifecycleState,
