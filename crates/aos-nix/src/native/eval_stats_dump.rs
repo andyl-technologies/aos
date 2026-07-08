@@ -15,7 +15,10 @@
 //!  "symbols_interned":4021,"imports_evaluated":37,"root_cutoffs":0,
 //!  "inline_cache_hits":0,"inline_cache_misses":0,
 //!  "tier1_promoted":0,"tier1_dispatched":0,"tier1_deopted":0,
-//!  "tier1_blacklisted":0}}
+//!  "tier1_blacklisted":0,
+//!  "memo_l0_hits":0,"memo_l0_misses":0,"memo_l0_admissions":0,
+//!  "memo_l0_declines":0,"memo_l1_hits":0,"memo_l1_misses":0,
+//!  "memo_l1_admissions":0,"memo_l1_declines":0}}
 //! ```
 
 use super::*;
@@ -50,7 +53,15 @@ impl NixNative {
 \"tier1_promoted\":{},\
 \"tier1_dispatched\":{},\
 \"tier1_deopted\":{},\
-\"tier1_blacklisted\":{}\
+\"tier1_blacklisted\":{},\
+\"memo_l0_hits\":{},\
+\"memo_l0_misses\":{},\
+\"memo_l0_admissions\":{},\
+\"memo_l0_declines\":{},\
+\"memo_l1_hits\":{},\
+\"memo_l1_misses\":{},\
+\"memo_l1_admissions\":{},\
+\"memo_l1_declines\":{}\
 }}}}",
             stats.thunks_allocated(),
             stats.thunks_forced(),
@@ -69,6 +80,14 @@ impl NixNative {
             stats.tier1_dispatched(),
             stats.tier1_deopted(),
             stats.tier1_blacklisted(),
+            stats.memo_l0_hits(),
+            stats.memo_l0_misses(),
+            stats.memo_l0_admissions(),
+            stats.memo_l0_declines(),
+            stats.memo_l1_hits(),
+            stats.memo_l1_misses(),
+            stats.memo_l1_admissions(),
+            stats.memo_l1_declines(),
         );
     }
 }

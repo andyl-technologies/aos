@@ -1751,7 +1751,7 @@ impl TreeWalk {
                 }
             }
         }
-        self.force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard)
+        self.force_claimed_thunk_with_memo(id, span, source_thunk, forced_payload, thunk, guard)
     }
 
     fn force_single_entry_thunk_value(
@@ -1773,7 +1773,7 @@ impl TreeWalk {
         Ok(value)
     }
 
-    fn force_memoized_claimed_thunk(
+    pub(super) fn force_memoized_claimed_thunk(
         &mut self,
         id: IrId,
         span: Span,
@@ -1861,7 +1861,7 @@ impl TreeWalk {
         Ok(value)
     }
 
-    fn eval_thunk_body(
+    pub(super) fn eval_thunk_body(
         &mut self,
         id: IrId,
         span: Span,
@@ -1966,7 +1966,7 @@ impl TreeWalk {
         }
     }
 
-    fn finish_forced_value(
+    pub(super) fn finish_forced_value(
         &mut self,
         id: IrId,
         span: Span,

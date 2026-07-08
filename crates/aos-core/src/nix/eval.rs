@@ -34,7 +34,7 @@ use aos_nix::eval::tree_walk::NixSearchPathEntry;
 #[cfg(feature = "native-eval")]
 use aos_nix::{
     NativeCliFallbackReason, NativeDrvClosure, NativeEvalError, NixNative,
-    eval::{EvalMode, IfdRealizationError, IfdRealizer, TreeWalkOptions},
+    eval::{EvalMode, IfdRealizationError, IfdRealizer, MemoOptions, TreeWalkOptions},
     heap::HeapMemoryBudget,
 };
 
@@ -735,8 +735,54 @@ pub struct NixEvalConfig {
     native_eval_stats: bool,
     native_jit: bool,
     native_parallel_workers: Option<std::num::NonZeroUsize>,
+    native_memo: NativeMemoSettings,
     heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
+}
+
+/// Parsed `AOS_NIX_MEMO*` settings for the native content-keyed memo tiers.
+///
+/// Mirrors the native evaluator's `MemoOptions` with plain types so the
+/// configuration exists independently of the `native-eval` feature. All
+/// fields are advisory performance settings; none affect evaluation results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeMemoSettings {
+    /// Master switch (`AOS_NIX_MEMO`). Off by default in this landing.
+    pub enabled: bool,
+    /// Per-worker in-thread tier switch (`AOS_NIX_MEMO_L0`).
+    pub l0_enabled: bool,
+    /// In-process shared tier switch (`AOS_NIX_MEMO_L1`); `None` selects the
+    /// default policy (on exactly when parallel workers are configured).
+    pub l1_enabled: Option<bool>,
+    /// Static recompute-estimate admission floor (`AOS_NIX_MEMO_MIN_COST`).
+    pub min_cost: u32,
+    /// Per-worker L0 entry cap (`AOS_NIX_MEMO_L0_ENTRIES`).
+    pub l0_entries: usize,
+    /// L1 retained-bytes budget (`AOS_NIX_MEMO_L1_BYTES`).
+    pub l1_bytes: u64,
+    /// Hits at L1 before an entry also installs at L0
+    /// (`AOS_NIX_MEMO_PROMOTE_HITS`).
+    pub promote_hits: u32,
+    /// Shadow-check every L0 hit (`AOS_NIX_MEMO_CHECK` contains `l0`/`all`).
+    pub check_l0: bool,
+    /// Shadow-check every L1 hit (`AOS_NIX_MEMO_CHECK` contains `l1`/`all`).
+    pub check_l1: bool,
+}
+
+impl Default for NativeMemoSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            l0_enabled: true,
+            l1_enabled: None,
+            min_cost: 64,
+            l0_entries: 65_536,
+            l1_bytes: 256 * 1024 * 1024,
+            promote_hits: 2,
+            check_l0: false,
+            check_l1: false,
+        }
+    }
 }
 
 impl Default for NixEvalConfig {
@@ -901,6 +947,16 @@ impl NixEvalConfig {
     }
 
     /// Enables or disables native parallel evaluation mode.
+    /// Returns the native content-memo settings.
+    pub const fn native_memo(&self) -> NativeMemoSettings {
+        self.native_memo
+    }
+
+    /// Replaces the native content-memo settings.
+    pub fn set_native_memo(&mut self, memo: NativeMemoSettings) {
+        self.native_memo = memo;
+    }
+
     pub fn set_native_parallel_workers(&mut self, workers: Option<std::num::NonZeroUsize>) {
         self.native_parallel_workers = workers;
     }
@@ -1298,6 +1354,7 @@ impl NixEvalConfig {
             native_eval_stats: false,
             native_jit: false,
             native_parallel_workers: None,
+            native_memo: NativeMemoSettings::default(),
             heap_memory_budget_bytes: None,
             trace_verbose: false,
         };
@@ -1338,6 +1395,7 @@ impl NixEvalConfig {
         if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
             config.set_aos_nix_max_rss_env_var(value);
         }
+        config.set_aos_nix_memo_env_vars(EnvMemoKnobs::from_process());
         match std::env::current_dir() {
             Ok(working_dir) => config.working_dir = Some(working_dir),
             Err(error) => {
@@ -1414,6 +1472,92 @@ impl NixEvalConfig {
 
     fn set_aos_nix_eval_stats_env_var(&mut self, value: &str) {
         self.set_native_eval_stats(matches!(value.trim(), "1" | "true"));
+    }
+
+    /// Applies one snapshot of the `AOS_NIX_MEMO*` environment knobs.
+    ///
+    /// Boolean knobs parse like the existing switches (`0`/`false`/`off`/`no`
+    /// disable); numeric knobs fall back to their defaults with a warning on
+    /// invalid values — the memo store is advisory, so configuration errors
+    /// never fail evaluation.
+    fn set_aos_nix_memo_env_vars(&mut self, knobs: EnvMemoKnobs) {
+        let mut memo = self.native_memo;
+        if let Some(value) = knobs.master.as_deref() {
+            memo.enabled = env_flag_is_truthy(value);
+        }
+        if let Some(value) = knobs.l0.as_deref() {
+            memo.l0_enabled = !env_flag_is_falsy(value);
+        }
+        if let Some(value) = knobs.l1.as_deref() {
+            let trimmed = value.trim();
+            memo.l1_enabled = if trimmed.is_empty() {
+                None
+            } else if env_flag_is_falsy(trimmed) {
+                Some(false)
+            } else {
+                Some(true)
+            };
+        }
+        if let Some(value) = knobs.min_cost.as_deref() {
+            match value.trim().parse::<u32>() {
+                Ok(min_cost) => memo.min_cost = min_cost,
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_MEMO_MIN_COST value; keeping the default admission floor"
+                ),
+            }
+        }
+        if let Some(value) = knobs.l0_entries.as_deref() {
+            match value.trim().parse::<usize>() {
+                Ok(entries) => memo.l0_entries = entries,
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_MEMO_L0_ENTRIES value; keeping the default entry cap"
+                ),
+            }
+        }
+        if let Some(value) = knobs.l1_bytes.as_deref() {
+            match value.trim().parse::<u64>() {
+                Ok(bytes) => memo.l1_bytes = bytes,
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_MEMO_L1_BYTES value; keeping the default byte budget"
+                ),
+            }
+        }
+        if let Some(value) = knobs.promote_hits.as_deref() {
+            match value.trim().parse::<u32>() {
+                Ok(hits) => memo.promote_hits = hits,
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_MEMO_PROMOTE_HITS value; keeping the default threshold"
+                ),
+            }
+        }
+        if let Some(value) = knobs.check.as_deref() {
+            memo.check_l0 = false;
+            memo.check_l1 = false;
+            for tier in value.split(',') {
+                match tier.trim().to_ascii_lowercase().as_str() {
+                    "" => {}
+                    "all" => {
+                        memo.check_l0 = true;
+                        memo.check_l1 = true;
+                    }
+                    "l0" => memo.check_l0 = true,
+                    "l1" => memo.check_l1 = true,
+                    other => tracing::warn!(
+                        tier = other,
+                        "unknown AOS_NIX_MEMO_CHECK tier; ignoring it"
+                    ),
+                }
+            }
+        }
+        self.native_memo = memo;
     }
 
     fn set_aos_nix_max_rss_env_var(&mut self, value: String) {
@@ -2790,6 +2934,45 @@ fn record_native_cli_fallback(reason: NativeCliFallbackReason) -> u64 {
     counter.fetch_add(1, Ordering::Relaxed) + 1
 }
 
+/// One snapshot of the raw `AOS_NIX_MEMO*` environment values.
+#[derive(Clone, Debug, Default)]
+struct EnvMemoKnobs {
+    master: Option<String>,
+    l0: Option<String>,
+    l1: Option<String>,
+    min_cost: Option<String>,
+    l0_entries: Option<String>,
+    l1_bytes: Option<String>,
+    promote_hits: Option<String>,
+    check: Option<String>,
+}
+
+impl EnvMemoKnobs {
+    /// Captures the process environment's memo knobs.
+    fn from_process() -> Self {
+        Self {
+            master: std::env::var("AOS_NIX_MEMO").ok(),
+            l0: std::env::var("AOS_NIX_MEMO_L0").ok(),
+            l1: std::env::var("AOS_NIX_MEMO_L1").ok(),
+            min_cost: std::env::var("AOS_NIX_MEMO_MIN_COST").ok(),
+            l0_entries: std::env::var("AOS_NIX_MEMO_L0_ENTRIES").ok(),
+            l1_bytes: std::env::var("AOS_NIX_MEMO_L1_BYTES").ok(),
+            promote_hits: std::env::var("AOS_NIX_MEMO_PROMOTE_HITS").ok(),
+            check: std::env::var("AOS_NIX_MEMO_CHECK").ok(),
+        }
+    }
+}
+
+/// True for the truthy switch spellings accepted by the memo knobs.
+fn env_flag_is_truthy(value: &str) -> bool {
+    matches!(value.trim(), "1" | "true" | "on" | "yes")
+}
+
+/// True for the falsy switch spellings shared by the existing kill switches.
+fn env_flag_is_falsy(value: &str) -> bool {
+    matches!(value.trim(), "0" | "false" | "off" | "no")
+}
+
 #[cfg(feature = "native-eval")]
 fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptions> {
     let mut options = TreeWalkOptions::new();
@@ -2855,6 +3038,18 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     }
     options.set_trace_verbose(config.trace_verbose());
     options.set_eval_stats_dump(config.native_eval_stats());
+    let memo = config.native_memo();
+    options.set_memo_options(MemoOptions {
+        enabled: memo.enabled,
+        l0_enabled: memo.l0_enabled,
+        l1_enabled: memo.l1_enabled,
+        min_cost: memo.min_cost,
+        l0_entries: memo.l0_entries,
+        l1_bytes: memo.l1_bytes,
+        promote_hits: memo.promote_hits,
+        check_l0: memo.check_l0,
+        check_l1: memo.check_l1,
+    });
     options.set_jit_tier1_publish_enabled(config.native_jit());
     // Parallel mode overrides the JIT flag: the tier-1 engine is worker-affine
     // and is never installed when parallel workers are configured.
@@ -3205,6 +3400,45 @@ mod tests {
             .expect_err("relative native cache root should be invalid");
 
         assert!(error.to_string().contains("AOS_NIX_CACHE"));
+    }
+
+    #[test]
+    fn eval_config_parses_memo_env_knobs() {
+        let mut config = NixEvalConfig::new();
+        config.set_aos_nix_memo_env_vars(EnvMemoKnobs {
+            master: Some("1".to_owned()),
+            l0: Some("off".to_owned()),
+            l1: Some("true".to_owned()),
+            min_cost: Some("128".to_owned()),
+            l0_entries: Some("1024".to_owned()),
+            l1_bytes: Some("4096".to_owned()),
+            promote_hits: Some("3".to_owned()),
+            check: Some("l0,l1".to_owned()),
+        });
+        let memo = config.native_memo();
+        assert!(memo.enabled);
+        assert!(!memo.l0_enabled);
+        assert_eq!(memo.l1_enabled, Some(true));
+        assert_eq!(memo.min_cost, 128);
+        assert_eq!(memo.l0_entries, 1024);
+        assert_eq!(memo.l1_bytes, 4096);
+        assert_eq!(memo.promote_hits, 3);
+        assert!(memo.check_l0);
+        assert!(memo.check_l1);
+
+        // Invalid numeric values keep the previous settings; `all` selects
+        // both CHECK tiers; falsy master disables.
+        config.set_aos_nix_memo_env_vars(EnvMemoKnobs {
+            master: Some("off".to_owned()),
+            min_cost: Some("not-a-number".to_owned()),
+            check: Some("all".to_owned()),
+            ..EnvMemoKnobs::default()
+        });
+        let memo = config.native_memo();
+        assert!(!memo.enabled);
+        assert_eq!(memo.min_cost, 128);
+        assert!(memo.check_l0);
+        assert!(memo.check_l1);
     }
 
     #[test]

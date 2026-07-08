@@ -26,6 +26,16 @@ pub enum TreeWalkErrorKind {
         /// The number of modules already loaded.
         modules: usize,
     },
+    /// A content-memo CHECK-mode hit diverged from a fresh evaluation.
+    ///
+    /// Raised only under `AOS_NIX_MEMO_CHECK`, where every content-memo hit
+    /// is shadowed by a real evaluation and asserted byte-identical; this is
+    /// the diagnostic failure for a divergence, never a production path.
+    #[error("content-memo hit at node {id:?} diverged from a fresh evaluation")]
+    MemoCheckDivergence {
+        /// The force site whose memoized payload disagreed.
+        id: IrId,
+    },
     /// The node kind and node payload disagreed.
     #[error("invalid payload for {kind:?} node {id:?}; expected {expected}")]
     InvalidPayload {

@@ -7,6 +7,7 @@ use crate::eval::heap::{SharedHeapArena, SharedHeapShard};
 mod force_identity;
 mod force_payload;
 mod force_persistence;
+mod memo;
 mod module_env;
 
 const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expression-identity-v1";
@@ -356,6 +357,11 @@ impl TreeWalk {
         let multi_worker_parallel = options
             .parallel_workers()
             .is_some_and(|workers| workers.get() > 1);
+        // Per-worker content-memo table (MEMO-1 L0). Allocated only when the
+        // tier is enabled so the memo adds nothing to the force path otherwise.
+        let memo_l0 = options
+            .memo_l0_active()
+            .then(|| super::memo::MemoL0Table::new(options.memo_options().l0_entries));
         Self {
             modules: vec![TreeWalkModule::new(
                 ir.clone(),
@@ -436,6 +442,9 @@ impl TreeWalk {
             tier1_skipped_def_sites: HashSet::new(),
             tier1_engine: None,
             parallel_force_registry,
+            memo_l0,
+            memo_def_sites: HashMap::new(),
+            memo_unhashable_values: HashSet::new(),
             #[cfg(test)]
             tree_walk_list_wrapper_calls: 0,
             #[cfg(test)]

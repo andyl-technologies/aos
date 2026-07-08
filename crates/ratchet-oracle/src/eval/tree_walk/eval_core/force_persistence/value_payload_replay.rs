@@ -26,7 +26,7 @@ impl TreeWalk {
         self.value_for_cached_expression_payload_with_depth(payload, 0, None, None)
     }
 
-    pub(super) fn prepare_observable_payload_for_subject(
+    pub(in crate::eval::tree_walk) fn prepare_observable_payload_for_subject(
         &self,
         payload: CachedExpressionValue,
         subject: &ForceCacheSubject,
@@ -42,7 +42,7 @@ impl TreeWalk {
         Some(payload.with_attr_position_source_hash(source_hash))
     }
 
-    pub(super) fn payload_position_remap_for_subject(
+    pub(in crate::eval::tree_walk) fn payload_position_remap_for_subject(
         &self,
         payload: &CachedExpressionValue,
         subject: &ForceCacheSubject,

@@ -261,6 +261,7 @@ mod flake;
 mod gc;
 mod hash;
 mod hash_file_surface;
+mod memo_l0;
 mod numeric;
 mod options;
 mod parallel_demand_pool;

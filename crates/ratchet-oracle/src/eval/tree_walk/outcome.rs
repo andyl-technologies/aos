@@ -13390,6 +13390,14 @@ pub struct EvalStats {
     pub(crate) tier1_dispatched: u64,
     pub(crate) tier1_deopted: u64,
     pub(crate) tier1_blacklisted: u64,
+    pub(crate) memo_l0_hits: u64,
+    pub(crate) memo_l0_misses: u64,
+    pub(crate) memo_l0_admissions: u64,
+    pub(crate) memo_l0_declines: u64,
+    pub(crate) memo_l1_hits: u64,
+    pub(crate) memo_l1_misses: u64,
+    pub(crate) memo_l1_admissions: u64,
+    pub(crate) memo_l1_declines: u64,
 }
 
 impl EvalStats {
@@ -13612,6 +13620,14 @@ impl EvalStats {
             tier1_dispatched,
             tier1_deopted,
             tier1_blacklisted,
+            memo_l0_hits,
+            memo_l0_misses,
+            memo_l0_admissions,
+            memo_l0_declines,
+            memo_l1_hits,
+            memo_l1_misses,
+            memo_l1_admissions,
+            memo_l1_declines,
         } = *other;
         self.thunks_forced = self.thunks_forced.saturating_add(thunks_forced);
         self.thunks_allocated = self.thunks_allocated.saturating_add(thunks_allocated);
@@ -13700,6 +13716,14 @@ impl EvalStats {
         self.tier1_dispatched = self.tier1_dispatched.saturating_add(tier1_dispatched);
         self.tier1_deopted = self.tier1_deopted.saturating_add(tier1_deopted);
         self.tier1_blacklisted = self.tier1_blacklisted.saturating_add(tier1_blacklisted);
+        self.memo_l0_hits = self.memo_l0_hits.saturating_add(memo_l0_hits);
+        self.memo_l0_misses = self.memo_l0_misses.saturating_add(memo_l0_misses);
+        self.memo_l0_admissions = self.memo_l0_admissions.saturating_add(memo_l0_admissions);
+        self.memo_l0_declines = self.memo_l0_declines.saturating_add(memo_l0_declines);
+        self.memo_l1_hits = self.memo_l1_hits.saturating_add(memo_l1_hits);
+        self.memo_l1_misses = self.memo_l1_misses.saturating_add(memo_l1_misses);
+        self.memo_l1_admissions = self.memo_l1_admissions.saturating_add(memo_l1_admissions);
+        self.memo_l1_declines = self.memo_l1_declines.saturating_add(memo_l1_declines);
     }
 
     /// Returns the number of `.drv` paths reused from clean derivation ATerm records.
@@ -13854,6 +13878,46 @@ impl EvalStats {
     /// Returns the number of def-sites blacklisted after a failed tier-1 lowering.
     pub const fn tier1_blacklisted(&self) -> u64 {
         self.tier1_blacklisted
+    }
+
+    /// Returns L0 content-memo hits (replayed instead of evaluated).
+    pub const fn memo_l0_hits(&self) -> u64 {
+        self.memo_l0_hits
+    }
+
+    /// Returns L0 content-memo probe misses (including failed revalidations).
+    pub const fn memo_l0_misses(&self) -> u64 {
+        self.memo_l0_misses
+    }
+
+    /// Returns entries admitted into the L0 content memo.
+    pub const fn memo_l0_admissions(&self) -> u64 {
+        self.memo_l0_admissions
+    }
+
+    /// Returns L0 content-memo eligibility and record declines.
+    pub const fn memo_l0_declines(&self) -> u64 {
+        self.memo_l0_declines
+    }
+
+    /// Returns L1 (in-process shared) content-memo hits.
+    pub const fn memo_l1_hits(&self) -> u64 {
+        self.memo_l1_hits
+    }
+
+    /// Returns L1 content-memo probe misses (including failed revalidations).
+    pub const fn memo_l1_misses(&self) -> u64 {
+        self.memo_l1_misses
+    }
+
+    /// Returns entries published into the L1 content memo.
+    pub const fn memo_l1_admissions(&self) -> u64 {
+        self.memo_l1_admissions
+    }
+
+    /// Returns L1 content-memo eligibility and record declines.
+    pub const fn memo_l1_declines(&self) -> u64 {
+        self.memo_l1_declines
     }
 
     pub(in crate::eval::tree_walk) fn record_heap_tier_b_admission(

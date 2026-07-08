@@ -367,6 +367,14 @@ pub(crate) struct SharedEvalContext {
     pub(super) symbols: SharedSymbolLog,
     pub(super) known_derivations: SharedKnownDerivationLog,
     pub(super) text_store: SharedTextStoreLog,
+    /// The in-process shared content-memo tier (MEMO-1 L1).
+    ///
+    /// `Some` exactly when the L1 tier is active for this evaluation. This is
+    /// the parallel substrate's first shared *writable* map: probes lock one
+    /// shard, publication is first-write-wins, and payloads are
+    /// self-contained plain data, so no cross-worker heap publication
+    /// protocol is involved beyond the shard mutex itself.
+    pub(super) memo: Option<Arc<super::memo::SharedMemoTable>>,
     queue: DemandQueue,
     counters: DemandCounters,
 }
@@ -419,6 +427,11 @@ impl ParallelDemandPool {
             symbols: SharedSymbolLog::seed(main.symbols.clone()),
             known_derivations: SharedKnownDerivationLog::default(),
             text_store: SharedTextStoreLog::default(),
+            memo: main.options.memo_l1_active().then(|| {
+                Arc::new(super::memo::SharedMemoTable::new(
+                    main.options.memo_options().l1_bytes,
+                ))
+            }),
             queue: DemandQueue::default(),
             counters: DemandCounters::default(),
         });

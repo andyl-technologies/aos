@@ -3,6 +3,7 @@
 use super::*;
 
 mod eval_stats;
+mod memo;
 mod path_policy;
 mod result_fingerprint;
 mod root_cutoff;

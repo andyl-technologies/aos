@@ -7,7 +7,7 @@ use crate::cache::hashing::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum CapturedFreeVariableDependency {
+pub(super) enum CapturedFreeVariableDependency {
     Slot {
         frame_index: usize,
         slot: u32,
@@ -26,7 +26,7 @@ enum CapturedFreeVariableDependency {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct DefaultSelectDependency {
+pub(super) struct DefaultSelectDependency {
     node: u32,
     nested_frame_count: usize,
     static_scopes: Box<[StaticBindingScope]>,
@@ -396,7 +396,7 @@ impl TreeWalk {
         ))
     }
 
-    fn force_cache_static_has_attr_value_hash(
+    pub(super) fn force_cache_static_has_attr_value_hash(
         &self,
         module_id: EvalModuleId,
         receiver: Value,
@@ -907,7 +907,7 @@ impl TreeWalk {
         Some(slots)
     }
 
-    fn captured_free_variable_dependencies(
+    pub(super) fn captured_free_variable_dependencies(
         ir: &Ir,
         root: IrId,
         captured_frame_count: usize,
@@ -1415,7 +1415,7 @@ impl TreeWalk {
         true
     }
 
-    fn node_is_force_lookup_safe(ir: &Ir, symbols: &SymbolTable, node: &IrNode) -> bool {
+    pub(super) fn node_is_force_lookup_safe(ir: &Ir, symbols: &SymbolTable, node: &IrNode) -> bool {
         if node.kind == IrKind::BuiltinAttr {
             return Self::builtin_attr_is_force_cache_lookup_safe(symbols, node);
         }
@@ -1666,7 +1666,7 @@ impl TreeWalk {
         matches!(node.data, IrData::Local { .. } | IrData::Upval { .. })
     }
 
-    fn push_ir_children(ir: &Ir, node: &IrNode, stack: &mut Vec<IrId>) -> bool {
+    pub(super) fn push_ir_children(ir: &Ir, node: &IrNode, stack: &mut Vec<IrId>) -> bool {
         match node.data {
             IrData::None
             | IrData::Int(_)

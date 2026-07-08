@@ -422,6 +422,66 @@ pub(crate) use version::{
     SplitVersionRanges, base_name_range, compare_version_bytes, parse_drv_name_split,
 };
 
+/// Configuration for the in-process content-keyed memoization tiers (MEMO-1).
+///
+/// Controls the L0 (per-worker, in-thread) and L1 (in-process shared, parallel
+/// mode) content memo tables described by RFC-0007's tiered content-keyed
+/// memoization design. The store is purely advisory: every knob here is a
+/// performance setting that must never change evaluation results, so none of
+/// these fields participate in the result-affecting options fingerprint.
+///
+/// The master switch defaults to **off** for this first landing (the design
+/// document defaults it on; flipping the default is gated on corpus
+/// measurement).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoOptions {
+    /// Master switch for the content memo (`AOS_NIX_MEMO`).
+    pub enabled: bool,
+    /// Enables the per-worker in-thread tier (`AOS_NIX_MEMO_L0`).
+    pub l0_enabled: bool,
+    /// Enables the in-process shared tier (`AOS_NIX_MEMO_L1`).
+    ///
+    /// `None` selects the default policy: on exactly when parallel workers are
+    /// configured (the shared tier is pointless in serial mode where L0
+    /// already covers the process).
+    pub l1_enabled: Option<bool>,
+    /// Static recompute-estimate admission floor (`AOS_NIX_MEMO_MIN_COST`).
+    ///
+    /// Def-sites whose lowered-IR static cost estimate falls below this floor
+    /// are never probed or recorded, keeping the memo entirely off the bare
+    /// force path for cheap subtrees.
+    pub min_cost: u32,
+    /// Per-worker L0 entry cap (`AOS_NIX_MEMO_L0_ENTRIES`).
+    pub l0_entries: usize,
+    /// L1 retained-bytes budget (`AOS_NIX_MEMO_L1_BYTES`).
+    pub l1_bytes: u64,
+    /// Hits at L1 before an entry is also installed at L0
+    /// (`AOS_NIX_MEMO_PROMOTE_HITS`).
+    pub promote_hits: u32,
+    /// Shadow-checks every L0 hit against a fresh evaluation
+    /// (`AOS_NIX_MEMO_CHECK=l0` or `all`).
+    pub check_l0: bool,
+    /// Shadow-checks every L1 hit against a fresh evaluation
+    /// (`AOS_NIX_MEMO_CHECK=l1` or `all`).
+    pub check_l1: bool,
+}
+
+impl Default for MemoOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            l0_enabled: true,
+            l1_enabled: None,
+            min_cost: 64,
+            l0_entries: 65_536,
+            l1_bytes: 256 * 1024 * 1024,
+            promote_hits: 2,
+            check_l0: false,
+            check_l1: false,
+        }
+    }
+}
+
 /// Runtime options used by the tree-walk evaluator.
 ///
 /// These options carry interpreter settings that C++ Nix normally reads from
@@ -466,6 +526,7 @@ pub struct TreeWalkOptions {
     parallel_thunk_worker_id: ParallelThunkWorkerId,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
+    memo: MemoOptions,
     #[cfg(test)]
     fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -510,6 +571,7 @@ impl Default for TreeWalkOptions {
             parallel_thunk_worker_id: ParallelThunkWorkerId::FIRST,
             heap_cheap_memory_advice_min_idle_epochs: None,
             flake_ref_resolutions: BTreeMap::new(),
+            memo: MemoOptions::default(),
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),
         }
@@ -1138,6 +1200,20 @@ pub struct TreeWalk {
     // cross-worker deadlock cycles before parking. Workers sharing one demand
     // graph must share one registry (see `set_parallel_force_registry`).
     parallel_force_registry: Option<Arc<ParallelForceCycleRegistry>>,
+    // Per-worker in-thread content memo (MEMO-1 L0). `Some` exactly when
+    // `MemoOptions` enables the L0 tier; `None` keeps the force path free of
+    // any memo bookkeeping. See `memo` and `eval_core::memo`.
+    memo_l0: Option<memo::MemoL0Table>,
+    // Per-def-site static admission decisions for the content memo, computed
+    // once per `(module, node)` body and reused by every later force of any
+    // thunk instance of that def-site. This is the runtime realization of the
+    // design's "admission flags on lowered nodes": non-admitted def-sites pay
+    // one hash-map probe per force and nothing else.
+    memo_def_sites: HashMap<EvalNodeRef, memo::MemoDefSiteState>,
+    // Per-eval memo of captured values known to have no durable hash (keyed
+    // by value payload bits). Purely advisory: a stale entry can only cause
+    // a spurious memo decline. See `eval_core::memo`.
+    memo_unhashable_values: HashSet<u64>,
     #[cfg(test)]
     tree_walk_list_wrapper_calls: usize,
     #[cfg(test)]
@@ -1360,6 +1436,7 @@ mod eval_load;
 mod eval_numeric;
 mod eval_path_ops;
 mod eval_primop_apply;
+mod memo;
 mod parallel_demand;
 mod eval_primop_bind;
 mod eval_raw;
