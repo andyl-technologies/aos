@@ -108,6 +108,7 @@ Full spec: **[27 — engineering standards and code quality](27-engineering-stan
 | [26](26-optimization-pass-catalog.md) | The optimization pass catalog: the simplifier specified pass-by-pass over the IR (matched node kinds, before→after rewrite, preconditions, fixpoint phase order, committed vs measure-gated) |
 | [27](27-engineering-standards.md) | Engineering standards: crate/dir structure + safe/unsafe fence, error handling (thiserror/anyhow), `tracing` logging, docs, trait abstractions, performance, test coverage, debugging hooks, file-size limits, commit hygiene |
 | [28](28-generalization-and-language-dialects.md) | Generalization & language dialects: the `ratchet` engine, Core IR vs Nix dialect (MLIR-style), CLIF as the low-level universal, the cache-soundness boundary, S-22/S-23, and the Phase 1b re-layering |
+| [29](29-tiered-content-keyed-memoization.md) | Unified tiered content-keyed memoization: one record abstraction subsuming the force cache, root cutoff, parse cache, and the JIT compiled-body cache; L0–L3 tier placement by recompute economics, per-subtree impure slices, per-tier CHECK mode, MEMO-1/MEMO-2 phasing |
 
 ## Decision log
 
