@@ -83,7 +83,7 @@ fn artifact_bundle_hydrates_entry_files() {
         .read_resolved()
         .expect("hydrated resolved artifact reads");
     assert_eq!(resolved.arena.nodes(), parsed.resolved.arena.nodes());
-    let ir = hydrated.read_ir().expect("hydrated IR artifact reads");
+    let (ir, _) = hydrated.read_ir().expect("hydrated IR artifact reads");
     assert!(lowered_ir_matches(&ir, &parsed.ir));
     assert_eq!(ir.facts.as_slice(), parsed.ir.facts.as_slice());
 
@@ -109,10 +109,10 @@ fn artifact_bundle_hydration_replaces_stale_fact_sidecar() {
             &ParseCacheMeta::new(cache.schema_version(), Some("stale.nix".to_owned()), 0, 0),
         )
         .expect("initial artifact writes");
-    let stale_ir = hydrated.read_ir().expect("initial IR reads");
+    let (stale_ir, _) = hydrated.read_ir().expect("initial IR reads");
     let mut stale_facts = IrFacts::conservative(stale_ir.arena.nodes().len());
     let stale_fact = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Once,
         escape: Escape::NoEscape,
     };
@@ -124,6 +124,7 @@ fn artifact_bundle_hydration_replaces_stale_fact_sidecar() {
         encode_ir_facts(
             &stale_facts,
             lowered_ir_fingerprint(&stale_ir).expect("stale IR fingerprint computes"),
+            crate::compile::IR_ANALYSIS_VERSION,
         )
         .expect("stale facts encode"),
     )
@@ -137,7 +138,7 @@ fn artifact_bundle_hydration_replaces_stale_fact_sidecar() {
 
     assert!(hydrated.is_complete());
     assert!(hydrated.facts_path().is_file());
-    let ir = hydrated.read_ir().expect("hydrated IR reads");
+    let (ir, _) = hydrated.read_ir().expect("hydrated IR reads");
     assert_eq!(ir.facts.as_slice(), parsed.ir.facts.as_slice());
     assert_ne!(ir.node_facts(ir.root), Some(stale_fact));
 
@@ -178,7 +179,7 @@ fn artifact_bundle_hydration_removes_stale_fact_sidecar_for_factless_bundles() {
 
     assert!(hydrated.is_complete());
     assert!(!hydrated.facts_path().exists());
-    let ir = hydrated.read_ir().expect("hydrated IR reads");
+    let (ir, _) = hydrated.read_ir().expect("hydrated IR reads");
     assert!(
         ir.facts
             .as_slice()
@@ -216,7 +217,7 @@ fn artifact_bundle_hydration_ignores_invalid_fact_payloads() {
 
     assert!(hydrated.is_complete());
     assert!(!hydrated.facts_path().exists());
-    let ir = hydrated.read_ir().expect("hydrated IR reads");
+    let (ir, _) = hydrated.read_ir().expect("hydrated IR reads");
     assert!(
         ir.facts
             .as_slice()

@@ -8,7 +8,7 @@ fn set_facts(ir: &mut Ir, id: IrId, facts: ExprFacts) {
 
 fn strict_no_escape() -> ExprFacts {
     ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Many,
         escape: Escape::NoEscape,
     }
@@ -80,7 +80,7 @@ fn scalar_replacement_plan_retains_scalars_without_escape_proof() {
         &mut ir,
         root,
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::Escapes,
         },
@@ -95,7 +95,7 @@ fn scalar_replacement_plan_retains_scalars_without_escape_proof() {
     assert_eq!(
         plan.retained()[0].reason(),
         ScalarReplacementRetentionReason::MissingProofs {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             escape: Escape::Escapes
         }
     );
@@ -181,7 +181,7 @@ fn scalar_replacement_plan_admits_strict_no_escape_primop_scalars() {
     let mut ir = annotate_allocations("builtins.isInt 1");
     let root = ir.root;
     assert_eq!(node(&ir, root).kind, IrKind::PrimOp);
-    ir.facts.get_mut(root).expect("root fact exists").strictness = Strictness::Strict;
+    ir.facts.get_mut(root).expect("root fact exists").strictness = Strictness::DemandedBeforeEffect;
 
     let plan = scalar_replacement_plan(&ir).expect("scalar replacement plan succeeds");
 

@@ -22,7 +22,7 @@ use crate::syntax::Symbol;
 /// Builds a scalar replacement plan for the current IR facts.
 ///
 /// Immediate scalar literals and direct primops are admitted only when their
-/// facts prove both [`Strictness::Strict`] and [`Escape::NoEscape`]. Strict
+/// facts prove both [`Strictness::DemandedBeforeEffect`] and [`Escape::NoEscape`]. Strict
 /// no-escape lists and attrsets are admitted only when the planner can recheck
 /// that they are uniquely consumed by an immediate-scalar primop. Scalar
 /// candidates with missing proofs are retained with their current facts, while
@@ -60,7 +60,7 @@ pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarR
 
         if let Some(kind) = scalar_kind(ir, id, node.kind, node.data)? {
             plan.scalar_candidate_count += 1;
-            if facts.strictness == Strictness::Strict && facts.escape == Escape::NoEscape {
+            if facts.strictness == Strictness::DemandedBeforeEffect && facts.escape == Escape::NoEscape {
                 plan.replacements.push(ScalarReplacement { node: id, kind });
             } else {
                 plan.retained.push(ScalarReplacementRetention {
@@ -74,7 +74,7 @@ pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarR
             continue;
         }
 
-        if facts.strictness == Strictness::Strict && facts.escape == Escape::NoEscape {
+        if facts.strictness == Strictness::DemandedBeforeEffect && facts.escape == Escape::NoEscape {
             match aggregate_kind(ir, id, node.kind, node.data)? {
                 Some(kind) => {
                     plan.aggregate_candidate_count += 1;
@@ -94,7 +94,7 @@ pub fn scalar_replacement_plan(ir: &Ir) -> Result<ScalarReplacementPlan, ScalarR
             }
         }
 
-        if facts.strictness == Strictness::Strict && facts.escape == Escape::NoEscape {
+        if facts.strictness == Strictness::DemandedBeforeEffect && facts.escape == Escape::NoEscape {
             plan.retained.push(ScalarReplacementRetention {
                 node: id,
                 reason: ScalarReplacementRetentionReason::UnsupportedNodeKind { kind: node.kind },

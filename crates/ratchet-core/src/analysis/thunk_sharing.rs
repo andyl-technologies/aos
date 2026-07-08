@@ -69,7 +69,7 @@ fn update_reason(
     strictness: Strictness,
     escape: Escape,
 ) -> FrameLocalThunkUpdateReason {
-    if cardinality == Cardinality::Absent && strictness == Strictness::Strict {
+    if cardinality == Cardinality::Absent && strictness.is_demanded() {
         return FrameLocalThunkUpdateReason::AbsentButStrict;
     }
     if cardinality != Cardinality::Once {

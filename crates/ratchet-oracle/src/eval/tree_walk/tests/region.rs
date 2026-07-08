@@ -23,7 +23,7 @@ fn region_plan_for_allocation_fails_closed_for_conservative_facts() {
 fn region_plan_for_allocation_uses_strict_no_escape_facts() {
     let mut ir = lower("x: x");
     *ir.facts.get_mut(ir.root).expect("root fact exists") = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Many,
         escape: Escape::NoEscape,
     };
@@ -50,7 +50,7 @@ fn region_plan_for_allocation_routes_hash_consed_shapes_to_permanent_shared() {
     ] {
         let mut ir = lower(source);
         *ir.facts.get_mut(ir.root).expect("root fact exists") = ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::NoEscape,
         };
@@ -78,7 +78,7 @@ fn region_plan_for_allocation_requires_strictness_and_no_escape() {
             "no escape without strictness has latent force",
         ),
         (
-            Strictness::Strict,
+            Strictness::DemandedBeforeEffect,
             Escape::Escapes,
             "strict escaping node leaves the frame",
         ),
@@ -114,7 +114,7 @@ fn region_plan_for_allocation_keeps_thunk_allocations_conservative() {
         ],
     );
     *ir.facts.get_mut(root).expect("root fact exists") = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Once,
         escape: Escape::NoEscape,
     };
@@ -143,7 +143,7 @@ fn region_plan_for_allocation_requires_speculable_effects() {
         )],
     );
     *ir.facts.get_mut(root).expect("root fact exists") = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Once,
         escape: Escape::NoEscape,
     };

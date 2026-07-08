@@ -12,6 +12,7 @@
 //!
 //! - `macros` — the declaration macros consumed by the inventory.
 //! - `declarations` — the `define_builtins!` invocation and generated `BUILTINS` registry.
+//! - `demand` — the per-builtin argument demand signatures used by strictness analysis.
 //! - `types` — the declaration record types, executor trait, and registry.
 //! - `docs` — the short user-facing documentation values.
 //! - `lookup` — the compile-time perfect-hash name lookup table.
@@ -23,6 +24,7 @@ pub(super) use crate::{IrId, IrNode};
 mod macros;
 
 mod declarations;
+mod demand;
 mod docs;
 mod lookup;
 mod types;
@@ -33,6 +35,7 @@ mod tests;
 mod tests_metadata;
 
 pub use declarations::{BUILTINS, BuiltinKind, BuiltinLookup};
+pub use demand::{ArgDemand, DemandSignature, demand_signature};
 pub use docs::*;
 pub use lookup::BuiltinLookupTable;
 pub use types::BuiltinDefinition;

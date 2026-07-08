@@ -74,7 +74,7 @@ fn tier1_thunk_fact_decision_maps_core_fact_lattice() {
         ),
         (
             ExprFacts {
-                strictness: Strictness::Strict,
+                strictness: Strictness::DemandedBeforeEffect,
                 cardinality: Cardinality::Many,
                 escape: Escape::Escapes,
             },
@@ -82,9 +82,41 @@ fn tier1_thunk_fact_decision_maps_core_fact_lattice() {
             ThunkSharing::Update,
             JitTier1ThunkFactDecision::EvaluateEagerWhnf,
         ),
+        // Demanded-but-not-before-effect fails closed: S1 alone never
+        // licenses eager evaluation (S2 requires DemandedBeforeEffect).
         (
             ExprFacts {
-                strictness: Strictness::Strict,
+                strictness: Strictness::Demanded,
+                cardinality: Cardinality::Many,
+                escape: Escape::Escapes,
+            },
+            BindingLowering::Thunk,
+            ThunkSharing::Update,
+            JitTier1ThunkFactDecision::AllocateUpdatingThunk,
+        ),
+        (
+            ExprFacts {
+                strictness: Strictness::Demanded,
+                cardinality: Cardinality::Once,
+                escape: Escape::NoEscape,
+            },
+            BindingLowering::Thunk,
+            ThunkSharing::SingleEntry,
+            JitTier1ThunkFactDecision::AllocateSingleEntryThunk,
+        ),
+        (
+            ExprFacts {
+                strictness: Strictness::Demanded,
+                cardinality: Cardinality::Absent,
+                escape: Escape::NoEscape,
+            },
+            BindingLowering::Thunk,
+            ThunkSharing::Update,
+            JitTier1ThunkFactDecision::AllocateUpdatingThunk,
+        ),
+        (
+            ExprFacts {
+                strictness: Strictness::DemandedBeforeEffect,
                 cardinality: Cardinality::Many,
                 escape: Escape::NoEscape,
             },
@@ -94,7 +126,7 @@ fn tier1_thunk_fact_decision_maps_core_fact_lattice() {
         ),
         (
             ExprFacts {
-                strictness: Strictness::Strict,
+                strictness: Strictness::DemandedBeforeEffect,
                 cardinality: Cardinality::Absent,
                 escape: Escape::NoEscape,
             },
@@ -159,7 +191,7 @@ fn tier1_thunk_fact_plan_reads_thunk_alloc_facts_without_lowering_clif() {
 #[test]
 fn tier1_thunk_fact_plan_preserves_absent_strict_contradiction_guard() {
     let facts = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Absent,
         escape: Escape::NoEscape,
     };
@@ -272,7 +304,7 @@ fn tier1_thunk_fact_plan_rejects_fact_table_node_count_mismatch() {
     *facts
         .get_mut(IrId::new(1))
         .expect("overlong fixture still has a thunk fact slot") = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Many,
         escape: Escape::NoEscape,
     };

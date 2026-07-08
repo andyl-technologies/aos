@@ -116,7 +116,7 @@ fn absent_strict_conflict_keeps_update_state() {
         &mut ir,
         thunk,
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Absent,
             escape: Escape::NoEscape,
         },

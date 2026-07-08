@@ -14,7 +14,27 @@ use crate::analysis::{
 };
 use crate::scope::{FrameId, Upvalue};
 
-use super::{Ir, IrFacts, IrId, Strictness};
+use super::{Ir, IrFacts, IrId};
+
+/// Version stamp of the fact-producing analysis pipeline.
+///
+/// Persisted fact sidecars record the analysis version that produced them. A
+/// stored sidecar whose version differs from the current producer must be
+/// treated as absent and re-analyzed; a sidecar carrying the current version
+/// (with a matching lowered-IR fingerprint) can be consumed without
+/// re-running [`annotate_ir`]. Bump this constant whenever any fact
+/// producer's semantics change.
+///
+/// Version history:
+///
+/// - `0` — reserved for fact tables that were serialized without running the
+///   analysis pipeline (conservative placeholder tables).
+/// - `2` — the three-level demand lattice (`Unknown` / `Demanded` /
+///   `DemandedBeforeEffect`), per-execution demand semantics, builtin demand
+///   signatures, and the `tryEval` barrier bit. (`1` denotes the earlier
+///   two-level lattice, which predates version stamping and can never appear
+///   in a stamped sidecar.)
+pub const IR_ANALYSIS_VERSION: u32 = 2;
 
 /// Summary of one complete IR fact annotation run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -48,7 +68,7 @@ impl IrDependencyFootprint {
             .iter()
             .enumerate()
             .filter_map(|(index, facts)| {
-                (facts.strictness == Strictness::Strict).then(|| IrId::new(index as u32))
+                facts.strictness.is_demanded().then(|| IrId::new(index as u32))
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();

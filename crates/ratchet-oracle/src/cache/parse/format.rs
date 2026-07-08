@@ -15,8 +15,8 @@
 //!               <nodes> <children> <frames> <with_chains>
 //!               <attr_paths> <bindings> <shapes>
 //! symbols.bin:  "AOSNIXSY" version symbol_count <len-prefixed symbol bytes>
-//! facts.bin:    "AOSNIXFT" version ir_fingerprint fact_count
-//!               <strictness/cardinality/escape tags>
+//! facts.bin:    "AOSNIXFT" version analysis_version ir_fingerprint fact_count
+//!               <strictness/cardinality/escape/try-eval-barrier tags>
 //! ```
 //!
 //! Per-element encoders and the [`BinaryReader`] live in the sibling
@@ -228,29 +228,40 @@ pub(super) fn encode_lowered_ir(ir: &Ir) -> Result<Vec<u8>, ParseCacheError> {
 pub(super) fn encode_ir_facts(
     facts: &IrFacts,
     ir_fingerprint: LoweredIrFingerprint,
+    analysis_version: u32,
 ) -> Result<Vec<u8>, ParseCacheError> {
     let mut out = Vec::new();
     out.extend_from_slice(FACTS_MAGIC);
     write_u32(&mut out, ARTIFACT_VERSION);
+    write_u32(&mut out, analysis_version);
     out.extend_from_slice(&ir_fingerprint.as_durable_hash().as_bytes());
     write_len(&mut out, facts.len(), "IR fact count")?;
-    for fact in facts.as_slice() {
+    for (index, fact) in facts.as_slice().iter().enumerate() {
         encode_expr_facts(&mut out, *fact);
+        out.push(u8::from(facts.try_eval_barrier(IrId::new(index as u32))));
     }
     Ok(out)
 }
 
+/// Decodes a `facts.bin` sidecar, returning the fact table and the analysis
+/// version recorded by its producer.
+///
+/// Callers decide what the version admits: any structurally valid sidecar may
+/// hydrate in-memory facts, but only a sidecar recording the current
+/// [`crate::compile::IR_ANALYSIS_VERSION`] proves the analysis pipeline
+/// already ran for this artifact.
 pub(super) fn decode_ir_facts(
     bytes: &[u8],
     expected_node_count: usize,
     expected_ir_fingerprint: LoweredIrFingerprint,
-) -> Result<IrFacts, String> {
+) -> Result<(IrFacts, u32), String> {
     let mut reader = BinaryReader::new(bytes);
     reader.expect_magic(FACTS_MAGIC)?;
     let version = reader.read_u32()?;
     if version != ARTIFACT_VERSION {
         return Err(format!("unsupported IR facts artifact version {version}"));
     }
+    let analysis_version = reader.read_u32()?;
     let actual_ir_fingerprint = reader.read_array::<32>()?;
     if actual_ir_fingerprint != expected_ir_fingerprint.as_durable_hash().as_bytes() {
         return Err("IR facts artifact fingerprint does not match lowered IR artifact".to_owned());
@@ -264,13 +275,16 @@ pub(super) fn decode_ir_facts(
 
     let mut facts = IrFacts::conservative(expected_node_count);
     for index in 0..fact_count {
+        let id = IrId::new(index as u32);
         let fact = decode_expr_facts(&mut reader)?;
         *facts
-            .get_mut(IrId::new(index as u32))
+            .get_mut(id)
             .ok_or_else(|| "IR fact index out of range".to_owned())? = fact;
+        let barrier = decode_try_eval_barrier(reader.read_u8()?)?;
+        facts.set_try_eval_barrier(id, barrier);
     }
     reader.expect_eof()?;
-    Ok(facts)
+    Ok((facts, analysis_version))
 }
 
 fn encode_expr_facts(out: &mut Vec<u8>, facts: ExprFacts) {
@@ -290,15 +304,25 @@ fn decode_expr_facts(reader: &mut BinaryReader<'_>) -> Result<ExprFacts, String>
 fn strictness_tag(strictness: Strictness) -> u8 {
     match strictness {
         Strictness::Unknown => 0,
-        Strictness::Strict => 1,
+        Strictness::Demanded => 1,
+        Strictness::DemandedBeforeEffect => 2,
     }
 }
 
 fn decode_strictness(tag: u8) -> Result<Strictness, String> {
     match tag {
         0 => Ok(Strictness::Unknown),
-        1 => Ok(Strictness::Strict),
+        1 => Ok(Strictness::Demanded),
+        2 => Ok(Strictness::DemandedBeforeEffect),
         tag => Err(format!("invalid strictness fact tag {tag}")),
+    }
+}
+
+fn decode_try_eval_barrier(tag: u8) -> Result<bool, String> {
+    match tag {
+        0 => Ok(false),
+        1 => Ok(true),
+        tag => Err(format!("invalid tryEval barrier fact tag {tag}")),
     }
 }
 

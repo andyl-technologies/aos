@@ -116,7 +116,9 @@ impl ParseCacheEntry {
         let ir_bytes = encode_lowered_ir(&ir)?;
         let symbols_bytes = encode_symbols(&resolved.symbols)?;
         let ir_fingerprint = lowered_ir_artifact_fingerprint(&ir_bytes, &symbols_bytes);
-        let facts_bytes = encode_ir_facts(&ir.facts, ir_fingerprint)?;
+        // The freshly-lowered fact table is conservative: record analysis
+        // version 0 so warm loads know the analysis pipeline has not run.
+        let facts_bytes = encode_ir_facts(&ir.facts, ir_fingerprint, 0)?;
         let meta_toml = meta.to_toml();
 
         let _ = fs::remove_file(&meta_path);
@@ -324,7 +326,7 @@ impl ParseCacheEntry {
             });
         }
 
-        let facts_bytes = encode_ir_facts(&ir.facts, stored_fingerprint)?;
+        let facts_bytes = encode_ir_facts(&ir.facts, stored_fingerprint, IR_ANALYSIS_VERSION)?;
         write_cache_file_atomic(&facts_path, &facts_bytes).map_err(|source| {
             ParseCacheError::WriteArtifact {
                 path: facts_path,
@@ -364,12 +366,16 @@ impl ParseCacheEntry {
 
     /// Reads a lowered IR artifact from this cache entry.
     ///
+    /// Returns the decoded IR and whether a valid `facts.bin` sidecar carrying
+    /// the current [`IR_ANALYSIS_VERSION`] was applied — i.e. whether the
+    /// analysis pipeline already ran for this artifact and needs no refresh.
+    ///
     /// # Errors
     ///
     /// Returns [`ParseCacheError`] if `ir.bin` or `symbols.bin` cannot be read
     /// or decoded. An unreadable or invalid optional `facts.bin` sidecar is
     /// ignored, leaving the decoded IR with conservative facts.
-    pub(super) fn read_ir(&self) -> Result<Ir, ParseCacheError> {
+    pub(super) fn read_ir(&self) -> Result<(Ir, bool), ParseCacheError> {
         let ir_path = self.ir_path();
         let symbols_path = self.symbols_path();
         let facts_path = self.facts_path();
@@ -392,14 +398,18 @@ impl ParseCacheEntry {
                 path: ir_path,
                 message,
             })?;
+        let mut facts_current = false;
         if facts_path.is_file() {
             if let Ok(facts) = fs::read(&facts_path) {
-                if let Ok(facts) = decode_ir_facts(&facts, ir.arena.nodes().len(), ir_fingerprint) {
+                if let Ok((facts, analysis_version)) =
+                    decode_ir_facts(&facts, ir.arena.nodes().len(), ir_fingerprint)
+                {
                     ir.facts = facts;
+                    facts_current = analysis_version == IR_ANALYSIS_VERSION;
                 }
             }
         }
-        Ok(ir)
+        Ok((ir, facts_current))
     }
 }
 

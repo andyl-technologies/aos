@@ -979,7 +979,9 @@ impl TreeWalk {
         source: &[u8],
         cached: &mut CachedParse,
     ) {
-        let _ = cached.refresh_and_store_facts();
+        // Warm path: a fingerprint-valid, version-current facts sidecar was
+        // already applied by the artifact load, so this skips re-analysis.
+        let _ = cached.ensure_facts_current_and_stored();
         self.materialize_persist_cached_import(realpath, source, cached);
     }
 

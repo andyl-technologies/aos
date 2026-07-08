@@ -989,7 +989,7 @@ fn escape_propagates_no_escape_bodies_to_strict_wrapping_thunks() {
 
     annotate_ir(&mut ir).expect("analysis succeeds");
 
-    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
     assert_eq!(escape(&ir, body), Escape::NoEscape);
     assert_eq!(escape(&ir, argument), Escape::NoEscape);
 }
@@ -1175,7 +1175,7 @@ fn escape_keeps_strict_and_captured_wrapping_thunks_conservative() {
 
     annotate_ir(&mut ir).expect("analysis succeeds");
 
-    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
     assert_eq!(escape(&ir, body), Escape::NoEscape);
     assert_eq!(escape(&ir, argument), Escape::Escapes);
 }
@@ -1189,7 +1189,7 @@ fn escape_marks_strict_unique_aggregate_scalar_primop_arguments_no_escape() {
     annotate_ir(&mut length_ir).expect("analysis succeeds");
 
     assert_eq!(node(&length_ir, list).kind, IrKind::List);
-    assert_eq!(strictness(&length_ir, list), Strictness::Strict);
+    assert_eq!(strictness(&length_ir, list), Strictness::DemandedBeforeEffect);
     assert_eq!(escape(&length_ir, list), Escape::NoEscape);
 
     let mut has_attr_ir = lowered(r#"builtins.hasAttr "a" { a = 1; }"#);
@@ -1199,7 +1199,7 @@ fn escape_marks_strict_unique_aggregate_scalar_primop_arguments_no_escape() {
     annotate_ir(&mut has_attr_ir).expect("analysis succeeds");
 
     assert_eq!(node(&has_attr_ir, attrset).kind, IrKind::AttrSet);
-    assert_eq!(strictness(&has_attr_ir, attrset), Strictness::Strict);
+    assert_eq!(strictness(&has_attr_ir, attrset), Strictness::DemandedBeforeEffect);
     assert_eq!(escape(&has_attr_ir, attrset), Escape::NoEscape);
 }
 
@@ -1255,7 +1255,7 @@ fn escape_keeps_shared_aggregate_scalar_primop_arguments_conservative() {
         bindings: Box::new([]),
         shapes: Box::new([]),
     };
-    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::DemandedBeforeEffect;
 
     annotate_escape(&mut ir).expect("escape analysis succeeds");
 
@@ -1300,7 +1300,7 @@ fn escape_keeps_with_chain_aggregate_scalar_primop_arguments_conservative() {
         bindings: Box::new([]),
         shapes: Box::new([]),
     };
-    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::DemandedBeforeEffect;
 
     annotate_escape(&mut ir).expect("escape analysis succeeds");
 
@@ -1346,7 +1346,7 @@ fn escape_rejects_malformed_with_chain_scope_references_for_aggregates() {
         bindings: Box::new([]),
         shapes: Box::new([]),
     };
-    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::DemandedBeforeEffect;
 
     let error = annotate_escape(&mut ir).expect_err("malformed with-chain scope rejects");
 
@@ -1411,7 +1411,7 @@ fn escape_keeps_dynamic_attr_path_aggregate_scalar_primop_arguments_conservative
         bindings: Box::new([]),
         shapes: Box::new([]),
     };
-    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::DemandedBeforeEffect;
 
     annotate_escape(&mut ir).expect("escape analysis succeeds");
 
@@ -1549,7 +1549,7 @@ fn raw_identity_thunk_ir(root: IrId, aggregate_child: IrId, with_chains: Box<[Ir
     ir.facts
         .get_mut(thunk)
         .expect("thunk fact exists")
-        .strictness = Strictness::Strict;
+        .strictness = Strictness::DemandedBeforeEffect;
     ir
 }
 
@@ -1709,7 +1709,7 @@ fn escape_rejects_malformed_aggregate_binding_value_references() {
     ir.facts
         .get_mut(attrset)
         .expect("attrset fact exists")
-        .strictness = Strictness::Strict;
+        .strictness = Strictness::DemandedBeforeEffect;
 
     let error = annotate_escape(&mut ir).expect_err("malformed binding value rejects");
 
@@ -1785,7 +1785,7 @@ fn escape_rejects_malformed_dynamic_binding_key_references() {
     ir.facts
         .get_mut(attrset)
         .expect("attrset fact exists")
-        .strictness = Strictness::Strict;
+        .strictness = Strictness::DemandedBeforeEffect;
 
     let error = annotate_escape(&mut ir).expect_err("malformed dynamic key rejects");
 
@@ -1849,7 +1849,7 @@ fn escape_rejects_malformed_dynamic_attr_path_segment_references() {
         bindings: Box::new([]),
         shapes: Box::new([]),
     };
-    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::Strict;
+    ir.facts.get_mut(list).expect("list fact exists").strictness = Strictness::DemandedBeforeEffect;
 
     let error = annotate_escape(&mut ir).expect_err("malformed attr path segment rejects");
 

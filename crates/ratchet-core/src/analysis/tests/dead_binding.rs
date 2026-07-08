@@ -59,7 +59,7 @@ fn dead_binding_plan_retains_absent_strict_conflicts() {
         &mut ir,
         binding,
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Absent,
             escape: Escape::Escapes,
         },
@@ -583,7 +583,7 @@ fn dead_binding_plan_retains_dangling_absent_but_strict_thunk_bodies() {
         &mut ir,
         value,
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Absent,
             escape: Escape::Escapes,
         },

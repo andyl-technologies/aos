@@ -3,8 +3,10 @@
 //! The full worker-wrapper transform will split a function into an always-inline
 //! wrapper and a worker with a stricter calling convention. This precursor does
 //! not rewrite IR. It names only the current safe boundary: direct literal
-//! lambda applications whose argument is already proven strict, and whose simple
-//! formal parameter or formal-set pattern replays as demanded by strictness.
+//! lambda applications whose argument is proven demanded before any observable
+//! effect (the wrapper *reorders* the force ahead of the body, so only the
+//! S1+S2 [`Strictness::DemandedBeforeEffect`] proof licenses it), and whose
+//! simple formal parameter or formal-set pattern replays as demanded.
 
 use thiserror::Error;
 
@@ -15,7 +17,9 @@ use crate::ir::{Ir, IrData, IrFacts, IrId, IrKind, Strictness};
 ///
 /// A call is admitted only when the callee is a literal [`IrKind::Lambda`], the
 /// lambda pattern is split-eligible, and the current fact table proves the lazy
-/// argument is [`Strictness::Strict`]. Split-eligible patterns are simple
+/// argument is [`Strictness::DemandedBeforeEffect`] (a merely
+/// [`Strictness::Demanded`] argument fails closed: wrapper forcing reorders
+/// the force ahead of the body). Split-eligible patterns are simple
 /// [`IrKind::Formal`] parameters and validated [`IrKind::FormalSet`] patterns
 /// whose strictness replay proves that binding forces the argument. Non-literal
 /// callees, unsupported patterns, and unproven arguments are retained so later
@@ -140,7 +144,7 @@ fn retention_reason(
         .facts
         .get(argument)
         .ok_or(WorkerWrapperPlanError::MissingFact { id: argument })?;
-    if facts.strictness != Strictness::Strict {
+    if facts.strictness != Strictness::DemandedBeforeEffect {
         return Ok(Some(WorkerWrapperRetentionReason::ArgumentNotStrict {
             strictness: facts.strictness,
         }));
@@ -242,7 +246,7 @@ fn strictness_proves_argument_demand(
         .facts
         .get(argument)
         .ok_or(WorkerWrapperPlanError::MissingFact { id: argument })?;
-    Ok(facts.strictness == Strictness::Strict)
+    Ok(facts.strictness == Strictness::DemandedBeforeEffect)
 }
 
 fn expected_payload(kind: IrKind) -> &'static str {

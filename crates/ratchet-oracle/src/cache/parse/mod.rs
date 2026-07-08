@@ -31,7 +31,8 @@ use thiserror::Error;
 use crate::cache::hashing::ParseCacheSourceHash;
 use crate::cache::{DurableBlake3Hash, LoweredIrFingerprint, ParseFileContentHash};
 use crate::compile::{
-    Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo, InheritGroupId,
+    Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo, IR_ANALYSIS_VERSION,
+    InheritGroupId,
     InheritResolution, InheritSource, Ir, IrAnalysisError, IrAnalysisReport, IrArena, IrAttrPathId,
     IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError,
     IrFacts, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain,
@@ -367,7 +368,7 @@ impl ParseCache {
             return Ok(None);
         }
         let resolved = entry.read_resolved()?;
-        let ir = entry.read_ir()?;
+        let (ir, facts_current) = entry.read_ir()?;
         Ok(Some(CachedParse {
             key,
             entry,
@@ -375,6 +376,7 @@ impl ParseCache {
             ir,
             hit: true,
             stored: true,
+            facts_current,
         }))
     }
 
@@ -415,6 +417,7 @@ impl ParseCache {
             ir,
             hit: false,
             stored,
+            facts_current: false,
         })
     }
 
@@ -461,6 +464,11 @@ pub struct CachedParse {
     pub hit: bool,
     /// Whether a valid artifact is present in the cache after this operation.
     pub stored: bool,
+    /// Whether [`Self::ir`] carries analysis facts produced by the current
+    /// analysis pipeline version (loaded from a fingerprint-valid,
+    /// version-current `facts.bin` sidecar or refreshed in this process), so
+    /// re-analysis can be skipped.
+    pub facts_current: bool,
 }
 
 impl CachedParse {
@@ -488,8 +496,34 @@ impl CachedParse {
     /// refreshed fact sidecar cannot be written for this parse-cache entry.
     pub fn refresh_and_store_facts(&mut self) -> Result<IrAnalysisReport, ParseFactRefreshError> {
         let report = self.refresh_facts()?;
+        self.facts_current = true;
         self.entry.write_fact_sidecar(&self.ir)?;
         Ok(report)
+    }
+
+    /// Ensures analysis facts are current, refreshing and storing on demand.
+    ///
+    /// This is the warm-path entry point: when the parse artifact was loaded
+    /// with a fingerprint-valid `facts.bin` sidecar recording the current
+    /// analysis version, the call returns `Ok(None)` without re-running any
+    /// analysis or touching the sidecar. Otherwise the facts are refreshed
+    /// in memory (making them current for this handle even if the sidecar
+    /// write then fails) and persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseFactRefreshError`] if analysis rejects malformed IR or
+    /// the refreshed fact sidecar cannot be written for this entry.
+    pub fn ensure_facts_current_and_stored(
+        &mut self,
+    ) -> Result<Option<IrAnalysisReport>, ParseFactRefreshError> {
+        if self.facts_current {
+            return Ok(None);
+        }
+        let report = self.refresh_facts()?;
+        self.facts_current = true;
+        self.entry.write_fact_sidecar(&self.ir)?;
+        Ok(Some(report))
     }
 }
 

@@ -28,7 +28,7 @@ fn strictness_rejects_fact_table_length_mismatches() {
         .facts
         .get_mut(IrId::new(1))
         .expect("stale fact exists")
-        .strictness = Strictness::Strict;
+        .strictness = Strictness::DemandedBeforeEffect;
 
     let error = annotate_strictness(&mut overlong).expect_err("overlong fact table rejects");
 
@@ -39,7 +39,7 @@ fn strictness_rejects_fact_table_length_mismatches() {
             actual: 2,
         }
     );
-    assert_eq!(strictness(&overlong, IrId::new(1)), Strictness::Strict);
+    assert_eq!(strictness(&overlong, IrId::new(1)), Strictness::DemandedBeforeEffect);
 
     let mut short = Ir {
         root: IrId::new(0),
@@ -112,7 +112,7 @@ fn strictness_rejects_malformed_payloads_before_marking_facts() {
 fn strictness_marks_root_and_guaranteed_strict_children_only() {
     let ir = annotate("if 1 == 1 then [ (1 / 0) ] else 0");
     let root = ir.root;
-    assert_eq!(strictness(&ir, root), Strictness::Strict);
+    assert_eq!(strictness(&ir, root), Strictness::DemandedBeforeEffect);
     let IrData::Triple {
         first: condition,
         second: then_branch,
@@ -122,10 +122,20 @@ fn strictness_marks_root_and_guaranteed_strict_children_only() {
         panic!("if payload expected");
     };
 
-    assert_eq!(strictness(&ir, condition), Strictness::Strict);
-    assert_eq!(strictness(&ir, then_branch), Strictness::Unknown);
-    assert_eq!(strictness(&ir, else_branch), Strictness::Unknown);
+    assert_eq!(strictness(&ir, condition), Strictness::DemandedBeforeEffect);
+    // Per-execution semantics: a branch is only evaluated on its own path,
+    // and when it is, the `if`'s consumer forces its value immediately, so
+    // the branch inherits the root's forced position.
+    assert_eq!(
+        strictness(&ir, then_branch),
+        Strictness::DemandedBeforeEffect
+    );
+    assert_eq!(
+        strictness(&ir, else_branch),
+        Strictness::DemandedBeforeEffect
+    );
 
+    // Lazy list elements stay unproven under WHNF list demand.
     let elements = list_elements(&ir, then_branch);
     assert_eq!(strictness(&ir, elements[0]), Strictness::Unknown);
 }
@@ -135,7 +145,7 @@ fn strictness_keeps_lazy_list_elements_unknown_under_whnf_list_demand() {
     let ir = annotate("builtins.length [ (1 / 0) ]");
     let args = primop_args(&ir, ir.root);
     let list = args[0];
-    assert_eq!(strictness(&ir, list), Strictness::Strict);
+    assert_eq!(strictness(&ir, list), Strictness::DemandedBeforeEffect);
 
     let elements = list_elements(&ir, list);
     assert_eq!(node(&ir, elements[0]).kind, IrKind::ThunkAlloc);
@@ -147,30 +157,38 @@ fn strictness_skips_higher_order_callbacks_that_empty_inputs_can_avoid() {
     let map_ir = annotate("builtins.map (builtins.throw \"function\") []");
     let map_args = primop_args(&map_ir, map_ir.root);
     assert_eq!(strictness(&map_ir, map_args[0]), Strictness::Unknown);
-    assert_eq!(strictness(&map_ir, map_args[1]), Strictness::Strict);
+    assert_eq!(strictness(&map_ir, map_args[1]), Strictness::DemandedBeforeEffect);
 
     let sort_ir = annotate("builtins.sort (builtins.throw \"comparator\") []");
     let sort_args = primop_args(&sort_ir, sort_ir.root);
     assert_eq!(strictness(&sort_ir, sort_args[0]), Strictness::Unknown);
-    assert_eq!(strictness(&sort_ir, sort_args[1]), Strictness::Strict);
+    assert_eq!(strictness(&sort_ir, sort_args[1]), Strictness::DemandedBeforeEffect);
 }
 
 #[test]
 fn strictness_keeps_option_dependent_trace_verbose_message_unknown() {
     let trace_ir = annotate("builtins.trace (builtins.throw \"message\") 1");
     let trace_args = primop_args(&trace_ir, trace_ir.root);
-    assert_eq!(strictness(&trace_ir, trace_args[0]), Strictness::Strict);
-    assert_eq!(strictness(&trace_ir, trace_args[1]), Strictness::Unknown);
+    assert_eq!(strictness(&trace_ir, trace_args[0]), Strictness::DemandedBeforeEffect);
+    // The value position is trace's own result: at this root call the
+    // consumer forces it right after trace returns, so the position
+    // inherits the call's forced position. The trace output stays ordered
+    // because the value is evaluated only after the message is emitted.
+    assert_eq!(
+        strictness(&trace_ir, trace_args[1]),
+        Strictness::DemandedBeforeEffect
+    );
 
     let verbose_ir = annotate("builtins.traceVerbose (builtins.throw \"message\") 1");
     let verbose_args = primop_args(&verbose_ir, verbose_ir.root);
+    // The verbose message is only forced when verbose tracing is enabled.
     assert_eq!(
         strictness(&verbose_ir, verbose_args[0]),
         Strictness::Unknown
     );
     assert_eq!(
         strictness(&verbose_ir, verbose_args[1]),
-        Strictness::Unknown
+        Strictness::DemandedBeforeEffect
     );
 }
 
@@ -179,9 +197,9 @@ fn strictness_keeps_foldl_empty_initial_accumulator_lazy() {
     let ir = annotate("builtins.foldl' (builtins.throw \"op\") (builtins.throw \"initial\") []");
     let args = primop_args(&ir, ir.root);
 
-    assert_eq!(strictness(&ir, args[0]), Strictness::Strict);
+    assert_eq!(strictness(&ir, args[0]), Strictness::DemandedBeforeEffect);
     assert_eq!(strictness(&ir, args[1]), Strictness::Unknown);
-    assert_eq!(strictness(&ir, args[2]), Strictness::Strict);
+    assert_eq!(strictness(&ir, args[2]), Strictness::DemandedBeforeEffect);
 }
 
 #[test]
@@ -195,8 +213,12 @@ fn strictness_does_not_mark_assert_body_as_unconditionally_demanded() {
         panic!("assert payload expected");
     };
 
-    assert_eq!(strictness(&ir, condition), Strictness::Strict);
-    assert_eq!(strictness(&ir, body), Strictness::Unknown);
+    assert_eq!(strictness(&ir, condition), Strictness::DemandedBeforeEffect);
+    // Per-execution semantics: the body only evaluates after the condition
+    // held, at which point the assert's consumer forces its value, so the
+    // body inherits the root's forced position. A failing assertion never
+    // reaches the body at all.
+    assert_eq!(strictness(&ir, body), Strictness::DemandedBeforeEffect);
 }
 
 #[test]
@@ -213,7 +235,7 @@ fn strictness_marks_dynamic_attr_keys_but_not_attr_values() {
         panic!("dynamic binding key expected");
     };
 
-    assert_eq!(strictness(&ir, key), Strictness::Strict);
+    assert_eq!(strictness(&ir, key), Strictness::DemandedBeforeEffect);
     assert_eq!(strictness(&ir, binding.value), Strictness::Unknown);
 }
 
@@ -230,7 +252,7 @@ fn strictness_marks_only_leading_dynamic_select_segments() {
     let IrAttrPathSegment::Dynamic(leading_key) = leading_segments[0] else {
         panic!("leading dynamic select segment expected");
     };
-    assert_eq!(strictness(&leading_ir, leading_key), Strictness::Strict);
+    assert_eq!(strictness(&leading_ir, leading_key), Strictness::DemandedBeforeEffect);
 
     let nested_ir = annotate(r#"({ a = {}; }).missing.${builtins.throw "key"}"#);
     let IrData::Select {
@@ -243,7 +265,12 @@ fn strictness_marks_only_leading_dynamic_select_segments() {
     let IrAttrPathSegment::Dynamic(nested_key) = nested_segments[1] else {
         panic!("nested dynamic select segment expected");
     };
-    assert_eq!(strictness(&nested_ir, nested_key), Strictness::Unknown);
+    // Per-execution semantics: a nested segment may never be evaluated, but
+    // when it is, the lookup forces it in the same instant.
+    assert_eq!(
+        strictness(&nested_ir, nested_key),
+        Strictness::DemandedBeforeEffect
+    );
 }
 
 #[test]
@@ -259,7 +286,7 @@ fn strictness_marks_only_leading_dynamic_has_attr_segments() {
     let IrAttrPathSegment::Dynamic(leading_key) = leading_segments[0] else {
         panic!("leading dynamic hasAttr segment expected");
     };
-    assert_eq!(strictness(&leading_ir, leading_key), Strictness::Strict);
+    assert_eq!(strictness(&leading_ir, leading_key), Strictness::DemandedBeforeEffect);
 
     let nested_ir = annotate(r#"({} ? missing.${builtins.throw "key"})"#);
     let IrData::HasAttr {
@@ -272,7 +299,11 @@ fn strictness_marks_only_leading_dynamic_has_attr_segments() {
     let IrAttrPathSegment::Dynamic(nested_key) = nested_segments[1] else {
         panic!("nested dynamic hasAttr segment expected");
     };
-    assert_eq!(strictness(&nested_ir, nested_key), Strictness::Unknown);
+    // Per-execution semantics: forced in the same instant it is evaluated.
+    assert_eq!(
+        strictness(&nested_ir, nested_key),
+        Strictness::DemandedBeforeEffect
+    );
 }
 
 #[test]
@@ -289,7 +320,7 @@ fn strictness_marks_direct_lambda_argument_thunk_when_body_demands_parameter() {
     let report = annotate_strictness(&mut ir).expect("strictness analysis succeeds");
 
     assert!(report.nodes_marked_strict > 0);
-    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
 }
 
 #[test]
@@ -305,7 +336,7 @@ fn strictness_marks_direct_formal_set_lambda_argument_for_pattern_matching() {
 
     annotate_strictness(&mut ir).expect("strictness analysis succeeds");
 
-    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
 }
 
 fn raw_direct_formal_set_lambda_ir(
@@ -482,7 +513,7 @@ fn strictness_marks_direct_lambda_argument_through_intervening_frame() {
 
     annotate_strictness(&mut ir).expect("strictness analysis succeeds");
 
-    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
 }
 
 #[test]
@@ -497,7 +528,7 @@ fn strictness_marks_direct_lambda_argument_in_recursive_dynamic_key() {
 
     annotate_strictness(&mut ir).expect("strictness analysis succeeds");
 
-    assert_eq!(strictness(&ir, argument), Strictness::Strict);
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
 }
 
 #[test]
@@ -550,4 +581,229 @@ fn strictness_respects_shadowing_frames_in_direct_lambda_probe() {
     };
 
     assert_eq!(strictness(&ir, argument), Strictness::Unknown);
+}
+
+#[test]
+fn strictness_marks_argument_through_let_bound_lambda_chase() {
+    let ir = annotate("let f = x: x + 1; in f (1 / 0)");
+    let IrData::Let { body, .. } = node(&ir, ir.root).data else {
+        panic!("let payload expected");
+    };
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, body).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(node(&ir, argument).kind, IrKind::ThunkAlloc);
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
+}
+
+#[test]
+fn strictness_marks_argument_through_select_resolved_lambda_chase() {
+    let ir = annotate("let lib = { inc = x: x + 1; }; in lib.inc (1 / 0)");
+    let IrData::Let { body, .. } = node(&ir, ir.root).data else {
+        panic!("let payload expected");
+    };
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, body).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
+}
+
+#[test]
+fn strictness_keeps_argument_lazy_through_ignoring_let_bound_lambda() {
+    let ir = annotate("let f = x: 7; in f (1 / 0)");
+    let IrData::Let { body, .. } = node(&ir, ir.root).data else {
+        panic!("let payload expected");
+    };
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, body).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(strictness(&ir, argument), Strictness::Unknown);
+}
+
+#[test]
+fn strictness_never_propagates_demand_through_try_eval_application() {
+    // S4: forcing the argument at the apply would escape the tryEval catch.
+    let ir = annotate(r#"(x: builtins.tryEval x) (builtins.throw "boom")"#);
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(node(&ir, argument).kind, IrKind::ThunkAlloc);
+    assert_eq!(strictness(&ir, argument), Strictness::Unknown);
+}
+
+#[test]
+fn strictness_flags_try_eval_argument_barrier_for_relocation_consumers() {
+    let ir = annotate(r#"builtins.tryEval (builtins.throw "boom")"#);
+    let args = primop_args(&ir, ir.root);
+    assert!(ir.facts.try_eval_barrier(args[0]));
+    assert!(!ir.facts.try_eval_barrier(ir.root));
+}
+
+#[test]
+fn strictness_caps_demand_behind_observable_trace_to_demanded() {
+    // The parameter is forced only after the trace output is emitted, so
+    // eager evaluation at the apply would lose the message ordering.
+    let ir = annotate(r#"(x: builtins.trace "m" (x + 1)) (builtins.throw "e")"#);
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(strictness(&ir, argument), Strictness::Demanded);
+}
+
+#[test]
+fn strictness_meets_demand_across_if_branches() {
+    // Demanded in both branches of a total condition: before-effect holds.
+    let both_ir = annotate("(x: if true then x + 1 else x - 1) (1 / 0)");
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&both_ir, both_ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(
+        strictness(&both_ir, argument),
+        Strictness::DemandedBeforeEffect
+    );
+
+    // Demanded in only one branch: no proof on every path.
+    let one_ir = annotate("(x: if true then x + 1 else 0) (1 / 0)");
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&one_ir, one_ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(strictness(&one_ir, argument), Strictness::Unknown);
+}
+
+#[test]
+fn strictness_marks_rec_let_forward_reference_bindings_demanded() {
+    // The body demands `a`; `a`'s value forces `b` when the slot is used, so
+    // both binding values earn the deferred-demand fan-out hint.
+    let ir = annotate("let a = b + 1; b = 2; in a");
+    let bindings = let_binding_values(&ir, ir.root);
+    assert_eq!(strictness(&ir, bindings[0]), Strictness::Demanded);
+    assert_eq!(strictness(&ir, bindings[1]), Strictness::Demanded);
+}
+
+#[test]
+fn strictness_keeps_unused_let_binding_values_unproven() {
+    let ir = annotate("let used = 1; dead = 1 / 0; in used + 1");
+    let bindings = let_binding_values(&ir, ir.root);
+    assert_eq!(strictness(&ir, bindings[0]), Strictness::Demanded);
+    assert_eq!(strictness(&ir, bindings[1]), Strictness::Unknown);
+}
+
+#[test]
+fn strictness_marks_selected_bindings_of_literal_attrset_receivers() {
+    // The literal receiver is built (total) and selected in one step, so the
+    // selected binding is forced before any effect.
+    let ir = annotate("({ a = 1 / 0; b = 1; }).a");
+    let IrData::Select { receiver, .. } = node(&ir, ir.root).data else {
+        panic!("select payload expected");
+    };
+    let IrData::AttrSet { bindings, .. } = node(&ir, receiver).data else {
+        panic!("attrset payload expected");
+    };
+    let selected = ir.bindings[bindings.start as usize];
+    let unselected = ir.bindings[bindings.start as usize + 1];
+    assert_eq!(
+        strictness(&ir, selected.value),
+        Strictness::DemandedBeforeEffect
+    );
+    assert_eq!(strictness(&ir, unselected.value), Strictness::Unknown);
+}
+
+#[test]
+fn strictness_marks_selected_bindings_of_chased_attrset_receivers_demanded() {
+    // A variable-chased receiver was constructed earlier, so the deferred
+    // window back to its allocation only supports the S1 rank.
+    let ir = annotate("let lib = { a = 1 / 0; }; in lib.a");
+    let IrData::Let { bindings, .. } = node(&ir, ir.root).data else {
+        panic!("let payload expected");
+    };
+    let lib_value = ir.bindings[bindings.start as usize].value;
+    let literal = match node(&ir, lib_value).data {
+        IrData::Node(body) => body,
+        _ => lib_value,
+    };
+    let IrData::AttrSet { bindings, .. } = node(&ir, literal).data else {
+        panic!("attrset payload expected");
+    };
+    let selected = ir.bindings[bindings.start as usize];
+    assert_eq!(strictness(&ir, selected.value), Strictness::Demanded);
+}
+
+#[test]
+fn strictness_transfers_result_spine_demand_from_forced_apply_positions() {
+    // `x: x` returns its parameter: the argument is forced exactly when the
+    // apply's value is, which at this forced root position is immediate.
+    let ir = annotate("(x: x) (1 / 0)");
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
+}
+
+#[test]
+fn strictness_declines_shared_ir_without_marking_facts() {
+    // Two parents share one child: per-execution claims are ill-defined, so
+    // the analysis declines and leaves every fact conservative.
+    let shared = IrId::new(0);
+    let arena = IrArena::from_raw_parts(
+        vec![
+            IrNode::new(
+                IrKind::Int,
+                Span::new(0, 1),
+                EffectClass::pure(),
+                IrData::Int(1),
+            ),
+            IrNode::new(
+                IrKind::BinOp,
+                Span::new(0, 3),
+                EffectClass::pure(),
+                IrData::Binary {
+                    op: crate::syntax::BinOpKind::Add,
+                    lhs: shared,
+                    rhs: shared,
+                },
+            ),
+        ],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root: IrId::new(1),
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let report = annotate_strictness(&mut ir).expect("shared IR is declined, not rejected");
+
+    assert_eq!(report.nodes_marked_strict, 0);
+    assert_eq!(strictness(&ir, IrId::new(0)), Strictness::Unknown);
+    assert_eq!(strictness(&ir, IrId::new(1)), Strictness::Unknown);
 }

@@ -686,7 +686,9 @@ impl NixNative {
                             &mut cached,
                         );
                     } else {
-                        let _ = cached.refresh_and_store_facts();
+                        // Warm loads with a version-current facts sidecar
+                        // skip re-analysis entirely.
+                        let _ = cached.ensure_facts_current_and_stored();
                     }
                     return Ok(cached.ir);
                 }
@@ -710,7 +712,8 @@ impl NixNative {
         source_path: Option<&Path>,
         cached: &mut CachedParse,
     ) {
-        let _ = cached.refresh_and_store_facts();
+        // Warm path: a version-current facts sidecar skips re-analysis.
+        let _ = cached.ensure_facts_current_and_stored();
         if !cached.stored {
             return;
         }

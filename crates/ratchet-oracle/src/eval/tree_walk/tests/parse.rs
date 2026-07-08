@@ -821,7 +821,7 @@ fn parse_cached_import_remap_preserves_analysis_facts() {
     let mut imported = lower("let x = 1; in x");
     let root = imported.root;
     let expected = crate::compile::ExprFacts {
-        strictness: crate::compile::Strictness::Strict,
+        strictness: crate::compile::Strictness::DemandedBeforeEffect,
         cardinality: crate::compile::Cardinality::Once,
         escape: crate::compile::Escape::NoEscape,
     };

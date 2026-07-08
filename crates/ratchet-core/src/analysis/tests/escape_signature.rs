@@ -147,7 +147,7 @@ fn raw_primop_scalar_replacement_plan(
         shapes: Box::new([]),
     };
     *ir.facts.get_mut(root).expect("root fact exists") = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Many,
         escape: Escape::NoEscape,
     };

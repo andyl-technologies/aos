@@ -15,7 +15,7 @@ fn set_facts(ir: &mut Ir, id: IrId, facts: ExprFacts) {
 
 fn strict_argument_facts() -> ExprFacts {
     ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Many,
         escape: Escape::Escapes,
     }
@@ -176,7 +176,7 @@ fn worker_wrapper_plan_retains_forged_strict_facts_when_formal_is_ignored() {
         &mut ir,
         argument,
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::Escapes,
         },
@@ -403,7 +403,7 @@ fn worker_wrapper_plan_retains_non_simple_literal_lambda_patterns() {
         &mut ir,
         argument,
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::Escapes,
         },
@@ -679,7 +679,7 @@ fn worker_wrapper_plan_rejects_invalid_simple_formal_payloads() {
         &mut ir,
         argument,
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::Escapes,
         },
@@ -766,7 +766,7 @@ fn worker_wrapper_plan_rejects_invalid_body_payloads() {
         &mut ir,
         argument,
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::Escapes,
         },

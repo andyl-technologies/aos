@@ -89,7 +89,7 @@ impl TreeWalk {
 fn allocation_region_facts_for_node(node: &IrNode, facts: ExprFacts) -> AllocationRegionFacts {
     let proven_no_escape = facts.escape == Escape::NoEscape;
     let thunk_like = matches!(node.kind, IrKind::ThunkAlloc);
-    let no_latent_force = facts.strictness == Strictness::Strict && !thunk_like;
+    let no_latent_force = facts.strictness.is_demanded() && !thunk_like;
     let speculable = node.effect.is_speculable();
     let sharing = allocation_region_sharing_for_node(node.kind);
 

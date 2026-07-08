@@ -216,7 +216,7 @@ pub const fn jit_tier1_thunk_fact_decision_for_facts(
     facts: ExprFacts,
 ) -> JitTier1ThunkFactDecision {
     match (facts.cardinality, facts.strictness) {
-        (Cardinality::Absent, Strictness::Strict) => {
+        (Cardinality::Absent, Strictness::Demanded | Strictness::DemandedBeforeEffect) => {
             return JitTier1ThunkFactDecision::AllocateUpdatingThunk;
         }
         (_, _) => {}

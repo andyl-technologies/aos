@@ -16,12 +16,14 @@ use crate::compile::{
 
 /// Builds the tree-walk allocation plan for one lowered thunk allocation.
 ///
-/// Strict facts may elide the thunk entirely by evaluating the body to WHNF.
-/// When the thunk remains lazy, a single-entry plan is returned only if the
-/// C-8 frame-local predicate admits it. Order-sensitive binding assembly blocks
-/// eager and omitted-storage rewrites so frame population cannot observe
-/// reordered evaluation, but lazy single-entry storage is still allowed when
-/// the sharing proof admits it.
+/// Only a [`Strictness::DemandedBeforeEffect`] proof (S1 + S2) may elide the
+/// thunk entirely by evaluating the body to WHNF; a merely
+/// [`Strictness::Demanded`] fact is an S1-only fan-out hint and keeps lazy
+/// storage. When the thunk remains lazy, a single-entry plan is returned only
+/// if the C-8 frame-local predicate admits it. Order-sensitive binding
+/// assembly blocks eager and omitted-storage rewrites so frame population
+/// cannot observe reordered evaluation, but lazy single-entry storage is
+/// still allowed when the sharing proof admits it.
 ///
 /// # Errors
 ///
@@ -91,7 +93,11 @@ fn order_sensitive_binding_assembly_plan(
     let Some(facts) = ir.node_facts(id) else {
         return Ok(update_slot());
     };
-    if facts.strictness != Strictness::Unknown {
+    // Only the eager-licensing proof keeps the update-slot guard: frame
+    // population is order-sensitive, so an eager-eligible binding must not be
+    // rewritten here. A merely `Demanded` fact is a fan-out hint (S1 only)
+    // and leaves the lazy sharing downgrade as available as an unproven one.
+    if facts.strictness == Strictness::DemandedBeforeEffect {
         return Ok(update_slot());
     }
     let downgrade = frame_local_single_entry_thunk_downgrade(ir, id)?;
@@ -349,7 +355,7 @@ mod tests {
     #[test]
     fn strict_lowering_elides_instead_of_allocating_single_entry_storage() {
         let ir = thunk_ir(ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Once,
             escape: Escape::NoEscape,
         });
@@ -394,9 +400,57 @@ mod tests {
     }
 
     #[test]
+    fn demand_position_keeps_demanded_facts_on_lazy_storage() {
+        // S1-only demand never licenses elision: the fan-out hint leaves the
+        // lazy sharing downgrade in charge.
+        let ir = thunk_ir(ExprFacts {
+            strictness: Strictness::Demanded,
+            cardinality: Cardinality::Once,
+            escape: Escape::NoEscape,
+        });
+
+        let plan = tree_walk_thunk_allocation_plan(
+            &ir,
+            THUNK,
+            TreeWalkThunkAllocationContext::DemandPosition,
+        )
+        .expect("demanded lazy plan succeeds");
+
+        let TreeWalkThunkAllocationPlan::SingleEntry(single_entry) = plan else {
+            panic!("single-entry storage expected for a demanded-once thunk");
+        };
+        assert_eq!(single_entry.thunk(), THUNK);
+        assert_eq!(single_entry.body(), BODY);
+    }
+
+    #[test]
+    fn order_sensitive_binding_assembly_admits_demanded_single_entry_storage() {
+        // A demanded (S1) binding is treated like an unproven one during
+        // order-sensitive assembly: the sharing proof still applies.
+        let ir = thunk_ir(ExprFacts {
+            strictness: Strictness::Demanded,
+            cardinality: Cardinality::Once,
+            escape: Escape::NoEscape,
+        });
+
+        let plan = tree_walk_thunk_allocation_plan(
+            &ir,
+            THUNK,
+            TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly,
+        )
+        .expect("order-sensitive plan succeeds");
+
+        let TreeWalkThunkAllocationPlan::SingleEntry(single_entry) = plan else {
+            panic!("single-entry storage expected");
+        };
+        assert_eq!(single_entry.thunk(), THUNK);
+        assert_eq!(single_entry.body(), BODY);
+    }
+
+    #[test]
     fn order_sensitive_binding_assembly_keeps_strict_facts_on_update_storage() {
         let ir = thunk_ir(ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Once,
             escape: Escape::NoEscape,
         });
@@ -676,7 +730,7 @@ mod tests {
     #[test]
     fn absent_strict_conflict_keeps_update_slot() {
         let ir = thunk_ir(ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Absent,
             escape: Escape::NoEscape,
         });

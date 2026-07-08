@@ -160,7 +160,7 @@ fn lowered_ir_matcher_ignores_non_serialized_fact_table() {
         .facts
         .get_mut(right.root)
         .expect("root fact exists")
-        .strictness = crate::compile::Strictness::Strict;
+        .strictness = crate::compile::Strictness::DemandedBeforeEffect;
 
     assert!(
         lowered_ir_matches(&left, &right),
@@ -180,14 +180,16 @@ fn lowered_ir_fact_artifacts_roundtrip() {
     let mut facts = IrFacts::conservative(2);
     let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");
     let expected = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Once,
         escape: Escape::NoEscape,
     };
     *facts.get_mut(IrId::new(1)).expect("fact slot exists") = expected;
 
-    let encoded = encode_ir_facts(&facts, fingerprint).expect("fact artifact encodes");
-    let decoded = decode_ir_facts(&encoded, 2, fingerprint).expect("fact artifact decodes");
+    let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION).expect("fact artifact encodes");
+    let (decoded, analysis_version) =
+        decode_ir_facts(&encoded, 2, fingerprint).expect("fact artifact decodes");
+    assert_eq!(analysis_version, crate::compile::IR_ANALYSIS_VERSION);
 
     assert_eq!(decoded.as_slice(), facts.as_slice());
     assert_eq!(decoded.get(IrId::new(1)), Some(expected));
@@ -197,7 +199,7 @@ fn lowered_ir_fact_artifacts_roundtrip() {
 fn lowered_ir_fact_artifacts_reject_count_mismatch() {
     let facts = IrFacts::conservative(1);
     let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");
-    let encoded = encode_ir_facts(&facts, fingerprint).expect("fact artifact encodes");
+    let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION).expect("fact artifact encodes");
     let error = decode_ir_facts(&encoded, 2, fingerprint).expect_err("mismatched count errors");
 
     assert!(error.contains("does not match node count"), "{error}");
@@ -207,8 +209,9 @@ fn lowered_ir_fact_artifacts_reject_count_mismatch() {
 fn lowered_ir_fact_artifacts_reject_invalid_tags() {
     let facts = IrFacts::conservative(1);
     let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");
-    let mut encoded = encode_ir_facts(&facts, fingerprint).expect("fact artifact encodes");
-    encoded[FACTS_MAGIC.len() + 4 + 32 + 4] = 99;
+    let mut encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION).expect("fact artifact encodes");
+    // magic + artifact version + analysis version + fingerprint + count.
+    encoded[FACTS_MAGIC.len() + 4 + 4 + 32 + 4] = 99;
 
     let error = decode_ir_facts(&encoded, 1, fingerprint).expect_err("invalid fact tag errors");
 
@@ -218,7 +221,7 @@ fn lowered_ir_fact_artifacts_reject_invalid_tags() {
 #[test]
 fn lowered_ir_fact_artifacts_reject_fingerprint_mismatch() {
     let facts = IrFacts::conservative(1);
-    let encoded = encode_ir_facts(&facts, test_lowered_ir_fingerprint(b"old-ir"))
+    let encoded = encode_ir_facts(&facts, test_lowered_ir_fingerprint(b"old-ir"), crate::compile::IR_ANALYSIS_VERSION)
         .expect("fact artifact encodes");
 
     let error = decode_ir_facts(&encoded, 1, test_lowered_ir_fingerprint(b"new-ir"))
@@ -407,7 +410,7 @@ fn write_resolved_commits_mandatory_artifacts_when_fact_sidecar_write_fails() {
 
     assert!(entry.is_complete());
     assert!(entry.facts_path().is_dir());
-    let loaded = entry.read_ir().expect("IR reads without fact sidecar");
+    let (loaded, _) = entry.read_ir().expect("IR reads without fact sidecar");
     assert!(
         loaded
             .facts
@@ -775,7 +778,7 @@ fn lowered_ir_artifacts_roundtrip_through_entry_files() {
     assert!(entry.is_complete());
     assert!(entry.facts_path().is_file());
 
-    let loaded = entry.read_ir().expect("lowered IR artifact reads");
+    let (loaded, _) = entry.read_ir().expect("lowered IR artifact reads");
     assert!(lowered_ir_matches(&loaded, &expected));
     let dynamic_binding = loaded
         .bindings
@@ -810,11 +813,11 @@ fn lowered_ir_entry_read_overlays_optional_fact_sidecar() {
     entry
         .write_resolved(&resolved, &meta)
         .expect("resolved artifact writes");
-    let base_ir = entry.read_ir().expect("IR reads");
+    let (base_ir, _) = entry.read_ir().expect("IR reads");
     let fact_id = base_ir.root;
     let mut expected = IrFacts::conservative(base_ir.arena.nodes().len());
     let root_fact = ExprFacts {
-        strictness: Strictness::Strict,
+        strictness: Strictness::DemandedBeforeEffect,
         cardinality: Cardinality::Once,
         escape: Escape::NoEscape,
     };
@@ -824,12 +827,13 @@ fn lowered_ir_entry_read_overlays_optional_fact_sidecar() {
         encode_ir_facts(
             &expected,
             lowered_ir_fingerprint(&base_ir).expect("IR fingerprint computes"),
+            crate::compile::IR_ANALYSIS_VERSION,
         )
         .expect("fact artifact encodes"),
     )
     .expect("fact sidecar writes");
 
-    let loaded = entry.read_ir().expect("lowered IR artifact reads");
+    let (loaded, _) = entry.read_ir().expect("lowered IR artifact reads");
 
     assert_eq!(loaded.facts.as_slice(), expected.as_slice());
     assert_eq!(loaded.node_facts(fact_id), Some(root_fact));
@@ -857,13 +861,14 @@ fn write_fact_sidecar_persists_refreshed_analysis_facts() {
         .entry
         .write_fact_sidecar(&analyzed)
         .expect("refreshed fact sidecar writes");
-    let loaded = parsed
+    let (loaded, facts_current) = parsed
         .entry
         .read_ir()
         .expect("refreshed fact sidecar reads");
 
     assert!(lowered_ir_matches(&loaded, &analyzed));
     assert_eq!(loaded.facts.as_slice(), analyzed.facts.as_slice());
+    assert!(facts_current, "refreshed sidecar records the current analysis version");
 
     let _ = fs::remove_dir_all(root);
 }
@@ -1030,6 +1035,78 @@ fn cached_parse_refresh_and_store_facts_updates_memory_and_sidecar() {
         .expect("cache read succeeds")
         .expect("cache entry exists");
     assert_eq!(cached.ir.facts.as_slice(), parsed.ir.facts.as_slice());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cached_parse_ensure_facts_skips_reanalysis_on_version_current_sidecar() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"builtins.toJSON (let x = 1; in x)";
+    let mut parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+
+    // The freshly-written entry carries an unanalyzed (version 0) sidecar.
+    assert!(!parsed.facts_current);
+    let report = parsed
+        .ensure_facts_current_and_stored()
+        .expect("facts refresh and store");
+    assert!(report.is_some(), "a cold entry runs the analysis");
+    assert!(parsed.facts_current);
+
+    // A warm load applies the version-current sidecar and skips re-analysis.
+    let mut warm = cache
+        .load_cached_bytes(source)
+        .expect("cache read succeeds")
+        .expect("cache entry exists");
+    assert!(warm.facts_current, "warm load applies the current sidecar");
+    let warm_facts = warm.ir.facts.as_slice().to_vec();
+    let skipped = warm
+        .ensure_facts_current_and_stored()
+        .expect("warm ensure succeeds");
+    assert!(skipped.is_none(), "warm ensure skips re-analysis");
+    assert_eq!(warm.ir.facts.as_slice(), warm_facts.as_slice());
+    assert_eq!(warm.ir.facts.as_slice(), parsed.ir.facts.as_slice());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cached_parse_ensure_facts_reanalyzes_on_stale_analysis_version() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"builtins.toJSON (let x = 1; in x)";
+    let mut parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    parsed
+        .ensure_facts_current_and_stored()
+        .expect("cold analysis succeeds");
+
+    // Rewrite the sidecar with a stale (bumped-away-from) analysis version.
+    let stale = encode_ir_facts(
+        &parsed.ir.facts,
+        lowered_ir_fingerprint(&parsed.ir).expect("IR fingerprint computes"),
+        IR_ANALYSIS_VERSION + 1,
+    )
+    .expect("stale sidecar encodes");
+    fs::write(parsed.entry.facts_path(), stale).expect("stale sidecar writes");
+
+    let mut warm = cache
+        .load_cached_bytes(source)
+        .expect("cache read succeeds")
+        .expect("cache entry exists");
+    assert!(
+        !warm.facts_current,
+        "a non-current analysis version is not consumed as current"
+    );
+    let report = warm
+        .ensure_facts_current_and_stored()
+        .expect("stale entry re-analyzes");
+    assert!(report.is_some());
+    assert!(warm.facts_current);
 
     let _ = fs::remove_dir_all(root);
 }
@@ -1248,11 +1325,12 @@ fn lowered_ir_entry_ignores_mismatched_fact_sidecar_fingerprint() {
     )
     .expect("replacement IR writes");
 
-    let loaded = first
+    let (loaded, facts_current) = first
         .entry
         .read_ir()
         .expect("stale fact sidecar is ignored");
 
+    assert!(!facts_current, "a stale fact sidecar cannot be current");
     assert!(lowered_ir_matches(&loaded, &other_ir));
     assert!(
         loaded
@@ -1286,7 +1364,7 @@ fn lowered_ir_roundtrip_preserves_captured_search_path_literal() {
         .expect("resolved artifact writes");
     assert!(entry.is_complete());
 
-    let loaded = entry.read_ir().expect("lowered IR artifact reads");
+    let (loaded, _) = entry.read_ir().expect("lowered IR artifact reads");
     assert!(lowered_ir_matches(&loaded, &expected));
     let search_path = loaded
         .arena

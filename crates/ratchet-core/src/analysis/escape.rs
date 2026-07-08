@@ -19,7 +19,7 @@ use crate::analysis::escape_signature::primop_escape_signature;
 use crate::builtins::direct_builtin;
 use crate::ir::{
     Escape, Ir, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData,
-    IrId, IrKind, Strictness,
+    IrId, IrKind,
 };
 use crate::syntax::Symbol;
 
@@ -595,7 +595,7 @@ fn strict_thunk_wraps_no_escape_body(
         .get(body)
         .ok_or(EscapeAnalysisError::MissingFact { id: body })?;
 
-    if facts.strictness != Strictness::Strict || body_facts.escape != Escape::NoEscape {
+    if !facts.strictness.is_demanded() || body_facts.escape != Escape::NoEscape {
         return Ok(false);
     }
 
@@ -839,7 +839,7 @@ fn strict_aggregate_consumed_by_scalar_primop(
         .facts
         .get(id)
         .ok_or(EscapeAnalysisError::MissingFact { id })?;
-    if facts.strictness != Strictness::Strict {
+    if !facts.strictness.is_demanded() {
         return Ok(false);
     }
     unique_scalar_primop_argument(ir, id)

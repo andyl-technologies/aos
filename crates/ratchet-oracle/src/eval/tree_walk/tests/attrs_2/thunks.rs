@@ -142,7 +142,7 @@ fn mark_all_thunk_allocs_strict(ir: &mut Ir) {
         .collect();
     for id in thunk_ids {
         *ir.facts.get_mut(id).expect("thunk fact exists") = crate::compile::ExprFacts {
-            strictness: crate::compile::Strictness::Strict,
+            strictness: crate::compile::Strictness::DemandedBeforeEffect,
             cardinality: crate::compile::Cardinality::Many,
             escape: crate::compile::Escape::Escapes,
         };
@@ -319,8 +319,8 @@ fn analyzer_produced_direct_body_let_thunk_uses_single_entry_storage() {
     );
     assert_eq!(
         facts.strictness,
-        crate::compile::Strictness::Unknown,
-        "order-sensitive frame assembly keeps the thunk lazy"
+        crate::compile::Strictness::Demanded,
+        "the demanded slot earns the S1 fan-out hint, which keeps the thunk lazy"
     );
 
     let mut evaluator = TreeWalk::with_options(
@@ -462,7 +462,7 @@ fn strict_thunk_alloc_facts_evaluate_eagerly() {
         let mut ir = lower("[ (1 + 6) ]");
         let thunk_alloc = first_thunk_alloc_id(&ir);
         *ir.facts.get_mut(thunk_alloc).expect("thunk fact exists") = crate::compile::ExprFacts {
-            strictness: crate::compile::Strictness::Strict,
+            strictness: crate::compile::Strictness::DemandedBeforeEffect,
             cardinality: crate::compile::Cardinality::Many,
             escape,
         };
@@ -2437,7 +2437,7 @@ fn strict_inherited_select_binding_facts_stay_lazy_during_attrset_assembly() {
     *ir.facts
         .get_mut(inherited_select)
         .expect("inherited select fact exists") = crate::compile::ExprFacts {
-        strictness: crate::compile::Strictness::Strict,
+        strictness: crate::compile::Strictness::DemandedBeforeEffect,
         cardinality: crate::compile::Cardinality::Many,
         escape: crate::compile::Escape::Escapes,
     };

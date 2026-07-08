@@ -42,7 +42,8 @@ pub use analysis::{
     worker_wrapper_plan,
 };
 pub use ir::{
-    BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, Ir, IrAnalysisError,
+    BindingLowering, Cardinality, Effect, EffectClass, Escape, ExprFacts, IR_ANALYSIS_VERSION, Ir,
+    IrAnalysisError,
     IrAnalysisReport, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice,
     IrChildSlice, IrData, IrDependencyFootprint, IrDialectOp, IrError, IrErrorKind, IrFacts,
     IrFrameCaptureFootprint, IrId, IrInlineCacheSiteId, IrKind, IrLowerOptions, IrNode, IrShape,

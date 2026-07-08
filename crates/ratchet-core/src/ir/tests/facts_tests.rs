@@ -36,14 +36,14 @@ fn fact_table_is_mutable_by_ir_id_for_future_analysis_passes() {
     let root = IrId::new(1);
     let root_facts = facts.get_mut(root).expect("root fact exists");
 
-    root_facts.strictness = Strictness::Strict;
+    root_facts.strictness = Strictness::DemandedBeforeEffect;
     root_facts.cardinality = Cardinality::Once;
     root_facts.escape = Escape::NoEscape;
 
     assert_eq!(
         facts.get(root),
         Some(ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Once,
             escape: Escape::NoEscape,
         })
@@ -64,7 +64,7 @@ fn annotate_ir_runs_current_fact_producers() {
     assert_eq!(
         ir.node_facts(ir.root),
         Some(ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::NoEscape,
         })
@@ -77,7 +77,9 @@ fn annotate_ir_runs_current_fact_producers() {
 fn annotate_ir_reports_dependency_footprint_in_canonical_order() {
     let mut branch_ir = lowered("if true then 1 else null");
     let IrData::Triple {
-        first: condition, ..
+        first: condition,
+        second: then_branch,
+        third: else_branch,
     } = node(&branch_ir, branch_ir.root).data
     else {
         panic!("if payload expected");
@@ -85,7 +87,9 @@ fn annotate_ir_reports_dependency_footprint_in_canonical_order() {
     let branch_root = branch_ir.root;
 
     let branch_report = annotate_ir(&mut branch_ir).expect("IR annotation succeeds");
-    let mut expected_strict_nodes = vec![branch_root, condition];
+    // Per-execution demand semantics also prove the branches: each inherits
+    // the root's forced position on its own path.
+    let mut expected_strict_nodes = vec![branch_root, condition, then_branch, else_branch];
     expected_strict_nodes.sort_by_key(|id| id.as_u32());
 
     assert_eq!(
@@ -196,7 +200,7 @@ fn annotate_ir_refreshes_from_conservative_facts() {
     assert_eq!(
         ir.node_facts(ir.root),
         Some(ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::Escapes,
         })
@@ -218,7 +222,7 @@ fn annotate_ir_leaves_conservative_facts_after_analysis_error() {
     facts
         .get_mut(IrId::new(0))
         .expect("root fact exists")
-        .strictness = Strictness::Strict;
+        .strictness = Strictness::DemandedBeforeEffect;
     facts
         .get_mut(IrId::new(0))
         .expect("root fact exists")
@@ -258,7 +262,7 @@ fn binding_lowering_requires_positive_strictness_and_escape_proofs() {
     );
     assert_eq!(
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::Escapes,
         }
@@ -267,7 +271,7 @@ fn binding_lowering_requires_positive_strictness_and_escape_proofs() {
     );
     assert_eq!(
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Many,
             escape: Escape::NoEscape,
         }
@@ -316,7 +320,7 @@ fn thunk_sharing_requires_cardinality_and_frame_locality_proofs() {
     );
     assert_eq!(
         ExprFacts {
-            strictness: Strictness::Strict,
+            strictness: Strictness::DemandedBeforeEffect,
             cardinality: Cardinality::Absent,
             escape: Escape::NoEscape,
         }

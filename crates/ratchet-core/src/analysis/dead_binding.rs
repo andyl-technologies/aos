@@ -8,7 +8,7 @@
 use thiserror::Error;
 
 use crate::ir::{
-    Cardinality, Ir, IrAttrPathSegment, IrBinding, IrBindingSlice, IrData, IrId, IrKind, Strictness,
+    Cardinality, Ir, IrAttrPathSegment, IrBinding, IrBindingSlice, IrData, IrId, IrKind,
 };
 use crate::syntax::Symbol;
 
@@ -120,7 +120,7 @@ fn retention_reason(
             cardinality: facts.cardinality,
         }));
     }
-    if facts.strictness == Strictness::Strict {
+    if facts.strictness.is_demanded() {
         return Ok(Some(DeadBindingRetentionReason::AbsentButStrict));
     }
     validate_omittable_value_edges(ir, binding.value, *value_node)?;
