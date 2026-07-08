@@ -249,6 +249,7 @@ mod derivation_cache_read_file_stale;
 mod derivation_cache_support;
 mod escape_signature;
 mod fetch_git;
+mod fetch_git_reuse;
 mod fetch_tarball;
 mod fetch_tree_1;
 mod fetch_tree_2;

@@ -16,6 +16,13 @@ impl TreeWalk {
         {
             return Ok(result);
         }
+        // A rev-locked fetch whose result is already materialized in the store
+        // is answered from its durable reuse record — mirroring C++ Nix, which
+        // resolves such inputs from its fetcher cache with an `isValidPath`
+        // check instead of re-cloning.
+        if let Some(result) = self.reuse_fetch_git_locked_result(argument, argument_span, &args)? {
+            return Ok(result);
+        }
 
         let repo = Self::fetch_git_clone(argument, argument_span, &args, checkout_dir)?;
         if args.reference.is_some() {
@@ -66,7 +73,7 @@ impl TreeWalk {
             digest,
         )?;
 
-        Ok(FetchGitResult {
+        let result = FetchGitResult {
             out_path,
             rev,
             dirty_rev: None,
@@ -76,7 +83,9 @@ impl TreeWalk {
             last_modified_date,
             nar_hash,
             submodules: args.submodules,
-        })
+        };
+        self.record_fetch_git_locked_result(argument, argument_span, &args, &result);
+        Ok(result)
     }
 
     pub(super) fn eval_dirty_fetch_git_local_worktree(

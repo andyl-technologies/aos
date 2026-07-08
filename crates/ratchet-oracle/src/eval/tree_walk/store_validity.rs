@@ -139,6 +139,16 @@ impl StoreValidityChecker {
         result
     }
 
+    /// Records that `store_path` is now valid, overriding any memoized answer.
+    ///
+    /// Used after this process itself registers the path (for example via
+    /// `nix-store --add-fixed`), when an earlier "invalid" answer memoized
+    /// before the registration would otherwise be returned for the rest of
+    /// the run.
+    pub(crate) fn record_valid(&mut self, store_path: &[u8]) {
+        self.memo.insert(store_path.to_vec(), true);
+    }
+
     /// Queries the path database for `store_path`.
     ///
     /// Returns `Some(true)`/`Some(false)` when the database produced a definitive
@@ -276,6 +286,22 @@ mod tests {
 
         // The cached answer is returned without re-reading the database.
         assert!(checker.is_valid(valid.as_bytes(), no_fallback));
+
+        std::fs::remove_dir_all(db_path.parent().expect("db parent")).expect("cleanup");
+    }
+
+    #[test]
+    fn record_valid_overrides_a_memoized_invalid_answer() {
+        let db_path = seed_db(&[]);
+        let mut checker = StoreValidityChecker::with_db_path(db_path.clone());
+        let path = b"/nix/store/44444444444444444444444444444444-registered";
+
+        // The database has no row, so the first query memoizes `false`.
+        assert!(!checker.is_valid(path, no_fallback));
+
+        // After an in-process registration the memo must say `true`.
+        checker.record_valid(path);
+        assert!(checker.is_valid(path, no_fallback));
 
         std::fs::remove_dir_all(db_path.parent().expect("db parent")).expect("cleanup");
     }
