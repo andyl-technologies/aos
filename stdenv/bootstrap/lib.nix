@@ -274,4 +274,25 @@
           printf '%s\n' "$buf"
         fi
   '';
+  # ── Defuse autotools regeneration after cp -r ─────────────────────────────────────
+  #
+  # Stages copy their source with `cp -r $src $TMPDIR/src`, which
+  # stamps the copies with fresh mtimes in readdir order — whether
+  # configure.in ends up newer than the pre-generated autotools outputs
+  # (configure, config.h.in, stamp-h.in, Makefile.in) is a per-machine
+  # coin flip. When it does, make re-runs autoconf/autoheader/automake,
+  # none of which exist on the bootstrap PATH, and the build dies with
+  # "command not found" (observed as gawk-3.0.6's `autoheader` Error
+  # 127). Interpolate this after `cd`-ing into the copied tree to pin
+  # every autotools input and output to one shared timestamp so no
+  # regeneration rule can fire. Plain shell on purpose: find(1) is not
+  # on the bootstrap PATH, and this must run under bash 2.05b.
+  freezeAutotoolsMtimes = ''
+    for f in aclocal.m4 configure.in configure.ac configure config.h.in \
+      stamp-h.in Makefile.in */aclocal.m4 */configure.in */configure \
+      */config.h.in */stamp-h.in */Makefile.in */*/Makefile.in; do
+      test -e "$f" && touch -r ./configure "$f" || :
+    done
+  '';
+
 }
