@@ -1987,13 +1987,41 @@ pub fn native_mode_from_env() -> NativeMode {
 enum NativeVerifyMode {
     Off,
     Always,
+    /// Deterministic 1-in-`period` sampling of verify-eligible operations.
+    ///
+    /// This is the RFC-0007 rollout canary (doc 14 §6.2/§7.2): a low-rate
+    /// residual verification that can stay on in CI and the fleet after
+    /// default-on without paying the full oracle re-run on every evaluation.
+    Sample { period: std::num::NonZeroU64 },
 }
 
+/// Parses a fractional `AOS_NIX_NATIVE_VERIFY` sample rate such as `0.05` or
+/// `5%` into a verify mode.
+///
+/// Rates at or above `1.0` verify every operation; a rate of exactly zero
+/// disables verification; negative, non-finite, or non-numeric input yields
+/// `None` so the caller can warn about the unknown value.
 #[cfg(feature = "native-eval")]
-impl NativeVerifyMode {
-    const fn enabled(self) -> bool {
-        matches!(self, Self::Always)
+fn parse_native_verify_sample_rate(raw: &str) -> Option<NativeVerifyMode> {
+    let (number, is_percent) = match raw.strip_suffix('%') {
+        Some(number) => (number.trim(), true),
+        None => (raw, false),
+    };
+    let rate: f64 = number.parse().ok()?;
+    let rate = if is_percent { rate / 100.0 } else { rate };
+    if !rate.is_finite() || rate < 0.0 {
+        return None;
     }
+    if rate == 0.0 {
+        return Some(NativeVerifyMode::Off);
+    }
+    if rate >= 1.0 {
+        return Some(NativeVerifyMode::Always);
+    }
+    // `0 < rate < 1` bounds the rounded period to `[1, +inf)`; the `as` cast
+    // saturates for absurdly small rates rather than wrapping.
+    let period = std::num::NonZeroU64::new((1.0 / rate).round() as u64)?;
+    Some(NativeVerifyMode::Sample { period })
 }
 
 #[cfg(feature = "native-eval")]
@@ -2005,7 +2033,10 @@ fn parse_native_verify_mode(value: Option<&str>) -> (NativeVerifyMode, Option<St
     match normalized.as_str() {
         "" | "0" | "false" | "no" | "off" => (NativeVerifyMode::Off, None),
         "1" | "true" | "yes" | "on" | "always" => (NativeVerifyMode::Always, None),
-        _ => (NativeVerifyMode::Off, Some(raw.to_string())),
+        _ => match parse_native_verify_sample_rate(&normalized) {
+            Some(mode) => (mode, None),
+            None => (NativeVerifyMode::Off, Some(raw.to_string())),
+        },
     }
 }
 
@@ -2022,6 +2053,27 @@ fn native_verify_mode_from_env() -> NativeVerifyMode {
         }
         mode
     })
+}
+
+/// Process-wide counter that drives deterministic verify sampling.
+#[cfg(feature = "native-eval")]
+static NATIVE_VERIFY_SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Decides whether this verify-eligible operation should re-run the oracle.
+///
+/// `Always` verifies every operation; `Sample { period }` verifies the first
+/// operation and then every `period`-th one, so a run shorter than the period
+/// still gets at least one verification.
+#[cfg(feature = "native-eval")]
+fn native_verify_should_run() -> bool {
+    match native_verify_mode_from_env() {
+        NativeVerifyMode::Off => false,
+        NativeVerifyMode::Always => true,
+        NativeVerifyMode::Sample { period } => {
+            let sequence = NATIVE_VERIFY_SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            sequence % period.get() == 0
+        }
+    }
 }
 
 /// Selects the active evaluator using `AOS_NIX_NATIVE`.
@@ -2621,7 +2673,7 @@ fn verify_native_file_drv_closure(
     attr: &str,
     native: &NativeDrvClosure,
 ) -> Result<()> {
-    if !native_verify_mode_from_env().enabled() {
+    if !native_verify_should_run() {
         return Ok(());
     }
 
@@ -2660,7 +2712,7 @@ fn verify_native_expr_drv_closure(
     expr: &str,
     native: &NativeDrvClosure,
 ) -> Result<()> {
-    if !native_verify_mode_from_env().enabled() {
+    if !native_verify_should_run() {
         return Ok(());
     }
 
@@ -2803,7 +2855,7 @@ fn compare_verify_drv_closure(
 
 #[cfg(feature = "native-eval")]
 fn verify_native_eval_expr(fallback: &NixCli, expr: &str, native: &str) -> Result<()> {
-    if !native_verify_mode_from_env().enabled() {
+    if !native_verify_should_run() {
         return Ok(());
     }
 
@@ -4307,6 +4359,46 @@ mod tests {
         assert_eq!(
             parse_native_verify_mode(Some(" ON ")),
             (NativeVerifyMode::Always, None)
+        );
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_verify_mode_recognizes_sample_rates() {
+        let period = |value: u64| std::num::NonZeroU64::new(value).expect("nonzero test period");
+        assert_eq!(
+            parse_native_verify_mode(Some("0.05")),
+            (NativeVerifyMode::Sample { period: period(20) }, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("5%")),
+            (NativeVerifyMode::Sample { period: period(20) }, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("0.5")),
+            (NativeVerifyMode::Sample { period: period(2) }, None)
+        );
+        // Rates at or above 1.0 verify everything; exact zero disables.
+        assert_eq!(
+            parse_native_verify_mode(Some("1.0")),
+            (NativeVerifyMode::Always, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("100%")),
+            (NativeVerifyMode::Always, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("0.0")),
+            (NativeVerifyMode::Off, None)
+        );
+        // Negative and non-numeric rates are unknown values.
+        assert_eq!(
+            parse_native_verify_mode(Some("-0.5")),
+            (NativeVerifyMode::Off, Some("-0.5".to_string()))
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("nan")),
+            (NativeVerifyMode::Off, Some("nan".to_string()))
         );
     }
 

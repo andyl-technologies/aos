@@ -5,7 +5,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -169,6 +169,15 @@ const CONFORMANCE_WRAPPER_ONLY_EXCLUSION_NAMES: &[&str] = &[
     // per-attribute environment override, so the dedicated runner owns them.
     "eval-okay-getenv",
     "eval-okay-path-string-interpolation",
+    // The case value is the non-existent source path `/foo`; the corpus
+    // wrapper's `builtins.toJSON` must copy it to the store, and both
+    // evaluators fail uncatchably outside `lang.sh`'s raw-output mode. The
+    // dedicated runner compares the raw value without JSON serialization.
+    "eval-okay-builtins",
+    // `(builtins.tryEval <foobaz>).success` needs the configured `NIX_PATH`
+    // angle-bracket lookup that `lang.sh` provides; the `nix-diff` seam does
+    // not configure a search path, so the dedicated runner owns this case.
+    "eval-okay-redefine-builtin",
 ];
 
 /// Error returned after `aos nix-diff` has already rendered a failure report.
@@ -249,6 +258,7 @@ pub fn run(
     eval_json: bool,
     exprs: &[String],
     eval_json_corpus: &[PathBuf],
+    time_budget: Option<Duration>,
     mode: DiffMode,
     oracle_stats: bool,
     cache_validation: bool,
@@ -273,7 +283,14 @@ pub fn run(
     )?;
 
     if eval_json {
-        return run_eval_json(printer, verbose, &eval_config, exprs, eval_json_corpus);
+        return run_eval_json(
+            printer,
+            verbose,
+            &eval_config,
+            exprs,
+            eval_json_corpus,
+            time_budget,
+        );
     }
 
     let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
@@ -738,6 +755,7 @@ fn run_eval_json(
     eval_config: &NixEvalConfig,
     exprs: &[String],
     eval_json_corpus: &[PathBuf],
+    time_budget: Option<Duration>,
 ) -> Result<()> {
     let entries = eval_json_entries(exprs, eval_json_corpus, eval_config)?;
     let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
@@ -748,8 +766,18 @@ fn run_eval_json(
         entries.len()
     ));
 
+    let started = Instant::now();
     let mut reports = Vec::with_capacity(entries.len());
     for entry in &entries {
+        // The budget is checked between entries so an in-flight comparison is
+        // never aborted; at least one entry always runs so a zero budget still
+        // performs real gate work.
+        if let Some(budget) = time_budget
+            && !reports.is_empty()
+            && started.elapsed() >= budget
+        {
+            break;
+        }
         let Some(entry_eval_config) = entry.eval_config.as_ref() else {
             reports.push(eval_json_report(
                 &oracle,
@@ -769,10 +797,13 @@ fn run_eval_json(
             entry_eval_config,
         ));
     }
+    let skipped = entries.len() - reports.len();
     let failure = eval_json_failure(&reports);
 
     if printer.json_if_active(&eval_json_report_json(
         &reports,
+        skipped,
+        time_budget,
         candidate_name,
         failure.as_ref(),
     )) {
@@ -787,6 +818,9 @@ fn run_eval_json(
             "eval-json diff matched {} expression(s): nix-cli vs {candidate_name}",
             reports.len()
         ));
+        if skipped > 0 {
+            printer.warning(&eval_json_budget_note(skipped, entries.len(), time_budget));
+        }
         return Ok(());
     };
 
@@ -819,8 +853,22 @@ fn run_eval_json(
                 printer.plain(&format!("      candidate: {candidate}"));
             }
         }
+        if skipped > 0 {
+            printer.warning(&eval_json_budget_note(skipped, entries.len(), time_budget));
+        }
     }
     Err(failure.into())
+}
+
+/// Renders the human-readable note emitted when a `--time-budget` run stops
+/// before comparing every corpus entry.
+fn eval_json_budget_note(skipped: usize, total: usize, time_budget: Option<Duration>) -> String {
+    let budget = time_budget
+        .map(|budget| format!("{}s", budget.as_secs()))
+        .unwrap_or_else(|| "unset".to_string());
+    format!(
+        "eval-json time budget ({budget}) exhausted: skipped {skipped} of {total} expression(s)"
+    )
 }
 
 fn eval_json_entries(
@@ -2522,6 +2570,8 @@ fn corpus_json(
 
 fn eval_json_report_json(
     reports: &[EvalJsonReport],
+    skipped: usize,
+    time_budget: Option<Duration>,
     candidate_name: &str,
     failure: Option<&NixDiffReportedFailure>,
 ) -> serde_json::Value {
@@ -2538,6 +2588,8 @@ fn eval_json_report_json(
         "matched": failure.is_none(),
         "error": failure.map(ToString::to_string),
         "expressions_checked": reports.len(),
+        "expressions_skipped": skipped,
+        "time_budget_seconds": time_budget.map(|budget| budget.as_secs()),
         "expressions_failed": failed_exprs,
         "divergence_count": divergence_count,
         "reports": reports.iter()
@@ -4504,7 +4556,7 @@ mod tests {
         let reports = vec![report];
         let failure = eval_json_failure(&reports);
 
-        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
+        let value = eval_json_report_json(&reports, 0, None, "aos-nix", failure.as_ref());
 
         assert_eq!(oracle.eval_expr_calls(), 1);
         assert_eq!(candidate.eval_expr_calls(), 1);
@@ -4525,6 +4577,48 @@ mod tests {
         assert!(value["reports"][0]["oracle_error"].is_null());
         assert!(value["reports"][0]["candidate_error"].is_null());
         assert!(value["reports"][0]["candidate_stats"].is_null());
+        assert_eq!(value["expressions_skipped"], 0);
+        assert!(value["time_budget_seconds"].is_null());
+    }
+
+    #[test]
+    fn eval_json_report_json_renders_time_budget_and_skips() {
+        let oracle = FixedJsonEval::value("oracle", "1");
+        let candidate = FixedJsonEval::value("candidate", "1");
+        let config = repro_config();
+        let entry = EvalJsonEntry {
+            name: "sample".to_string(),
+            expr: "1".to_string(),
+            eval_config: None,
+        };
+        let report = eval_json_report(&oracle, &candidate, &entry, &config);
+        let reports = vec![report];
+        let failure = eval_json_failure(&reports);
+
+        let value = eval_json_report_json(
+            &reports,
+            3,
+            Some(Duration::from_secs(120)),
+            "aos-nix",
+            failure.as_ref(),
+        );
+
+        assert_eq!(value["matched"], true);
+        assert_eq!(value["expressions_checked"], 1);
+        assert_eq!(value["expressions_skipped"], 3);
+        assert_eq!(value["time_budget_seconds"], 120);
+    }
+
+    #[test]
+    fn eval_json_budget_note_names_budget_and_skip_counts() {
+        assert_eq!(
+            eval_json_budget_note(7, 10, Some(Duration::from_secs(90))),
+            "eval-json time budget (90s) exhausted: skipped 7 of 10 expression(s)"
+        );
+        assert_eq!(
+            eval_json_budget_note(1, 2, None),
+            "eval-json time budget (unset) exhausted: skipped 1 of 2 expression(s)"
+        );
     }
 
     #[test]
@@ -4545,7 +4639,7 @@ mod tests {
         let reports = vec![report];
         let failure = eval_json_failure(&reports);
 
-        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
+        let value = eval_json_report_json(&reports, 0, None, "aos-nix", failure.as_ref());
 
         assert_eq!(oracle.eval_expr_calls(), 1);
         assert_eq!(candidate.eval_expr_calls(), 1);
@@ -4584,7 +4678,7 @@ mod tests {
         let reports = vec![report];
         let failure = eval_json_failure(&reports);
 
-        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
+        let value = eval_json_report_json(&reports, 0, None, "aos-nix", failure.as_ref());
 
         assert_eq!(
             failure.as_ref().map(ToString::to_string).as_deref(),
@@ -4621,7 +4715,7 @@ mod tests {
         let reports = vec![report];
         let failure = eval_json_failure(&reports);
 
-        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
+        let value = eval_json_report_json(&reports, 0, None, "aos-nix", failure.as_ref());
 
         assert_eq!(
             value["reports"][0]["reproduce"],
@@ -4646,7 +4740,7 @@ mod tests {
         let reports = vec![report];
         let failure = eval_json_failure(&reports);
 
-        let value = eval_json_report_json(&reports, "aos-nix", failure.as_ref());
+        let value = eval_json_report_json(&reports, 0, None, "aos-nix", failure.as_ref());
 
         assert_eq!(
             failure.as_ref().map(ToString::to_string).as_deref(),

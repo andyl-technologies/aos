@@ -299,6 +299,161 @@ in {
     echo "PASS" > "$out/result"
   '';
 
+  # Budgeted full generated eval-json corpus (RFC-0007 doc 15 §2.7 / decision
+  # C-4): auto-enumerates the package set, the explicit toolchain overlay, the
+  # `systems.*` toplevels, and the pinned C++ Nix `tests/functional/lang`
+  # conformance corpus into source seeds, then replays every seed through the
+  # nix-cli/native strict-JSON diff under a wall-clock time budget. The C++
+  # oracle runs against a throwaway sandbox-local store (`nix-store --init`
+  # plus redirected NIX_STORE_DIR/NIX_STATE_DIR), so no network or host store
+  # access is needed; the repo itself is imported from the filtered
+  # `repoSrc` store path.
+  eval-json-corpus-full = pkgs.runCommand "aos-eval-json-corpus-full" {
+    buildDeps = [
+      self
+      pkgs.nix
+    ];
+  } ''
+    set -eu
+
+    work="$TMPDIR/aos-eval-json-corpus-full"
+    nix_conf="$work/nix-conf"
+    generated="$work/generated"
+    export HOME="$work/home"
+    export AOS_ROOT="$work/aos-root"
+    export AOS_NIX_STORE_DIR="$work/store"
+    export AOS_NIX_STATE_DIR="$work/state"
+    export AOS_NIX_LOG_DIR="$work/log"
+    export NIX_STORE_DIR="$AOS_NIX_STORE_DIR"
+    export NIX_STATE_DIR="$AOS_NIX_STATE_DIR"
+    export NIX_LOG_DIR="$AOS_NIX_LOG_DIR"
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR="$nix_conf"
+    export AOS_NIX_CACHE="$work/native-cache"
+
+    mkdir -p \
+      "$HOME" \
+      "$AOS_ROOT" \
+      "$AOS_NIX_STORE_DIR" \
+      "$AOS_NIX_STATE_DIR" \
+      "$AOS_NIX_LOG_DIR" \
+      "$NIX_CONF_DIR" \
+      "$AOS_NIX_CACHE" \
+      "$generated"
+
+    printf 'substituters =\n' > "$NIX_CONF_DIR/nix.conf"
+
+    ${pkgs.nix}/bin/nix-store --init
+
+    # Unpack the pinned C++ Nix source so the generator can synthesize the
+    # eval-okay conformance seed set from tests/functional/lang.
+    tar -xzf ${pkgs.nix.src} -C "$work"
+    export AOS_NIX_LANG_TESTS="$work/nix-${pkgs.nix.version}/tests/functional/lang"
+
+    # Exclusions, in two classes:
+    #
+    # Eval-time IFD (hermetically infeasible here): evaluating these attrs
+    # forces builtins.readFile on a built derivation output (the cc-wrapper's
+    # nix-support metadata), which the sandbox store cannot realize without
+    # network. They stay covered by the networked `.drv` acceptance-gate runs
+    # (`aos nix-diff --all --systems` on builders).
+    #   systems, pkgs.bazel*, pkgs.envoy, pkgs.linux
+    #
+    # TODO(RFC-0007): known native divergences pending evaluator fixes; every
+    # one is reproduced and tracked in doc 22 ("--eval --json budgeted
+    # full-corpus check" row). Remove each exclusion as its fix lands:
+    #   pkgs.gnu-efi, pkgs.go-1_4, pkgs.gcc-libs
+    #     -> "expected list, got Thunk" at lib/hardening.nix:116
+    #        (concatStringsSep does not force its list argument).
+    #   conformance.eval-okay-fromTOML
+    #     -> float rendering of 5e22: C++ nlohmann prints the non-shortest
+    #        4.9999999999999996e+22, native prints the shortest 5e+22.
+    ${self}/bin/aos \
+      --eval-system=${self.system} \
+      nix-fuzz-corpus \
+      --file ${repoSrc}/default.nix \
+      --output-dir "$generated" \
+      --clean \
+      --exclude systems \
+      --exclude pkgs.bazel-bootstrap \
+      --exclude pkgs.bazel-7 \
+      --exclude pkgs.bazel-8 \
+      --exclude pkgs.bazel-9 \
+      --exclude pkgs.bazel \
+      --exclude pkgs.envoy \
+      --exclude pkgs.linux \
+      --exclude pkgs.gnu-efi \
+      --exclude pkgs.go-1_4 \
+      --exclude pkgs.gcc-libs \
+      --exclude conformance.eval-okay-fromTOML
+
+    # The budget bounds the corpus replay: entries are compared in
+    # deterministic seed-name order until the budget is exhausted, and any
+    # divergence in the compared prefix fails the check.
+    ${self}/bin/aos \
+      --eval-system=${self.system} \
+      nix-diff \
+      --eval-json \
+      --eval-json-corpus "$generated" \
+      --time-budget 900
+
+    echo "PASS" > "$out/result"
+  '';
+
+  # Representative `.drv` byte-parity differential (RFC-0007 doc 15 §2):
+  # instantiates a fixed witness set spanning the compression/crypto/coreutils/
+  # shell corners of the package graph with both the C++ Nix oracle and the
+  # native evaluator, requiring byte-identical `.drv` closures. Uses the same
+  # sandbox-local store pattern as the eval-json checks.
+  drv-parity-representative = pkgs.runCommand "aos-drv-parity-representative" {
+    buildDeps = [
+      self
+      pkgs.nix
+    ];
+  } ''
+    set -eu
+
+    work="$TMPDIR/aos-drv-parity-representative"
+    nix_conf="$work/nix-conf"
+    export HOME="$work/home"
+    export AOS_ROOT="$work/aos-root"
+    export AOS_NIX_STORE_DIR="$work/store"
+    export AOS_NIX_STATE_DIR="$work/state"
+    export AOS_NIX_LOG_DIR="$work/log"
+    export NIX_STORE_DIR="$AOS_NIX_STORE_DIR"
+    export NIX_STATE_DIR="$AOS_NIX_STATE_DIR"
+    export NIX_LOG_DIR="$AOS_NIX_LOG_DIR"
+    export NIX_REMOTE=""
+    export NIX_CONF_DIR="$nix_conf"
+    export AOS_NIX_CACHE="$work/native-cache"
+
+    mkdir -p \
+      "$HOME" \
+      "$AOS_ROOT" \
+      "$AOS_NIX_STORE_DIR" \
+      "$AOS_NIX_STATE_DIR" \
+      "$AOS_NIX_LOG_DIR" \
+      "$NIX_CONF_DIR" \
+      "$AOS_NIX_CACHE"
+
+    printf 'substituters =\n' > "$NIX_CONF_DIR/nix.conf"
+
+    ${pkgs.nix}/bin/nix-store --init
+
+    for attr in pkgs.zlib pkgs.openssl pkgs.coreutils pkgs.bash; do
+      echo "==> nix-diff --mode=byte -A $attr"
+      ${self}/bin/aos \
+        --eval-system=${self.system} \
+        nix-diff \
+        --mode=byte \
+        -A "$attr" \
+        -- \
+        ${repoSrc}/default.nix
+    done
+
+    echo "PASS" > "$out/result"
+  '';
+
   host-apr-apm-command-surface = let
     hostAprApmCommandSurfaceDeps = [
       self

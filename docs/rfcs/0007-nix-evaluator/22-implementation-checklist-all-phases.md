@@ -9703,6 +9703,62 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       bounded smoke check: it does not enumerate or run the full automatic
       package/toolchain/system/conformance corpus, consume the configured fuzz
       time budget, run scheduled CI, or close `C-4`.
+- [x] Current `--eval --json` budgeted full-corpus check + rollout groundwork
+      (implemented on top of `38da57c37`):
+      `aos nix-diff --eval-json` accepts `--time-budget <SECONDS>` — corpus
+      entries are compared in deterministic seed-name order until the
+      wall-clock budget is exhausted between entries (an in-flight comparison
+      is never aborted, at least one entry always runs), skipped counts and
+      the budget are reported in the human summary and the JSON report
+      (`expressions_skipped`, `time_budget_seconds`), and any divergence in
+      the compared prefix still fails the gate. `aos nix-fuzz-corpus` accepts
+      repeatable `--exclude <ATTR>` (exact attr path or dot-prefix) so
+      hermetic runs can skip attributes whose *evaluation* requires realizing
+      derivation outputs (eval-time `readFile` IFD on the cc-wrapper's
+      nix-support metadata: `systems.*`, `pkgs.bazel*`, `pkgs.envoy`,
+      `pkgs.linux`); those stay covered by the networked `.drv`
+      acceptance-gate runs. The AOS package integration checks expose
+      `checks.integration.aos-eval-json-corpus-full` (flake:
+      `integration-aos-eval-json-corpus-full`): it regenerates the automatic
+      package/toolchain/system corpus from the sandboxed repo source, unpacks
+      the pinned C++ Nix source tarball (`pkgs.nix.src`, `2.24.12`) to set
+      `AOS_NIX_LANG_TESTS` so the generated conformance seed set is included,
+      and replays the generated corpus through the strict-JSON diff against a
+      throwaway sandbox-local store under a 900 s budget; and
+      `checks.integration.aos-drv-parity-representative` adds a `.drv`
+      byte-parity differential over the fixed zlib/openssl/coreutils/bash
+      witness set with the same sandbox-store pattern. The full generated
+      corpus (661 seeds: 281 `pkgs.*` + 265 `stdenv.*` toolchain-tier + 3
+      `systems.*` + 112 `conformance.*`) was run end-to-end locally: 645/661
+      compared clean; two conformance cases moved to the wrapper-only
+      exclusion list (`eval-okay-builtins` embeds the non-existent source
+      path `/foo` that the corpus `toJSON` wrapper cannot serialize;
+      `eval-okay-redefine-builtin` needs the configured `NIX_PATH`
+      angle-bracket lookup that only the dedicated runner models); seven
+      seeds are eval-time-IFD-infeasible as above; and the run surfaced
+      **three genuine native divergences, all pre-existing at `38da57c37`
+      and owned by the evaluator (outside this chunk)**, excluded in the CI
+      check with `TODO(RFC-0007)` markers until fixed: (1)
+      `pkgs.gnu-efi`/`pkgs.go-1_4`/`pkgs.gcc-libs` fail native eval with
+      "expected list, got Thunk" at `lib/hardening.nix:116`
+      (`builtins.concatStringsSep` does not force its list argument; also
+      breaks `nix-diff --mode=byte -A pkgs.gnu-efi`), (2) `builtins.match`
+      treats `\-` inside a bracket expression as an escaped dash where C++
+      Nix's POSIX-ERE keeps the backslash a literal member (minimal repro:
+      `builtins.match "[a-zA-Z0-9@%:_.\\-]+[.](service|device)"
+      "dev-disk-by\\x2dpartlabel-swap.device"` — oracle `["device"]`, native
+      `null`; this is what fails all three `systems.*.build.toplevel` module
+      evals), and (3) `conformance.eval-okay-fromTOML` float rendering of
+      `5e22`: identical f64 bits, C++ nlohmann/Grisu2 prints the non-shortest
+      `4.9999999999999996e+22`, native prints the shortest `5e+22`.
+      Rollout groundwork for Phase D verify-sampling also landed:
+      `AOS_NIX_NATIVE_VERIFY` additionally accepts a fractional sample rate
+      (`0.05` or `5%`), implemented as deterministic 1-in-N sampling (first
+      verify-eligible operation always verifies) with the existing
+      match/divergence/incomplete counters unchanged and default off. `C-4`
+      remains open until the three divergences above are fixed, their
+      exclusions removed, and the full-corpus check is green in scheduled
+      Linux CI.
 - [x] Current annotated-IR JSON parity precursor:
       `ratchet-oracle` now has an internal tree-walk differential harness that
       lowers `builtins.toJSON` expressions twice, evaluates one copy with

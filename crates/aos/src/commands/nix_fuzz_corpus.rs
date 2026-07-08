@@ -30,16 +30,22 @@ struct FuzzCorpusSummary {
 
 /// Generates cargo-fuzz source seeds from the `nix-diff` corpus.
 ///
+/// `excludes` removes seeds from the generated set by exact attribute path or
+/// by dot-prefix (`systems` excludes every `systems.*` seed). This is how the
+/// hermetic CI corpus check skips attributes whose *evaluation* needs
+/// realization (eval-time IFD) that a sandboxed store cannot satisfy.
+///
 /// # Errors
 ///
 /// Returns an error if the repository root cannot be found, C++ Nix is
-/// unavailable, the `nix-diff` corpus cannot be enumerated, or seed files cannot
-/// be written.
+/// unavailable, the `nix-diff` corpus cannot be enumerated, every generated
+/// seed is excluded, or seed files cannot be written.
 pub fn run(
     printer: &Printer,
     verbose: u8,
     eval_config: NixEvalConfig,
     attrs: &[String],
+    excludes: &[String],
     file: Option<&Path>,
     output_dir: Option<&Path>,
     clean: bool,
@@ -72,6 +78,7 @@ pub fn run(
     } else {
         fuzz_source_seeds_for_attrs(&file, attrs, &eval_config)?
     };
+    let seeds = filter_excluded_seeds(seeds, excludes);
     if seeds.is_empty() {
         return Err(AosError::InvalidArgument {
             message: "nix-fuzz-corpus generated no source seeds".to_string(),
@@ -105,6 +112,24 @@ fn default_output_dir(root: &Path) -> PathBuf {
     DEFAULT_PARITY_CORPUS_DIR
         .iter()
         .fold(root.to_path_buf(), |dir, segment| dir.join(segment))
+}
+
+/// Drops seeds matching an exclusion by exact attr path or dot-prefix.
+fn filter_excluded_seeds(seeds: Vec<FuzzSourceSeed>, excludes: &[String]) -> Vec<FuzzSourceSeed> {
+    if excludes.is_empty() {
+        return seeds;
+    }
+    seeds
+        .into_iter()
+        .filter(|seed| !excludes.iter().any(|exclude| seed_excluded(seed, exclude)))
+        .collect()
+}
+
+fn seed_excluded(seed: &FuzzSourceSeed, exclude: &str) -> bool {
+    seed.name == exclude
+        || (seed.name.len() > exclude.len()
+            && seed.name.starts_with(exclude)
+            && seed.name.as_bytes()[exclude.len()] == b'.')
 }
 
 fn effective_fuzz_eval_config(mut eval_config: NixEvalConfig) -> Result<NixEvalConfig> {
@@ -316,6 +341,33 @@ mod tests {
         assert_eq!(config.eval_mode(), NixEvalMode::Pure);
         assert_eq!(config.current_system(), Some("aos-test-target"));
         Ok(())
+    }
+
+    #[test]
+    fn filter_excluded_seeds_matches_exact_and_dot_prefix() {
+        let seed = |name: &str| FuzzSourceSeed {
+            name: name.to_string(),
+            source: name.to_string(),
+            source_file: PathBuf::from("/repo/default.nix"),
+            source_file_kind: FuzzSourceFileKind::Direct,
+            root_args: "{}".to_string(),
+        };
+        let seeds = vec![
+            seed("pkgs.linux"),
+            seed("pkgs.linux-headers"),
+            seed("systems.server.build.toplevel"),
+            seed("systems.edge.build.toplevel"),
+            seed("pkgs.zlib"),
+        ];
+
+        let excludes = vec!["pkgs.linux".to_string(), "systems".to_string()];
+        let kept = filter_excluded_seeds(seeds.clone(), &excludes);
+        let names: Vec<&str> = kept.iter().map(|seed| seed.name.as_str()).collect();
+
+        // Exact match excludes pkgs.linux but not the pkgs.linux-headers
+        // sibling; the dot-prefix form excludes every systems.* seed.
+        assert_eq!(names, ["pkgs.linux-headers", "pkgs.zlib"]);
+        assert_eq!(filter_excluded_seeds(seeds.clone(), &[]).len(), seeds.len());
     }
 
     #[test]

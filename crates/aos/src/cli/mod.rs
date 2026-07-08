@@ -248,6 +248,9 @@ pub enum Commands {
         /// Source seed file or directory to compare under --eval-json
         #[arg(long = "eval-json-corpus", value_name = "PATH", requires = "eval_json")]
         eval_json_corpus: Vec<std::path::PathBuf>,
+        /// Wall-clock budget in seconds for --eval-json corpus runs
+        #[arg(long, value_name = "SECONDS", requires = "eval_json")]
+        time_budget: Option<u64>,
         /// Nix file to instantiate (default: repository default.nix)
         #[arg(conflicts_with_all = ["eval_json", "oracle_drv", "candidate_drv"])]
         file: Option<std::path::PathBuf>,
@@ -331,6 +334,9 @@ pub enum Commands {
         /// Attribute path to render as a source seed
         #[arg(short = 'A', long)]
         attr: Vec<String>,
+        /// Attribute path (or dot-prefix) to exclude from generated seeds
+        #[arg(long, value_name = "ATTR")]
+        exclude: Vec<String>,
         /// Nix file to import (default: repository default.nix)
         #[arg(long)]
         file: Option<std::path::PathBuf>,
@@ -461,6 +467,7 @@ mod tests {
                 eval_json,
                 expr,
                 eval_json_corpus,
+                time_budget,
                 file,
                 mode,
                 oracle_stats,
@@ -477,6 +484,7 @@ mod tests {
                 assert!(!eval_json);
                 assert!(expr.is_empty());
                 assert!(eval_json_corpus.is_empty());
+                assert_eq!(time_budget, None);
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Byte);
                 assert!(!oracle_stats);
@@ -511,6 +519,7 @@ mod tests {
                 eval_json,
                 expr,
                 eval_json_corpus,
+                time_budget,
                 file,
                 mode,
                 oracle_stats,
@@ -527,6 +536,7 @@ mod tests {
                 assert!(!eval_json);
                 assert!(expr.is_empty());
                 assert!(eval_json_corpus.is_empty());
+                assert_eq!(time_budget, None);
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
                 assert_eq!(mode, NixDiffMode::Path);
                 assert!(!oracle_stats);
@@ -660,6 +670,36 @@ mod tests {
     }
 
     #[test]
+    fn nix_diff_parses_eval_json_time_budget() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--eval-json",
+            "--eval-json-corpus",
+            "fuzz/corpus/parity_json",
+            "--time-budget",
+            "900",
+        ]);
+
+        match cli.command {
+            Commands::NixDiff {
+                eval_json,
+                time_budget,
+                ..
+            } => {
+                assert!(eval_json);
+                assert_eq!(time_budget, Some(900));
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+
+        // Without a corpus selection present, --time-budget alone still
+        // requires --eval-json (and an attr selection).
+        let err = parse_cli_error(["aos", "nix-diff", "--time-budget", "900"]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
     fn nix_diff_eval_json_conflicts_with_drv_selection() {
         let err = parse_cli_error(["aos", "nix-diff", "--eval-json", "--attr", "pkgs.hello"]);
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
@@ -750,6 +790,7 @@ mod tests {
                 eval_json,
                 expr,
                 eval_json_corpus,
+                time_budget,
                 file,
                 mode,
                 oracle_stats,
@@ -766,6 +807,7 @@ mod tests {
                 assert!(!eval_json);
                 assert!(expr.is_empty());
                 assert!(eval_json_corpus.is_empty());
+                assert_eq!(time_budget, None);
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Structural);
                 assert!(!oracle_stats);
@@ -996,11 +1038,13 @@ mod tests {
         match cli.command {
             Commands::NixFuzzCorpus {
                 attr,
+                exclude,
                 file,
                 output_dir,
                 clean,
             } => {
                 assert!(attr.is_empty());
+                assert!(exclude.is_empty());
                 assert_eq!(file, None);
                 assert_eq!(output_dir, None);
                 assert!(!clean);
@@ -1018,6 +1062,10 @@ mod tests {
             "pkgs.zlib",
             "-A",
             "conformance.eval-okay-number",
+            "--exclude",
+            "systems",
+            "--exclude",
+            "pkgs.envoy",
             "--file",
             "default.nix",
             "--output-dir",
@@ -1028,6 +1076,7 @@ mod tests {
         match cli.command {
             Commands::NixFuzzCorpus {
                 attr,
+                exclude,
                 file,
                 output_dir,
                 clean,
@@ -1039,6 +1088,7 @@ mod tests {
                         "conformance.eval-okay-number".to_string()
                     ]
                 );
+                assert_eq!(exclude, ["systems".to_string(), "pkgs.envoy".to_string()]);
                 assert_eq!(file, Some(std::path::PathBuf::from("default.nix")));
                 assert_eq!(
                     output_dir,
