@@ -230,7 +230,7 @@ impl TreeWalk {
         name: &[u8],
         span: Span,
     ) -> Result<Symbol, TreeWalkError> {
-        self.symbols.intern(name).map_err(|source| {
+        self.intern_symbol_for_eval(name).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::SymbolIntern {
                     id,

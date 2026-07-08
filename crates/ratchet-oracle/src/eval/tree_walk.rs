@@ -1043,6 +1043,18 @@ pub struct TreeWalk {
     find_file_cache_hits: usize,
     find_file_cache_misses: usize,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
+    /// Cross-worker shared state for one parallel evaluation (L2-P3b).
+    ///
+    /// `Some` exactly while this evaluator participates in a parallel demand
+    /// pool: the main worker between pool spawn and finish, and helper
+    /// workers for their whole lifetime. Serial evaluation never sets it.
+    shared: Option<Arc<parallel_demand::SharedEvalContext>>,
+    /// Consumed prefix of the shared known-derivation log.
+    shared_known_derivations_cursor: usize,
+    /// Consumed prefix of the shared text-store log.
+    shared_text_store_cursor: usize,
+    /// Last observed [`parallel_demand::SharedEvalContext`] version.
+    shared_version_seen: u64,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
     /// Path prefixes confirmed to contain no symlink component during
     /// force-cache traceability checks. The Nix store is immutable for the
@@ -1348,6 +1360,7 @@ mod eval_load;
 mod eval_numeric;
 mod eval_path_ops;
 mod eval_primop_apply;
+mod parallel_demand;
 mod eval_primop_bind;
 mod eval_raw;
 mod eval_regex;

@@ -152,7 +152,12 @@ fn eval_whnf_owned_with_evaluator(
     if let Some(realizer) = ifd_realizer {
         evaluator.set_ifd_realizer(realizer);
     }
-    let value = evaluator.eval_root()?;
+    let pool = parallel_demand::ParallelDemandPool::spawn(&mut evaluator);
+    let value = evaluator.eval_root();
+    if let Some(pool) = pool {
+        pool.finish(&mut evaluator);
+    }
+    let value = value?;
     evaluator.record_attr_select_cache_site_telemetry();
     let derivations = evaluator.derivation_snapshot()?;
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
@@ -308,9 +313,16 @@ fn eval_instantiation_attr_path_with_evaluator(
     if let Some(realizer) = ifd_realizer {
         evaluator.set_ifd_realizer(realizer);
     }
-    let root = evaluator.eval_root()?;
+    let pool = parallel_demand::ParallelDemandPool::spawn(&mut evaluator);
+    let value = evaluator.eval_root().and_then(|root| {
+        let span = evaluator.node(ir.root)?.span;
+        evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)
+    });
+    if let Some(pool) = pool {
+        pool.finish(&mut evaluator);
+    }
+    let value = value?;
     let span = evaluator.node(ir.root)?.span;
-    let value = evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)?;
     evaluator.record_attr_select_cache_site_telemetry();
     let derivations = evaluator.derivation_snapshot()?;
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
@@ -535,8 +547,14 @@ pub(in crate::eval) fn eval_raw_bytes_with_evaluator_owned(
     ir: &Ir,
     mut evaluator: TreeWalk,
 ) -> Result<(Vec<u8>, TreeWalk), TreeWalkError> {
-    let value = evaluator.eval_root()?;
-    let out = render_raw_value_with_evaluator(&mut evaluator, ir, value)?;
+    let pool = parallel_demand::ParallelDemandPool::spawn(&mut evaluator);
+    let out = evaluator
+        .eval_root()
+        .and_then(|value| render_raw_value_with_evaluator(&mut evaluator, ir, value));
+    if let Some(pool) = pool {
+        pool.finish(&mut evaluator);
+    }
+    let out = out?;
     let stats = evaluator.stats_snapshot();
     TreeWalk::emit_stats_trace(&stats);
     evaluator.advance_persist_eval_cache_run_boundary();

@@ -809,18 +809,20 @@ impl TreeWalk {
         aterm_bytes: Option<Vec<u8>>,
     ) {
         let output_names = derivation.outputs.keys().cloned().collect();
-        self.known_derivations.insert(
-            drv_path,
-            KnownDerivation {
-                id,
-                span,
-                derivation: derivation.clone(),
-                hash_derivation_modulo,
-                output_names,
-                output_resolution,
-                aterm_bytes,
-            },
-        );
+        let known = KnownDerivation {
+            id,
+            span,
+            derivation: derivation.clone(),
+            hash_derivation_modulo,
+            output_names,
+            output_resolution,
+            aterm_bytes,
+        };
+        // Under a parallel demand pool the surface must be visible to every
+        // worker before any value carrying this derivation's context is
+        // published through a thunk cell.
+        self.publish_known_derivation(&drv_path, &known);
+        self.known_derivations.insert(drv_path, known);
     }
 
     pub(super) fn alloc_derivation_strict_result(

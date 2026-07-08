@@ -177,16 +177,7 @@ impl TreeWalk {
         source_name: Vec<u8>,
         source: Vec<u8>,
     ) -> Result<EvalModuleId, TreeWalkError> {
-        let raw = u32::try_from(self.modules.len()).map_err(|_| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::TooManyModules {
-                    id,
-                    modules: self.modules.len(),
-                },
-                span,
-            )
-        })?;
-        self.modules.push(TreeWalkModule::new(
+        let module = TreeWalkModule::new(
             ir,
             Some(path_literal_base),
             ForceCacheOptionsIdentity::new(&self.options),
@@ -194,7 +185,32 @@ impl TreeWalk {
                 name: source_name,
                 bytes: source,
             }),
-        ));
+        );
+        let raw = if self.shared.is_some() {
+            // Parallel mode: module ids are allocated from the shared
+            // registry so any worker can resolve any worker's thunk bodies.
+            self.publish_shared_module(module).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::TooManyModules {
+                        id,
+                        modules: self.modules.len(),
+                    },
+                    span,
+                )
+            })?
+        } else {
+            let raw = u32::try_from(self.modules.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::TooManyModules {
+                        id,
+                        modules: self.modules.len(),
+                    },
+                    span,
+                )
+            })?;
+            self.modules.push(module);
+            raw
+        };
         Ok(EvalModuleId::new(raw))
     }
 

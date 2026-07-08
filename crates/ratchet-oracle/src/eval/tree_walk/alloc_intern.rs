@@ -19,7 +19,7 @@ impl TreeWalk {
         name: &[u8],
         span: Span,
     ) -> Result<Option<Value>, TreeWalkError> {
-        let symbol = self.symbols.intern(name).map_err(|source| {
+        let symbol = self.intern_symbol_for_eval(name).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::SymbolIntern {
                     id,
@@ -486,7 +486,7 @@ impl TreeWalk {
         id: IrId,
         bytes: &[u8],
     ) -> Result<Symbol, TreeWalkError> {
-        self.symbols.intern(bytes).map_err(|source| {
+        self.intern_symbol_for_eval(bytes).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::SymbolIntern {
                     id,
@@ -1631,6 +1631,13 @@ impl TreeWalk {
         forced_payload: u64,
         result: Result<Value, TreeWalkError>,
     ) -> Result<Value, TreeWalkError> {
+        // Replaying a result another worker published is a foreign-value
+        // ingestion point: refresh the shared-context prefix replicas so all
+        // symbols, modules, and derivation surfaces reachable from the
+        // replayed value (or error) resolve locally. The publishing edge of
+        // the parallel cell happens-before this call, so the shared logs are
+        // never stale here.
+        self.sync_shared_context();
         match result {
             Ok(value) => {
                 self.unmark_lazy_identity_thunk_payload(forced_payload);

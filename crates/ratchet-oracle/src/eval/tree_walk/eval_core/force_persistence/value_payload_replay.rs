@@ -190,7 +190,7 @@ impl TreeWalk {
             let mut entries = Vec::new();
             entries.try_reserve_exact(attr_payloads.len()).ok()?;
             for (name, position, value_payload) in attr_payloads {
-                let symbol = self.symbols.intern(&name).ok()?;
+                let symbol = self.intern_symbol_for_eval(&name).ok()?;
                 let value = self.value_for_cached_expression_payload_with_depth(
                     value_payload,
                     depth.saturating_add(1),

@@ -343,6 +343,14 @@ impl TreeWalk {
             Self::clone_attr_entries_lexicographic(argument, argument_span, attrs)?
         };
 
+        // Parallel fan-out (L2-P3b): every attribute value below is forced
+        // unconditionally, so unforced attribute thunks are guaranteed-needed
+        // work idle helper workers can claim ahead of this serial loop.
+        if self.shared.is_some() {
+            let candidates = Self::demand_eligible_values(entries.iter().map(|entry| entry.value));
+            self.publish_demand_values(parallel_demand::DemandTaskKind::Force, &candidates);
+        }
+
         let mut derivation = nix_compat::derivation::Derivation::default();
         let mut context = StringContext::empty();
         let name = self.derivation_name_value(id, span, argument, argument_span, &entries)?;
@@ -381,6 +389,13 @@ impl TreeWalk {
             };
 
             let value = self.force_value(argument, argument_span, entry.value)?;
+            // Parallel fan-out (L2-P3b): list-valued non-special attributes
+            // are string-coerced element by element below; publish the
+            // elements so helpers can instantiate independent dependency
+            // subtrees while this loop coerces serially.
+            if self.shared.is_some() && value.tag() == ValueTag::List {
+                self.publish_derivation_list_fanout(&key, value);
+            }
             if key == NAME_ATTR {
                 if structured_attrs_enabled {
                     Self::write_structured_json_string_field(

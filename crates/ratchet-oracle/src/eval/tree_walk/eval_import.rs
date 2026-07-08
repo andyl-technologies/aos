@@ -523,13 +523,12 @@ impl TreeWalk {
             |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
         )?)
         .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
-        self.text_store.insert(
-            path.clone(),
-            TextStoreEntry {
-                contents,
-                references: reference_context,
-            },
-        );
+        let entry = TextStoreEntry {
+            contents,
+            references: reference_context,
+        };
+        self.publish_text_store_entry(&path, &entry);
+        self.text_store.insert(path.clone(), entry);
         self.alloc_tree_walk_string(id, span, NixString::new(path, context))
     }
 

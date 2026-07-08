@@ -385,7 +385,7 @@ impl TreeWalk {
                     )
                 })?;
                 for (key, value) in values {
-                    let symbol = self.symbols.intern(key.as_bytes()).map_err(|source| {
+                    let symbol = self.intern_symbol_for_eval(key.as_bytes()).map_err(|source| {
                         TreeWalkError::new(
                             TreeWalkErrorKind::SymbolIntern {
                                 id,
@@ -459,7 +459,7 @@ impl TreeWalk {
                     )
                 })?;
                 for (key, value) in values {
-                    let symbol = self.symbols.intern(key.as_bytes()).map_err(|source| {
+                    let symbol = self.intern_symbol_for_eval(key.as_bytes()).map_err(|source| {
                         TreeWalkError::new(
                             TreeWalkErrorKind::SymbolIntern {
                                 id,
@@ -497,7 +497,7 @@ impl TreeWalk {
                     span,
                 )
             })?;
-        let value_symbol = self.symbols.intern(VALUE_ATTR).map_err(|source| {
+        let value_symbol = self.intern_symbol_for_eval(VALUE_ATTR).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::SymbolIntern {
                     id,

@@ -845,7 +845,7 @@ impl TreeWalk {
             )
         })?;
         for group in groups {
-            let symbol = self.symbols.intern(&group.path).map_err(|source| {
+            let symbol = self.intern_symbol_for_eval(&group.path).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::SymbolIntern {
                         id,

@@ -638,7 +638,7 @@ impl TreeWalk {
             )
         })?;
         for (key, value) in attrs {
-            let symbol = self.symbols.intern(&key).map_err(|source| {
+            let symbol = self.intern_symbol_for_eval(&key).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::SymbolIntern {
                         id,

@@ -231,6 +231,10 @@ in {
   # Each system has .config, .options, .build, and .checks.
   systems = discoverSystems;
 
+  # Eval-only benchmark attrs (never built). `bench.wide` instantiates every
+  # IFD-free package in one evaluation; see tests/bench/wide.nix.
+  bench = import ./tests/bench/wide.nix {inherit pkgs lib;};
+
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = {

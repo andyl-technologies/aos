@@ -294,7 +294,7 @@ impl TreeWalk {
             } else {
                 None
             };
-            let symbol = self.symbols.intern(name).map_err(|source| {
+            let symbol = self.intern_symbol_for_eval(name).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::SymbolIntern {
                         id,
@@ -687,13 +687,12 @@ impl TreeWalk {
                 digest,
             )?,
         };
-        self.text_store.insert(
-            path.clone(),
-            TextStoreEntry {
-                contents,
-                references: StringContext::empty(),
-            },
-        );
+        let entry = TextStoreEntry {
+            contents,
+            references: StringContext::empty(),
+        };
+        self.publish_text_store_entry(&path, &entry);
+        self.text_store.insert(path.clone(), entry);
         self.alloc_fetcher_result_path_value(id, span, path)
     }
 

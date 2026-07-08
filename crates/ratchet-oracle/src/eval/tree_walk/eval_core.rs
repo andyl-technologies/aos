@@ -353,6 +353,9 @@ impl TreeWalk {
         let parallel_force_registry = options
             .parallel_thunk_payloads_enabled()
             .then(|| Arc::new(ParallelForceCycleRegistry::new()));
+        let multi_worker_parallel = options
+            .parallel_workers()
+            .is_some_and(|workers| workers.get() > 1);
         Self {
             modules: vec![TreeWalkModule::new(
                 ir.clone(),
@@ -369,7 +372,16 @@ impl TreeWalk {
             options,
             stats: EvalStats::default(),
             attr_telemetry: AttrTelemetry::new(),
-            shape_table: ShapeTable::new().ok(),
+            // Hidden-class shape projection stores process-local `ShapeId`s in
+            // shared heap attrs metadata. Under multi-worker parallel mode a
+            // reader may not own the projecting worker's shape table, so
+            // projection is disabled entirely (readers then always take the
+            // flat lookup path); K = 1 parallel mode and serial mode keep it.
+            shape_table: if multi_worker_parallel {
+                None
+            } else {
+                ShapeTable::new().ok()
+            },
             flat_select_caches: SelectCacheMap::default(),
             shaped_select_caches: SelectCacheMap::default(),
             hamt_select_caches: SelectCacheMap::default(),
@@ -387,6 +399,10 @@ impl TreeWalk {
             find_file_cache_hits: 0,
             find_file_cache_misses: 0,
             known_derivations: BTreeMap::new(),
+            shared: None,
+            shared_known_derivations_cursor: 0,
+            shared_text_store_cursor: 0,
+            shared_version_seen: 0,
             import_cache: BTreeMap::new(),
             import_traceable_nonsymlink_prefixes: HashSet::new(),
             import_paths_cache: HashMap::new(),

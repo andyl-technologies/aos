@@ -106,12 +106,24 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         argument: IrId,
-        _argument_span: Span,
+        argument_span: Span,
         path: &[u8],
         base: &[u8],
         source: &[u8],
         global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
+        if self.shared.is_some() {
+            return self.load_and_eval_import_bytes_shared(
+                id,
+                span,
+                argument,
+                argument_span,
+                path,
+                base,
+                source,
+                global_scope,
+            );
+        }
         // Move the live symbol table into the parser instead of cloning it: the
         // grown superset becomes the new live table below, so the pre-parse table
         // is discarded on success and cloning it only to drop it dominated cold
@@ -167,6 +179,79 @@ impl TreeWalk {
         // Adopt the freshly lowered symbol table as the live table without a
         // clone; the module keeps the emptied husk and reads `self.symbols`.
         self.symbols = std::mem::take(&mut ir.symbols);
+        self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
+    }
+
+    /// Parallel-mode fresh import load: parse standalone, then remap.
+    ///
+    /// Under a shared demand pool the live symbol table is a prefix replica
+    /// of the shared symbol log, so the serial fast path (seeding the parser
+    /// with the live table and adopting the grown superset) would fork the
+    /// replica outside the log. Instead the module is parsed and lowered with
+    /// an isolated symbol table, then remapped through the same
+    /// [`TreeWalk::remap_cached_import_ir`] path cached imports use, whose
+    /// interning runs through the shared-log choke point. Parsing happens
+    /// outside any shared lock, so concurrent imports of different files
+    /// still parse in parallel.
+    #[allow(clippy::too_many_arguments)]
+    fn load_and_eval_import_bytes_shared(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+        base: &[u8],
+        source: &[u8],
+        global_scope: ImportGlobalScope,
+    ) -> Result<Value, TreeWalkError> {
+        let parsed = parse_bytes_with_symbols(source, SymbolTable::new()).map_err(|error| {
+            let span = error.span();
+            TreeWalkError::new(
+                TreeWalkErrorKind::ImportParse {
+                    id: argument,
+                    path: path.to_vec(),
+                    message: error.to_string(),
+                },
+                span,
+            )
+            .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
+        })?;
+        let resolved = if global_scope.is_scoped() {
+            ScopeResolver::with_options(ResolverOptions::with_unresolved_globals()).resolve(parsed)
+        } else {
+            resolve(parsed)
+        }
+        .map_err(|error| {
+            let span = error.span();
+            TreeWalkError::new(
+                TreeWalkErrorKind::ImportScope {
+                    id: argument,
+                    path: path.to_vec(),
+                    message: error.to_string(),
+                },
+                span,
+            )
+            .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
+        })?;
+        let ir = if global_scope.is_scoped() {
+            nix_lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
+        } else {
+            nix_lower(resolved)
+        }
+        .map_err(|error| {
+            let span = error.span();
+            TreeWalkError::new(
+                TreeWalkErrorKind::ImportLower {
+                    id: argument,
+                    path: path.to_vec(),
+                    message: error.to_string(),
+                },
+                span,
+            )
+            .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
+        })?;
+        let ir = self.remap_cached_import_ir(argument, argument_span, path, ir)?;
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }
 
@@ -232,7 +317,7 @@ impl TreeWalk {
         // stable; if a later step fails, the extra symbols left in the live
         // table are harmless and never invalidate previously interned ids.
         for bytes in ir.symbols.symbols() {
-            let symbol = self.symbols.intern(bytes).map_err(|source| {
+            let symbol = self.intern_symbol_for_eval(bytes).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::ImportScope {
                         id: argument,
