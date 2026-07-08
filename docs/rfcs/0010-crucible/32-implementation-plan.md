@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:52435eb3c45eb30a`
+Checklist sync digest: `rfc0010-checklist-v1:0af5b4698d8541b6`
 
 ## The phase ladder
 
@@ -462,17 +462,21 @@ long-held locks.
   remote interactive finalization through stopped snapshot query, actor-owned
   terminal savepoint validation, replay-oracle proof, and stopped-session
   cleanup, plus explicitly selected local-QEMU resumes that run the same resumed
-  session workflow and derive a source-savepoint ancestor realization proof.
+  session workflow, invoke the `crucible-qemu` resume coordinator through an
+  API-owned adapter backed by a `SimBackend`-seeded
+  `QemuBackendRealizationExecutor`, and derive
+  branch/runtime proof fields from that coordinator result.
   The `crucible-qemu` realization coordinator owns baked-genesis,
   source-ancestor, and savevm policy branches, and now exposes a `Backend`-backed
   realization executor that restores exact/baked snapshots through the
   QMP-backed backend boundary and replays suffixes through backend horizon
   advances, while the CLI emits
-  `materialization=qemu-vm-realization`, `operation=resume`, branch, replay
-  count, and resolved QEMU/plugin identity in stdout and the canonical log.
-  process-level `resume --backend qemu` JSONL
-  output checks that proof plus replay-oracle validation through
-  marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
+  `materialization=qemu-vm-realization`, `operation=resume`,
+  `executor=model-checkpoint`, branch, replay count, runtime/configuration
+  hashes, and resolved QEMU/plugin identity in stdout and the canonical log.
+  process-level `resume --backend qemu` JSONL output checks those
+  coordinator-derived proof fields from that model-checkpoint executor plus
+  replay-oracle validation through marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
   `running` after `cont`. Full closure waits for having the selected CLI
   local-QEMU resume path construct a real `QemuNode` executor for that

@@ -25,9 +25,11 @@ use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueE
 use clap_complete::Shell;
 use crucible_api::{
     AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest, DestroySessionRequest,
-    InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
-    RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
-    ResumeSessionRequest, RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
+    InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode,
+    ModelCheckpointVmResumeRealizationProof, QuiescentLifecycleLoop, RPC_PROTOCOL_BUILD,
+    RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH, ResumeSessionRequest,
+    RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
+    realize_model_checkpoint_vm_resume_from_savepoint,
     serve_lifecycle_http2_with_mode_until_shutdown,
 };
 use crucible_session::engine as crucible_model;
@@ -37,9 +39,9 @@ use crucible_session::engine::{
     QuantumOutcome as QOut, QuantumRequest as QReq, SchedulerError as QErr,
 };
 use crucible_session::validation::{
-    ResumeRealizationProof, ValidationDag, ValidationDagStoreError, empty_validation_dag,
+    ValidationDag, ValidationDagStoreError, empty_validation_dag,
     fork_session_from_validation_base, fork_session_from_validation_checkpoint,
-    realize_resume_from_savepoint, resume_session_from_validation_dag,
+    resume_session_from_validation_dag,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointId, BreakpointSpec, CheckpointRef, CommandReply,
@@ -5475,10 +5477,13 @@ struct ResumeWorkflowReport {
     run: RunWorkflowReport,
     source_checkpoint: crucible::ContentHash,
     resumed_configuration: crucible::ContentHash,
-    terminal_configuration: crucible::Configuration,
+    terminal_configuration: CliModelConfiguration,
     scenario_label: String,
     terminal_oracle: SavepointOracleProof,
 }
+
+type CliModelConfiguration = crucible::Configuration;
+type CliModelScenarioDef = crucible::ScenarioDef;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ForkWorkflowReport {
@@ -6070,7 +6075,7 @@ fn run_local_save_recording_workflow(
         .map(|node| (node.id.clone(), node.white_box))
         .collect::<BTreeMap<_, _>>();
     let control_plane = LifecycleControlPlane::new("crucible-cli-save", Vec::new(), {
-        move |_scenario: &crucible::ScenarioDef, _seed| {
+        move |_scenario: &CliModelScenarioDef, _seed| {
             SaveRecordingLifecycleLoop::new(sources.clone())
         }
     })
@@ -6117,16 +6122,7 @@ fn run_local_qemu_resume_workflow(
     };
     let (evidence, report) =
         run_local_resume_workflow_report_with_driver(resume_plan, interactive_driver)?;
-    let proof = realize_resume_from_savepoint(
-        &evidence.configuration,
-        &evidence.checkpoint,
-        &report.terminal_configuration,
-    )
-    .map_err(|error| {
-        CliError::Identity(format!(
-            "local QEMU resume realization proof failed: {error}"
-        ))
-    })?;
+    let realization = realize_local_qemu_resume(&evidence, &report.terminal_configuration)?;
     let mut outcome = finish_resume_workflow_outcome(
         thin_plan,
         backend_plan,
@@ -6134,8 +6130,25 @@ fn run_local_qemu_resume_workflow(
         resume_plan,
         report,
     )?;
-    append_local_qemu_resume_identity(&mut outcome, backend_plan, &proof)?;
+    append_local_qemu_resume_identity(&mut outcome, backend_plan, &realization)?;
     Ok(outcome)
+}
+
+fn realize_local_qemu_resume(
+    evidence: &ResumeHandleEvidence,
+    terminal_configuration: &CliModelConfiguration,
+) -> Result<ModelCheckpointVmResumeRealizationProof, CliError> {
+    realize_model_checkpoint_vm_resume_from_savepoint(
+        &evidence.scenario_form,
+        &evidence.configuration,
+        &evidence.checkpoint,
+        terminal_configuration,
+    )
+    .map_err(|error| {
+        CliError::Identity(format!(
+            "local QEMU resume realization coordinator failed: {error}"
+        ))
+    })
 }
 
 fn run_local_resume_workflow_report_with_driver(
@@ -8412,7 +8425,7 @@ fn append_local_qemu_save_identity(
 fn append_local_qemu_resume_identity(
     outcome: &mut BackendCommandOutcome,
     backend_plan: &BackendSelectionPlan,
-    proof: &ResumeRealizationProof,
+    proof: &ModelCheckpointVmResumeRealizationProof,
 ) -> Result<(), CliError> {
     let Some(ResolvedLocalBackend::Qemu {
         qemu_build_id,

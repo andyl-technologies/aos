@@ -16,6 +16,8 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
+  apiVmResume = builtins.readFile ../../crates/crucible-api/src/vm_resume.rs;
+  simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   qemuBackendExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/backend_executor.rs;
@@ -45,6 +47,15 @@
     )
     requirements;
 
+  forbiddenFor = fileLabel: content: forbidden:
+    lib.concatMap (
+      item:
+        lib.optionals (hasInfix item.needle content) [
+          "${fileLabel}: forbidden ${item.label}: `${item.needle}`"
+        ]
+    )
+    forbidden;
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
@@ -73,7 +84,11 @@
       }
       {
         label = "T-CLI-10 local-QEMU realization proof progress";
-        needle = "`materialization=qemu-vm-realization`, `operation=resume`, branch";
+        needle = "`materialization=qemu-vm-realization`, `operation=resume`,\n  `executor=model-checkpoint`, branch";
+      }
+      {
+        label = "T-CLI-10 local-QEMU coordinator invocation progress";
+        needle = "invoke the `crucible-qemu` resume coordinator through a";
       }
       {
         label = "T-CLI-10 process qemu resume progress";
@@ -95,11 +110,15 @@
       }
       {
         label = "phase5 CLI resume local-QEMU realization proof progress";
-        needle = "`materialization=qemu-vm-realization`, `operation=resume`, branch";
+        needle = "`materialization=qemu-vm-realization`, `operation=resume`,\n  `executor=model-checkpoint`, branch";
+      }
+      {
+        label = "phase5 CLI resume local-QEMU coordinator invocation progress";
+        needle = "invoke the `crucible-qemu` resume coordinator through a";
       }
       {
         label = "phase5 CLI process qemu resume progress";
-        needle = "process-level `resume --backend qemu` JSONL\n  output checks that proof plus replay-oracle validation";
+        needle = "process-level `resume --backend qemu` JSONL output checks those\n  coordinator-derived proof fields from that model-checkpoint executor plus";
       }
       {
         label = "phase5 CLI QMP snapshot-load smoke progress";
@@ -165,10 +184,14 @@
       }
       {
         label = "resume local-QEMU proof derivation";
-        needle = "realize_resume_from_savepoint(";
+        needle = "fn realize_local_qemu_resume(";
       }
       {
-        label = "resume local-QEMU proof summary";
+        label = "resume local-QEMU coordinator invocation";
+        needle = "realize_model_checkpoint_vm_resume_from_savepoint(";
+      }
+      {
+        label = "resume local-QEMU realization summary";
         needle = "proof.field_summary()";
       }
       {
@@ -334,6 +357,62 @@
         needle = "ancestor-replay";
       }
     ]
+    ++ forbiddenFor "crates/crucible-session/src/validation.rs" sessionValidation [
+      {
+        label = "QEMU boundary term";
+        needle = "qemu";
+      }
+      {
+        label = "QEMU boundary type";
+        needle = "Qemu";
+      }
+      {
+        label = "QEMU uppercase boundary term";
+        needle = "QEMU";
+      }
+      {
+        label = "loadvm boundary term";
+        needle = "loadvm";
+      }
+      {
+        label = "savevm boundary term";
+        needle = "savevm";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/vm_resume.rs" apiVmResume [
+      {
+        label = "resume API VM realization proof";
+        needle = "struct ModelCheckpointVmResumeRealizationProof";
+      }
+      {
+        label = "resume API VM realization derivation";
+        needle = "realize_model_checkpoint_vm_resume_from_savepoint";
+      }
+      {
+        label = "resume API-owned QEMU coordinator invocation";
+        needle = "resume_qemu_vm(";
+      }
+      {
+        label = "resume API-owned QEMU backend executor";
+        needle = "QemuBackendRealizationExecutor::new";
+      }
+      {
+        label = "resume API-owned QEMU model backend";
+        needle = "SimBackend::from_restorable_checkpoints";
+      }
+      {
+        label = "resume API-owned QEMU replay oracle status";
+        needle = "QemuReplayOracleValidation::NotRun";
+      }
+      {
+        label = "resume API-owned QEMU model executor marker";
+        needle = "model-checkpoint";
+      }
+      {
+        label = "resume API-owned QEMU ancestor replay branch";
+        needle = "ancestor-replay";
+      }
+    ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
       {
         label = "resume QEMU realization coordinator";
@@ -366,6 +445,20 @@
         needle = "load_baked_genesis(&genesis, &baked)";
       }
     ]
+    ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackend [
+      {
+        label = "resume model backend restorable checkpoint constructor";
+        needle = "pub fn from_restorable_checkpoint";
+      }
+      {
+        label = "resume model backend restorable checkpoints constructor";
+        needle = "pub fn from_restorable_checkpoints";
+      }
+      {
+        label = "resume model backend checkpoint state derivation";
+        needle = "fn from_checkpoint(checkpoint: &Checkpoint) -> Self";
+      }
+    ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
         label = "process qemu resume JSONL regression";
@@ -386,6 +479,10 @@
       {
         label = "process qemu resume materialization";
         needle = "materialization=qemu-vm-realization";
+      }
+      {
+        label = "process qemu resume model executor";
+        needle = "executor=model-checkpoint";
       }
       {
         label = "process qemu resume branch";

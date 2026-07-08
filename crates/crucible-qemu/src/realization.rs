@@ -37,6 +37,28 @@ pub struct QemuBakedGenesisSnapshot {
     pub checkpoint: Checkpoint,
 }
 
+impl QemuBakedGenesisSnapshot {
+    /// Bakes `world` into a genesis snapshot suitable for QEMU realization.
+    ///
+    /// This helper keeps model baking behind the `crucible-qemu` boundary for
+    /// callers that should only invoke QEMU realization APIs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when the model engine rejects the
+    /// world or cannot materialize its baked genesis checkpoint.
+    pub fn from_model_world(world: &World) -> Result<Self, QemuVmRealizationError> {
+        let genesis = crucible::bake(world).map_err(|source| QemuVmRealizationError::Store {
+            operation: "bake genesis for QEMU realization",
+            message: source.to_string(),
+        })?;
+        Ok(Self {
+            world_id: world.id,
+            checkpoint: genesis.checkpoint,
+        })
+    }
+}
+
 /// A cached ancestor selected for replay toward a target configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuCachedAncestor {

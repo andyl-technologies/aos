@@ -1090,18 +1090,23 @@ branch on the verdict without parsing output:
   now query the stopped snapshot, validate the actor-materialized terminal
   savepoint, emit the same replay-oracle proof, and clean up the stopped remote
   session. Explicitly selected local-QEMU resumes now run the same resumed
-  session workflow and derive a source-savepoint ancestor realization proof;
+  session workflow, invoke the `crucible-qemu` resume coordinator through an
+  API-owned adapter backed by a `SimBackend`-seeded
+  `QemuBackendRealizationExecutor`, and derive the emitted branch/runtime proof
+  from that coordinator result;
   `crucible-qemu` owns the typed realization coordinator with
   baked-genesis/source-ancestor evidence, the default savevm policy, and a
   `Backend`-backed realization executor that restores exact/baked snapshots
   through the QMP-backed backend boundary and replays suffixes through backend
   horizon advances.
   Stdout and the canonical log record
-  `materialization=qemu-vm-realization`, `operation=resume`, branch, replay
-  count, runtime/configuration hashes, and resolved QEMU/plugin identity.
+  `materialization=qemu-vm-realization`, `operation=resume`,
+  `executor=model-checkpoint`, branch, replay count, runtime/configuration
+  hashes, and resolved QEMU/plugin identity.
   Process-tests cover real-binary
-  `resume --backend qemu` JSONL output plus replay-oracle validation through
-  marker-resolved QEMU/plugin identity. The gate also runs a direct patched-QEMU
+  `resume --backend qemu` JSONL output, coordinator-derived branch/runtime
+  fields from that model-checkpoint executor, and replay-oracle validation
+  through marker-resolved QEMU/plugin identity. The gate also runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
   `running` after `cont`. Full closure remains blocked on having the selected
   CLI local-QEMU resume path construct a real `QemuNode` executor for that

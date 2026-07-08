@@ -15,7 +15,8 @@
 //! owns the unary discovery and lifecycle API; [`streaming`] owns the typed
 //! `Control` and `Watch`+`Send` attach-and-command facade; [`server`] owns the
 //! HTTP/2 daemon transport; [`open_set`] owns the dotted-kind plus
-//! typed-attribute payload model.
+//! typed-attribute payload model; [`vm_resume`] owns the process-local VM
+//! resume realization bridge used by thin CLI callers.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -30,6 +31,8 @@ pub mod rpc_abi;
 pub mod server;
 pub mod session_mapping;
 pub mod streaming;
+#[path = "vm_resume.rs"]
+pub mod vm_resume;
 
 pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
@@ -94,4 +97,8 @@ pub use streaming::{
     StreamingCapabilitySet, StreamingCommandCapability, StreamingEquivalenceError,
     StreamingEquivalenceReport, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame,
     WatchStream, validate_control_watch_send_equivalence,
+};
+pub use vm_resume::{
+    ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError,
+    realize_model_checkpoint_vm_resume_from_savepoint,
 };

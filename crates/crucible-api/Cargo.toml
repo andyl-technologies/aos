@@ -11,6 +11,7 @@ workspace = true
 axum = { workspace = true }
 bytes = { workspace = true }
 crucible = { path = "../crucible" }
+crucible-qemu = { path = "../crucible-qemu" }
 crucible-session = { path = "../crucible-session" }
 futures-util = { workspace = true }
 reqwest = { workspace = true, features = ["http2"] }
