@@ -169,7 +169,8 @@ pub use thunk_wait::{
 };
 pub use tree_walk::{
     EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,
-    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, MemoOptions,
+    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, MemoNetMode,
+    MemoNetOptions, MemoOptions, MemoTierEvents,
     OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, TreeWalk, TreeWalkError, TreeWalkErrorKind,
     TreeWalkOptions,
     TreeWalkOptionsError, canonicalize_cacheable_input_trace,

@@ -12,6 +12,7 @@ mod node_metadata;
 mod node_trace;
 mod parse_artifact_index;
 mod root_record;
+mod root_record_bundle;
 mod root_record_index;
 
 pub use blob_index::{
@@ -32,6 +33,10 @@ pub use parse_artifact_index::{
     PersistParseArtifactKey,
 };
 pub use root_record::RootInstantiationRecord;
+pub use root_record_bundle::{
+    PERSIST_ROOT_RECORD_BUNDLE_MAGIC, PERSIST_ROOT_RECORD_BUNDLE_VERSION, RootRecordBundle,
+    RootRecordBundleError,
+};
 pub use root_record_index::{
     PersistRootRecordIndex, PersistRootRecordIndexEntry, PersistRootRecordIndexValue,
     PersistRootRecordKey,

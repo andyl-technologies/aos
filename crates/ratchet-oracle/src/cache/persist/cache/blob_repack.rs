@@ -3,11 +3,14 @@
 use super::super::INDEX_REWRITE_ID;
 use super::repack_helpers::{
     FileRepackPaths, FileRepackStagePaths, file_relocation_locations, file_repack_replacements,
-    relocate_file_artifact_entries, relocate_parse_artifact_entries, swap_repacked_file_store,
-    swap_repacked_value_store, value_repack_replacements, write_repacked_blob_index,
-    write_repacked_file_artifact_index, write_repacked_parse_artifact_index,
+    relocate_file_artifact_entries, relocate_parse_artifact_entries,
+    relocate_root_record_entries, swap_repacked_file_store, swap_repacked_value_store,
+    value_repack_replacements, write_repacked_blob_index, write_repacked_file_artifact_index,
+    write_repacked_parse_artifact_index, write_repacked_root_record_index,
 };
 use super::*;
+
+use ratchet_cache::file_lock::{AdvisoryFileLock, AdvisoryFileLockMode};
 
 use std::sync::atomic::Ordering;
 
@@ -106,6 +109,20 @@ impl PersistCache {
         let _parse_artifact_guard = self
             .lock_parse_artifact_write()
             .map_err(|source| PersistFileBlobPackRepackError::ParseArtifactIndex { source })?;
+        // Root-record entries embed pack locations, so they are relocated with
+        // the other `files/` sidecars. The exclusive advisory lock excludes
+        // concurrent record writers for the duration of the swap; it is always
+        // acquired after the `files/` store lock (the same order every other
+        // path uses), so no lock-order inversion is possible.
+        let root_record_lock_path = self.layout().root_record_lock_path();
+        let _root_record_guard = AdvisoryFileLock::lock(
+            root_record_lock_path.clone(),
+            AdvisoryFileLockMode::Exclusive,
+        )
+        .map_err(|source| PersistFileBlobPackRepackError::RootRecordLock {
+            path: root_record_lock_path,
+            source,
+        })?;
         let pending_roots = self
             .root_locks
             .pending_file_roots()
@@ -134,6 +151,15 @@ impl PersistCache {
                 .map_err(|source| PersistFileBlobPackRepackError::ParseArtifactIndex { source })?,
             &relocation_locations,
         )?;
+        let root_record_index =
+            PersistRootRecordIndex::open(self.layout().root_record_index_path())
+                .map_err(|source| PersistFileBlobPackRepackError::RootRecordIndex { source })?;
+        let root_record_entries = relocate_root_record_entries(
+            root_record_index
+                .latest_entries()
+                .map_err(|source| PersistFileBlobPackRepackError::RootRecordIndex { source })?,
+            plan.record_relocations(),
+        );
 
         let rewrite_id = INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
         let tmp_pack_path = self.file_pack.path().with_extension(format!(
@@ -152,17 +178,24 @@ impl PersistCache {
             "repack-parse-artifacts-{}-{rewrite_id}.tmp",
             std::process::id()
         ));
+        let root_record_index_path = root_record_index.path().to_path_buf();
+        let tmp_root_record_path = root_record_index_path.with_extension(format!(
+            "repack-root-records-{}-{rewrite_id}.tmp",
+            std::process::id()
+        ));
         let stage = FileRepackStagePaths {
             pack: &tmp_pack_path,
             blob_index: &tmp_index_path,
             file_artifact_index: &tmp_file_artifact_path,
             parse_artifact_index: &tmp_parse_artifact_path,
+            root_record_index: &tmp_root_record_path,
         };
         let paths = FileRepackPaths {
             pack: self.file_pack.path(),
             blob_index: self.file_index.path(),
             file_artifact_index: self.file_artifact_index.path(),
             parse_artifact_index: self.parse_artifact_index.path(),
+            root_record_index: &root_record_index_path,
         };
         let replacements = file_repack_replacements(paths, stage, rewrite_id);
         if let Err(source) = self.file_pack.write_relocated_records_mapped_to(
@@ -188,6 +221,12 @@ impl PersistCache {
         {
             replacements.cleanup_staged();
             return Err(PersistFileBlobPackRepackError::ParseArtifactIndex { source });
+        }
+        if let Err(source) =
+            write_repacked_root_record_index(&tmp_root_record_path, &root_record_entries)
+        {
+            replacements.cleanup_staged();
+            return Err(PersistFileBlobPackRepackError::RootRecordIndex { source });
         }
         swap_repacked_file_store(&replacements)?;
         // The file index file was swapped out-of-band, so invalidate the live

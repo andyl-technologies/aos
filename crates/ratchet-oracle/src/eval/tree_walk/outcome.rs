@@ -13398,6 +13398,44 @@ pub struct EvalStats {
     pub(crate) memo_l1_misses: u64,
     pub(crate) memo_l1_admissions: u64,
     pub(crate) memo_l1_declines: u64,
+    pub(crate) memo_l2_secondary_hits: u64,
+    pub(crate) memo_l2_secondary_misses: u64,
+    pub(crate) memo_l2_promotions: u64,
+    pub(crate) memo_l2_reval_failures: u64,
+    pub(crate) memo_net_hits: u64,
+    pub(crate) memo_net_misses: u64,
+    pub(crate) memo_net_errors: u64,
+    pub(crate) memo_net_reval_failures: u64,
+}
+
+/// Durable-tier (L2 secondary-location and L3 network) memo event counts.
+///
+/// The root-cutoff orchestration in `aos-nix` runs *outside* the evaluator —
+/// a warm cutoff never constructs a `TreeWalk` — so its multi-location and
+/// network probe outcomes are collected into this plain struct and folded
+/// into the final [`EvalStats`] through [`EvalStats::merge_memo_tier_events`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MemoTierEvents {
+    /// Records served from a secondary L2 disk location.
+    pub l2_secondary_hits: u64,
+    /// Probes that consulted at least one secondary L2 location and missed
+    /// everywhere on disk.
+    pub l2_secondary_misses: u64,
+    /// Records copied into the primary location after a slower-tier hit.
+    pub l2_promotions: u64,
+    /// Disk-tier records rejected because their impure-input slice failed
+    /// revalidation.
+    pub l2_reval_failures: u64,
+    /// Records fetched, validated, and accepted from the L3 network tier.
+    pub net_hits: u64,
+    /// Network probes the endpoint answered with "no such record".
+    pub net_misses: u64,
+    /// Network probes that failed at the transport or validation layer
+    /// (timeouts, malformed bundles, content-hash mismatches).
+    pub net_errors: u64,
+    /// Network records rejected because their impure-input slice failed
+    /// local revalidation.
+    pub net_reval_failures: u64,
 }
 
 impl EvalStats {
@@ -13558,6 +13596,79 @@ impl EvalStats {
         }
     }
 
+    /// Returns records served from a secondary L2 disk location.
+    pub const fn memo_l2_secondary_hits(&self) -> u64 {
+        self.memo_l2_secondary_hits
+    }
+
+    /// Returns probes that consulted secondaries and missed on every disk location.
+    pub const fn memo_l2_secondary_misses(&self) -> u64 {
+        self.memo_l2_secondary_misses
+    }
+
+    /// Returns records copied into the primary location after a slower-tier hit.
+    pub const fn memo_l2_promotions(&self) -> u64 {
+        self.memo_l2_promotions
+    }
+
+    /// Returns disk-tier records rejected by impure-input slice revalidation.
+    pub const fn memo_l2_reval_failures(&self) -> u64 {
+        self.memo_l2_reval_failures
+    }
+
+    /// Returns records fetched, validated, and accepted from the network tier.
+    pub const fn memo_net_hits(&self) -> u64 {
+        self.memo_net_hits
+    }
+
+    /// Returns network probes answered with "no such record".
+    pub const fn memo_net_misses(&self) -> u64 {
+        self.memo_net_misses
+    }
+
+    /// Returns network probes that failed at the transport or validation layer.
+    pub const fn memo_net_errors(&self) -> u64 {
+        self.memo_net_errors
+    }
+
+    /// Returns network records rejected by local impure-input revalidation.
+    pub const fn memo_net_reval_failures(&self) -> u64 {
+        self.memo_net_reval_failures
+    }
+
+    /// Folds durable-tier memo events observed outside the evaluator into
+    /// these counters.
+    ///
+    /// The root-cutoff fast path answers without constructing an evaluator,
+    /// so its L2/L3 probe outcomes arrive as a [`MemoTierEvents`] snapshot
+    /// after the fact. Every field is combined with saturating addition.
+    pub fn merge_memo_tier_events(&mut self, events: &MemoTierEvents) {
+        let MemoTierEvents {
+            l2_secondary_hits,
+            l2_secondary_misses,
+            l2_promotions,
+            l2_reval_failures,
+            net_hits,
+            net_misses,
+            net_errors,
+            net_reval_failures,
+        } = *events;
+        self.memo_l2_secondary_hits = self.memo_l2_secondary_hits.saturating_add(l2_secondary_hits);
+        self.memo_l2_secondary_misses = self
+            .memo_l2_secondary_misses
+            .saturating_add(l2_secondary_misses);
+        self.memo_l2_promotions = self.memo_l2_promotions.saturating_add(l2_promotions);
+        self.memo_l2_reval_failures = self
+            .memo_l2_reval_failures
+            .saturating_add(l2_reval_failures);
+        self.memo_net_hits = self.memo_net_hits.saturating_add(net_hits);
+        self.memo_net_misses = self.memo_net_misses.saturating_add(net_misses);
+        self.memo_net_errors = self.memo_net_errors.saturating_add(net_errors);
+        self.memo_net_reval_failures = self
+            .memo_net_reval_failures
+            .saturating_add(net_reval_failures);
+    }
+
     /// Accumulates another evaluator's counters into this one.
     ///
     /// Parallel evaluation keeps per-worker [`EvalStats`] and merges them into
@@ -13628,6 +13739,14 @@ impl EvalStats {
             memo_l1_misses,
             memo_l1_admissions,
             memo_l1_declines,
+            memo_l2_secondary_hits,
+            memo_l2_secondary_misses,
+            memo_l2_promotions,
+            memo_l2_reval_failures,
+            memo_net_hits,
+            memo_net_misses,
+            memo_net_errors,
+            memo_net_reval_failures,
         } = *other;
         self.thunks_forced = self.thunks_forced.saturating_add(thunks_forced);
         self.thunks_allocated = self.thunks_allocated.saturating_add(thunks_allocated);
@@ -13724,6 +13843,16 @@ impl EvalStats {
         self.memo_l1_misses = self.memo_l1_misses.saturating_add(memo_l1_misses);
         self.memo_l1_admissions = self.memo_l1_admissions.saturating_add(memo_l1_admissions);
         self.memo_l1_declines = self.memo_l1_declines.saturating_add(memo_l1_declines);
+        self.merge_memo_tier_events(&MemoTierEvents {
+            l2_secondary_hits: memo_l2_secondary_hits,
+            l2_secondary_misses: memo_l2_secondary_misses,
+            l2_promotions: memo_l2_promotions,
+            l2_reval_failures: memo_l2_reval_failures,
+            net_hits: memo_net_hits,
+            net_misses: memo_net_misses,
+            net_errors: memo_net_errors,
+            net_reval_failures: memo_net_reval_failures,
+        });
     }
 
     /// Returns the number of `.drv` paths reused from clean derivation ATerm records.

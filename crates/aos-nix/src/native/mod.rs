@@ -31,8 +31,8 @@ use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
 use crate::eval::tree_walk::{canonicalize_policy_path, normalize_absolute_path_bytes};
 use crate::eval::{
-    EvalErrorLabel, EvalMode, EvalOutcome, EvalStats, IfdRealizer, Tier1Engine, TreeWalkError,
-    TreeWalkErrorKind, TreeWalkOptions,
+    EvalErrorLabel, EvalMode, EvalOutcome, EvalStats, IfdRealizer, MemoTierEvents, Tier1Engine,
+    TreeWalkError, TreeWalkErrorKind, TreeWalkOptions,
     eval_instantiation_attr_path_owned_with_options_source_realizer_eval_cache_and_engine,
     eval_whnf_owned_with_options_realizer_eval_cache_and_engine, revalidate_cacheable_input_trace,
 };
@@ -564,35 +564,29 @@ impl NixNative {
         let cutoff_key = (options.root_cutoff_enabled() && options.persist_cache_root().is_some())
             .then(|| root_cutoff::root_record_key(&file, &source, attr, &options));
 
+        let mut memo_events = MemoTierEvents::default();
         if let Some(key) = cutoff_key {
-            if let Some(closure) = self.load_root_cutoff_closure(&options, key) {
-                if options.root_cutoff_check() {
-                    let (fresh, _, _) =
-                        self.eval_file_attr_closure_full(&file, attr, &options, &source)?;
-                    if fresh != closure {
-                        tracing::error!(
-                            target: "aos_nix::cache",
-                            file = %file.display(),
-                            attr,
-                            "root cutoff closure diverged from a full evaluation"
-                        );
-                        return Err(NativeEvalError::Internal {
-                            message: format!(
-                                "root cutoff closure for {} attr {attr} diverged from a full evaluation",
-                                file.display()
-                            ),
-                        }
-                        .into());
-                    }
-                }
-                let stats = EvalStats::for_root_cutoff();
+            if let Some((closure, hit_source)) =
+                self.load_root_cutoff_closure(&options, key, &mut memo_events)
+            {
+                self.verify_root_cutoff_closure(
+                    &file,
+                    attr,
+                    &options,
+                    hit_source,
+                    &closure,
+                    &source,
+                )?;
+                let mut stats = EvalStats::for_root_cutoff();
+                stats.merge_memo_tier_events(&memo_events);
                 self.maybe_dump_eval_stats(&stats);
                 return Ok((closure, stats));
             }
         }
 
-        let (closure, stats, cacheable_inputs) =
+        let (closure, mut stats, cacheable_inputs) =
             self.eval_file_attr_closure_full(&file, attr, &options, &source)?;
+        stats.merge_memo_tier_events(&memo_events);
         if let (Some(key), Some(inputs)) = (cutoff_key, cacheable_inputs) {
             self.store_root_cutoff(&options, key, &closure, &inputs);
         }
@@ -656,24 +650,23 @@ impl NixNative {
                     persist_cache
                 });
             if let Some(persist_cache) = &persist_cache {
-                let cached = if let Some(source_path) = source_path {
-                    persist_cache
-                        .load_parse_cache_source_from_index(&cache, source_path, source)
-                        .ok()
-                        .flatten()
-                } else {
-                    persist_cache
-                        .load_parse_cache_bytes_from_index(&cache, source)
-                        .ok()
-                        .flatten()
-                };
-                if let Some(mut cached) = cached {
+                let cached =
+                    self.load_native_parse_artifact_any(&cache, persist_cache, source_path, source);
+                if let Some((mut cached, from_secondary)) = cached {
                     #[cfg(test)]
                     self.observe_persistent_parse_hit(if source_path.is_some() {
                         NativePersistentParseHit::Source
                     } else {
                         NativePersistentParseHit::Bytes
                     });
+                    if from_secondary {
+                        self.promote_native_parse_artifact(
+                            persist_cache,
+                            source,
+                            source_path,
+                            &cached,
+                        );
+                    }
                     self.refresh_and_materialize_native_cached_parse(
                         persist_cache,
                         source,
@@ -937,6 +930,8 @@ fn native_filesystem_access_denied(mode: EvalMode, path: &[u8]) -> NativeEvalErr
 mod error;
 mod eval_stats_dump;
 mod fallback;
+mod memo_net;
+mod parse_locations;
 mod root_cutoff;
 mod source;
 

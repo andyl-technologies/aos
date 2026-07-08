@@ -128,23 +128,30 @@ impl PersistCache {
         &self,
         key: PersistRootRecordKey,
     ) -> Result<Option<HydratedRootInstantiation>, PersistRootRecordError> {
-        let lock_path = self.layout().root_record_lock_path();
-        let _guard = AdvisoryFileLock::lock(lock_path.clone(), AdvisoryFileLockMode::Shared)
-            .map_err(|source| PersistRootRecordError::AdvisoryLock {
-                path: lock_path,
-                source,
-            })?;
-        let index = self.open_root_record_index()?;
-        let Some(value) = index
-            .lookup(key)
-            .map_err(|source| PersistRootRecordError::Index { source })?
-        else {
+        // The advisory guard is scoped to the index lookup alone: blob reads
+        // below acquire the `files/` store lock, and holding the root-record
+        // lock across them would invert the files-then-roots order used by
+        // storage maintenance (an ABBA deadlock). The blob reads need no
+        // root-record lock — they are content-addressed and self-verifying.
+        let value = {
+            let lock_path = self.layout().root_record_lock_path();
+            let _guard = AdvisoryFileLock::lock(lock_path.clone(), AdvisoryFileLockMode::Shared)
+                .map_err(|source| PersistRootRecordError::AdvisoryLock {
+                    path: lock_path,
+                    source,
+                })?;
+            let index = self.open_root_record_index()?;
+            index
+                .lookup(key)
+                .map_err(|source| PersistRootRecordError::Index { source })?
+        };
+        let Some(value) = value else {
             return Ok(None);
         };
 
-        let record_bytes = self
-            .read_blob(value.blob_key(), value.location())
-            .map_err(|source| PersistRootRecordError::BlobPack { source })?;
+        let Some(record_bytes) = self.read_root_record_blob(value)? else {
+            return Ok(None);
+        };
         let record = RootInstantiationRecord::decode(&record_bytes)
             .map_err(|source| PersistRootRecordError::Format { source })?;
 
@@ -169,6 +176,137 @@ impl PersistCache {
             inputs: record.inputs().to_vec(),
             run_id: record.run_id(),
         }))
+    }
+
+    /// Reads a root-record payload blob, healing a stale indexed location.
+    ///
+    /// The `roots/` sidecar embeds the record blob's pack location at write
+    /// time, but file-pack repack relocates records; a record written before a
+    /// repack that predates root-record relocation support carries a stale
+    /// offset. Because the blob is content-addressed, the current `files/`
+    /// blob index remains the authority: when the embedded location no longer
+    /// verifies, the read retries at the freshly indexed location.
+    ///
+    /// Returns `Ok(None)` when the blob is absent from both the embedded
+    /// location and the current blob index (the record is dead; callers treat
+    /// this as a clean miss).
+    fn read_root_record_blob(
+        &self,
+        value: PersistRootRecordIndexValue,
+    ) -> Result<Option<Vec<u8>>, PersistRootRecordError> {
+        match self.read_blob(value.blob_key(), value.location()) {
+            Ok(bytes) => return Ok(Some(bytes)),
+            Err(error) => {
+                tracing::debug!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "root-record blob unreadable at its indexed location; retrying via blob index"
+                );
+            }
+        }
+        let Some(location) = self
+            .lookup_blob_location(value.blob_key())
+            .map_err(|source| PersistRootRecordError::BlobIndex { source })?
+        else {
+            return Ok(None);
+        };
+        if location == value.location() {
+            return Ok(None);
+        }
+        self.read_blob(value.blob_key(), location)
+            .map(Some)
+            .map_err(|source| PersistRootRecordError::BlobPack { source })
+    }
+
+    /// Enumerates the `files/` blobs kept live by durable root records.
+    ///
+    /// For every newest root-record index entry this resolves — through the
+    /// current `files/` blob index, which stays authoritative across pack
+    /// relocation — the encoded record blob plus every closure `.drv` blob the
+    /// record references. Records whose blobs are unresolvable or whose
+    /// payload no longer decodes are skipped (they are already dead and their
+    /// bytes are legitimately reclaimable), so a single corrupt record never
+    /// wedges storage maintenance.
+    ///
+    /// `files_advisory_guard` must be the caller's held `files/` store lock:
+    /// maintenance callers already hold it exclusively, so record payloads are
+    /// read through the mapped pack directly rather than through the
+    /// self-locking [`Self::read_blob`] path (which would deadlock against the
+    /// caller's own store lock). Callers must also hold the root-record
+    /// advisory lock (shared suffices; the file-pack repack already holds it
+    /// exclusively) so a concurrent record writer cannot tear the index
+    /// snapshot — it is *not* acquired here because advisory file locks are
+    /// not reentrant and the repack caller would self-deadlock.
+    pub(super) fn root_record_blob_live_roots(
+        &self,
+        files_advisory_guard: &AdvisoryFileLock,
+    ) -> Result<Vec<PersistBlobLiveRoot>, PersistBlobLiveRootError> {
+        let index = PersistRootRecordIndex::open(self.layout().root_record_index_path())
+            .map_err(|source| PersistBlobLiveRootError::RootRecordIndex { source })?;
+        let mut roots = Vec::new();
+        for entry in index
+            .latest_entries()
+            .map_err(|source| PersistBlobLiveRootError::RootRecordIndex { source })?
+        {
+            let value = entry.value();
+            let Some(record_location) = self
+                .lookup_blob_location(value.blob_key())
+                .map_err(|source| PersistBlobLiveRootError::BlobIndex { source })?
+            else {
+                tracing::debug!(
+                    target: "aos_nix::cache",
+                    "root-record blob missing from the blob index; treating the record as dead"
+                );
+                continue;
+            };
+            let record_bytes = match self.file_pack().with_mapped_blob(
+                files_advisory_guard,
+                record_location,
+                value.blob_key().hash(),
+                <[u8]>::to_vec,
+            ) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::debug!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "root-record blob unreadable; treating the record as dead"
+                    );
+                    continue;
+                }
+            };
+            let Ok(record) = RootInstantiationRecord::decode(&record_bytes) else {
+                tracing::debug!(
+                    target: "aos_nix::cache",
+                    "root-record payload undecodable; treating the record as dead"
+                );
+                continue;
+            };
+            roots.push(PersistBlobLiveRoot::new(
+                PersistBlobLiveRootSource::RootRecordIndex,
+                value.blob_key(),
+                record_location,
+            ));
+            for (_, blob_hash) in record.entries() {
+                let blob_key = PersistBlobKey::for_file(*blob_hash);
+                let Some(location) = self
+                    .lookup_blob_location(blob_key)
+                    .map_err(|source| PersistBlobLiveRootError::BlobIndex { source })?
+                else {
+                    tracing::debug!(
+                        target: "aos_nix::cache",
+                        "root-record closure blob missing from the blob index"
+                    );
+                    continue;
+                };
+                roots.push(PersistBlobLiveRoot::new(
+                    PersistBlobLiveRootSource::RootRecordIndex,
+                    blob_key,
+                    location,
+                ));
+            }
+        }
+        Ok(roots)
     }
 
     fn open_root_record_index(&self) -> Result<PersistRootRecordIndex, PersistRootRecordError> {

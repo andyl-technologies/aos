@@ -99,8 +99,8 @@ use crate::cache::{
     ImpureInputTraceSource, InputFingerprintError, MaterializationCostObservation,
     MaterializationCosts, MaterializationDecision, MemoizationDecision, MemoizationSubject,
     NixSha256Digest, ParseCache, ParseCacheError, ParseFileKey, PersistCache,
-    PersistMaterialization, PersistNodeMetadataKey, PersistNodeTracePayload, ValueHash,
-    lowered_ir_fingerprint,
+    PersistDiskLocation, PersistLatencyClass, PersistMaterialization, PersistNodeMetadataKey,
+    PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
 };
 use crate::compile::{
     DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
@@ -362,6 +362,7 @@ pub use errors::EvalErrorContext;
 pub use errors::{EvalErrorLabel, EvalErrorSource, TreeWalkError};
 pub(crate) use op_types::*;
 pub use options::TreeWalkOptionsError;
+pub use options::{MemoNetMode, MemoNetOptions};
 pub use options::{canonicalize_policy_path, normalize_absolute_path_bytes};
 pub(crate) use options::{
     file_type_name, is_valid_store_path, join_path_literal, join_search_path,
@@ -411,7 +412,7 @@ pub use outcome::{
     EvalGcStressBoundaryMinorGcRootWritebackWrite,
     EvalGcStressBoundaryMinorGcRootWritebackWritePlan,
     EvalGcStressBoundaryMinorGcRootWritebackWritePlanReport, EvalGcStressBoundaryScans,
-    EvalOutcome, EvalStats, EvalTierBTransitionAdmissionApplyError,
+    EvalOutcome, EvalStats, EvalTierBTransitionAdmissionApplyError, MemoTierEvents,
     EvalTierBTransitionAdmissionPlan, EvalTierBTransitionAdmissionPlanError,
     EvalTierBTransitionDomain, EvalTierBTransitionDomainPreflight, EvalTierBTransitionPreflight,
     EvalTierBTransitionPreflightError, EvalTierBTransitionRequest, EvalTraceKind, EvalTraceOutput,
@@ -464,6 +465,20 @@ pub struct MemoOptions {
     /// Shadow-checks every L1 hit against a fresh evaluation
     /// (`AOS_NIX_MEMO_CHECK=l1` or `all`).
     pub check_l1: bool,
+    /// Enables the secondary disk locations of the L2 tier
+    /// (`AOS_NIX_MEMO_L2`, a kill switch defaulting on).
+    ///
+    /// This governs only the additive `AOS_NIX_MEMO_DISK` secondaries; the
+    /// primary `AOS_NIX_CACHE` location keeps its own existing switches
+    /// (root cutoff, force-cache persist layer, parse cache) so disabling L2
+    /// never changes primary-location behavior.
+    pub l2_enabled: bool,
+    /// Shadow-checks every secondary-location (L2) root-cutoff hit
+    /// (`AOS_NIX_MEMO_CHECK=l2` or `all`).
+    pub check_l2: bool,
+    /// Shadow-checks every network-tier (L3) root-cutoff hit
+    /// (`AOS_NIX_MEMO_CHECK=l3` or `all`).
+    pub check_l3: bool,
 }
 
 impl Default for MemoOptions {
@@ -478,6 +493,9 @@ impl Default for MemoOptions {
             promote_hits: 2,
             check_l0: false,
             check_l1: false,
+            l2_enabled: true,
+            check_l2: false,
+            check_l3: false,
         }
     }
 }
@@ -527,6 +545,8 @@ pub struct TreeWalkOptions {
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
     flake_ref_resolutions: BTreeMap<Vec<u8>, Vec<u8>>,
     memo: MemoOptions,
+    memo_disk_locations: Vec<PersistDiskLocation>,
+    memo_net: Option<MemoNetOptions>,
     #[cfg(test)]
     fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -572,6 +592,8 @@ impl Default for TreeWalkOptions {
             heap_cheap_memory_advice_min_idle_epochs: None,
             flake_ref_resolutions: BTreeMap::new(),
             memo: MemoOptions::default(),
+            memo_disk_locations: Vec::new(),
+            memo_net: None,
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),
         }
@@ -1136,6 +1158,13 @@ pub struct TreeWalk {
     import_paths_cache: HashMap<Vec<u8>, (PathBuf, PathBuf)>,
     parse_cache: Option<ParseCache>,
     persist_cache: Option<PersistCache>,
+    /// Opened secondary L2 disk locations in probe order (MEMO-2 §5.4).
+    ///
+    /// Populated alongside [`Self::persist_cache`] from
+    /// `TreeWalkOptions::memo_disk_locations`; empty when none are configured
+    /// or none opened. Import-time parse-artifact probes fall through to
+    /// these after a primary miss and promote hits into the primary.
+    persist_secondary_caches: Vec<(PersistLatencyClass, PersistCache)>,
     persist_cache_open_attempted: bool,
     eval_cache: Arc<Mutex<EvalCacheRuntime>>,
     // Cached "is any forced-expression cache observable" predicate, computed once
@@ -1429,6 +1458,7 @@ mod eval_derivation;
 mod eval_hash;
 mod eval_import;
 mod eval_impure_inputs;
+mod import_persist_locations;
 mod eval_list_filter;
 mod eval_list_group;
 mod eval_list_map;

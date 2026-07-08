@@ -160,6 +160,50 @@ pub(super) fn relocate_parse_artifact_entries(
         .collect()
 }
 
+/// Rewrites root-record index entries against a planned file-pack relocation.
+///
+/// Every newest root-record entry is re-pointed at its record blob's new pack
+/// location. Matching prefers the exact `(hash, old location)` relocation
+/// identity; an entry whose embedded location is already stale (written before
+/// root-record relocation support existed) falls back to matching the planned
+/// relocations by content hash alone, which is unambiguous because the
+/// compacted pack holds one record per hash. Entries whose record blob is not
+/// relocated at all reference a dead blob and are dropped — the record could
+/// never hydrate again anyway.
+pub(super) fn relocate_root_record_entries(
+    entries: Vec<PersistRootRecordIndexEntry>,
+    relocations: &[PersistBlobRecordRelocation],
+) -> Vec<PersistRootRecordIndexEntry> {
+    let by_identity = file_relocation_locations(relocations);
+    let mut by_hash = BTreeMap::new();
+    for relocation in relocations {
+        by_hash.insert(relocation.key().index_bytes(), relocation.new_location());
+    }
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let value = entry.value();
+            let key = value.blob_key();
+            let new_location = by_identity
+                .get(&blob_record_identity(key, value.location()))
+                .or_else(|| by_hash.get(&key.index_bytes()))
+                .copied()?;
+            Some(PersistRootRecordIndexEntry::new(
+                entry.key(),
+                PersistRootRecordIndexValue::new(value.blob_hash(), new_location),
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn write_repacked_root_record_index(
+    tmp_path: &Path,
+    entries: &[PersistRootRecordIndexEntry],
+) -> Result<(), PersistRootRecordIndexError> {
+    PersistRootRecordIndex::write_entries_to(tmp_path, entries)?;
+    Ok(())
+}
+
 pub(super) fn write_repacked_file_artifact_index(
     tmp_path: &Path,
     entries: &[PersistFileArtifactIndexEntry],
@@ -274,6 +318,7 @@ pub(super) struct FileRepackPaths<'a> {
     pub(super) blob_index: &'a Path,
     pub(super) file_artifact_index: &'a Path,
     pub(super) parse_artifact_index: &'a Path,
+    pub(super) root_record_index: &'a Path,
 }
 
 #[derive(Clone, Copy)]
@@ -282,6 +327,7 @@ pub(super) struct FileRepackStagePaths<'a> {
     pub(super) blob_index: &'a Path,
     pub(super) file_artifact_index: &'a Path,
     pub(super) parse_artifact_index: &'a Path,
+    pub(super) root_record_index: &'a Path,
 }
 
 pub(super) fn swap_repacked_file_store(
@@ -296,6 +342,7 @@ const FILE_REPACK_PACK_REPLACEMENT: usize = 0;
 const FILE_REPACK_BLOB_INDEX_REPLACEMENT: usize = 1;
 const FILE_REPACK_FILE_ARTIFACT_REPLACEMENT: usize = 2;
 const FILE_REPACK_PARSE_ARTIFACT_REPLACEMENT: usize = 3;
+const FILE_REPACK_ROOT_RECORD_REPLACEMENT: usize = 4;
 
 pub(super) fn file_repack_replacements(
     paths: FileRepackPaths<'_>,
@@ -332,6 +379,14 @@ pub(super) fn file_repack_replacements(
             stage.parse_artifact_index.to_path_buf(),
             paths.parse_artifact_index.with_extension(format!(
                 "repack-backup-parse-artifacts-{}-{rewrite_id}.tmp",
+                std::process::id()
+            )),
+        ),
+        FileReplacement::new(
+            paths.root_record_index.to_path_buf(),
+            stage.root_record_index.to_path_buf(),
+            paths.root_record_index.with_extension(format!(
+                "repack-backup-root-records-{}-{rewrite_id}.tmp",
                 std::process::id()
             )),
         ),
@@ -396,13 +451,16 @@ fn file_repack_file_error(
                 source: PersistParseArtifactIndexError::Write { path, source },
             }
         }
+        FILE_REPACK_ROOT_RECORD_REPLACEMENT => PersistFileBlobPackRepackError::RootRecordIndex {
+            source: PersistRootRecordIndexError::Write { path, source },
+        },
         _ => {
             debug_assert!(
-                index <= FILE_REPACK_PARSE_ARTIFACT_REPLACEMENT,
+                index <= FILE_REPACK_ROOT_RECORD_REPLACEMENT,
                 "unexpected file repack replacement index {index}"
             );
-            PersistFileBlobPackRepackError::ParseArtifactIndex {
-                source: PersistParseArtifactIndexError::Write { path, source },
+            PersistFileBlobPackRepackError::RootRecordIndex {
+                source: PersistRootRecordIndexError::Write { path, source },
             }
         }
     }

@@ -313,6 +313,49 @@ impl PersistRootRecordIndex {
         Ok(found)
     }
 
+    /// Returns the newest entry for every root-record key.
+    ///
+    /// Entries are returned in stable encoded-key order. If a key appears
+    /// multiple times in the append-only sidecar, only its newest value is
+    /// returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistRootRecordIndexError`] if the index cannot be created,
+    /// opened, inspected, read, or decoded.
+    pub fn latest_entries(
+        &self,
+    ) -> Result<Vec<PersistRootRecordIndexEntry>, PersistRootRecordIndexError> {
+        let mut latest = std::collections::BTreeMap::new();
+        for entry in self.entries()? {
+            latest.insert(entry.key().index_bytes(), entry);
+        }
+        Ok(latest.into_values().collect())
+    }
+
+    /// Writes `entries` exactly to `path`, replacing any stale file there.
+    ///
+    /// This staging helper serves maintenance flows that build a replacement
+    /// sidecar at a separate path before a later multi-file swap (file-pack
+    /// repack relocation). Entries are written in caller-supplied order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistRootRecordIndexError`] if the staged index cannot be
+    /// removed, created, written, or flushed.
+    pub(in crate::cache::persist) fn write_entries_to(
+        path: impl Into<PathBuf>,
+        entries: &[PersistRootRecordIndexEntry],
+    ) -> Result<usize, PersistRootRecordIndexError> {
+        let entries = entries
+            .iter()
+            .copied()
+            .map(persist_root_record_entry_to_engine)
+            .collect::<Vec<_>>();
+        EngineArtifactIndex::write_entries_to(path, &entries)
+            .map_err(engine_root_record_index_error)
+    }
+
     fn entries(&self) -> Result<Vec<PersistRootRecordIndexEntry>, PersistRootRecordIndexError> {
         self.engine
             .entries()

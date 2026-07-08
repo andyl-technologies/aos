@@ -18,7 +18,11 @@
 //!  "tier1_blacklisted":0,
 //!  "memo_l0_hits":0,"memo_l0_misses":0,"memo_l0_admissions":0,
 //!  "memo_l0_declines":0,"memo_l1_hits":0,"memo_l1_misses":0,
-//!  "memo_l1_admissions":0,"memo_l1_declines":0}}
+//!  "memo_l1_admissions":0,"memo_l1_declines":0,
+//!  "memo_l2_secondary_hits":0,"memo_l2_secondary_misses":0,
+//!  "memo_l2_promotions":0,"memo_l2_reval_failures":0,
+//!  "memo_net_hits":0,"memo_net_misses":0,"memo_net_errors":0,
+//!  "memo_net_reval_failures":0}}
 //! ```
 
 use super::*;
@@ -61,7 +65,15 @@ impl NixNative {
 \"memo_l1_hits\":{},\
 \"memo_l1_misses\":{},\
 \"memo_l1_admissions\":{},\
-\"memo_l1_declines\":{}\
+\"memo_l1_declines\":{},\
+\"memo_l2_secondary_hits\":{},\
+\"memo_l2_secondary_misses\":{},\
+\"memo_l2_promotions\":{},\
+\"memo_l2_reval_failures\":{},\
+\"memo_net_hits\":{},\
+\"memo_net_misses\":{},\
+\"memo_net_errors\":{},\
+\"memo_net_reval_failures\":{}\
 }}}}",
             stats.thunks_allocated(),
             stats.thunks_forced(),
@@ -88,6 +100,14 @@ impl NixNative {
             stats.memo_l1_misses(),
             stats.memo_l1_admissions(),
             stats.memo_l1_declines(),
+            stats.memo_l2_secondary_hits(),
+            stats.memo_l2_secondary_misses(),
+            stats.memo_l2_promotions(),
+            stats.memo_l2_reval_failures(),
+            stats.memo_net_hits(),
+            stats.memo_net_misses(),
+            stats.memo_net_errors(),
+            stats.memo_net_reval_failures(),
         );
     }
 }

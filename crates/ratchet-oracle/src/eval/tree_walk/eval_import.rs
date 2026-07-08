@@ -939,20 +939,6 @@ impl TreeWalk {
         Ok(Some(cached))
     }
 
-    fn load_persist_cached_import(
-        &mut self,
-        realpath: &Path,
-        source: &[u8],
-    ) -> Option<CachedParse> {
-        self.open_persist_import_cache();
-        let cache = self.parse_cache.as_ref()?;
-        let persist_cache = self.persist_cache.as_ref()?;
-        persist_cache
-            .load_parse_cache_source_from_index(cache, realpath, source)
-            .ok()
-            .flatten()
-    }
-
     fn materialize_persist_cached_import(
         &mut self,
         realpath: &Path,
@@ -985,7 +971,7 @@ impl TreeWalk {
         self.materialize_persist_cached_import(realpath, source, cached);
     }
 
-    fn open_persist_import_cache(&mut self) {
+    pub(super) fn open_persist_import_cache(&mut self) {
         if self.parse_cache.is_none() {
             return;
         }

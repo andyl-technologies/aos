@@ -10,6 +10,7 @@ impl PersistCache {
     fn snapshot_blob_live_roots_unlocked(
         &self,
         store: PersistBlobStore,
+        advisory_guard: &AdvisoryFileLock,
     ) -> Result<Vec<PersistBlobLiveRoot>, PersistBlobLiveRootError> {
         let blob_entries = self
             .blob_index(store)
@@ -48,6 +49,7 @@ impl PersistCache {
                     value.location(),
                 ));
             }
+            roots.extend(self.root_record_blob_live_roots(advisory_guard)?);
         }
         Ok(roots)
     }
@@ -100,8 +102,25 @@ impl PersistCache {
         } else {
             None
         };
+        // Root records root `files/` blobs too; hold their advisory lock while
+        // snapshotting so a concurrent record writer cannot tear the index.
+        // Always acquired after the `files/` store lock (never the reverse),
+        // matching every other path that takes both.
+        let _root_record_guard = if store == PersistBlobStore::Files {
+            let lock_path = self.layout().root_record_lock_path();
+            Some(
+                AdvisoryFileLock::lock(lock_path.clone(), AdvisoryFileLockMode::Shared).map_err(
+                    |source| PersistBlobPackTrimError::RootRecordLock {
+                        path: lock_path,
+                        source,
+                    },
+                )?,
+            )
+        } else {
+            None
+        };
         let roots = self
-            .snapshot_blob_live_roots_unlocked(store)
+            .snapshot_blob_live_roots_unlocked(store, &advisory_guard)
             .map_err(PersistBlobPackTrimError::from)?;
         let pack = self.blob_pack(store);
         let mut live_end = PERSIST_BLOB_PACK_HEADER_LEN as u64;
@@ -173,19 +192,39 @@ impl PersistCache {
         } else {
             None
         };
+        // See `trim_blob_pack_tail`: the root-record advisory lock is held
+        // (shared) while snapshotting so record writers cannot tear the index.
+        let _root_record_guard = if store == PersistBlobStore::Files {
+            let lock_path = self.layout().root_record_lock_path();
+            Some(
+                AdvisoryFileLock::lock(lock_path.clone(), AdvisoryFileLockMode::Shared).map_err(
+                    |source| PersistBlobPackLivenessPlanError::Roots {
+                        source: PersistBlobLiveRootError::RootRecordLock {
+                            path: lock_path,
+                            source,
+                        },
+                    },
+                )?,
+            )
+        } else {
+            None
+        };
         let roots = self
-            .snapshot_blob_live_roots_unlocked(store)
+            .snapshot_blob_live_roots_unlocked(store, &blob_advisory_guard)
             .map_err(|source| PersistBlobPackLivenessPlanError::Roots { source })?;
         self.plan_blob_pack_liveness_from_roots(store, roots, &blob_advisory_guard)
     }
 
+    /// Plans liveness with the caller's locks. For the `files/` store the
+    /// caller must hold the root-record advisory lock (the file-pack repack
+    /// holds it exclusively) in addition to the store advisory guard.
     fn plan_blob_pack_liveness_unlocked(
         &self,
         store: PersistBlobStore,
         advisory_guard: &AdvisoryFileLock,
     ) -> Result<PersistBlobPackLivenessPlan, PersistBlobPackLivenessPlanError> {
         let roots = self
-            .snapshot_blob_live_roots_unlocked(store)
+            .snapshot_blob_live_roots_unlocked(store, advisory_guard)
             .map_err(|source| PersistBlobPackLivenessPlanError::Roots { source })?;
         self.plan_blob_pack_liveness_from_roots(store, roots, advisory_guard)
     }

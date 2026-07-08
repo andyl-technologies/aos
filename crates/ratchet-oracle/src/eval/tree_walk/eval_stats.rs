@@ -87,6 +87,14 @@ impl TreeWalk {
             memo_l1_misses: self.stats.memo_l1_misses,
             memo_l1_admissions: self.stats.memo_l1_admissions,
             memo_l1_declines: self.stats.memo_l1_declines,
+            memo_l2_secondary_hits: self.stats.memo_l2_secondary_hits,
+            memo_l2_secondary_misses: self.stats.memo_l2_secondary_misses,
+            memo_l2_promotions: self.stats.memo_l2_promotions,
+            memo_l2_reval_failures: self.stats.memo_l2_reval_failures,
+            memo_net_hits: self.stats.memo_net_hits,
+            memo_net_misses: self.stats.memo_net_misses,
+            memo_net_errors: self.stats.memo_net_errors,
+            memo_net_reval_failures: self.stats.memo_net_reval_failures,
         }
     }
 

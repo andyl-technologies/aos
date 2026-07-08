@@ -19,6 +19,24 @@
 
 use super::*;
 
+use crate::cache::{
+    PersistCacheLocations, PersistLatencyClass, PersistLocationHit, RootRecordBundle,
+};
+use crate::eval::{MemoNetMode, MemoTierEvents};
+
+use super::memo_net;
+
+/// Where a taken root cutoff found its record (RFC-0007 doc 29 tiers).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RootCutoffHitSource {
+    /// The primary `AOS_NIX_CACHE` location (L2 primary).
+    Primary,
+    /// A secondary `AOS_NIX_MEMO_DISK` location of the given class (L2).
+    Secondary(PersistLatencyClass),
+    /// The `AOS_NIX_MEMO_NET` endpoint (L3), already installed locally.
+    Network,
+}
+
 /// The compiled-in root-cutoff key domain separator.
 const ROOT_CUTOFF_KEY_DOMAIN: &[u8] = b"aos-nix-root-cutoff-key";
 
@@ -153,58 +171,210 @@ impl NixNative {
         Ok((closure, stats, cacheable_inputs))
     }
 
-    /// Loads and revalidates a durable root-cutoff closure for `key`, if usable.
+    /// Loads and revalidates a durable root-cutoff closure for `key`.
     ///
-    /// Returns `None` — falling through to a normal evaluation — when no record
-    /// exists, when any recorded impure input no longer observes its recorded
-    /// result, or when the persistent cache cannot be opened or read. Failures
-    /// are logged at debug level and never surfaced to the caller.
+    /// Locations are probed in tier order — the primary `AOS_NIX_CACHE` root,
+    /// then each `AOS_NIX_MEMO_DISK` secondary (fastest class first), then the
+    /// `AOS_NIX_MEMO_NET` endpoint. Every candidate record, wherever it came
+    /// from, must pass the identical impure-input revalidation before it may
+    /// answer; a record that fails revalidation at one location does not stop
+    /// the probe (a slower location may hold a record whose observations still
+    /// match the current world). A secondary or network hit is promoted into
+    /// the primary location so the next run answers from the fast path.
+    ///
+    /// Returns `None` — falling through to a normal evaluation — when no
+    /// location holds a usable record. Failures are logged at debug level and
+    /// counted into `events`; they are never surfaced to the caller.
     pub(super) fn load_root_cutoff_closure(
         &self,
         options: &TreeWalkOptions,
         key: PersistRootRecordKey,
-    ) -> Option<NativeDrvClosure> {
+        events: &mut MemoTierEvents,
+    ) -> Option<(NativeDrvClosure, RootCutoffHitSource)> {
         let root = options.persist_cache_root()?;
-        let cache = PersistCache::open(root)
-            .map_err(|error| {
+        let locations = PersistCacheLocations::open(
+            root,
+            options.persist_cache_verify(),
+            options.memo_disk_locations(),
+        )
+        .map_err(|error| {
+            tracing::debug!(
+                target: "aos_nix::cache",
+                error = %error,
+                "root cutoff could not open the persistent cache"
+            );
+        })
+        .ok()?;
+
+        for (hit, cache) in locations.iter() {
+            let record = match cache.load_root_instantiation(key) {
+                Ok(Some(record)) => record,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::debug!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "root cutoff record load failed at a location"
+                    );
+                    continue;
+                }
+            };
+            if !revalidate_cacheable_input_trace(options, record.inputs()) {
                 tracing::debug!(
                     target: "aos_nix::cache",
-                    error = %error,
-                    "root cutoff could not open the persistent cache"
+                    "root cutoff record impure inputs failed revalidation"
                 );
-            })
-            .ok()?;
-        let record = match cache.load_root_instantiation(key) {
-            Ok(Some(record)) => record,
-            Ok(None) => return None,
-            Err(error) => {
+                events.l2_reval_failures = events.l2_reval_failures.saturating_add(1);
+                continue;
+            }
+            if !record.closure().contains_key(record.root()) {
                 tracing::debug!(
                     target: "aos_nix::cache",
-                    error = %error,
-                    "root cutoff record load failed"
+                    "root cutoff record omitted its own root derivation"
                 );
+                continue;
+            }
+            let source = match hit {
+                PersistLocationHit::Primary => RootCutoffHitSource::Primary,
+                PersistLocationHit::Secondary(class) => {
+                    events.l2_secondary_hits = events.l2_secondary_hits.saturating_add(1);
+                    if locations.promote_root_instantiation(key, &record) {
+                        events.l2_promotions = events.l2_promotions.saturating_add(1);
+                    }
+                    RootCutoffHitSource::Secondary(class)
+                }
+            };
+            let (root_path, drvs) = record.into_closure_parts();
+            return Some((
+                NativeDrvClosure {
+                    root: root_path,
+                    drvs,
+                },
+                source,
+            ));
+        }
+        if locations.has_secondaries() {
+            events.l2_secondary_misses = events.l2_secondary_misses.saturating_add(1);
+        }
+
+        self.load_root_cutoff_closure_from_network(options, key, &locations, events)
+    }
+
+    /// Fetches, validates, installs, and answers from an L3 network record.
+    ///
+    /// A fetched bundle is content-validated by the codec (every blob re-hashes,
+    /// the record decodes, the closure is fully covered), then its impure-input
+    /// slice is revalidated against the local world exactly like a disk record
+    /// — the endpoint is a validation-shaped catalog, never an authority. Only
+    /// a record that passes both is installed into the primary location and
+    /// used. Any transport or validation failure is a miss plus a process-wide
+    /// backoff, never an evaluation error.
+    fn load_root_cutoff_closure_from_network(
+        &self,
+        options: &TreeWalkOptions,
+        key: PersistRootRecordKey,
+        locations: &PersistCacheLocations,
+        events: &mut MemoTierEvents,
+    ) -> Option<(NativeDrvClosure, RootCutoffHitSource)> {
+        let net = options.memo_net()?;
+        let bundle = match memo_net::fetch_root_record_bundle(net, key) {
+            memo_net::NetFetchOutcome::Hit(bundle) => bundle,
+            memo_net::NetFetchOutcome::Miss => {
+                events.net_misses = events.net_misses.saturating_add(1);
+                return None;
+            }
+            memo_net::NetFetchOutcome::Error => {
+                events.net_errors = events.net_errors.saturating_add(1);
                 return None;
             }
         };
-        if !revalidate_cacheable_input_trace(options, record.inputs()) {
+        if !revalidate_cacheable_input_trace(options, bundle.record().inputs()) {
             tracing::debug!(
                 target: "aos_nix::cache",
-                "root cutoff record impure inputs failed revalidation"
+                "network root record impure inputs failed local revalidation"
             );
+            events.net_reval_failures = events.net_reval_failures.saturating_add(1);
             return None;
         }
-        let (root_path, drvs) = record.into_closure_parts();
+        let record = bundle.record();
+        let drvs = bundle.closure();
+        let root_path = PathBuf::from(OsStr::from_bytes(record.root_drv()));
         if !drvs.contains_key(&root_path) {
-            tracing::debug!(
-                target: "aos_nix::cache",
-                "root cutoff record omitted its own root derivation"
-            );
+            // Unreachable for a validated bundle; kept as defense in depth.
+            events.net_errors = events.net_errors.saturating_add(1);
             return None;
         }
-        Some(NativeDrvClosure {
-            root: root_path,
-            drvs,
-        })
+        if let Err(error) = locations.primary().store_root_instantiation(
+            key,
+            record.root_drv(),
+            &drvs,
+            record.inputs(),
+            record.run_id(),
+        ) {
+            tracing::debug!(
+                target: "aos_nix::cache",
+                error = %error,
+                "network root record could not be installed into the primary cache"
+            );
+        }
+        events.net_hits = events.net_hits.saturating_add(1);
+        Some((
+            NativeDrvClosure {
+                root: root_path,
+                drvs,
+            },
+            RootCutoffHitSource::Network,
+        ))
+    }
+
+    /// Shadow-checks a taken root cutoff against a full evaluation.
+    ///
+    /// The check runs when the global `AOS_NIX_ROOT_CUTOFF_CHECK` switch is on,
+    /// or when the hit's tier is covered by `AOS_NIX_MEMO_CHECK` (`l2` for a
+    /// secondary-location hit, `l3` for a network hit). A divergent closure is
+    /// a loud error: the cutoff must be byte-identical to a fresh evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shadow evaluation itself fails or if its closure
+    /// differs from the cutoff-provided closure.
+    pub(super) fn verify_root_cutoff_closure(
+        &self,
+        file: &Path,
+        attr: &str,
+        options: &TreeWalkOptions,
+        source: RootCutoffHitSource,
+        closure: &NativeDrvClosure,
+        entry_source: &[u8],
+    ) -> Result<()> {
+        let memo = options.memo_options();
+        let check = options.root_cutoff_check()
+            || match source {
+                RootCutoffHitSource::Primary => false,
+                RootCutoffHitSource::Secondary(_) => memo.check_l2,
+                RootCutoffHitSource::Network => memo.check_l3,
+            };
+        if !check {
+            return Ok(());
+        }
+        let (fresh, _, _) = self.eval_file_attr_closure_full(file, attr, options, entry_source)?;
+        if fresh != *closure {
+            tracing::error!(
+                target: "aos_nix::cache",
+                file = %file.display(),
+                attr,
+                ?source,
+                "root cutoff closure diverged from a full evaluation"
+            );
+            return Err(NativeEvalError::Internal {
+                message: format!(
+                    "root cutoff closure for {} attr {attr} diverged from a full evaluation",
+                    file.display()
+                ),
+            }
+            .into());
+        }
+        Ok(())
     }
 
     /// Durably records a root-cutoff closure and its impure inputs for `key`.
@@ -233,18 +403,34 @@ impl NixNative {
             }
         };
         let root_bytes = closure.root().as_os_str().as_bytes();
-        if let Err(error) = cache.store_root_instantiation(
-            key,
-            root_bytes,
-            closure.drvs(),
-            inputs,
-            root_cutoff_run_id(),
-        ) {
+        let run_id = root_cutoff_run_id();
+        if let Err(error) =
+            cache.store_root_instantiation(key, root_bytes, closure.drvs(), inputs, run_id)
+        {
             tracing::debug!(
                 target: "aos_nix::cache",
                 error = %error,
                 "root cutoff record writeback failed"
             );
+        }
+        // Publish to the L3 endpoint only from explicitly writable (rw)
+        // configurations — the doc 29 §5.5 CI/trusted-builder policy. Publish
+        // failures are logged and ignored; the network tier is advisory.
+        if let Some(net) = options.memo_net() {
+            if net.mode == MemoNetMode::ReadWrite {
+                match RootRecordBundle::from_closure(root_bytes, closure.drvs(), inputs, run_id) {
+                    Ok(bundle) => {
+                        memo_net::publish_root_record_bundle(net, key, &bundle);
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            target: "aos_nix::cache",
+                            error = %error,
+                            "root cutoff network bundle construction failed"
+                        );
+                    }
+                }
+            }
         }
     }
 }

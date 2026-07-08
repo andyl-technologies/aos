@@ -34,7 +34,10 @@ use aos_nix::eval::tree_walk::NixSearchPathEntry;
 #[cfg(feature = "native-eval")]
 use aos_nix::{
     NativeCliFallbackReason, NativeDrvClosure, NativeEvalError, NixNative,
-    eval::{EvalMode, IfdRealizationError, IfdRealizer, MemoOptions, TreeWalkOptions},
+    eval::{
+        EvalMode, IfdRealizationError, IfdRealizer, MemoNetMode, MemoNetOptions, MemoOptions,
+        TreeWalkOptions,
+    },
     heap::HeapMemoryBudget,
 };
 
@@ -736,6 +739,8 @@ pub struct NixEvalConfig {
     native_jit: bool,
     native_parallel_workers: Option<std::num::NonZeroUsize>,
     native_memo: NativeMemoSettings,
+    native_memo_disk_spec: Option<String>,
+    native_memo_net: Option<NativeMemoNetSettings>,
     heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
 }
@@ -767,6 +772,17 @@ pub struct NativeMemoSettings {
     pub check_l0: bool,
     /// Shadow-check every L1 hit (`AOS_NIX_MEMO_CHECK` contains `l1`/`all`).
     pub check_l1: bool,
+    /// Secondary L2 disk-location kill switch (`AOS_NIX_MEMO_L2`, default on).
+    ///
+    /// Governs only the additive `AOS_NIX_MEMO_DISK` secondaries; the primary
+    /// `AOS_NIX_CACHE` location keeps its own existing switches.
+    pub l2_enabled: bool,
+    /// Shadow-check every secondary-location root-cutoff hit
+    /// (`AOS_NIX_MEMO_CHECK` contains `l2`/`all`).
+    pub check_l2: bool,
+    /// Shadow-check every network-tier root-cutoff hit
+    /// (`AOS_NIX_MEMO_CHECK` contains `l3`/`all`).
+    pub check_l3: bool,
 }
 
 impl Default for NativeMemoSettings {
@@ -781,9 +797,31 @@ impl Default for NativeMemoSettings {
             promote_hits: 2,
             check_l0: false,
             check_l1: false,
+            l2_enabled: true,
+            check_l2: false,
+            check_l3: false,
         }
     }
 }
+
+/// Parsed `AOS_NIX_MEMO_NET*` settings for the L3 network memo tier.
+///
+/// Mirrors the native evaluator's `MemoNetOptions` with plain types so the
+/// configuration exists independently of the `native-eval` feature. The tier
+/// is advisory and read-only by default; it only takes effect alongside a
+/// configured `AOS_NIX_CACHE` root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeMemoNetSettings {
+    /// Base endpoint URL (`AOS_NIX_MEMO_NET`).
+    pub endpoint: String,
+    /// Whether publishing is allowed (`AOS_NIX_MEMO_NET_MODE=rw`).
+    pub writable: bool,
+    /// Per-request timeout in milliseconds (`AOS_NIX_MEMO_NET_TIMEOUT_MS`).
+    pub timeout_ms: u64,
+}
+
+/// The default L3 network-tier request timeout in milliseconds.
+const NATIVE_MEMO_NET_DEFAULT_TIMEOUT_MS: u64 = 2_000;
 
 impl Default for NixEvalConfig {
     fn default() -> Self {
@@ -955,6 +993,30 @@ impl NixEvalConfig {
     /// Replaces the native content-memo settings.
     pub fn set_native_memo(&mut self, memo: NativeMemoSettings) {
         self.native_memo = memo;
+    }
+
+    /// Returns the raw secondary L2 disk-location spec (`AOS_NIX_MEMO_DISK`).
+    ///
+    /// The spec grammar (`class:path[,class:path...]`) is parsed by the native
+    /// evaluator when options are built; an invalid spec disables the
+    /// secondaries with a warning rather than failing evaluation.
+    pub fn native_memo_disk_spec(&self) -> Option<&str> {
+        self.native_memo_disk_spec.as_deref()
+    }
+
+    /// Replaces the raw secondary L2 disk-location spec.
+    pub fn set_native_memo_disk_spec(&mut self, spec: Option<String>) {
+        self.native_memo_disk_spec = spec;
+    }
+
+    /// Returns the L3 network memo-tier settings, if configured.
+    pub fn native_memo_net(&self) -> Option<&NativeMemoNetSettings> {
+        self.native_memo_net.as_ref()
+    }
+
+    /// Replaces the L3 network memo-tier settings.
+    pub fn set_native_memo_net(&mut self, net: Option<NativeMemoNetSettings>) {
+        self.native_memo_net = net;
     }
 
     pub fn set_native_parallel_workers(&mut self, workers: Option<std::num::NonZeroUsize>) {
@@ -1355,6 +1417,8 @@ impl NixEvalConfig {
             native_jit: false,
             native_parallel_workers: None,
             native_memo: NativeMemoSettings::default(),
+            native_memo_disk_spec: None,
+            native_memo_net: None,
             heap_memory_budget_bytes: None,
             trace_verbose: false,
         };
@@ -1538,18 +1602,27 @@ impl NixEvalConfig {
                 ),
             }
         }
+        if let Some(value) = knobs.l2.as_deref() {
+            memo.l2_enabled = !env_flag_is_falsy(value);
+        }
         if let Some(value) = knobs.check.as_deref() {
             memo.check_l0 = false;
             memo.check_l1 = false;
+            memo.check_l2 = false;
+            memo.check_l3 = false;
             for tier in value.split(',') {
                 match tier.trim().to_ascii_lowercase().as_str() {
                     "" => {}
                     "all" => {
                         memo.check_l0 = true;
                         memo.check_l1 = true;
+                        memo.check_l2 = true;
+                        memo.check_l3 = true;
                     }
                     "l0" => memo.check_l0 = true,
                     "l1" => memo.check_l1 = true,
+                    "l2" => memo.check_l2 = true,
+                    "l3" => memo.check_l3 = true,
                     other => tracing::warn!(
                         tier = other,
                         "unknown AOS_NIX_MEMO_CHECK tier; ignoring it"
@@ -1558,6 +1631,51 @@ impl NixEvalConfig {
             }
         }
         self.native_memo = memo;
+        if let Some(value) = knobs.disk {
+            let trimmed = value.trim();
+            self.native_memo_disk_spec = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
+        if let Some(value) = knobs.net {
+            let endpoint = value.trim().trim_end_matches('/').to_string();
+            self.native_memo_net = if endpoint.is_empty() {
+                None
+            } else {
+                let writable = match knobs.net_mode.as_deref().map(str::trim) {
+                    None | Some("") | Some("ro") => false,
+                    Some("rw") => true,
+                    Some(other) => {
+                        tracing::warn!(
+                            mode = other,
+                            "unknown AOS_NIX_MEMO_NET_MODE value; staying read-only"
+                        );
+                        false
+                    }
+                };
+                let timeout_ms = match knobs.net_timeout_ms.as_deref().map(str::trim) {
+                    None | Some("") => NATIVE_MEMO_NET_DEFAULT_TIMEOUT_MS,
+                    Some(raw) => match raw.parse::<u64>() {
+                        Ok(timeout_ms) => timeout_ms,
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                value = raw,
+                                "invalid AOS_NIX_MEMO_NET_TIMEOUT_MS value; keeping the default"
+                            );
+                            NATIVE_MEMO_NET_DEFAULT_TIMEOUT_MS
+                        }
+                    },
+                };
+                Some(NativeMemoNetSettings {
+                    endpoint,
+                    writable,
+                    timeout_ms,
+                })
+            };
+        }
     }
 
     fn set_aos_nix_max_rss_env_var(&mut self, value: String) {
@@ -2940,11 +3058,16 @@ struct EnvMemoKnobs {
     master: Option<String>,
     l0: Option<String>,
     l1: Option<String>,
+    l2: Option<String>,
     min_cost: Option<String>,
     l0_entries: Option<String>,
     l1_bytes: Option<String>,
     promote_hits: Option<String>,
     check: Option<String>,
+    disk: Option<String>,
+    net: Option<String>,
+    net_mode: Option<String>,
+    net_timeout_ms: Option<String>,
 }
 
 impl EnvMemoKnobs {
@@ -2954,11 +3077,16 @@ impl EnvMemoKnobs {
             master: std::env::var("AOS_NIX_MEMO").ok(),
             l0: std::env::var("AOS_NIX_MEMO_L0").ok(),
             l1: std::env::var("AOS_NIX_MEMO_L1").ok(),
+            l2: std::env::var("AOS_NIX_MEMO_L2").ok(),
             min_cost: std::env::var("AOS_NIX_MEMO_MIN_COST").ok(),
             l0_entries: std::env::var("AOS_NIX_MEMO_L0_ENTRIES").ok(),
             l1_bytes: std::env::var("AOS_NIX_MEMO_L1_BYTES").ok(),
             promote_hits: std::env::var("AOS_NIX_MEMO_PROMOTE_HITS").ok(),
             check: std::env::var("AOS_NIX_MEMO_CHECK").ok(),
+            disk: std::env::var("AOS_NIX_MEMO_DISK").ok(),
+            net: std::env::var("AOS_NIX_MEMO_NET").ok(),
+            net_mode: std::env::var("AOS_NIX_MEMO_NET_MODE").ok(),
+            net_timeout_ms: std::env::var("AOS_NIX_MEMO_NET_TIMEOUT_MS").ok(),
         }
     }
 }
@@ -3031,6 +3159,42 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         options.set_persist_cache_verify(config.native_cache_verify());
         options.set_root_cutoff_enabled(config.native_root_cutoff());
         options.set_root_cutoff_check(config.native_root_cutoff_check());
+        // Secondary L2 disk locations and the L3 network tier are additive to
+        // the primary cache root, so both are configured only alongside it.
+        // Each configured secondary spec names a cache-root directory whose
+        // `persist/` child mirrors the primary's layout.
+        if let Some(spec) = config.native_memo_disk_spec() {
+            match aos_nix::cache::PersistDiskLocation::parse_list(spec) {
+                Ok(locations) => {
+                    let locations = locations
+                        .into_iter()
+                        .map(|location| {
+                            aos_nix::cache::PersistDiskLocation::new(
+                                location.class(),
+                                location.root().join("persist"),
+                            )
+                        })
+                        .collect();
+                    options.set_memo_disk_locations(locations);
+                }
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    spec,
+                    "invalid AOS_NIX_MEMO_DISK value; disabling secondary cache locations"
+                ),
+            }
+        }
+        if let Some(net) = config.native_memo_net() {
+            options.set_memo_net(Some(MemoNetOptions {
+                endpoint: net.endpoint.clone(),
+                mode: if net.writable {
+                    MemoNetMode::ReadWrite
+                } else {
+                    MemoNetMode::ReadOnly
+                },
+                timeout_ms: net.timeout_ms,
+            }));
+        }
     }
     if let Some(max_resident_bytes) = config.heap_memory_budget_bytes() {
         options.set_heap_memory_budget(HeapMemoryBudget::new(max_resident_bytes)?);
@@ -3049,6 +3213,9 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         promote_hits: memo.promote_hits,
         check_l0: memo.check_l0,
         check_l1: memo.check_l1,
+        l2_enabled: memo.l2_enabled,
+        check_l2: memo.check_l2,
+        check_l3: memo.check_l3,
     });
     options.set_jit_tier1_publish_enabled(config.native_jit());
     // Parallel mode overrides the JIT flag: the tier-1 engine is worker-affine
@@ -3414,6 +3581,11 @@ mod tests {
             l1_bytes: Some("4096".to_owned()),
             promote_hits: Some("3".to_owned()),
             check: Some("l0,l1".to_owned()),
+            l2: Some("off".to_owned()),
+            disk: Some("hdd:/bulk/cache".to_owned()),
+            net: Some("http://memo.example/base/".to_owned()),
+            net_mode: Some("rw".to_owned()),
+            net_timeout_ms: Some("750".to_owned()),
         });
         let memo = config.native_memo();
         assert!(memo.enabled);
@@ -3425,6 +3597,14 @@ mod tests {
         assert_eq!(memo.promote_hits, 3);
         assert!(memo.check_l0);
         assert!(memo.check_l1);
+        assert!(!memo.l2_enabled);
+        assert!(!memo.check_l2);
+        assert!(!memo.check_l3);
+        assert_eq!(config.native_memo_disk_spec(), Some("hdd:/bulk/cache"));
+        let net = config.native_memo_net().expect("net settings parse");
+        assert_eq!(net.endpoint, "http://memo.example/base");
+        assert!(net.writable);
+        assert_eq!(net.timeout_ms, 750);
 
         // Invalid numeric values keep the previous settings; `all` selects
         // both CHECK tiers; falsy master disables.
@@ -3439,6 +3619,8 @@ mod tests {
         assert_eq!(memo.min_cost, 128);
         assert!(memo.check_l0);
         assert!(memo.check_l1);
+        assert!(memo.check_l2);
+        assert!(memo.check_l3);
     }
 
     #[test]

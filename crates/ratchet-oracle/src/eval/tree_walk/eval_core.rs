@@ -414,6 +414,7 @@ impl TreeWalk {
             import_paths_cache: HashMap::new(),
             parse_cache,
             persist_cache: None,
+            persist_secondary_caches: Vec::new(),
             persist_cache_open_attempted: false,
             eval_cache,
             force_cache_active,

@@ -8,6 +8,8 @@ mod path_policy;
 mod result_fingerprint;
 mod root_cutoff;
 
+pub use memo::{MemoNetMode, MemoNetOptions};
+
 // Retains the former crate-visible helper paths, even when no current caller uses them.
 #[allow(unused_imports)]
 pub(crate) use path_policy::{

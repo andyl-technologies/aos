@@ -1141,6 +1141,14 @@ impl TreeWalk {
                 self.persist_cache = PersistCache::open(root)
                     .ok()
                     .map(|cache| cache.with_value_decode_verification(verify));
+                // Secondary L2 locations (MEMO-2): opened best-effort in probe
+                // order; consulted by import-time parse-artifact loads after a
+                // primary miss. An unopenable location is silently skipped.
+                let secondaries = crate::cache::persist::open_secondary_caches(
+                    self.options.memo_disk_locations(),
+                    verify,
+                );
+                self.persist_secondary_caches = secondaries;
             }
         }
     }

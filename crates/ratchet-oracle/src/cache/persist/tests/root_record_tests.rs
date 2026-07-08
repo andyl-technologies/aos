@@ -140,6 +140,150 @@ fn newest_record_for_a_key_wins() {
 }
 
 #[test]
+fn file_pack_repack_preserves_root_records() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    // Unrooted bytes ahead of the record's blobs give the repack reclaimable
+    // space, forcing every later rooted record to relocate downward. Before
+    // root-record blob liveness was wired into maintenance, this relocation
+    // stranded the roots/ sidecar's embedded locations and every stored root
+    // record stopped hydrating (the MEMO-2 regression this test pins).
+    let garbage = b"unrooted leading garbage";
+    let garbage_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(garbage));
+    cache
+        .append_blob(garbage_key, garbage)
+        .expect("unrooted garbage appends");
+
+    let closure = sample_closure();
+    let inputs = vec![cacheable(b"/a", b"one")];
+    cache
+        .store_root_instantiation(sample_key(6), b"/nix/store/root.drv", &closure, &inputs, 9)
+        .expect("record stores");
+
+    let plan = cache
+        .repack_file_blob_pack()
+        .expect("file blob pack repacks");
+    assert!(
+        plan.reclaimable_bytes() > 0,
+        "the repack must actually relocate records for this regression to bite"
+    );
+
+    let loaded = cache
+        .load_root_instantiation(sample_key(6))
+        .expect("record loads after repack")
+        .expect("record survives repack");
+    assert_eq!(loaded.root(), Path::new("/nix/store/root.drv"));
+    assert_eq!(loaded.closure(), &closure);
+    assert_eq!(loaded.inputs(), inputs.as_slice());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn storage_maintenance_preserves_root_records() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+
+    // A raw (unindexed) copy of a payload that is later properly indexed
+    // leaves a repair-clean plan with reclaimable unrooted bytes, which is
+    // exactly the shape that drives `maintain_storage` into its repack branch.
+    let duplicate = b"duplicated payload";
+    let duplicate_key = PersistBlobKey::for_file(PersistFileBlobHash::for_payload(duplicate));
+    cache
+        .append_blob(duplicate_key, duplicate)
+        .expect("raw duplicate appends");
+    cache
+        .append_blob_indexed(duplicate_key, duplicate)
+        .expect("indexed duplicate appends");
+
+    let closure = sample_closure();
+    cache
+        .store_root_instantiation(sample_key(7), b"/nix/store/root.drv", &closure, &[], 3)
+        .expect("record stores");
+
+    let policy =
+        PersistStorageMaintenancePolicy::default().with_min_repack_reclaimable_bytes(1);
+    let outcome = cache
+        .maintain_storage(policy)
+        .expect("automatic maintenance runs");
+    assert!(
+        matches!(outcome, PersistStorageMaintenanceOutcome::Repacked { .. }),
+        "the fixture must drive the repack branch, got {outcome:?}"
+    );
+
+    let loaded = cache
+        .load_root_instantiation(sample_key(7))
+        .expect("record loads after maintenance")
+        .expect("record survives maintenance");
+    assert_eq!(loaded.closure(), &closure);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn load_heals_a_stale_indexed_record_location() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let closure = sample_closure();
+    cache
+        .store_root_instantiation(sample_key(8), b"/nix/store/root.drv", &closure, &[], 1)
+        .expect("record stores");
+
+    // Simulate a roots/ entry written before root-record relocation support:
+    // same record blob hash, bogus embedded pack location. The newest entry
+    // wins lookups, so the load must fall back to the authoritative blob
+    // index instead of failing on the stale offset.
+    let index = PersistRootRecordIndex::open(cache.layout().root_record_index_path())
+        .expect("root record index opens");
+    let current = index
+        .lookup(sample_key(8))
+        .expect("index lookup succeeds")
+        .expect("entry exists");
+    let stale_location = PersistBlobLocation::new(
+        current.location().record_offset() + 13,
+        current.location().payload_len(),
+    );
+    index
+        .append_entry(PersistRootRecordIndexEntry::new(
+            sample_key(8),
+            PersistRootRecordIndexValue::new(current.blob_hash(), stale_location),
+        ))
+        .expect("stale entry appends");
+
+    let loaded = cache
+        .load_root_instantiation(sample_key(8))
+        .expect("record loads despite the stale location")
+        .expect("record hydrates through the blob index");
+    assert_eq!(loaded.closure(), &closure);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn liveness_plan_attributes_root_record_roots() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let closure = sample_closure();
+    cache
+        .store_root_instantiation(sample_key(9), b"/nix/store/root.drv", &closure, &[], 1)
+        .expect("record stores");
+
+    let plan = cache
+        .plan_blob_pack_liveness(PersistBlobStore::Files)
+        .expect("liveness plan builds");
+    let root_record_roots = plan
+        .live_roots()
+        .iter()
+        .filter(|live| live.source() == PersistBlobLiveRootSource::RootRecordIndex)
+        .count();
+    // One root for the encoded record blob plus one per closure entry.
+    assert_eq!(root_record_roots, 1 + closure.len());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn identical_closures_dedupe_blob_storage() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

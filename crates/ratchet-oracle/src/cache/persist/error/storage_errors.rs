@@ -64,6 +64,20 @@ pub enum PersistBlobLiveRootError {
         /// The underlying parse-artifact lock or read error.
         source: PersistParseArtifactIndexError,
     },
+    /// The root-record index could not be snapshotted.
+    #[error("failed to snapshot persistent root-record live roots")]
+    RootRecordIndex {
+        /// The underlying root-record index error.
+        source: PersistRootRecordIndexError,
+    },
+    /// The shared root-record advisory lock could not be acquired.
+    #[error("failed to acquire persistent root-record advisory lock at {path} for live roots")]
+    RootRecordLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The same-process pending file-root registry could not be snapshotted.
     #[error("failed to snapshot pending persistent file roots")]
     PendingFileRoots,
@@ -110,6 +124,22 @@ pub enum PersistBlobPackTrimError {
         /// The underlying parse-artifact lock or read error.
         source: PersistParseArtifactIndexError,
     },
+    /// The root-record index could not be snapshotted.
+    #[error("failed to snapshot persistent root-record live roots before tail trim")]
+    RootRecordIndex {
+        /// The underlying root-record index error.
+        source: PersistRootRecordIndexError,
+    },
+    /// The shared root-record advisory lock could not be acquired.
+    #[error(
+        "failed to acquire persistent root-record advisory lock at {path} before tail trim"
+    )]
+    RootRecordLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
+    },
     /// The same-process pending file-root registry could not be snapshotted.
     #[error("failed to snapshot pending persistent file roots before tail trim")]
     PendingFileRoots,
@@ -144,6 +174,12 @@ impl From<PersistBlobLiveRootError> for PersistBlobPackTrimError {
             }
             PersistBlobLiveRootError::ParseArtifactIndex { source } => {
                 Self::ParseArtifactIndex { source }
+            }
+            PersistBlobLiveRootError::RootRecordIndex { source } => {
+                Self::RootRecordIndex { source }
+            }
+            PersistBlobLiveRootError::RootRecordLock { path, source } => {
+                Self::RootRecordLock { path, source }
             }
             PersistBlobLiveRootError::PendingFileRoots => Self::PendingFileRoots,
             PersistBlobLiveRootError::WrongStoreEntry { expected, actual } => {
@@ -308,6 +344,22 @@ pub enum PersistFileBlobPackRepackError {
     ParseArtifactIndex {
         /// The underlying parse-artifact index error.
         source: PersistParseArtifactIndexError,
+    },
+    /// The relocated root-record index could not be read, written, or swapped.
+    #[error("failed to relocate persistent root-record index during file blob-pack repack")]
+    RootRecordIndex {
+        /// The underlying root-record index error.
+        source: PersistRootRecordIndexError,
+    },
+    /// The advisory root-record lock could not be acquired for relocation.
+    #[error(
+        "failed to acquire persistent root-record advisory lock at {path} during file blob-pack repack"
+    )]
+    RootRecordLock {
+        /// The advisory lock file path.
+        path: PathBuf,
+        /// The underlying advisory lock error.
+        source: ratchet_cache::file_lock::AdvisoryFileLockError,
     },
 }
 

@@ -123,6 +123,7 @@ mod disk;
 mod error;
 mod format;
 mod layout;
+mod locations;
 mod materialization;
 mod pack;
 
@@ -165,11 +166,17 @@ pub use format::{
     PersistFileArtifactIndexEntry, PersistFileArtifactIndexValue, PersistFileArtifactKey,
     PersistNodeMetadataIndex, PersistNodeMetadataIndexEntry, PersistNodeMetadataIndexValue,
     PersistNodeMetadataKey, PersistNodeTraceLog, PersistNodeTraceLogEntry, PersistNodeTracePayload,
+    PERSIST_ROOT_RECORD_BUNDLE_MAGIC, PERSIST_ROOT_RECORD_BUNDLE_VERSION,
     PersistParseArtifactIndex, PersistParseArtifactIndexEntry, PersistParseArtifactIndexValue,
     PersistParseArtifactKey, PersistRootRecordIndex, PersistRootRecordIndexEntry,
-    PersistRootRecordIndexValue, PersistRootRecordKey, RootInstantiationRecord,
+    PersistRootRecordIndexValue, PersistRootRecordKey, RootInstantiationRecord, RootRecordBundle,
+    RootRecordBundleError,
 };
 pub use layout::PersistLayout;
+pub use locations::{
+    PersistCacheLocations, PersistDiskLocation, PersistDiskLocationSpecError, PersistLatencyClass,
+    PersistLocationHit, open_secondary_caches,
+};
 pub use materialization::{
     PersistFileArtifactMaterialization, PersistMaterialization, PersistParseArtifactMaterialization,
 };

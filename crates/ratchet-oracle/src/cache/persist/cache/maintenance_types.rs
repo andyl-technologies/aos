@@ -294,6 +294,12 @@ pub enum PersistBlobLiveRootSource {
     FileArtifactIndex,
     /// The parse-artifact mapping index in the `files/` store.
     ParseArtifactIndex,
+    /// The durable root-instantiation record index in the `roots/` sidecar.
+    ///
+    /// Roots from this source cover both the encoded record blob itself and
+    /// every closure `.drv` blob the record references, so storage maintenance
+    /// never reclaims a byte a live root-cutoff record still needs.
+    RootRecordIndex,
     /// A same-process file-artifact append whose mapping is not recorded yet.
     PendingFileArtifact,
     /// A same-process parse-artifact append whose mapping is not recorded yet.
