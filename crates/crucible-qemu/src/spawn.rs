@@ -10,6 +10,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use thiserror::Error;
@@ -164,10 +165,42 @@ pub fn spawn_qemu_child_with_fds(
     command: &QemuLaunchCommand,
     region_len: u64,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    spawn_qemu_child_with_fds_in_optional_directory(command, None, region_len)
+}
+
+/// Spawns a validated QEMU launch command in `run_directory`.
+///
+/// Relative launch artifacts, including the QMP socket filename and root overlay
+/// image, are resolved by QEMU under this working directory without embedding
+/// volatile host paths in the launch hash material.
+///
+/// # Errors
+///
+/// Returns [`QemuSpawnError`] when descriptor creation, descriptor duplication,
+/// parent-death signal setup, changing the child working directory, or process
+/// spawning fails.
+pub fn spawn_qemu_child_with_fds_in_directory(
+    command: &QemuLaunchCommand,
+    run_directory: impl AsRef<Path>,
+    region_len: u64,
+) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    spawn_qemu_child_with_fds_in_optional_directory(
+        command,
+        Some(run_directory.as_ref()),
+        region_len,
+    )
+}
+
+fn spawn_qemu_child_with_fds_in_optional_directory(
+    command: &QemuLaunchCommand,
+    run_directory: Option<&Path>,
+    region_len: u64,
+) -> Result<QemuSpawnedChild, QemuSpawnError> {
     let (resources, child_resources) = create_spawn_resources(region_len)?;
     let child = spawn_process_with_resources(
         command.executable(),
         command.args(),
+        run_directory,
         child_resources,
         &[],
         "spawn QEMU child",
@@ -217,6 +250,11 @@ fn create_spawn_resources(
 
 #[cfg(test)]
 /// Creates host setup resources and the child-side control socket for tests.
+///
+/// # Errors
+///
+/// Returns [`QemuSpawnError`] when descriptor setup fails or `region_len` is
+/// zero.
 pub(crate) fn create_test_spawn_resource_pair(
     region_len: u64,
 ) -> Result<(QemuSpawnHostResources, UnixStream), QemuSpawnError> {
@@ -230,6 +268,7 @@ pub(crate) fn create_test_spawn_resource_pair(
 fn spawn_process_with_resources(
     executable: &str,
     args: &[String],
+    run_directory: Option<&Path>,
     child_resources: QemuSpawnChildResources,
     envs: &[(&str, &str)],
     operation: &'static str,
@@ -248,6 +287,9 @@ fn spawn_process_with_resources(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    if let Some(run_directory) = run_directory {
+        command.current_dir(run_directory);
+    }
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -420,6 +462,7 @@ mod tests {
 
     const PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CHILD_PROBE";
     const SOURCE_FDS_ENV: &str = "CRUCIBLE_QEMU_SPAWN_SOURCE_FDS";
+    const CWD_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CWD_PROBE";
     const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
     const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
     const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
@@ -478,6 +521,7 @@ mod tests {
         let mut child = spawn_process_with_resources(
             &current_exe,
             &args,
+            None,
             child_resources,
             &[(PROBE_ENV, "1"), (SOURCE_FDS_ENV, &source_fds)],
             "spawn child fd probe",
@@ -486,6 +530,50 @@ mod tests {
         let status = child.wait()?;
 
         assert!(status.success());
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_spawn_run_directory_sets_child_cwd() -> Result<(), Box<dyn Error>> {
+        if let Some(expected) = env::var_os(CWD_PROBE_ENV) {
+            child_probe_cwd(Path::new(&expected))?;
+            return Ok(());
+        }
+
+        let (_host, child_resources) = create_spawn_resources(4096)?;
+        let source_fds = format!(
+            "{},{},{}",
+            child_resources.control_socket.as_raw_fd(),
+            child_resources.shmem_fd.as_raw_fd(),
+            child_resources.wake_fd.as_raw_fd()
+        );
+        let run_directory = unique_temp_run_directory("qemu-spawn-cwd")?;
+        let expected_directory = run_directory.canonicalize()?;
+        let current_exe = env::current_exe()?;
+        let current_exe = current_exe.to_string_lossy().into_owned();
+        let args = vec![
+            String::from("--exact"),
+            String::from("spawn::tests::qemu_spawn_run_directory_sets_child_cwd"),
+        ];
+        let mut child = spawn_process_with_resources(
+            &current_exe,
+            &args,
+            Some(&run_directory),
+            child_resources,
+            &[
+                (
+                    CWD_PROBE_ENV,
+                    expected_directory.as_os_str().to_string_lossy().as_ref(),
+                ),
+                (SOURCE_FDS_ENV, &source_fds),
+            ],
+            "spawn child cwd probe",
+        )?;
+
+        let status = child.wait()?;
+
+        assert!(status.success());
+        std::fs::remove_dir_all(run_directory)?;
         Ok(())
     }
 
@@ -551,6 +639,7 @@ mod tests {
         let child = spawn_process_with_resources(
             &current_exe,
             &args,
+            None,
             child_resources,
             &[(PDEATH_CHILD_ENV, "1")],
             "spawn parent-death probe child",
@@ -571,6 +660,29 @@ mod tests {
             assert_fd_closed(fd)?;
         }
         Ok(())
+    }
+
+    fn child_probe_cwd(expected: &Path) -> Result<(), Box<dyn Error>> {
+        let actual = std::env::current_dir()?.canonicalize()?;
+        assert_eq!(actual, expected);
+        child_probe_fixed_fds()
+    }
+
+    fn unique_temp_run_directory(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let path = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            unique_temp_suffix()
+        ));
+        std::fs::create_dir(&path)?;
+        Ok(path)
+    }
+
+    fn unique_temp_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
     }
 
     fn assert_fd_open(fd: RawFd) -> Result<(), Box<dyn Error>> {

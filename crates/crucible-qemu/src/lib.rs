@@ -120,8 +120,9 @@ pub use node::{
 #[cfg(target_os = "linux")]
 pub use node_factory::{
     QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestoreAdmission, QemuNodeRestorePlan,
-    QemuQmpShutdownOnlyControlChannel, build_qemu_node_from_completed_setup,
-    build_qemu_node_from_restored_checkpoint,
+    QemuQmpShutdownOnlyControlChannel, QemuWarmRestoreLaunchError,
+    build_qemu_node_from_completed_setup, build_qemu_node_from_restored_checkpoint,
+    spawn_setup_and_restore_qemu_node,
 };
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
@@ -178,5 +179,5 @@ pub use single_vm_fingerprint::{
 #[cfg(target_os = "linux")]
 pub use spawn::{
     QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
-    spawn_qemu_child_with_fds,
+    spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
 };
