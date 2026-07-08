@@ -540,6 +540,7 @@ pub struct TreeWalkOptions {
     thunk_resolve_barrier_tier: GenerationalGcTier,
     parallel_thunk_payloads_enabled: bool,
     parallel_workers: Option<std::num::NonZeroUsize>,
+    parallel_shape_projection: bool,
     jit_tier1_publish_enabled: bool,
     parallel_thunk_worker_id: ParallelThunkWorkerId,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
@@ -587,6 +588,7 @@ impl Default for TreeWalkOptions {
             thunk_resolve_barrier_tier: GenerationalGcTier::OneShotArena,
             parallel_thunk_payloads_enabled: false,
             parallel_workers: None,
+            parallel_shape_projection: false,
             jit_tier1_publish_enabled: false,
             parallel_thunk_worker_id: ParallelThunkWorkerId::FIRST,
             heap_cheap_memory_advice_min_idle_epochs: None,
@@ -1137,6 +1139,8 @@ pub struct TreeWalk {
     shared_known_derivations_cursor: usize,
     /// Consumed prefix of the shared text-store log.
     shared_text_store_cursor: usize,
+    /// Consumed prefix of the shared import-result log.
+    shared_import_log_cursor: usize,
     /// Last observed [`parallel_demand::SharedEvalContext`] version.
     shared_version_seen: u64,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
@@ -1468,6 +1472,8 @@ mod eval_path_ops;
 mod eval_primop_apply;
 mod memo;
 mod parallel_demand;
+mod parallel_import;
+mod parallel_shape;
 mod eval_primop_bind;
 mod eval_raw;
 mod eval_regex;

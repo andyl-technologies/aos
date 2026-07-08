@@ -743,6 +743,14 @@ impl TreeWalkOptions {
         self.parallel_workers = workers;
     }
 
+    /// Enables or disables hidden-class shape projection at `K >= 2`.
+    ///
+    /// See [`Self::parallel_shape_projection`] for the semantics and the
+    /// measured rationale behind the `false` default.
+    pub fn set_parallel_shape_projection(&mut self, enabled: bool) {
+        self.parallel_shape_projection = enabled;
+    }
+
     /// Enables or disables publishing promoted tier-1 native entries for dispatch.
     ///
     /// When disabled (the default), `publish_tier1_slot` is a no-op and installed
@@ -983,6 +991,18 @@ impl TreeWalkOptions {
     /// Returns the configured parallel evaluation worker count, if enabled.
     pub const fn parallel_workers(&self) -> Option<std::num::NonZeroUsize> {
         self.parallel_workers
+    }
+
+    /// Returns whether hidden-class shape projection stays on at `K >= 2`.
+    ///
+    /// Defaults to `false`: multi-worker evaluations disable projection and
+    /// take flat attr lookups instead. The shared-shape-log substrate keeps
+    /// dense shape ids globally consistent when this is enabled, so the
+    /// choice is purely a performance default - on the measured package
+    /// corpus the projection plus transient shaped-select machinery costs
+    /// more than shaped lookups save, and the gap widens with worker count.
+    pub const fn parallel_shape_projection(&self) -> bool {
+        self.parallel_shape_projection
     }
 
     /// Returns whether promoted tier-1 native entries may be published for dispatch.

@@ -1593,6 +1593,20 @@ impl TreeWalk {
         thunk: &EvalThunk,
         parallel_cell: &TreeWalkParallelThunkCell,
     ) -> Result<Value, TreeWalkError> {
+        // Fast path: a serial-cell `Forced` observation is release-published by
+        // the forcing worker before the parallel cell's own terminal publish,
+        // and the cached value is immutable after publication, so an
+        // acquire-load hit here replays the exact result the parallel cell
+        // would hand back - without the payload mutex or the payload clone.
+        // Repeated forces of already-forced thunks dominate the parallel-mode
+        // force mix, so this removes the largest single-worker overhead of the
+        // shared backend (L2-P4 item 4). Failed forces never reach `Forced`,
+        // so error replay still flows through the payload cell below.
+        if let Some(value) = thunk.cell().cached_value().map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
+        })? {
+            return self.replay_parallel_payload_terminal_result(forced_payload, Ok(value));
+        }
         if let Some(result) = parallel_cell.checked_terminal_result().map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
         })? {

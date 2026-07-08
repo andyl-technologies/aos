@@ -868,3 +868,115 @@ fn shapes_reject_duplicate_or_unknown_keys() {
         }
     );
 }
+
+#[test]
+fn shape_table_replica_shares_descriptors_and_dense_ids() {
+    let (symbols, ids) = symbols(&[b"a", b"b", b"c"]);
+    let mut table = ShapeTable::new().expect("table builds");
+    let interned = table
+        .intern_construction_order(&[ids[0], ids[1]], &symbols)
+        .expect("shape interns");
+
+    let replica = table.replica().expect("replica builds");
+    assert_eq!(replica.len(), table.len());
+
+    let mirrored = replica.handle(interned.id()).expect("replica resolves id");
+    assert!(mirrored.ptr_eq(&interned), "replica shares descriptor Arcs");
+    // Handles from the replica pass the authoritative table's identity checks
+    // (and vice versa), which is what lets one worker's handle drive another
+    // table in the shared-log protocol.
+    assert!(
+        table
+            .transition_insert_key_cached(&mirrored, ids[0])
+            .expect("existing key resolves on the source table")
+            .is_some()
+    );
+
+    // Interning through the source table then replicating the suffix keeps
+    // ids dense and identical on the replica.
+    let mut replica = replica;
+    let extended = table
+        .intern_construction_order(&[ids[2]], &symbols)
+        .expect("new shape interns");
+    table
+        .replicate_suffix_into(&mut replica)
+        .expect("suffix replicates");
+    assert_eq!(replica.len(), table.len());
+    let mirrored = replica
+        .handle(extended.id())
+        .expect("replicated id resolves");
+    assert!(mirrored.ptr_eq(&extended));
+}
+
+#[test]
+fn shape_table_cached_transitions_resolve_without_interning() {
+    let (symbols, ids) = symbols(&[b"a", b"b"]);
+    let mut table = ShapeTable::new().expect("table builds");
+    let root = table.empty();
+
+    // A never-seen edge is a cached-path miss.
+    assert!(
+        table
+            .transition_insert_key_cached(&root, ids[0])
+            .expect("cached probe succeeds")
+            .is_none()
+    );
+
+    let ShapeTableTransition::AppendKey { child, .. } = table
+        .transition_insert_key(&root, ids[0], &symbols)
+        .expect("append transitions")
+    else {
+        panic!("new key appends");
+    };
+
+    // The interned edge now resolves read-only, to the same child.
+    let Some(ShapeTableTransition::AppendKey {
+        child: cached_child,
+        cached,
+        ..
+    }) = table
+        .transition_insert_key_cached(&root, ids[0])
+        .expect("cached probe succeeds")
+    else {
+        panic!("cached edge resolves");
+    };
+    assert!(cached);
+    assert!(cached_child.ptr_eq(&child));
+
+    // Existing keys resolve to their slot without table growth.
+    let before = table.len();
+    let Some(ShapeTableTransition::ExistingKey { slot, .. }) = table
+        .transition_insert_key_cached(&child, ids[0])
+        .expect("cached probe succeeds")
+    else {
+        panic!("existing key resolves");
+    };
+    assert_eq!(slot, 0);
+    assert_eq!(table.len(), before);
+    // And a genuinely new edge still misses.
+    assert!(
+        table
+            .transition_insert_key_cached(&child, ids[1])
+            .expect("cached probe succeeds")
+            .is_none()
+    );
+}
+
+#[test]
+fn shape_table_replicate_suffix_rejects_foreign_handles_gracefully() {
+    let (symbols, ids) = symbols(&[b"a"]);
+    let mut table = ShapeTable::new().expect("table builds");
+    let mut unrelated = ShapeTable::new().expect("second table builds");
+    let interned = table
+        .intern_construction_order(&[ids[0]], &symbols)
+        .expect("shape interns");
+
+    // A handle from an unrelated table (same id space, different Arcs) fails
+    // the identity check instead of aliasing the wrong record.
+    let foreign_root = unrelated.empty();
+    assert!(matches!(
+        table.transition_insert_key_cached(&foreign_root, ids[0]),
+        Err(ShapeError::ForeignShapeHandle { .. })
+    ));
+    let _ = interned;
+}

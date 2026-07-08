@@ -738,6 +738,7 @@ pub struct NixEvalConfig {
     native_eval_stats: bool,
     native_jit: bool,
     native_parallel_workers: Option<std::num::NonZeroUsize>,
+    native_parallel_shape_projection: bool,
     native_memo: NativeMemoSettings,
     native_memo_disk_spec: Option<String>,
     native_memo_net: Option<NativeMemoNetSettings>,
@@ -1021,6 +1022,21 @@ impl NixEvalConfig {
 
     pub fn set_native_parallel_workers(&mut self, workers: Option<std::num::NonZeroUsize>) {
         self.native_parallel_workers = workers;
+    }
+
+    /// Returns whether hidden-class shape projection stays on at `K >= 2`.
+    ///
+    /// Off by default and enabled through the `AOS_NIX_PARALLEL_SHAPES=1`
+    /// environment variable. When enabled, multi-worker parallel evaluation
+    /// shares one shape log across workers instead of disabling projection;
+    /// this is a performance knob, never a semantics change.
+    pub const fn native_parallel_shape_projection(&self) -> bool {
+        self.native_parallel_shape_projection
+    }
+
+    /// Enables or disables hidden-class shape projection at `K >= 2`.
+    pub fn set_native_parallel_shape_projection(&mut self, enabled: bool) {
+        self.native_parallel_shape_projection = enabled;
     }
 
     /// Returns whether native root-level early cutoff is enabled.
@@ -1416,6 +1432,7 @@ impl NixEvalConfig {
             native_eval_stats: false,
             native_jit: false,
             native_parallel_workers: None,
+            native_parallel_shape_projection: false,
             native_memo: NativeMemoSettings::default(),
             native_memo_disk_spec: None,
             native_memo_net: None,
@@ -1455,6 +1472,12 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_PARALLEL") {
             config.set_aos_nix_parallel_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_PARALLEL_SHAPES") {
+            config.set_native_parallel_shape_projection(!matches!(
+                value.trim(),
+                "" | "0" | "false" | "off" | "no"
+            ));
         }
         if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
             config.set_aos_nix_max_rss_env_var(value);
@@ -3224,6 +3247,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     if config.native_parallel_workers().is_some() {
         options.set_jit_tier1_publish_enabled(false);
     }
+    options.set_parallel_shape_projection(config.native_parallel_shape_projection());
     Ok(options)
 }
 

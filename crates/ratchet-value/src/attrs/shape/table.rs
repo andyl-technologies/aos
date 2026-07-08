@@ -90,6 +90,143 @@ impl ShapeTable {
         self.handle_unchecked(ShapeId::new(0))
     }
 
+    /// Returns the number of interned shape records.
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Returns whether the table holds only unreachable storage.
+    ///
+    /// Always `false` for tables built through [`ShapeTable::new`] or
+    /// [`ShapeTable::replica`], which contain at least the root shape.
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// Clones this table into an id-compatible replica.
+    ///
+    /// The replica shares every interned [`AttrShape`] descriptor `Arc` with
+    /// this table, so handles produced by either table pass the other's
+    /// pointer-identity checks and dense [`ShapeId`]s mean the same shape in
+    /// both. This is the seeding primitive for the parallel evaluator's
+    /// prefix-replica shape sharing: one authoritative table is replicated
+    /// per worker and extended only through
+    /// [`ShapeTable::replicate_suffix_into`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError::TableAllocationFailed`] if replica storage cannot
+    /// be reserved.
+    pub fn replica(&self) -> Result<Self, ShapeError> {
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(self.records.len())
+            .map_err(|_| ShapeError::TableAllocationFailed {
+                shapes: self.records.len(),
+            })?;
+        records.extend(self.records.iter().cloned());
+        let mut by_fingerprint = HashMap::new();
+        by_fingerprint
+            .try_reserve(self.by_fingerprint.len())
+            .map_err(|_| ShapeError::TableAllocationFailed {
+                shapes: self.records.len(),
+            })?;
+        for (fingerprint, bucket) in &self.by_fingerprint {
+            by_fingerprint.insert(*fingerprint, bucket.clone());
+        }
+        Ok(Self {
+            records,
+            by_fingerprint,
+        })
+    }
+
+    /// Appends this table's unseen record suffix onto a prefix replica.
+    ///
+    /// `local` must be a prefix replica of this table (seeded through
+    /// [`ShapeTable::replica`] and never interned into directly), so every
+    /// appended record keeps its dense [`ShapeId`] and shares its descriptor
+    /// `Arc`. Cached transition edges on the copied records are preserved;
+    /// they reference ids at or below this table's tip, all of which exist in
+    /// `local` after the append.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError::TableAllocationFailed`] if record or index
+    /// storage cannot be reserved. A failed reservation leaves `local` a
+    /// shorter but still consistent prefix replica.
+    pub fn replicate_suffix_into(&self, local: &mut Self) -> Result<(), ShapeError> {
+        debug_assert!(
+            local.records.len() <= self.records.len(),
+            "prefix replica is longer than the authoritative shape table"
+        );
+        while local.records.len() < self.records.len() {
+            let index = local.records.len();
+            let record = &self.records[index];
+            let raw = u32::try_from(index).map_err(|_| ShapeError::TooManyShapes { len: index })?;
+            local
+                .records
+                .try_reserve(1)
+                .map_err(|_| ShapeError::TableAllocationFailed {
+                    shapes: index.saturating_add(1),
+                })?;
+            local.insert_fingerprint_index(record.shape.fingerprint(), raw, index)?;
+            local.records.push(record.clone());
+        }
+        Ok(())
+    }
+
+    /// Resolves a transition without interning, using only existing state.
+    ///
+    /// Returns `Ok(Some(_))` when `key` already exists on `parent` or the
+    /// parent record caches an edge for `key`; returns `Ok(None)` when the
+    /// transition would have to intern a new child shape (the caller must then
+    /// take the mutating [`ShapeTable::transition_insert_key`] path).
+    ///
+    /// Unlike [`ShapeTable::transition_insert_key`], this fast path performs
+    /// no per-record symbol-universe validation and matches cached edges by
+    /// `Symbol` identity alone. The caller must therefore drive one table with
+    /// one symbol universe: every `Symbol` it passes must come from the same
+    /// [`SymbolTable`] lineage (or an id-compatible prefix replica) used for
+    /// every other transition on this table. The evaluator guarantees this by
+    /// construction; the mutating path keeps the defensive byte-level checks
+    /// and remains the arbiter whenever this fast path misses.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShapeError::UnknownShapeId`] or
+    /// [`ShapeError::ForeignShapeHandle`] when `parent` does not belong to
+    /// this table.
+    pub fn transition_insert_key_cached(
+        &self,
+        parent: &ShapeHandle,
+        key: Symbol,
+    ) -> Result<Option<ShapeTableTransition>, ShapeError> {
+        let parent_index = self.checked_record_index(parent)?;
+        if let Some(slot) = self.records[parent_index].shape.slot(key) {
+            return Ok(Some(ShapeTableTransition::ExistingKey {
+                parent: parent.clone(),
+                key,
+                slot,
+            }));
+        }
+        if let Some((_, edge)) = self.records[parent_index]
+            .transitions
+            .iter()
+            .find(|(cached_key, _)| *cached_key == key)
+        {
+            let child = self.handle(edge.child)?;
+            return Ok(Some(ShapeTableTransition::AppendKey {
+                parent: parent.clone(),
+                child,
+                key,
+                source_slot: edge.source_slot,
+                symbol_slot: edge.symbol_slot,
+                cached: true,
+            }));
+        }
+        Ok(None)
+    }
+
     /// Interns a shape built from construction-order keys.
     ///
     /// # Errors

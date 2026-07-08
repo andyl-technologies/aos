@@ -159,3 +159,167 @@ fn parallel_pool_handles_dynamic_symbols_in_derivation_env() {
         assert_eq!(serial_surfaces, parallel_surfaces);
     }
 }
+
+/// Evaluates `source` under `options`, returning the rendered root string,
+/// sorted derivation surfaces, and merged evaluator stats.
+fn eval_derivation_surfaces_with_options(
+    source: &str,
+    options: TreeWalkOptions,
+) -> (Vec<u8>, Vec<(String, Vec<u8>)>, EvalStats) {
+    let ir = lower(source);
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("evaluation succeeds");
+    let root = outcome
+        .heap
+        .get_string(outcome.value)
+        .expect("root drvPath renders as a string")
+        .bytes()
+        .to_vec();
+    let mut surfaces: Vec<(String, Vec<u8>)> = outcome
+        .derivations
+        .iter()
+        .map(|derivation| {
+            (
+                derivation.absolute_path().to_owned(),
+                derivation.aterm_bytes().unwrap_or_default().to_vec(),
+            )
+        })
+        .collect();
+    surfaces.sort();
+    (root, surfaces, outcome.stats)
+}
+
+/// A derivation graph whose leaves live in imported files, so helper workers
+/// demand imports the main worker may or may not have finished.
+fn write_import_fanout_fixture(root: &std::path::Path) -> String {
+    let names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"];
+    for name in &names {
+        fs::write(
+            root.join(format!("leaf-{name}.nix")),
+            format!(
+                r#"builtins.derivation {{
+                     name = "leaf-{name}";
+                     system = "x86_64-linux";
+                     builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                     args = [ "-c" ":" ];
+                     payload = import ./payload-{name}.nix;
+                   }}"#
+            ),
+        )
+        .expect("leaf writes");
+        fs::write(
+            root.join(format!("payload-{name}.nix")),
+            format!("\"payload-{name}\""),
+        )
+        .expect("payload writes");
+    }
+    let imports = names
+        .iter()
+        .map(|name| format!("(import ./leaf-{name}.nix)"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        r#"(builtins.derivation {{
+             name = "root";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ "-c" ":" ];
+             deps = [ {imports} ];
+           }}).drvPath"#
+    )
+}
+
+/// Imported files demanded by helper workers evaluate once through the shared
+/// import log and produce byte-identical surfaces to the serial evaluation.
+#[test]
+fn parallel_pool_shares_import_results_across_workers() {
+    let root = fs::canonicalize(unique_temp_dir("parallel-import-fanout"))
+        .expect("temp dir canonicalizes");
+    let source = write_import_fanout_fixture(&root);
+    let mut base_options = TreeWalkOptions::new();
+    base_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+
+    let (serial_root, serial_surfaces, serial_stats) =
+        eval_derivation_surfaces_with_options(&source, base_options.clone());
+    assert!(!serial_surfaces.is_empty());
+
+    for _ in 0..3 {
+        let workers = 4usize;
+        let mut options = base_options.clone();
+        options.set_parallel_workers(NonZeroUsize::new(workers));
+        let (parallel_root, parallel_surfaces, parallel_stats) =
+            eval_derivation_surfaces_with_options(&source, options);
+        assert_eq!(serial_root, parallel_root);
+        assert_eq!(serial_surfaces, parallel_surfaces);
+        // The shared import log bounds cross-worker duplication to genuinely
+        // concurrent first imports; without it every helper re-imported every
+        // file it demanded. Allow the racy overlap but reject wholesale
+        // duplication.
+        assert!(
+            parallel_stats.imports_evaluated()
+                <= serial_stats.imports_evaluated() + workers as u64,
+            "parallel workers re-evaluated imports wholesale: {} vs serial {}",
+            parallel_stats.imports_evaluated(),
+            serial_stats.imports_evaluated(),
+        );
+    }
+}
+
+/// Multi-worker evaluation with shared shape projection enabled stays
+/// byte-identical to serial: projected shape ids are dense in one shared log
+/// and every worker resolves foreign ids through its prefix replica.
+#[test]
+fn parallel_pool_shape_projection_matches_serial() {
+    let (serial_root, serial_surfaces) = eval_derivation_surfaces(WIDE_DERIVATION_GRAPH, None);
+    for workers in [2, 4] {
+        let mut options = TreeWalkOptions::with_parallel_workers(NonZeroUsize::new(workers));
+        options.set_parallel_shape_projection(true);
+        let ir = lower(WIDE_DERIVATION_GRAPH);
+        let outcome = eval_whnf_owned_with_options(&ir, options).expect("evaluation succeeds");
+        let root = outcome
+            .heap
+            .get_string(outcome.value)
+            .expect("root drvPath renders as a string")
+            .bytes()
+            .to_vec();
+        let mut surfaces: Vec<(String, Vec<u8>)> = outcome
+            .derivations
+            .iter()
+            .map(|derivation| {
+                (
+                    derivation.absolute_path().to_owned(),
+                    derivation.aterm_bytes().unwrap_or_default().to_vec(),
+                )
+            })
+            .collect();
+        surfaces.sort();
+        assert_eq!(serial_root, root, "shape projection diverged at K={workers}");
+        assert_eq!(serial_surfaces, surfaces);
+    }
+}
+
+/// Shared shape projection with imported modules: foreign projected ids reach
+/// workers through replay and demand receipt, and the shaped-select fallback
+/// never fails the evaluation.
+#[test]
+fn parallel_pool_shape_projection_matches_serial_with_imports() {
+    let root = fs::canonicalize(unique_temp_dir("parallel-shape-imports"))
+        .expect("temp dir canonicalizes");
+    let source = write_import_fanout_fixture(&root);
+    let mut base_options = TreeWalkOptions::new();
+    base_options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    let (serial_root, serial_surfaces, _) =
+        eval_derivation_surfaces_with_options(&source, base_options.clone());
+    for _ in 0..3 {
+        let mut options = base_options.clone();
+        options.set_parallel_workers(NonZeroUsize::new(3));
+        options.set_parallel_shape_projection(true);
+        let (parallel_root, parallel_surfaces, _) =
+            eval_derivation_surfaces_with_options(&source, options);
+        assert_eq!(serial_root, parallel_root);
+        assert_eq!(serial_surfaces, parallel_surfaces);
+    }
+}

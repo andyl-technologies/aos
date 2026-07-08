@@ -574,12 +574,18 @@ impl TreeWalk {
         if !current_force_cache_trace_complete {
             self.mark_force_cache_impure_input_trace_incomplete();
         }
+        // Under parallel mode, adopt any imports other workers completed
+        // before treating this path as a miss. A foreign hit is a
+        // foreign-value ingestion point, so the shared-context replicas are
+        // refreshed below before the adopted value is returned.
+        self.sync_shared_import_log();
         match self.import_cache.get(&cache_path).cloned() {
             Some(ImportCacheEntry::Ready {
                 value,
                 trace,
                 force_cache_trace_complete,
             }) => {
+                self.sync_shared_context();
                 if let Some(trace) = trace {
                     for fingerprint in trace {
                         self.record_impure_input(fingerprint);
@@ -622,6 +628,12 @@ impl TreeWalk {
                         self.mark_impure_input_trace_incomplete();
                         None
                     };
+                self.publish_shared_import_result(
+                    &cache_path,
+                    value,
+                    trace.as_deref(),
+                    force_cache_trace_complete,
+                );
                 self.import_cache.insert(
                     cache_path,
                     ImportCacheEntry::Ready {

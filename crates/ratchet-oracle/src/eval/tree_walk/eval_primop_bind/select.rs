@@ -322,12 +322,17 @@ impl TreeWalk {
         site: IrInlineCacheSiteId,
         path_index: usize,
     ) -> Result<AttrSelectOutcome, TreeWalkError> {
-        let shaped = self.transient_shaped_attrs_for_projected_shape(
-            id,
-            span,
-            attrs_value,
-            projected_shape,
-        )?;
+        // Resolve the projected shape id first: under parallel mode the id may
+        // name a shape this worker's replica cannot resolve (a foreign id after
+        // a failed replica sync, or a worker whose projection was disabled).
+        // Shape projection is an accelerator, never a semantic requirement, so
+        // an unresolved id falls back to the flat select path instead of
+        // failing the evaluation.
+        let Ok(shape) = self.shaped_handle_for_projected_shape(projected_shape) else {
+            return self.select_flat_attr_with_cache(id, span, attrs_value, symbol, site, path_index);
+        };
+        let shaped =
+            self.transient_shaped_attrs_for_projected_shape(id, span, attrs_value, shape)?;
         let key = (self.current_module.as_u32(), site.as_u32(), path_index);
         let (state, outcome) = {
             let cache = self.shaped_select_caches.entry(key).or_default();
@@ -378,24 +383,8 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         attrs_value: Value,
-        projected_shape: ShapeId,
+        shape: ShapeHandle,
     ) -> Result<ShapedAttrs, TreeWalkError> {
-        let shape = self
-            .shape_table
-            .as_ref()
-            .ok_or_else(|| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Shape {
-                        id,
-                        source: ShapeError::UnknownShapeId {
-                            id: projected_shape,
-                        },
-                    },
-                    span,
-                )
-            })?
-            .handle(projected_shape)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Shape { id, source }, span))?;
         let attrs = self
             .heap
             .get_attrs(attrs_value)

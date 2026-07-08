@@ -350,49 +350,49 @@ impl TreeWalk {
         }
         keys.extend(attrs.iter_source_order().map(|entry| entry.key));
 
-        let (shape, transitions) = {
-            let Some(shape_table) = self.shape_table.as_mut() else {
-                tracing::debug!(
-                    target: "aos_nix::eval::attr_telemetry",
-                    node = id.as_u32(),
-                    span_start = span.start,
-                    span_end = span.end,
-                    "skipping flat attr shape-census telemetry because shape table initialization failed"
-                );
-                return None;
+        let Some(shape_table) = self.shape_table.as_ref() else {
+            tracing::debug!(
+                target: "aos_nix::eval::attr_telemetry",
+                node = id.as_u32(),
+                span_start = span.start,
+                span_end = span.end,
+                "skipping flat attr shape-census telemetry because no shape table is active"
+            );
+            return None;
+        };
+        let mut shape = shape_table.empty();
+        let mut transitions = 0u64;
+        for key in keys {
+            // Transitions route through the parallel-aware choke point: local
+            // cached edges stay lock-free and new shapes intern into the
+            // shared log first, so the projected id is global under a demand
+            // pool and plain-local in serial mode.
+            let transition = match self.shape_transition_insert_key_for_eval(&shape, key) {
+                Ok(transition) => transition,
+                Err(source) => {
+                    tracing::debug!(
+                        target: "aos_nix::eval::attr_telemetry",
+                        node = id.as_u32(),
+                        span_start = span.start,
+                        span_end = span.end,
+                        error = %source,
+                        "skipping flat attr shape-census telemetry after shape projection failure"
+                    );
+                    return None;
+                }
             };
-            let mut shape = shape_table.empty();
-            let mut transitions = 0u64;
-            for key in keys {
-                let transition = match shape_table.transition_insert_key(&shape, key, &self.symbols)
-                {
-                    Ok(transition) => transition,
-                    Err(source) => {
-                        tracing::debug!(
-                            target: "aos_nix::eval::attr_telemetry",
-                            node = id.as_u32(),
-                            span_start = span.start,
-                            span_end = span.end,
-                            error = %source,
-                            "skipping flat attr shape-census telemetry after shape projection failure"
-                        );
-                        return None;
+            match transition {
+                ShapeTableTransition::ExistingKey { parent, .. } => {
+                    shape = parent;
+                }
+                ShapeTableTransition::AppendKey { child, cached, .. } => {
+                    if !cached {
+                        transitions = transitions.saturating_add(1);
                     }
-                };
-                match transition {
-                    ShapeTableTransition::ExistingKey { parent, .. } => {
-                        shape = parent;
-                    }
-                    ShapeTableTransition::AppendKey { child, cached, .. } => {
-                        if !cached {
-                            transitions = transitions.saturating_add(1);
-                        }
-                        shape = child;
-                    }
+                    shape = child;
                 }
             }
-            (shape, transitions)
-        };
+        }
         Some((shape, transitions))
     }
 

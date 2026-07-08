@@ -16,6 +16,13 @@
 //! - one **known-derivation log** and one **text-store log**: `.drv`
 //!   surfaces and `builtins.toFile` texts computed by any worker are visible
 //!   to the serializer on every worker;
+//! - one **import-result log** ([`parallel_import::SharedImportLog`]):
+//!   completed imports are adopted instead of re-parsed and re-evaluated by
+//!   other workers (L2-P4);
+//! - optionally one **shape log** ([`parallel_shape::SharedShapeLog`]): when
+//!   [`TreeWalkOptions::parallel_shape_projection`] is enabled, hidden-class
+//!   shape ids are dense in one shared table instead of projection being
+//!   disabled at `K >= 2` (L2-P4);
 //! - one **demand queue** ([`DemandQueue`]): strict-force fan-out sites (the
 //!   `derivation` builtin's attribute and list coercion loops) publish
 //!   batches of guaranteed-needed force work that idle helpers steal.
@@ -74,8 +81,21 @@ const DEMAND_TASK_CHUNK: usize = 4;
 /// Maximum queued tasks before publishers drop further fan-out.
 ///
 /// The queue only ever holds work the publisher is itself about to perform
-/// serially, so dropping under saturation costs nothing but lost overlap.
-const DEMAND_QUEUE_CAP: usize = 1024;
+/// serially, so dropping under saturation costs nothing but lost overlap -
+/// but lost overlap is precisely what starves helpers on wide evaluations
+/// (P3b's cap of 1024 dropped ~35% of published fan-out on the wide corpus
+/// while two of three helpers idled). Tasks are two machine words plus a
+/// four-value batch, so a deep queue is memory-cheap; the cap now exists only
+/// to bound a pathological publish storm.
+const DEMAND_QUEUE_CAP: usize = 65536;
+
+/// Stack size for helper worker threads.
+///
+/// Helper evaluation recurses as deeply as the main evaluator, whose
+/// `max_call_depth` guard is calibrated against a main-thread stack (8 MiB on
+/// the supported platforms), so helpers get double that rather than the 2 MiB
+/// Rust spawned-thread default, which overflows on deep package spines.
+const HELPER_STACK_SIZE: usize = 16 << 20;
 
 /// Recovers a mutex guard, ignoring poisoning.
 ///
@@ -84,7 +104,7 @@ const DEMAND_QUEUE_CAP: usize = 1024;
 /// allocation failures abort), so a poisoned lock still guards consistent
 /// data; the poison flag is only set if a panic unwinds through user-visible
 /// evaluator bugs, in which case the pool propagates the panic at join.
-fn recover<'a, T: ?Sized>(
+pub(super) fn recover<'a, T: ?Sized>(
     result: Result<MutexGuard<'a, T>, std::sync::PoisonError<MutexGuard<'a, T>>>,
 ) -> MutexGuard<'a, T> {
     match result {
@@ -367,6 +387,14 @@ pub(crate) struct SharedEvalContext {
     pub(super) symbols: SharedSymbolLog,
     pub(super) known_derivations: SharedKnownDerivationLog,
     pub(super) text_store: SharedTextStoreLog,
+    /// The shared hidden-class shape log (L2-P4).
+    ///
+    /// `Some` when the main evaluator's shape table seeded an authoritative
+    /// shared table at pool spawn; `None` disables shape projection on every
+    /// worker for this evaluation (the pre-P4 parallel behavior).
+    pub(super) shapes: Option<parallel_shape::SharedShapeLog>,
+    /// The shared import-result log (L2-P4).
+    pub(super) imports: parallel_import::SharedImportLog,
     /// The in-process shared content-memo tier (MEMO-1 L1).
     ///
     /// `Some` exactly when the L1 tier is active for this evaluation. This is
@@ -381,7 +409,7 @@ pub(crate) struct SharedEvalContext {
 
 impl SharedEvalContext {
     /// Marks a completed publication into any shared log.
-    fn bump_version(&self) {
+    pub(super) fn bump_version(&self) {
         self.version.fetch_add(1, Ordering::AcqRel);
     }
 }
@@ -421,12 +449,30 @@ impl ParallelDemandPool {
         let root_ir = main.modules.first().map(|module| module.ir.clone())?;
         let arena = main.heap.shared_arena()?.clone();
         let registry = main.parallel_force_registry()?.clone();
+        // Multi-worker shape projection is opt-in (see
+        // `TreeWalkOptions::parallel_shape_projection`). When enabled, seed
+        // the authoritative shared shape table from the main worker's table:
+        // record `Arc`s are shared, so main's existing handles remain valid
+        // against the log. Whenever no shared log exists (default, or a
+        // failed seed) projection is disabled everywhere - main's table is
+        // dropped below - so no process-local id can ever reach shared attrs
+        // metadata.
+        let shapes = if main.options.parallel_shape_projection() {
+            parallel_shape::SharedShapeLog::seed(main.shape_table.as_ref())
+        } else {
+            None
+        };
+        if shapes.is_none() {
+            main.shape_table = None;
+        }
         let shared = Arc::new(SharedEvalContext {
             version: AtomicU64::new(0),
             modules: SharedModuleRegistry::seed(&main.modules),
             symbols: SharedSymbolLog::seed(main.symbols.clone()),
             known_derivations: SharedKnownDerivationLog::default(),
             text_store: SharedTextStoreLog::default(),
+            shapes,
+            imports: parallel_import::SharedImportLog::default(),
             memo: main.options.memo_l1_active().then(|| {
                 Arc::new(super::memo::SharedMemoTable::new(
                     main.options.memo_options().l1_bytes,
@@ -474,6 +520,12 @@ impl ParallelDemandPool {
             let realizer = realizer.clone();
             let spawned = std::thread::Builder::new()
                 .name(format!("aos-nix-eval-{worker_index}"))
+                // Helpers run full tree-walk recursion over the same package
+                // spines as the main evaluator, which is tuned for a main
+                // thread's 8 MiB stack; the Rust spawned-thread default of
+                // 2 MiB overflows on deep instantiations. Give helpers the
+                // same order of headroom the main thread gets.
+                .stack_size(HELPER_STACK_SIZE)
                 .spawn(move || {
                     let eval_cache = Arc::new(Mutex::new(EvalCacheRuntime::from_enabled(false)));
                     let mut walk = match root_source {
@@ -491,6 +543,14 @@ impl ParallelDemandPool {
                     if let Some(realizer) = realizer {
                         walk.set_ifd_realizer(realizer);
                     }
+                    // Replace the fresh local shape table with a replica of
+                    // the shared log so record `Arc`s and dense ids are
+                    // globally consistent; without a shared log, projection
+                    // stays disabled on this worker.
+                    walk.shape_table = shared_for_worker
+                        .shapes
+                        .as_ref()
+                        .and_then(parallel_shape::SharedShapeLog::replica);
                     walk.shared = Some(shared_for_worker);
                     walk.parallel_worker_loop()
                 });
@@ -578,9 +638,10 @@ impl TreeWalk {
     ///
     /// Called at every ingestion point where a foreign value can first become
     /// visible (parallel-cell replays and demand-task receipt), so all
-    /// symbols, modules, known derivations, and text-store entries reachable
-    /// from foreign values are locally resolvable. Cheap when already
-    /// current: one acquire load per log.
+    /// symbols, modules, known derivations, text-store entries, shape
+    /// records, and finished imports reachable from foreign values are
+    /// locally resolvable. Cheap when already current: one acquire load per
+    /// log.
     pub(super) fn sync_shared_context(&mut self) {
         let Some(shared) = self.shared.clone() else {
             return;
@@ -597,6 +658,10 @@ impl TreeWalk {
         shared
             .text_store
             .sync_into(&mut self.shared_text_store_cursor, &mut self.text_store);
+        self.sync_shared_shape_table(&shared);
+        shared
+            .imports
+            .sync_into(&mut self.shared_import_log_cursor, &mut self.import_cache);
         // Store the pre-sync observation: appends racing the sync above are
         // picked up by the next ingestion point.
         self.shared_version_seen = version;

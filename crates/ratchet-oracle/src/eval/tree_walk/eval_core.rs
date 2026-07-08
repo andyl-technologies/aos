@@ -354,9 +354,6 @@ impl TreeWalk {
         let parallel_force_registry = options
             .parallel_thunk_payloads_enabled()
             .then(|| Arc::new(ParallelForceCycleRegistry::new()));
-        let multi_worker_parallel = options
-            .parallel_workers()
-            .is_some_and(|workers| workers.get() > 1);
         // Per-worker content-memo table (MEMO-1 L0). Allocated only when the
         // tier is enabled so the memo adds nothing to the force path otherwise.
         let memo_l0 = options
@@ -378,16 +375,12 @@ impl TreeWalk {
             options,
             stats: EvalStats::default(),
             attr_telemetry: AttrTelemetry::new(),
-            // Hidden-class shape projection stores process-local `ShapeId`s in
-            // shared heap attrs metadata. Under multi-worker parallel mode a
-            // reader may not own the projecting worker's shape table, so
-            // projection is disabled entirely (readers then always take the
-            // flat lookup path); K = 1 parallel mode and serial mode keep it.
-            shape_table: if multi_worker_parallel {
-                None
-            } else {
-                ShapeTable::new().ok()
-            },
+            // Hidden-class shape projection stores dense `ShapeId`s in shared
+            // heap attrs metadata. Under multi-worker parallel mode the demand
+            // pool replaces this table with a prefix replica of one shared
+            // shape log at spawn (see `parallel_shape`), so the ids are global
+            // and foreign readers resolve them through their own replicas.
+            shape_table: ShapeTable::new().ok(),
             flat_select_caches: SelectCacheMap::default(),
             shaped_select_caches: SelectCacheMap::default(),
             hamt_select_caches: SelectCacheMap::default(),
@@ -408,6 +401,7 @@ impl TreeWalk {
             shared: None,
             shared_known_derivations_cursor: 0,
             shared_text_store_cursor: 0,
+            shared_import_log_cursor: 0,
             shared_version_seen: 0,
             import_cache: BTreeMap::new(),
             import_traceable_nonsymlink_prefixes: HashSet::new(),
