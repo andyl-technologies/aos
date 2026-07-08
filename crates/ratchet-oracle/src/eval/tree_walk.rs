@@ -1136,6 +1136,17 @@ pub struct TreeWalk {
     shaped_select_caches: SelectCacheMap<(u32, u32, usize), ShapedSelectCache>,
     hamt_select_caches: SelectCacheMap<(u32, u32, usize), HamtSelectCache>,
     attr_update_node_states: BTreeMap<AttrUpdateTelemetryNodeKey, AttrUpdateTelemetryState>,
+    /// Whether `//` merges record per-merge attrset telemetry.
+    ///
+    /// The telemetry pipeline (shape census, representation-policy dispatch,
+    /// and override-chain node states) re-walks every merge result and is
+    /// consumed only by in-process measurement snapshots, so production
+    /// evaluation disables it and takes the linear
+    /// [`FlatAttrs::update_right_biased`] fast path instead. Enabled by
+    /// default under `cfg(test)` and via the `AOS_NIX_ATTR_TELEMETRY`
+    /// environment variable; both paths produce representation-identical
+    /// attrset values.
+    attr_update_telemetry_enabled: bool,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
     impure_input_trace: Vec<ImpureInputFingerprint>,

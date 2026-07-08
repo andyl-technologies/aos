@@ -700,3 +700,51 @@ fn forcing_attr_value_thunks_memoizes_whnf_results() {
         .expect("forced thunk reuses cache");
     assert_eq!(forced_again.as_int(), Ok(3));
 }
+
+/// Evaluates `source` to a string with per-merge attr telemetry disabled,
+/// driving the production `//` fast path instead of the telemetry path.
+fn eval_string_bytes_without_attr_update_telemetry(source: &str) -> Vec<u8> {
+    let ir = lower(source);
+    let mut evaluator = TreeWalk::new(&ir);
+    evaluator.set_attr_update_telemetry_enabled(false);
+    let value = evaluator.eval_root().expect("source evaluates");
+    let string = evaluator
+        .heap
+        .get_string(value)
+        .expect("result is a heap-owned string");
+    string.bytes().to_vec()
+}
+
+#[test]
+fn attr_update_fast_path_matches_telemetry_path_bytes() {
+    // Attr-heavy sweep: dynamic keys, rec, nested merges, overridden
+    // positions, and a fold chain deep and wide enough that the telemetry
+    // path projects a HAMT representation while the fast path stays flat.
+    for source in [
+        // Iteration order and right bias through toJSON (lexicographic).
+        r#"builtins.toJSON ({ b = 1; ${"a"} = 2; z = 0; } // { c = 3; a = 4; })"#,
+        // attrNames of a nested merge with interleaved dynamic keys.
+        r#"builtins.concatStringsSep "," (builtins.attrNames
+             (({ x = 1; ${"0z"} = 2; } // rec { a = 3; b = a + 1; }) // { ${"x"} = 9; }))"#,
+        // Overridden keys take the right operand's position.
+        r#"builtins.toJSON (builtins.unsafeGetAttrPos "a"
+             ({ a = 1; } //
+              { a = 2; }))"#,
+        // Deep override chain over a wide accumulator: crosses both the
+        // flat-attr threshold (64) and the override-chain threshold (4).
+        r#"builtins.toJSON (builtins.foldl'
+             (acc: i: acc // { "k${builtins.toString i}" = i * i; })
+             {}
+             (builtins.genList (i: i) 100))"#,
+        // Merge results feed selects and nested merges.
+        r#"let base = { a = { x = 1; }; b = 2; };
+               merged = base // { a = base.a // { y = 2; }; c = 3; };
+           in builtins.toJSON [ merged merged.a.y (builtins.attrNames merged) ]"#,
+    ] {
+        assert_eq!(
+            eval_string_bytes_without_attr_update_telemetry(source),
+            eval_string_bytes(source),
+            "fast-path bytes diverge for {source}",
+        );
+    }
+}

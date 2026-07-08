@@ -387,6 +387,7 @@ impl TreeWalk {
             shaped_select_caches: SelectCacheMap::default(),
             hamt_select_caches: SelectCacheMap::default(),
             attr_update_node_states: BTreeMap::new(),
+            attr_update_telemetry_enabled: Self::attr_update_telemetry_default(),
             trace_output: Vec::new(),
             warning_output: Vec::new(),
             impure_input_trace: Vec::new(),

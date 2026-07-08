@@ -145,13 +145,97 @@ impl TreeWalk {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
         let left = self.force_lazy_foldl_initial_value(lhs, lhs_span, left)?;
-        let left_operand = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
-
+        // The left operand type-checks before the right operand evaluates, so
+        // a non-attrset left reports its type error even when forcing the
+        // right operand would fail.
+        if left.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: lhs,
+                    expected: "attrs",
+                    actual: left.tag(),
+                },
+                lhs_span,
+            ));
+        }
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
         let right = self.force_lazy_foldl_initial_value(rhs, rhs_span, right)?;
+        if !self.attr_update_telemetry_enabled {
+            return self
+                .merge_attr_update_fast(id, node.span, lhs, lhs_span, left, rhs, rhs_span, right);
+        }
+        let left_operand = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
         let right_operand = self.attr_entries_for_update(id, rhs, rhs_span, right)?;
         self.merge_attr_update_entries(id, node.span, lhs, left_operand, right_operand)
+    }
+
+    /// Returns the process-default toggle for per-merge attrset telemetry.
+    ///
+    /// Telemetry defaults on under `cfg(test)` so measurement-asserting unit
+    /// tests observe the full pipeline, and off in production binaries where
+    /// nothing consumes it. Setting `AOS_NIX_ATTR_TELEMETRY` to anything but
+    /// `0` re-enables it for release-binary measurement runs.
+    pub(in crate::eval::tree_walk) fn attr_update_telemetry_default() -> bool {
+        cfg!(test)
+            || std::env::var_os("AOS_NIX_ATTR_TELEMETRY").is_some_and(|value| value != "0")
+    }
+
+    /// Overrides the per-merge attrset telemetry toggle for tests.
+    #[cfg(test)]
+    pub(in crate::eval::tree_walk) fn set_attr_update_telemetry_enabled(&mut self, enabled: bool) {
+        self.attr_update_telemetry_enabled = enabled;
+    }
+
+    /// Merges two forced attrset operands without recording merge telemetry.
+    ///
+    /// This is the production `//` path: a single [`FlatAttrs`] linear merge
+    /// over the operands' symbol-sorted storage, allocated with plain flat
+    /// metadata. It produces exactly the same attrset value bytes as the
+    /// telemetry path in [`TreeWalk::merge_attr_update_entries`], which stays
+    /// behind the [`Self::attr_update_telemetry_default`] toggle because its
+    /// shape-census and representation-dispatch accounting re-walk every
+    /// merge result.
+    #[allow(clippy::too_many_arguments)]
+    fn merge_attr_update_fast(
+        &mut self,
+        id: IrId,
+        span: Span,
+        lhs: IrId,
+        lhs_span: Span,
+        left: Value,
+        rhs: IrId,
+        rhs_span: Span,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
+        for (operand_id, operand_span, value) in [(lhs, lhs_span, left), (rhs, rhs_span, right)] {
+            if value.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: operand_id,
+                        expected: "attrs",
+                        actual: value.tag(),
+                    },
+                    operand_span,
+                ));
+            }
+        }
+        let merged = {
+            let left_attrs = self.heap.get_attrs(left).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, lhs_span)
+            })?;
+            let right_attrs = self.heap.get_attrs(right).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, rhs_span)
+            })?;
+            left_attrs
+                .update_right_biased(right_attrs, &self.symbols)
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
+                })?
+        };
+        self.heap
+            .alloc_attrs_with_projected_shape_metadata(0, AttrSetReprKind::Flat, None, merged)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     /// Merges two already-forced attrset values using Nix `//` semantics.
@@ -181,6 +265,9 @@ impl TreeWalk {
         rhs_span: Span,
         right: Value,
     ) -> Result<Value, TreeWalkError> {
+        if !self.attr_update_telemetry_enabled {
+            return self.merge_attr_update_fast(id, span, lhs, lhs_span, left, rhs, rhs_span, right);
+        }
         let left_operand = self.attr_entries_for_update(id, lhs, lhs_span, left)?;
         let right_operand = self.attr_entries_for_update(id, rhs, rhs_span, right)?;
         self.merge_attr_update_entries(id, span, lhs, left_operand, right_operand)
