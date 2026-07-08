@@ -11,8 +11,8 @@ use crucible::{
 use crucible_qemu::{
     QemuBackendRealizationExecutor, QemuBakedGenesisSnapshot, QemuCachedAncestor,
     QemuReplayOracleValidation, QemuSavevmCompletenessPolicy, QemuVmRealization,
-    QemuVmRealizationError, QemuVmRealizationKind, QemuVmRealizationOperation,
-    QemuVmRealizationStore, QemuVmSnapshot, resume_qemu_vm,
+    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
+    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmSnapshot, resume_qemu_vm,
 };
 use crucible_session::validation::{ResumeRealizationError, realize_resume_from_savepoint};
 use thiserror::Error;
@@ -31,7 +31,7 @@ pub enum VmResumeRealizationError {
     },
 }
 
-/// Stable proof fields emitted for model-checkpoint VM resume realization.
+/// Stable proof fields emitted for VM resume realization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelCheckpointVmResumeRealizationProof {
     operation: &'static str,
@@ -61,7 +61,7 @@ impl ModelCheckpointVmResumeRealizationProof {
         )
     }
 
-    fn from_realization(realization: &QemuVmRealization) -> Self {
+    fn from_realization(realization: &QemuVmRealization, executor: &'static str) -> Self {
         let operation = match realization.operation {
             QemuVmRealizationOperation::Resume => "resume",
             QemuVmRealizationOperation::Start => "start",
@@ -88,7 +88,7 @@ impl ModelCheckpointVmResumeRealizationProof {
             };
         Self {
             operation,
-            executor: "model-checkpoint",
+            executor,
             branch,
             configuration: realization.configuration.id(),
             runtime_state: realization.runtime.id,
@@ -176,7 +176,6 @@ pub fn realize_model_checkpoint_vm_resume_from_savepoint(
     source_checkpoint: &Checkpoint,
     target: &Configuration,
 ) -> Result<ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError> {
-    realize_resume_from_savepoint(source_configuration, source_checkpoint, target)?;
     let baked_genesis =
         QemuBakedGenesisSnapshot::from_model_world(scenario.world()).map_err(|error| {
             VmResumeRealizationError::Realization {
@@ -185,17 +184,50 @@ pub fn realize_model_checkpoint_vm_resume_from_savepoint(
         })?;
     let restorable_checkpoints = [source_checkpoint.clone(), baked_genesis.checkpoint.clone()];
     let backend = crucible::SimBackend::from_restorable_checkpoints(&restorable_checkpoints);
+    let mut executor = QemuBackendRealizationExecutor::new(backend);
+    realize_qemu_vm_resume_from_savepoint_with_executor(
+        scenario,
+        source_configuration,
+        source_checkpoint,
+        target,
+        baked_genesis,
+        "model-checkpoint",
+        &mut executor,
+    )
+}
+
+/// Realizes a process-local VM resume proof through a caller-owned QEMU executor.
+///
+/// This entry point lets local-QEMU callers select the concrete runtime
+/// executor while reusing the API-owned savepoint validation and QEMU
+/// coordinator store shape. The `executor` argument may be a test/model backend
+/// adapter or a concrete QEMU node executor; the emitted proof records
+/// `executor_label` verbatim.
+///
+/// # Errors
+///
+/// Returns [`VmResumeRealizationError`] when the source checkpoint is not on
+/// the target resume path or when coordinator branch selection or replay fails.
+pub fn realize_qemu_vm_resume_from_savepoint_with_executor(
+    scenario: &ScenarioDefForm,
+    source_configuration: &Configuration,
+    source_checkpoint: &Checkpoint,
+    target: &Configuration,
+    baked_genesis: QemuBakedGenesisSnapshot,
+    executor_label: &'static str,
+    executor: &mut impl QemuVmRealizationExecutor,
+) -> Result<ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError> {
+    realize_resume_from_savepoint(source_configuration, source_checkpoint, target)?;
     let mut store = ApiVmResumeRealizationStore {
         source_configuration,
         source_checkpoint,
         baked_genesis,
     };
-    let mut executor = QemuBackendRealizationExecutor::new(backend);
     let realization = resume_qemu_vm(
         scenario.world(),
         target,
         &mut store,
-        &mut executor,
+        executor,
         QemuSavevmCompletenessPolicy::default(),
     )
     .map_err(|error| VmResumeRealizationError::Realization {
@@ -203,6 +235,7 @@ pub fn realize_model_checkpoint_vm_resume_from_savepoint(
     })?;
     Ok(ModelCheckpointVmResumeRealizationProof::from_realization(
         &realization,
+        executor_label,
     ))
 }
 
@@ -213,4 +246,220 @@ fn format_content_hash_ref(hash: ContentHash) -> String {
 fn format_optional_content_hash_ref(hash: Option<ContentHash>) -> String {
     hash.map(format_content_hash_ref)
         .unwrap_or_else(|| String::from("none"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crucible::{
+        CheckpointKind, Decision, EventLogOffset, Icount, MaterializedState, NodeBlobRef, NodeId,
+        NodeTemplate, Plan, Properties, ReadyPoint, RngDecision, RngStreamId, RuntimeState,
+        SchedulerState, Seed, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    };
+    use crucible_qemu::{
+        QemuBakedGenesisRestoreAdmission, QemuLoadvmCommandAuthorization,
+        QemuLoadvmRealizationAdmission, QemuVmReplayRequest, QemuVmSnapshot,
+    };
+
+    use super::*;
+
+    #[derive(Default)]
+    struct ScriptedExecutor {
+        baked_loads: usize,
+        replayed_decisions: usize,
+    }
+
+    impl QemuVmRealizationExecutor for ScriptedExecutor {
+        fn load_exact_snapshot(
+            &mut self,
+            _config: &Configuration,
+            _snapshot: &QemuVmSnapshot,
+            _authorization: QemuLoadvmCommandAuthorization,
+            _admission: QemuLoadvmRealizationAdmission,
+        ) -> Result<RuntimeState, QemuVmRealizationError> {
+            Err(QemuVmRealizationError::Executor {
+                operation: "test exact snapshot",
+                message: String::from("default policy should not load exact snapshots"),
+            })
+        }
+
+        fn load_exact_snapshot_for_replay_oracle_probe(
+            &mut self,
+            _config: &Configuration,
+            _snapshot: &QemuVmSnapshot,
+            _authorization: QemuLoadvmCommandAuthorization,
+        ) -> Result<RuntimeState, QemuVmRealizationError> {
+            Err(QemuVmRealizationError::Executor {
+                operation: "test exact snapshot probe",
+                message: String::from("resume proof should not run replay-oracle probes"),
+            })
+        }
+
+        fn load_baked_genesis(
+            &mut self,
+            config: &Configuration,
+            admission: QemuBakedGenesisRestoreAdmission<'_>,
+        ) -> Result<RuntimeState, QemuVmRealizationError> {
+            self.baked_loads += 1;
+            Ok(runtime_for_config(
+                config,
+                hash("runtime", "baked-genesis"),
+                admission.checkpoint(),
+            ))
+        }
+
+        fn replay_one_quantum(
+            &mut self,
+            _runtime: RuntimeState,
+            request: QemuVmReplayRequest,
+        ) -> Result<RuntimeState, QemuVmRealizationError> {
+            self.replayed_decisions += 1;
+            let checkpoint = runtime_checkpoint_for_config(
+                "target",
+                &request.to,
+                Icount {
+                    retired: self.replayed_decisions as u64,
+                },
+            );
+            Ok(runtime_for_config(
+                &request.to,
+                hash("runtime", "replayed-target"),
+                &checkpoint,
+            ))
+        }
+    }
+
+    #[test]
+    fn qemu_resume_proof_uses_caller_supplied_executor() -> Result<(), VmResumeRealizationError> {
+        let scenario = scenario_form();
+        let source = Configuration::genesis(scenario.scenario_def());
+        let target = Configuration {
+            def: source.def.clone(),
+            schedule: source.schedule.appended(Decision::RngDraw(RngDecision {
+                stream: RngStreamId::from_name("api-vm-resume"),
+                value: 7,
+            })),
+        };
+        let source_checkpoint = checkpoint_for_config("source", &source, Icount { retired: 0 });
+        let baked_genesis =
+            QemuBakedGenesisSnapshot::from_model_world(scenario.world()).map_err(|error| {
+                VmResumeRealizationError::Realization {
+                    message: error.to_string(),
+                }
+            })?;
+        let mut executor = ScriptedExecutor::default();
+
+        let proof = realize_qemu_vm_resume_from_savepoint_with_executor(
+            &scenario,
+            &source,
+            &source_checkpoint,
+            &target,
+            baked_genesis,
+            "scripted-node",
+            &mut executor,
+        )?;
+
+        assert_eq!(executor.baked_loads, 1);
+        assert_eq!(executor.replayed_decisions, 1);
+        let summary = proof.field_summary();
+        assert!(summary.contains("executor=scripted-node"));
+        assert!(summary.contains("branch=ancestor-replay"));
+        assert!(summary.contains("replayed_decisions=1"));
+        assert!(summary.contains(&format!(
+            "configuration={}",
+            format_content_hash_ref(target.id())
+        )));
+        Ok(())
+    }
+
+    fn scenario_form() -> ScenarioDefForm {
+        let world = World::from_nodes(vec![WorldNode {
+            id: node_id(),
+            arch: VmArchitecture::X86_64,
+            memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+            cmdline: String::new(),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 0 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+            icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        }])
+        .expect("test world should be valid");
+        ScenarioDefForm::from_components(
+            &world,
+            &Plan::empty(),
+            &Properties::empty(),
+            Seed::from_u64(10),
+        )
+        .expect("test scenario form should be valid")
+    }
+
+    fn checkpoint_for_config(name: &str, config: &Configuration, icount: Icount) -> Checkpoint {
+        let node_blobs = BTreeMap::from([(node_id(), NodeBlobRef::baked(hash("node-blob", name)))]);
+        Checkpoint::from_recorded_configuration(
+            config,
+            None,
+            Default::default(),
+            BTreeMap::from([(node_id(), icount)]),
+            CheckpointKind::Fat,
+            node_blobs,
+        )
+        .map(|checkpoint| {
+            let state = MaterializedState::from_checkpoint_parts(
+                &checkpoint.node_icounts,
+                &checkpoint.node_blobs,
+            );
+            checkpoint.with_materialized_state(Some(state))
+        })
+        .expect("test checkpoint should match its configuration")
+    }
+
+    fn runtime_checkpoint_for_config(
+        name: &str,
+        config: &Configuration,
+        icount: Icount,
+    ) -> Checkpoint {
+        let mut checkpoint = Checkpoint::with_node_blobs(
+            hash("runtime-checkpoint", name),
+            config.id(),
+            CheckpointKind::Fat,
+            BTreeMap::from([(node_id(), NodeBlobRef::baked(hash("node-blob", name)))]),
+        );
+        checkpoint.node_icounts.insert(node_id(), icount);
+        let state = MaterializedState::from_checkpoint_parts(
+            &checkpoint.node_icounts,
+            &checkpoint.node_blobs,
+        );
+        checkpoint.with_materialized_state(Some(state))
+    }
+
+    fn runtime_for_config(
+        config: &Configuration,
+        runtime_id: ContentHash,
+        checkpoint: &Checkpoint,
+    ) -> RuntimeState {
+        RuntimeState {
+            id: runtime_id,
+            configuration: config.id(),
+            node_blobs: checkpoint.node_blobs.clone(),
+            node_icounts: checkpoint.node_icounts.clone(),
+            scheduler: SchedulerState::from_schedule(&config.schedule),
+            event_log: EventLogOffset::default(),
+        }
+    }
+
+    fn node_id() -> NodeId {
+        NodeId {
+            name: String::from("api-vm"),
+        }
+    }
+
+    fn hash(domain: &str, material: &str) -> ContentHash {
+        ContentHash::from_canonical_material(domain, material)
+    }
 }
