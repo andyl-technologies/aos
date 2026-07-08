@@ -7,16 +7,17 @@
 //! cannot issue `savevm` or `loadvm` without the explicit realization-policy
 //! authorization path.
 
-use crucible::{Checkpoint, SchedulerSendAuthorizer};
+use crucible::{Checkpoint, ContentHash, SchedulerSendAuthorizer};
 use crucible_shmem::{SetupRegionMapError, mmap_setup_region};
 use thiserror::Error;
 
 use crate::{
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuHostIoRuntime, QemuHostPluginSetup,
-    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
-    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
-    QemuNodeChannelError, QemuNodeChannels, QemuNodeChild, QemuQmpMachineControlChannel,
-    QemuQmpVmStateControlChannel, QemuQuantumShmemConfig, QemuShutdownPolicy, QmpTimeoutStream,
+    QemuAsyncDriverPolicy, QemuBakedGenesisRestoreAdmission, QemuCrashDetector, QemuHostIoRuntime,
+    QemuHostPluginSetup, QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose,
+    QemuLoadvmRealizationAdmission, QemuMappedQuantumShmemHotPath,
+    QemuMappedQuantumShmemHotPathError, QemuNode, QemuNodeChannelError, QemuNodeChannels,
+    QemuNodeChild, QemuQmpMachineControlChannel, QemuQmpVmStateControlChannel,
+    QemuQuantumShmemConfig, QemuShutdownPolicy, QmpTimeoutStream,
 };
 
 /// QMP machine-control adapter that only exposes graceful shutdown.
@@ -92,8 +93,8 @@ pub enum QemuNodeFactoryError {
         /// Underlying VMState restore channel error.
         source: QemuNodeChannelError,
     },
-    /// The authorization token was not issued for runtime realization.
-    #[error("QEMU VMState restore requires runtime-realization authorization, got {purpose:?}")]
+    /// The authorization token did not match the restore admission kind.
+    #[error("QEMU VMState restore authorization does not match admission kind, got {purpose:?}")]
     VmStateRestoreAuthorization {
         /// Purpose attached to the rejected authorization token.
         purpose: QemuLoadvmCommandPurpose,
@@ -141,11 +142,23 @@ impl<A, R> QemuNodeFactoryRuntime<A, R> {
 pub struct QemuNodeRestorePlan<'a> {
     checkpoint: &'a Checkpoint,
     authorization: QemuLoadvmCommandAuthorization,
-    admission: QemuLoadvmRealizationAdmission,
+    admission: QemuNodeRestoreAdmission,
+}
+
+/// Admission proof for the VMState snapshot restored before node assembly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QemuNodeRestoreAdmission {
+    /// The trusted baked ready-point snapshot produced by QEMU genesis baking.
+    BakedGenesis {
+        /// World identity whose baked genesis was validated.
+        world_id: ContentHash,
+    },
+    /// A replay-oracle-validated exact fat checkpoint runtime.
+    ReplayOracle(QemuLoadvmRealizationAdmission),
 }
 
 impl<'a> QemuNodeRestorePlan<'a> {
-    /// Creates a warm-restore plan from the checkpoint and policy proof.
+    /// Creates a warm-restore plan for an exact fat checkpoint.
     #[must_use]
     pub const fn new(
         checkpoint: &'a Checkpoint,
@@ -155,7 +168,19 @@ impl<'a> QemuNodeRestorePlan<'a> {
         Self {
             checkpoint,
             authorization,
-            admission,
+            admission: QemuNodeRestoreAdmission::ReplayOracle(admission),
+        }
+    }
+
+    /// Creates a warm-restore plan for a baked genesis ready-point checkpoint.
+    #[must_use]
+    pub fn baked_genesis(admission: QemuBakedGenesisRestoreAdmission<'a>) -> Self {
+        Self {
+            checkpoint: admission.checkpoint(),
+            authorization: admission.authorization(),
+            admission: QemuNodeRestoreAdmission::BakedGenesis {
+                world_id: admission.world_id(),
+            },
         }
     }
 }
@@ -208,14 +233,17 @@ where
 /// Restores QEMU VMState, then builds a scheduler-facing QEMU node.
 ///
 /// This is the warm-realization factory path: callers must provide an explicit
-/// runtime-realization `loadvm` authorization token and admission proof before
-/// the QMP channel is reduced to shutdown-only node control. Generic backend
-/// snapshot/restore remains disabled on the returned [`QemuNode`].
+/// `loadvm` authorization token and matching admission proof before the QMP
+/// channel is reduced to shutdown-only node control. Baked-genesis restores use
+/// an admission object produced by the realization coordinator after validating
+/// the baked snapshot against its world; exact fat-checkpoint restores use
+/// replay-oracle admission. Generic backend snapshot/restore remains disabled
+/// on the returned [`QemuNode`].
 ///
 /// # Errors
 ///
-/// Returns [`QemuNodeFactoryError`] when the authorization was not issued for
-/// runtime realization, when the completed setup slot does not match the
+/// Returns [`QemuNodeFactoryError`] when the authorization does not match the
+/// supplied admission proof, when the completed setup slot does not match the
 /// shared-memory hot-path config, when QMP rejects the authorized VMState
 /// restore, when the setup memfd cannot be mapped, or when the mapped hot-path
 /// adapter rejects the completed region.
@@ -244,8 +272,7 @@ where
         authorization,
         admission,
     } = restore;
-    let _admitted_runtime_hash = admission.runtime_hash();
-    validate_runtime_restore_authorization(authorization)?;
+    validate_runtime_restore_authorization(authorization, admission)?;
     let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;
     qmp.restore_checkpoint_vmstate(checkpoint, authorization)
         .map_err(|source| QemuNodeFactoryError::VmStateRestore { source })?;
@@ -328,12 +355,26 @@ fn validate_setup_slot_matches_config(
 
 fn validate_runtime_restore_authorization(
     authorization: QemuLoadvmCommandAuthorization,
+    admission: QemuNodeRestoreAdmission,
 ) -> Result<(), QemuNodeFactoryError> {
     let purpose = authorization.purpose();
-    if purpose != QemuLoadvmCommandPurpose::RuntimeRealization {
-        return Err(QemuNodeFactoryError::VmStateRestoreAuthorization { purpose });
+    match (purpose, admission) {
+        (
+            QemuLoadvmCommandPurpose::RuntimeRealization,
+            QemuNodeRestoreAdmission::ReplayOracle(admission),
+        ) => {
+            let _admitted_runtime_hash = admission.runtime_hash();
+            Ok(())
+        }
+        (
+            QemuLoadvmCommandPurpose::BakedGenesisRealization,
+            QemuNodeRestoreAdmission::BakedGenesis { world_id },
+        ) => {
+            let _admitted_world_id = world_id;
+            Ok(())
+        }
+        (purpose, _) => Err(QemuNodeFactoryError::VmStateRestoreAuthorization { purpose }),
     }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -143,6 +143,19 @@ impl QemuSavevmCompletenessPolicy {
             purpose: QemuLoadvmCommandPurpose::RuntimeRealization,
         })
     }
+
+    /// Authorizes QMP `loadvm` for the trusted baked-genesis ready-point snapshot.
+    ///
+    /// This authorization is deliberately separate from the exact fat-checkpoint
+    /// runtime branch: it only loads a baked genesis snapshot produced by
+    /// `bake`, so it remains available while arbitrary exact snapshot `loadvm`
+    /// is disabled by the Phase 0 fallback policy.
+    #[must_use]
+    pub const fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization {
+        QemuLoadvmCommandAuthorization {
+            purpose: QemuLoadvmCommandPurpose::BakedGenesisRealization,
+        }
+    }
 }
 
 impl Default for QemuSavevmCompletenessPolicy {
@@ -219,6 +232,20 @@ mod tests {
         assert_eq!(admission.runtime_hash(), runtime_hash);
     }
 
+    #[test]
+    fn fallback_policy_authorizes_baked_genesis_without_enabling_exact_loadvm() {
+        let policy = QemuSavevmCompletenessPolicy::phase0_fallback();
+
+        assert_eq!(
+            policy.authorize_baked_genesis_runtime().purpose(),
+            QemuLoadvmCommandPurpose::BakedGenesisRealization
+        );
+        assert!(matches!(
+            policy.authorize_loadvm_runtime(),
+            Err(QemuSavevmPolicyError::LoadvmBranchDisabled { .. })
+        ));
+    }
+
     fn content_hash_with_byte(byte: u8) -> ContentHash {
         ContentHash { bytes: [byte; 32] }
     }
@@ -258,6 +285,8 @@ pub enum QemuVmRealizationBranch {
 /// Purpose for an authorized low-level QMP `loadvm` command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QemuLoadvmCommandPurpose {
+    /// Realize the trusted baked ready-point snapshot for a world's genesis.
+    BakedGenesisRealization,
     /// Run the S3-style snapshot-completeness probe without admitting a runtime.
     SnapshotCompletenessProbe,
     /// Realize a production runtime from a fat snapshot.
@@ -283,6 +312,15 @@ impl QemuLoadvmCommandAuthorization {
     pub(crate) const fn runtime_realization_for_test() -> Self {
         Self {
             purpose: QemuLoadvmCommandPurpose::RuntimeRealization,
+        }
+    }
+
+    /// Returns a baked-genesis realization authorization for crate-internal tests.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn baked_genesis_realization_for_test() -> Self {
+        Self {
+            purpose: QemuLoadvmCommandPurpose::BakedGenesisRealization,
         }
     }
 }

@@ -75,6 +75,14 @@
         needle = "build_qemu_node_from_restored_checkpoint";
       }
       {
+        label = "restore admission export";
+        needle = "QemuNodeRestoreAdmission";
+      }
+      {
+        label = "baked genesis restore admission export";
+        needle = "QemuBakedGenesisRestoreAdmission";
+      }
+      {
         label = "shutdown-only QMP adapter export";
         needle = "QemuQmpShutdownOnlyControlChannel";
       }
@@ -113,12 +121,32 @@
         needle = "pub fn build_qemu_node_from_restored_checkpoint";
       }
       {
-        label = "runtime admission proof consumed";
+        label = "restore admission enum";
+        needle = "pub enum QemuNodeRestoreAdmission";
+      }
+      {
+        label = "baked genesis restore admission";
+        needle = "QemuNodeRestoreAdmission::BakedGenesis {\n                world_id: admission.world_id(),\n            }";
+      }
+      {
+        label = "exact replay-oracle restore admission";
+        needle = "QemuNodeRestoreAdmission::ReplayOracle(admission)";
+      }
+      {
+        label = "baked genesis plan uses validated admission";
+        needle = "pub fn baked_genesis(admission: QemuBakedGenesisRestoreAdmission";
+      }
+      {
+        label = "baked genesis plan uses admitted checkpoint";
+        needle = "checkpoint: admission.checkpoint()";
+      }
+      {
+        label = "exact runtime admission proof consumed";
         needle = "let _admitted_runtime_hash = admission.runtime_hash();";
       }
       {
         label = "runtime authorization check before restore";
-        needle = "validate_runtime_restore_authorization(authorization)?;\n    let prepared_setup = prepare_qemu_node_setup";
+        needle = "validate_runtime_restore_authorization(authorization, admission)?;\n    let prepared_setup = prepare_qemu_node_setup";
       }
       {
         label = "local setup prepared before restore";
@@ -131,6 +159,14 @@
       {
         label = "runtime purpose enforcement";
         needle = "QemuLoadvmCommandPurpose::RuntimeRealization";
+      }
+      {
+        label = "baked genesis purpose enforcement";
+        needle = "QemuLoadvmCommandPurpose::BakedGenesisRealization";
+      }
+      {
+        label = "baked genesis world proof consumed";
+        needle = "let _admitted_world_id = world_id;";
       }
       {
         label = "setup slot validation";
@@ -185,6 +221,22 @@
         needle = "factory_rejects_probe_authorization_before_vmstate_restore";
       }
       {
+        label = "baked genesis restore test";
+        needle = "factory_restores_baked_genesis_without_oracle_admission";
+      }
+      {
+        label = "baked restore test uses validated admission";
+        needle = "QemuBakedGenesisRestoreAdmission::new";
+      }
+      {
+        label = "baked restore test uses baked node blob";
+        needle = "NodeBlobRef::baked";
+      }
+      {
+        label = "baked auth exact restore rejection test";
+        needle = "factory_rejects_baked_authorization_for_replay_oracle_restore";
+      }
+      {
         label = "slot mismatch before restore test";
         needle = "factory_rejects_restore_slot_mismatch_before_vmstate_restore";
       }
@@ -217,6 +269,14 @@
       {
         label = "cfg-test-only admission constructor";
         needle = "    #[cfg(test)]\n    pub(crate) const fn for_test";
+      }
+      {
+        label = "baked genesis load authorization";
+        needle = "pub const fn authorize_baked_genesis_runtime";
+      }
+      {
+        label = "baked genesis load purpose";
+        needle = "QemuLoadvmCommandPurpose::BakedGenesisRealization";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu/src/savevm_policy.rs" savevmPolicy [
@@ -314,7 +374,7 @@ in
             warm_restore_factory=prepares-setup-before-authorized-loadvm
             qmp_after_assembly=shutdown-only
             generic_snapshot_restore=fail-closed
-            admission_boundary=opaque-replay-oracle-proof
+            admission_boundary=opaque-replay-oracle-proof-or-baked-genesis
             RESULT
           '';
         }

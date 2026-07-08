@@ -119,7 +119,7 @@ pub use node::{
 };
 #[cfg(target_os = "linux")]
 pub use node_factory::{
-    QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestorePlan,
+    QemuNodeFactoryError, QemuNodeFactoryRuntime, QemuNodeRestoreAdmission, QemuNodeRestorePlan,
     QemuQmpShutdownOnlyControlChannel, build_qemu_node_from_completed_setup,
     build_qemu_node_from_restored_checkpoint,
 };
@@ -137,11 +137,12 @@ pub use quantum::{
     QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
 };
 pub use realization::{
-    QemuBackendRealizationExecutor, QemuBakedGenesisSnapshot, QemuCachedAncestor,
-    QemuVmBakeExecutor, QemuVmLoadvmAdmissionPolicy, QemuVmRealization, QemuVmRealizationError,
-    QemuVmRealizationExecutor, QemuVmRealizationKind, QemuVmRealizationOperation,
-    QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot, bake_qemu_genesis_vm,
-    check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm, resume_qemu_vm, start_qemu_vm,
+    QemuBackendRealizationExecutor, QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot,
+    QemuCachedAncestor, QemuVmBakeExecutor, QemuVmLoadvmAdmissionPolicy, QemuVmRealization,
+    QemuVmRealizationError, QemuVmRealizationExecutor, QemuVmRealizationKind,
+    QemuVmRealizationOperation, QemuVmRealizationStore, QemuVmReplayRequest, QemuVmSnapshot,
+    bake_qemu_genesis_vm, check_qemu_replay_oracle, fork_qemu_vm, instantiate_qemu_vm,
+    resume_qemu_vm, start_qemu_vm,
 };
 pub use savevm_policy::{
     QEMU_SAVEVM_FALLBACK_MARKER, QEMU_SAVEVM_PHASE0_S3_CHECK, QemuLoadvmCommandAuthorization,
