@@ -169,14 +169,19 @@ pub enum ThunkSharing {
 ///
 /// Entries are indexed by [`IrId`] and are expected to stay in one-to-one order
 /// with the node arena. Alongside the per-node [`ExprFacts`] records the table
-/// carries a per-node `tryEval` barrier bit: nodes that root the argument
-/// subtree of a `builtins.tryEval` application. No transform in the current
-/// pipeline consumes the bit; it is persisted for future relocation passes
-/// (S4: computations must not be moved across a `tryEval` catch boundary).
+/// carries two per-node bits:
+///
+/// - a `tryEval` barrier bit: nodes that root the argument subtree of a
+///   `builtins.tryEval` application. No transform in the current pipeline
+///   consumes the bit; it is persisted for future relocation passes (S4:
+///   computations must not be moved across a `tryEval` catch boundary).
+/// - an eager-assembly bit ([`Self::assembly_eager`]): binding-value thunk
+///   allocations that a frame assembler may evaluate directly to WHNF.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IrFacts {
     nodes: Box<[ExprFacts]>,
     try_eval_barriers: Box<[bool]>,
+    assembly_eager: Box<[bool]>,
 }
 
 impl IrFacts {
@@ -185,6 +190,7 @@ impl IrFacts {
         Self {
             nodes: vec![ExprFacts::conservative(); node_count].into_boxed_slice(),
             try_eval_barriers: vec![false; node_count].into_boxed_slice(),
+            assembly_eager: vec![false; node_count].into_boxed_slice(),
         }
     }
 
@@ -234,5 +240,51 @@ impl IrFacts {
     /// Returns all `tryEval` barrier bits in IR node order.
     pub fn try_eval_barriers(&self) -> &[bool] {
         &self.try_eval_barriers
+    }
+
+    /// Returns whether `id` carries the eager-assembly license.
+    ///
+    /// The bit is a per-frame assembly plan entry produced by the strictness
+    /// analysis for binding-value `ThunkAlloc` nodes of attrset literals that
+    /// flow into a derivation boundary (`builtins.derivationStrict` /
+    /// `builtins.derivation`). It licenses an order-sensitive frame assembler
+    /// to evaluate the binding body directly to WHNF into its slot instead of
+    /// allocating lazy storage, under the assembler's existing contract:
+    /// bindings are populated in source order and dynamic-key or shape
+    /// validation has already completed.
+    ///
+    /// The producer only sets the bit where that schedule is proven
+    /// observation-equivalent to lazy assembly (soundness rules S2 + S3):
+    ///
+    /// - values whose bodies are structurally *total* (incapable of throwing,
+    ///   diverging, or emitting trace output), which every derivation
+    ///   boundary forces; evaluating them at any point of the assembly is
+    ///   silent, so their relative order never matters; and
+    /// - at most one non-total value: the `name` binding of a literal that is
+    ///   the syntactically direct `derivationStrict` argument, whose force is
+    ///   the serializer's first observable-event opportunity.
+    ///
+    /// Note the bit is deliberately not folded into [`Strictness`]: a total
+    /// value late in the serializer's sorted force order is only
+    /// [`Strictness::Demanded`] (an earlier attribute's failure can precede
+    /// its force), yet eager evaluation of it is still invisible because its
+    /// body cannot produce events.
+    pub fn assembly_eager(&self, id: IrId) -> bool {
+        self.assembly_eager.get(id.index()).copied().unwrap_or(false)
+    }
+
+    /// Marks `id` as carrying the eager-assembly license.
+    ///
+    /// Out-of-range ids are ignored; the bit table always mirrors the
+    /// node-fact table length.
+    pub fn set_assembly_eager(&mut self, id: IrId, eager: bool) {
+        if let Some(slot) = self.assembly_eager.get_mut(id.index()) {
+            *slot = eager;
+        }
+    }
+
+    /// Returns all eager-assembly bits in IR node order.
+    pub fn assembly_eager_bits(&self) -> &[bool] {
+        &self.assembly_eager
     }
 }

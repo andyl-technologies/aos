@@ -13,9 +13,34 @@ use crate::syntax::{Span, SymbolTable, parse_str};
 
 const TEST_WITH_VAR_OP: IrDialectOp = IrDialectOp::new(1);
 
+/// The Nix dialect's `derivationStrict` op key (`NIX_OP_DERIVATION_STRICT`),
+/// installed so tests exercise the production `DialectNode` lowering shape.
+const TEST_DERIVATION_STRICT_OP: IrDialectOp = IrDialectOp::new(1);
+
+fn test_derivation_dialect_op(
+    _name: Option<&[u8]>,
+    direct: crate::builtins::BuiltinDirect,
+) -> Option<IrDialectOp> {
+    match direct {
+        crate::builtins::BuiltinDirect::DerivationStrict => Some(TEST_DERIVATION_STRICT_OP),
+        _ => None,
+    }
+}
+
 fn lowered(source: &str) -> Ir {
     lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))
         .expect("IR lowers")
+}
+
+/// Lowers with the Nix dialect's `derivationStrict` op installed, so the
+/// boundary appears as `IrData::DialectNode` exactly as `nix_lower` produces.
+fn lowered_with_derivation_op(source: &str) -> Ir {
+    let resolved = resolve(parse_str(source).expect("source parses")).expect("source resolves");
+    lower_with_options(
+        resolved,
+        IrLowerOptions::new().with_builtin_dialect_op(test_derivation_dialect_op),
+    )
+    .expect("IR lowers")
 }
 
 fn lowered_with_dynamic_scope(source: &str) -> Ir {
@@ -45,6 +70,12 @@ fn escape(ir: &Ir, id: IrId) -> Escape {
 
 fn annotate(source: &str) -> Ir {
     let mut ir = lowered(source);
+    annotate_strictness(&mut ir).expect("strictness analysis succeeds");
+    ir
+}
+
+fn annotate_with_derivation_op(source: &str) -> Ir {
+    let mut ir = lowered_with_derivation_op(source);
     annotate_strictness(&mut ir).expect("strictness analysis succeeds");
     ir
 }

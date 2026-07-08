@@ -14,7 +14,7 @@ use crate::syntax::Symbol;
 use super::{Analysis, StrictnessAnalysisError};
 
 /// Maximum alias hops followed by one chase.
-const CHASE_BUDGET: usize = 32;
+pub(super) const CHASE_BUDGET: usize = 32;
 
 /// The `rec { }` override attribute that makes slot values non-static.
 const OVERRIDES_ATTR: &[u8] = b"__overrides";

@@ -22,8 +22,11 @@ use crate::compile::{
 /// storage. When the thunk remains lazy, a single-entry plan is returned only
 /// if the C-8 frame-local predicate admits it. Order-sensitive binding
 /// assembly blocks eager and omitted-storage rewrites so frame population
-/// cannot observe reordered evaluation, but lazy single-entry storage is
-/// still allowed when the sharing proof admits it.
+/// cannot observe reordered evaluation — unless the analysis carries the
+/// per-frame assembly proof for this exact node
+/// ([`crate::compile::IrFacts::assembly_eager`]), which licenses evaluating
+/// the body to WHNF in the assembler's own source-order schedule. Lazy
+/// single-entry storage is still allowed when the sharing proof admits it.
 ///
 /// # Errors
 ///
@@ -90,6 +93,17 @@ fn order_sensitive_binding_assembly_plan(
             TreeWalkThunkUpdateReason::OrderSensitiveBindingAssembly,
         ))
     };
+    // The assembly-eager bit is the one proof that licenses eager rewrites
+    // inside order-sensitive frame population: its producer verified that
+    // evaluating this binding to WHNF at its source-order assembly position
+    // is observation-equivalent to lazy storage (S2 + S3). A node-level
+    // `DemandedBeforeEffect` fact alone is not that proof - it claims demand
+    // relative to the binding's own force, not the frame's fill order.
+    if ir.facts.assembly_eager(id) {
+        return Ok(TreeWalkThunkAllocationPlan::ElideToWhnf(
+            TreeWalkThunkElision::new(id, body, BindingLowering::Eager),
+        ));
+    }
     let Some(facts) = ir.node_facts(id) else {
         return Ok(update_slot());
     };
@@ -314,6 +328,71 @@ mod tests {
             bindings: Box::new([]),
             shapes: Box::new([]),
         }
+    }
+
+    #[test]
+    fn order_sensitive_binding_assembly_honors_the_assembly_eager_bit() {
+        // The analysis' per-frame assembly proof is the one license for eager
+        // rewrites during frame population; it overrides the update-slot
+        // guard even when node-level strictness would also be eager-eligible.
+        for strictness in [
+            Strictness::Unknown,
+            Strictness::Demanded,
+            Strictness::DemandedBeforeEffect,
+        ] {
+            let mut ir = thunk_ir(ExprFacts {
+                strictness,
+                cardinality: Cardinality::Many,
+                escape: Escape::Escapes,
+            });
+            ir.facts.set_assembly_eager(THUNK, true);
+
+            let plan = tree_walk_thunk_allocation_plan(
+                &ir,
+                THUNK,
+                TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly,
+            )
+            .expect("assembly-eager plan succeeds");
+
+            let TreeWalkThunkAllocationPlan::ElideToWhnf(elision) = plan else {
+                panic!("assembly-eager elision expected for {strictness:?}");
+            };
+            assert_eq!(elision.thunk(), THUNK);
+            assert_eq!(elision.body(), BODY);
+            assert_eq!(elision.lowering(), BindingLowering::Eager);
+        }
+    }
+
+    #[test]
+    fn demand_position_ignores_the_assembly_eager_bit() {
+        // The bit's proof is about the assembler's source-order schedule; in
+        // demand position the ordinary strictness plan stays in charge.
+        let mut ir = thunk_ir(ExprFacts {
+            strictness: Strictness::Unknown,
+            cardinality: Cardinality::Many,
+            escape: Escape::Escapes,
+        });
+        ir.facts.set_assembly_eager(THUNK, true);
+
+        let plan = tree_walk_thunk_allocation_plan(
+            &ir,
+            THUNK,
+            TreeWalkThunkAllocationContext::DemandPosition,
+        )
+        .expect("demand-position plan succeeds");
+
+        assert_eq!(
+            plan,
+            TreeWalkThunkAllocationPlan::UpdateSlot(TreeWalkThunkUpdateSlot::new(
+                THUNK,
+                BODY,
+                TreeWalkThunkUpdateReason::SharingProof(
+                    FrameLocalThunkUpdateReason::CardinalityNotOnce {
+                        cardinality: Cardinality::Many,
+                    },
+                ),
+            ))
+        );
     }
 
     fn malformed_ir(root: IrId, nodes: Vec<IrNode>) -> Ir {

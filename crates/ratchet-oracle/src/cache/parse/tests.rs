@@ -196,6 +196,43 @@ fn lowered_ir_fact_artifacts_roundtrip() {
 }
 
 #[test]
+fn lowered_ir_fact_artifacts_roundtrip_boolean_fact_bits() {
+    let mut facts = IrFacts::conservative(3);
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-flag-test");
+    facts.set_try_eval_barrier(IrId::new(0), true);
+    facts.set_assembly_eager(IrId::new(1), true);
+    facts.set_try_eval_barrier(IrId::new(2), true);
+    facts.set_assembly_eager(IrId::new(2), true);
+
+    let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION)
+        .expect("fact artifact encodes");
+    let (decoded, _) = decode_ir_facts(&encoded, 3, fingerprint).expect("fact artifact decodes");
+
+    assert_eq!(decoded, facts);
+    assert!(decoded.try_eval_barrier(IrId::new(0)));
+    assert!(!decoded.assembly_eager(IrId::new(0)));
+    assert!(!decoded.try_eval_barrier(IrId::new(1)));
+    assert!(decoded.assembly_eager(IrId::new(1)));
+    assert!(decoded.try_eval_barrier(IrId::new(2)));
+    assert!(decoded.assembly_eager(IrId::new(2)));
+}
+
+#[test]
+fn lowered_ir_fact_artifacts_reject_invalid_flag_bytes() {
+    let facts = IrFacts::conservative(1);
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-flag-test");
+    let mut encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION)
+        .expect("fact artifact encodes");
+    // magic + artifact version + analysis version + fingerprint + count +
+    // the three per-node fact tags put the flag byte last in the record.
+    encoded[FACTS_MAGIC.len() + 4 + 4 + 32 + 4 + 3] = 0b100;
+
+    let error = decode_ir_facts(&encoded, 1, fingerprint).expect_err("invalid flag byte errors");
+
+    assert!(error.contains("invalid node fact flag byte"), "{error}");
+}
+
+#[test]
 fn lowered_ir_fact_artifacts_reject_count_mismatch() {
     let facts = IrFacts::conservative(1);
     let fingerprint = test_lowered_ir_fingerprint(b"fact-artifact-test");

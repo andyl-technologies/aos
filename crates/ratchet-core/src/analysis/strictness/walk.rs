@@ -20,11 +20,14 @@
 //! their own, so the child inherits the parent's position: if the parent's
 //! value is forced immediately by *its* consumer, so is the child's.
 
-use crate::builtins::{ArgDemand, demand_signature, lookup_builtin};
+use crate::builtins::{ArgDemand, BuiltinExecution, demand_signature, lookup_builtin};
 use crate::ir::{IrAttrPathSegment, IrData, IrId, IrKind, Strictness};
 use crate::syntax::BinOpKind;
 
 use super::collect::{LambdaArgumentDemand, lambda_argument_demand};
+use super::derivation::{
+    DERIVATION_STRICT_DIALECT_OP, DerivationBoundary, seed_derivation_boundary,
+};
 use super::frames::{ChasedCallee, FrameScope, chase_attrset_literal, chase_callee};
 use super::{Analysis, StrictnessAnalysisError};
 
@@ -455,6 +458,18 @@ fn visit_primop(
                 }
                 return Ok(());
             };
+            // Derivation boundaries seed binding-value demand and the
+            // eager-assembly plan for statically-shaped argument literals.
+            if let [argument] = args {
+                let boundary = match builtin.execution() {
+                    BuiltinExecution::DerivationStrict => Some(DerivationBoundary::Strict),
+                    BuiltinExecution::Derivation => Some(DerivationBoundary::Wrapper),
+                    _ => None,
+                };
+                if let Some(boundary) = boundary {
+                    seed_derivation_boundary(analysis, *argument, stack, boundary)?;
+                }
+            }
             let signature = demand_signature(builtin.execution());
             for (index, arg) in args.iter().enumerate() {
                 let arg_position = match signature.arg(index) {
@@ -476,7 +491,10 @@ fn visit_primop(
             }
             Ok(())
         }
-        IrData::DialectNode { argument, .. } => {
+        IrData::DialectNode { op, argument } => {
+            if op == DERIVATION_STRICT_DIALECT_OP {
+                seed_derivation_boundary(analysis, argument, stack, DerivationBoundary::Strict)?;
+            }
             visit(analysis, argument, Position::ForcedNow, stack)
         }
         _ => Ok(()),

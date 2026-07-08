@@ -126,6 +126,19 @@ fn json_parity_source_strategy() -> impl Strategy<Value = String> {
         (-100_i64..=100).prop_map(|value| {
             format!("(x: builtins.trace \"m\" (x + 1)) {}", nix_int(value))
         }),
+        // Derivation-boundary seeding: total binding values assemble
+        // eagerly, `name` is first-forced, everything else stays lazy.
+        (prop::collection::vec(-20_i64..=20, 0..5), -100_i64..=100).prop_map(
+            |(deps, value)| {
+                format!(
+                    "(builtins.derivationStrict {{ name = \"d\" + \"x\"; \
+                     builder = \"b\"; system = \"s\"; \
+                     deps = {}; value = {}; }}).drvPath",
+                    nix_int_list(&deps),
+                    nix_int(value),
+                )
+            }
+        ),
     ]
 }
 
@@ -402,4 +415,185 @@ fn analysis_annotations_preserve_unforced_identity_call_results() {
     ] {
         assert_annotated_fallible_observation_matches_conservative(source);
     }
+}
+
+/// Pins the `derivationStrict` dialect-op key the core strictness analysis
+/// mirrors (`ratchet-core` cannot depend on the dialect crate). The key is
+/// serialized raw into persisted `ir.bin` artifacts, so it is format-stable
+/// and the mirror constant may rely on it.
+#[test]
+fn derivation_strict_dialect_op_is_format_stable() {
+    assert_eq!(
+        aos_nix_dialect::NIX_OP_DERIVATION_STRICT,
+        crate::compile::IrDialectOp::new(1),
+    );
+}
+
+#[test]
+fn analysis_annotations_preserve_derivation_strict_error_identity_and_order() {
+    for source in [
+        // `name` is forced first: its error wins over every other attribute.
+        r#"builtins.derivationStrict {
+             name = builtins.throw "name-error";
+             builder = builtins.throw "builder-error";
+             system = "s";
+           }"#,
+        // Sorted force order between two throwing attributes: `builder`
+        // precedes `system` lexicographically in both schedules.
+        r#"builtins.derivationStrict {
+             name = "ok";
+             builder = builtins.throw "first-sorted";
+             system = builtins.throw "second-sorted";
+           }"#,
+        // A missing `name` throws before any attribute value is forced.
+        r#"builtins.derivationStrict {
+             builder = builtins.throw "builder-error";
+             system = "s";
+           }"#,
+        // Non-string name: the type error fires after the first force.
+        r#"builtins.derivationStrict {
+             name = 1 + 2;
+             builder = builtins.throw "builder-error";
+             system = "s";
+           }"#,
+    ] {
+        assert_annotated_fallible_observation_matches_conservative(source);
+    }
+}
+
+#[test]
+fn analysis_annotations_preserve_derivation_strict_ignore_nulls_interplay() {
+    for source in [
+        // Null attributes are forced before the `__ignoreNulls` drop.
+        r#"(builtins.derivationStrict {
+             name = "d";
+             builder = "b";
+             system = "s";
+             __ignoreNulls = true;
+             dropped = null;
+             extra = [ 1 2 ];
+           }).drvPath"#,
+        // A throwing `__ignoreNulls` fires in its pre-loop force position.
+        r#"builtins.derivationStrict {
+             name = "d";
+             builder = "b";
+             system = "s";
+             __ignoreNulls = builtins.throw "ignore-nulls";
+           }"#,
+    ] {
+        assert_annotated_fallible_observation_matches_conservative(source);
+    }
+}
+
+#[test]
+fn analysis_annotations_preserve_derivation_strict_structured_attrs() {
+    for source in [
+        r#"(builtins.derivationStrict {
+             name = "d";
+             builder = "b";
+             system = "s";
+             __structuredAttrs = true;
+             nested = { a = [ 1 ]; b = "x"; };
+             outputs = [ "out" "dev" ];
+           }).drvPath"#,
+        r#"builtins.derivationStrict {
+             name = "d";
+             builder = "b";
+             system = "s";
+             __structuredAttrs = builtins.throw "structured";
+           }"#,
+    ] {
+        assert_annotated_fallible_observation_matches_conservative(source);
+    }
+}
+
+#[test]
+fn analysis_annotations_preserve_derivation_strict_binding_sources() {
+    for source in [
+        // `inherit (src) attr` values route through the shared-receiver
+        // select-thunk path and must stay as lazy as before.
+        r#"let src = { dep = builtins.throw "inherited"; };
+           in builtins.derivationStrict {
+             name = "d";
+             builder = "b";
+             system = "s";
+             inherit (src) dep;
+           }"#,
+        // Dynamic keys mixed with static ones decline the eager plan.
+        r#"builtins.derivationStrict {
+             name = "d";
+             builder = "b";
+             system = "s";
+             ${"dy" + "namic"} = builtins.throw "dynamic-value";
+           }"#,
+        // Formal defaults are populated by the same order-sensitive
+        // assembler and must stay lazy.
+        r#"({ x ? builtins.throw "default" }: builtins.derivationStrict {
+             name = "d";
+             builder = "b";
+             system = "s";
+           }) {}"#,
+        // Recursive-let forward references feeding a derivation literal.
+        r#"let n = "a" + b; b = "bc";
+           in (builtins.derivationStrict {
+             name = n;
+             builder = "b";
+             system = "s";
+             deps = [ 1 2 3 ];
+           }).drvPath"#,
+        // A rec literal argument declines seeding but must stay equivalent.
+        r#"(builtins.derivationStrict (rec {
+             name = "d" + "x";
+             builder = "b";
+             system = "s";
+             alias = name;
+           })).drvPath"#,
+    ] {
+        assert_annotated_fallible_observation_matches_conservative(source);
+    }
+}
+
+#[test]
+fn analysis_annotations_drive_binding_assembly_elision() {
+    let source = r#"(builtins.derivationStrict {
+        name = "d-" + "1";
+        builder = "/bin/sh";
+        system = "x86_64-linux";
+        args = [ "-c" "true" ];
+    }).drvPath"#;
+    let conservative_ir = lower(source);
+    let mut annotated_ir = lower(source);
+    crate::compile::annotate_ir(&mut annotated_ir).expect("analysis succeeds");
+
+    let conservative = eval_whnf_owned(&conservative_ir).expect("conservative evaluates");
+    let annotated = eval_whnf_owned(&annotated_ir).expect("annotated evaluates");
+
+    let conservative_path = conservative
+        .heap()
+        .get_string(conservative.value())
+        .expect("drvPath is a string")
+        .bytes()
+        .to_vec();
+    let annotated_path = annotated
+        .heap()
+        .get_string(annotated.value())
+        .expect("drvPath is a string")
+        .bytes()
+        .to_vec();
+    assert_eq!(annotated_path, conservative_path);
+
+    // The non-total first-forced `name` and the total `args` list evaluate
+    // directly into their slots; the conservative plan allocates instead.
+    assert_eq!(conservative.stats().binding_assembly_elisions(), 0);
+    assert!(
+        annotated.stats().binding_assembly_elisions() >= 2,
+        "expected at least two assembly elisions, got {}",
+        annotated.stats().binding_assembly_elisions(),
+    );
+    assert!(
+        annotated.stats().thunks_allocated() < conservative.stats().thunks_allocated(),
+        "eager assembly must allocate fewer thunks ({} vs {})",
+        annotated.stats().thunks_allocated(),
+        conservative.stats().thunks_allocated(),
+    );
 }

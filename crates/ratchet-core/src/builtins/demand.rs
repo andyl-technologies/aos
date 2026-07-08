@@ -133,7 +133,6 @@ const TRACE_VERBOSE: DemandSignature = DemandSignature::new(&[
 ]);
 const ADD_ERROR_CONTEXT: DemandSignature =
     DemandSignature::new(&[ArgDemand::Lazy, ArgDemand::Barred]);
-const LAZY_1: DemandSignature = DemandSignature::new(&[ArgDemand::Lazy]);
 const LAZY_RESULT: DemandSignature = DemandSignature::new(&[ArgDemand::Result {
     after_effect: false,
 }]);
@@ -222,7 +221,7 @@ pub const fn demand_signature(execution: BuiltinExecution) -> DemandSignature {
             mode: TraceMode::Verbose,
         } => TRACE_VERBOSE,
         BuiltinExecution::Warn => TRACE_ALWAYS,
-        BuiltinExecution::DerivationStrict => LAZY_1,
+        BuiltinExecution::DerivationStrict => FORCED_1,
         BuiltinExecution::LazyUnary => LAZY_RESULT,
         BuiltinExecution::BuiltinsValue
         | BuiltinExecution::TrueValue
@@ -308,8 +307,10 @@ mod tests {
                     assert_eq!(signature.arg(1), ArgDemand::Forced);
                 }
                 BuiltinExecution::DerivationStrict => {
-                    // Chunk B owns derivationStrict demand seeding (S3).
-                    assert_eq!(signature.arg(0), ArgDemand::Lazy);
+                    // The serializer forces the argument attrset to WHNF
+                    // before any other work; the per-attribute S3 seeding
+                    // lives in the strictness analysis, not this table.
+                    assert_eq!(signature.arg(0), ArgDemand::Forced);
                 }
                 _ => {}
             }

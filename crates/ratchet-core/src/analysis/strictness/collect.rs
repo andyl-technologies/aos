@@ -117,20 +117,20 @@ fn cap(level: Strictness) -> Strictness {
 /// Each step is `(map, step_total)`: entries join first-wins, and once a
 /// possibly-effectful step has run, later entries are capped to
 /// [`Strictness::Demanded`].
-struct Sequence {
+pub(super) struct Sequence {
     result: SlotDemand,
     effect_seen: bool,
 }
 
 impl Sequence {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             result: SlotDemand::default(),
             effect_seen: false,
         }
     }
 
-    fn push(&mut self, map: &SlotDemand, step_total: bool) {
+    pub(super) fn push(&mut self, map: &SlotDemand, step_total: bool) {
         for (key, level) in &map.entries {
             let level = if self.effect_seen { cap(*level) } else { *level };
             self.result.insert_first_wins(*key, level);
@@ -141,11 +141,11 @@ impl Sequence {
     }
 
     /// Records a possibly-effectful step that contributes no demand.
-    fn push_opaque_step(&mut self) {
+    pub(super) fn push_opaque_step(&mut self) {
         self.effect_seen = true;
     }
 
-    fn finish(self) -> SlotDemand {
+    pub(super) fn finish(self) -> SlotDemand {
         self.result
     }
 }
@@ -757,6 +757,17 @@ fn collect_primop(
             let Some(builtin) = lookup_builtin(name) else {
                 return Ok(SlotDemand::default());
             };
+            // The derivationStrict serializer forces the argument, then every
+            // attribute value of a direct literal argument in its verified
+            // (name-first) order; compose those forces sequentially instead
+            // of using the generic per-argument treatment.
+            if matches!(
+                builtin.execution(),
+                crate::builtins::BuiltinExecution::DerivationStrict
+            ) && let [argument] = args
+            {
+                return collect_derivation_strict(analysis, *argument);
+            }
             let signature = demand_signature(builtin.execution());
             // Force order across builtin arguments is not part of the frozen
             // surface, so each contribution is capped unless every *other*
@@ -800,9 +811,26 @@ fn collect_primop(
             }
             Ok(result)
         }
-        IrData::DialectNode { argument, .. } => {
+        IrData::DialectNode { op, argument } => {
+            if op == super::derivation::DERIVATION_STRICT_DIALECT_OP {
+                return collect_derivation_strict(analysis, argument);
+            }
             Ok((*collect(analysis, argument, CollectCtx::Forced)?).clone())
         }
         _ => Ok(SlotDemand::default()),
     }
+}
+
+/// Composes the `derivationStrict` argument force with the boundary's
+/// per-attribute forces of a direct literal argument.
+fn collect_derivation_strict(
+    analysis: &mut Analysis<'_>,
+    argument: IrId,
+) -> Result<SlotDemand, StrictnessAnalysisError> {
+    let mut sequence = Sequence::new();
+    let base = collect(analysis, argument, CollectCtx::Forced)?;
+    sequence.push(&base, analysis.total(argument));
+    let boundary = super::derivation::collect_derivation_strict_boundary(analysis, argument)?;
+    sequence.push(&boundary, false);
+    Ok(sequence.finish())
 }

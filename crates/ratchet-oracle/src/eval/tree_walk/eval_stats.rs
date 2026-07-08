@@ -11,6 +11,7 @@ impl TreeWalk {
             thunks_forced: self.stats.thunks_forced,
             thunks_allocated: self.stats.thunks_allocated,
             thunks_elided: self.stats.thunks_elided,
+            binding_assembly_elisions: self.stats.binding_assembly_elisions,
             thunk_cache_hits: self.stats.thunk_cache_hits,
             inline_cache_hits: self.stats.inline_cache_hits,
             inline_cache_misses: self.stats.inline_cache_misses,
@@ -104,6 +105,7 @@ impl TreeWalk {
             thunks_forced = stats.thunks_forced(),
             thunks_allocated = stats.thunks_allocated(),
             thunks_elided = stats.thunks_elided(),
+            binding_assembly_elisions = stats.binding_assembly_elisions(),
             thunk_cache_hits = stats.thunk_cache_hits(),
             inline_cache_hits = stats.inline_cache_hits(),
             inline_cache_misses = stats.inline_cache_misses(),
@@ -594,6 +596,13 @@ impl TreeWalk {
 
     pub(super) fn increment_thunks_elided(&mut self) {
         self.stats.thunks_elided = self.stats.thunks_elided.saturating_add(1);
+    }
+
+    /// Records one assembly-proof elision: an order-sensitive binding whose
+    /// body was evaluated directly into its slot instead of a lazy thunk.
+    pub(super) fn increment_binding_assembly_elisions(&mut self) {
+        self.stats.binding_assembly_elisions =
+            self.stats.binding_assembly_elisions.saturating_add(1);
     }
 
     pub(super) fn increment_thunks_forced(&mut self) {

@@ -28,6 +28,14 @@
 //!    summaries ([`collect`]), static slot resolution over the scope-resolved
 //!    frame stack, and the per-builtin [`crate::builtins::DemandSignature`].
 //!
+//! Derivation boundaries get dedicated seeding (the `derivation` submodule):
+//! an attrset
+//! literal flowing into `builtins.derivationStrict` / `builtins.derivation`
+//! earns demand marks on its binding values from the serializer's verified
+//! force order, and the per-frame eager-assembly plan
+//! ([`crate::ir::IrFacts::assembly_eager`]) licenses evaluating total (plus
+//! the first-forced `name`) binding values directly into their slots.
+//!
 //! `tryEval` is strict in its argument, but demand never propagates through
 //! a `tryEval` application into an enclosing lambda's parameter summary
 //! (soundness rule S4): a force hoisted above the call would escape the
@@ -40,6 +48,7 @@
 //! unsoundly.
 
 mod collect;
+mod derivation;
 mod frames;
 mod totality;
 mod walk;
@@ -182,7 +191,10 @@ pub fn annotate_strictness(
     totality::compute(&mut analysis, ir.root, &mut Vec::new())?;
     walk::run(&mut analysis)?;
     let Analysis {
-        marks, barriers, ..
+        marks,
+        barriers,
+        assembly_eager,
+        ..
     } = analysis;
 
     let mut report = StrictnessAnalysisReport::default();
@@ -198,6 +210,9 @@ pub fn annotate_strictness(
     }
     for id in barriers {
         ir.facts.set_try_eval_barrier(id, true);
+    }
+    for id in assembly_eager {
+        ir.facts.set_assembly_eager(id, true);
     }
     Ok(report)
 }
@@ -218,6 +233,9 @@ struct Analysis<'a> {
     marks: Vec<(IrId, Strictness)>,
     /// `tryEval` argument-subtree roots to flag after the run completes.
     barriers: Vec<IrId>,
+    /// Eager-assembly licenses (derivation-boundary seeding) to flag after
+    /// the run completes.
+    assembly_eager: Vec<IrId>,
 }
 
 impl<'a> Analysis<'a> {
@@ -229,6 +247,7 @@ impl<'a> Analysis<'a> {
             collect_active: Vec::new(),
             marks: Vec::new(),
             barriers: Vec::new(),
+            assembly_eager: Vec::new(),
         }
     }
 

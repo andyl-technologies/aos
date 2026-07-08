@@ -16,8 +16,12 @@
 //!               <attr_paths> <bindings> <shapes>
 //! symbols.bin:  "AOSNIXSY" version symbol_count <len-prefixed symbol bytes>
 //! facts.bin:    "AOSNIXFT" version analysis_version ir_fingerprint fact_count
-//!               <strictness/cardinality/escape/try-eval-barrier tags>
+//!               <strictness/cardinality/escape tags + flag byte>
 //! ```
+//!
+//! The per-node `facts.bin` flag byte packs the boolean fact bits: bit 0 is
+//! the `tryEval` barrier and bit 1 the eager-assembly license (written by
+//! analysis version 3 producers; older sidecars only ever wrote bit 0).
 //!
 //! Per-element encoders and the [`BinaryReader`] live in the sibling
 //! [`mod@codec`] module; structural validation of decoded artifacts lives in
@@ -238,9 +242,31 @@ pub(super) fn encode_ir_facts(
     write_len(&mut out, facts.len(), "IR fact count")?;
     for (index, fact) in facts.as_slice().iter().enumerate() {
         encode_expr_facts(&mut out, *fact);
-        out.push(u8::from(facts.try_eval_barrier(IrId::new(index as u32))));
+        let id = IrId::new(index as u32);
+        out.push(node_fact_flags(facts, id));
     }
     Ok(out)
+}
+
+/// Bit 0 of the per-node flag byte: `tryEval` barrier.
+const FACT_FLAG_TRY_EVAL_BARRIER: u8 = 1 << 0;
+
+/// Bit 1 of the per-node flag byte: eager-assembly license.
+const FACT_FLAG_ASSEMBLY_EAGER: u8 = 1 << 1;
+
+/// Packs one node's boolean fact bits into the per-node flag byte.
+///
+/// Sidecars produced before analysis version 3 only ever wrote bit 0, so
+/// they decode unchanged (with the eager-assembly bit absent).
+fn node_fact_flags(facts: &IrFacts, id: IrId) -> u8 {
+    let mut flags = 0;
+    if facts.try_eval_barrier(id) {
+        flags |= FACT_FLAG_TRY_EVAL_BARRIER;
+    }
+    if facts.assembly_eager(id) {
+        flags |= FACT_FLAG_ASSEMBLY_EAGER;
+    }
+    flags
 }
 
 /// Decodes a `facts.bin` sidecar, returning the fact table and the analysis
@@ -280,8 +306,9 @@ pub(super) fn decode_ir_facts(
         *facts
             .get_mut(id)
             .ok_or_else(|| "IR fact index out of range".to_owned())? = fact;
-        let barrier = decode_try_eval_barrier(reader.read_u8()?)?;
-        facts.set_try_eval_barrier(id, barrier);
+        let flags = decode_node_fact_flags(reader.read_u8()?)?;
+        facts.set_try_eval_barrier(id, flags & FACT_FLAG_TRY_EVAL_BARRIER != 0);
+        facts.set_assembly_eager(id, flags & FACT_FLAG_ASSEMBLY_EAGER != 0);
     }
     reader.expect_eof()?;
     Ok((facts, analysis_version))
@@ -318,12 +345,11 @@ fn decode_strictness(tag: u8) -> Result<Strictness, String> {
     }
 }
 
-fn decode_try_eval_barrier(tag: u8) -> Result<bool, String> {
-    match tag {
-        0 => Ok(false),
-        1 => Ok(true),
-        tag => Err(format!("invalid tryEval barrier fact tag {tag}")),
+fn decode_node_fact_flags(flags: u8) -> Result<u8, String> {
+    if flags & !(FACT_FLAG_TRY_EVAL_BARRIER | FACT_FLAG_ASSEMBLY_EAGER) != 0 {
+        return Err(format!("invalid node fact flag byte {flags}"));
     }
+    Ok(flags)
 }
 
 fn cardinality_tag(cardinality: Cardinality) -> u8 {

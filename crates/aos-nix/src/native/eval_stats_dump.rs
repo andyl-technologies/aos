@@ -9,7 +9,8 @@
 //! The emitted object has the shape:
 //!
 //! ```text
-//! {"aos_nix_eval_stats":{"thunks_allocated":22013,"thunks_elided":12,"thunks_forced":21880,
+//! {"aos_nix_eval_stats":{"thunks_allocated":22013,"thunks_elided":12,
+//!  "binding_assembly_elisions":0,"thunks_forced":21880,
 //!  "attrsets_built":6042,"attrs_entries_total":38110,"values_allocated":24901,
 //!  "function_calls":16233,"hashcons_attempts":31044,"hashcons_hits":6143,
 //!  "symbols_interned":4021,"imports_evaluated":37,"root_cutoffs":0,
@@ -43,6 +44,7 @@ impl NixNative {
             "{{\"aos_nix_eval_stats\":{{\
 \"thunks_allocated\":{},\
 \"thunks_elided\":{},\
+\"binding_assembly_elisions\":{},\
 \"thunks_forced\":{},\
 \"attrsets_built\":{},\
 \"attrs_entries_total\":{},\
@@ -78,6 +80,7 @@ impl NixNative {
 }}}}",
             stats.thunks_allocated(),
             stats.thunks_elided(),
+            stats.binding_assembly_elisions(),
             stats.thunks_forced(),
             stats.attrsets_built(),
             stats.attrs_entries_total(),

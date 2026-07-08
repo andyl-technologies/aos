@@ -642,6 +642,19 @@ impl TreeWalk {
             }
             TreeWalkThunkAllocationPlan::ElideToWhnf(elision) => {
                 self.increment_thunks_elided();
+                if context == TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly {
+                    self.increment_binding_assembly_elisions();
+                    // Evaluate the body exactly as its deferred force would:
+                    // outside the assembly window, so nested allocations plan
+                    // in demand position. The GC-stress accumulator depth is
+                    // deliberately left in place - in-flight frame entries
+                    // are not rooted during assembly, matching the existing
+                    // dynamic-key evaluation path.
+                    let saved = std::mem::take(&mut self.order_sensitive_binding_depth);
+                    let result = self.eval_node(elision.body());
+                    self.order_sensitive_binding_depth = saved;
+                    return result;
+                }
                 self.eval_node(elision.body())
             }
         }

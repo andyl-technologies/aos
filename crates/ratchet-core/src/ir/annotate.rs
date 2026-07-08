@@ -34,7 +34,12 @@ use super::{Ir, IrFacts, IrId};
 ///   signatures, and the `tryEval` barrier bit. (`1` denotes the earlier
 ///   two-level lattice, which predates version stamping and can never appear
 ///   in a stamped sidecar.)
-pub const IR_ANALYSIS_VERSION: u32 = 2;
+/// - `3` — derivation-boundary demand seeding: attrset literals flowing into
+///   `derivationStrict` / `derivation` earn demand marks on their binding
+///   values, `derivationStrict`'s argument demand is `Forced`, and the
+///   per-node eager-assembly bit
+///   ([`crate::ir::IrFacts::assembly_eager`]) is produced.
+pub const IR_ANALYSIS_VERSION: u32 = 3;
 
 /// Summary of one complete IR fact annotation run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

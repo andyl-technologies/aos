@@ -807,3 +807,190 @@ fn strictness_declines_shared_ir_without_marking_facts() {
     assert_eq!(strictness(&ir, IrId::new(0)), Strictness::Unknown);
     assert_eq!(strictness(&ir, IrId::new(1)), Strictness::Unknown);
 }
+
+/// Returns `(value, key_bytes)` pairs for a (possibly thunk-wrapped) attrset
+/// literal's static bindings, in source order.
+fn attrset_binding_values(ir: &Ir, id: IrId) -> Vec<(IrId, Vec<u8>)> {
+    let literal = match node(ir, id).data {
+        IrData::Node(body) if node(ir, id).kind == IrKind::ThunkAlloc => body,
+        _ => id,
+    };
+    let IrData::AttrSet { bindings, .. } = node(ir, literal).data else {
+        panic!("attrset payload expected");
+    };
+    let start = bindings.start as usize;
+    let end = start + bindings.len();
+    ir.bindings[start..end]
+        .iter()
+        .filter_map(|binding| match binding.key {
+            IrAttrPathSegment::Static(key) => Some((
+                binding.value,
+                ir.symbols.resolve(key).expect("key resolves").to_vec(),
+            )),
+            IrAttrPathSegment::Dynamic(_) => None,
+        })
+        .collect()
+}
+
+
+fn dialect_node_argument(ir: &Ir, id: IrId) -> IrId {
+    let IrData::DialectNode { argument, .. } = node(ir, id).data else {
+        panic!("dialect-node payload expected");
+    };
+    argument
+}
+
+fn binding_value(entries: &[(IrId, Vec<u8>)], key: &[u8]) -> IrId {
+    entries
+        .iter()
+        .find(|(_, entry)| entry == key)
+        .map(|(value, _)| *value)
+        .unwrap_or_else(|| panic!("binding {:?} exists", String::from_utf8_lossy(key)))
+}
+
+#[test]
+fn strictness_seeds_direct_derivation_strict_literal_bindings() {
+    // Force order verified against the serializer: `name` first (nothing can
+    // precede its force), then every attribute in sorted order with
+    // possibly-effectful processing between forces.
+    let ir = annotate_with_derivation_op(
+        r#"builtins.derivationStrict {
+             name = "d" + "x";
+             builder = [ (1 / 0) ];
+             src = 1 / 0;
+           }"#,
+    );
+    let entries = attrset_binding_values(&ir, dialect_node_argument(&ir, ir.root));
+
+    // `name` is non-total but first-forced: before-effect demand + license.
+    let name = binding_value(&entries, b"name");
+    assert_eq!(strictness(&ir, name), Strictness::DemandedBeforeEffect);
+    assert!(ir.facts.assembly_eager(name));
+
+    // `builder` is a total list literal: demanded (after possible events)
+    // and eager-licensed by totality.
+    let builder = binding_value(&entries, b"builder");
+    assert_eq!(strictness(&ir, builder), Strictness::Demanded);
+    assert!(ir.facts.assembly_eager(builder));
+
+    // `src` is non-total and not first-forced: demanded only, kept lazy.
+    let src = binding_value(&entries, b"src");
+    assert_eq!(strictness(&ir, src), Strictness::Demanded);
+    assert!(!ir.facts.assembly_eager(src));
+}
+
+#[test]
+fn strictness_declines_recursive_derivation_strict_literals() {
+    // Eager evaluation inside a recursive frame could read slots that are
+    // not yet initialized, so recursive literals fail closed.
+    let ir = annotate_with_derivation_op(
+        r#"builtins.derivationStrict (rec {
+             name = "d" + "x";
+             builder = [ 1 ];
+           })"#,
+    );
+    let entries = attrset_binding_values(&ir, dialect_node_argument(&ir, ir.root));
+    for (value, _) in &entries {
+        assert!(!ir.facts.assembly_eager(*value));
+    }
+    assert_eq!(
+        strictness(&ir, binding_value(&entries, b"name")),
+        Strictness::Unknown
+    );
+}
+
+#[test]
+fn strictness_declines_dynamic_key_derivation_strict_literals() {
+    // Dynamic-key forces interleave with slot population and may collide
+    // with the static `name` lookup, so mixed literals fail closed.
+    let ir = annotate_with_derivation_op(
+        r#"builtins.derivationStrict {
+             name = "d" + "x";
+             builder = [ 1 ];
+             ${"ex" + "tra"} = 1 / 0;
+           }"#,
+    );
+    let entries = attrset_binding_values(&ir, dialect_node_argument(&ir, ir.root));
+    for (value, _) in &entries {
+        assert!(!ir.facts.assembly_eager(*value));
+    }
+    assert_eq!(
+        strictness(&ir, binding_value(&entries, b"name")),
+        Strictness::Unknown
+    );
+}
+
+#[test]
+fn strictness_seeds_chased_derivation_strict_literals_without_name_license() {
+    // A variable-chased literal may be assembled by another consumer first,
+    // so only totality licenses eagerness and demand caps at S1.
+    let ir = annotate_with_derivation_op(
+        r#"let args = { name = "d" + "x"; builder = [ (1 / 0) ]; };
+           in builtins.derivationStrict args"#,
+    );
+    let args_value = let_binding_values(&ir, ir.root)[0];
+    let entries = attrset_binding_values(&ir, args_value);
+
+    let name = binding_value(&entries, b"name");
+    assert_eq!(strictness(&ir, name), Strictness::Demanded);
+    assert!(!ir.facts.assembly_eager(name));
+
+    let builder = binding_value(&entries, b"builder");
+    assert_eq!(strictness(&ir, builder), Strictness::Demanded);
+    assert!(ir.facts.assembly_eager(builder));
+}
+
+#[test]
+fn strictness_seeds_derivation_wrapper_literals_with_totals_only() {
+    // The `derivation` wrapper performs observable work before the
+    // serializer loop and forces attributes only when its result is used, so
+    // no demand marks and no first-force license - totality only.
+    let ir = annotate(
+        r#"builtins.derivation {
+             name = "d" + "x";
+             builder = [ (1 / 0) ];
+           }"#,
+    );
+    let args = primop_args(&ir, ir.root);
+    let entries = attrset_binding_values(&ir, args[0]);
+
+    let name = binding_value(&entries, b"name");
+    assert_eq!(strictness(&ir, name), Strictness::Unknown);
+    assert!(!ir.facts.assembly_eager(name));
+
+    let builder = binding_value(&entries, b"builder");
+    assert_eq!(strictness(&ir, builder), Strictness::Unknown);
+    assert!(ir.facts.assembly_eager(builder));
+}
+
+#[test]
+fn strictness_collects_derivation_strict_name_demand_uncapped() {
+    // The lambda summary sees the serializer force `name` before any event,
+    // so the argument thunk earns the eager rank at the apply site.
+    let ir = annotate_with_derivation_op(
+        r#"(x: builtins.derivationStrict { name = x; builder = "b"; }) ("d" + "x")"#,
+    );
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(strictness(&ir, argument), Strictness::DemandedBeforeEffect);
+}
+
+#[test]
+fn strictness_collects_derivation_strict_non_name_demand_capped() {
+    // Non-name attributes are forced after the serializer's name processing
+    // can raise events, so the summary caps at S1.
+    let ir = annotate_with_derivation_op(
+        r#"(x: builtins.derivationStrict { name = "n"; builder = x; }) ("d" + "x")"#,
+    );
+    let IrData::Pair {
+        second: argument, ..
+    } = node(&ir, ir.root).data
+    else {
+        panic!("apply payload expected");
+    };
+    assert_eq!(strictness(&ir, argument), Strictness::Demanded);
+}

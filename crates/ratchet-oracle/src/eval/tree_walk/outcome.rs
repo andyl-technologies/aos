@@ -13342,6 +13342,7 @@ pub struct EvalStats {
     pub(crate) thunks_forced: u64,
     pub(crate) thunks_allocated: u64,
     pub(crate) thunks_elided: u64,
+    pub(crate) binding_assembly_elisions: u64,
     pub(crate) thunk_cache_hits: u64,
     pub(crate) inline_cache_hits: u64,
     pub(crate) inline_cache_misses: u64,
@@ -13452,6 +13453,14 @@ impl EvalStats {
     /// Returns the number of planned thunk allocations elided by later tiers.
     pub const fn thunks_elided(&self) -> u64 {
         self.thunks_elided
+    }
+
+    /// Returns the number of elided thunks whose bodies were evaluated
+    /// directly into their slots during order-sensitive binding assembly
+    /// under the analysis' per-frame assembly proof (a subset of
+    /// [`Self::thunks_elided`]).
+    pub const fn binding_assembly_elisions(&self) -> u64 {
+        self.binding_assembly_elisions
     }
 
     /// Returns the number of already-forced thunk cell reuses.
@@ -13683,6 +13692,7 @@ impl EvalStats {
             thunks_forced,
             thunks_allocated,
             thunks_elided,
+            binding_assembly_elisions,
             thunk_cache_hits,
             inline_cache_hits,
             inline_cache_misses,
@@ -13751,6 +13761,9 @@ impl EvalStats {
         self.thunks_forced = self.thunks_forced.saturating_add(thunks_forced);
         self.thunks_allocated = self.thunks_allocated.saturating_add(thunks_allocated);
         self.thunks_elided = self.thunks_elided.saturating_add(thunks_elided);
+        self.binding_assembly_elisions = self
+            .binding_assembly_elisions
+            .saturating_add(binding_assembly_elisions);
         self.thunk_cache_hits = self.thunk_cache_hits.saturating_add(thunk_cache_hits);
         self.inline_cache_hits = self.inline_cache_hits.saturating_add(inline_cache_hits);
         self.inline_cache_misses = self.inline_cache_misses.saturating_add(inline_cache_misses);
