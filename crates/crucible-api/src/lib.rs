@@ -101,4 +101,5 @@ pub use streaming::{
 pub use vm_resume::{
     ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError,
     realize_model_checkpoint_vm_resume_from_savepoint,
+    realize_qemu_vm_resume_from_savepoint_with_executor,
 };
