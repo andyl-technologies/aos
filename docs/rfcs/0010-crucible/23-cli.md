@@ -1098,7 +1098,10 @@ branch on the verdict without parsing output:
   baked-genesis/source-ancestor evidence, the default savevm policy, and a
   `Backend`-backed realization executor that restores exact/baked snapshots
   through the QMP-backed backend boundary and replays suffixes through backend
-  horizon advances.
+  horizon advances, plus a Linux real-node realization executor that launches a
+  policy-authorized restored `QemuNode`, replays through shared memory, samples
+  live fingerprints and icounts, and keeps generic QMP snapshot/restore closed
+  after node assembly.
   Stdout and the canonical log record
   `materialization=qemu-vm-realization`, `operation=resume`,
   `executor=model-checkpoint`, branch, replay count, runtime/configuration
@@ -1108,10 +1111,9 @@ branch on the verdict without parsing output:
   fields from that model-checkpoint executor, and replay-oracle validation
   through marker-resolved QEMU/plugin identity. The gate also runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
-  `running` after `cont`. Full closure remains blocked on having the selected
-  CLI local-QEMU resume path construct a real `QemuNode` executor for that
-  coordinator and on replay-oracle admission for exact `loadvm` when policy
-  enables that branch.
+  `running` after `cont`. Full closure remains blocked on wiring the selected
+  CLI local-QEMU resume path to that real `QemuNode` executor and on
+  replay-oracle admission for exact `loadvm` when policy enables that branch.
 - [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
   session; `--seed` re-seed and `--override decision=value`; child artifact
   reproduces without the parent). — satisfies [CLI-21]; spec §11.

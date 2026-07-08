@@ -21,6 +21,8 @@
   sessionValidation = builtins.readFile ../../crates/crucible-session/src/validation.rs;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
   qemuBackendExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/backend_executor.rs;
+  qemuNodeExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs;
+  qemuNodeExecutorTests = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/tests.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -83,6 +85,10 @@
         needle = "`crucible-qemu` owns the typed realization coordinator";
       }
       {
+        label = "T-CLI-10 local-QEMU real node executor progress";
+        needle = "Linux real-node realization executor";
+      }
+      {
         label = "T-CLI-10 local-QEMU realization proof progress";
         needle = "`materialization=qemu-vm-realization`, `operation=resume`,\n  `executor=model-checkpoint`, branch";
       }
@@ -107,6 +113,10 @@
       {
         label = "phase5 CLI resume local-QEMU coordinator progress";
         needle = "`crucible-qemu` realization coordinator owns";
+      }
+      {
+        label = "phase5 CLI resume local-QEMU real node executor progress";
+        needle = "Linux real-node realization executor";
       }
       {
         label = "phase5 CLI resume local-QEMU realization proof progress";
@@ -442,7 +452,39 @@
       }
       {
         label = "resume QEMU baked genesis config mismatch regression";
-        needle = "load_baked_genesis(&genesis, &baked)";
+        needle = "load_baked_genesis(&genesis, baked_admission)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/realization/node_executor.rs" qemuNodeExecutor [
+      {
+        label = "resume QEMU real node executor";
+        needle = "pub struct QemuNodeRealizationExecutor";
+      }
+      {
+        label = "resume QEMU real node launcher";
+        needle = "pub trait QemuNodeRealizationLauncher";
+      }
+      {
+        label = "resume QEMU warm restore launcher";
+        needle = "pub struct QemuWarmRestoreNodeLauncher";
+      }
+      {
+        label = "resume QEMU warm restore launch composition";
+        needle = "spawn_setup_and_restore_qemu_node(";
+      }
+      {
+        label = "resume QEMU real node baked load";
+        needle = "QemuNodeRestorePlan::baked_genesis(admission)";
+      }
+      {
+        label = "resume QEMU real node replay shared memory";
+        needle = ".advance_to_horizon(horizon)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/realization/node_executor/tests.rs" qemuNodeExecutorTests [
+      {
+        label = "resume QEMU real node no generic snapshot regression";
+        needle = "qemu_node_realization_executor_replays_without_generic_snapshot_or_restore";
       }
     ]
     ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackend [

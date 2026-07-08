@@ -18,6 +18,13 @@ use crate::{
 
 mod backend_executor;
 pub use backend_executor::QemuBackendRealizationExecutor;
+#[cfg(target_os = "linux")]
+mod node_executor;
+#[cfg(target_os = "linux")]
+pub use node_executor::{
+    QemuNodeRealizationExecutor, QemuNodeRealizationLauncher, QemuRealizedNodeBackend,
+    QemuWarmRestoreNodeLauncher,
+};
 
 /// An exact QEMU VM snapshot cached for one configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1564,13 +1571,14 @@ mod tests {
         let log = shared_log();
         let store = scripted_store(Rc::clone(&log), &world, &def);
 
-        let error = QemuBakedGenesisRestoreAdmission::new(
+        let error = match QemuBakedGenesisRestoreAdmission::new(
             &store.baked,
             &world,
             QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
-        )
-        .err()
-        .expect("runtime loadvm token should not admit baked genesis restore");
+        ) {
+            Ok(_) => panic!("runtime loadvm token should not admit baked genesis restore"),
+            Err(error) => error,
+        };
 
         assert!(matches!(
             error,
