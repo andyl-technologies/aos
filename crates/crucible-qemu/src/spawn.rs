@@ -10,7 +10,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 use thiserror::Error;
@@ -455,7 +455,9 @@ mod tests {
     use std::io::Write;
     use std::mem::MaybeUninit;
     use std::os::fd::AsRawFd;
+    use std::path::PathBuf;
     use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -466,6 +468,7 @@ mod tests {
     const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
     const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
     const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
+    static TEMP_DIR_SUFFIX: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn qemu_spawn_resources_create_socket_memfd_eventfd_and_host_copies()
@@ -678,11 +681,8 @@ mod tests {
         Ok(path)
     }
 
-    fn unique_temp_suffix() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
+    fn unique_temp_suffix() -> u64 {
+        TEMP_DIR_SUFFIX.fetch_add(1, Ordering::Relaxed)
     }
 
     fn assert_fd_open(fd: RawFd) -> Result<(), Box<dyn Error>> {

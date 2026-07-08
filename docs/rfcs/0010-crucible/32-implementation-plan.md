@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:0af5b4698d8541b6`
+Checklist sync digest: `rfc0010-checklist-v1:68609304c5b6a603`
 
 ## The phase ladder
 
@@ -470,7 +470,10 @@ long-held locks.
   source-ancestor, and savevm policy branches, and now exposes a `Backend`-backed
   realization executor that restores exact/baked snapshots through the
   QMP-backed backend boundary and replays suffixes through backend horizon
-  advances, while the CLI emits
+  advances, plus a Linux real-node realization executor that launches a
+  policy-authorized restored `QemuNode`, replays through shared memory, samples
+  live fingerprints and icounts, and keeps generic QMP snapshot/restore closed
+  after node assembly, while the CLI emits
   `materialization=qemu-vm-realization`, `operation=resume`,
   `executor=model-checkpoint`, branch, replay count, runtime/configuration
   hashes, and resolved QEMU/plugin identity in stdout and the canonical log.
@@ -478,10 +481,9 @@ long-held locks.
   coordinator-derived proof fields from that model-checkpoint executor plus
   replay-oracle validation through marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
-  `running` after `cont`. Full closure waits for having the selected CLI
-  local-QEMU resume path construct a real `QemuNode` executor for that
-  coordinator and for replay-oracle admission for exact `loadvm` when policy
-  enables that branch.
+  `running` after `cont`. Full closure waits for wiring the selected CLI
+  local-QEMU resume path to that real `QemuNode` executor and for
+  replay-oracle admission for exact `loadvm` when policy enables that branch.
   `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,

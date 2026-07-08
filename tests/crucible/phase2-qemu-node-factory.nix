@@ -14,6 +14,8 @@
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   nodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
   nodeFactoryTests = builtins.readFile ../../crates/crucible-qemu/src/node_factory/tests.rs;
+  nodeExecutor = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs;
+  nodeExecutorTests = builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/tests.rs;
   savevmPolicy = builtins.readFile ../../crates/crucible-qemu/src/savevm_policy.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -81,6 +83,14 @@
       {
         label = "warm restore launch error export";
         needle = "QemuWarmRestoreLaunchError";
+      }
+      {
+        label = "real node realization executor export";
+        needle = "QemuNodeRealizationExecutor";
+      }
+      {
+        label = "real node warm restore launcher export";
+        needle = "QemuWarmRestoreNodeLauncher";
       }
       {
         label = "restore admission export";
@@ -163,6 +173,18 @@
       {
         label = "warm restore delegates restored factory";
         needle = "build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)";
+      }
+      {
+        label = "restore plan checkpoint accessor";
+        needle = "pub const fn checkpoint(&self) -> &'a Checkpoint";
+      }
+      {
+        label = "restore plan authorization accessor";
+        needle = "pub const fn authorization(&self) -> QemuLoadvmCommandAuthorization";
+      }
+      {
+        label = "restore plan admission accessor";
+        needle = "pub const fn admission(&self) -> QemuNodeRestoreAdmission";
       }
       {
         label = "restore admission enum";
@@ -305,6 +327,66 @@
         needle = "assert_qmp_wrote_only_capabilities";
       }
     ]
+    ++ failuresFor "crates/crucible-qemu/src/realization/node_executor.rs" nodeExecutor [
+      {
+        label = "real node executor module";
+        needle = "Real-node executor for QEMU VM realization.";
+      }
+      {
+        label = "real node backend trait";
+        needle = "pub trait QemuRealizedNodeBackend";
+      }
+      {
+        label = "real node launcher trait";
+        needle = "pub trait QemuNodeRealizationLauncher";
+      }
+      {
+        label = "warm restore concrete launcher";
+        needle = "pub struct QemuWarmRestoreNodeLauncher";
+      }
+      {
+        label = "warm restore launch composition call";
+        needle = "spawn_setup_and_restore_qemu_node(";
+      }
+      {
+        label = "real node executor";
+        needle = "pub struct QemuNodeRealizationExecutor";
+      }
+      {
+        label = "baked genesis restore plan";
+        needle = "QemuNodeRestorePlan::baked_genesis(admission)";
+      }
+      {
+        label = "exact snapshot restore plan";
+        needle = "QemuNodeRestorePlan::new(&snapshot.checkpoint, authorization, admission)";
+      }
+      {
+        label = "replay uses shared-memory advance";
+        needle = ".advance_to_horizon(horizon)";
+      }
+      {
+        label = "replay samples live fingerprint";
+        needle = ".fingerprint()";
+      }
+      {
+        label = "replay samples live icount";
+        needle = ".current_icount()";
+      }
+      {
+        label = "probe admission TODO is explicit";
+        needle = "real-node replay-oracle probes require a probe-only restore admission path";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/realization/node_executor/tests.rs" nodeExecutorTests [
+      {
+        label = "node executor baked genesis test";
+        needle = "qemu_node_realization_executor_loads_baked_genesis_before_node_replay";
+      }
+      {
+        label = "node executor no generic snapshot test";
+        needle = "qemu_node_realization_executor_replays_without_generic_snapshot_or_restore";
+      }
+    ]
     ++ failuresFor "crates/crucible-qemu/src/savevm_policy.rs" savevmPolicy [
       {
         label = "private admission field block";
@@ -405,6 +487,15 @@ in
               --lib \
               node_factory \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-qemu-node-factory-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --lib \
+              node_executor \
+              -- --test-threads=1
           '';
         }
         {
@@ -418,8 +509,10 @@ in
             tasks=${taskList}
             check_scope=linux-post-setup-node-composition
             rust_test=crucible-qemu::node_factory
+            rust_test_extra=crucible-qemu::realization::node_executor
             completed_setup_factory=maps-setup-region-and-binds-shmem-hotpath
             warm_restore_factory=prepares-setup-before-authorized-loadvm
+            real_node_executor=warm-restored-qemu-node-replay-without-generic-qmp-snapshot
             qmp_after_assembly=shutdown-only
             generic_snapshot_restore=fail-closed
             admission_boundary=opaque-replay-oracle-proof-or-baked-genesis

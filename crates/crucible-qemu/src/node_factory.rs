@@ -227,6 +227,24 @@ impl<'a> QemuNodeRestorePlan<'a> {
             },
         }
     }
+
+    /// Returns the checkpoint whose VMState will be restored.
+    #[must_use]
+    pub const fn checkpoint(&self) -> &'a Checkpoint {
+        self.checkpoint
+    }
+
+    /// Returns the low-level QMP `loadvm` authorization token.
+    #[must_use]
+    pub const fn authorization(&self) -> QemuLoadvmCommandAuthorization {
+        self.authorization
+    }
+
+    /// Returns the admission proof paired with the restore authorization.
+    #[must_use]
+    pub const fn admission(&self) -> QemuNodeRestoreAdmission {
+        self.admission
+    }
 }
 
 /// Builds a scheduler-facing QEMU node from completed Linux setup pieces.
