@@ -231,7 +231,7 @@ fn cli_resume_qemu_process_jsonl_reports_identity_and_oracle() -> Result<(), Box
     assert!(stdout.contains("status=fat==thin-passed"));
     assert!(
         stdout.contains(
-            "materialization=qemu-vm-realization operation=resume branch=ancestor-replay"
+            "materialization=qemu-vm-realization operation=resume executor=model-checkpoint branch=ancestor-replay"
         )
     );
     assert!(stdout.contains("configuration=blake3:"));

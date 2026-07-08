@@ -53,6 +53,35 @@ impl SimBackend {
         }
     }
 
+    /// Builds a backend that can restore `checkpoint` as a known snapshot.
+    ///
+    /// The resulting backend mirrors the checkpoint's highest recorded node
+    /// instruction count as its deterministic state. This is intended for
+    /// model-backed realization paths that need to replay from an existing
+    /// checkpoint without depending on a concrete VM process.
+    #[must_use]
+    pub fn from_restorable_checkpoint(checkpoint: &Checkpoint) -> Self {
+        Self::from_restorable_checkpoints(std::slice::from_ref(checkpoint))
+    }
+
+    /// Builds a backend that can restore each checkpoint in `checkpoints`.
+    ///
+    /// Unknown checkpoints still fail through [`Backend::restore`]. This
+    /// constructor only declares the supplied checkpoints as known deterministic
+    /// model snapshots.
+    #[must_use]
+    pub fn from_restorable_checkpoints(checkpoints: &[Checkpoint]) -> Self {
+        let mut snapshots = BTreeMap::new();
+        for checkpoint in checkpoints {
+            snapshots.insert(checkpoint.id, SimBackendState::from_checkpoint(checkpoint));
+        }
+        let state = checkpoints
+            .last()
+            .map(SimBackendState::from_checkpoint)
+            .unwrap_or_default();
+        Self { state, snapshots }
+    }
+
     /// Returns the current deterministic backend state.
     #[must_use]
     pub fn state(&self) -> &SimBackendState {
@@ -209,6 +238,22 @@ pub struct SimBackendState {
 }
 
 impl SimBackendState {
+    fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
+        let icount = checkpoint
+            .node_icounts
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(Icount {
+                retired: checkpoint.virtual_time.ticks,
+            });
+        Self {
+            icount,
+            delivered_inputs: Vec::new(),
+            shutdown: false,
+        }
+    }
+
     /// Computes a deterministic fingerprint for this state.
     #[must_use]
     pub fn fingerprint(&self) -> ContentHash {
@@ -1467,6 +1512,26 @@ mod tests {
             Backend::restore(&mut backend, &unknown),
             Err(BackendError::Rejected { message }) if message == "sim backend cannot restore unknown checkpoint"
         ));
+    }
+
+    #[test]
+    fn sim_backend_restorable_checkpoint_constructor_seeds_restore() {
+        let mut unknown = Checkpoint::new(
+            ContentHash { bytes: [7; 32] },
+            ContentHash::default(),
+            CheckpointKind::Fat,
+        );
+        unknown.virtual_time = VirtualTime { ticks: 3 };
+        unknown.node_icounts.insert(
+            NodeId {
+                name: String::from("node-a"),
+            },
+            Icount { retired: 11 },
+        );
+        let mut backend = SimBackend::from_restorable_checkpoint(&unknown);
+
+        assert_eq!(Backend::restore(&mut backend, &unknown), Ok(()));
+        assert_eq!(backend.state().icount, Icount { retired: 11 });
     }
 
     #[test]

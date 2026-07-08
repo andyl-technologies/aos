@@ -10,9 +10,9 @@ use crucible::{
     Checkpoint, Configuration, ContentAddressedBlobRef, ContentHash, DagStore, Decision,
     EngineError, GenesisCheckpoint, MaterializationPolicy, MaterializationTrigger, QuantumLoop,
     ReplayOracleCheck, ScenarioDef, ScenarioDefForm, SearchBudget, SearchFailureOracle,
-    SearchReplayOracleSamplingConfig, SearchStrategy, TemporalGraph,
-    TemporalGraphSampledSearchRun, TemporalGraphSearchRun, TemporalGraphStoreError,
-    TemporalGraphStoreKeys, UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, reduce,
+    SearchReplayOracleSamplingConfig, SearchStrategy, TemporalGraph, TemporalGraphSampledSearchRun,
+    TemporalGraphSearchRun, TemporalGraphStoreError, TemporalGraphStoreKeys,
+    UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, reduce,
 };
 use thiserror::Error;
 
@@ -88,7 +88,7 @@ impl ResumeRealizationProof {
     #[must_use]
     pub fn field_summary(&self) -> String {
         format!(
-            "materialization=qemu-vm-realization operation={} branch={} configuration={} runtime={} ancestor_configuration={} checkpoint={} replayed_decisions={}",
+            "operation={} branch={} configuration={} runtime={} ancestor_configuration={} checkpoint={} replayed_decisions={}",
             self.operation,
             self.branch,
             format_content_hash_ref(self.configuration),
@@ -129,13 +129,11 @@ pub fn realize_resume_from_savepoint(
             target_len,
         });
     }
-    let prefix =
-        target
-            .schedule
-            .prefix(source_len)
-            .map_err(|error| ResumeRealizationError::SchedulePrefix {
-                message: error.to_string(),
-            })?;
+    let prefix = target.schedule.prefix(source_len).map_err(|error| {
+        ResumeRealizationError::SchedulePrefix {
+            message: error.to_string(),
+        }
+    })?;
     if source_configuration.def != target.def || prefix != source_configuration.schedule {
         return Err(ResumeRealizationError::SourceNotAncestor {
             source_configuration: source_id,
