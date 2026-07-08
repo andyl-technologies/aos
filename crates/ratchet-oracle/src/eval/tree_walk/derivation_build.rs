@@ -488,7 +488,7 @@ impl TreeWalk {
         fingerprint.extend_from_slice(self.options.store_dir());
         fingerprint.push(b':');
         fingerprint.extend_from_slice(name.as_bytes());
-        let fingerprint_hash = Sha256::digest(&fingerprint);
+        let fingerprint_hash = Self::sha256_array(&fingerprint);
         let digest = nix_compat::store_path::compress_hash::<{ nix_compat::store_path::DIGEST_SIZE }>(
             &fingerprint_hash,
         );

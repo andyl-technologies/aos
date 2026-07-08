@@ -36,7 +36,7 @@ use md5::{Digest as _, Md5};
 use regex::bytes::{Regex, RegexBuilder};
 use serde_json::{Number as JsonNumber, Value as JsonValue};
 use sha1::{Digest as _, Sha1};
-use sha2::{Sha256, Sha512};
+use sha2::Sha512;
 use thiserror::Error;
 use toml::{Value as TomlValue, value::Datetime as TomlDatetime};
 use url::Url;
@@ -1105,7 +1105,25 @@ pub struct TreeWalk {
     current_module: EvalModuleId,
     symbols: SymbolTable,
     heap: EvalHeap,
+    /// The active lexical frame stack.
+    ///
+    /// Every mutation must go through the `push_env_frame` /
+    /// `pop_env_frame` / `swap_env_frames` / `restore_env_frames` helpers so
+    /// [`Self::env_generation`] is bumped and the capture cache stays
+    /// coherent.
     env: Vec<Arc<EvalFrame>>,
+    /// Generation counter bumped on every [`Self::env`] mutation.
+    ///
+    /// Keys [`Self::env_capture_cache`]: a cached [`EvalEnv`] snapshot is
+    /// valid exactly while the generation it was captured under is current.
+    env_generation: u64,
+    /// The last [`EvalEnv`] captured from [`Self::env`], keyed by the
+    /// generation it was captured under.
+    ///
+    /// Thunk allocation captures the same environment many times between
+    /// frame-stack mutations; replaying the cached snapshot turns those
+    /// captures into O(1) `Arc` clones.
+    env_capture_cache: Option<(u64, EvalEnv)>,
     with_scopes: Vec<EvalWithScope>,
     scoped_globals: Vec<Value>,
     options: TreeWalkOptions,

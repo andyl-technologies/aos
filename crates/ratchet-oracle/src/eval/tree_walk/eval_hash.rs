@@ -544,7 +544,7 @@ impl TreeWalk {
         let digest = match algorithm {
             HashStringAlgorithm::Md5 => Md5::digest(bytes).to_vec(),
             HashStringAlgorithm::Sha1 => Sha1::digest(bytes).to_vec(),
-            HashStringAlgorithm::Sha256 => Sha256::digest(bytes).to_vec(),
+            HashStringAlgorithm::Sha256 => Self::sha256_array(bytes).to_vec(),
             HashStringAlgorithm::Sha512 => Sha512::digest(bytes).to_vec(),
         };
         match NixHashDigest::new(algorithm, digest) {

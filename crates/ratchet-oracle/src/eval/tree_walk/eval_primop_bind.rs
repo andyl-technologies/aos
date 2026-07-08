@@ -742,7 +742,7 @@ impl TreeWalk {
                 )
             })?;
         if let Some(frame_values) = &frame_values {
-            self.env.push(Arc::clone(frame_values));
+            self.push_env_frame(Arc::clone(frame_values));
         }
         self.begin_order_sensitive_binding_assembly();
         let result = (|| {
@@ -908,7 +908,7 @@ impl TreeWalk {
         })();
         self.end_order_sensitive_binding_assembly();
         if recursive {
-            let _ = self.env.pop();
+            self.pop_env_frame();
         }
         let entries = result?;
 

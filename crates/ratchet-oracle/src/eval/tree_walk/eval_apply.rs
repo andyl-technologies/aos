@@ -33,7 +33,7 @@ impl TreeWalk {
         let frame_values = EvalFrame::new(slot_count).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
         })?;
-        self.env.push(Arc::clone(&frame_values));
+        self.push_env_frame(Arc::clone(&frame_values));
         self.begin_order_sensitive_binding_assembly();
         let init_result = (|| {
             let mut inherit_source_thunks = BTreeMap::new();
@@ -65,7 +65,7 @@ impl TreeWalk {
         })();
         self.end_order_sensitive_binding_assembly();
         let result = init_result.and_then(|()| self.eval_node(body));
-        let _ = self.env.pop();
+        self.pop_env_frame();
         result
     }
 

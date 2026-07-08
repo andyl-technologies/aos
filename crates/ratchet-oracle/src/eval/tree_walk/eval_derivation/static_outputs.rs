@@ -12,16 +12,21 @@ impl TreeWalk {
         derivation: &mut nix_compat::derivation::Derivation,
         input_hashes: &KnownDerivationInputHashes,
     ) -> Result<DerivationHashModulo, TreeWalkError> {
-        let pre_output_aterm =
-            self.derivation_aterm_bytes_with_input_hashes(derivation, &input_hashes.hashes);
-        if let Some((
-            cached,
-            _persistent_hit,
-            _identity,
-            _free_var_value_hashes,
-            dependency,
-            early_cutoff,
-        )) = self.lookup_static_derivation_output_paths_for_current_node(id, &pre_output_aterm)
+        // The pre-output ATerm serialization only feeds cache keys; skip the
+        // full serialization pass entirely when the eval cache runtime is
+        // disabled (both the lookup and the observation below no-op then).
+        let pre_output_aterm = self.eval_cache_runtime_enabled().then(|| {
+            self.derivation_aterm_bytes_with_input_hashes(derivation, &input_hashes.hashes)
+        });
+        if let Some(pre_output_aterm) = pre_output_aterm.as_deref()
+            && let Some((
+                cached,
+                _persistent_hit,
+                _identity,
+                _free_var_value_hashes,
+                dependency,
+                early_cutoff,
+            )) = self.lookup_static_derivation_output_paths_for_current_node(id, pre_output_aterm)
             && let Some(known_hash) =
                 self.apply_static_derivation_output_paths_from_cache(id, name, derivation, &cached)
         {
@@ -39,7 +44,14 @@ impl TreeWalk {
         self.calculate_output_paths(id, span, name, derivation, &hash)?;
         let known_hash =
             self.hash_derivation_modulo_with_inputs(id, span, derivation, &input_hashes.hashes)?;
-        self.observe_static_derivation_output_paths(id, &pre_output_aterm, derivation, known_hash);
+        if let Some(pre_output_aterm) = pre_output_aterm.as_deref() {
+            self.observe_static_derivation_output_paths(
+                id,
+                pre_output_aterm,
+                derivation,
+                known_hash,
+            );
+        }
         Ok(known_hash)
     }
 

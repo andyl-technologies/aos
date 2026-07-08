@@ -370,6 +370,8 @@ impl TreeWalk {
             symbols: ir.symbols.clone(),
             heap,
             env: Vec::new(),
+            env_generation: 0,
+            env_capture_cache: None,
             with_scopes: Vec::new(),
             scoped_globals: Vec::new(),
             options,

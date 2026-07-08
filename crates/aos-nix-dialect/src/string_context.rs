@@ -35,11 +35,14 @@ pub enum ContextKind {
 /// output name for [`ContextKind::SingleOutput`]. The path syntax is validated
 /// by store-path aware layers; this type only enforces the structural invariant
 /// that paths are non-empty.
+///
+/// The path and output bytes are held behind [`Arc`]s so cloning an element
+/// during context unions is an O(1) reference-count bump.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContextElement {
-    path: Vec<u8>,
+    path: Arc<[u8]>,
     kind: ContextKind,
-    output: Option<Vec<u8>>,
+    output: Option<Arc<[u8]>>,
 }
 
 impl ContextElement {
@@ -54,7 +57,7 @@ impl ContextElement {
         }
 
         Ok(Self {
-            path,
+            path: path.into(),
             kind: ContextKind::OpaquePath,
             output: None,
         })
@@ -71,9 +74,9 @@ impl ContextElement {
         }
 
         Ok(Self {
-            path,
+            path: path.into(),
             kind: ContextKind::SingleOutput,
-            output: Some(output),
+            output: Some(output.into()),
         })
     }
 
@@ -88,7 +91,7 @@ impl ContextElement {
         }
 
         Ok(Self {
-            path,
+            path: path.into(),
             kind: ContextKind::DeepDerivation,
             output: None,
         })
@@ -110,13 +113,7 @@ impl ContextElement {
     }
 
     fn try_clone_element(&self) -> Result<Self, NixStringError> {
-        let path = try_clone_bytes(&self.path)?;
-        let output = self.output.as_deref().map(try_clone_bytes).transpose()?;
-        Ok(Self {
-            path,
-            kind: self.kind,
-            output,
-        })
+        Ok(self.clone())
     }
 }
 
@@ -207,6 +204,15 @@ impl StringContext {
     /// [`NixStringError::ByteAllocationFailed`] if the union cannot reserve its
     /// storage.
     pub fn union(&self, other: &Self) -> Result<Self, NixStringError> {
+        // Unions with an empty or identical context are pervasive (every
+        // string clone unions with the empty context); resolve them with an
+        // O(1) `Arc` bump instead of deep-cloning every element.
+        if other.is_empty() || Arc::ptr_eq(&self.elements, &other.elements) {
+            return Ok(self.clone());
+        }
+        if self.is_empty() {
+            return Ok(other.clone());
+        }
         let capacity =
             self.len()
                 .checked_add(other.len())

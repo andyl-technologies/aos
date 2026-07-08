@@ -1,6 +1,7 @@
 //! Tree-walk evaluator tests: filesystem 1.
 
 use super::*;
+use sha2::{Digest, Sha256};
 
 #[test]
 fn hash_file_primop_hashes_file_contents() {

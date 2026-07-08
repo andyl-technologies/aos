@@ -17,7 +17,6 @@
 
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::string::{NixStringError, StringContext};
@@ -178,9 +177,9 @@ where
 
 /// Computes the content-only SHA-256 digest for `.drv` output bytes.
 pub fn parallel_drv_output_content_sha256(bytes: &[u8]) -> [u8; 32] {
-    let digest = Sha256::digest(bytes);
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
     let mut fixed = [0_u8; 32];
-    fixed.copy_from_slice(&digest);
+    fixed.copy_from_slice(digest.as_ref());
     fixed
 }
 

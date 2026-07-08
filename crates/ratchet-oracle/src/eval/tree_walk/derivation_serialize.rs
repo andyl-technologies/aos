@@ -331,16 +331,24 @@ impl TreeWalk {
     }
 
     pub(super) fn write_aterm_escaped_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-        for byte in bytes {
-            match *byte {
+        // Copy maximal runs of ordinary bytes in bulk; scanning for the next
+        // byte that needs an escape is much cheaper than pushing bytes one at
+        // a time through per-byte capacity checks.
+        let needs_escape =
+            |byte: u8| matches!(byte, b'\\' | b'\n' | b'\r' | b'\t' | b'"');
+        let mut rest = bytes;
+        while let Some(index) = rest.iter().position(|&byte| needs_escape(byte)) {
+            out.extend_from_slice(&rest[..index]);
+            match rest[index] {
                 b'\\' => out.extend_from_slice(b"\\\\"),
                 b'\n' => out.extend_from_slice(b"\\n"),
                 b'\r' => out.extend_from_slice(b"\\r"),
                 b'\t' => out.extend_from_slice(b"\\t"),
-                b'"' => out.extend_from_slice(b"\\\""),
-                byte => out.push(byte),
+                _ => out.extend_from_slice(b"\\\""),
             }
+            rest = &rest[index + 1..];
         }
+        out.extend_from_slice(rest);
     }
 
     pub(super) fn write_lower_hex(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -351,10 +359,13 @@ impl TreeWalk {
         }
     }
 
+    /// Hashes `bytes` with SHA-256 using the assembly-optimized `ring`
+    /// backend, which is several times faster than the portable software
+    /// implementation on hosts without dedicated SHA extensions compiled in.
     pub(super) fn sha256_array(bytes: &[u8]) -> [u8; 32] {
-        let digest = Sha256::digest(bytes);
+        let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
         let mut out = [0; 32];
-        out.copy_from_slice(&digest);
+        out.copy_from_slice(digest.as_ref());
         out
     }
 

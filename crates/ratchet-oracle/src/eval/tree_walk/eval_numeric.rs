@@ -653,14 +653,14 @@ impl TreeWalk {
         let thunk_env = self.clone_env_frames(id, env, span)?;
         let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
         self.reserve_suspended_env_root_frame(id, span)?;
-        let saved_env = std::mem::replace(&mut self.env, thunk_env);
+        let saved_env = self.swap_env_frames(thunk_env);
         let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
         self.push_suspended_env_roots(saved_env, saved_with_scopes, Vec::new());
         let result = self.with_current_module(body.module(), |eval| {
             eval.eval_nested_equality_operand(body.id())
         });
         if let Some(saved) = self.pop_suspended_env_roots() {
-            self.env = saved.env;
+            self.restore_env_frames(saved.env);
             self.with_scopes = saved.with_scopes;
         } else {
             debug_assert!(false, "suspended env root stack is unbalanced");

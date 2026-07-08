@@ -276,14 +276,14 @@ impl TreeWalk {
         let module =
             self.push_module(id, span, ir, base.to_vec(), path.to_vec(), source.to_vec())?;
         let imported_scoped_globals = self.import_scoped_globals(id, span, global_scope)?;
-        let saved_env = std::mem::take(&mut self.env);
+        let saved_env = self.swap_env_frames(Vec::new());
         let saved_with_scopes = std::mem::take(&mut self.with_scopes);
         let saved_scoped_globals =
             std::mem::replace(&mut self.scoped_globals, imported_scoped_globals);
         self.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
         let result = self.with_current_module(module, |eval| eval.eval_node(root));
         if let Some(saved) = self.pop_suspended_env_roots() {
-            self.env = saved.env;
+            self.restore_env_frames(saved.env);
             self.with_scopes = saved.with_scopes;
             self.scoped_globals = saved.scoped_globals;
         } else {

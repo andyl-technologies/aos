@@ -261,12 +261,66 @@ impl TreeWalk {
     }
 
     pub(in crate::eval::tree_walk) fn capture_env(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
     ) -> Result<EvalEnv, TreeWalkError> {
-        EvalEnv::capture(&self.env)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
+        // Thunk allocation captures the same frame stack many times between
+        // mutations; replay the generation-keyed snapshot as an O(1) clone.
+        if let Some((generation, cached)) = &self.env_capture_cache
+            && *generation == self.env_generation
+        {
+            debug_assert!(
+                cached.frames().len() == self.env.len()
+                    && cached
+                        .frames()
+                        .iter()
+                        .zip(self.env.iter())
+                        .all(|(cached, live)| Arc::ptr_eq(cached, live)),
+                "env capture cache generation matched a mutated frame stack"
+            );
+            return Ok(cached.clone());
+        }
+        let captured = EvalEnv::capture(&self.env)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))?;
+        self.env_capture_cache = Some((self.env_generation, captured.clone()));
+        Ok(captured)
+    }
+
+    /// Pushes a lexical frame onto the active stack, invalidating the
+    /// env-capture cache via the generation counter.
+    #[inline]
+    pub(in crate::eval::tree_walk) fn push_env_frame(&mut self, frame: Arc<EvalFrame>) {
+        self.env_generation = self.env_generation.wrapping_add(1);
+        self.env.push(frame);
+    }
+
+    /// Pops the innermost lexical frame, invalidating the env-capture cache
+    /// via the generation counter.
+    #[inline]
+    pub(in crate::eval::tree_walk) fn pop_env_frame(&mut self) {
+        self.env_generation = self.env_generation.wrapping_add(1);
+        let _ = self.env.pop();
+    }
+
+    /// Replaces the active frame stack with `frames` and returns the previous
+    /// stack, invalidating the env-capture cache via the generation counter.
+    #[inline]
+    pub(in crate::eval::tree_walk) fn swap_env_frames(
+        &mut self,
+        frames: Vec<Arc<EvalFrame>>,
+    ) -> Vec<Arc<EvalFrame>> {
+        self.env_generation = self.env_generation.wrapping_add(1);
+        std::mem::replace(&mut self.env, frames)
+    }
+
+    /// Restores a frame stack previously returned by
+    /// [`Self::swap_env_frames`], invalidating the env-capture cache via the
+    /// generation counter.
+    #[inline]
+    pub(in crate::eval::tree_walk) fn restore_env_frames(&mut self, frames: Vec<Arc<EvalFrame>>) {
+        self.env_generation = self.env_generation.wrapping_add(1);
+        self.env = frames;
     }
 
     pub(in crate::eval::tree_walk) fn capture_with_env(

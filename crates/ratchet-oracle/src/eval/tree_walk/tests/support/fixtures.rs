@@ -1,6 +1,7 @@
 //! Tree-walk test support: temporary-file, git, and HTTP/tarball fixtures.
 
 use super::super::*;
+use sha2::{Digest, Sha256};
 
 pub(crate) fn unique_temp_dir(prefix: &str) -> PathBuf {
     static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);

@@ -314,16 +314,16 @@ impl TreeWalk {
         path: &Path,
         filter: Option<&SourcePathFilter>,
     ) -> Result<NixSha256Digest, TreeWalkError> {
-        let mut nar = Vec::new();
+        // Stream the NAR encoding straight into the hasher instead of
+        // buffering the whole archive: source trees can be tens of megabytes
+        // and the intermediate `Vec` was pure allocator and memcpy traffic.
+        let mut hasher = Sha256StreamHasher::new();
         {
-            let node = nix_compat::nar::writer::open(&mut nar)
+            let node = nix_compat::nar::writer::open(&mut hasher)
                 .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
             self.write_source_path_nar_node(id, span, path, node, true, filter)?;
         }
-        let digest = Sha256::digest(&nar);
-        let mut fixed = [0_u8; 32];
-        fixed.copy_from_slice(&digest);
-        Ok(NixSha256Digest::from_bytes(fixed))
+        Ok(NixSha256Digest::from_bytes(hasher.finish()))
     }
 
     pub(super) fn source_path_flat_sha256(
@@ -334,10 +334,7 @@ impl TreeWalk {
     ) -> Result<NixSha256Digest, TreeWalkError> {
         let contents = fs::read(path)
             .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
-        let digest = Sha256::digest(&contents);
-        let mut fixed = [0_u8; 32];
-        fixed.copy_from_slice(&digest);
-        Ok(NixSha256Digest::from_bytes(fixed))
+        Ok(NixSha256Digest::from_bytes(Self::sha256_array(&contents)))
     }
 
     pub(super) fn write_source_path_nar_node<W: io::Write>(
@@ -521,7 +518,7 @@ impl TreeWalk {
         fingerprint.push(b':');
         fingerprint.extend_from_slice(name.as_bytes());
 
-        let fingerprint_hash = Sha256::digest(&fingerprint);
+        let fingerprint_hash = Self::sha256_array(&fingerprint);
         let digest = nix_compat::store_path::compress_hash::<{ nix_compat::store_path::DIGEST_SIZE }>(
             &fingerprint_hash,
         );
@@ -902,5 +899,43 @@ impl TreeWalk {
             self.write_json_value(id, span, attrs_id, attrs_span, value, out, context)?;
         }
         Self::extend_bytes_for_node(id, span, out, b"}")
+    }
+}
+
+/// An [`io::Write`] adapter that feeds every written byte into a streaming
+/// SHA-256 context.
+///
+/// Used to hash NAR encodings of source trees without materializing the
+/// archive bytes in memory.
+struct Sha256StreamHasher {
+    context: ring::digest::Context,
+}
+
+impl Sha256StreamHasher {
+    /// Creates a hasher with an empty SHA-256 state.
+    fn new() -> Self {
+        Self {
+            context: ring::digest::Context::new(&ring::digest::SHA256),
+        }
+    }
+
+    /// Consumes the hasher and returns the SHA-256 digest of all bytes
+    /// written so far.
+    fn finish(self) -> [u8; 32] {
+        let digest = self.context.finish();
+        let mut out = [0_u8; 32];
+        out.copy_from_slice(digest.as_ref());
+        out
+    }
+}
+
+impl io::Write for Sha256StreamHasher {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.context.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }

@@ -359,7 +359,7 @@ impl TreeWalk {
             call_env.push(call_frame);
             eval.reserve_suspended_env_root_frame(id, span)?;
             eval.enter_call(id, span)?;
-            let saved_env = std::mem::replace(&mut eval.env, call_env);
+            let saved_env = eval.swap_env_frames(call_env);
             let saved_with_scopes = std::mem::replace(&mut eval.with_scopes, call_with_env);
             let saved_scoped_globals =
                 std::mem::replace(&mut eval.scoped_globals, call_scoped_globals);
@@ -384,7 +384,7 @@ impl TreeWalk {
                 eval.eval_node(lambda.body())
             })();
             if let Some(saved) = eval.pop_suspended_env_roots() {
-                eval.env = saved.env;
+                eval.restore_env_frames(saved.env);
                 eval.with_scopes = saved.with_scopes;
                 eval.scoped_globals = saved.scoped_globals;
             } else {

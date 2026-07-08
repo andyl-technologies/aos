@@ -39,9 +39,24 @@ use crate::compile::IrId;
 use crate::value::{HeapObject, Value, ValueTag};
 
 /// A captured lexical environment snapshot.
-#[derive(Clone, Debug, Default)]
+///
+/// The frame list is held behind an [`Arc`] so cloning a snapshot — the
+/// dominant operation when one lexical environment is captured by many
+/// thunks — is an O(1) reference-count bump rather than a fresh frame-list
+/// allocation.
+#[derive(Clone, Debug)]
 pub struct EvalEnv {
-    frames: Box<[Arc<EvalFrame>]>,
+    frames: Arc<[Arc<EvalFrame>]>,
+}
+
+impl Default for EvalEnv {
+    fn default() -> Self {
+        static EMPTY: std::sync::LazyLock<Arc<[Arc<EvalFrame>]>> =
+            std::sync::LazyLock::new(|| Arc::from(Vec::new()));
+        Self {
+            frames: Arc::clone(&EMPTY),
+        }
+    }
 }
 
 impl EvalEnv {
@@ -60,7 +75,7 @@ impl EvalEnv {
         })?;
         captured.extend_from_slice(frames);
         Ok(Self {
-            frames: captured.into_boxed_slice(),
+            frames: captured.into(),
         })
     }
 
