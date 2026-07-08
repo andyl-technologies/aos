@@ -43,6 +43,10 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let separator_span = self.node(separator_id)?.span;
         let separator_value = self.eval_node(separator_id)?;
+        // C++ Nix forces both arguments to WHNF (`forceString` /
+        // `forceList`) before type-checking; a thunked argument must be
+        // evaluated here rather than reported as a type error.
+        let separator_value = self.force_value(separator_id, separator_span, separator_value)?;
         if separator_value.tag() != ValueTag::String {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -81,6 +85,7 @@ impl TreeWalk {
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
+        let list_value = self.force_value(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {

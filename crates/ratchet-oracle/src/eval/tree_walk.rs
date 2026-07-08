@@ -34,7 +34,7 @@ use bzip2::read::BzDecoder;
 use flate2::read::GzDecoder;
 use md5::{Digest as _, Md5};
 use regex::bytes::{Regex, RegexBuilder};
-use serde_json::{Number as JsonNumber, Value as JsonValue};
+use serde_json::Value as JsonValue;
 use sha1::{Digest as _, Sha1};
 use sha2::Sha512;
 use thiserror::Error;
@@ -418,6 +418,8 @@ pub use outcome::{
     EvalTierBTransitionPreflightError, EvalTierBTransitionRequest, EvalTraceKind, EvalTraceOutput,
     EvalWarningOutput, IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer,
 };
+pub(crate) use eval_regex_ere::{bracket_expression_end, translate_posix_ere};
+pub(crate) use json_float::nlohmann_json_float_bytes;
 pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
 pub(crate) use version::{
     SplitVersionRanges, base_name_range, compare_version_bytes, parse_drv_name_split,
@@ -1495,7 +1497,9 @@ mod parallel_shape;
 mod eval_primop_bind;
 mod eval_raw;
 mod eval_regex;
+mod eval_regex_ere;
 mod eval_session;
+mod json_float;
 mod eval_sort;
 mod eval_source;
 mod eval_stats;

@@ -663,35 +663,14 @@ impl TreeWalk {
         out: &mut Vec<u8>,
     ) -> Result<(), TreeWalkError> {
         let value = f64::from_bits(value.payload_bits());
+        // C++ Nix serializes floats through nlohmann/json, which renders
+        // non-finite values as `null` and everything else with its Grisu2
+        // printer (see `json_float`).
         if !value.is_finite() {
             return Self::extend_bytes_for_node(id, span, out, b"null");
         }
-        let value = if value == 0.0 { 0.0 } else { value };
-        let Some(number) = JsonNumber::from_f64(value) else {
-            return Self::extend_bytes_for_node(id, span, out, b"null");
-        };
-        let mut bytes = number.to_string().into_bytes();
-        Self::normalize_json_float_exponent(&mut bytes);
+        let bytes = nlohmann_json_float_bytes(value);
         Self::extend_bytes_for_node(id, span, out, &bytes)
-    }
-
-    pub(super) fn normalize_json_float_exponent(bytes: &mut Vec<u8>) {
-        let Some(exponent) = bytes.iter().position(|byte| matches!(*byte, b'e' | b'E')) else {
-            return;
-        };
-        bytes[exponent] = b'e';
-        let sign = exponent + 1;
-        let digits = match bytes.get(sign).copied() {
-            Some(b'+') | Some(b'-') => sign + 1,
-            Some(_) => {
-                bytes.insert(sign, b'+');
-                sign + 1
-            }
-            None => return,
-        };
-        if bytes.len().saturating_sub(digits) == 1 {
-            bytes.insert(digits, b'0');
-        }
     }
 
     pub(super) fn write_json_string_value(

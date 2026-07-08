@@ -368,6 +368,24 @@ fn to_json_primop_formats_floats_like_cpp_nix_json() {
         eval_string_bytes("builtins.toJSON 100000000000000000000.0"),
         b"1e+20"
     );
+    // Grisu2 parity (eval-okay-fromTOML): nlohmann's printer is not always
+    // shortest — 5e22 renders through its rounded digit generation.
+    assert_eq!(
+        eval_string_bytes("builtins.toJSON 5.0e22"),
+        b"4.9999999999999996e+22"
+    );
+    // Fixed-point notation stops at digits10 (15) integral digits.
+    assert_eq!(eval_string_bytes("builtins.toJSON 2.5e15"), b"2.5e+15");
+    assert_eq!(eval_string_bytes("builtins.toJSON 100.0"), b"100.0");
+    // Exponents always carry a sign and at least two digits.
+    assert_eq!(eval_string_bytes("builtins.toJSON 1.0e-7"), b"1e-07");
+    assert_eq!(eval_string_bytes("builtins.toJSON 0.0001"), b"0.0001");
+    // A true IEEE negative zero keeps its sign (nlohmann uses signbit);
+    // `-0.0` in Nix parses as `0 - 0.0`, which is positive zero.
+    assert_eq!(
+        eval_string_bytes("builtins.toJSON ((0.0 - 1.0) * 0.0)"),
+        b"-0.0"
+    );
     assert_eq!(
         eval_string_bytes("builtins.toJSON ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))"),
         b"null"

@@ -339,7 +339,19 @@ impl TreeWalk {
             ));
         }
         self.validate_match_regex_pattern(id, span, pattern)?;
-        let pattern_text = std::str::from_utf8(pattern).map_err(|source| {
+        // Re-emit POSIX ERE bracket expressions in Rust `regex` syntax; the
+        // two grammars diverge inside `[...]` (see `eval_regex_ere`).
+        let translated = translate_posix_ere(pattern).map_err(|message| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::RegexCompile {
+                    id,
+                    pattern: pattern.to_vec(),
+                    message,
+                },
+                span,
+            )
+        })?;
+        let pattern_text = std::str::from_utf8(&translated).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::RegexCompile {
                     id,
@@ -375,30 +387,42 @@ impl TreeWalk {
         span: Span,
         pattern: &[u8],
     ) -> Result<(), TreeWalkError> {
-        let mut in_bracket_class = false;
-        let mut escaped = false;
-
-        for (index, byte) in pattern.iter().copied().enumerate() {
-            if escaped {
-                if byte.is_ascii_alphabetic() {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::RegexCompile {
-                            id,
-                            pattern: pattern.to_vec(),
-                            message: "unsupported POSIX ERE escape".to_owned(),
-                        },
-                        span,
-                    ));
+        // Bracket expressions are skipped wholesale: inside `[...]` POSIX
+        // ERE has no escapes and no metacharacters, so none of the checks
+        // below apply there. Their contents are validated during
+        // translation (`translate_posix_ere`).
+        let mut index = 0;
+        while index < pattern.len() {
+            match pattern[index] {
+                b'\\' => {
+                    if let Some(escaped) = pattern.get(index + 1) {
+                        if escaped.is_ascii_alphabetic() {
+                            return Err(TreeWalkError::new(
+                                TreeWalkErrorKind::RegexCompile {
+                                    id,
+                                    pattern: pattern.to_vec(),
+                                    message: "unsupported POSIX ERE escape".to_owned(),
+                                },
+                                span,
+                            ));
+                        }
+                        index += 2;
+                        continue;
+                    }
+                    // Trailing backslash: reported by the translation step.
+                    break;
                 }
-                escaped = false;
-                continue;
-            }
-
-            match byte {
-                b'\\' => escaped = true,
-                b'[' if !in_bracket_class => in_bracket_class = true,
-                b']' if in_bracket_class => in_bracket_class = false,
-                b'|' if !in_bracket_class && Self::is_empty_regex_alternative(pattern, index) => {
+                b'[' => {
+                    match bracket_expression_end(pattern, index) {
+                        Some(end) => {
+                            index = end + 1;
+                            continue;
+                        }
+                        // Unterminated: reported by the translation step.
+                        None => break,
+                    }
+                }
+                b'|' if Self::is_empty_regex_alternative(pattern, index) => {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::RegexCompile {
                             id,
@@ -408,7 +432,7 @@ impl TreeWalk {
                         span,
                     ));
                 }
-                b'?' if !in_bracket_class && self.follows_unescaped_quantifier(pattern, index) => {
+                b'?' if self.follows_unescaped_quantifier(pattern, index) => {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::RegexCompile {
                             id,
@@ -418,7 +442,7 @@ impl TreeWalk {
                         span,
                     ));
                 }
-                b'(' if !in_bracket_class => {
+                b'(' => {
                     if matches!(pattern.get(index + 1), Some(b'?' | b')')) {
                         return Err(TreeWalkError::new(
                             TreeWalkErrorKind::RegexCompile {
@@ -429,8 +453,9 @@ impl TreeWalk {
                             span,
                         ));
                     }
+                    index += 1;
                 }
-                _ => {}
+                _ => index += 1,
             }
         }
 

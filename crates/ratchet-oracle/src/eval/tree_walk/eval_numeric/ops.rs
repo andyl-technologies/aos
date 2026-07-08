@@ -16,7 +16,10 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         match self.eval_number_node(operand)? {
             Number::Int(value) => Ok(Value::int(value.wrapping_neg())),
-            Number::Float(value) => Ok(Value::float(-value)),
+            // C++ Nix parses `-e` as `__sub 0 e`, so float negation is a
+            // subtraction from positive zero: `-0.0` evaluates to `0.0`
+            // (IEEE `0.0 - 0.0` is positive zero), never to negative zero.
+            Number::Float(value) => Ok(Value::float(0.0 - value)),
         }
     }
 

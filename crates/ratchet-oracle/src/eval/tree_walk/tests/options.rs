@@ -3,6 +3,7 @@
 use super::*;
 use crate::attrs::repr::AttrSetReprKind;
 use crate::eval::heap::EvalThunkForceStorageMode;
+use serde_json::Number as JsonNumber;
 use crate::eval::heap::{
     EvalHeap, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapResidentMemorySource,
 };

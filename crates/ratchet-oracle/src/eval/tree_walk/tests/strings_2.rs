@@ -2,6 +2,37 @@
 
 use super::*;
 
+/// Chunk-F corpus regression (`lib/hardening.nix:116` via `pkgs.gnu-efi`):
+/// both arguments must be forced to WHNF before type-checking, exactly as
+/// C++ Nix's `forceString` / `forceList` — a thunked list (for example a
+/// function-call result) is not a type error.
+#[test]
+fn concat_strings_sep_primop_forces_thunked_arguments() {
+    assert_eq!(
+        eval_string_bytes(
+            "let tokens = xs: builtins.filter (t: t != null) xs; \
+             in builtins.concatStringsSep \" \" (tokens [ \"a\" null \"b\" ])"
+        ),
+        b"a b"
+    );
+    assert_eq!(
+        eval_string_bytes(
+            "builtins.concatStringsSep \" \" (builtins.attrValues { a = \"x\"; b = \"y\"; })"
+        ),
+        b"x y"
+    );
+    assert_eq!(
+        eval_string_bytes(
+            "let sep = s: s; in builtins.concatStringsSep (sep \", \") [ \"a\" \"b\" ]"
+        ),
+        b"a, b"
+    );
+    assert_eq!(
+        eval_string_bytes("let xs = [ \"a\" \"b\" ]; in builtins.concatStringsSep \",\" xs"),
+        b"a,b"
+    );
+}
+
 #[test]
 fn concat_strings_sep_primop_checks_arguments_left_to_right() {
     let ir = lower("builtins.concatStringsSep 1 (1 / 0)");

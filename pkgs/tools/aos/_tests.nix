@@ -350,24 +350,15 @@ in {
     tar -xzf ${pkgs.nix.src} -C "$work"
     export AOS_NIX_LANG_TESTS="$work/nix-${pkgs.nix.version}/tests/functional/lang"
 
-    # Exclusions, in two classes:
-    #
-    # Eval-time IFD (hermetically infeasible here): evaluating these attrs
-    # forces builtins.readFile on a built derivation output (the cc-wrapper's
-    # nix-support metadata), which the sandbox store cannot realize without
-    # network. They stay covered by the networked `.drv` acceptance-gate runs
-    # (`aos nix-diff --all --systems` on builders).
-    #   systems, pkgs.bazel*, pkgs.envoy, pkgs.linux
-    #
-    # TODO(RFC-0007): known native divergences pending evaluator fixes; every
-    # one is reproduced and tracked in doc 22 ("--eval --json budgeted
-    # full-corpus check" row). Remove each exclusion as its fix lands:
-    #   pkgs.gnu-efi, pkgs.go-1_4, pkgs.gcc-libs
-    #     -> "expected list, got Thunk" at lib/hardening.nix:116
-    #        (concatStringsSep does not force its list argument).
-    #   conformance.eval-okay-fromTOML
-    #     -> float rendering of 5e22: C++ nlohmann prints the non-shortest
-    #        4.9999999999999996e+22, native prints the shortest 5e+22.
+    # Exclusions — eval-time IFD (hermetically infeasible here): evaluating
+    # these attrs forces builtins.readFile on a built derivation output (the
+    # cc-wrapper's / bootstrap tools' nix-support metadata), which the
+    # sandbox store cannot realize without network. They stay covered by the
+    # networked `.drv` acceptance-gate runs (`aos nix-diff --all --systems`
+    # on builders).
+    #   systems, pkgs.bazel*, pkgs.envoy, pkgs.linux,
+    #   pkgs.gcc-libs (readFile on the bootstrap dynamic-linker path,
+    #   pkgs/libs/gcc-libs.nix)
     ${self}/bin/aos \
       --eval-system=${self.system} \
       nix-fuzz-corpus \
@@ -382,10 +373,7 @@ in {
       --exclude pkgs.bazel \
       --exclude pkgs.envoy \
       --exclude pkgs.linux \
-      --exclude pkgs.gnu-efi \
-      --exclude pkgs.go-1_4 \
-      --exclude pkgs.gcc-libs \
-      --exclude conformance.eval-okay-fromTOML
+      --exclude pkgs.gcc-libs
 
     # The budget bounds the corpus replay: entries are compared in
     # deterministic seed-name order until the budget is exhausted, and any

@@ -270,6 +270,7 @@ mod parse;
 mod path_store;
 mod properties;
 mod regex;
+mod regex_ere;
 mod region;
 mod safepoint_roots;
 mod search_path;
