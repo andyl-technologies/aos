@@ -60,8 +60,11 @@ const ADDRESS_HASH_ROTATE: u32 = 5;
 /// far more cheaply than the default DoS-resistant `SipHash`. The keys are
 /// internal pointer values and never attacker-chosen, so the weaker mixer is
 /// safe here.
+///
+/// Shared with the sibling shared-arena modules (`pub(super)`), which index
+/// the same word-aligned record addresses for parallel-mode resolution.
 #[derive(Default)]
-struct AddressHasher {
+pub(super) struct AddressHasher {
     hash: u64,
 }
 

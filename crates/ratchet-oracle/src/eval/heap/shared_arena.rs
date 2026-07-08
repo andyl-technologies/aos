@@ -27,9 +27,11 @@
 //!   `&self`, so a shard can be driven from a scoped worker thread holding only
 //!   an [`Arc`].
 //! - **Stable record addresses.** Records live in an append-only table of
-//!   fixed-size chunks ([`OnceLock`] slots inside boxed chunks). A chunk box is
-//!   allocated once and never moves, so a record's slot address is stable for
-//!   the arena's lifetime. That slot address *is* the value's opaque
+//!   geometrically growing chunks ([`OnceLock`] slots inside boxed chunks;
+//!   level `c` holds `CHUNK_LEN << c` slots, so capacity doubles per level the
+//!   way a `Vec` doubles, without ever relocating a published record). A chunk
+//!   box is allocated once and never moves, so a record's slot address is
+//!   stable for the arena's lifetime. That slot address *is* the value's opaque
 //!   `HeapObject` handle - a safe raw-pointer cast that is never dereferenced as
 //!   a `HeapObject` (the type is a zero-sized opaque key, exactly as the
 //!   production heap treats it).
@@ -55,9 +57,9 @@
 //! | State | Placement | Rationale |
 //! |-------|-----------|-----------|
 //! | Record storage (typed payloads) | Shared, per-shard append-only chunks | Cross-worker deref needs stable, Acquire-published records |
-//! | Address index (addr -> record id) | Shared, per-shard `RwLock<Vec<(addr,id)>>` (append-only) | Resolve consults it; single writer appends, many readers scan |
+//! | Address index (addr -> record id) | Shared, per-shard `RwLock<HashMap>` (insert-only) | Resolve consults it; single writer inserts, many readers probe `O(1)` |
 //! | Bump cursor (`next` slot) | Per-shard, single writer | Only the owning worker allocates in its shard |
-//! | Hash-cons interning | **Per-worker (dropped here)** | Hash-consing is an optimization; cross-worker dedup loss only costs memory, never changes semantics, and pointer-equality fast paths in `eval_compare` already fall back to content comparison |
+//! | Hash-cons interning | **Per-worker (none here)** | The arena stores no cons tables; each worker's [`super::EvalHeap`] keeps its own (see `shared_backend`). Cross-worker dedup loss only costs memory, never changes semantics, and pointer-equality fast paths in `eval_compare` fall back to content comparison |
 //! | `last_touch_epoch` / access epoch | **Dropped here** | GC is quiesced under parallel mode, so idle-epoch tracking is a serial-only concern; dropping it removes the interior-mutable `Cell` that made reads non-`Sync` |
 //!
 //! # Memory tradeoff of per-worker hash-cons
@@ -73,11 +75,14 @@
 //!
 //! # Serial mode
 //!
-//! This module is purely additive. The serial [`super::EvalHeap`] hot path is
-//! untouched: nothing here is reachable unless a parallel driver constructs a
-//! [`SharedHeapArena`]. There is no runtime branch on the serial allocation or
-//! resolution path.
+//! Nothing here is reachable unless a parallel driver constructs a
+//! [`SharedHeapArena`] (production wiring: [`super::EvalHeap::with_shared_shard`]
+//! under `TreeWalkOptions::parallel_workers`). The serial [`super::EvalHeap`]
+//! allocation and resolution paths pay only a branch-predictable check of the
+//! always-`None` backend option; see the `shared_backend` module for the seam.
 
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
@@ -91,11 +96,16 @@ use crate::string::NixString;
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
 use super::HeapObjectValue;
+use super::record_table::AddressHasher;
 
-/// Records per chunk. Chunks are boxed once and never moved, so every slot has
-/// a stable address for the arena's lifetime. A power of two keeps the
-/// index/offset split a shift and a mask.
+/// Records in the first (level-0) chunk. Level `c` holds `CHUNK_LEN << c`
+/// records, so chunk sizes grow geometrically like a `Vec`'s doubling while
+/// every already-boxed chunk keeps its records at stable addresses. A power of
+/// two keeps the level/offset split cheap bit math.
 const CHUNK_LEN: usize = 256;
+
+/// An address-keyed index of published records, shared with readers.
+type SharedAddressIndex = HashMap<usize, usize, BuildHasherDefault<AddressHasher>>;
 
 /// A failure allocating into or resolving through a [`SharedHeapArena`].
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -185,32 +195,61 @@ type HeapChunk = Box<[OnceLock<SharedHeapRecord>]>;
 pub struct SharedHeapShard {
     /// This shard's index within its arena.
     shard_id: usize,
-    /// Fixed table of chunk slots. Each chunk box is allocated on demand and
-    /// then never moves, so slot addresses are stable.
+    /// Fixed table of chunk levels. Level `c` is boxed on demand with
+    /// `CHUNK_LEN << c` slots and then never moves, so slot addresses are
+    /// stable while total capacity grows geometrically.
     chunks: Box<[OnceLock<HeapChunk>]>,
     /// Next record slot the owning worker will fill (single-writer bump).
     next: AtomicUsize,
     /// Count of published records, for diagnostics and stats merging.
     published: AtomicUsize,
+    /// Approximate payload bytes published, for arena-level accounting when a
+    /// process resident-set sample is unavailable.
+    payload_bytes: AtomicUsize,
     /// Maps a record's handle address to its record id for resolution.
-    index: RwLock<Vec<(usize, usize)>>,
-    /// The shard's fixed record capacity (`chunks.len() * CHUNK_LEN`).
+    index: RwLock<SharedAddressIndex>,
+    /// The shard's record capacity (`CHUNK_LEN * (2^levels - 1)`, the smallest
+    /// whole number of geometric levels covering the requested capacity).
     capacity: usize,
 }
 
+/// Returns the chunk level and in-chunk offset of record `id`.
+///
+/// Level `c` covers ids `[CHUNK_LEN * (2^c - 1), CHUNK_LEN * (2^(c+1) - 1))`
+/// with `CHUNK_LEN << c` slots.
+const fn slot_location(id: usize) -> (usize, usize) {
+    let scaled = id / CHUNK_LEN + 1;
+    let level = (usize::BITS - 1 - scaled.leading_zeros()) as usize;
+    let level_base = CHUNK_LEN * ((1 << level) - 1);
+    (level, id - level_base)
+}
+
+/// Returns the number of geometric chunk levels needed to hold `capacity`
+/// records (at least one level).
+const fn levels_for_capacity(capacity: usize) -> u32 {
+    let mut levels = 1u32;
+    // Total capacity with `levels` levels is `CHUNK_LEN * (2^levels - 1)`.
+    // 63 levels already exceed any addressable record count.
+    while levels < 63 && CHUNK_LEN * ((1usize << levels) - 1) < capacity {
+        levels += 1;
+    }
+    levels
+}
+
 impl SharedHeapShard {
-    /// Builds an empty shard sized to hold `capacity` records (rounded up to a
-    /// whole number of chunks).
+    /// Builds an empty shard sized to hold at least `capacity` records
+    /// (rounded up to a whole number of geometric chunk levels).
     fn new(shard_id: usize, capacity: usize) -> Self {
-        let chunk_count = capacity.div_ceil(CHUNK_LEN).max(1);
-        let chunks = (0..chunk_count).map(|_| OnceLock::new()).collect();
+        let levels = levels_for_capacity(capacity);
+        let chunks = (0..levels).map(|_| OnceLock::new()).collect();
         Self {
             shard_id,
             chunks,
             next: AtomicUsize::new(0),
             published: AtomicUsize::new(0),
-            index: RwLock::new(Vec::new()),
-            capacity: chunk_count * CHUNK_LEN,
+            payload_bytes: AtomicUsize::new(0),
+            index: RwLock::new(SharedAddressIndex::default()),
+            capacity: CHUNK_LEN * ((1usize << levels) - 1),
         }
     }
 
@@ -229,23 +268,37 @@ impl SharedHeapShard {
         self.published.load(Ordering::Acquire)
     }
 
-    /// Publishes `object` into the next free slot and returns its runtime value.
+    /// Returns the approximate payload bytes published into this shard.
+    ///
+    /// This is a logical-size estimate for arena-fallback memory accounting;
+    /// the primary parallel-mode budget source is the process resident set.
+    pub fn published_payload_bytes(&self) -> usize {
+        self.payload_bytes.load(Ordering::Acquire)
+    }
+
+    /// Publishes `object` into the next free slot and returns its runtime
+    /// value plus the record id within this shard.
     ///
     /// The owning worker is the only writer, so the bump cursor advances with a
     /// relaxed fetch-add; the record is made visible to readers by
     /// [`OnceLock::set`] (Release) followed by an index insert under the write
     /// lock. The returned [`Value`] carries the slot address as its opaque
-    /// handle.
+    /// handle; the record id lets the owning worker keep a lock-free private
+    /// address index for its own allocations.
     ///
     /// # Errors
     ///
-    /// Returns [`SharedHeapError::ShardFull`] when the shard's fixed capacity is
+    /// Returns [`SharedHeapError::ShardFull`] when the shard's capacity is
     /// exhausted, [`SharedHeapError::SlotAlreadyPublished`] if the
     /// single-writer contract was violated, or [`SharedHeapError::Value`] if the
     /// slot address cannot form a valid heap value (it always can in practice;
     /// chunk slots are pointer-aligned).
-    fn alloc(&self, object: HeapObjectValue) -> Result<Value, SharedHeapError> {
+    pub(super) fn alloc_object(
+        &self,
+        object: HeapObjectValue,
+    ) -> Result<(Value, usize), SharedHeapError> {
         let tag = object.tag();
+        let payload_estimate = payload_size_estimate(&object);
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         if id >= self.capacity {
             // Saturate the cursor so a full shard reports full rather than
@@ -256,9 +309,8 @@ impl SharedHeapShard {
                 capacity: self.capacity,
             });
         }
-        let chunk_idx = id / CHUNK_LEN;
-        let slot_idx = id % CHUNK_LEN;
-        let chunk = self.chunks[chunk_idx].get_or_init(new_chunk);
+        let (level, slot_idx) = slot_location(id);
+        let chunk = self.chunks[level].get_or_init(|| new_chunk(CHUNK_LEN << level));
         let slot = &chunk[slot_idx];
         let address = slot as *const OnceLock<SharedHeapRecord> as usize;
         debug_assert_eq!(address & 0x7, 0, "record slot is 8-byte aligned");
@@ -273,10 +325,12 @@ impl SharedHeapShard {
         // Publish the address so cross-shard resolution can find it. The write
         // lock's release synchronizes-with every later reader's read lock.
         if let Ok(mut index) = self.index.write() {
-            index.push((address, id));
+            index.insert(address, id);
         }
+        self.payload_bytes
+            .fetch_add(payload_estimate, Ordering::Release);
         self.published.fetch_add(1, Ordering::Release);
-        Ok(value)
+        Ok((value, id))
     }
 
     /// Convenience: publishes a string value.
@@ -285,7 +339,7 @@ impl SharedHeapShard {
     ///
     /// Propagates any allocation failure from the shard.
     pub fn alloc_string(&self, string: NixString) -> Result<Value, SharedHeapError> {
-        self.alloc(HeapObjectValue::String(string))
+        Ok(self.alloc_object(HeapObjectValue::String(string))?.0)
     }
 
     /// Convenience: publishes a list value.
@@ -294,22 +348,30 @@ impl SharedHeapShard {
     ///
     /// Propagates any allocation failure from the shard.
     pub fn alloc_list(&self, list: NixList) -> Result<Value, SharedHeapError> {
-        self.alloc(HeapObjectValue::List(list))
+        Ok(self.alloc_object(HeapObjectValue::List(list))?.0)
     }
 
     /// Returns the record at `id`, if it has been published.
     fn record(&self, id: usize) -> Option<&SharedHeapRecord> {
-        let chunk = self.chunks.get(id / CHUNK_LEN)?.get()?;
-        chunk.get(id % CHUNK_LEN)?.get()
+        let (level, slot_idx) = slot_location(id);
+        let chunk = self.chunks.get(level)?.get()?;
+        chunk.get(slot_idx)?.get()
+    }
+
+    /// Returns the typed object of the published record at `id`.
+    ///
+    /// This is the owning worker's lock-free fast path: it pairs with the
+    /// record id returned by [`SharedHeapShard::alloc_object`], so the caller
+    /// already proved the id names a published record of this shard.
+    pub(super) fn object_at(&self, id: usize) -> Option<&HeapObjectValue> {
+        Some(&self.record(id)?.object)
     }
 
     /// Resolves `address` to its record within this shard, if it owns it.
     fn resolve_address(&self, address: usize) -> Option<&SharedHeapRecord> {
         let id = {
             let index = self.index.read().ok()?;
-            index
-                .iter()
-                .find_map(|&(addr, id)| (addr == address).then_some(id))?
+            index.get(&address).copied()?
         };
         let record = self.record(id)?;
         debug_assert_eq!(
@@ -318,6 +380,21 @@ impl SharedHeapShard {
         );
         Some(record)
     }
+}
+
+/// Estimates the resident payload bytes of one typed record.
+///
+/// Used only for arena-fallback memory accounting; `Arc`-shared payloads count
+/// their handle size because their bodies are shared with the value graph.
+fn payload_size_estimate(object: &HeapObjectValue) -> usize {
+    let inline = std::mem::size_of::<SharedHeapRecord>();
+    let out_of_line = match object {
+        HeapObjectValue::String(string) | HeapObjectValue::Path(string) => string.len(),
+        HeapObjectValue::List(list) => list.len() * std::mem::size_of::<Value>(),
+        HeapObjectValue::Attrs { attrs, .. } => attrs.len() * 2 * std::mem::size_of::<Value>(),
+        HeapObjectValue::Lambda(_) | HeapObjectValue::Primop(_) | HeapObjectValue::Thunk(_) => 0,
+    };
+    inline.saturating_add(out_of_line)
 }
 
 /// A `Sync` evaluator heap shared by K parallel worker threads.
@@ -368,6 +445,26 @@ impl SharedHeapArena {
     /// Total records published across every shard.
     pub fn published_len(&self) -> usize {
         self.shards.iter().map(|shard| shard.published_len()).sum()
+    }
+
+    /// Approximate payload bytes published across every shard.
+    ///
+    /// Summed from per-shard atomic counters, so concurrent readers never
+    /// block allocation and no shard is double-counted.
+    pub fn published_payload_bytes(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| shard.published_payload_bytes())
+            .fold(0usize, usize::saturating_add)
+    }
+
+    /// Resolves an opaque heap pointer to its typed object, across all shards.
+    ///
+    /// This is the cross-worker dereference primitive used by the production
+    /// heap backend when a handle is not covered by the worker's own private
+    /// index (a value allocated by another worker).
+    pub(super) fn resolve_object(&self, ptr: NonNull<HeapObject>) -> Option<&HeapObjectValue> {
+        self.resolve(ptr).ok().map(|record| &record.object)
     }
 
     /// Resolves an opaque heap pointer to its record, across all shards.
@@ -451,9 +548,9 @@ impl SharedHeapArena {
     }
 }
 
-/// Allocates one fresh, empty record chunk.
-fn new_chunk() -> HeapChunk {
-    (0..CHUNK_LEN).map(|_| OnceLock::new()).collect()
+/// Allocates one fresh, empty record chunk with `len` slots.
+fn new_chunk(len: usize) -> HeapChunk {
+    (0..len).map(|_| OnceLock::new()).collect()
 }
 
 /// Builds a non-null heap handle from a slot address.

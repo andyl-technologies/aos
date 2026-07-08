@@ -262,6 +262,7 @@ mod hash;
 mod hash_file_surface;
 mod numeric;
 mod options;
+mod parallel_shared_heap;
 mod parse;
 mod path_store;
 mod properties;

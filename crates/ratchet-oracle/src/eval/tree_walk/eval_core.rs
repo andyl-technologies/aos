@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::cache::hashing::ForceCapturedValueHash;
+use crate::eval::heap::{SharedHeapArena, SharedHeapShard};
 
 mod force_identity;
 mod force_payload;
@@ -305,7 +306,13 @@ impl TreeWalk {
     ) -> Self {
         let path_literal_base = options.path_literal_base().map(<[u8]>::to_vec);
         let parse_cache = options.parse_cache_root().map(ParseCache::new);
-        let mut heap = if options.heap_thread_local_tier_a_enabled() {
+        let mut heap = if let Some(workers) = options.parallel_workers() {
+            // Parallel mode: allocate into one shard of a K-shard shared
+            // arena so (in the P3b scheduler phase) K production workers can
+            // dereference one another's fresh allocations. Until then the
+            // single production TreeWalk drives shard 0.
+            Self::shared_parallel_heap(workers)
+        } else if options.heap_thread_local_tier_a_enabled() {
             EvalHeap::new_thread_local_tier_a()
         } else {
             EvalHeap::new()
@@ -536,6 +543,69 @@ impl TreeWalk {
     /// Returns a snapshot of mirrored evaluator counters.
     pub fn stats(&self) -> EvalStats {
         self.stats_snapshot()
+    }
+
+    /// Builds a parallel-mode heap over a fresh K-shard shared arena.
+    ///
+    /// The evaluator allocates into shard 0; the remaining shards are reserved
+    /// for the P3b scheduler phase's worker `TreeWalk`s, which will adopt them
+    /// through [`TreeWalk::adopt_shared_heap_shard`].
+    fn shared_parallel_heap(workers: std::num::NonZeroUsize) -> EvalHeap {
+        /// Per-shard record capacity hint. Chunk levels grow geometrically, so
+        /// a generous hint costs only `log2` empty chunk-table slots up front
+        /// while making shard exhaustion unreachable for real evaluations.
+        const SHARED_HEAP_SHARD_CAPACITY: usize = 1 << 32;
+        let arena = Arc::new(SharedHeapArena::new(
+            workers.get(),
+            SHARED_HEAP_SHARD_CAPACITY,
+        ));
+        match arena.shard(0) {
+            Ok(shard) => {
+                let shard = Arc::clone(shard);
+                EvalHeap::with_shared_shard(arena, shard)
+            }
+            Err(_) => {
+                // Unreachable: a shared arena always holds shard 0. Degrade to
+                // the serial heap rather than panicking in production.
+                debug_assert!(false, "shared arena is never built without shard 0");
+                EvalHeap::new()
+            }
+        }
+    }
+
+    /// Replaces this evaluator's heap with one allocating into `shard` of the
+    /// caller's shared `arena`.
+    ///
+    /// This is the multi-worker construction seam: the P3b scheduler (and the
+    /// in-crate K-worker harness today) builds one arena, then one `TreeWalk`
+    /// per worker, and hands worker `i` shard `i` so every worker can resolve
+    /// every other worker's allocations. It must be called before evaluation
+    /// begins - the freshly constructed heap it replaces must not have handed
+    /// out any values yet.
+    ///
+    /// GC-stress polling stays quiesced and the options' memory budget is
+    /// re-applied to the adopted heap.
+    // Production multi-worker wiring is the P3b scheduler slice; the in-crate
+    // K-worker harness exercises this today.
+    #[allow(dead_code)]
+    pub(crate) fn adopt_shared_heap_shard(
+        &mut self,
+        arena: Arc<SharedHeapArena>,
+        shard: Arc<SharedHeapShard>,
+    ) {
+        debug_assert!(
+            self.heap.is_empty(),
+            "shared heap shard adopted after values were allocated"
+        );
+        let mut heap = EvalHeap::with_shared_shard(arena, shard);
+        heap.set_gc_stress_policy(GcStressPolicy::disabled());
+        if let Some(heap_memory_budget) = self.options.heap_memory_budget() {
+            heap.set_memory_budget(heap_memory_budget);
+            heap.set_resident_memory_mode(
+                EvalHeapResidentMemoryMode::ProcessResidentSetWithArenaFallback,
+            );
+        }
+        self.heap = heap;
     }
 
     /// Evaluates the IR root to weak head normal form.

@@ -132,6 +132,33 @@ fn full_shard_reports_error() {
     ));
 }
 
+/// Records stay resolvable to their own content across geometric chunk-level
+/// boundaries: allocations well past the first chunk land in later, larger
+/// chunks whose slot addresses are stable from the moment they are published.
+#[test]
+fn geometric_chunk_growth_keeps_addresses_stable() {
+    // A capacity hint of 4 chunk levels: 256 + 512 + 1024 + 2048 records.
+    let arena = SharedHeapArena::new(1, 3000);
+    let shard = arena.shard(0).expect("shard 0");
+    assert!(shard.capacity() >= 3000);
+
+    let mut allocated = Vec::new();
+    for index in 0..3000u32 {
+        let bytes = format!("chunk-crossing-{index}").into_bytes();
+        let value = shard
+            .alloc_string(NixString::from_bytes(bytes.clone()))
+            .expect("within capacity");
+        allocated.push((value, bytes));
+    }
+    for (value, bytes) in &allocated {
+        assert_eq!(
+            arena.get_string(*value).expect("record resolves").bytes(),
+            bytes.as_slice()
+        );
+    }
+    assert_eq!(shard.published_len(), 3000);
+}
+
 /// The dependency graph the harness forces.
 ///
 /// Cell `i` (for `i > 0`) depends on cells `i - 1` and `i / 2`, so forcing a

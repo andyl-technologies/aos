@@ -34,21 +34,24 @@
 //! - the thread-local bump arena backing worker allocations;
 //! - thunk claim guards (deliberately `!Send`).
 //!
-//! # What still blocks a shared production heap
+//! # What still blocks K production workers
 //!
-//! The value graph itself is `Sync` (P1), but `EvalHeap`'s *allocation and
-//! resolution* machinery is per-evaluator: the record side table, hash-cons
-//! tables, and allocators are `&mut`-mutated on every allocation. Until those
-//! are made concurrent, K production `TreeWalk` instances cannot dereference
-//! one another's freshly allocated heap values, so this harness exercises the
-//! full claim/park/cycle/replay protocol on shared cells whose bodies produce
-//! immediate values. Under parallel mode the production evaluator runs with
-//! minor GC quiesced (production never runs minor collections; GC-stress
-//! polling must stay off) and without the worker-affine tier-1 JIT engine.
-//!
-//! The scheduler phase (P3) replaces this harness's fixed per-worker root
-//! iteration with demand-driven fan-out; the forcing protocol underneath is
-//! unchanged.
+//! The value graph is `Sync` (P1) and, since P3a, the production heap is
+//! shardable: under `TreeWalkOptions::parallel_workers` every `EvalHeap`
+//! allocates into its own [`SharedHeapArena`](super::heap::SharedHeapArena)
+//! shard and resolves values across all shards (the backend seam is
+//! `super::heap::shared_backend`), so K production `TreeWalk`s over one arena
+//! *can* dereference one another's fresh allocations - exercised by the
+//! `tree_walk::tests::parallel_shared_heap` harness. What remains for the
+//! scheduler phase (P3b) is spawning those K workers in production: sharing
+//! the module registry so a worker can *force* another worker's suspended
+//! thunk bodies (an `EvalNodeRef` names the owning evaluator's modules),
+//! translating per-evaluator symbol tables for cross-worker attr lookup, and
+//! replacing this harness's fixed per-worker root iteration with
+//! demand-driven fan-out. Under parallel mode the production evaluator runs
+//! with minor GC quiesced (production never runs minor collections;
+//! GC-stress polling must stay off) and without the worker-affine tier-1 JIT
+//! engine.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;

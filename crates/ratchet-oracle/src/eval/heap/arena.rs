@@ -613,6 +613,7 @@ impl EvalHeap {
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
             alloc_counters: EvalHeapAllocationCounters::default(),
+            shared: None,
         }
     }
 
@@ -648,6 +649,7 @@ impl EvalHeap {
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
             alloc_counters: EvalHeapAllocationCounters::default(),
+            shared: None,
         })
     }
 
@@ -1286,7 +1288,7 @@ impl EvalHeap {
         EvalHeapCheapMemoryBudgetPlan::new(decision, cheap_advice_report)
     }
 
-    fn poll_memory_budget_after_allocation(&mut self) {
+    pub(super) fn poll_memory_budget_after_allocation(&mut self) {
         let Some(budget) = self.memory_budget else {
             return;
         };
@@ -1302,7 +1304,12 @@ impl EvalHeap {
     ) -> (usize, EvalHeapResidentMemorySource) {
         let mapped_bytes = worker_stats
             .mapped_bytes
-            .saturating_add(permanent_stats.mapped_bytes);
+            .saturating_add(permanent_stats.mapped_bytes)
+            .saturating_add(
+                self.shared
+                    .as_ref()
+                    .map_or(0, |shared| shared.arena().published_payload_bytes()),
+            );
         match self.resident_memory_mode {
             EvalHeapResidentMemoryMode::ArenaMappedBytes => {
                 (mapped_bytes, EvalHeapResidentMemorySource::ArenaMappedBytes)
@@ -1373,6 +1380,9 @@ impl EvalHeap {
     /// not belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`]
     /// if the handle belongs to this heap but references another typed record.
     pub fn allocation_domain(&self, value: Value) -> Result<HeapAllocationDomain, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.allocation_domain(value);
+        }
         let (tag, ptr) = any_value_heap_ptr(value)?;
         let record = self.record_or_unknown(tag, ptr)?;
         let actual = record.object.tag();
@@ -1392,6 +1402,9 @@ impl EvalHeap {
     /// not belong to this heap. Returns [`EvalHeapError::RecordTypeMismatch`]
     /// if the handle belongs to this heap but references another typed record.
     pub fn generation(&self, value: Value) -> Result<HeapGeneration, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.generation(value);
+        }
         let (tag, ptr) = any_value_heap_ptr(value)?;
         let record = self.record_or_unknown(tag, ptr)?;
         let actual = record.object.tag();
@@ -1434,12 +1447,15 @@ impl EvalHeap {
 
     /// Returns the number of typed objects registered in this heap.
     pub fn len(&self) -> usize {
+        if let Some(shared) = &self.shared {
+            return shared.published_len();
+        }
         self.records.len()
     }
 
     /// Returns whether this heap contains no typed objects.
     pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.len() == 0
     }
 
     #[cfg(test)]
@@ -1465,6 +1481,9 @@ impl EvalHeap {
     /// reserved, if the runtime allocator cannot reserve a string handle, or if
     /// the resulting handle violates the runtime value alignment contract.
     pub fn alloc_string(&mut self, string: NixString) -> Result<Value, EvalHeapError> {
+        if self.shared.is_some() {
+            return self.shared_alloc_string(string);
+        }
         let hash = string.structural_hash_xxh3();
         let cons_slot = match self.admit_string_cons(hash, &string)? {
             HashConsReservation::Existing(value) => {
@@ -1525,6 +1544,9 @@ impl EvalHeap {
     /// reserved, if the runtime allocator cannot reserve a path handle, or if
     /// the resulting handle violates the runtime value alignment contract.
     pub fn alloc_path(&mut self, path: NixString) -> Result<Value, EvalHeapError> {
+        if self.shared.is_some() {
+            return self.shared_alloc_path(path);
+        }
         let hash = path.structural_hash_xxh3();
         let cons_slot = match self.admit_path_cons(hash, &path)? {
             HashConsReservation::Existing(value) => {
@@ -1585,6 +1607,9 @@ impl EvalHeap {
     /// reserved, if the runtime allocator cannot reserve a list handle, or if
     /// the resulting handle violates the runtime value alignment contract.
     pub fn alloc_list(&mut self, list: NixList) -> Result<Value, EvalHeapError> {
+        if self.shared.is_some() {
+            return self.shared_alloc_list(list);
+        }
         let hash = list_structural_hash(&list);
         let cons_slot = match self.admit_list_cons(hash, &list)? {
             HashConsReservation::Existing(value) => {
@@ -1686,6 +1711,14 @@ impl EvalHeap {
         projected_shape: Option<ShapeId>,
         attrs: FlatAttrs,
     ) -> Result<Value, EvalHeapError> {
+        if self.shared.is_some() {
+            return self.shared_alloc_attrs_with_projected_shape_metadata(
+                shape,
+                repr,
+                projected_shape,
+                attrs,
+            );
+        }
         self.alloc_counters.note_attrs_built(attrs.len());
         let metadata = match projected_shape {
             Some(projected_shape) => {
@@ -1755,6 +1788,9 @@ impl EvalHeap {
     /// runtime allocator cannot reserve a lambda handle, or if the resulting
     /// handle violates the runtime value alignment contract.
     pub fn alloc_lambda(&mut self, lambda: EvalLambda) -> Result<Value, EvalHeapError> {
+        if self.shared.is_some() {
+            return self.shared_alloc_lambda(lambda);
+        }
         self.reserve_record_slot()?;
         let allocation = self
             .allocator
@@ -1788,6 +1824,9 @@ impl EvalHeap {
     /// runtime allocator cannot reserve a builtin handle, or if the resulting
     /// handle violates the runtime value alignment contract.
     pub fn alloc_primop(&mut self, primop: EvalPrimOp) -> Result<Value, EvalHeapError> {
+        if self.shared.is_some() {
+            return self.shared_alloc_primop(primop);
+        }
         self.reserve_record_slot()?;
         let allocation = self
             .allocator
@@ -1821,6 +1860,9 @@ impl EvalHeap {
     /// runtime allocator cannot reserve a thunk handle, or if the resulting
     /// handle violates the runtime value alignment contract.
     pub fn alloc_thunk(&mut self, thunk: EvalThunk) -> Result<Value, EvalHeapError> {
+        if self.shared.is_some() {
+            return self.shared_alloc_thunk(thunk);
+        }
         self.reserve_record_slot()?;
         let allocation = self
             .allocator
@@ -1944,6 +1986,9 @@ impl EvalHeap {
         &self,
         value: Value,
     ) -> Result<Option<ValueHash>, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.cached_value_hash(value);
+        }
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
         Ok(self.records.cold_value_hash(address))
     }
@@ -1968,6 +2013,9 @@ impl EvalHeap {
         value: Value,
         hash: ValueHash,
     ) -> Result<HeapValueHashCacheUpdate, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.cache_value_hash(value, hash);
+        }
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
         match self.records.cold_value_hash(address) {
             Some(existing) if existing == hash => Ok(HeapValueHashCacheUpdate::AlreadyPresent),
@@ -1995,6 +2043,9 @@ impl EvalHeap {
         &self,
         value: Value,
     ) -> Result<Option<ValueHash>, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.cached_captured_value_hash(value);
+        }
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
         Ok(self.records.cold_captured_value_hash(address))
     }
@@ -2013,6 +2064,9 @@ impl EvalHeap {
         value: Value,
         hash: ValueHash,
     ) -> Result<(), EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.cache_captured_value_hash(value, hash);
+        }
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
         self.records
             .set_cold_captured_value_hash(address, Some(hash));
@@ -2040,6 +2094,9 @@ impl EvalHeap {
     /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
     /// belongs to this heap but references a non-string record.
     pub fn get_string_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixString, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.get_string_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::String, ptr)?;
         match &record.object {
             HeapObjectValue::String(string) => {
@@ -2075,6 +2132,9 @@ impl EvalHeap {
     /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
     /// belongs to this heap but references a non-path record.
     pub fn get_path_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixString, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.get_path_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Path, ptr)?;
         match &record.object {
             HeapObjectValue::Path(path) => {
@@ -2110,6 +2170,9 @@ impl EvalHeap {
     /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
     /// belongs to this heap but references a non-list record.
     pub fn get_list_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&NixList, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.get_list_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::List, ptr)?;
         match &record.object {
             HeapObjectValue::List(list) => {
@@ -2145,6 +2208,9 @@ impl EvalHeap {
     /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
     /// belongs to this heap but references a non-attrset record.
     pub fn get_attrs_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&FlatAttrs, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.get_attrs_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
         match &record.object {
             HeapObjectValue::Attrs { attrs, .. } => {
@@ -2183,6 +2249,9 @@ impl EvalHeap {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<EvalHeapAttrsMetadata, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.get_attrs_metadata_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
         match &record.object {
             HeapObjectValue::Attrs { metadata, .. } => {
@@ -2218,6 +2287,9 @@ impl EvalHeap {
     /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
     /// belongs to this heap but references a non-lambda record.
     pub fn get_lambda_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&EvalLambda, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.get_lambda_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
         match &record.object {
             HeapObjectValue::Lambda(lambda) => {
@@ -2253,6 +2325,9 @@ impl EvalHeap {
     /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
     /// belongs to this heap but references a non-builtin record.
     pub fn get_primop_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&EvalPrimOp, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.get_primop_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
         match &record.object {
             HeapObjectValue::Primop(primop) => {
@@ -2288,6 +2363,9 @@ impl EvalHeap {
     /// this heap. Returns [`EvalHeapError::RecordTypeMismatch`] if `ptr`
     /// belongs to this heap but references a non-thunk record.
     pub fn get_thunk_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&EvalThunk, EvalHeapError> {
+        if let Some(shared) = &self.shared {
+            return shared.get_thunk_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
         match &record.object {
             HeapObjectValue::Thunk(thunk) => {
@@ -2306,6 +2384,9 @@ impl EvalHeap {
     /// re-entering evaluation.
     pub(crate) fn clone_thunk(&self, value: Value) -> Result<Arc<EvalThunk>, EvalHeapError> {
         let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
+        if let Some(shared) = &self.shared {
+            return shared.clone_thunk_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
         match &record.object {
             HeapObjectValue::Thunk(thunk) => {
@@ -2324,6 +2405,9 @@ impl EvalHeap {
     /// before evaluating the body.
     pub(crate) fn clone_lambda(&self, value: Value) -> Result<Arc<EvalLambda>, EvalHeapError> {
         let ptr = value.as_lambda_ptr().map_err(EvalHeapError::Value)?;
+        if let Some(shared) = &self.shared {
+            return shared.clone_lambda_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
         match &record.object {
             HeapObjectValue::Lambda(lambda) => {
@@ -2342,6 +2426,9 @@ impl EvalHeap {
     /// before forcing captured arguments.
     pub(crate) fn clone_primop(&self, value: Value) -> Result<Arc<EvalPrimOp>, EvalHeapError> {
         let ptr = value.as_primop_ptr().map_err(EvalHeapError::Value)?;
+        if let Some(shared) = &self.shared {
+            return shared.clone_primop_ptr(ptr);
+        }
         let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
         match &record.object {
             HeapObjectValue::Primop(primop) => {
@@ -2507,7 +2594,7 @@ impl EvalHeap {
         ))
     }
 
-    fn push_string_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
+    pub(super) fn push_string_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
         let pushed = self.string_cons.push_reserved(slot, value);
         debug_assert!(
             pushed,
@@ -2515,7 +2602,7 @@ impl EvalHeap {
         );
     }
 
-    fn push_path_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
+    pub(super) fn push_path_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
         let pushed = self.path_cons.push_reserved(slot, value);
         debug_assert!(
             pushed,
@@ -2523,7 +2610,7 @@ impl EvalHeap {
         );
     }
 
-    fn push_attrs_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
+    pub(super) fn push_attrs_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
         let pushed = self.attrs_cons.push_reserved(slot, value);
         debug_assert!(
             pushed,
@@ -2531,7 +2618,7 @@ impl EvalHeap {
         );
     }
 
-    fn push_list_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
+    pub(super) fn push_list_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
         let pushed = self.list_cons.push_reserved(slot, value);
         debug_assert!(
             pushed,
@@ -2539,7 +2626,7 @@ impl EvalHeap {
         );
     }
 
-    fn cancel_string_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
+    pub(super) fn cancel_string_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
         let canceled = self.string_cons.cancel_reserved(slot);
         debug_assert!(
             canceled,
@@ -2547,7 +2634,7 @@ impl EvalHeap {
         );
     }
 
-    fn cancel_path_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
+    pub(super) fn cancel_path_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
         let canceled = self.path_cons.cancel_reserved(slot);
         debug_assert!(
             canceled,
@@ -2555,7 +2642,7 @@ impl EvalHeap {
         );
     }
 
-    fn cancel_attrs_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
+    pub(super) fn cancel_attrs_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
         let canceled = self.attrs_cons.cancel_reserved(slot);
         debug_assert!(
             canceled,
@@ -2563,7 +2650,7 @@ impl EvalHeap {
         );
     }
 
-    fn cancel_list_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
+    pub(super) fn cancel_list_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
         let canceled = self.list_cons.cancel_reserved(slot);
         debug_assert!(
             canceled,
@@ -2799,7 +2886,7 @@ impl EvalHeap {
     }
 }
 
-fn value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
+pub(super) fn value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
     match value.tag() {
         ValueTag::String => Ok((
             ValueTag::String,
@@ -2824,7 +2911,7 @@ fn value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalH
     }
 }
 
-fn any_value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
+pub(super) fn any_value_heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
     match value.tag() {
         ValueTag::String => Ok((
             ValueTag::String,
@@ -2908,7 +2995,7 @@ const fn whole_heap_memory_budget_sample(
     )
 }
 
-fn list_structural_hash(list: &NixList) -> HotXxh3Hash {
+pub(super) fn list_structural_hash(list: &NixList) -> HotXxh3Hash {
     let mut hasher = Xxh3::new();
     ValueTag::List.hash(&mut hasher);
     list.len().hash(&mut hasher);
@@ -2919,7 +3006,7 @@ fn list_structural_hash(list: &NixList) -> HotXxh3Hash {
     HotXxh3Hash::from_xxh3(hasher.finish())
 }
 
-fn attrs_structural_hash(metadata: EvalHeapAttrsMetadata, attrs: &FlatAttrs) -> HotXxh3Hash {
+pub(super) fn attrs_structural_hash(metadata: EvalHeapAttrsMetadata, attrs: &FlatAttrs) -> HotXxh3Hash {
     let mut hasher = Xxh3::new();
     ValueTag::Attrs.hash(&mut hasher);
     metadata.hash(&mut hasher);

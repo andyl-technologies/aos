@@ -45,10 +45,12 @@ mod primop;
 mod record_table;
 mod roots;
 mod shared_arena;
+mod shared_backend;
 mod thunk;
 
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 use record_table::HeapRecordTable;
+use shared_backend::SharedHeapBackend;
 
 pub use shared_arena::{SharedHeapArena, SharedHeapError, SharedHeapShard};
 
@@ -244,6 +246,10 @@ pub struct EvalHeap {
     list_cons: HashConsTable<HotXxh3Hash, Value>,
     attrs_cons: HashConsTable<HotXxh3Hash, Value>,
     alloc_counters: EvalHeapAllocationCounters,
+    /// Parallel-mode shared-arena backend. `None` in serial mode, where every
+    /// allocation and resolution path keeps its unchanged serial behavior
+    /// behind one branch-predictable check of this option.
+    shared: Option<SharedHeapBackend>,
 }
 
 impl Default for EvalHeap {
@@ -2284,6 +2290,16 @@ pub enum EvalHeapError {
     /// The generational minor-GC planner rejected the oracle snapshot.
     #[error("collector-poll minor-GC planning error: {0}")]
     GenerationalGc(#[from] GenerationalGcError),
+    /// A parallel-mode shared-arena heap operation failed.
+    #[error("shared evaluator heap error: {0}")]
+    SharedArena(#[from] SharedHeapError),
+    /// A shared-mode heap operation ran on a heap without a shared backend.
+    ///
+    /// This is an internal invariant violation: shared-mode entry points are
+    /// only dispatched when the backend is installed. It is reported as an
+    /// error rather than a panic so no invariant break is silently absorbed.
+    #[error("shared heap backend missing for a shared-mode heap operation")]
+    SharedBackendMissing,
 }
 
 impl EvalHeapError {
