@@ -9,15 +9,17 @@ pub mod advice;
 pub mod arena;
 pub mod budget;
 pub mod concurrent_gc;
+pub mod gauges;
 pub mod gc;
 pub mod region;
 pub mod resident;
 pub mod safety;
 
 pub use advice::{
-    MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_cold,
+    AllocatorReleaseOutcome, MemoryAdviceKind, MemoryAdviceOutcome, MemoryAdviceRange, advise_cold,
     advise_cold_heap_object_allocation, advise_dead, advise_evict,
     advise_evict_heap_object_allocation, advise_free, advise_huge, advise_range,
+    release_free_allocator_memory,
 };
 pub use arena::{
     ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionMark, ArenaRegionPopReport,
@@ -56,7 +58,9 @@ pub use region::{
     AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,
     RegionPlan, RegionRuntimeTier, RegionSharing,
 };
+pub use gauges::ArenaProcessGauges;
 pub use resident::{
-    ProcessResidentMemoryError, ProcessResidentMemorySample, ProcessResidentMemorySource,
-    process_resident_memory_sample, process_resident_memory_sample_from_linux_statm,
+    PeakResidentMemoryScope, ProcessResidentMemoryError, ProcessResidentMemorySample,
+    ProcessResidentMemorySource, peak_resident_memory_bytes, process_resident_memory_sample,
+    process_resident_memory_sample_from_linux_statm,
 };

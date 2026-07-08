@@ -17,7 +17,8 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::record::{
-    BenchmarkRecord, BenchmarkRunRecord, BenchmarkSummary, NativeBenchmarkSummary, STATS_DELTA_KEYS,
+    BenchmarkRecord, BenchmarkRunRecord, BenchmarkSummary, NativeBenchmarkSummary,
+    NativeMemorySummary, STATS_DELTA_KEYS,
 };
 
 /// Z-score threshold above which a mean movement is treated as significant.
@@ -71,6 +72,58 @@ pub(crate) struct BenchmarkComparison {
     /// The C++ Nix oracle movement, reported for context only.
     pub(crate) oracle: Movement,
     pub(crate) stats_delta: BTreeMap<String, StatsDelta>,
+    /// The native peak-memory movement, when both runs captured memory probes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) memory: Option<MemoryMovement>,
+}
+
+/// A native peak-memory movement between a baseline and the current run.
+///
+/// Compares the maximum per-sample `getrusage` peak-RSS watermark movement
+/// ([`NativeMemorySummary::peak_rss_delta_bytes_max`]). The watermark is a
+/// single deterministic high-water measurement per run, so significance uses a
+/// plain relative threshold rather than a z-score.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(crate) struct MemoryMovement {
+    pub(crate) previous_peak_rss_delta_bytes: u64,
+    pub(crate) current_peak_rss_delta_bytes: u64,
+    pub(crate) delta_bytes: i64,
+    pub(crate) delta_percent: f64,
+    pub(crate) threshold_percent: f64,
+    pub(crate) regression: bool,
+    pub(crate) improvement: bool,
+}
+
+/// Compares native peak-memory summaries between baseline and current runs.
+///
+/// Returns `None` unless both sides captured a positive peak-RSS movement, so
+/// legacy records and no-probe builds can never trip a memory regression.
+fn memory_movement(
+    current: &NativeBenchmarkSummary,
+    previous: &NativeBenchmarkSummary,
+    threshold: f64,
+) -> Option<MemoryMovement> {
+    let current_peak = peak_rss_delta(current.memory)?;
+    let previous_peak = peak_rss_delta(previous.memory)?;
+    let delta_bytes = i64::try_from(current_peak).unwrap_or(i64::MAX)
+        - i64::try_from(previous_peak).unwrap_or(i64::MAX);
+    let delta_percent = delta_bytes as f64 / previous_peak as f64;
+    Some(MemoryMovement {
+        previous_peak_rss_delta_bytes: previous_peak,
+        current_peak_rss_delta_bytes: current_peak,
+        delta_bytes,
+        delta_percent,
+        threshold_percent: threshold,
+        regression: delta_percent > threshold,
+        improvement: delta_percent < -threshold,
+    })
+}
+
+/// Extracts a comparable (positive) peak-RSS movement from a memory summary.
+fn peak_rss_delta(memory: Option<NativeMemorySummary>) -> Option<u64> {
+    memory
+        .and_then(|memory| memory.peak_rss_delta_bytes_max)
+        .filter(|&peak| peak > 0)
 }
 
 /// A single `NIX_SHOW_STATS` counter's movement between baseline and current run.
@@ -189,6 +242,7 @@ pub(crate) fn compare_benchmarks(
     current: &BenchmarkRecord,
     previous: PreviousBenchmark<'_>,
     threshold: f64,
+    memory_threshold: f64,
 ) -> BenchmarkComparison {
     let native = native_movement(
         &current.native_summary,
@@ -212,6 +266,11 @@ pub(crate) fn compare_benchmarks(
         native_over_oracle,
         oracle,
         stats_delta: stats_delta(&current.summary, &previous.record.summary),
+        memory: memory_movement(
+            &current.native_summary,
+            &previous.record.native_summary,
+            memory_threshold,
+        ),
     }
 }
 

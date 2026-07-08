@@ -214,6 +214,7 @@ async fn run(cli: &Cli) -> Result<()> {
         fail_on_regression,
         require_perf_win,
         regression_threshold,
+        memory_regression_threshold,
     } = &cli.command
     {
         return run_nix_bench_threaded(
@@ -228,6 +229,7 @@ async fn run(cli: &Cli) -> Result<()> {
             *fail_on_regression,
             *require_perf_win,
             *regression_threshold,
+            *memory_regression_threshold,
         );
     }
 
@@ -454,6 +456,7 @@ fn run_nix_diff_threaded(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_nix_bench_threaded(
     printer: Printer,
     verbose: u8,
@@ -466,6 +469,7 @@ fn run_nix_bench_threaded(
     fail_on_regression: bool,
     require_perf_win: bool,
     regression_threshold: f64,
+    memory_regression_threshold: f64,
 ) -> Result<()> {
     const NIX_BENCH_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -485,6 +489,7 @@ fn run_nix_bench_threaded(
                 fail_on_regression,
                 require_perf_win,
                 regression_threshold,
+                memory_regression_threshold,
             )
         })
         .context("spawning nix-bench worker thread")?;

@@ -92,6 +92,87 @@ pub enum ProcessResidentMemoryError {
     /// The Darwin Mach resident byte count did not fit in `usize`.
     #[error("resident byte count overflowed while reading Mach task basic info")]
     DarwinMachResidentBytesOverflow,
+    /// The `getrusage` peak resident-memory query failed.
+    #[error("getrusage failed for peak resident memory: errno {errno}")]
+    GetrusageFailed {
+        /// The failing `getrusage` errno.
+        errno: i32,
+    },
+}
+
+/// The process scope of a peak resident-memory (`ru_maxrss`) query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PeakResidentMemoryScope {
+    /// The calling process itself (`RUSAGE_SELF`).
+    SelfProcess,
+    /// All terminated and waited-for children (`RUSAGE_CHILDREN`).
+    ///
+    /// `ru_maxrss` under this scope is the **maximum** resident set observed
+    /// across all waited-for children since process start, not a sum, and it
+    /// never decreases. Attributing it to one child requires comparing the
+    /// watermark before and after that child exits.
+    WaitedChildren,
+}
+
+/// Returns the peak resident set in bytes for `scope`, when supported.
+///
+/// The value is the kernel's `ru_maxrss` watermark: it is monotonic for the
+/// life of the process (scope [`PeakResidentMemoryScope::SelfProcess`]) or the
+/// running maximum over waited-for children
+/// ([`PeakResidentMemoryScope::WaitedChildren`]). Unsupported targets return
+/// `Ok(None)` so callers can skip peak accounting without special-casing the
+/// platform.
+///
+/// # Errors
+///
+/// Returns [`ProcessResidentMemoryError::GetrusageFailed`] when the target has
+/// a sampler but the `getrusage` call fails.
+pub fn peak_resident_memory_bytes(
+    scope: PeakResidentMemoryScope,
+) -> Result<Option<u64>, ProcessResidentMemoryError> {
+    peak_resident_memory_bytes_for_target(scope)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn peak_resident_memory_bytes_for_target(
+    scope: PeakResidentMemoryScope,
+) -> Result<Option<u64>, ProcessResidentMemoryError> {
+    let who = match scope {
+        PeakResidentMemoryScope::SelfProcess => libc::RUSAGE_SELF,
+        PeakResidentMemoryScope::WaitedChildren => libc::RUSAGE_CHILDREN,
+    };
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    let status = {
+        // SAFETY: `who` is one of the two standard rusage selectors and the
+        // output pointer names valid, writable `rusage` storage. `getrusage`
+        // is a side-effect-free process query; the result is only read after
+        // the success check below.
+        unsafe { libc::getrusage(who, usage.as_mut_ptr()) }
+    };
+    if status != 0 {
+        return Err(ProcessResidentMemoryError::GetrusageFailed {
+            errno: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
+        });
+    }
+    let usage = {
+        // SAFETY: `getrusage` returned success, so it filled the `rusage`
+        // structure completely.
+        unsafe { usage.assume_init() }
+    };
+    let raw = u64::try_from(usage.ru_maxrss).unwrap_or(0);
+    // Linux reports `ru_maxrss` in kilobytes; Darwin reports bytes.
+    #[cfg(target_os = "linux")]
+    let bytes = raw.saturating_mul(1024);
+    #[cfg(target_os = "macos")]
+    let bytes = raw;
+    Ok(Some(bytes))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn peak_resident_memory_bytes_for_target(
+    _scope: PeakResidentMemoryScope,
+) -> Result<Option<u64>, ProcessResidentMemoryError> {
+    Ok(None)
 }
 
 /// Samples current process resident bytes when a platform sampler exists.
@@ -273,6 +354,26 @@ mod tests {
             process_resident_memory_sample_from_linux_statm("123 2\n", usize::MAX),
             Err(ProcessResidentMemoryError::LinuxStatmResidentBytesOverflow)
         ));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn peak_sampler_reports_at_least_current_resident_bytes() {
+        let peak = peak_resident_memory_bytes(PeakResidentMemoryScope::SelfProcess)
+            .expect("peak sampler succeeds")
+            .expect("target has a peak resident-memory sampler");
+        let current = ProcessResidentMemorySample::current()
+            .expect("target sampler succeeds")
+            .expect("target has a live resident-memory sampler");
+
+        assert!(peak > 0);
+        assert!(peak >= current.resident_bytes() as u64 / 2);
+
+        // The children watermark is monotonic and may be zero when this test
+        // process has not waited for any children.
+        let children = peak_resident_memory_bytes(PeakResidentMemoryScope::WaitedChildren)
+            .expect("children peak sampler succeeds");
+        assert!(children.is_some());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

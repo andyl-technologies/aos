@@ -28,6 +28,7 @@ pub const HEAP_INNATE_UNSAFE_OPERATIONS: &[HeapInnateUnsafeOperation] = &[
     HeapInnateUnsafeOperation::MemoryAdviceRange,
     HeapInnateUnsafeOperation::ResidentMemoryProbe,
     HeapInnateUnsafeOperation::RegionPopHandoff,
+    HeapInnateUnsafeOperation::AllocatorFreeMemoryRelease,
 ];
 
 /// Required audit tools for heap and GC unsafe code.
@@ -58,6 +59,9 @@ pub enum HeapInnateUnsafeOperation {
     ResidentMemoryProbe,
     /// Rewinds a region after the caller proves all later heap handles are dead.
     RegionPopHandoff,
+    /// Asks the process allocator to return dirty-but-free pages to the OS
+    /// (`malloc_trim` on glibc targets).
+    AllocatorFreeMemoryRelease,
 }
 
 /// Standing controls required before unsafe heap or GC code can land.
@@ -257,10 +261,15 @@ mod tests {
             .join("src")
             .join("heap");
 
+        // resident.rs count 4 -> 6: the `getrusage` peak resident-memory probe
+        // added one `unsafe` libc call plus one `assume_init` on its output,
+        // both under the reviewed `ResidentMemoryProbe` innate operation.
+        // advice.rs count 12 -> 13: the glibc `malloc_trim(0)` call under the
+        // reviewed `AllocatorFreeMemoryRelease` innate operation.
         for (file_name, expected_count) in [
-            ("advice.rs", 12usize),
+            ("advice.rs", 13usize),
             ("arena.rs", 12usize),
-            ("resident.rs", 4usize),
+            ("resident.rs", 6usize),
         ] {
             let source_path = heap_root.join(file_name);
             let source = fs::read_to_string(&source_path).expect("source file is readable");

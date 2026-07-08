@@ -328,6 +328,9 @@ pub enum Commands {
         /// Relative movement threshold for regressions and required perf wins
         #[arg(long, default_value_t = crate::commands::nix_bench::default_regression_threshold())]
         regression_threshold: f64,
+        /// Relative peak-RSS movement threshold for memory regressions
+        #[arg(long, default_value_t = crate::commands::nix_bench::default_memory_regression_threshold())]
+        memory_regression_threshold: f64,
     },
     /// Generate cargo-fuzz source seeds
     NixFuzzCorpus {
@@ -959,6 +962,7 @@ mod tests {
                 fail_on_regression,
                 require_perf_win,
                 regression_threshold,
+                memory_regression_threshold,
             } => {
                 assert!(attr.is_empty());
                 assert_eq!(file, None);
@@ -970,6 +974,10 @@ mod tests {
                 assert_eq!(
                     regression_threshold,
                     crate::commands::nix_bench::default_regression_threshold()
+                );
+                assert_eq!(
+                    memory_regression_threshold,
+                    crate::commands::nix_bench::default_memory_regression_threshold()
                 );
             }
             _ => panic!("expected nix-bench command"),
@@ -996,6 +1004,8 @@ mod tests {
             "--require-perf-win",
             "--regression-threshold",
             "0.2",
+            "--memory-regression-threshold",
+            "0.3",
         ]);
 
         match cli.command {
@@ -1008,6 +1018,7 @@ mod tests {
                 fail_on_regression,
                 require_perf_win,
                 regression_threshold,
+                memory_regression_threshold,
             } => {
                 assert_eq!(
                     attr,
@@ -1026,6 +1037,7 @@ mod tests {
                 assert!(fail_on_regression);
                 assert!(require_perf_win);
                 assert_eq!(regression_threshold, 0.2);
+                assert_eq!(memory_regression_threshold, 0.3);
             }
             _ => panic!("expected nix-bench command"),
         }

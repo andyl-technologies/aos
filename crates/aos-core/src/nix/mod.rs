@@ -16,13 +16,20 @@
 //!   [`NixEval`] seam.
 //! - [`env`](mod@env) -- [`aos_nix_env`], the `AOS_ROOT`-derived environment
 //!   bindings that point Nix subprocesses at the AOS store layout.
+//! - [`native_memory`] -- optional in-process memory probes (RSS, peak RSS,
+//!   arena gauges) used by `aos nix-bench` when built with `native-eval`.
 
 pub mod env;
 pub mod eval;
+pub mod native_memory;
 pub mod runner;
 pub mod store;
 
 pub use env::{aos_nix_command, aos_nix_env, aos_tokio_nix_command};
+pub use native_memory::{
+    NativeArenaGauges, children_peak_rss_bytes, current_rss_bytes, native_arena_gauges,
+    native_memory_probes_supported, peak_rss_bytes, release_free_memory, reset_native_arena_peak,
+};
 pub use eval::{
     DrvClosure, NativeEvalStats, NativeFallbackStats, NativeMode, NativeShadowStats,
     NativeSuccessStats, NativeVerifyStats, NixEval, NixEvalConfig, NixEvalMode,

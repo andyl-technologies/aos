@@ -19,6 +19,7 @@ fn sample(elapsed_seconds: f64, cpu_time: f64, thunks: u64) -> BenchmarkSample {
             "cpuTime": cpu_time,
             "nrThunks": thunks,
         }),
+        child_peak_rss_bytes: None,
     }
 }
 
@@ -28,6 +29,7 @@ fn sample_without_stats(elapsed_seconds: f64) -> BenchmarkSample {
         elapsed_nanos: duration_nanos(Duration::from_secs_f64(elapsed_seconds)),
         drv_path: "/nix/store/example.drv".to_string(),
         stats: serde_json::json!({}),
+        child_peak_rss_bytes: None,
     }
 }
 
@@ -53,6 +55,7 @@ fn outcome(
             record: &previous,
         },
         threshold,
+        default_memory_regression_threshold(),
     );
     BenchmarkOutcome {
         record: current,
@@ -74,6 +77,7 @@ fn record_with_context(
             elapsed_seconds: sample.elapsed_seconds,
             elapsed_nanos: sample.elapsed_nanos,
             drv_path: sample.drv_path.clone(),
+            memory: None,
         })
         .collect();
     BenchmarkRecord {
@@ -237,6 +241,7 @@ fn comparison_flags_significant_regression_with_stats_delta() {
             record: &previous,
         },
         0.10,
+        0.10,
     );
 
     assert!(comparison.significant);
@@ -281,6 +286,7 @@ fn comparison_flags_significant_improvement_with_stats_delta() {
             commit: "previous",
             record: &previous,
         },
+        0.10,
         0.10,
     );
 
@@ -667,4 +673,182 @@ fn toolchain_attr_expr_includes_bootstrap_roots_and_gcc_tiers() {
     assert!(expr.contains("stdenv.toolchainTiers.${tierName}.${componentName}"));
     assert!(expr.contains("\"gccStage2\""));
     assert!(expr.contains("\"linuxHeaders\""));
+}
+
+fn native_sample_with_memory(peak_rss_delta: u64) -> NativeBenchmarkSample {
+    NativeBenchmarkSample {
+        elapsed_seconds: 1.0,
+        elapsed_nanos: 1_000_000_000,
+        drv_path: "/nix/store/example.drv".to_string(),
+        memory: Some(NativeSampleMemory {
+            rss_before_bytes: Some(100),
+            rss_after_bytes: Some(200 + peak_rss_delta),
+            peak_rss_before_bytes: Some(1_000),
+            peak_rss_after_bytes: Some(1_000 + peak_rss_delta),
+            peak_rss_delta_bytes: Some(peak_rss_delta),
+            arena: Some(NativeSampleArena {
+                live_mapped_bytes_before: 0,
+                live_mapped_bytes_after: 0,
+                peak_live_mapped_bytes: 64 + peak_rss_delta,
+                live_chunks_after: 0,
+                chunks_mapped: 6,
+                bytes_mapped: 64 + peak_rss_delta,
+            }),
+        }),
+    }
+}
+
+fn record_with_memory(name: &str, peak_rss_delta: u64) -> BenchmarkRecord {
+    let mut record = record(name, vec![sample(1.0, 0.5, 10)]);
+    record.native_samples = vec![
+        native_sample_with_memory(peak_rss_delta),
+        native_sample_with_memory(peak_rss_delta / 2),
+    ];
+    record.native_summary = summarize_native_samples(&record.native_samples);
+    record
+}
+
+#[test]
+fn native_memory_summary_takes_maxima_and_final_arena_state() {
+    let record = record_with_memory("leaf:cold:pkgs.zlib", 1_000);
+    let memory = record.native_summary.memory.expect("memory summary");
+
+    assert_eq!(memory.peak_rss_delta_bytes_max, Some(1_000));
+    assert_eq!(memory.rss_after_bytes_max, Some(1_200));
+    assert_eq!(memory.arena_peak_live_mapped_bytes_max, Some(1_064));
+    assert_eq!(memory.arena_live_mapped_bytes_after_last, Some(0));
+}
+
+#[test]
+fn native_memory_summary_is_absent_without_memory_probes() {
+    let record = record("leaf:cold:pkgs.zlib", vec![sample(1.0, 0.5, 10)]);
+
+    assert!(record.native_summary.memory.is_none());
+}
+
+#[test]
+fn memory_regression_is_flagged_past_the_memory_threshold() {
+    let previous = record_with_memory("leaf:cold:pkgs.zlib", 1_000);
+    let current = record_with_memory("leaf:cold:pkgs.zlib", 1_500);
+
+    let comparison = compare_benchmarks(
+        &current,
+        PreviousBenchmark {
+            commit: "previous",
+            record: &previous,
+        },
+        0.10,
+        0.10,
+    );
+
+    let memory = comparison.memory.expect("memory movement");
+    assert_eq!(memory.previous_peak_rss_delta_bytes, 1_000);
+    assert_eq!(memory.current_peak_rss_delta_bytes, 1_500);
+    assert_eq!(memory.delta_bytes, 500);
+    assert!(memory.regression);
+    assert!(!memory.improvement);
+}
+
+#[test]
+fn memory_improvement_is_flagged_and_small_movement_is_neither() {
+    let previous = record_with_memory("leaf:cold:pkgs.zlib", 1_000);
+
+    let improved = record_with_memory("leaf:cold:pkgs.zlib", 500);
+    let comparison = compare_benchmarks(
+        &improved,
+        PreviousBenchmark {
+            commit: "previous",
+            record: &previous,
+        },
+        0.10,
+        0.10,
+    );
+    let memory = comparison.memory.expect("memory movement");
+    assert!(memory.improvement);
+    assert!(!memory.regression);
+
+    let steady = record_with_memory("leaf:cold:pkgs.zlib", 1_050);
+    let comparison = compare_benchmarks(
+        &steady,
+        PreviousBenchmark {
+            commit: "previous",
+            record: &previous,
+        },
+        0.10,
+        0.10,
+    );
+    let memory = comparison.memory.expect("memory movement");
+    assert!(!memory.improvement);
+    assert!(!memory.regression);
+}
+
+#[test]
+fn memory_movement_requires_probes_on_both_sides() {
+    let previous = record("leaf:cold:pkgs.zlib", vec![sample(1.0, 0.5, 10)]);
+    let current = record_with_memory("leaf:cold:pkgs.zlib", 1_000);
+
+    let comparison = compare_benchmarks(
+        &current,
+        PreviousBenchmark {
+            commit: "previous",
+            record: &previous,
+        },
+        0.10,
+        0.10,
+    );
+
+    assert!(comparison.memory.is_none());
+}
+
+#[test]
+fn skipped_parity_records_never_match_as_baselines() {
+    let mut previous = record("leaf:cold:pkgs.zlib", vec![sample(1.0, 0.5, 10)]);
+    previous.parity = BenchmarkParity::skipped("aos-nix");
+    let current = record("leaf:cold:pkgs.zlib", vec![sample(1.0, 0.5, 10)]);
+    let history = vec![BenchmarkRunRecord {
+        version: BENCH_HISTORY_VERSION,
+        commit: "previous".to_string(),
+        timestamp_unix_ms: 1,
+        file: current.file.clone(),
+        benchmarks: vec![previous],
+    }];
+
+    assert!(previous_benchmark(&history, &current, "current").is_none());
+}
+
+#[test]
+fn v2_history_records_without_memory_fields_still_parse() {
+    let line = serde_json::json!({
+        "version": 2,
+        "commit": "previouscommit",
+        "timestamp_unix_ms": 1,
+        "file": "/repo/default.nix",
+        "benchmarks": [{
+            "name": "leaf:cold:pkgs.zlib",
+            "attr": "pkgs.zlib",
+            "samples": [{
+                "elapsed_seconds": 1.0,
+                "elapsed_nanos": 1000000000u64,
+                "drv_path": "/nix/store/example.drv",
+                "stats": {}
+            }],
+            "summary": {
+                "samples": 1,
+                "mean_seconds": 1.0,
+                "stddev_seconds": 0.0,
+                "min_seconds": 1.0,
+                "max_seconds": 1.0,
+                "stats_mean": {}
+            }
+        }]
+    });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("history.jsonl");
+    fs::write(&path, format!("{line}\n")).expect("write history");
+
+    let history = read_history(&path).expect("v2 history parses");
+    let benchmark = &history[0].benchmarks[0];
+    assert!(benchmark.summary.child_peak_rss_bytes_max.is_none());
+    assert!(benchmark.native_summary.memory.is_none());
+    assert!(benchmark.samples[0].child_peak_rss_bytes.is_none());
 }

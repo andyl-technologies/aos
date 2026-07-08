@@ -279,6 +279,59 @@ fn full_pages_in_range(range: MemoryAdviceRange, page_size: usize) -> FullPageRa
     FullPageRange::Selected(MemoryAdviceRange { ptr, len })
 }
 
+/// The result of asking the process allocator to return free memory to the OS.
+///
+/// Evaluator teardown frees large transient structures (heap-record tables,
+/// captured environments, string storage) back to the process allocator, which
+/// may keep the pages dirty-but-free. On a long-lived process that runs many
+/// evaluations, those retained pages dominate resident-set growth even though
+/// live allocation stays bounded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AllocatorReleaseOutcome {
+    /// The allocator was asked to release free memory and reported success.
+    Released,
+    /// The allocator reported that no memory could be released.
+    NothingToRelease,
+    /// This target has no supported allocator-release lowering.
+    ///
+    /// Darwin is intentionally unsupported: `libmalloc` performs its own
+    /// pressure relief (observed empirically as periodic resident-set drops),
+    /// and its `malloc_zone_pressure_relief` API has no binding in the pinned
+    /// `libc`, while heap policy forbids ad-hoc `extern` declarations.
+    Unsupported,
+}
+
+/// Asks the process allocator to return dirty-but-free memory to the OS.
+///
+/// On Linux/glibc this calls `malloc_trim(0)`, which releases free heap pages
+/// (top-of-heap and per-arena) back to the kernel. Call it at evaluation
+/// boundaries, never on a hot path: released pages fault back in on next use,
+/// so trimming between timed measurements keeps resident-set numbers honest at
+/// a small one-time refault cost.
+pub fn release_free_allocator_memory() -> AllocatorReleaseOutcome {
+    release_free_allocator_memory_for_target()
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn release_free_allocator_memory_for_target() -> AllocatorReleaseOutcome {
+    let released = {
+        // SAFETY: `malloc_trim(0)` is a glibc allocator maintenance call with
+        // no memory-safety preconditions; it only releases allocator-owned
+        // free pages and returns 1 when memory was returned to the system.
+        unsafe { libc::malloc_trim(0) }
+    };
+    if released == 1 {
+        AllocatorReleaseOutcome::Released
+    } else {
+        AllocatorReleaseOutcome::NothingToRelease
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn release_free_allocator_memory_for_target() -> AllocatorReleaseOutcome {
+    AllocatorReleaseOutcome::Unsupported
+}
+
 #[cfg(target_os = "linux")]
 fn round_up_to_multiple(value: usize, multiple: usize) -> Option<usize> {
     debug_assert!(multiple != 0);
@@ -318,6 +371,23 @@ mod tests {
             .aos_alloc_string(128)
             .expect("string object allocates");
         (arena, allocation)
+    }
+
+    #[test]
+    fn allocator_release_reports_a_target_appropriate_outcome() {
+        // Generate some allocator churn so glibc targets have free pages to
+        // consider; the outcome remains advisory on every platform.
+        let churn: Vec<Vec<u8>> = (0..64).map(|_| vec![0_u8; 64 * 1024]).collect();
+        drop(churn);
+
+        let outcome = release_free_allocator_memory();
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        assert!(matches!(
+            outcome,
+            AllocatorReleaseOutcome::Released | AllocatorReleaseOutcome::NothingToRelease
+        ));
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+        assert_eq!(outcome, AllocatorReleaseOutcome::Unsupported);
     }
 
     #[test]

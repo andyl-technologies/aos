@@ -717,6 +717,7 @@ impl Chunk {
         }
         let ptr =
             std::ptr::NonNull::new(raw_ptr.cast::<u8>()).ok_or(ArenaError::NullChunkPointer)?;
+        super::gauges::record_chunk_mapped(mapped_bytes);
         Ok(Self {
             ptr,
             logical_bytes,
@@ -802,6 +803,7 @@ impl Drop for Chunk {
             // and `Chunk` owns that mapping until this drop runs.
             unsafe { libc::munmap(self.ptr.as_ptr().cast(), self.mapped_bytes) }
         };
+        super::gauges::record_chunk_unmapped(self.mapped_bytes);
         if rc != 0 {
             debug_assert!(
                 false,

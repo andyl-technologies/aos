@@ -21,10 +21,15 @@
 //!       "temperature": "cold",
 //!       "context": { ... },
 //!       "parity": { "mode": "byte", "candidate": "aos-nix", "matched": true, ... },
-//!       "samples":        [ { "elapsed_seconds": .., "drv_path": "..", "stats": {..} } ],
-//!       "summary":        { "mean_seconds": .., "stats_mean": {..} },
-//!       "native_samples": [ { "elapsed_seconds": .., "drv_path": ".." } ],
-//!       "native_summary": { "mean_seconds": .., "min_seconds": .. }
+//!       "samples":        [ { "elapsed_seconds": .., "drv_path": "..", "stats": {..},
+//!                             "child_peak_rss_bytes": .. } ],
+//!       "summary":        { "mean_seconds": .., "stats_mean": {..},
+//!                           "child_peak_rss_bytes_max": .. },
+//!       "native_samples": [ { "elapsed_seconds": .., "drv_path": "..",
+//!                             "memory": { "rss_before_bytes": .., "rss_after_bytes": ..,
+//!                                         "peak_rss_delta_bytes": .., "arena": {..} } } ],
+//!       "native_summary": { "mean_seconds": .., "min_seconds": ..,
+//!                           "memory": { "peak_rss_delta_bytes_max": .., .. } }
 //!     }
 //!   ]
 //! }
@@ -35,6 +40,14 @@
 //! both deserialize with serde defaults (an empty native sample set, a
 //! zero-count [`NativeBenchmarkSummary`]) and are treated as lacking a native
 //! baseline rather than as a regression.
+//!
+//! Version `3` added optional memory fields: `memory` on each native sample
+//! (RSS bracketing, the `getrusage` peak-RSS watermark movement, and Tier-A
+//! arena gauges), `child_peak_rss_bytes` on oracle samples (attributed via the
+//! `RUSAGE_CHILDREN` watermark), and the corresponding `native_summary` /
+//! `summary` aggregates. All are `Option`s serialized only when captured, so
+//! version-2 records and no-probe builds deserialize unchanged and are treated
+//! as lacking a memory baseline.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -51,9 +64,10 @@ use aos_nix_harness::diff::DrvDiffReport;
 /// On-disk benchmark history schema version.
 ///
 /// Version `2` added the native evaluator timings (`native_samples` and
-/// `native_summary`); version `1` records omit them and deserialize with serde
-/// defaults.
-pub(crate) const BENCH_HISTORY_VERSION: u32 = 2;
+/// `native_summary`); version `3` added the optional memory instrumentation
+/// fields. Records from older versions omit the newer fields and deserialize
+/// with serde defaults.
+pub(crate) const BENCH_HISTORY_VERSION: u32 = 3;
 
 /// C++ Nix `NIX_SHOW_STATS` counters tracked for the per-benchmark delta report.
 pub(crate) const STATS_DELTA_KEYS: &[&str] = &[
@@ -105,17 +119,78 @@ pub(crate) struct BenchmarkSample {
     pub(crate) elapsed_nanos: u64,
     pub(crate) drv_path: String,
     pub(crate) stats: serde_json::Value,
+    /// Peak RSS of the oracle child, from the `RUSAGE_CHILDREN` watermark.
+    ///
+    /// `Some` only when this sample's child raised the watermark, which makes
+    /// the attribution certain; `None` when the child peaked below an earlier
+    /// child (its exact peak is unknowable from the parent) or when the build
+    /// carries no memory probes. (Schema v3.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) child_peak_rss_bytes: Option<u64>,
 }
 
 /// A single native evaluator instantiation timing.
 ///
 /// The native evaluator does not emit `NIX_SHOW_STATS`, so a native sample
-/// records only wall-clock time and the resulting `.drv` path.
+/// records only wall-clock time, the resulting `.drv` path, and (schema v3)
+/// optional in-process memory probes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct NativeBenchmarkSample {
     pub(crate) elapsed_seconds: f64,
     pub(crate) elapsed_nanos: u64,
     pub(crate) drv_path: String,
+    /// In-process memory probes bracketing this sample, when captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) memory: Option<NativeSampleMemory>,
+}
+
+/// Memory probes bracketing one native evaluator sample. (Schema v3.)
+///
+/// RSS fields are point samples from the platform resident-memory source;
+/// peak-RSS fields come from the monotonic `getrusage` watermark, so
+/// `peak_rss_delta_bytes` is `0` when an earlier eval in this process already
+/// peaked higher — the first cold sample carries the meaningful peak.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct NativeSampleMemory {
+    /// Process RSS sampled just before the eval, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rss_before_bytes: Option<u64>,
+    /// Process RSS sampled just after the eval, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rss_after_bytes: Option<u64>,
+    /// `getrusage` peak-RSS watermark before the eval, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) peak_rss_before_bytes: Option<u64>,
+    /// `getrusage` peak-RSS watermark after the eval, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) peak_rss_after_bytes: Option<u64>,
+    /// Watermark movement across the eval (`after - before`), in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) peak_rss_delta_bytes: Option<u64>,
+    /// Tier-A arena mapping gauges bracketing the eval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) arena: Option<NativeSampleArena>,
+}
+
+/// Tier-A arena mapping gauges bracketing one native sample. (Schema v3.)
+///
+/// All byte counts are `mmap`-level mapped bytes. `live_mapped_bytes_after`
+/// returning to `live_mapped_bytes_before` proves the eval's arenas were
+/// unmapped before the next sample started.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct NativeSampleArena {
+    /// Live arena mapped bytes before the eval.
+    pub(crate) live_mapped_bytes_before: u64,
+    /// Live arena mapped bytes after the eval.
+    pub(crate) live_mapped_bytes_after: u64,
+    /// High-water live arena mapped bytes during the eval (peak rebased before).
+    pub(crate) peak_live_mapped_bytes: u64,
+    /// Live arena chunks after the eval.
+    pub(crate) live_chunks_after: u64,
+    /// Arena chunks newly mapped during the eval.
+    pub(crate) chunks_mapped: u64,
+    /// Arena bytes newly mapped during the eval.
+    pub(crate) bytes_mapped: u64,
 }
 
 /// Aggregate statistics over a benchmark's C++ Nix oracle samples.
@@ -127,6 +202,9 @@ pub(crate) struct BenchmarkSummary {
     pub(crate) min_seconds: f64,
     pub(crate) max_seconds: f64,
     pub(crate) stats_mean: BTreeMap<String, f64>,
+    /// Maximum attributed oracle-child peak RSS over the samples. (Schema v3.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) child_peak_rss_bytes_max: Option<u64>,
 }
 
 /// Aggregate wall-clock statistics over a benchmark's native evaluator samples.
@@ -140,6 +218,31 @@ pub(crate) struct NativeBenchmarkSummary {
     pub(crate) stddev_seconds: f64,
     pub(crate) min_seconds: f64,
     pub(crate) max_seconds: f64,
+    /// Aggregate memory statistics over the samples' probes. (Schema v3.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) memory: Option<NativeMemorySummary>,
+}
+
+/// Aggregate memory statistics over a benchmark's native samples. (Schema v3.)
+///
+/// The peak-RSS watermark is monotonic across the process, so
+/// `peak_rss_delta_bytes_max` is normally set by the first sample of the first
+/// benchmark that reached a new process high-water mark; it is the headline
+/// memory metric the regression gate compares.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct NativeMemorySummary {
+    /// Maximum `peak_rss_delta_bytes` over the samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) peak_rss_delta_bytes_max: Option<u64>,
+    /// Maximum post-eval RSS point sample, in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rss_after_bytes_max: Option<u64>,
+    /// Maximum per-sample arena mapped-bytes high-water mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) arena_peak_live_mapped_bytes_max: Option<u64>,
+    /// Live arena mapped bytes after the final sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) arena_live_mapped_bytes_after_last: Option<u64>,
 }
 
 /// The `.drv` parity proof recorded alongside a benchmark's timings.
@@ -173,6 +276,24 @@ impl BenchmarkParity {
             divergence_count: report.divergences.len(),
             root_divergence_count: report.root_divergences.len(),
             contaminated_divergence_count: report.contaminated_divergences.len(),
+        }
+    }
+
+    /// Builds the unproven parity record for a diagnostics run that skipped
+    /// the gate (`AOS_NIX_BENCH_SKIP_PARITY=1`).
+    ///
+    /// `matched` stays `false`, so a skipped run can never satisfy perf-win
+    /// admissibility and never becomes a comparison baseline.
+    pub(crate) fn skipped(candidate_name: &str) -> Self {
+        Self {
+            mode: "skipped".to_string(),
+            candidate: candidate_name.to_string(),
+            matched: false,
+            oracle_root: None,
+            candidate_root: None,
+            divergence_count: 0,
+            root_divergence_count: 0,
+            contaminated_divergence_count: 0,
         }
     }
 
@@ -299,6 +420,10 @@ pub(crate) fn summarize_samples(samples: &[BenchmarkSample]) -> BenchmarkSummary
         min_seconds,
         max_seconds,
         stats_mean: mean_numeric_stats(samples),
+        child_peak_rss_bytes_max: samples
+            .iter()
+            .filter_map(|sample| sample.child_peak_rss_bytes)
+            .max(),
     }
 }
 
@@ -322,7 +447,39 @@ pub(crate) fn summarize_native_samples(
         stddev_seconds,
         min_seconds,
         max_seconds,
+        memory: summarize_native_memory(samples),
     }
+}
+
+/// Aggregates the optional per-sample memory probes into a summary.
+///
+/// Returns `None` when no sample carried memory data, which downstream
+/// comparison treats as "no memory baseline".
+fn summarize_native_memory(samples: &[NativeBenchmarkSample]) -> Option<NativeMemorySummary> {
+    let memory = samples
+        .iter()
+        .filter_map(|sample| sample.memory)
+        .collect::<Vec<_>>();
+    if memory.is_empty() {
+        return None;
+    }
+    Some(NativeMemorySummary {
+        peak_rss_delta_bytes_max: memory
+            .iter()
+            .filter_map(|sample| sample.peak_rss_delta_bytes)
+            .max(),
+        rss_after_bytes_max: memory
+            .iter()
+            .filter_map(|sample| sample.rss_after_bytes)
+            .max(),
+        arena_peak_live_mapped_bytes_max: memory
+            .iter()
+            .filter_map(|sample| sample.arena.map(|arena| arena.peak_live_mapped_bytes))
+            .max(),
+        arena_live_mapped_bytes_after_last: memory
+            .last()
+            .and_then(|sample| sample.arena.map(|arena| arena.live_mapped_bytes_after)),
+    })
 }
 
 /// Returns `(mean, sample-stddev, min, max)` over `count` elapsed-second values.

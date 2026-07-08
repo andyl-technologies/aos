@@ -10,10 +10,12 @@
 //!
 //! The module is split by concern: `record` owns the on-disk JSONL schema,
 //! `analysis` owns regression and admissibility analysis, `corpus` builds the
-//! benchmark specs, and this file drives sampling and rendering.
+//! benchmark specs, `memory` owns the per-sample memory probes (RSS, peak-RSS
+//! watermarks, arena gauges), and this file drives sampling and rendering.
 
 mod analysis;
 pub(crate) mod corpus;
+mod memory;
 mod record;
 
 use std::path::Path;
@@ -32,10 +34,12 @@ use aos_nix_harness::diff::{DiffMode, DrvDiffReport, diff_closure};
 
 use analysis::*;
 use corpus::{BenchmarkSpec, benchmark_specs};
+use memory::{NativeMemoryBefore, OracleChildPeakBefore, mib, trace_phase};
 use record::*;
 
 const DEFAULT_SAMPLES: usize = 3;
 const DEFAULT_REGRESSION_THRESHOLD: f64 = 0.10;
+const DEFAULT_MEMORY_REGRESSION_THRESHOLD: f64 = 0.10;
 
 /// Error returned after `aos nix-bench` has rendered a regression report.
 #[derive(Debug, Clone)]
@@ -44,10 +48,18 @@ pub struct NixBenchRegressionFailure {
 }
 
 impl NixBenchRegressionFailure {
-    fn new(count: usize) -> Self {
+    fn new(count: usize, memory_count: usize) -> Self {
         let plural = if count == 1 { "" } else { "s" };
+        let memory = if memory_count > 0 {
+            let plural = if memory_count == 1 { "" } else { "s" };
+            format!(" (including {memory_count} peak-memory regression{plural})")
+        } else {
+            String::new()
+        };
         Self {
-            message: format!("nix benchmark found {count} significant native regression{plural}"),
+            message: format!(
+                "nix benchmark found {count} significant native regression{plural}{memory}"
+            ),
         }
     }
 }
@@ -127,9 +139,10 @@ impl std::error::Error for NixBenchParityFailure {}
 /// initialized, a selected benchmark diverges at the parity gate, Nix cannot
 /// instantiate a selected attribute with `NIX_SHOW_STATS`, the native evaluator
 /// cannot instantiate a selected attribute, history cannot be read or written,
-/// or `fail_on_regression` is set and a significant native regression is
-/// detected. It also returns an error when `require_perf_win` is set and the run
-/// is not admissible as a performance win.
+/// or `fail_on_regression` is set and a significant native time or peak-memory
+/// regression is detected. It also returns an error when `require_perf_win` is
+/// set and the run is not admissible as a performance win.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     printer: &Printer,
     verbose: u8,
@@ -142,8 +155,9 @@ pub fn run(
     fail_on_regression: bool,
     require_perf_win: bool,
     regression_threshold: f64,
+    memory_regression_threshold: f64,
 ) -> Result<()> {
-    validate_args(samples, regression_threshold)?;
+    validate_args(samples, regression_threshold, memory_regression_threshold)?;
     NixRunner::ensure_nix_instantiate_available()?;
     if eval_config.eval_mode() == NixEvalMode::Ambient {
         eval_config.set_eval_mode(NixEvalMode::Impure);
@@ -151,6 +165,7 @@ pub fn run(
     let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())
         .context("initializing nix-bench .drv parity gate")?;
     let candidate_name = candidate.name().to_string();
+    trace_phase("candidate-initialized");
 
     let root = NixRunner::find_root()?;
     let file = file
@@ -180,8 +195,14 @@ pub fn run(
             &eval_config,
             samples,
         )?;
-        let comparison = previous_benchmark(&previous_runs, &record, &commit)
-            .map(|previous| compare_benchmarks(&record, previous, regression_threshold));
+        let comparison = previous_benchmark(&previous_runs, &record, &commit).map(|previous| {
+            compare_benchmarks(
+                &record,
+                previous,
+                regression_threshold,
+                memory_regression_threshold,
+            )
+        });
         outcomes.push(BenchmarkOutcome { record, comparison });
     }
 
@@ -200,7 +221,7 @@ pub fn run(
         append_history(&history, &run)?;
     }
 
-    let regression_count = outcomes
+    let time_regression_count = outcomes
         .iter()
         .filter(|outcome| {
             outcome
@@ -209,9 +230,24 @@ pub fn run(
                 .is_some_and(|comparison| comparison.regression)
         })
         .count();
-    let failure = (regression_count > 0).then(|| NixBenchRegressionFailure::new(regression_count));
+    let memory_regression_count = outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome.comparison.as_ref().is_some_and(|comparison| {
+                comparison
+                    .memory
+                    .as_ref()
+                    .is_some_and(|memory| memory.regression)
+            })
+        })
+        .count();
+    let regression_count = time_regression_count + memory_regression_count;
+    let failure = (regression_count > 0)
+        .then(|| NixBenchRegressionFailure::new(regression_count, memory_regression_count));
+    // Perf-win admissibility stays driven by the timing movements; a memory
+    // regression blocks `--fail-on-regression` but does not veto admission.
     let admissibility =
-        BenchmarkAdmissibility::evaluate(&outcomes, require_perf_win, regression_count);
+        BenchmarkAdmissibility::evaluate(&outcomes, require_perf_win, time_regression_count);
     let admissibility_failure = (require_perf_win && !admissibility.admitted)
         .then(|| NixBenchAdmissibilityFailure::new(&admissibility.failure_reasons));
     let blocked = (fail_on_regression && failure.is_some()) || admissibility_failure.is_some();
@@ -253,7 +289,16 @@ pub const fn default_regression_threshold() -> f64 {
     DEFAULT_REGRESSION_THRESHOLD
 }
 
-fn validate_args(samples: usize, regression_threshold: f64) -> Result<()> {
+/// Returns the default peak-memory regression threshold used by the CLI.
+pub const fn default_memory_regression_threshold() -> f64 {
+    DEFAULT_MEMORY_REGRESSION_THRESHOLD
+}
+
+fn validate_args(
+    samples: usize,
+    regression_threshold: f64,
+    memory_regression_threshold: f64,
+) -> Result<()> {
     if samples == 0 {
         return Err(AosError::InvalidArgument {
             message: "nix-bench requires at least one sample".to_string(),
@@ -263,6 +308,13 @@ fn validate_args(samples: usize, regression_threshold: f64) -> Result<()> {
     if !regression_threshold.is_finite() || regression_threshold < 0.0 {
         return Err(AosError::InvalidArgument {
             message: "nix-bench --regression-threshold must be a finite non-negative number"
+                .to_string(),
+        }
+        .into());
+    }
+    if !memory_regression_threshold.is_finite() || memory_regression_threshold < 0.0 {
+        return Err(AosError::InvalidArgument {
+            message: "nix-bench --memory-regression-threshold must be a finite non-negative number"
                 .to_string(),
         }
         .into());
@@ -292,8 +344,11 @@ fn run_one_benchmark(
     eval_config: &NixEvalConfig,
     samples: usize,
 ) -> Result<BenchmarkRecord> {
+    trace_phase("parity-gate-start");
     let parity = run_parity_gate(oracle, candidate, candidate_name, spec)?;
+    trace_phase("parity-gate-done");
     let oracle_samples = capture_benchmark_samples(spec, samples, || {
+        let child_peak = OracleChildPeakBefore::capture();
         let stats = oracle
             .instantiate_with_stats(&spec.file, &spec.attr)
             .with_context(|| format!("running nix-instantiate for {}", spec.name))?;
@@ -302,18 +357,23 @@ fn run_one_benchmark(
             elapsed_nanos: duration_nanos(stats.elapsed),
             drv_path: stats.drv_path.to_string_lossy().into_owned(),
             stats: stats.stats,
+            child_peak_rss_bytes: child_peak.finish(),
         })
     })?;
+    trace_phase("oracle-samples-done");
     let native_samples = capture_benchmark_samples(spec, samples, || {
+        let memory_before = NativeMemoryBefore::capture();
         let started = Instant::now();
-        let drv_path = candidate
-            .instantiate(&spec.file, &spec.attr)
+        let drv_path = native_instantiate(candidate, spec)
             .with_context(|| format!("running native instantiate for {}", spec.name))?;
         let elapsed = started.elapsed();
+        let memory = memory_before.finish();
+        trace_phase("native-sample-done");
         Ok(NativeBenchmarkSample {
             elapsed_seconds: elapsed.as_secs_f64(),
             elapsed_nanos: duration_nanos(elapsed),
             drv_path: drv_path.to_string_lossy().into_owned(),
+            memory,
         })
     })?;
 
@@ -369,12 +429,43 @@ fn run_parity_gate(
     candidate_name: &str,
     spec: &BenchmarkSpec,
 ) -> Result<BenchmarkParity> {
+    if skip_parity_gate_for_diagnostics() {
+        return Ok(BenchmarkParity::skipped(candidate_name));
+    }
     let report = diff_closure(oracle, candidate, &spec.file, &spec.attr, DiffMode::Byte)
         .with_context(|| format!("checking .drv parity for {}", spec.name))?;
     if !report.divergences.is_empty() {
         return Err(NixBenchParityFailure::new(spec, candidate_name, &report).into());
     }
     Ok(BenchmarkParity::matched(candidate_name, &report))
+}
+
+/// Runs one native instantiation for a timing/memory sample.
+///
+/// The normal path is [`NixEval::instantiate`], which includes `.drv` store
+/// materialization exactly like the C++ oracle. Under the
+/// `AOS_NIX_BENCH_SKIP_PARITY=1` diagnostics mode the sample instead uses the
+/// in-memory [`NixEval::instantiate_closure`] when the candidate supports it:
+/// a diagnostics run may be measuring an evaluator whose `.drv` bytes do not
+/// yet match the store contents, and writing divergent `.drv`s is neither
+/// possible (store permissions) nor desirable.
+fn native_instantiate(candidate: &dyn NixEval, spec: &BenchmarkSpec) -> Result<std::path::PathBuf> {
+    if skip_parity_gate_for_diagnostics()
+        && let Some(closure) = candidate.instantiate_closure(&spec.file, &spec.attr)?
+    {
+        return Ok(closure.into_parts().0);
+    }
+    candidate.instantiate(&spec.file, &spec.attr)
+}
+
+/// Returns whether `AOS_NIX_BENCH_SKIP_PARITY=1` disables the parity gate.
+///
+/// This is a memory/perf diagnostics escape hatch only: the recorded parity
+/// mode becomes `"skipped"` with `matched == false`, so such a run can never
+/// pass perf-win admissibility and is never selected as a comparison baseline
+/// (baseline matching requires matched parity on both sides).
+fn skip_parity_gate_for_diagnostics() -> bool {
+    std::env::var("AOS_NIX_BENCH_SKIP_PARITY").is_ok_and(|value| value == "1")
 }
 
 fn run_json(
@@ -398,6 +489,11 @@ fn run_json(
         "blocked": blocked,
         "regression_count": outcomes.iter().filter(|outcome| {
             outcome.comparison.as_ref().is_some_and(|comparison| comparison.regression)
+        }).count(),
+        "memory_regression_count": outcomes.iter().filter(|outcome| {
+            outcome.comparison.as_ref().is_some_and(|comparison| {
+                comparison.memory.as_ref().is_some_and(|memory| memory.regression)
+            })
         }).count(),
         "admissibility": admissibility,
         "error": errors.first(),
@@ -509,6 +605,58 @@ fn render_outcome(printer: &Printer, outcome: &BenchmarkOutcome) {
         line.push_str(" baseline=none");
     }
     printer.plain(&line);
+    if let Some(memory_line) = render_memory_line(outcome) {
+        printer.plain(&memory_line);
+    }
+}
+
+/// Renders the optional per-benchmark memory line for the human report.
+///
+/// Returns `None` when the run captured no native memory probes and no
+/// attributed oracle-child peak, so builds without probes render unchanged.
+fn render_memory_line(outcome: &BenchmarkOutcome) -> Option<String> {
+    let record = &outcome.record;
+    let memory = record.native_summary.memory;
+    let oracle_child = record.summary.child_peak_rss_bytes_max;
+    if memory.is_none() && oracle_child.is_none() {
+        return None;
+    }
+    let mut line = "    memory:".to_string();
+    if let Some(memory) = memory {
+        if let Some(peak) = memory.peak_rss_delta_bytes_max {
+            line.push_str(&format!(" native_peak_rss_delta_max={}", mib(peak)));
+        }
+        if let Some(rss) = memory.rss_after_bytes_max {
+            line.push_str(&format!(" native_rss_after_max={}", mib(rss)));
+        }
+        if let Some(arena_peak) = memory.arena_peak_live_mapped_bytes_max {
+            line.push_str(&format!(" arena_peak={}", mib(arena_peak)));
+        }
+        if let Some(arena_after) = memory.arena_live_mapped_bytes_after_last {
+            line.push_str(&format!(" arena_after={}", mib(arena_after)));
+        }
+    }
+    if let Some(oracle_child) = oracle_child {
+        line.push_str(&format!(" oracle_child_peak_rss={}", mib(oracle_child)));
+    }
+    if let Some(movement) = outcome
+        .comparison
+        .as_ref()
+        .and_then(|comparison| comparison.memory.as_ref())
+    {
+        line.push_str(&format!(
+            " mem_delta={:+.2}% threshold={:.2}%",
+            movement.delta_percent * 100.0,
+            movement.threshold_percent * 100.0
+        ));
+        if movement.regression {
+            line.push_str(" MEM-REGRESSION");
+        }
+        if movement.improvement {
+            line.push_str(" MEM-IMPROVEMENT");
+        }
+    }
+    Some(line)
 }
 
 fn benchmark_error_messages(
