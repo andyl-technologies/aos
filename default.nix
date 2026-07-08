@@ -232,8 +232,14 @@ in {
   systems = discoverSystems;
 
   # Eval-only benchmark attrs (never built). `bench.wide` instantiates every
-  # IFD-free package in one evaluation; see tests/bench/wide.nix.
-  bench = import ./tests/bench/wide.nix {inherit pkgs lib;};
+  # IFD-free package in one evaluation (see tests/bench/wide.nix);
+  # `bench.compute.*` are self-contained compute workloads sized for
+  # evaluator benchmarking (see tests/bench/compute.nix).
+  bench =
+    import ./tests/bench/wide.nix {inherit pkgs lib;}
+    // {
+      compute = import ./tests/bench/compute.nix {};
+    };
 
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
