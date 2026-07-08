@@ -1615,14 +1615,27 @@ impl TreeWalk {
 
         let worker = self.options.parallel_thunk_worker_id();
         let body_ran = std::cell::Cell::new(false);
-        match parallel_cell
+        // Claim-wait diagnostics (stats runs only): time slow-path forces
+        // that resolve without running the body - i.e. waits on a claim
+        // another worker owns, plus racy terminal replays. Gated on the
+        // stats dump so production parallel runs skip the per-force clock.
+        let wait_started = (self.shared.is_some() && self.options.eval_stats_dump())
+            .then(std::time::Instant::now);
+        let outcome = parallel_cell
             .force_or_wait_with(worker, || {
                 body_ran.set(true);
                 self.force_serial_thunk_value(id, span, source_thunk, forced_payload, thunk)
             })
             .map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
-            })? {
+            })?;
+        if let Some(started) = wait_started
+            && !body_ran.get()
+            && let Some(shared) = self.shared.as_ref()
+        {
+            shared.record_claim_wait(started.elapsed());
+        }
+        match outcome {
             TreeWalkParallelThunkForceOutcome::Ready(result) => {
                 if body_ran.get() {
                     result

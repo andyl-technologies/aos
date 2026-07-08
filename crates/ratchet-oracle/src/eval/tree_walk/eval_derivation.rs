@@ -3,6 +3,7 @@
 use super::*;
 
 mod aterm_cache;
+mod demand_fanout;
 mod name_value;
 mod static_outputs;
 
@@ -343,13 +344,12 @@ impl TreeWalk {
             Self::clone_attr_entries_lexicographic(argument, argument_span, attrs)?
         };
 
-        // Parallel fan-out (L2-P3b): every attribute value below is forced
-        // unconditionally, so unforced attribute thunks are guaranteed-needed
-        // work idle helper workers can claim ahead of this serial loop.
-        if self.shared.is_some() {
-            let candidates = Self::demand_eligible_values(entries.iter().map(|entry| entry.value));
-            self.publish_demand_values(parallel_demand::DemandTaskKind::Force, &candidates);
-        }
+        // Parallel fan-out (L2-P5): every attribute value below is forced
+        // unconditionally and every non-scalar attribute is string-coerced, so
+        // entry values publish as force or coercion demand that helper workers
+        // execute ahead of this serial loop - unfolding the dependency closure
+        // transitively (see `demand_fanout`).
+        self.publish_derivation_entry_fanout(&entries);
 
         let mut derivation = nix_compat::derivation::Derivation::default();
         let mut context = StringContext::empty();

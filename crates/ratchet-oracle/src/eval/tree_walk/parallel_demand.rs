@@ -50,13 +50,18 @@
 //! Only work the serial evaluator is already committed to forcing:
 //!
 //! - every attribute value of a `derivation` call is forced unconditionally,
-//!   so unforced attribute thunks are published as [`DemandTaskKind::Force`]
-//!   batches;
-//! - every element of a list-valued (non-special) derivation attribute is
-//!   string-coerced, and derivation attrsets coerce through their `outPath`
-//!   attribute, so list elements are published as
-//!   [`DemandTaskKind::Coerce`] batches whose executor mirrors exactly that
-//!   demand (force; lists recurse; attrsets force `outPath`).
+//!   so scalar-only attribute thunks are published as
+//!   [`DemandTaskKind::Force`] batches;
+//! - every non-scalar derivation attribute is string-coerced by the serial
+//!   loop (lists element by element, hookless attrsets through `outPath`,
+//!   and the same shapes under `__structuredAttrs`), so those entries are
+//!   published as [`DemandTaskKind::Coerce`] batches *at `derivationStrict`
+//!   entry* (L2-P5, see `eval_derivation::demand_fanout`) and again per
+//!   attribute as the serial loop forces each list. The coercion executor
+//!   mirrors exactly that demand (force; lists recurse; hookless attrsets
+//!   force `outPath`), and a helper coercing a dependency attrset runs its
+//!   `derivationStrict`, which publishes *its* entry fan-out - the eager
+//!   transitive walk that keeps helpers saturated ahead of the serializer.
 //!
 //! Duplicate demand between the main worker and helpers is deduplicated by
 //! the parallel thunk claim protocol: the first claimer runs a body once and
@@ -78,15 +83,29 @@ use super::*;
 /// bounding per-task overhead.
 const DEMAND_TASK_CHUNK: usize = 4;
 
+/// Returns the batch size for one published task of `kind`.
+///
+/// Force tasks batch [`DEMAND_TASK_CHUNK`] plain forces to amortize queue
+/// overhead. Coercion tasks carry a single value: each value can be a whole
+/// package subtree, and batching would let one force blocked on a contended
+/// claim hold the rest of the batch hostage inside a parked helper while
+/// other helpers idle (L2-P5 convoy measurement).
+const fn demand_task_chunk(kind: DemandTaskKind) -> usize {
+    match kind {
+        DemandTaskKind::Force => DEMAND_TASK_CHUNK,
+        DemandTaskKind::Coerce => 1,
+    }
+}
+
 /// Maximum queued tasks before publishers drop further fan-out.
 ///
 /// The queue only ever holds work the publisher is itself about to perform
 /// serially, so dropping under saturation costs nothing but lost overlap -
 /// but lost overlap is precisely what starves helpers on wide evaluations
 /// (P3b's cap of 1024 dropped ~35% of published fan-out on the wide corpus
-/// while two of three helpers idled). Tasks are two machine words plus a
-/// four-value batch, so a deep queue is memory-cheap; the cap now exists only
-/// to bound a pathological publish storm.
+/// while two of three helpers idled). Tasks are two machine words plus an
+/// at-most-four-value batch, so a deep queue is memory-cheap; the cap now
+/// exists only to bound a pathological publish storm.
 const DEMAND_QUEUE_CAP: usize = 65536;
 
 /// Stack size for helper worker threads.
@@ -305,6 +324,8 @@ struct DemandQueueState {
 pub(crate) struct DemandQueue {
     state: Mutex<DemandQueueState>,
     available: Condvar,
+    /// High-water mark of queued task depth (diagnostics only).
+    peak: AtomicU64,
 }
 
 impl DemandQueue {
@@ -326,6 +347,8 @@ impl DemandQueue {
                 state.tasks.push_back(task);
                 accepted += 1;
             }
+            self.peak
+                .fetch_max(state.tasks.len() as u64, Ordering::Relaxed);
         }
         if accepted > 0 {
             self.available.notify_all();
@@ -371,6 +394,19 @@ pub(crate) struct DemandCounters {
     dropped: AtomicU64,
     executed: AtomicU64,
     executed_values: AtomicU64,
+    /// Wall nanoseconds helpers spent executing demand tasks (includes time
+    /// blocked on contended thunk claims inside a task).
+    task_nanos: AtomicU64,
+    /// Wall nanoseconds helpers spent in their worker loops overall; the
+    /// difference to `task_nanos` is time parked on an empty queue.
+    loop_nanos: AtomicU64,
+    /// Wall nanoseconds workers spent on slow-path forces that resolved
+    /// without running the thunk body (claim waits and racy replays).
+    /// Collected only under `AOS_NIX_EVAL_STATS=1` to keep the per-force
+    /// timing tax off production runs.
+    claim_wait_nanos: AtomicU64,
+    /// Number of slow-path forces counted into `claim_wait_nanos`.
+    claim_waits: AtomicU64,
 }
 
 /// Cross-worker shared state for one parallel evaluation.
@@ -411,6 +447,18 @@ impl SharedEvalContext {
     /// Marks a completed publication into any shared log.
     pub(super) fn bump_version(&self) {
         self.version.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Records one slow-path force that resolved without running the body.
+    ///
+    /// Fed by the parallel force choke point under `AOS_NIX_EVAL_STATS=1`;
+    /// the accumulated wait time separates "helpers busy" from "helpers
+    /// blocked on contended claims" in the drained-pool diagnostics.
+    pub(super) fn record_claim_wait(&self, elapsed: std::time::Duration) {
+        self.counters
+            .claim_wait_nanos
+            .fetch_add(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
+        self.counters.claim_waits.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -607,12 +655,29 @@ impl ParallelDemandPool {
         let dropped = self.shared.counters.dropped.load(Ordering::Relaxed);
         let executed = self.shared.counters.executed.load(Ordering::Relaxed);
         let executed_values = self.shared.counters.executed_values.load(Ordering::Relaxed);
+        let task_nanos = self.shared.counters.task_nanos.load(Ordering::Relaxed);
+        let loop_nanos = self.shared.counters.loop_nanos.load(Ordering::Relaxed);
+        let claim_wait_nanos = self.shared.counters.claim_wait_nanos.load(Ordering::Relaxed);
+        let claim_waits = self.shared.counters.claim_waits.load(Ordering::Relaxed);
+        let queue_peak = self.shared.queue.peak.load(Ordering::Relaxed);
+        // Helper occupancy: fraction of aggregate helper loop wall spent
+        // executing tasks (task time still includes claim-wait blocking; the
+        // claim-wait counters bound that share when stats are enabled).
+        let helper_busy_permille = if loop_nanos > 0 {
+            task_nanos.saturating_mul(1000) / loop_nanos
+        } else {
+            0
+        };
         tracing::debug!(
             target: "aos_nix::eval::parallel",
             published,
             dropped,
             executed,
             executed_values,
+            task_nanos,
+            loop_nanos,
+            helper_busy_permille,
+            queue_peak,
             "parallel demand pool drained"
         );
         if main.options.eval_stats_dump() {
@@ -623,7 +688,13 @@ impl ParallelDemandPool {
 \"tasks_published\":{published},\
 \"tasks_dropped\":{dropped},\
 \"tasks_executed\":{executed},\
-\"task_values_executed\":{executed_values}\
+\"task_values_executed\":{executed_values},\
+\"task_nanos\":{task_nanos},\
+\"loop_nanos\":{loop_nanos},\
+\"helper_busy_permille\":{helper_busy_permille},\
+\"claim_wait_nanos\":{claim_wait_nanos},\
+\"claim_waits\":{claim_waits},\
+\"queue_peak\":{queue_peak}\
 }}}}"
             );
         }
@@ -715,16 +786,20 @@ impl TreeWalk {
     ///
     /// `values` are split into small batches; work past the queue cap is
     /// dropped (the publisher performs it serially anyway). No-op unless this
-    /// evaluation runs a demand pool.
+    /// evaluation runs a demand pool. Force batches below two values are
+    /// skipped (one plain force cannot amortize queue overhead), but a single
+    /// coercion value is still worth publishing: its executor unfolds list
+    /// and dependency subtrees transitively.
     pub(super) fn publish_demand_values(&self, kind: DemandTaskKind, values: &[Value]) {
         let Some(shared) = self.shared.as_ref() else {
             return;
         };
-        if values.len() < 2 {
+        if values.is_empty() || (kind == DemandTaskKind::Force && values.len() < 2) {
             return;
         }
-        let mut tasks = Vec::with_capacity(values.len().div_ceil(DEMAND_TASK_CHUNK));
-        for chunk in values.chunks(DEMAND_TASK_CHUNK) {
+        let chunk_size = demand_task_chunk(kind);
+        let mut tasks = Vec::with_capacity(values.len().div_ceil(chunk_size));
+        for chunk in values.chunks(chunk_size) {
             tasks.push(DemandTask {
                 kind,
                 values: chunk.to_vec(),
@@ -742,18 +817,6 @@ impl TreeWalk {
             .fetch_add((published - accepted) as u64, Ordering::Relaxed);
     }
 
-    /// Collects the thunk-tagged subset of `values` for fan-out publication.
-    pub(super) fn demand_eligible_values(values: impl Iterator<Item = Value>) -> Vec<Value> {
-        values
-            .filter(|value| {
-                matches!(
-                    classify_whnf_tag_fast_path(*value),
-                    WhnfTagFastPath::RequiresThunkProtocol(_)
-                )
-            })
-            .collect()
-    }
-
     /// Publishes coercion fan-out for a list-valued derivation attribute.
     ///
     /// Only attributes whose serial handling string-coerces every list
@@ -762,19 +825,7 @@ impl TreeWalk {
     /// never reach element coercion, so publishing them would be speculative
     /// work the serial evaluator is not committed to.
     pub(super) fn publish_derivation_list_fanout(&mut self, key: &[u8], value: Value) {
-        const SCALAR_ONLY_KEYS: &[&[u8]] = &[
-            NAME_ATTR,
-            BUILDER_ATTR,
-            SYSTEM_ATTR,
-            IGNORE_NULLS_ATTR,
-            STRUCTURED_ATTRS_ATTR,
-            CONTENT_ADDRESSED_ATTR,
-            IMPURE_ATTR,
-            OUTPUT_HASH_ATTR,
-            OUTPUT_HASH_ALGO_ATTR,
-            OUTPUT_HASH_MODE_ATTR,
-        ];
-        if SCALAR_ONLY_KEYS.contains(&key) {
+        if Self::derivation_scalar_only_attr(key) {
             return;
         }
         let Ok(list) = self.heap.get_list(value) else {
@@ -798,7 +849,8 @@ impl TreeWalk {
     ///
     /// Mirrors exactly the demand the serial derivation coercion path
     /// produces: force; recurse into lists (publishing all but the first
-    /// chunk for other helpers); force the `outPath` attribute of attrsets.
+    /// element for other helpers); force the `outPath` attribute of hookless
+    /// attrsets.
     ///
     /// # Errors
     ///
@@ -826,18 +878,27 @@ impl TreeWalk {
                     })?;
                     list.as_slice().to_vec()
                 };
-                if elements.len() > DEMAND_TASK_CHUNK {
-                    self.publish_demand_values(
-                        DemandTaskKind::Coerce,
-                        &elements[DEMAND_TASK_CHUNK..],
-                    );
+                let keep = demand_task_chunk(DemandTaskKind::Coerce);
+                if elements.len() > keep {
+                    self.publish_demand_values(DemandTaskKind::Coerce, &elements[keep..]);
                 }
-                for element in elements.into_iter().take(DEMAND_TASK_CHUNK) {
+                for element in elements.into_iter().take(keep) {
                     self.run_demand_value(id, span, DemandTaskKind::Coerce, element)?;
                 }
             }
             ValueTag::Attrs => {
-                if let Some(out_path) = self.attr_value_by_name(id, value, b"outPath", span)? {
+                // Serial string coercion prefers a `__toString` hook, and
+                // only the hookless path forces `outPath` (see
+                // `derivation_attrs_to_string_value` / `write_json_attrs`).
+                // Applying the hook here would duplicate unmemoized lambda
+                // work, so hooked attrsets are left to the serializer, and
+                // `outPath` is forced only when serial provably forces it.
+                if self
+                    .attr_value_by_name(id, value, TO_STRING_ATTR, span)?
+                    .is_none()
+                    && let Some(out_path) =
+                        self.attr_value_by_name(id, value, OUT_PATH_ATTR, span)?
+                {
                     self.run_demand_value(id, span, DemandTaskKind::Coerce, out_path)?;
                 }
             }
@@ -848,6 +909,7 @@ impl TreeWalk {
 
     /// Runs a helper worker: steal demand tasks until the pool shuts down.
     fn parallel_worker_loop(mut self) -> ParallelWorkerOutcome {
+        let loop_started = std::time::Instant::now();
         let id = self.current_ir().root;
         let span = self
             .current_ir()
@@ -862,6 +924,7 @@ impl TreeWalk {
             .and_then(|shared| shared.queue.pop_or_park())
         {
             self.sync_shared_context();
+            let task_started = std::time::Instant::now();
             let mut executed_values = 0u64;
             for value in &task.values {
                 // Task errors are deliberately dropped: any error inside a
@@ -877,7 +940,17 @@ impl TreeWalk {
                     .counters
                     .executed_values
                     .fetch_add(executed_values, Ordering::Relaxed);
+                shared.counters.task_nanos.fetch_add(
+                    u64::try_from(task_started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
             }
+        }
+        if let Some(shared) = self.shared.as_ref() {
+            shared.counters.loop_nanos.fetch_add(
+                u64::try_from(loop_started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                Ordering::Relaxed,
+            );
         }
         ParallelWorkerOutcome {
             stats: self.stats_snapshot(),

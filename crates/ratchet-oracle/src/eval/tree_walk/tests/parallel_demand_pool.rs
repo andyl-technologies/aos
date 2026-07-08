@@ -266,6 +266,118 @@ fn parallel_pool_shares_import_results_across_workers() {
     }
 }
 
+/// A graph exercising the eager entry-time coercion fan-out (L2-P5): nested
+/// list-of-list dependencies, `__ignoreNulls` with null attributes, and a
+/// `__toString`-hooked attrset whose `outPath` must never be forced (the
+/// hooked coercion path wins serially, so eager fan-out must skip it - the
+/// `throw` is a tripwire that fails the evaluation loudly if it is demanded).
+const EAGER_COERCION_GRAPH: &str = r#"
+    let
+      mk = name: deps:
+        builtins.derivation {
+          inherit name deps;
+          system = "x86_64-linux";
+          builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+          args = [ "-c" ":" ];
+        };
+      leaves = map (name: mk "leaf-${name}" [])
+        [ "one" "two" "three" "four" "five" "six" ];
+      first = builtins.head leaves;
+      root = builtins.derivation {
+        name = "root";
+        system = "x86_64-linux";
+        builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+        args = [ "-c" ":" ];
+        __ignoreNulls = true;
+        maybe = null;
+        deps = [ leaves [ first [ (builtins.elemAt leaves 1) ] ] ];
+        hooked = {
+          __toString = self: "hooked-const";
+          outPath = throw "outPath of a __toString-hooked attrset was forced";
+        };
+      };
+    in root.drvPath
+"#;
+
+/// Eager entry-time coercion fan-out matches serial byte-for-byte across
+/// nested lists, ignored nulls, and `__toString`-hooked attrsets.
+#[test]
+fn parallel_pool_eager_coercion_fanout_matches_serial() {
+    let (serial_root, serial_surfaces) = eval_derivation_surfaces(EAGER_COERCION_GRAPH, None);
+    assert!(!serial_surfaces.is_empty());
+    for _ in 0..3 {
+        for workers in [2, 4] {
+            let (parallel_root, parallel_surfaces) =
+                eval_derivation_surfaces(EAGER_COERCION_GRAPH, Some(workers));
+            assert_eq!(
+                serial_root, parallel_root,
+                "root drvPath diverged with {workers} workers"
+            );
+            assert_eq!(serial_surfaces, parallel_surfaces);
+        }
+    }
+}
+
+/// Structured-attrs derivations publish the same entry fan-out safely: the
+/// JSON serialization recurses lists and coerces `outPath`-bearing attrsets,
+/// so the eager coercion demand is a subset of the serial demand.
+#[test]
+fn parallel_pool_structured_attrs_matches_serial() {
+    const STRUCTURED_GRAPH: &str = r#"
+        let
+          mk = name: deps:
+            builtins.derivation {
+              inherit name deps;
+              system = "x86_64-linux";
+              builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+              args = [ "-c" ":" ];
+            };
+          leaves = map (name: mk "leaf-${name}" []) [ "one" "two" "three" ];
+        in (builtins.derivation {
+             name = "structured-root";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             args = [ "-c" ":" ];
+             __structuredAttrs = true;
+             outputs = [ "out" "dev" ];
+             deps = leaves;
+             meta = { nested = { list = [ 1 2 3 ]; flag = true; }; };
+           }).drvPath
+    "#;
+    let (serial_root, serial_surfaces) = eval_derivation_surfaces(STRUCTURED_GRAPH, None);
+    for _ in 0..3 {
+        let (parallel_root, parallel_surfaces) = eval_derivation_surfaces(STRUCTURED_GRAPH, Some(4));
+        assert_eq!(serial_root, parallel_root);
+        assert_eq!(serial_surfaces, parallel_surfaces);
+    }
+}
+
+/// Scalar-only attributes are never published as coercion demand: a
+/// list-valued `name` type-errors identically under serial and parallel
+/// evaluation instead of having its elements eagerly coerced.
+#[test]
+fn parallel_pool_scalar_only_attr_errors_identically() {
+    const BAD_SCALAR_GRAPH: &str = r#"
+        (builtins.derivation {
+          name = [ "bad" "name" ];
+          system = "x86_64-linux";
+          builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+          args = [ "-c" ":" ];
+        }).drvPath
+    "#;
+    let ir = lower(BAD_SCALAR_GRAPH);
+    let serial_error = eval_whnf_owned_with_options(&ir, TreeWalkOptions::default())
+        .expect_err("serial evaluation fails");
+    for _ in 0..3 {
+        let parallel_error = eval_whnf_owned_with_options(
+            &ir,
+            TreeWalkOptions::with_parallel_workers(NonZeroUsize::new(4)),
+        )
+        .expect_err("parallel evaluation fails");
+        assert_eq!(serial_error.to_string(), parallel_error.to_string());
+    }
+}
+
 /// Multi-worker evaluation with shared shape projection enabled stays
 /// byte-identical to serial: projected shape ids are dense in one shared log
 /// and every worker resolves foreign ids through its prefix replica.
