@@ -35,8 +35,8 @@ use aos_nix::eval::tree_walk::NixSearchPathEntry;
 use aos_nix::{
     NativeCliFallbackReason, NativeDrvClosure, NativeEvalError, NixNative,
     eval::{
-        EvalMode, IfdRealizationError, IfdRealizer, MemoNetMode, MemoNetOptions, MemoOptions,
-        TreeWalkOptions,
+        EvalGcMode, EvalMode, IfdRealizationError, IfdRealizer, MemoNetMode, MemoNetOptions,
+        MemoOptions, TreeWalkOptions,
     },
     heap::HeapMemoryBudget,
 };
@@ -737,6 +737,8 @@ pub struct NixEvalConfig {
     native_root_cutoff_check: bool,
     native_eval_stats: bool,
     native_jit: bool,
+    native_gc_sweep: bool,
+    native_gc_sweep_threshold: Option<u64>,
     native_parallel_workers: Option<std::num::NonZeroUsize>,
     native_parallel_shape_projection: bool,
     native_memo: NativeMemoSettings,
@@ -971,6 +973,36 @@ impl NixEvalConfig {
     /// Enables or disables the native tier-1 JIT engine.
     pub fn set_native_jit(&mut self, native_jit: bool) {
         self.native_jit = native_jit;
+    }
+
+    /// Returns whether Tier-B live reclamation (`AOS_NIX_GC=sweep`) is enabled.
+    ///
+    /// Off by default (Tier-A never-free arena semantics). When on, the
+    /// native evaluator sheds forced thunks' captured closures at publish and
+    /// runs precise non-moving sweeps over unreachable worker heap records at
+    /// evaluator quiescent points. Results are byte-identical either way;
+    /// parallel evaluation pins reclamation off regardless of this setting.
+    pub const fn native_gc_sweep(&self) -> bool {
+        self.native_gc_sweep
+    }
+
+    /// Enables or disables Tier-B live reclamation.
+    pub fn set_native_gc_sweep(&mut self, native_gc_sweep: bool) {
+        self.native_gc_sweep = native_gc_sweep;
+    }
+
+    /// Returns the Tier-B sweep growth threshold override, if configured.
+    ///
+    /// Set through `AOS_NIX_GC_THRESHOLD=<thunks>`; `0` sweeps at every
+    /// quiescent opportunity (the stress cadence). `None` uses the evaluator
+    /// default.
+    pub const fn native_gc_sweep_threshold(&self) -> Option<u64> {
+        self.native_gc_sweep_threshold
+    }
+
+    /// Overrides the Tier-B sweep growth threshold.
+    pub fn set_native_gc_sweep_threshold(&mut self, threshold: Option<u64>) {
+        self.native_gc_sweep_threshold = threshold;
     }
 
     /// Returns the native parallel evaluation worker count, if enabled.
@@ -1431,6 +1463,8 @@ impl NixEvalConfig {
             native_root_cutoff_check: false,
             native_eval_stats: false,
             native_jit: false,
+            native_gc_sweep: false,
+            native_gc_sweep_threshold: None,
             native_parallel_workers: None,
             native_parallel_shape_projection: false,
             native_memo: NativeMemoSettings::default(),
@@ -1469,6 +1503,12 @@ impl NixEvalConfig {
         }
         if let Ok(value) = std::env::var("AOS_NIX_JIT") {
             config.set_aos_nix_jit_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_GC") {
+            config.set_aos_nix_gc_env_var(&value);
+        }
+        if let Ok(value) = std::env::var("AOS_NIX_GC_THRESHOLD") {
+            config.set_aos_nix_gc_threshold_env_var(&value);
         }
         if let Ok(value) = std::env::var("AOS_NIX_PARALLEL") {
             config.set_aos_nix_parallel_env_var(&value);
@@ -1514,6 +1554,24 @@ impl NixEvalConfig {
 
     fn set_aos_nix_cache_verify_env_var(&mut self, value: &str) {
         self.set_native_cache_verify(matches!(value.trim(), "1" | "true"));
+    }
+
+    fn set_aos_nix_gc_env_var(&mut self, value: &str) {
+        self.set_native_gc_sweep(matches!(value.trim(), "sweep" | "1" | "true"));
+    }
+
+    fn set_aos_nix_gc_threshold_env_var(&mut self, value: &str) {
+        match value.trim().parse::<u64>() {
+            Ok(threshold) => self.set_native_gc_sweep_threshold(Some(threshold)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    value,
+                    "invalid AOS_NIX_GC_THRESHOLD value; using the evaluator default"
+                );
+                self.set_native_gc_sweep_threshold(None);
+            }
+        }
     }
 
     fn set_aos_nix_jit_env_var(&mut self, value: &str) {
@@ -3293,6 +3351,12 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         check_l3: memo.check_l3,
     });
     options.set_jit_tier1_publish_enabled(config.native_jit());
+    if config.native_gc_sweep() {
+        options.set_gc_mode(EvalGcMode::Sweep);
+    }
+    if let Some(threshold) = config.native_gc_sweep_threshold() {
+        options.set_gc_sweep_threshold(threshold);
+    }
     // Parallel mode overrides the JIT flag: the tier-1 engine is worker-affine
     // and is never installed when parallel workers are configured.
     options.set_parallel_workers(config.native_parallel_workers());

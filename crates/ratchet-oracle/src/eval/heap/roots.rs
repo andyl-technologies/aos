@@ -4259,6 +4259,7 @@ impl EvalHeap {
         for record in &self.records {
             if record.allocation_domain != HeapAllocationDomain::Worker
                 || generation_for_record(record) != HeapGeneration::Young
+                || record.is_retired()
             {
                 continue;
             }
@@ -6659,6 +6660,15 @@ impl EvalHeap {
                     push_parallel_thunk_payload_edge(&mut edges, thunk)?;
                 }
             },
+            // Retired slots are unreachable through resolution (their index
+            // entries were removed at retirement); a scan can only reach one
+            // through a stale root, which must fail loudly.
+            HeapObjectValue::Retired { tag } => {
+                return Err(EvalHeapError::UnknownPointer {
+                    tag: *tag,
+                    address: record.ptr.as_ptr() as usize,
+                });
+            }
         }
         Ok(edges)
     }
@@ -8376,6 +8386,10 @@ fn push_thunk_kind_edges(
             push_heap_edge(edges, HeapEdgeSource::ThunkSelectReceiver, *receiver)
         }
         EvalThunkKind::BuiltinAttr { .. } => Ok(()),
+        // Only forced thunks are shed, and forced thunks scan their cached
+        // result instead of their kind, so a released kind can never reach a
+        // suspended/blackhole kind scan. Fail loudly if it somehow does.
+        EvalThunkKind::Released => Err(EvalHeapError::ReleasedThunkWork { address: 0 }),
     }
 }
 
@@ -8498,7 +8512,7 @@ fn push_object_scan(
     Ok(())
 }
 
-const fn is_scannable_eval_heap_value(value: Value) -> bool {
+pub(super) const fn is_scannable_eval_heap_value(value: Value) -> bool {
     matches!(
         value.tag(),
         ValueTag::String

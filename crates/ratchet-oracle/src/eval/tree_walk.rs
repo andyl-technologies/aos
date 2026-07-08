@@ -56,11 +56,12 @@ use super::heap::{
     AllocationCollectorPollReferenceWritebackReport, AllocationCollectorPollRootReferenceValue,
     AllocationCollectorPollRootValueWritebackSlot, AllocationCollectorPollRootWritebackPlan,
     AllocationCollectorPollRootWritebackReport, AllocationCollectorPollRootWritebackSlot,
-    AllocationCollectorPollScan, EvalHeap, EvalHeapAttrsMetadata, EvalHeapCheapMemoryAdviceReport,
-    EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue, EvalHeapError,
-    EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode, EvalHeapTierBAdmissionReport,
-    EvalHeapWorkerRegionPopReport, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk,
-    EvalThunkKind, HeapAllocationDomain, HeapEdgeSource, PreciseHeapScan,
+    AllocationCollectorPollScan, EvalGcMode, EvalHeap, EvalHeapAttrsMetadata,
+    EvalHeapCheapMemoryAdviceReport, EvalHeapCheapMemoryBudgetPlan, EvalHeapColdHashConsedValue,
+    EvalHeapError, EvalHeapMemoryBudgetAction, EvalHeapResidentMemoryMode,
+    EvalHeapSweepReport, EvalHeapTierBAdmissionReport, EvalHeapWorkerRegionPopReport, EvalLambda,
+    EvalPrimOp, EvalPrimOpArg, EvalRootSet, EvalThunk, EvalThunkKind, HeapAllocationDomain,
+    HeapEdgeSource, PreciseHeapScan,
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ForceGuard, ThunkState};
@@ -502,6 +503,20 @@ impl Default for MemoOptions {
     }
 }
 
+/// Default worker-record growth between Tier-B quiescent sweeps.
+///
+/// A sweep is considered at an evaluator quiescent point only after at least
+/// this many thunks were allocated since the previous sweep. The default is
+/// sized so sub-second evaluations (a package instantiate, `bench.wide` at
+/// ~250k thunks) never pay for marking, while multi-million-thunk evaluations
+/// (system toplevels, long-lived embedders) sweep a bounded number of times
+/// with each cycle amortized against seconds of evaluation. Measured on
+/// `bench.wide`: one sweep costs roughly 60-70ms and retires ~137k worker
+/// records; capture shedding itself is time-neutral. Set
+/// `AOS_NIX_GC_THRESHOLD=0` to sweep at every quiescent opportunity (the
+/// stress cadence).
+pub const DEFAULT_GC_SWEEP_THRESHOLD: u64 = 1_048_576;
+
 /// Runtime options used by the tree-walk evaluator.
 ///
 /// These options carry interpreter settings that C++ Nix normally reads from
@@ -539,6 +554,8 @@ pub struct TreeWalkOptions {
     heap_tier_b_transition_admission_enabled: bool,
     heap_thread_local_tier_a_enabled: bool,
     gc_stress_policy: GcStressPolicy,
+    gc_mode: EvalGcMode,
+    gc_sweep_threshold: u64,
     thunk_resolve_barrier_tier: GenerationalGcTier,
     parallel_thunk_payloads_enabled: bool,
     parallel_workers: Option<std::num::NonZeroUsize>,
@@ -587,6 +604,8 @@ impl Default for TreeWalkOptions {
             heap_tier_b_transition_admission_enabled: false,
             heap_thread_local_tier_a_enabled: false,
             gc_stress_policy: GcStressPolicy::disabled(),
+            gc_mode: EvalGcMode::Off,
+            gc_sweep_threshold: DEFAULT_GC_SWEEP_THRESHOLD,
             thunk_resolve_barrier_tier: GenerationalGcTier::OneShotArena,
             parallel_thunk_payloads_enabled: false,
             parallel_workers: None,
@@ -1230,6 +1249,18 @@ pub struct TreeWalk {
     suspended_env_roots: Vec<SuspendedTreeWalkEnv>,
     thunk_resolve_remembered_set: RememberedSet,
     thunk_resolve_card_table: GcCardTable,
+    // Effective Tier-B live-reclamation mode for this evaluation. Copied from
+    // options at construction with the parallel quiescence pin applied, so the
+    // force hot path reads one field instead of re-deriving the pin.
+    gc_mode: EvalGcMode,
+    // Worker-record count observed by the last quiescent sweep, for the
+    // growth-threshold cadence.
+    gc_records_at_last_sweep: u64,
+    // Quiescent-sweep requests declined because the evaluator held transient
+    // roots or an in-flight force (diagnostic counter).
+    gc_sweeps_skipped_nonquiescent: u64,
+    // The most recent quiescent sweep's cycle report, for stats surfaces.
+    gc_last_sweep_report: Option<EvalHeapSweepReport>,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     // Keyed by thunk payload bits and used only for membership tests, so an
     // unordered `HashSet` gives O(1) probes on the per-force hot path.
@@ -1523,6 +1554,7 @@ mod fetch_tree_args;
 mod fetch_tree_forge;
 mod flake_git;
 mod flake_ref;
+mod gc_sweep;
 mod region;
 mod safepoint_roots;
 mod select_cache_hash;
@@ -1536,6 +1568,7 @@ pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
 pub use eval_impure_inputs::{
     canonicalize_cacheable_input_trace, revalidate_cacheable_input_trace,
 };
+pub use gc_sweep::TreeWalkGcSweepError;
 pub use safepoint_roots::{
     TreeWalkSafepointMinorGcReferenceWritebackBufferApplication,
     TreeWalkSafepointMinorGcReferenceWritebackPlan, TreeWalkSafepointMinorGcRootWritebackReport,

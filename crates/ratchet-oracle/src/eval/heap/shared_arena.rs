@@ -392,7 +392,10 @@ fn payload_size_estimate(object: &HeapObjectValue) -> usize {
         HeapObjectValue::String(string) | HeapObjectValue::Path(string) => string.len(),
         HeapObjectValue::List(list) => list.len() * std::mem::size_of::<Value>(),
         HeapObjectValue::Attrs { attrs, .. } => attrs.len() * 2 * std::mem::size_of::<Value>(),
-        HeapObjectValue::Lambda(_) | HeapObjectValue::Primop(_) | HeapObjectValue::Thunk(_) => 0,
+        HeapObjectValue::Lambda(_)
+        | HeapObjectValue::Primop(_)
+        | HeapObjectValue::Thunk(_)
+        | HeapObjectValue::Retired { .. } => 0,
     };
     inline.saturating_add(out_of_line)
 }

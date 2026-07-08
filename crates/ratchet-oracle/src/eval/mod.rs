@@ -161,6 +161,7 @@ pub use thunk_payload::{
     TreeWalkParallelThunkForceWorkOutcome, TreeWalkParallelThunkGuard, TreeWalkParallelThunkWait,
     TreeWalkParallelThunkWorkWait,
 };
+pub use heap::{EvalGcMode, EvalHeapSweepReport};
 pub use thunk_registry::{ParallelForceCycleRegistry, ParallelForceWaitRegistration};
 pub use thunk_wait::{
     ParallelThunkContentionReport, ParallelThunkReadyWork, ParallelThunkReadyWorkWaitError,

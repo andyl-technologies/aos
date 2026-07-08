@@ -5067,6 +5067,31 @@ and helps the oracle directly.
 - [ ] `heap/gc.rs` — Tier B precise generational copying collector with a
       cache-resident nursery; precise (not conservative) so Boehm-style false
       retention is eliminated ([06](06-memory-management-and-gc.md)).
+- [x] Stage B1 Tier-B live reclamation (non-moving, delivered):
+      `ratchet-oracle::eval::heap::gc` ships `AOS_NIX_GC=sweep` — (a) thunk
+      capture shedding at the §4.5 thunk-update site
+      (`EvalHeap::shed_forced_thunk_captures`: the record keeps its address
+      and `Forced` result while the captured closure graph — envs, `with`
+      scopes, scoped globals, captured argument values — is dropped at publish,
+      the GHC destructive-update analogue), and (b) a precise non-moving sweep
+      (`EvalHeap::sweep_unreachable_worker_records`) marking from the
+      safepoint root set plus permanent-object worker edges and retiring
+      unreachable worker records in place (payload dropped, address index
+      entry removed, slot recycled through the record-table free list;
+      addresses never reissued, so stale handles fail loudly as unknown
+      pointers). Driven from evaluator quiescent points
+      (`TreeWalk::maybe_sweep_heap_at_quiescence`, growth-threshold cadence,
+      `AOS_NIX_GC_THRESHOLD`; `sweep_heap_for_validation` is the stress
+      proving-ground entry), pinned off under parallel evaluation, mutually
+      exclusive with worker-region pops (fail-closed both directions), with
+      cycle stats (`thunks_shed`/`gc_sweeps`/`gc_records_swept`) in
+      `EvalStats`, the stats trace, and the `AOS_NIX_EVAL_STATS` dump.
+      **The copying nursery is deliberately deferred (recorded in
+      [06](06-memory-management-and-gc.md) §4's implementation note):** on the
+      record-table value representation the sweep captures the payload-side
+      memory win without perturbing `payload_bits` identity, and B1's loud
+      missed-root failure mode (no address reuse) is the staging gate that
+      proves precise-root completeness before B2 ever moves an object.
 - [x] Current minor-GC frontier precursor:
       `ratchet-value::heap::gc::MinorGcPlan` builds the initial young-object
       frontier for a future Tier-B minor collection from precise roots plus a
@@ -7258,6 +7283,15 @@ and helps the oracle directly.
       Automatic tree-walk allocation placement and IR escape-analysis wiring
       remain open.
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
+- [x] Stage B1 root enumeration is live for the non-moving sweep:
+      `TreeWalk::safepoint_root_set` (frames, `with` scopes, scoped globals,
+      suspended env stacks, force continuations, primop arguments, import
+      cache, interned tables) is consumed by the shipping quiescent sweep, and
+      the sweep's no-address-reuse retirement makes any missed root a loud
+      unknown-pointer failure — the corpus-level stress proving ground for the
+      transient-root discipline the moving collector will require. Cranelift
+      stack-map wiring and mid-force (non-quiescent) root completeness remain
+      open in the row above.
 - [x] Current `heap/roots.rs` tree-walk graph precursor:
       `ratchet-oracle::eval::heap::roots` defines explicit root descriptors for
       value-stack slots, active and suspended tree-walk lexical/dynamic scopes,

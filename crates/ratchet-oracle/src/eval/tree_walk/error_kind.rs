@@ -878,6 +878,15 @@ pub enum TreeWalkErrorKind {
         /// The lower-level tree-walk writeback failure.
         source: TreeWalkSafepointRootWritebackError,
     },
+    /// A Tier-B quiescent sweep failed.
+    ///
+    /// Sweep failures are evaluator bugs (a stale root, a non-quiescent
+    /// caller, or storage exhaustion), never user errors.
+    #[error("Tier-B quiescent sweep failed: {source}")]
+    GcQuiescentSweep {
+        /// The lower-level root-collection or heap-sweep failure.
+        source: TreeWalkGcSweepError,
+    },
     /// Automatic post-evaluation Tier-B admission failed.
     #[error("Tier-B transition admission failed at node {id:?}: {source}")]
     TierBTransitionAdmission {

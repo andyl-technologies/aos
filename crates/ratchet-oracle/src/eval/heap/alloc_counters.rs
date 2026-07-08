@@ -53,6 +53,15 @@ pub(crate) struct EvalHeapAllocationCounters {
     /// The difference from [`Self::hashcons_attempts`] is the number of records
     /// that had to be freshly allocated.
     pub(crate) hashcons_hits: u64,
+    /// Forced thunks whose captures were shed by `AOS_NIX_GC=sweep`.
+    ///
+    /// Each shed drops the thunk's captured closure graph after its WHNF
+    /// result is published; the record and its forced result stay live.
+    pub(crate) thunks_shed: u64,
+    /// Quiescent-point sweep cycles performed by the Tier-B collector.
+    pub(crate) gc_sweeps: u64,
+    /// Worker records retired across all sweep cycles.
+    pub(crate) gc_records_swept: u64,
 }
 
 impl EvalHeapAllocationCounters {
@@ -98,5 +107,31 @@ impl EvalHeapAllocationCounters {
     /// Returns hash-cons lookups that reused an existing canonical value.
     pub(crate) const fn hashcons_hits(&self) -> u64 {
         self.hashcons_hits
+    }
+
+    /// Records that one forced thunk's captures were shed.
+    pub(crate) fn note_thunk_shed(&mut self) {
+        self.thunks_shed = self.thunks_shed.saturating_add(1);
+    }
+
+    /// Records one sweep cycle that retired `records_swept` worker records.
+    pub(crate) fn note_sweep(&mut self, records_swept: u64) {
+        self.gc_sweeps = self.gc_sweeps.saturating_add(1);
+        self.gc_records_swept = self.gc_records_swept.saturating_add(records_swept);
+    }
+
+    /// Returns forced thunks whose captures were shed.
+    pub(crate) const fn thunks_shed(&self) -> u64 {
+        self.thunks_shed
+    }
+
+    /// Returns quiescent-point sweep cycles performed.
+    pub(crate) const fn gc_sweeps(&self) -> u64 {
+        self.gc_sweeps
+    }
+
+    /// Returns worker records retired across all sweep cycles.
+    pub(crate) const fn gc_records_swept(&self) -> u64 {
+        self.gc_records_swept
     }
 }

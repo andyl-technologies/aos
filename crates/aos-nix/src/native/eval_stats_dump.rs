@@ -15,6 +15,8 @@
 //!  "function_calls":16233,"hashcons_attempts":31044,"hashcons_hits":6143,
 //!  "symbols_interned":4021,"imports_evaluated":37,"root_cutoffs":0,
 //!  "inline_cache_hits":0,"inline_cache_misses":0,
+//!  "thunks_shed":0,"gc_sweeps":0,"gc_records_swept":0,
+//!  "gc_sweeps_skipped_nonquiescent":0,
 //!  "tier1_promoted":0,"tier1_dispatched":0,"tier1_deopted":0,
 //!  "tier1_blacklisted":0,
 //!  "memo_l0_hits":0,"memo_l0_misses":0,"memo_l0_admissions":0,
@@ -57,6 +59,10 @@ impl NixNative {
 \"root_cutoffs\":{},\
 \"inline_cache_hits\":{},\
 \"inline_cache_misses\":{},\
+\"thunks_shed\":{},\
+\"gc_sweeps\":{},\
+\"gc_records_swept\":{},\
+\"gc_sweeps_skipped_nonquiescent\":{},\
 \"tier1_promoted\":{},\
 \"tier1_dispatched\":{},\
 \"tier1_deopted\":{},\
@@ -93,6 +99,10 @@ impl NixNative {
             stats.root_cutoffs(),
             stats.inline_cache_hits(),
             stats.inline_cache_misses(),
+            stats.thunks_shed(),
+            stats.gc_sweeps(),
+            stats.gc_records_swept(),
+            stats.gc_sweeps_skipped_nonquiescent(),
             stats.tier1_promoted(),
             stats.tier1_dispatched(),
             stats.tier1_deopted(),

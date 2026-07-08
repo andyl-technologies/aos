@@ -40,6 +40,7 @@ use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
 mod alloc_counters;
 mod arena;
+mod gc;
 mod lambda;
 mod primop;
 mod record_table;
@@ -49,6 +50,7 @@ mod shared_backend;
 mod thunk;
 
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
+pub use gc::{EvalGcMode, EvalHeapSweepReport};
 use record_table::HeapRecordTable;
 use shared_backend::SharedHeapBackend;
 
@@ -153,6 +155,16 @@ pub(crate) enum EvalThunkKind {
         /// The selected builtin declaration.
         builtin: Builtin,
     },
+    /// The deferred work and captured environments were released after forcing.
+    ///
+    /// The Tier-B `AOS_NIX_GC=sweep` mode sheds a thunk's captures once its
+    /// WHNF result is published (the tree-walk analogue of GHC/C++ Nix's
+    /// destructive thunk update): the record keeps its address and its
+    /// [`ThunkCell`] `Forced` result, but the closure graph is dropped so the
+    /// captured environments can be reclaimed mid-evaluation. Reading the
+    /// deferred work of a released thunk is an evaluator bug and every reader
+    /// must fail loudly rather than guess.
+    Released,
 }
 
 /// A suspended tree-walk thunk heap record.
@@ -268,6 +280,17 @@ struct HeapRecord {
     minor_gc_forwarding: Cell<Option<ResolvedValueGeneration>>,
     last_touch_epoch: Cell<u64>,
     object: HeapObjectValue,
+}
+
+impl HeapRecord {
+    /// Returns `true` when the record was reclaimed by the Tier-B sweep.
+    ///
+    /// Retired slots are unreachable through address resolution (their index
+    /// entries are removed at retirement) but remain in the record table until
+    /// the slot is recycled; whole-table iterations must skip them.
+    const fn is_retired(&self) -> bool {
+        matches!(self.object, HeapObjectValue::Retired { .. })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -518,6 +541,19 @@ enum HeapObjectValue {
     Lambda(Arc<EvalLambda>),
     Primop(Arc<EvalPrimOp>),
     Thunk(Arc<EvalThunk>),
+    /// The record was reclaimed by the Tier-B non-moving sweep.
+    ///
+    /// A retired slot keeps its position in the record table (the slot is
+    /// recycled through the table's free list) but its payload has been
+    /// dropped and its address index entry removed, so no `Value` resolution
+    /// can reach it: a stale handle fails loudly as
+    /// [`EvalHeapError::UnknownPointer`] instead of resolving to a zombie
+    /// payload. `tag` preserves the retired record's original type for
+    /// diagnostics.
+    Retired {
+        /// The [`ValueTag`] the record carried before retirement.
+        tag: ValueTag,
+    },
 }
 
 impl HeapObjectValue {
@@ -530,6 +566,7 @@ impl HeapObjectValue {
             Self::Lambda(_) => ValueTag::Lambda,
             Self::Primop(_) => ValueTag::Primop,
             Self::Thunk(_) => ValueTag::Thunk,
+            Self::Retired { tag } => *tag,
         }
     }
 }
@@ -581,6 +618,34 @@ pub enum EvalHeapError {
         actual: ValueTag,
         /// The pointer address shared by the runtime value and heap record.
         address: usize,
+    },
+    /// A released thunk's deferred work was read after capture shedding.
+    ///
+    /// `AOS_NIX_GC=sweep` sheds a forced thunk's captures at publish time
+    /// ([`EvalThunkKind::Released`]); any later attempt to read the deferred
+    /// work is an evaluator bug that must fail loudly instead of guessing.
+    #[error("released thunk deferred work read after capture shedding at 0x{address:x}")]
+    ReleasedThunkWork {
+        /// The thunk record address whose released work was read.
+        address: usize,
+    },
+    /// A capture-shedding request targeted a thunk that is not shed-eligible.
+    #[error("capture shedding rejected at 0x{address:x}: {reason}")]
+    ShedRejected {
+        /// The thunk record address that was not shed-eligible.
+        address: usize,
+        /// Why the record cannot be shed.
+        reason: &'static str,
+    },
+    /// A worker-region pop was requested after the Tier-B sweep retired records.
+    ///
+    /// Region pops rewind the bump arena and may reuse truncated addresses,
+    /// which is only sound while retirement has never removed a non-tail
+    /// record. The two reclaimers are mutually exclusive within one heap.
+    #[error("worker-region pop rejected: {retired} records were retired by the Tier-B sweep")]
+    RegionPopAfterSweep {
+        /// The running total of records retired by the sweep.
+        retired: u64,
     },
     /// A heap record already carries a different canonical value hash.
     #[error("heap value hash mismatch: existing {existing:?}, attempted {attempted:?}")]

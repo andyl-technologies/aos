@@ -419,6 +419,32 @@ across requests. That case is Tier B.
 
 ## 4. Tier B — precise generational copying GC (daemon)
 
+> **Implementation note (Stage B1, recorded 2026-07): the non-moving sweep IS
+> the Tier-B minor collector for the record-table-era value representation.**
+> The value representation as built resolves every `Value` through an opaque
+> address key into a typed record side table; object state lives in
+> malloc-backed payloads (`Arc`'d thunks/lambdas, `Rc`'d environment frames),
+> not in the bump arena a copying collector would compact. On that
+> architecture the memory win of §4 is captured by (a) *thunk capture
+> shedding* at the §4.5 thunk-update site (the tree-walk analogue of GHC's
+> destructive update — the captured closure graph is dropped the moment the
+> WHNF result publishes) and (b) a *precise non-moving sweep* over
+> worker-domain records at evaluator quiescent points (payloads dropped,
+> address-index entries removed, record slots recycled; addresses are never
+> reissued, so a missed root fails loudly as an unknown pointer instead of
+> silently resolving to a recycled object). Both ship behind
+> `AOS_NIX_GC=sweep` with Tier A as the default, and are pinned off under
+> parallel evaluation (per-worker/concurrent collection is Phase 8).
+> The copying nursery (Stage B2) remains mandated but is gated on: (1) the
+> B1 sweep running clean under stress across the full corpus, proving
+> precise-root completeness before anything moves; (2) an audit of every
+> `payload_bits` identity key (force caches, tier-1 slots, pointer-equality
+> fast paths) with rehash hooks; and (3) the value-representation flattening
+> that moves payload bytes into the collected space, where copying's
+> O(survivors) reset actually pays. This staging follows `S-8`'s
+> alloc-via-symbols swap-ability and `C-10`'s measure-gated daemon framing
+> (see [decision register](19-decision-register.md)).
+
 ### 4.1 When and why
 
 A long-lived `aos-nix` daemon (serving editor integrations, a registry hub, or
@@ -2391,6 +2417,16 @@ GC must be observationally invisible (§8): every item is gated by the different
 ### Tier B — precise generational copying GC (§4)
 
 - [ ] Precise, generational, copying collector for the daemon: cache-resident copying nursery (work ∝ survivors), promotion policy, rarely-collected old generation (§4.1–§4.3) — **P3**, `S-8`; harness byte-green under Tier B, miri/ASan-clean.
+- [x] Stage B1 (delivered, see the §4 implementation note): Tier-B live
+      reclamation as a *non-moving* precise collector behind `AOS_NIX_GC=sweep`
+      — thunk capture shedding at the §4.5 thunk-update site plus a precise
+      quiescent-point sweep retiring unreachable worker records (payloads
+      dropped, index entries removed, slots recycled, addresses never
+      reissued). Harness byte-green under Tier A and under `AOS_NIX_GC=sweep`
+      (x4 packages serial + stress-threshold-0, K=4 parallel pin, compute
+      suite, `bench.wide`, cache-on cold/warm). The copying nursery remains
+      open in the row above, gated on B1 stress-proven root completeness, the
+      `payload_bits` identity audit, and value-rep flattening.
 - [x] Current minor-GC frontier precursor:
       `ratchet-value::heap::gc::MinorGcPlan` builds the future minor
       collection's initial young-object survivor frontier from precise roots

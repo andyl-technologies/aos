@@ -13349,6 +13349,14 @@ pub struct EvalStats {
     pub(crate) shape_transitions: u64,
     pub(crate) gc_bytes: u64,
     pub(crate) gc_pause_us: u64,
+    /// Forced thunks whose captures were shed by `AOS_NIX_GC=sweep`.
+    pub(crate) thunks_shed: u64,
+    /// Tier-B quiescent sweep cycles performed.
+    pub(crate) gc_sweeps: u64,
+    /// Worker heap records retired across all Tier-B sweep cycles.
+    pub(crate) gc_records_swept: u64,
+    /// Quiescent-sweep requests declined because the evaluator was not quiescent.
+    pub(crate) gc_sweeps_skipped_nonquiescent: u64,
     pub(crate) tier_promotions: u64,
     pub(crate) deopts: u64,
     pub(crate) force_cache_hits: u64,
@@ -13491,6 +13499,26 @@ impl EvalStats {
     /// Returns microseconds spent in a future GC subsystem.
     pub const fn gc_pause_us(&self) -> u64 {
         self.gc_pause_us
+    }
+
+    /// Returns forced thunks whose captures were shed by `AOS_NIX_GC=sweep`.
+    pub const fn thunks_shed(&self) -> u64 {
+        self.thunks_shed
+    }
+
+    /// Returns Tier-B quiescent sweep cycles performed.
+    pub const fn gc_sweeps(&self) -> u64 {
+        self.gc_sweeps
+    }
+
+    /// Returns worker heap records retired across all Tier-B sweep cycles.
+    pub const fn gc_records_swept(&self) -> u64 {
+        self.gc_records_swept
+    }
+
+    /// Returns quiescent-sweep requests declined for lack of quiescence.
+    pub const fn gc_sweeps_skipped_nonquiescent(&self) -> u64 {
+        self.gc_sweeps_skipped_nonquiescent
     }
 
     /// Returns the number of promotions into optimized evaluator tiers.
@@ -13699,6 +13727,10 @@ impl EvalStats {
             shape_transitions,
             gc_bytes,
             gc_pause_us,
+            thunks_shed,
+            gc_sweeps,
+            gc_records_swept,
+            gc_sweeps_skipped_nonquiescent,
             tier_promotions,
             deopts,
             force_cache_hits,
@@ -13770,6 +13802,12 @@ impl EvalStats {
         self.shape_transitions = self.shape_transitions.saturating_add(shape_transitions);
         self.gc_bytes = self.gc_bytes.saturating_add(gc_bytes);
         self.gc_pause_us = self.gc_pause_us.saturating_add(gc_pause_us);
+        self.thunks_shed = self.thunks_shed.saturating_add(thunks_shed);
+        self.gc_sweeps = self.gc_sweeps.saturating_add(gc_sweeps);
+        self.gc_records_swept = self.gc_records_swept.saturating_add(gc_records_swept);
+        self.gc_sweeps_skipped_nonquiescent = self
+            .gc_sweeps_skipped_nonquiescent
+            .saturating_add(gc_sweeps_skipped_nonquiescent);
         self.tier_promotions = self.tier_promotions.saturating_add(tier_promotions);
         self.deopts = self.deopts.saturating_add(deopts);
         self.force_cache_hits = self.force_cache_hits.saturating_add(force_cache_hits);

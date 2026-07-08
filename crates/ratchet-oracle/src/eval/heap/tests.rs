@@ -22,6 +22,7 @@ use crate::string::{ContextElement, StringContext};
 use crate::syntax::{Span, SymbolTable};
 
 mod errors;
+mod gc;
 
 fn attrs_with_one_entry() -> FlatAttrs {
     attrs_with_value(Value::int(7))

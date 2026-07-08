@@ -707,6 +707,21 @@ impl TreeWalkOptions {
         self.gc_stress_policy = GcStressPolicy::disabled();
     }
 
+    /// Selects the Tier-B live-reclamation mode (the `AOS_NIX_GC` knob).
+    ///
+    /// `EvalGcMode::Sweep` enables thunk capture shedding at force publish and
+    /// precise non-moving sweeps at evaluator quiescent points. The default
+    /// `EvalGcMode::Off` keeps Tier-A never-free semantics. Parallel
+    /// evaluation pins the effective mode to `Off` regardless of this setting.
+    pub fn set_gc_mode(&mut self, mode: EvalGcMode) {
+        self.gc_mode = mode;
+    }
+
+    /// Sets the worker-record growth required between Tier-B quiescent sweeps.
+    pub fn set_gc_sweep_threshold(&mut self, threshold: u64) {
+        self.gc_sweep_threshold = threshold;
+    }
+
     /// Selects the generational tier used for thunk-resolution write barriers.
     pub fn set_thunk_resolve_barrier_tier(&mut self, tier: GenerationalGcTier) {
         self.thunk_resolve_barrier_tier = tier;
@@ -973,6 +988,16 @@ impl TreeWalkOptions {
     /// Returns the configured GC-stress polling policy.
     pub const fn gc_stress_policy(&self) -> GcStressPolicy {
         self.gc_stress_policy
+    }
+
+    /// Returns the configured Tier-B live-reclamation mode.
+    pub const fn gc_mode(&self) -> EvalGcMode {
+        self.gc_mode
+    }
+
+    /// Returns the worker-record growth required between Tier-B sweeps.
+    pub const fn gc_sweep_threshold(&self) -> u64 {
+        self.gc_sweep_threshold
     }
 
     /// Returns the configured thunk-resolution barrier tier.

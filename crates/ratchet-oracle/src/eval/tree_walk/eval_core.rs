@@ -333,6 +333,19 @@ impl TreeWalk {
             options.gc_stress_policy()
         };
         heap.set_gc_stress_policy(gc_stress_policy);
+        // Tier-B live reclamation (AOS_NIX_GC=sweep) is likewise pinned OFF
+        // under parallel evaluation: capture shedding and the quiescent sweep
+        // both require the serial heap's single-mutator invariants, and the
+        // per-worker/concurrent collector is Phase 8. This is an explicit
+        // quiescence pin, not a default: a parallel evaluation with a
+        // configured sweep mode runs byte-identically to gc-off.
+        let gc_mode = if options.parallel_workers().is_some()
+            || options.parallel_thunk_payloads_enabled()
+        {
+            EvalGcMode::Off
+        } else {
+            options.gc_mode()
+        };
         if let Some(heap_memory_budget) = options.heap_memory_budget() {
             heap.set_memory_budget(heap_memory_budget);
             heap.set_resident_memory_mode(
@@ -433,6 +446,10 @@ impl TreeWalk {
             suspended_env_roots: Vec::new(),
             thunk_resolve_remembered_set: RememberedSet::new(),
             thunk_resolve_card_table: GcCardTable::default(),
+            gc_mode,
+            gc_records_at_last_sweep: 0,
+            gc_sweeps_skipped_nonquiescent: 0,
+            gc_last_sweep_report: None,
             lazy_identity_thunks: HashSet::new(),
             lazy_foldl_initial_thunks: HashSet::new(),
             tier1_publish_slots: HashMap::new(),
@@ -965,7 +982,12 @@ impl TreeWalk {
                 receiver,
                 path,
             } => self.force_cache_subject_for_select(*select, *receiver, *path),
-            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2 { .. } => None,
+            // Force-cache subjects are computed while forcing a claimed thunk,
+            // before its captures can be shed; a released kind has no work to
+            // cache and admits nothing.
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Released => None,
         }
     }
 
@@ -1230,7 +1252,8 @@ impl TreeWalk {
             }
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
-            | EvalThunkKind::Select { .. } => false,
+            | EvalThunkKind::Select { .. }
+            | EvalThunkKind::Released => false,
         }
     }
 

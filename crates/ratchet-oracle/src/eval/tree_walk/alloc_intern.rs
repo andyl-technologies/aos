@@ -2003,6 +2003,17 @@ impl TreeWalk {
             EvalThunkKind::BuiltinAttr { symbol, builtin } => {
                 (*builtin).select(self, id, span, *symbol)
             }
+            // A shed thunk is already `Forced`, so every force re-entry
+            // short-circuits on its cached result before reaching the body.
+            // Evaluating a released body means a caller bypassed the force
+            // protocol after capture shedding: fail loudly.
+            EvalThunkKind::Released => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id,
+                    source: EvalHeapError::ReleasedThunkWork { address: 0 },
+                },
+                span,
+            )),
         }
     }
 
@@ -2021,9 +2032,13 @@ impl TreeWalk {
             // with exactly that barrier, so take it directly and skip the vtable
             // lookup, function-pointer call, and `RuntimeThunkResolveBarrier` enum
             // construction on the hottest evaluator event.
-            return guard.finish(value).map_err(|source| {
+            let value = guard.finish(value).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
-            });
+            })?;
+            if self.gc_mode.is_enabled() {
+                self.shed_forced_thunk_captures(id, span, source_thunk)?;
+            }
+            return Ok(value);
         }
         let mut barrier = runtime_thunk_resolve_write_barrier_with_card_table(
             tier,
@@ -2033,8 +2048,32 @@ impl TreeWalk {
             &mut self.thunk_resolve_card_table,
         )
         .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        guard
+        let value = guard
             .finish_with_barrier(value, &mut barrier)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
+        if self.gc_mode.is_enabled() {
+            self.shed_forced_thunk_captures(id, span, source_thunk)?;
+        }
+        Ok(value)
+    }
+
+    /// Sheds the just-published thunk's captures under `AOS_NIX_GC=sweep`.
+    ///
+    /// Runs strictly after the WHNF result is published, so the captured
+    /// closure graph is provably dead for evaluation (every later force
+    /// short-circuits on the cached result). This is the tree-walk analogue of
+    /// GHC/C++ Nix's destructive thunk update; it preserves handle identity
+    /// (the record keeps its address and forced result) and is therefore
+    /// observationally invisible.
+    fn shed_forced_thunk_captures(
+        &mut self,
+        id: IrId,
+        span: Span,
+        source_thunk: Value,
+    ) -> Result<(), TreeWalkError> {
+        self.heap
+            .shed_forced_thunk_captures(source_thunk)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        Ok(())
     }
 }

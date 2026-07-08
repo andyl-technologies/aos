@@ -40,6 +40,24 @@ impl EvalThunk {
         }
     }
 
+    /// Creates a forced thunk record whose deferred work has been released.
+    ///
+    /// This is the Tier-B capture-shedding replacement installed by
+    /// [`EvalHeap::shed_forced_thunk_captures`](super::EvalHeap::shed_forced_thunk_captures)
+    /// once a serial thunk publishes its WHNF result: the cell is already
+    /// `Forced` with `result`, and the released kind carries no captured
+    /// environments, so dropping the original record payload frees its closure
+    /// graph. Only serial-storage thunks are shed, so the replacement never
+    /// carries a parallel payload cell.
+    pub(crate) fn released_forced(result: Value) -> Self {
+        Self {
+            kind: EvalThunkKind::Released,
+            cell: ThunkCell::forced(result),
+            force_storage_mode: EvalThunkForceStorageMode::Serial,
+            parallel_cell: None,
+        }
+    }
+
     /// Marks this node thunk as single-entry storage.
     ///
     /// Single-entry storage is admitted only after the C-8 frame-local
@@ -187,7 +205,8 @@ impl EvalThunk {
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. }
-            | EvalThunkKind::BuiltinAttr { .. } => None,
+            | EvalThunkKind::BuiltinAttr { .. }
+            | EvalThunkKind::Released => None,
         }
     }
 
@@ -198,7 +217,8 @@ impl EvalThunk {
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. }
-            | EvalThunkKind::BuiltinAttr { .. } => None,
+            | EvalThunkKind::BuiltinAttr { .. }
+            | EvalThunkKind::Released => None,
         }
     }
 
@@ -209,7 +229,8 @@ impl EvalThunk {
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. }
-            | EvalThunkKind::BuiltinAttr { .. } => None,
+            | EvalThunkKind::BuiltinAttr { .. }
+            | EvalThunkKind::Released => None,
         }
     }
 
@@ -220,7 +241,8 @@ impl EvalThunk {
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. }
-            | EvalThunkKind::BuiltinAttr { .. } => None,
+            | EvalThunkKind::BuiltinAttr { .. }
+            | EvalThunkKind::Released => None,
         }
     }
 
@@ -231,7 +253,8 @@ impl EvalThunk {
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
             | EvalThunkKind::Select { .. }
-            | EvalThunkKind::BuiltinAttr { .. } => None,
+            | EvalThunkKind::BuiltinAttr { .. }
+            | EvalThunkKind::Released => None,
         }
     }
 
@@ -244,6 +267,18 @@ impl EvalThunk {
     #[allow(dead_code)]
     pub(crate) const fn force_storage_mode(&self) -> EvalThunkForceStorageMode {
         self.force_storage_mode
+    }
+
+    /// Returns whether this thunk stores its force state only in the serial cell.
+    ///
+    /// This is the shed-eligibility predicate for Tier-B capture shedding:
+    /// single-entry thunks re-evaluate their body on each force (no published
+    /// result to stand in for the captures), and thunks with a parallel
+    /// payload cell are shared across workers, so only plain serial-storage
+    /// thunks qualify.
+    pub(crate) const fn has_serial_only_force_storage(&self) -> bool {
+        matches!(self.force_storage_mode, EvalThunkForceStorageMode::Serial)
+            && self.parallel_cell.is_none()
     }
 
     /// Returns whether this thunk uses the single-entry direct force path.

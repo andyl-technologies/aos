@@ -1071,6 +1071,20 @@ impl TreeWalk {
     /// cannot be snapshotted, if a root-set length overflows, or if storage for
     /// another root cannot be reserved.
     pub fn safepoint_root_set(&self) -> Result<EvalRootSet, TreeWalkSafepointRootError> {
+        let mut roots = self.mutator_root_set()?;
+        roots.try_extend(&self.heap.interned_root_set()?)?;
+        Ok(roots)
+    }
+
+    /// Builds the mutator-owned safepoint roots without the interned tables.
+    ///
+    /// This is [`Self::safepoint_root_set`] minus the permanent hash-cons
+    /// entries. The Tier-B non-moving sweep uses it directly: permanent
+    /// records are immortal and never traversed by the sweep's worker-only
+    /// marking (their worker edges are seeded from the records themselves),
+    /// so materializing and hash-sorting every interned entry as a root would
+    /// be pure marking overhead.
+    pub(super) fn mutator_root_set(&self) -> Result<EvalRootSet, TreeWalkSafepointRootError> {
         let mut roots = EvalRootSet::new();
 
         for (frame_index, frame) in self.env.iter().enumerate() {
@@ -1143,7 +1157,6 @@ impl TreeWalk {
                 .ok_or(super::super::heap::EvalRootSetError::LengthOverflow)?;
         }
 
-        roots.try_extend(&self.heap.interned_root_set()?)?;
         Ok(roots)
     }
 

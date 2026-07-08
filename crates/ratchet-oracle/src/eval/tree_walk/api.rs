@@ -158,6 +158,11 @@ fn eval_whnf_owned_with_evaluator(
         pool.finish(&mut evaluator);
     }
     let value = value?;
+    // Tier-B quiescent point: the root force has fully unwound, so worker
+    // garbage is reclaimable with the produced value as an extra root. A
+    // no-op unless AOS_NIX_GC=sweep is enabled and the growth threshold has
+    // been reached.
+    evaluator.maybe_sweep_heap_at_quiescence(&[value])?;
     evaluator.record_attr_select_cache_site_telemetry();
     let derivations = evaluator.derivation_snapshot()?;
     let gc_stress_boundary_scans = gc_stress_boundary_scans_for_outcome(&evaluator, value)?;
@@ -322,6 +327,9 @@ fn eval_instantiation_attr_path_with_evaluator(
         pool.finish(&mut evaluator);
     }
     let value = value?;
+    // Tier-B quiescent point: the instantiation force has fully unwound (see
+    // `eval_whnf_owned_with_evaluator`).
+    evaluator.maybe_sweep_heap_at_quiescence(&[value])?;
     let span = evaluator.node(ir.root)?.span;
     evaluator.record_attr_select_cache_site_telemetry();
     let derivations = evaluator.derivation_snapshot()?;

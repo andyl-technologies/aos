@@ -232,3 +232,101 @@ fn daemon_force_cache_replay_runs_barrier_without_remembered_edge_for_permanent_
         "force-cache replayed permanent targets do not dirty cards"
     );
 }
+
+/// A program with plenty of thunk garbage: each call allocates a `heavy`
+/// thunk that is demanded only on the untaken branch, so its record dies with
+/// the call frame once the result is strict. (Bindings must be conditionally
+/// used - a never-used binding would be removed by dead-binding elimination,
+/// and values stored into attrsets are immortal via permanent hash-consing.)
+const SWEEP_FIXTURE: &str =
+    "let\n  pick = n: let heavy = (x: x * x) n; in if n > 0 then n + 1 else heavy;\nin pick 1 + pick 2 + pick 3";
+
+#[test]
+fn sweep_mode_evaluation_is_byte_identical_and_sheds_captures() {
+    let ir = lower(SWEEP_FIXTURE);
+    let baseline = eval_raw_bytes_with_options(&ir, TreeWalkOptions::default())
+        .expect("baseline evaluates");
+
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_gc_sweep_threshold(0);
+    let swept = eval_raw_bytes_with_options(&ir, options.clone()).expect("sweep-mode evaluates");
+    assert_eq!(baseline, swept, "AOS_NIX_GC=sweep must be byte-invisible");
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("owned sweep-mode evaluates");
+    let stats = outcome.stats();
+    assert!(
+        stats.thunks_shed() > 0,
+        "forced thunks shed their captures under sweep mode"
+    );
+    assert_eq!(
+        stats.gc_sweeps(),
+        1,
+        "threshold 0 sweeps once at the post-root quiescent point"
+    );
+    assert!(
+        stats.gc_records_swept() > 0,
+        "dead worker records are retired by the quiescent sweep"
+    );
+    assert_eq!(stats.gc_sweeps_skipped_nonquiescent(), 0);
+}
+
+#[test]
+fn sweep_mode_off_by_default_keeps_counters_zero() {
+    let outcome = eval_whnf_owned(&lower(SWEEP_FIXTURE)).expect("expression evaluates");
+    let stats = outcome.stats();
+    assert_eq!(stats.thunks_shed(), 0);
+    assert_eq!(stats.gc_sweeps(), 0);
+    assert_eq!(stats.gc_records_swept(), 0);
+}
+
+#[test]
+fn parallel_mode_pins_sweep_off() {
+    let ir = lower(SWEEP_FIXTURE);
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_gc_sweep_threshold(0);
+    options.set_parallel_thunk_payloads_enabled(true);
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("parallel-mode evaluates");
+    let stats = outcome.stats();
+    assert_eq!(
+        stats.thunks_shed(),
+        0,
+        "parallel evaluation pins Tier-B reclamation off"
+    );
+    assert_eq!(stats.gc_sweeps(), 0);
+}
+
+#[test]
+fn validation_sweep_preserves_later_forcing() {
+    // Force one attr, sweep with the root as the only extra root, then force
+    // the second attr: the sweep must retire only true garbage, and the still
+    // reachable suspended thunk must keep evaluating correctly afterwards.
+    let ir = lower("{ a = (x: x + 1) 1; b = (y: y * 3) 2; }");
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let (a_value, b_value) = {
+        let attrs = evaluator.heap().get_attrs(root).expect("root is attrs");
+        (
+            attrs.get(symbol_for(&ir, b"a")).expect("a exists"),
+            attrs.get(symbol_for(&ir, b"b")).expect("b exists"),
+        )
+    };
+    let span = Span::new(0, 0);
+    let a_forced = evaluator
+        .force_value(ir.root, span, a_value)
+        .expect("a forces");
+    assert!(a_forced.raw_eq(Value::int(2)));
+
+    let report = evaluator
+        .sweep_heap_for_validation(&[root])
+        .expect("validation sweep succeeds");
+    assert!(report.live_worker_records > 0);
+
+    let b_forced = evaluator
+        .force_value(ir.root, span, b_value)
+        .expect("b still forces after the sweep");
+    assert!(b_forced.raw_eq(Value::int(6)));
+}

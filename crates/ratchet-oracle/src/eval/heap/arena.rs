@@ -718,6 +718,9 @@ impl EvalHeap {
         let mut worker_records = 0usize;
         let mut permanent_shared_records = 0usize;
         for record in &self.records {
+            if record.is_retired() {
+                continue;
+            }
             match record.allocation_domain {
                 HeapAllocationDomain::Worker => {
                     worker_records = worker_records.saturating_add(1);
@@ -764,6 +767,9 @@ impl EvalHeap {
 
         let mut generation_rewrites = 0usize;
         for record in &mut self.records {
+            if record.is_retired() {
+                continue;
+            }
             let admitted_generation =
                 tier_b_admitted_generation_for_allocation_domain(record.allocation_domain);
             if record.generation != admitted_generation {
@@ -964,7 +970,9 @@ impl EvalHeap {
         let live_worker_records = self
             .records
             .iter()
-            .filter(|record| record.allocation_domain == HeapAllocationDomain::Worker)
+            .filter(|record| {
+                record.allocation_domain == HeapAllocationDomain::Worker && !record.is_retired()
+            })
             .count();
         if live_worker_records != 0 {
             return Err(EvalHeapError::WorkerResetLiveRecords {
@@ -2694,6 +2702,19 @@ impl EvalHeap {
         mark: EvalHeapWorkerRegionMark,
     ) -> Result<usize, EvalHeapError> {
         self.validate_worker_region_mark_is_innermost(mark)?;
+
+        // A worker-region pop rewinds the bump arena, so a later allocation may
+        // reuse a truncated record's address. That is only sound while the
+        // Tier-B sweep has never retired a record: a retired record's address
+        // must keep failing as an unknown pointer forever, and slot recycling
+        // additionally breaks the "records are in allocation order" tail
+        // assumption this validation depends on. Region pops and the sweep are
+        // therefore mutually exclusive within one heap (RFC-0007 06 SS3.3/SS5).
+        if self.records.retired_total() != 0 {
+            return Err(EvalHeapError::RegionPopAfterSweep {
+                retired: self.records.retired_total(),
+            });
+        }
 
         let reclaimed = self.records.len() - mark.records;
         let reclaimed_records = &self.records[mark.records..];

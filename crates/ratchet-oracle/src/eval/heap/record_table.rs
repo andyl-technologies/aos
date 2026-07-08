@@ -39,9 +39,9 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
 use crate::cache::cutoff::ValueHash;
-use crate::value::HeapObject;
+use crate::value::{HeapObject, ValueTag};
 
-use super::HeapRecord;
+use super::{HeapObjectValue, HeapRecord};
 
 /// Multiply constant for the `FxHash`-style integer mixer (the 64-bit variant).
 ///
@@ -140,6 +140,18 @@ pub(super) struct HeapRecordTable {
     records: Vec<HeapRecord>,
     index: AddressIndex,
     cold_hashes: RefCell<ColdHashMap>,
+    /// Positions of retired slots available for reuse by [`Self::push`].
+    ///
+    /// The Tier-B non-moving sweep retires unreachable worker records in
+    /// place ([`Self::retire_at_position`]): the payload is dropped, the
+    /// address index entry is removed, and the slot position is parked here so
+    /// the next allocation recycles it instead of growing the record `Vec`.
+    /// Recycling reuses *slot positions*, never *addresses* - the bump arena
+    /// only hands each address out once (outside tail truncation), so a stale
+    /// handle to a retired record keeps failing loudly as an unknown pointer.
+    free_slots: Vec<u32>,
+    /// Running total of slots ever retired by the sweep, for cycle stats.
+    retired_total: u64,
 }
 
 impl HeapRecordTable {
@@ -149,10 +161,15 @@ impl HeapRecordTable {
             records: Vec::new(),
             index: AddressIndex::default(),
             cold_hashes: RefCell::new(ColdHashMap::default()),
+            free_slots: Vec::new(),
+            retired_total: 0,
         }
     }
 
     /// Appends `record` to the table and indexes it by its address.
+    ///
+    /// Recycles a retired slot when one is available; otherwise appends to the
+    /// record `Vec`.
     ///
     /// # Panics
     ///
@@ -161,12 +178,35 @@ impl HeapRecordTable {
     /// live record - a violation of the unique-live-address contract.
     pub(super) fn push(&mut self, record: HeapRecord) {
         let address = record.ptr.as_ptr() as usize;
-        let position = self.records.len();
-        debug_assert!(
-            position <= u32::MAX as usize,
-            "heap record count exceeds the u32 index width"
-        );
-        self.records.push(record);
+        let position = match self.free_slots.pop() {
+            Some(free) => {
+                debug_assert!(
+                    self.records
+                        .get(free as usize)
+                        .is_some_and(HeapRecord::is_retired),
+                    "record free list named a slot that is not retired"
+                );
+                if let Some(slot) = self.records.get_mut(free as usize) {
+                    *slot = record;
+                    free as usize
+                } else {
+                    // Fail open in release: fall back to appending rather than
+                    // dropping the record on a corrupted free-list entry.
+                    let position = self.records.len();
+                    self.records.push(record);
+                    position
+                }
+            }
+            None => {
+                let position = self.records.len();
+                debug_assert!(
+                    position <= u32::MAX as usize,
+                    "heap record count exceeds the u32 index width"
+                );
+                self.records.push(record);
+                position
+            }
+        };
         match self.index.entry(address) {
             Entry::Occupied(_) => {
                 debug_assert!(false, "pushed a record over a live heap address");
@@ -180,22 +220,77 @@ impl HeapRecordTable {
         }
     }
 
+    /// Retires the record at `position`, dropping its payload in place.
+    ///
+    /// The record's address index entry and cold hashes are removed, its
+    /// payload object is replaced with [`HeapObjectValue::Retired`] (dropping
+    /// the typed payload and everything it owns), and the slot is parked on
+    /// the free list for reuse. Address resolution for the retired address
+    /// fails as an unknown pointer from this point on.
+    ///
+    /// Returns the retired record's original [`ValueTag`], or `None` when
+    /// `position` is out of bounds or already retired (both left untouched).
+    pub(super) fn retire_at_position(&mut self, position: usize) -> Option<ValueTag> {
+        let record = self.records.get_mut(position)?;
+        if record.is_retired() {
+            return None;
+        }
+        let tag = record.object.tag();
+        let address = record.ptr.as_ptr() as usize;
+        record.object = HeapObjectValue::Retired { tag };
+        record.structural_hash = None;
+        record.minor_gc_forwarding.set(None);
+        self.index.remove(&address);
+        self.cold_hashes.get_mut().remove(&address);
+        self.free_slots.push(position as u32);
+        self.retired_total = self.retired_total.saturating_add(1);
+        Some(tag)
+    }
+
+    /// Returns the number of slots currently parked on the free list.
+    pub(super) fn free_slot_count(&self) -> usize {
+        self.free_slots.len()
+    }
+
+    /// Returns the running total of slots ever retired by the sweep.
+    pub(super) fn retired_total(&self) -> u64 {
+        self.retired_total
+    }
+
     /// Drops all records past `len`, removing their index entries.
     ///
     /// This is a no-op if `len` is at least the current length. Because records
     /// are only ever removed from the tail, no surviving record changes
     /// position, so no surviving index entry needs to be rekeyed.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if any slot has been retired: tail truncation
+    /// (the worker-region pop) rewinds the bump arena and may hand a truncated
+    /// address out again, which is only sound while retirement has never
+    /// removed a *non-tail* record. The sweep and region pops are therefore
+    /// mutually exclusive within one heap; callers gate pops on
+    /// [`Self::free_slot_count`] / [`Self::retired_total`] being zero.
     pub(super) fn truncate(&mut self, len: usize) {
         if len >= self.records.len() {
             return;
         }
+        debug_assert!(
+            self.retired_total == 0,
+            "record-table truncate after Tier-B retirement would allow address reuse"
+        );
         let cold_hashes = self.cold_hashes.get_mut();
         for record in &self.records[len..] {
+            if record.is_retired() {
+                continue;
+            }
             let address = record.ptr.as_ptr() as usize;
             self.index.remove(&address);
             cold_hashes.remove(&address);
         }
         self.records.truncate(len);
+        self.free_slots
+            .retain(|&position| (position as usize) < len);
     }
 
     /// Returns the cached canonical value hash for the record at `address`.
