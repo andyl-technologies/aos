@@ -22,11 +22,13 @@ use serde_json::Value;
 
 use crate::spawn::create_test_spawn_resource_pair;
 use crate::{
-    QMP_CAPABILITIES_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_LOAD_COMMAND, QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome,
-    QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot, QemuLoadvmCommandAuthorization,
-    QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission, QemuNodeChannelPlane, QemuNodeChild,
-    QemuNodeLifecycleState, QemuQmpVmStateControlChannel, QemuSavevmCompletenessPolicy,
+    LaunchProfileCandidate, QMP_CAPABILITIES_COMMAND, QMP_QUERY_JOBS_COMMAND,
+    QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QemuAsyncDriverRuntimeError, QemuAsyncWait,
+    QemuAsyncWaitOutcome, QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot,
+    QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
+    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
+    QemuNodeChannelPlane, QemuNodeChild, QemuNodeLifecycleState, QemuQmpVmStateControlChannel,
+    QemuSavevmCompletenessPolicy, QemuVmLaunchConfig,
 };
 
 use super::*;
@@ -263,6 +265,36 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
         execute_name(json_line(&lines, 3)),
         Some(QMP_QUIT_COMMAND_NAME)
     );
+
+    Ok(())
+}
+
+#[test]
+fn warm_restore_launch_requires_qmp_channel_before_spawn() -> Result<(), Box<dyn Error>> {
+    let command = launch_command_without_qmp()?;
+    let world = baked_world()?;
+    let snapshot = baked_genesis_snapshot(&world);
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &snapshot,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+
+    let error = spawn_setup_and_restore_qemu_node(
+        &command,
+        "/tmp/crucible-node-factory-test",
+        RegionConfig::new(1, 4, 0),
+        0,
+        QemuNodeRestorePlan::baked_genesis(admission),
+        node_factory_runtime(),
+    )
+    .err()
+    .ok_or("warm restore launch should reject commands without QMP before spawn")?;
+
+    assert!(matches!(
+        error,
+        QemuWarmRestoreLaunchError::MissingQmpChannel
+    ));
 
     Ok(())
 }
@@ -640,6 +672,33 @@ fn baked_genesis_snapshot(world: &World) -> QemuBakedGenesisSnapshot {
             node_blobs,
         ),
     }
+}
+
+fn launch_command_without_qmp() -> Result<QemuLaunchCommand, Box<dyn Error>> {
+    Ok(QemuLaunchCommandBuilder::new(
+        LaunchProfileCandidate::default().try_into_deterministic()?,
+        QemuVmLaunchConfig::new(
+            "vm-a",
+            launch_artifact("kernel"),
+            launch_artifact("root-image"),
+        ),
+        "/nix/store/00000000000000000000000000000000-qemu/bin/qemu-system-x86_64",
+        QemuLaunchPluginConfig::new(
+            "/nix/store/00000000000000000000000000000000-crucible-qemu-plugin/lib/crucible.so",
+            0,
+        ),
+    )
+    .build()?)
+}
+
+fn launch_artifact(name: &str) -> QemuLaunchArtifact {
+    QemuLaunchArtifact::new(
+        ContentHash::from_canonical_material(
+            "crucible.qemu.node-factory.test.launch-artifact.v1",
+            name,
+        ),
+        format!("/nix/store/00000000000000000000000000000000-crucible-{name}"),
+    )
 }
 
 fn content_hash_with_byte(byte: u8) -> ContentHash {

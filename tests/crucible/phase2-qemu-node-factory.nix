@@ -75,6 +75,14 @@
         needle = "build_qemu_node_from_restored_checkpoint";
       }
       {
+        label = "warm restore launch helper export";
+        needle = "spawn_setup_and_restore_qemu_node";
+      }
+      {
+        label = "warm restore launch error export";
+        needle = "QemuWarmRestoreLaunchError";
+      }
+      {
         label = "restore admission export";
         needle = "QemuNodeRestoreAdmission";
       }
@@ -119,6 +127,42 @@
       {
         label = "warm restore factory";
         needle = "pub fn build_qemu_node_from_restored_checkpoint";
+      }
+      {
+        label = "warm restore launch error";
+        needle = "pub enum QemuWarmRestoreLaunchError";
+      }
+      {
+        label = "warm restore launch composition";
+        needle = "pub fn spawn_setup_and_restore_qemu_node";
+      }
+      {
+        label = "warm restore requires qmp before spawn";
+        needle = ".ok_or(QemuWarmRestoreLaunchError::MissingQmpChannel)?";
+      }
+      {
+        label = "warm restore spawn uses launch command";
+        needle = "let spawned = spawn_qemu_child_with_fds_in_directory(";
+      }
+      {
+        label = "warm restore spawn uses region layout size";
+        needle = "allocation.layout().region_size";
+      }
+      {
+        label = "warm restore reuses run directory for qmp";
+        needle = "let run_directory = run_directory.as_ref();";
+      }
+      {
+        label = "warm restore plugin setup";
+        needle = "complete_qemu_host_plugin_setup(\n        resources.into_setup_resources(),";
+      }
+      {
+        label = "warm restore qmp vmstate connect";
+        needle = "QemuQmpVmStateControlChannel::connect_unix_socket(qmp.socket_path(run_directory))";
+      }
+      {
+        label = "warm restore delegates restored factory";
+        needle = "build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)";
       }
       {
         label = "restore admission enum";
@@ -235,6 +279,10 @@
       {
         label = "baked auth exact restore rejection test";
         needle = "factory_rejects_baked_authorization_for_replay_oracle_restore";
+      }
+      {
+        label = "warm restore launch qmp guard test";
+        needle = "warm_restore_launch_requires_qmp_channel_before_spawn";
       }
       {
         label = "slot mismatch before restore test";

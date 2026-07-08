@@ -7,17 +7,23 @@
 //! cannot issue `savevm` or `loadvm` without the explicit realization-policy
 //! authorization path.
 
+use std::path::Path;
+
 use crucible::{Checkpoint, ContentHash, SchedulerSendAuthorizer};
-use crucible_shmem::{SetupRegionMapError, mmap_setup_region};
+use crucible_shmem::{
+    RegionAllocation, RegionConfig, RegionLayoutError, SetupRegionMapError, mmap_setup_region,
+};
 use thiserror::Error;
 
 use crate::{
     QemuAsyncDriverPolicy, QemuBakedGenesisRestoreAdmission, QemuCrashDetector, QemuHostIoRuntime,
-    QemuHostPluginSetup, QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose,
-    QemuLoadvmRealizationAdmission, QemuMappedQuantumShmemHotPath,
-    QemuMappedQuantumShmemHotPathError, QemuNode, QemuNodeChannelError, QemuNodeChannels,
-    QemuNodeChild, QemuQmpMachineControlChannel, QemuQmpVmStateControlChannel,
-    QemuQuantumShmemConfig, QemuShutdownPolicy, QmpTimeoutStream,
+    QemuHostPluginSetup, QemuHostPluginSetupError, QemuLaunchCommand,
+    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
+    QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
+    QemuNodeChannelError, QemuNodeChannels, QemuNodeChild, QemuQmpMachineControlChannel,
+    QemuQmpVmStateControlChannel, QemuQuantumShmemConfig, QemuShutdownPolicy, QemuSpawnError,
+    QmpError, QmpTimeoutStream, complete_qemu_host_plugin_setup,
+    spawn_qemu_child_with_fds_in_directory,
 };
 
 /// QMP machine-control adapter that only exposes graceful shutdown.
@@ -98,6 +104,44 @@ pub enum QemuNodeFactoryError {
     VmStateRestoreAuthorization {
         /// Purpose attached to the rejected authorization token.
         purpose: QemuLoadvmCommandPurpose,
+    },
+}
+
+/// Errors returned while spawning and restoring a QEMU node from a launch command.
+#[derive(Debug, Error)]
+pub enum QemuWarmRestoreLaunchError {
+    /// The launch command did not include the QMP channel required for VMState restore.
+    #[error("QEMU warm restore launch requires a QMP channel")]
+    MissingQmpChannel,
+    /// The requested shared-memory region layout could not be computed.
+    #[error("QEMU warm restore shared-memory layout failed")]
+    RegionLayout {
+        /// Underlying shared-memory layout error.
+        source: RegionLayoutError,
+    },
+    /// QEMU process spawning failed.
+    #[error("QEMU warm restore spawn failed")]
+    Spawn {
+        /// Underlying spawn error.
+        source: QemuSpawnError,
+    },
+    /// Host/plugin setup failed before VMState restore.
+    #[error("QEMU warm restore plugin setup failed")]
+    HostSetup {
+        /// Underlying host setup error.
+        source: QemuHostPluginSetupError,
+    },
+    /// Connecting the typed VMState QMP client failed.
+    #[error("QEMU warm restore QMP connection failed")]
+    QmpConnect {
+        /// Underlying QMP error.
+        source: QmpError,
+    },
+    /// Final scheduler-facing node assembly failed.
+    #[error("QEMU warm restore node assembly failed")]
+    Factory {
+        /// Underlying node factory error.
+        source: QemuNodeFactoryError,
     },
 }
 
@@ -228,6 +272,58 @@ where
         crash_detector,
         host_io_runtime,
     ))
+}
+
+/// Spawns QEMU, completes plugin setup, restores VMState, and assembles a node.
+///
+/// This is the Linux warm-realization composition path that the real QEMU
+/// resume executor uses after launch command construction. It keeps each
+/// lower-level boundary explicit: spawn owns fixed descriptor inheritance,
+/// host setup owns plugin handoff, QMP owns checkpoint-tagged VMState restore,
+/// and [`build_qemu_node_from_restored_checkpoint`] reduces QMP to
+/// shutdown-only control before returning the scheduler-facing [`QemuNode`].
+///
+/// # Errors
+///
+/// Returns [`QemuWarmRestoreLaunchError`] when the launch command has no QMP
+/// channel, shared-memory layout computation fails, QEMU cannot be spawned, the
+/// plugin setup handshake fails, the QMP VMState channel cannot be connected, or
+/// final node assembly rejects the restore plan.
+pub fn spawn_setup_and_restore_qemu_node<A, R>(
+    command: &QemuLaunchCommand,
+    run_directory: impl AsRef<Path>,
+    region_config: RegionConfig,
+    slot_index: u32,
+    restore: QemuNodeRestorePlan<'_>,
+    runtime: QemuNodeFactoryRuntime<A, R>,
+) -> Result<QemuNode, QemuWarmRestoreLaunchError>
+where
+    A: SchedulerSendAuthorizer + 'static,
+    R: QemuHostIoRuntime + 'static,
+{
+    let run_directory = run_directory.as_ref();
+    let qmp = command
+        .qmp_channel()
+        .ok_or(QemuWarmRestoreLaunchError::MissingQmpChannel)?;
+    let allocation = RegionAllocation::new(region_config)
+        .map_err(|source| QemuWarmRestoreLaunchError::RegionLayout { source })?;
+    let spawned = spawn_qemu_child_with_fds_in_directory(
+        command,
+        run_directory,
+        allocation.layout().region_size,
+    )
+    .map_err(|source| QemuWarmRestoreLaunchError::Spawn { source })?;
+    let (child, resources) = spawned.into_parts();
+    let setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        slot_index,
+    )
+    .map_err(|source| QemuWarmRestoreLaunchError::HostSetup { source })?;
+    let qmp = QemuQmpVmStateControlChannel::connect_unix_socket(qmp.socket_path(run_directory))
+        .map_err(|source| QemuWarmRestoreLaunchError::QmpConnect { source })?;
+    build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, runtime)
+        .map_err(|source| QemuWarmRestoreLaunchError::Factory { source })
 }
 
 /// Restores QEMU VMState, then builds a scheduler-facing QEMU node.
