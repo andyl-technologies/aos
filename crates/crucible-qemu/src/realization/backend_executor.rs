@@ -6,7 +6,7 @@ use crucible::{
 };
 
 use super::{
-    QemuBakedGenesisSnapshot, QemuVmRealizationError, QemuVmRealizationExecutor,
+    QemuBakedGenesisRestoreAdmission, QemuVmRealizationError, QemuVmRealizationExecutor,
     QemuVmReplayRequest, QemuVmSnapshot, validate_checkpoint_matches_config,
     validate_runtime_matches_admission,
 };
@@ -61,8 +61,9 @@ where
     fn load_baked_genesis(
         &mut self,
         config: &Configuration,
-        snapshot: &QemuBakedGenesisSnapshot,
+        admission: QemuBakedGenesisRestoreAdmission<'_>,
     ) -> Result<RuntimeState, QemuVmRealizationError> {
+        let snapshot = admission.snapshot();
         self.backend
             .restore(&snapshot.checkpoint)
             .map_err(|source| backend_executor_error("restore baked genesis", source))?;
@@ -225,8 +226,8 @@ mod tests {
     use super::*;
     use crate::savevm_policy::validate_loadvm_realized_runtime;
     use crate::{
-        QemuCachedAncestor, QemuReplayOracleValidation, QemuSavevmPolicyError,
-        QemuVmLoadvmAdmissionPolicy, QemuVmRealizationStore, resume_qemu_vm,
+        QemuBakedGenesisSnapshot, QemuCachedAncestor, QemuReplayOracleValidation,
+        QemuSavevmPolicyError, QemuVmLoadvmAdmissionPolicy, QemuVmRealizationStore, resume_qemu_vm,
     };
 
     type SharedLog = Rc<RefCell<Vec<RealizationCall>>>;
@@ -350,6 +351,10 @@ mod tests {
     }
 
     impl QemuVmLoadvmAdmissionPolicy for AdmittingLoadvmPolicy {
+        fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization {
+            QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test()
+        }
+
         fn authorize_loadvm_runtime(
             self,
         ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
@@ -479,7 +484,12 @@ mod tests {
         );
         let genesis = Configuration::genesis(scenario("backend-baked-genesis"));
         let baked = store.baked.clone();
-        let baked_runtime = executor.load_baked_genesis(&genesis, &baked)?;
+        let baked_admission = QemuBakedGenesisRestoreAdmission::new(
+            &baked,
+            &world,
+            QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+        )?;
+        let baked_runtime = executor.load_baked_genesis(&genesis, baked_admission)?;
         assert_eq!(baked_runtime.configuration, genesis.id());
 
         Ok(())

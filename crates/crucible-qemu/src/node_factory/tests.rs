@@ -1,6 +1,7 @@
 //! Tests for Linux QEMU node factory composition.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::io::{self, Cursor, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
@@ -11,8 +12,9 @@ use std::thread;
 use std::time::Duration;
 
 use crucible::{
-    Backend, Checkpoint, CheckpointKind, ContentHash, NodeId, SchedulerError, SchedulerNodeId,
-    SchedulerSendAuthorization, SchedulerSendAuthorizer,
+    Backend, Checkpoint, CheckpointKind, ContentHash, Icount, NodeBlobRef, NodeId, ReadyPoint,
+    SchedulerError, SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, PluginHandshakeConfig};
 use crucible_shmem::{ABI_VERSION, RegionConfig, RegionLayout, SLOT_NET_ROUTER};
@@ -22,9 +24,9 @@ use crate::spawn::create_test_spawn_resource_pair;
 use crate::{
     QMP_CAPABILITIES_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
     QMP_SNAPSHOT_LOAD_COMMAND, QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome,
-    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
-    QemuNodeChannelPlane, QemuNodeChild, QemuNodeLifecycleState, QemuQmpVmStateControlChannel,
-    QemuSavevmCompletenessPolicy,
+    QemuBakedGenesisRestoreAdmission, QemuBakedGenesisSnapshot, QemuLoadvmCommandAuthorization,
+    QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission, QemuNodeChannelPlane, QemuNodeChild,
+    QemuNodeLifecycleState, QemuQmpVmStateControlChannel, QemuSavevmCompletenessPolicy,
 };
 
 use super::*;
@@ -201,6 +203,71 @@ fn factory_restores_vmstate_before_reducing_qmp_to_shutdown_only() -> Result<(),
 }
 
 #[test]
+fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<dyn Error>> {
+    let config = RegionConfig::new(1, 4, 0);
+    let layout = RegionLayout::for_config(config)?;
+    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    let plugin_peer = thread::spawn(move || {
+        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::WaitForQuit)
+    });
+    let setup =
+        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
+        r#"{"return":{}}"#,
+    ]);
+    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
+    let world = baked_world()?;
+    let snapshot = baked_genesis_snapshot(&world);
+    let admission = QemuBakedGenesisRestoreAdmission::new(
+        &snapshot,
+        &world,
+        QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+    )?;
+
+    let mut node = build_qemu_node_from_restored_checkpoint(
+        QemuNodeChild::new(child),
+        setup,
+        qmp,
+        QemuNodeRestorePlan::baked_genesis(admission),
+        node_factory_runtime(),
+    )?;
+
+    assert!(node.shutdown_child()?.reaped);
+
+    let plugin_region = match plugin_peer.join() {
+        Ok(Ok(region)) => region,
+        Ok(Err(error)) => return Err(error.into()),
+        Err(_panic) => return Err("plugin setup peer panicked".into()),
+    };
+    assert_eq!(plugin_region.region_len, layout.region_size);
+
+    let lines = written_json_lines_from_shared(&qmp_written)?;
+    assert_eq!(
+        execute_name(json_line(&lines, 0)),
+        Some(QMP_CAPABILITIES_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_SNAPSHOT_LOAD_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 2)),
+        Some(QMP_QUERY_JOBS_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 3)),
+        Some(QMP_QUIT_COMMAND_NAME)
+    );
+
+    Ok(())
+}
+
+#[test]
 fn factory_rejects_probe_authorization_before_vmstate_restore() -> Result<(), Box<dyn Error>> {
     let config = RegionConfig::new(1, 4, 0);
     let layout = RegionLayout::for_config(config)?;
@@ -236,6 +303,56 @@ fn factory_rejects_probe_authorization_before_vmstate_restore() -> Result<(), Bo
         error,
         QemuNodeFactoryError::VmStateRestoreAuthorization {
             purpose: QemuLoadvmCommandPurpose::SnapshotCompletenessProbe
+        }
+    ));
+    assert_qmp_wrote_only_capabilities(&qmp_written)?;
+
+    let plugin_region = match plugin_peer.join() {
+        Ok(Ok(region)) => region,
+        Ok(Err(error)) => return Err(error.into()),
+        Err(_panic) => return Err("plugin setup peer panicked".into()),
+    };
+    assert_eq!(plugin_region.region_len, layout.region_size);
+
+    Ok(())
+}
+
+#[test]
+fn factory_rejects_baked_authorization_for_replay_oracle_restore() -> Result<(), Box<dyn Error>> {
+    let config = RegionConfig::new(1, 4, 0);
+    let layout = RegionLayout::for_config(config)?;
+    let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+    let plugin_peer = thread::spawn(move || {
+        plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
+    });
+    let setup =
+        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let (qmp_stream, qmp_written) = scripted_qmp_with_written([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+    ]);
+    let qmp = QemuQmpVmStateControlChannel::connect(qmp_stream)?;
+    let checkpoint = checkpoint_with_hash_byte(0xab);
+
+    let error = build_qemu_node_from_restored_checkpoint(
+        QemuNodeChild::new(child),
+        setup,
+        qmp,
+        QemuNodeRestorePlan::new(
+            &checkpoint,
+            QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test(),
+            test_admission(),
+        ),
+        node_factory_runtime(),
+    )
+    .err()
+    .ok_or("factory should reject baked authorization for replay-oracle restore")?;
+
+    assert!(matches!(
+        error,
+        QemuNodeFactoryError::VmStateRestoreAuthorization {
+            purpose: QemuLoadvmCommandPurpose::BakedGenesisRealization
         }
     ));
     assert_qmp_wrote_only_capabilities(&qmp_written)?;
@@ -481,6 +598,48 @@ fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {
         content_hash_with_byte(byte.wrapping_add(1)),
         CheckpointKind::Fat,
     )
+}
+
+fn baked_world() -> Result<World, Box<dyn Error>> {
+    Ok(World::from_nodes(vec![WorldNode {
+        id: node_id("vm-a"),
+        arch: VmArchitecture::X86_64,
+        memory_mib: 512,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount::default(),
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: 1,
+        icount_shift: 0,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])?)
+}
+
+fn baked_genesis_snapshot(world: &World) -> QemuBakedGenesisSnapshot {
+    let node = world
+        .nodes()
+        .first()
+        .map(|node| node.id.clone())
+        .unwrap_or_else(|| node_id("vm-a"));
+    let node_blobs = BTreeMap::from([(
+        node,
+        NodeBlobRef::baked(ContentHash::from_canonical_material(
+            "crucible.qemu.node-factory.test.baked-blob.v1",
+            "vm-a",
+        )),
+    )]);
+    QemuBakedGenesisSnapshot {
+        world_id: world.id(),
+        checkpoint: Checkpoint::with_node_blobs(
+            content_hash_with_byte(0xab),
+            content_hash_with_byte(0xac),
+            CheckpointKind::Fat,
+            node_blobs,
+        ),
+    }
 }
 
 fn content_hash_with_byte(byte: u8) -> ContentHash {

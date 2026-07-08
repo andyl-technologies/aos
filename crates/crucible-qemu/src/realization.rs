@@ -12,8 +12,8 @@ use crucible::{
 use thiserror::Error;
 
 use crate::{
-    QemuLoadvmCommandAuthorization, QemuLoadvmRealizationAdmission, QemuReplayOracleValidation,
-    QemuSavevmCompletenessPolicy, QemuSavevmPolicyError,
+    QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
+    QemuReplayOracleValidation, QemuSavevmCompletenessPolicy, QemuSavevmPolicyError,
 };
 
 mod backend_executor;
@@ -56,6 +56,64 @@ impl QemuBakedGenesisSnapshot {
             world_id: world.id,
             checkpoint: genesis.checkpoint,
         })
+    }
+}
+
+/// Validated admission to restore a baked-genesis VMState snapshot.
+///
+/// Values of this type are created only after the baked snapshot has been
+/// checked against the requested world and the QMP `loadvm` token has the
+/// baked-genesis purpose. Real QEMU executors can pass this object directly to
+/// the Linux node factory without accepting arbitrary fat checkpoints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuBakedGenesisRestoreAdmission<'a> {
+    snapshot: &'a QemuBakedGenesisSnapshot,
+    authorization: QemuLoadvmCommandAuthorization,
+}
+
+impl<'a> QemuBakedGenesisRestoreAdmission<'a> {
+    /// Builds a baked-genesis restore admission after validating the snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuVmRealizationError`] when `snapshot` is not a valid baked
+    /// genesis snapshot for `world` or when `authorization` was not issued for
+    /// baked-genesis realization.
+    pub(crate) fn new(
+        snapshot: &'a QemuBakedGenesisSnapshot,
+        world: &World,
+        authorization: QemuLoadvmCommandAuthorization,
+    ) -> Result<Self, QemuVmRealizationError> {
+        validate_baked_genesis_snapshot(snapshot, world)?;
+        validate_baked_genesis_authorization(authorization)?;
+        Ok(Self {
+            snapshot,
+            authorization,
+        })
+    }
+
+    /// Returns the validated baked-genesis snapshot.
+    #[must_use]
+    pub const fn snapshot(self) -> &'a QemuBakedGenesisSnapshot {
+        self.snapshot
+    }
+
+    /// Returns the checkpoint whose VMState may be restored.
+    #[must_use]
+    pub const fn checkpoint(self) -> &'a Checkpoint {
+        &self.snapshot.checkpoint
+    }
+
+    /// Returns the low-level QMP `loadvm` authorization token.
+    #[must_use]
+    pub const fn authorization(self) -> QemuLoadvmCommandAuthorization {
+        self.authorization
+    }
+
+    /// Returns the world identity whose baked genesis was admitted.
+    #[must_use]
+    pub const fn world_id(self) -> ContentHash {
+        self.snapshot.world_id
     }
 }
 
@@ -169,6 +227,12 @@ pub trait QemuVmRealizationStore {
 
 /// Loadvm admission policy used by QEMU realization.
 pub trait QemuVmLoadvmAdmissionPolicy {
+    /// Authorizes loading the trusted baked-genesis ready-point snapshot.
+    ///
+    /// This does not admit arbitrary exact fat checkpoints; it only supplies
+    /// the low-level QMP token needed by the baked-genesis fallback branch.
+    fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization;
+
     /// Authorizes the low-level runtime `loadvm` command.
     ///
     /// # Errors
@@ -191,6 +255,10 @@ pub trait QemuVmLoadvmAdmissionPolicy {
 }
 
 impl QemuVmLoadvmAdmissionPolicy for QemuSavevmCompletenessPolicy {
+    fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization {
+        self.authorize_baked_genesis_runtime()
+    }
+
     fn authorize_loadvm_runtime(
         self,
     ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
@@ -234,7 +302,10 @@ pub trait QemuVmRealizationExecutor {
         authorization: QemuLoadvmCommandAuthorization,
     ) -> Result<RuntimeState, QemuVmRealizationError>;
 
-    /// Loads a baked genesis snapshot without cold-booting.
+    /// Loads a validated baked genesis snapshot without cold-booting.
+    ///
+    /// The admission object carries both the baked snapshot and the
+    /// baked-genesis-specific QMP authorization token.
     ///
     /// # Errors
     ///
@@ -243,7 +314,7 @@ pub trait QemuVmRealizationExecutor {
     fn load_baked_genesis(
         &mut self,
         config: &Configuration,
-        snapshot: &QemuBakedGenesisSnapshot,
+        admission: QemuBakedGenesisRestoreAdmission<'_>,
     ) -> Result<RuntimeState, QemuVmRealizationError>;
 
     /// Replays one decision using the same quantum-step machinery as live execution.
@@ -556,8 +627,12 @@ fn instantiate_qemu_vm_inner(
 
     if config.is_genesis() {
         let snapshot = store.baked_genesis(world, &config.def)?;
-        validate_baked_genesis_snapshot(&snapshot, world)?;
-        let runtime = executor.load_baked_genesis(&config, &snapshot)?;
+        let admission = QemuBakedGenesisRestoreAdmission::new(
+            &snapshot,
+            world,
+            policy.authorize_baked_genesis_runtime(),
+        )?;
+        let runtime = executor.load_baked_genesis(&config, admission)?;
         return Ok(QemuVmRealization {
             operation: QemuVmRealizationOperation::Instantiate,
             configuration: config,
@@ -653,8 +728,12 @@ fn realize_qemu_replay_oracle_thin_path(
 
     if config.is_genesis() {
         let snapshot = store.baked_genesis(world, &config.def)?;
-        validate_baked_genesis_snapshot(&snapshot, world)?;
-        return executor.load_baked_genesis(&config, &snapshot);
+        let admission = QemuBakedGenesisRestoreAdmission::new(
+            &snapshot,
+            world,
+            policy.authorize_baked_genesis_runtime(),
+        )?;
+        return executor.load_baked_genesis(&config, admission);
     }
 
     let genesis = Configuration::genesis(config.def.clone());
@@ -829,6 +908,20 @@ fn validate_runtime_matches_admission(
     }
 }
 
+fn validate_baked_genesis_authorization(
+    authorization: QemuLoadvmCommandAuthorization,
+) -> Result<(), QemuVmRealizationError> {
+    let purpose = authorization.purpose();
+    if purpose == QemuLoadvmCommandPurpose::BakedGenesisRealization {
+        Ok(())
+    } else {
+        Err(QemuVmRealizationError::InvalidLoadvmAuthorization {
+            operation: "restore baked genesis",
+            purpose,
+        })
+    }
+}
+
 fn proper_ancestor_suffix(
     ancestor: &Configuration,
     target: &Configuration,
@@ -931,6 +1024,14 @@ pub enum QemuVmRealizationError {
         /// Underlying policy error.
         source: QemuSavevmPolicyError,
     },
+    /// A low-level `loadvm` token had the wrong purpose for the selected branch.
+    #[error("invalid QEMU loadvm authorization for {operation}: got {purpose:?}")]
+    InvalidLoadvmAuthorization {
+        /// Runtime operation being attempted.
+        operation: &'static str,
+        /// Purpose attached to the rejected authorization token.
+        purpose: QemuLoadvmCommandPurpose,
+    },
     /// A world has invalid ready-point policy configuration.
     #[error("invalid world ready-point configuration: {source}")]
     ReadyPointPolicy {
@@ -971,7 +1072,10 @@ mod tests {
             config: ContentHash,
             authorization: QemuLoadvmCommandPurpose,
         },
-        LoadBaked(ContentHash),
+        LoadBaked {
+            config: ContentHash,
+            authorization: QemuLoadvmCommandPurpose,
+        },
         Replay {
             from_len: usize,
             to_len: usize,
@@ -1039,6 +1143,10 @@ mod tests {
     }
 
     impl QemuVmLoadvmAdmissionPolicy for ScriptedLoadvmPolicy {
+        fn authorize_baked_genesis_runtime(self) -> QemuLoadvmCommandAuthorization {
+            QemuLoadvmCommandAuthorization::baked_genesis_realization_for_test()
+        }
+
         fn authorize_loadvm_runtime(
             self,
         ) -> Result<QemuLoadvmCommandAuthorization, QemuSavevmPolicyError> {
@@ -1132,11 +1240,13 @@ mod tests {
         fn load_baked_genesis(
             &mut self,
             config: &Configuration,
-            snapshot: &QemuBakedGenesisSnapshot,
+            admission: QemuBakedGenesisRestoreAdmission<'_>,
         ) -> Result<RuntimeState, QemuVmRealizationError> {
-            self.log
-                .borrow_mut()
-                .push(RealizationCall::LoadBaked(config.id()));
+            let snapshot = admission.snapshot();
+            self.log.borrow_mut().push(RealizationCall::LoadBaked {
+                config: config.id(),
+                authorization: admission.authorization().purpose(),
+            });
             Ok(RuntimeState {
                 id: snapshot.checkpoint.id,
                 configuration: config.id(),
@@ -1434,7 +1544,10 @@ mod tests {
             }
         );
         assert!(logged(&log).contains(&RealizationCall::BakedGenesis(world.id)));
-        assert!(logged(&log).contains(&RealizationCall::LoadBaked(genesis.id())));
+        assert!(logged(&log).contains(&RealizationCall::LoadBaked {
+            config: genesis.id(),
+            authorization: QemuLoadvmCommandPurpose::BakedGenesisRealization,
+        }));
         assert!(
             !logged(&log)
                 .iter()
@@ -1442,6 +1555,30 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn qemu_baked_genesis_rejects_runtime_loadvm_authorization() {
+        let world = world("baked-auth-rejects-runtime");
+        let def = scenario("baked-auth-rejects-runtime");
+        let log = shared_log();
+        let store = scripted_store(Rc::clone(&log), &world, &def);
+
+        let error = QemuBakedGenesisRestoreAdmission::new(
+            &store.baked,
+            &world,
+            QemuLoadvmCommandAuthorization::runtime_realization_for_test(),
+        )
+        .err()
+        .expect("runtime loadvm token should not admit baked genesis restore");
+
+        assert!(matches!(
+            error,
+            QemuVmRealizationError::InvalidLoadvmAuthorization {
+                operation: "restore baked genesis",
+                purpose: QemuLoadvmCommandPurpose::RuntimeRealization
+            }
+        ));
     }
 
     #[test]
@@ -1568,9 +1705,10 @@ mod tests {
             authorization: QemuLoadvmCommandPurpose::SnapshotCompletenessProbe,
         }));
         assert!(logged(&log).contains(&RealizationCall::BakedGenesis(world.id)));
-        assert!(logged(&log).contains(&RealizationCall::LoadBaked(
-            Configuration::genesis(def).id()
-        )));
+        assert!(logged(&log).contains(&RealizationCall::LoadBaked {
+            config: Configuration::genesis(def).id(),
+            authorization: QemuLoadvmCommandPurpose::BakedGenesisRealization,
+        }));
         assert!(logged(&log).contains(&RealizationCall::Replay {
             from_len: 0,
             to_len: 1,
@@ -2134,7 +2272,10 @@ mod tests {
             }
         );
         assert!(logged(&log).contains(&RealizationCall::BakedGenesis(world.id)));
-        assert!(logged(&log).contains(&RealizationCall::LoadBaked(requested_genesis.id())));
+        assert!(logged(&log).contains(&RealizationCall::LoadBaked {
+            config: requested_genesis.id(),
+            authorization: QemuLoadvmCommandPurpose::BakedGenesisRealization,
+        }));
 
         Ok(())
     }
