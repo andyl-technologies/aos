@@ -336,6 +336,15 @@ impl TreeWalk {
                 function_span,
             )
         })?;
+        // Tier-2 apply seam: with an engine installed, an undecided lambda
+        // def-site is consulted once here; a published compiled body replaces
+        // the interpreted call entirely. `None` (no engine, skipped def-site,
+        // deopt, or no dispatch) falls through byte-for-byte unchanged.
+        if self.tier1_engine.is_some()
+            && let Some(value) = self.try_tier2_lambda_apply(id, span, function, &lambda, argument)
+        {
+            return Ok(value);
+        }
         self.with_current_module(lambda.module(), |eval| {
             let slot_count = eval.frame_info(id, lambda.frame(), span)?.slot_count as usize;
             let call_frame = EvalFrame::new(slot_count).map_err(|source| {

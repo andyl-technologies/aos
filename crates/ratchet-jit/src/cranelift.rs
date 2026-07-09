@@ -60,6 +60,9 @@ use crate::{
     },
 };
 
+mod tier2;
+pub use tier2::jit_cranelift_call_context_finalized_lambda_entry;
+
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
 pub const PINNED_CRANELIFT_CODEGEN_VERSION: &str = "0.127.4";
 
@@ -3312,6 +3315,7 @@ fn registered_tier1_slot_preflight_from_finalization_preserving_slot(
 fn module_symbol_name_for_artifact(artifact: &JitModuleArtifactMetadata) -> String {
     let kind = match artifact.kind() {
         JitClifArtifactKind::ThunkBody => "thunk_body",
+        JitClifArtifactKind::Tier2LambdaEntry => "tier2_lambda_entry",
     };
     match artifact.source() {
         JitClifArtifactSource::ConstantSmoke => format!("aos.jit.constant_smoke.{kind}"),

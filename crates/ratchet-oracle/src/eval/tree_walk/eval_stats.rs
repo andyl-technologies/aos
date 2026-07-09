@@ -84,6 +84,10 @@ impl TreeWalk {
             tier1_dispatched: self.stats.tier1_dispatched,
             tier1_deopted: self.stats.tier1_deopted,
             tier1_blacklisted: self.stats.tier1_blacklisted,
+            tier2_promoted: self.stats.tier2_promoted,
+            tier2_dispatched: self.stats.tier2_dispatched,
+            tier2_deopted: self.stats.tier2_deopted,
+            tier2_blacklisted: self.stats.tier2_blacklisted,
             memo_l0_hits: self.stats.memo_l0_hits,
             memo_l0_misses: self.stats.memo_l0_misses,
             memo_l0_admissions: self.stats.memo_l0_admissions,
@@ -126,6 +130,10 @@ impl TreeWalk {
             tier1_dispatched = stats.tier1_dispatched(),
             tier1_deopted = stats.tier1_deopted(),
             tier1_blacklisted = stats.tier1_blacklisted(),
+            tier2_promoted = stats.tier2_promoted(),
+            tier2_dispatched = stats.tier2_dispatched(),
+            tier2_deopted = stats.tier2_deopted(),
+            tier2_blacklisted = stats.tier2_blacklisted(),
             memo_l0_hits = stats.memo_l0_hits(),
             memo_l0_misses = stats.memo_l0_misses(),
             memo_l0_admissions = stats.memo_l0_admissions(),
@@ -631,6 +639,22 @@ impl TreeWalk {
 
     pub(crate) fn increment_tier1_blacklisted(&mut self) {
         self.stats.tier1_blacklisted = self.stats.tier1_blacklisted.saturating_add(1);
+    }
+
+    pub(crate) fn increment_tier2_promoted(&mut self) {
+        self.stats.tier2_promoted = self.stats.tier2_promoted.saturating_add(1);
+    }
+
+    pub(crate) fn increment_tier2_dispatched(&mut self) {
+        self.stats.tier2_dispatched = self.stats.tier2_dispatched.saturating_add(1);
+    }
+
+    pub(crate) fn increment_tier2_deopted(&mut self) {
+        self.stats.tier2_deopted = self.stats.tier2_deopted.saturating_add(1);
+    }
+
+    pub(crate) fn increment_tier2_blacklisted(&mut self) {
+        self.stats.tier2_blacklisted = self.stats.tier2_blacklisted.saturating_add(1);
     }
 
     pub(super) fn increment_thunk_cache_hits(&mut self) {

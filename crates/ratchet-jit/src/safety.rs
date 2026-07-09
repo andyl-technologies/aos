@@ -134,6 +134,9 @@ mod tests {
                     if is_allowed_native_thunk_call_token(&source_path, &code, token) {
                         continue;
                     }
+                    if is_allowed_native_lambda_call_token(&source_path, &code, token) {
+                        continue;
+                    }
 
                     if matches!(token, "unsafe" | "extern" | "transmute") {
                         findings.push(format!(
@@ -204,6 +207,31 @@ mod tests {
             "transmute" => {
                 trimmed
                     == "let entry = unsafe { mem::transmute::<*mut u8, JitThunkFn>(code_ptr.as_ptr()) };"
+            }
+            _ => false,
+        }
+    }
+
+    /// The tier-2 lambda-entry boundary lives in `cranelift/tier2.rs`: one
+    /// dispatch entrypoint, one native call, and one code-pointer transmute,
+    /// each pinned to a single reviewed line.
+    fn is_allowed_native_lambda_call_token(source_path: &Path, code: &str, token: &str) -> bool {
+        if source_path.file_name().and_then(|name| name.to_str()) != Some("tier2.rs") {
+            return false;
+        }
+
+        let trimmed = code.trim_start();
+        match token {
+            "unsafe" => {
+                trimmed.starts_with(
+                    "pub unsafe fn jit_cranelift_call_context_finalized_lambda_entry(",
+                ) || trimmed == "let lambda_dispatched = unsafe { lambda_entry(rt, env, argument) };"
+                    || trimmed
+                        == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };"
+            }
+            "transmute" => {
+                trimmed
+                    == "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };"
             }
             _ => false,
         }
@@ -351,6 +379,33 @@ mod tests {
             ),
             1,
             "native thunk code-pointer transmute must stay singly reviewed"
+        );
+
+        let tier2 = fs::read_to_string(source_root.join("cranelift").join("tier2.rs"))
+            .expect("tier-2 Cranelift source file is readable");
+        assert_eq!(
+            trimmed_line_occurrences(
+                &tier2,
+                "pub unsafe fn jit_cranelift_call_context_finalized_lambda_entry(",
+            ),
+            1,
+            "tier-2 lambda-entry dispatch entrypoint must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &tier2,
+                "let lambda_dispatched = unsafe { lambda_entry(rt, env, argument) };",
+            ),
+            1,
+            "tier-2 lambda-entry native call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &tier2,
+                "let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };",
+            ),
+            1,
+            "tier-2 lambda code-pointer transmute must stay singly reviewed"
         );
     }
 

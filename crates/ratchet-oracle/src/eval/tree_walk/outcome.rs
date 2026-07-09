@@ -13399,6 +13399,10 @@ pub struct EvalStats {
     pub(crate) tier1_dispatched: u64,
     pub(crate) tier1_deopted: u64,
     pub(crate) tier1_blacklisted: u64,
+    pub(crate) tier2_promoted: u64,
+    pub(crate) tier2_dispatched: u64,
+    pub(crate) tier2_deopted: u64,
+    pub(crate) tier2_blacklisted: u64,
     pub(crate) memo_l0_hits: u64,
     pub(crate) memo_l0_misses: u64,
     pub(crate) memo_l0_admissions: u64,
@@ -13773,6 +13777,10 @@ impl EvalStats {
             tier1_dispatched,
             tier1_deopted,
             tier1_blacklisted,
+            tier2_promoted,
+            tier2_dispatched,
+            tier2_deopted,
+            tier2_blacklisted,
             memo_l0_hits,
             memo_l0_misses,
             memo_l0_admissions,
@@ -13886,6 +13894,10 @@ impl EvalStats {
         self.tier1_dispatched = self.tier1_dispatched.saturating_add(tier1_dispatched);
         self.tier1_deopted = self.tier1_deopted.saturating_add(tier1_deopted);
         self.tier1_blacklisted = self.tier1_blacklisted.saturating_add(tier1_blacklisted);
+        self.tier2_promoted = self.tier2_promoted.saturating_add(tier2_promoted);
+        self.tier2_dispatched = self.tier2_dispatched.saturating_add(tier2_dispatched);
+        self.tier2_deopted = self.tier2_deopted.saturating_add(tier2_deopted);
+        self.tier2_blacklisted = self.tier2_blacklisted.saturating_add(tier2_blacklisted);
         self.memo_l0_hits = self.memo_l0_hits.saturating_add(memo_l0_hits);
         self.memo_l0_misses = self.memo_l0_misses.saturating_add(memo_l0_misses);
         self.memo_l0_admissions = self.memo_l0_admissions.saturating_add(memo_l0_admissions);
@@ -14058,6 +14070,31 @@ impl EvalStats {
     /// Returns the number of def-sites blacklisted after a failed tier-1 lowering.
     pub const fn tier1_blacklisted(&self) -> u64 {
         self.tier1_blacklisted
+    }
+
+    /// Returns the number of lambda def-sites promoted to tier-2 native code.
+    pub const fn tier2_promoted(&self) -> u64 {
+        self.tier2_promoted
+    }
+
+    /// Returns the number of lambda applications served by tier-2 native code.
+    ///
+    /// Each dispatch covers one *boundary* application; direct native
+    /// self-calls inside a compiled recursion are not individually counted.
+    pub const fn tier2_dispatched(&self) -> u64 {
+        self.tier2_dispatched
+    }
+
+    /// Returns the number of tier-2 dispatch attempts that deoptimized to the
+    /// interpreted call.
+    pub const fn tier2_deopted(&self) -> u64 {
+        self.tier2_deopted
+    }
+
+    /// Returns the number of lambda def-sites blacklisted after a failed tier-2
+    /// lowering.
+    pub const fn tier2_blacklisted(&self) -> u64 {
+        self.tier2_blacklisted
     }
 
     /// Returns L0 content-memo hits (replayed instead of evaluated).

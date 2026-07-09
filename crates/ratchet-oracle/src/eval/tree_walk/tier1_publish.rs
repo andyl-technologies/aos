@@ -69,6 +69,32 @@ pub enum Tier1ForceHook {
     },
 }
 
+/// The outcome of consulting a [`Tier1Engine`] at a serial lambda application.
+///
+/// The engine is consulted once per lambda application of an undecided def-site
+/// (the tier-2 seam). It either dispatches a published tier-2 compiled lambda
+/// body (whose value replaces the interpreted call), reports a deopt (native
+/// code ran but trapped, so the tree walk must run the call), or reports that it
+/// did not dispatch (optionally having promoted the def-site for a later call).
+#[derive(Debug)]
+pub enum Tier2ApplyHook {
+    /// Published tier-2 native code produced this call's value; skip the body.
+    Dispatched(Value),
+    /// Native code ran but trapped; deoptimize to the interpreted call.
+    Deopted,
+    /// No dispatch happened; run the interpreted call as usual.
+    Continued {
+        /// True when this call compiled and published a tier-2 entry for reuse.
+        promoted: bool,
+        /// True when this call newly blacklisted the def-site after a failed
+        /// tier-2 lowering (the shape is not compilable and is never retried).
+        blacklisted: bool,
+        /// True when the engine has permanently decided not to dispatch this
+        /// def-site, so the apply path should stop consulting the engine for it.
+        gated: bool,
+    },
+}
+
 /// A pluggable tier-1 JIT engine consulted by the serial force path.
 ///
 /// The tree-walk evaluator owns no JIT machinery — the Cranelift lowerer,
@@ -94,6 +120,32 @@ pub trait Tier1Engine: fmt::Debug {
         id: IrId,
         span: Span,
     ) -> Tier1ForceHook;
+
+    /// Consulted once per serial lambda application of an undecided def-site.
+    ///
+    /// This is the tier-2 seam: `function` is the applied [`Value::is_lambda`]
+    /// closure, `lambda` is its cloned heap record (module, body, pattern, and
+    /// captured environments), and `argument` is the raw — possibly still
+    /// suspended — call argument. `id` and `span` identify the application
+    /// expression for diagnostics. The default implementation gates the def-site
+    /// so an engine without tier-2 support pays the hook at most once per
+    /// def-site.
+    fn on_lambda_apply(
+        &self,
+        eval: &mut TreeWalk,
+        function: Value,
+        lambda: &crate::eval::heap::EvalLambda,
+        argument: Value,
+        id: IrId,
+        span: Span,
+    ) -> Tier2ApplyHook {
+        let _ = (eval, function, lambda, argument, id, span);
+        Tier2ApplyHook::Continued {
+            promoted: false,
+            blacklisted: false,
+            gated: true,
+        }
+    }
 }
 
 /// The `Empty` state: an entry is installed but not published for dispatch.
@@ -164,6 +216,16 @@ impl OpaqueTier1Slot {
     /// the finalized entry the publisher recorded.
     pub fn is_published(&self) -> bool {
         self.state.load(Ordering::Acquire) == TIER1_SLOT_PUBLISHED
+    }
+
+    /// Publishes a freshly installed def-site entry.
+    ///
+    /// Def-site entries (tier-1 and tier-2 alike) are compiled per IR body and
+    /// are valid for every instance of that body, so their install paths
+    /// publish unconditionally. This is the sibling-module face of
+    /// [`try_publish`](Self::try_publish) used by the tier-2 apply seam.
+    pub(super) fn publish_def_site_slot(&self) -> bool {
+        self.try_publish()
     }
 
     /// Transitions the slot `Empty -> Published` at most once.

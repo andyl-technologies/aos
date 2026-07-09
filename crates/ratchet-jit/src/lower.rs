@@ -40,8 +40,13 @@ use crate::{
 mod arith_tree;
 mod error;
 pub mod interp;
+mod lambda_rec;
 
 pub use error::JitLowerError;
+pub use lambda_rec::{
+    AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,
+    lower_tier2_self_recursive_lambda,
+};
 
 /// Cranelift user-function namespace reserved for Core IR root thunks.
 ///

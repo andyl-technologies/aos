@@ -551,6 +551,11 @@ mod tests {
         "uns",
         "afe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };"
     );
+    const CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE: &str = concat!(
+        "let lambda_dispatched = ",
+        "uns",
+        "afe { jit_cranelift_call_context_finalized_lambda_entry(body, rt, env, argument) };"
+    );
     const PRIMOP_CALL_FN_TYPE_LINE: &str = concat!(
         "uns",
         "afe ",
@@ -996,6 +1001,7 @@ mod tests {
             trimmed == NATIVE_CALL_JIT_BOUNDARY_LINE
                 || trimmed == FINALIZED_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE
+                || trimmed == CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE
         } else {
             false
         }
@@ -1380,6 +1386,11 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&native_call, CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE),
             1,
             "shared-context finalized native thunk-call jit boundary must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&native_call, CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE),
+            1,
+            "shared-context finalized native lambda-call jit boundary must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&env, ENV_GET_FN_TYPE_LINE),
@@ -1928,6 +1939,11 @@ mod unchecked_cfg;
             &native_call_lines,
             CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE,
             "shared-context finalized native thunk-call jit boundary must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &native_call_lines,
+            CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE,
+            "shared-context finalized native lambda-call jit boundary must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &lines,

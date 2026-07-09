@@ -80,6 +80,7 @@ pub use cranelift::{
     PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact,
     jit_cranelift_artifact_finalization_preflight_for_artifact,
+    jit_cranelift_call_context_finalized_lambda_entry,
     jit_cranelift_call_context_finalized_thunk_entry, jit_cranelift_call_finalized_thunk_entry,
     jit_cranelift_dependency_pin,
     jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates,
@@ -98,6 +99,10 @@ pub use cranelift::{
     jit_cranelift_symbol_registration_preflight_with_candidates,
     jit_cranelift_tier1_promotion_preflight_for_ir_root,
     jit_cranelift_tier1_slot_preflight_for_artifact,
+};
+pub use lower::{
+    AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,
+    lower_tier2_self_recursive_lambda,
 };
 pub use lower::{
     AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX,

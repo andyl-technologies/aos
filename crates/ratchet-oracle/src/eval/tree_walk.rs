@@ -1284,6 +1284,21 @@ pub struct TreeWalk {
     // `EvalThunk::body_ref` field read, skipping the engine hook (and its heap
     // and side-table lookups) for a decided cold def-site's later instances.
     tier1_skipped_def_sites: HashSet<EvalNodeRef>,
+    // Tier-2 compiled lambda entries shared across every closure instance of a
+    // lambda def-site, keyed by `(module_index << 32) | body_ir_id`. Populated
+    // only when a `tier1_engine` promotes a lambda body through the tier-2
+    // apply seam. See `tier2_apply`.
+    tier2_def_site_slots: HashMap<u64, OpaqueTier1Slot>,
+    // Lambda def-sites the engine has permanently decided not to dispatch
+    // through the tier-2 apply seam (blacklisted or gated), as a per-module
+    // bit vector indexed by the lambda body's IR id. The apply path is far
+    // hotter than the force path, so the decided check must not hash: two
+    // indexed loads and a bit test keep the per-apply hook tax negligible on
+    // apply-dominated workloads that promote nothing.
+    tier2_skipped_def_sites: Vec<Box<[u64]>>,
+    // The number of distinct decided (skipped) tier-2 def-sites, for
+    // diagnostics; the bit vector itself has no cheap population count.
+    tier2_skipped_def_site_total: usize,
     // Optional pluggable tier-1 JIT engine consulted once per claimed serial
     // force. `None` (the default) leaves the force path byte-for-byte unchanged.
     // Held by `Rc` so the force path can clone it out and release the field
@@ -1563,7 +1578,8 @@ mod serialize_xml;
 mod store_validity;
 use store_validity::StoreValidityChecker;
 mod tier1_publish;
-pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook};
+pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook};
+mod tier2_apply;
 
 pub use eval_impure_inputs::{
     canonicalize_cacheable_input_trace, revalidate_cacheable_input_trace,

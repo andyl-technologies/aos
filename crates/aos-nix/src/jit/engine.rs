@@ -104,7 +104,19 @@ pub struct NixJitTier1Engine {
     /// callable for the engine's whole life.
     context: RefCell<Option<JitModuleContext>>,
     state: RefCell<EngineState>,
+    /// Whether the tier-2 lambda apply seam is active.
+    ///
+    /// On by default whenever the engine is installed: the tier-2 promotion
+    /// gate only admits self-recursive arithmetic bodies whose native win
+    /// clears the dispatch harness by construction (see [`tier2`]), so it
+    /// cannot regress workloads whose lambdas fall outside that grammar.
+    /// `AOS_NIX_JIT_TIER2=0` disables it for A/B measurement.
+    tier2_enabled: bool,
+    /// Tier-2 per-def-site promotion bookkeeping (see [`tier2`]).
+    tier2: RefCell<tier2::Tier2EngineState>,
 }
+
+mod tier2;
 
 /// Mutable per-run promotion bookkeeping guarded by the engine's [`RefCell`].
 #[derive(Default)]
@@ -234,6 +246,8 @@ impl NixJitTier1Engine {
                 == Ok("1"),
             context: RefCell::new(None),
             state: RefCell::new(EngineState::default()),
+            tier2_enabled: std::env::var("AOS_NIX_JIT_TIER2").as_deref() != Ok("0"),
+            tier2: RefCell::new(tier2::Tier2EngineState::default()),
         })
     }
 
@@ -734,6 +748,18 @@ impl Tier1Engine for NixJitTier1Engine {
             blacklisted: outcome.blacklisted,
             gated: outcome.gated,
         }
+    }
+
+    fn on_lambda_apply(
+        &self,
+        eval: &mut TreeWalk,
+        function: Value,
+        lambda: &ratchet_oracle::eval::heap::EvalLambda,
+        argument: Value,
+        id: IrId,
+        span: Span,
+    ) -> ratchet_oracle::eval::Tier2ApplyHook {
+        self.on_lambda_apply_impl(eval, function, lambda, argument, id, span)
     }
 }
 

@@ -15,6 +15,12 @@ use crate::tier::JitTier;
 pub enum JitClifArtifactKind {
     /// A compiled-thunk body using the frozen thunk runtime ABI.
     ThunkBody,
+    /// A tier-2 compiled-lambda boundary entry using the frozen lambda ABI.
+    ///
+    /// The entry adapts the frozen `(rt, env, argument) -> Value` lambda-call
+    /// signature onto a module-local recursive body function; only the entry is
+    /// ever called from Rust (see `lower::lambda_rec`).
+    Tier2LambdaEntry,
 }
 
 /// The source identity for a non-executable CLIF artifact.

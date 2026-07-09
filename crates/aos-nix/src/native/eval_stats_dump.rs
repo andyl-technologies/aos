@@ -19,6 +19,8 @@
 //!  "gc_sweeps_skipped_nonquiescent":0,
 //!  "tier1_promoted":0,"tier1_dispatched":0,"tier1_deopted":0,
 //!  "tier1_blacklisted":0,
+//!  "tier2_promoted":0,"tier2_dispatched":0,"tier2_deopted":0,
+//!  "tier2_blacklisted":0,
 //!  "memo_l0_hits":0,"memo_l0_misses":0,"memo_l0_admissions":0,
 //!  "memo_l0_declines":0,"memo_l1_hits":0,"memo_l1_misses":0,
 //!  "memo_l1_admissions":0,"memo_l1_declines":0,
@@ -67,6 +69,10 @@ impl NixNative {
 \"tier1_dispatched\":{},\
 \"tier1_deopted\":{},\
 \"tier1_blacklisted\":{},\
+\"tier2_promoted\":{},\
+\"tier2_dispatched\":{},\
+\"tier2_deopted\":{},\
+\"tier2_blacklisted\":{},\
 \"memo_l0_hits\":{},\
 \"memo_l0_misses\":{},\
 \"memo_l0_admissions\":{},\
@@ -107,6 +113,10 @@ impl NixNative {
             stats.tier1_dispatched(),
             stats.tier1_deopted(),
             stats.tier1_blacklisted(),
+            stats.tier2_promoted(),
+            stats.tier2_dispatched(),
+            stats.tier2_deopted(),
+            stats.tier2_blacklisted(),
             stats.memo_l0_hits(),
             stats.memo_l0_misses(),
             stats.memo_l0_admissions(),

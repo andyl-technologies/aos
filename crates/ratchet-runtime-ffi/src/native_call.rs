@@ -23,8 +23,8 @@ use std::ffi::c_void;
 use ratchet_jit::{
     JitClifArtifact, JitCraneliftNativeCallError,
     JitCraneliftRegisteredArtifactFinalizationPreflight, JitModuleContextFinalizedBody,
-    JitRuntimeSymbolAddressCandidate, jit_cranelift_call_context_finalized_thunk_entry,
-    jit_cranelift_call_finalized_thunk_entry,
+    JitRuntimeSymbolAddressCandidate, jit_cranelift_call_context_finalized_lambda_entry,
+    jit_cranelift_call_context_finalized_thunk_entry, jit_cranelift_call_finalized_thunk_entry,
     jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates,
 };
 use ratchet_oracle::value::Value;
@@ -214,6 +214,57 @@ pub fn run_context_finalized_native_thunk_call(
     // `body` alive, so its frozen-ABI wrappers and code stay live for the call.
     let context_dispatched = unsafe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };
     match context_dispatched {
+        Ok(value) => {
+            let trap = scope.take_trap();
+            drop(scope);
+            drop(context);
+            Ok(NativeThunkCallOutcome { value, trap })
+        }
+        Err(error) => {
+            drop(scope);
+            Err(error)
+        }
+    }
+}
+
+/// Runs a tier-2 lambda entry finalized into a shared [`JitModuleContext`].
+///
+/// This mirrors [`run_context_finalized_native_thunk_call`] for the frozen
+/// lambda-call ABI: the compiled entry receives the runtime context, the
+/// dispatcher-owned environment, and the applied `argument` (which may still be
+/// a suspended thunk — the compiled body forces it at its first strict use,
+/// exactly where the tree walk would). The call runs under a fresh
+/// [`RuntimeTrapScope`], so both an evaluator error transferred by a forcing
+/// wrapper and a compiled-body deopt (guard failure, exhausted depth budget)
+/// come back as a [`NativeThunkCallOutcome`] whose `trap` is `Some`; the
+/// dispatcher treats any trap as a deopt and re-runs the call through the tree
+/// walk.
+///
+/// [`JitModuleContext`]: ratchet_jit::JitModuleContext
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported
+/// native value ABI, the finalized body is not a tier-2 lambda entry, or the
+/// compiled body returns a value whose payload violates the runtime layout.
+pub fn run_context_finalized_native_lambda_call(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    argument: Value,
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
+    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let rt = context.as_mut().as_mut_ptr();
+    let env = (env as *const EvalEnv) as *mut c_void;
+
+    let scope = RuntimeTrapScope::new();
+    // SAFETY: `rt` is the pinned context over `eval`, `env` the caller-owned
+    // environment clone, `argument` a live value on `eval`'s heap; the caller
+    // keeps `body`'s module alive and the scope converts errors/deopts to traps.
+    let lambda_dispatched = unsafe { jit_cranelift_call_context_finalized_lambda_entry(body, rt, env, argument) };
+    match lambda_dispatched {
         Ok(value) => {
             let trap = scope.take_trap();
             drop(scope);
