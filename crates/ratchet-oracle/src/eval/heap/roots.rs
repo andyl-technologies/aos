@@ -4034,6 +4034,18 @@ impl EvalHeap {
         while let Some(value) = worklist.pop_front() {
             let (tag, ptr) = heap_ptr(value)?;
             let address = ptr.as_ptr() as usize;
+            // Flat strings/paths (doc 30 FV-1) are edge-free leaf objects
+            // outside the record table; validate them through the flat store
+            // and emit the same empty-edge object scan a string record
+            // produced before flattening.
+            if self.shared.is_none() && matches!(tag, ValueTag::String | ValueTag::Path) {
+                self.flat_verify(tag, ptr)?;
+                if !push_visited(&mut visited, address)? {
+                    continue;
+                }
+                push_object_scan(&mut scan.objects, HeapObjectScan::new(value, Vec::new()))?;
+                continue;
+            }
             let record = self.record_or_unknown(tag, ptr)?;
             let actual = record.object.tag();
             if actual != tag {
@@ -4072,7 +4084,7 @@ impl EvalHeap {
         Ok(AllocationCollectorPollScan::new(
             poll,
             scan,
-            self.records.len(),
+            self.scannable_object_count(),
             self.region_owner,
             self.worker_region_epoch,
             self.allocation_safepoints(),
@@ -4302,7 +4314,7 @@ impl EvalHeap {
 
         Ok(
             AllocationCollectorPollMinorGcDestinationRecordReservations::new(
-                self.records.len(),
+                self.scannable_object_count(),
                 self.region_owner,
                 self.worker_region_epoch,
                 self.allocation_safepoints(),
@@ -6678,10 +6690,22 @@ impl EvalHeap {
         poll_scan: &AllocationCollectorPollScan,
     ) -> Result<(), EvalHeapError> {
         for root in poll_scan.scan().roots() {
-            self.record_for_scannable_value(root.value())?;
+            self.validate_scannable_value(root.value())?;
         }
 
         for object in poll_scan.scan().objects() {
+            let (tag, ptr) = heap_ptr(object.value())?;
+            if self.shared.is_none() && matches!(tag, ValueTag::String | ValueTag::Path) {
+                // Flat strings/paths are immutable, edge-free leaves; a scan
+                // that recorded them with no edges is always current.
+                self.flat_verify(tag, ptr)?;
+                if !object.edges().is_empty() {
+                    return Err(EvalHeapError::CollectorPollScanStaleObject {
+                        address: gc_address_for_value(object.value())?,
+                    });
+                }
+                continue;
+            }
             let record = self.record_for_scannable_value(object.value())?;
             let current_edges = self.scan_record_edges(record)?;
             if current_edges != object.edges() {
@@ -6693,43 +6717,62 @@ impl EvalHeap {
         Ok(())
     }
 
+    /// Returns the count of scannable typed objects (records plus flat).
+    ///
+    /// Collector-poll snapshots capture this count and staleness validation
+    /// re-compares it, so any typed allocation — record-backed or flat —
+    /// invalidates an outstanding snapshot exactly as string records did
+    /// before FV-1.
+    fn scannable_object_count(&self) -> usize {
+        self.records.len().saturating_add(self.flat.len())
+    }
+
+    /// Validates a scan root value against either heap domain.
+    fn validate_scannable_value(&self, value: Value) -> Result<(), EvalHeapError> {
+        let (tag, ptr) = heap_ptr(value)?;
+        if self.shared.is_none() && matches!(tag, ValueTag::String | ValueTag::Path) {
+            return self.flat_verify(tag, ptr);
+        }
+        self.record_for_scannable_value(value).map(|_| ())
+    }
+
     fn validate_collector_poll_snapshot_allocation_state(
         &self,
         poll_scan: &AllocationCollectorPollScan,
     ) -> Result<(), EvalHeapError> {
-        if poll_scan.heap_records() != self.records.len() {
+        if poll_scan.heap_records() != self.scannable_object_count() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "heap record count changed",
                 expected_records: poll_scan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if poll_scan.worker_region_owner() != self.region_owner {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker region owner changed",
                 expected_records: poll_scan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if poll_scan.worker_region_epoch() != self.worker_region_epoch {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker region epoch changed",
                 expected_records: poll_scan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if poll_scan.allocation_safepoints() != self.allocation_safepoints() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker allocation safepoints changed",
                 expected_records: poll_scan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if poll_scan.permanent_allocation_safepoints() != self.permanent_allocation_safepoints() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "permanent allocation safepoints changed",
                 expected_records: poll_scan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         Ok(())
@@ -7170,6 +7213,15 @@ impl EvalHeap {
         &self,
         value: Value,
     ) -> Result<ResolvedValueGeneration, EvalHeapError> {
+        let (tag, ptr) = heap_ptr(value)?;
+        if self.shared.is_none() && matches!(tag, ValueTag::String | ValueTag::Path) {
+            self.flat_verify(tag, ptr)?;
+            return Ok(ResolvedValueGeneration::Heap {
+                address: GcHeapAddress::new(ptr.as_ptr() as usize)
+                    .map_err(EvalHeapError::GenerationalGc)?,
+                generation: HeapGeneration::Permanent,
+            });
+        }
         let record = self.record_for_scannable_value(value)?;
         Ok(ResolvedValueGeneration::Heap {
             address: gc_address_for_record(record)?,
@@ -7261,39 +7313,39 @@ impl EvalHeap {
         &self,
         plan: &AllocationCollectorPollMinorGcPlan,
     ) -> Result<(), EvalHeapError> {
-        if plan.heap_records() != self.records.len() {
+        if plan.heap_records() != self.scannable_object_count() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "heap record count changed since minor-GC planning",
                 expected_records: plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if plan.worker_region_owner() != self.region_owner {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker region owner changed since minor-GC planning",
                 expected_records: plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if plan.worker_region_epoch() != self.worker_region_epoch {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker region epoch changed since minor-GC planning",
                 expected_records: plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if plan.allocation_safepoints() != self.allocation_safepoints() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker allocation safepoints changed since minor-GC planning",
                 expected_records: plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if plan.permanent_allocation_safepoints() != self.permanent_allocation_safepoints() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "permanent allocation safepoints changed since minor-GC planning",
                 expected_records: plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         Ok(())
@@ -7303,39 +7355,39 @@ impl EvalHeap {
         &self,
         commit_plan: &AllocationCollectorPollMinorGcCommitPlan<'_>,
     ) -> Result<(), EvalHeapError> {
-        if commit_plan.heap_records() != self.records.len() {
+        if commit_plan.heap_records() != self.scannable_object_count() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "heap record count changed since minor-GC commit planning",
                 expected_records: commit_plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if commit_plan.worker_region_owner() != self.region_owner {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker region owner changed since minor-GC commit planning",
                 expected_records: commit_plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if commit_plan.worker_region_epoch() != self.worker_region_epoch {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker region epoch changed since minor-GC commit planning",
                 expected_records: commit_plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if commit_plan.allocation_safepoints() != self.allocation_safepoints() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "worker allocation safepoints changed since minor-GC commit planning",
                 expected_records: commit_plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         if commit_plan.permanent_allocation_safepoints() != self.permanent_allocation_safepoints() {
             return Err(EvalHeapError::CollectorPollScanStaleHeapSnapshot {
                 reason: "permanent allocation safepoints changed since minor-GC commit planning",
                 expected_records: commit_plan.heap_records(),
-                actual_records: self.records.len(),
+                actual_records: self.scannable_object_count(),
             });
         }
         Ok(())

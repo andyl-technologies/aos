@@ -332,6 +332,7 @@ enum FindFileLookupOrigin {
 // Type, helper, and error-enum definitions split into concern modules below;
 // re-exported here so siblings (and the public path) keep resolving them.
 mod api;
+mod campaign_counters;
 mod error_kind;
 mod errors;
 mod op_types;
@@ -358,6 +359,7 @@ pub use api::{
     eval_whnf_owned_with_options_realizer_and_eval_cache,
     eval_whnf_owned_with_options_realizer_eval_cache_and_engine, eval_whnf_with_options,
 };
+pub use campaign_counters::CampaignCounters;
 pub use error_kind::TreeWalkErrorKind;
 pub(crate) use errors::ArithmeticOp;
 pub use errors::EvalErrorContext;
@@ -1177,6 +1179,9 @@ pub struct TreeWalk {
     scoped_globals: Vec<Value>,
     options: TreeWalkOptions,
     stats: EvalStats,
+    /// Process-wide environment capture counters observed at construction;
+    /// `stats_snapshot` reports the movement since this baseline (doc 30 FV-0).
+    campaign_env_baseline: super::env::capture_stats::EnvCaptureStats,
     attr_telemetry: AttrTelemetry,
     shape_table: Option<ShapeTable>,
     flat_select_caches: SelectCacheMap<(u32, u32, usize), FlatSelectCache>,

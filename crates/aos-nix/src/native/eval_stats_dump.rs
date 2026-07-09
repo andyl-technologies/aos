@@ -27,8 +27,23 @@
 //!  "memo_l2_secondary_hits":0,"memo_l2_secondary_misses":0,
 //!  "memo_l2_promotions":0,"memo_l2_reval_failures":0,
 //!  "memo_net_hits":0,"memo_net_misses":0,"memo_net_errors":0,
-//!  "memo_net_reval_failures":0}}
+//!  "memo_net_reval_failures":0,
+//!  "campaign":{"record_probes_string":0,"record_probes_path":0,
+//!  "record_probes_list":0,"record_probes_attrs":0,"record_probes_lambda":0,
+//!  "record_probes_primop":0,"record_probes_thunk":0,"record_probes_other":0,
+//!  "flat_string_resolutions":0,"flat_path_resolutions":0,
+//!  "payload_arc_clones":0,"env_captures":0,"env_capture_frame_handles":0,
+//!  "with_env_captures":0,"with_env_capture_scopes":0,
+//!  "scoped_global_env_captures":0,"scoped_global_env_capture_scopes":0,
+//!  "env_frame_allocs":0,"env_frame_slot_bytes":0,"string_payload_bytes":0,
+//!  "string_store_path_payload_bytes":0,"path_payload_bytes":0,
+//!  "list_payload_elements":0}}}
 //! ```
+//!
+//! The nested `campaign` object carries the RFC-0007 doc 30 FV-0 flat-value
+//! campaign counters: record-table dereference probes by value kind, flat
+//! store resolutions, payload `Arc` clones, environment capture-copy and
+//! frame-allocation volume, and per-kind payload byte mass.
 
 use super::*;
 
@@ -88,7 +103,32 @@ impl NixNative {
 \"memo_net_hits\":{},\
 \"memo_net_misses\":{},\
 \"memo_net_errors\":{},\
-\"memo_net_reval_failures\":{}\
+\"memo_net_reval_failures\":{},\
+\"campaign\":{{\
+\"record_probes_string\":{},\
+\"record_probes_path\":{},\
+\"record_probes_list\":{},\
+\"record_probes_attrs\":{},\
+\"record_probes_lambda\":{},\
+\"record_probes_primop\":{},\
+\"record_probes_thunk\":{},\
+\"record_probes_other\":{},\
+\"flat_string_resolutions\":{},\
+\"flat_path_resolutions\":{},\
+\"payload_arc_clones\":{},\
+\"env_captures\":{},\
+\"env_capture_frame_handles\":{},\
+\"with_env_captures\":{},\
+\"with_env_capture_scopes\":{},\
+\"scoped_global_env_captures\":{},\
+\"scoped_global_env_capture_scopes\":{},\
+\"env_frame_allocs\":{},\
+\"env_frame_slot_bytes\":{},\
+\"string_payload_bytes\":{},\
+\"string_store_path_payload_bytes\":{},\
+\"path_payload_bytes\":{},\
+\"list_payload_elements\":{}\
+}}\
 }}}}",
             stats.thunks_allocated(),
             stats.thunks_elided(),
@@ -133,6 +173,29 @@ impl NixNative {
             stats.memo_net_misses(),
             stats.memo_net_errors(),
             stats.memo_net_reval_failures(),
+            stats.campaign().record_probes_string,
+            stats.campaign().record_probes_path,
+            stats.campaign().record_probes_list,
+            stats.campaign().record_probes_attrs,
+            stats.campaign().record_probes_lambda,
+            stats.campaign().record_probes_primop,
+            stats.campaign().record_probes_thunk,
+            stats.campaign().record_probes_other,
+            stats.campaign().flat_string_resolutions,
+            stats.campaign().flat_path_resolutions,
+            stats.campaign().payload_arc_clones,
+            stats.campaign().env_captures,
+            stats.campaign().env_capture_frame_handles,
+            stats.campaign().with_env_captures,
+            stats.campaign().with_env_capture_scopes,
+            stats.campaign().scoped_global_env_captures,
+            stats.campaign().scoped_global_env_capture_scopes,
+            stats.campaign().env_frame_allocs,
+            stats.campaign().env_frame_slot_bytes,
+            stats.campaign().string_payload_bytes,
+            stats.campaign().string_store_path_payload_bytes,
+            stats.campaign().path_payload_bytes,
+            stats.campaign().list_payload_elements,
         );
     }
 }

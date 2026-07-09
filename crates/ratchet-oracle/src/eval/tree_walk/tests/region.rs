@@ -244,11 +244,13 @@ fn discard_worker_region_scope_retires_mark_after_pop_error() {
 
     let error = evaluator
         .discard_worker_region_if_plan_permits(plan, |eval| {
+            // A permanent record-backed value (strings are flat since FV-1,
+            // so a list stands in as the permanent heap record).
             let value = eval
                 .heap
-                .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
-                .expect("permanent string allocates");
-            assert_eq!(value.tag(), ValueTag::String);
+                .alloc_list(NixList::new(vec![Value::int(59)]))
+                .expect("permanent list allocates");
+            assert_eq!(value.tag(), ValueTag::List);
         })
         .expect_err("permanent suffix rejects lexical worker-region pop");
 

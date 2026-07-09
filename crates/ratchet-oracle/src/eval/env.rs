@@ -38,6 +38,119 @@ use super::module::{EvalModuleId, EvalNodeRef};
 use crate::compile::IrId;
 use crate::value::{HeapObject, Value, ValueTag};
 
+/// Process-wide environment capture/allocation counters (RFC-0007 doc 30 FV-0).
+///
+/// The flat-value campaign's §11.1 reproducibility fix: the capture-copy and
+/// small-environment-allocation figures previously quoted only from session
+/// profiles become stock-build counters here. The counters are process-wide
+/// relaxed atomics because [`EvalEnv::capture`] and [`EvalFrame::new`] have no
+/// evaluator handle to thread a per-eval counter through; each `TreeWalk`
+/// snapshots them at construction and reports the delta at stats time, so a
+/// serial evaluation sees exactly its own capture mass (concurrent evaluators
+/// in one process fold into whichever snapshot window they overlap).
+pub(crate) mod capture_stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static ENV_CAPTURES: AtomicU64 = AtomicU64::new(0);
+    static ENV_CAPTURE_FRAME_HANDLES: AtomicU64 = AtomicU64::new(0);
+    static WITH_ENV_CAPTURES: AtomicU64 = AtomicU64::new(0);
+    static WITH_ENV_CAPTURE_SCOPES: AtomicU64 = AtomicU64::new(0);
+    static SCOPED_GLOBAL_ENV_CAPTURES: AtomicU64 = AtomicU64::new(0);
+    static SCOPED_GLOBAL_ENV_CAPTURE_SCOPES: AtomicU64 = AtomicU64::new(0);
+    static ENV_FRAME_ALLOCS: AtomicU64 = AtomicU64::new(0);
+    static ENV_FRAME_SLOT_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    /// A point-in-time reading of the process-wide capture counters.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct EnvCaptureStats {
+        /// Lexical frame-array copies performed by [`super::EvalEnv::capture`].
+        pub(crate) env_captures: u64,
+        /// Frame handles copied across all lexical captures (8 bytes each).
+        pub(crate) env_capture_frame_handles: u64,
+        /// `with`-scope stack copies performed by [`super::EvalWithEnv::capture`].
+        pub(crate) with_env_captures: u64,
+        /// Scope entries copied across all `with`-stack captures.
+        pub(crate) with_env_capture_scopes: u64,
+        /// Scoped-import global stack copies.
+        pub(crate) scoped_global_env_captures: u64,
+        /// Scope values copied across all scoped-global captures.
+        pub(crate) scoped_global_env_capture_scopes: u64,
+        /// Lexical frames allocated by [`super::EvalFrame::new`].
+        pub(crate) env_frame_allocs: u64,
+        /// Slot-storage bytes allocated across all frame allocations.
+        pub(crate) env_frame_slot_bytes: u64,
+    }
+
+    impl EnvCaptureStats {
+        /// Returns the counter movement since `baseline` (saturating).
+        pub(crate) fn delta_since(self, baseline: Self) -> Self {
+            Self {
+                env_captures: self.env_captures.saturating_sub(baseline.env_captures),
+                env_capture_frame_handles: self
+                    .env_capture_frame_handles
+                    .saturating_sub(baseline.env_capture_frame_handles),
+                with_env_captures: self
+                    .with_env_captures
+                    .saturating_sub(baseline.with_env_captures),
+                with_env_capture_scopes: self
+                    .with_env_capture_scopes
+                    .saturating_sub(baseline.with_env_capture_scopes),
+                scoped_global_env_captures: self
+                    .scoped_global_env_captures
+                    .saturating_sub(baseline.scoped_global_env_captures),
+                scoped_global_env_capture_scopes: self
+                    .scoped_global_env_capture_scopes
+                    .saturating_sub(baseline.scoped_global_env_capture_scopes),
+                env_frame_allocs: self
+                    .env_frame_allocs
+                    .saturating_sub(baseline.env_frame_allocs),
+                env_frame_slot_bytes: self
+                    .env_frame_slot_bytes
+                    .saturating_sub(baseline.env_frame_slot_bytes),
+            }
+        }
+    }
+
+    /// Reads all counters with relaxed ordering.
+    pub(crate) fn snapshot() -> EnvCaptureStats {
+        EnvCaptureStats {
+            env_captures: ENV_CAPTURES.load(Ordering::Relaxed),
+            env_capture_frame_handles: ENV_CAPTURE_FRAME_HANDLES.load(Ordering::Relaxed),
+            with_env_captures: WITH_ENV_CAPTURES.load(Ordering::Relaxed),
+            with_env_capture_scopes: WITH_ENV_CAPTURE_SCOPES.load(Ordering::Relaxed),
+            scoped_global_env_captures: SCOPED_GLOBAL_ENV_CAPTURES.load(Ordering::Relaxed),
+            scoped_global_env_capture_scopes: SCOPED_GLOBAL_ENV_CAPTURE_SCOPES
+                .load(Ordering::Relaxed),
+            env_frame_allocs: ENV_FRAME_ALLOCS.load(Ordering::Relaxed),
+            env_frame_slot_bytes: ENV_FRAME_SLOT_BYTES.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Records one lexical frame-array copy of `frames` handles.
+    pub(super) fn note_env_capture(frames: usize) {
+        ENV_CAPTURES.fetch_add(1, Ordering::Relaxed);
+        ENV_CAPTURE_FRAME_HANDLES.fetch_add(frames as u64, Ordering::Relaxed);
+    }
+
+    /// Records one `with`-scope stack copy of `scopes` entries.
+    pub(super) fn note_with_env_capture(scopes: usize) {
+        WITH_ENV_CAPTURES.fetch_add(1, Ordering::Relaxed);
+        WITH_ENV_CAPTURE_SCOPES.fetch_add(scopes as u64, Ordering::Relaxed);
+    }
+
+    /// Records one scoped-global stack copy of `scopes` values.
+    pub(super) fn note_scoped_global_env_capture(scopes: usize) {
+        SCOPED_GLOBAL_ENV_CAPTURES.fetch_add(1, Ordering::Relaxed);
+        SCOPED_GLOBAL_ENV_CAPTURE_SCOPES.fetch_add(scopes as u64, Ordering::Relaxed);
+    }
+
+    /// Records one lexical frame allocation of `slot_bytes` slot storage.
+    pub(super) fn note_env_frame_alloc(slot_bytes: usize) {
+        ENV_FRAME_ALLOCS.fetch_add(1, Ordering::Relaxed);
+        ENV_FRAME_SLOT_BYTES.fetch_add(slot_bytes as u64, Ordering::Relaxed);
+    }
+}
+
 /// A captured lexical environment snapshot.
 ///
 /// The frame list is held behind an [`Arc`] so cloning a snapshot — the
@@ -67,6 +180,7 @@ impl EvalEnv {
     /// Returns [`EvalEnvError::CaptureAllocationFailed`] if the snapshot frame
     /// list cannot be reserved.
     pub fn capture(frames: &[Arc<EvalFrame>]) -> Result<Self, EvalEnvError> {
+        capture_stats::note_env_capture(frames.len());
         let mut captured = Vec::new();
         captured.try_reserve_exact(frames.len()).map_err(|_| {
             EvalEnvError::CaptureAllocationFailed {
@@ -99,6 +213,7 @@ impl EvalWithEnv {
     /// Returns [`EvalEnvError::WithCaptureAllocationFailed`] if the snapshot
     /// scope list cannot be reserved.
     pub fn capture(scopes: &[EvalWithScope]) -> Result<Self, EvalEnvError> {
+        capture_stats::note_with_env_capture(scopes.len());
         let mut captured = Vec::new();
         captured.try_reserve_exact(scopes.len()).map_err(|_| {
             EvalEnvError::WithCaptureAllocationFailed {
@@ -131,6 +246,7 @@ impl EvalScopedGlobalEnv {
     /// Returns [`EvalEnvError::ScopedGlobalCaptureAllocationFailed`] if the
     /// snapshot scope list cannot be reserved.
     pub fn capture(scopes: &[Value]) -> Result<Self, EvalEnvError> {
+        capture_stats::note_scoped_global_env_capture(scopes.len());
         let mut captured = Vec::new();
         captured.try_reserve_exact(scopes.len()).map_err(|_| {
             EvalEnvError::ScopedGlobalCaptureAllocationFailed {
@@ -337,6 +453,9 @@ impl EvalFrame {
     /// Returns [`EvalEnvError::FrameAllocationFailed`] if the slot vector
     /// cannot be reserved.
     pub fn new(slot_count: usize) -> Result<Arc<Self>, EvalEnvError> {
+        capture_stats::note_env_frame_alloc(
+            slot_count.saturating_mul(std::mem::size_of::<AtomicValueCell>()),
+        );
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(slot_count)

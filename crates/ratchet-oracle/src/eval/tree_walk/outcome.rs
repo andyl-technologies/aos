@@ -13419,6 +13419,8 @@ pub struct EvalStats {
     pub(crate) memo_net_misses: u64,
     pub(crate) memo_net_errors: u64,
     pub(crate) memo_net_reval_failures: u64,
+    /// Flat-value campaign work-volume counters (RFC-0007 doc 30 FV-0).
+    pub(crate) campaign: CampaignCounters,
 }
 
 /// Durable-tier (L2 secondary-location and L3 network) memo event counts.
@@ -13797,6 +13799,7 @@ impl EvalStats {
             memo_net_misses,
             memo_net_errors,
             memo_net_reval_failures,
+            campaign,
         } = *other;
         self.thunks_forced = self.thunks_forced.saturating_add(thunks_forced);
         self.thunks_allocated = self.thunks_allocated.saturating_add(thunks_allocated);
@@ -13916,6 +13919,12 @@ impl EvalStats {
             net_errors: memo_net_errors,
             net_reval_failures: memo_net_reval_failures,
         });
+        self.campaign = self.campaign.merged(campaign);
+    }
+
+    /// Returns the flat-value campaign work-volume counters (doc 30 FV-0).
+    pub const fn campaign(&self) -> CampaignCounters {
+        self.campaign
     }
 
     /// Returns the number of `.drv` paths reused from clean derivation ATerm records.

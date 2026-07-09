@@ -3,9 +3,14 @@
 //! Runtime [`Value`] words carry opaque [`HeapObject`] pointers. This registry
 //! owns the typed Rust-side objects behind those pointers for the safe tree-walk
 //! oracle: the bump arena provides stable opaque handles, while a side table
-//! maps those handles back to checked [`NixString`], path [`NixString`],
-//! [`NixList`], [`FlatAttrs`] plus representation/shape metadata,
-//! [`EvalLambda`], [`EvalPrimOp`], and [`EvalThunk`] values.
+//! maps those handles back to checked [`NixList`], [`FlatAttrs`] plus
+//! representation/shape metadata, [`EvalLambda`], [`EvalPrimOp`], and
+//! [`EvalThunk`] values.
+//!
+//! Strings and paths are the exception since RFC-0007 doc 30 stage FV-1: in
+//! serial mode their [`NixString`] payloads live *flat* behind the value
+//! address (header plus payload in the flat object store) and never enter the
+//! record table; see the `flat_values` module for the seam.
 
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -40,6 +45,8 @@ use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
 mod alloc_counters;
 mod arena;
+mod deref_counters;
+mod flat_values;
 mod gc;
 mod lambda;
 mod primop;
@@ -50,6 +57,10 @@ mod shared_backend;
 mod thunk;
 
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
+pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};
+use flat_values::FlatColdHashStore;
+
+use crate::heap::flat::{FlatObjectKind, FlatObjectStore};
 pub use gc::{EvalGcMode, EvalHeapSweepReport};
 use record_table::HeapRecordTable;
 use shared_backend::SharedHeapBackend;
@@ -258,6 +269,15 @@ pub struct EvalHeap {
     list_cons: HashConsTable<HotXxh3Hash, Value>,
     attrs_cons: HashConsTable<HotXxh3Hash, Value>,
     alloc_counters: EvalHeapAllocationCounters,
+    /// Dereference-chain volume counters (RFC-0007 doc 30 FV-0).
+    deref_counters: EvalHeapDerefCounters,
+    /// Flat string/path objects (RFC-0007 doc 30 FV-1, serial mode).
+    ///
+    /// Owns its own arena; payload drop glue runs in the store's `Drop`
+    /// before that arena unmaps. See `flat_values` for the integration seam.
+    flat: FlatObjectStore<NixString>,
+    /// Sparse cutoff-cache hash side map for flat objects.
+    flat_cold_hashes: FlatColdHashStore,
     /// Parallel-mode shared-arena backend. `None` in serial mode, where every
     /// allocation and resolution path keeps its unchanged serial behavior
     /// behind one branch-predictable check of this option.

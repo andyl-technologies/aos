@@ -142,12 +142,18 @@ fn set_heap_generation(heap: &mut EvalHeap, value: Value, generation: HeapGenera
 
 fn record_layout_size(heap: &EvalHeap, value: Value) -> usize {
     let address = gc_address(value);
-    heap.records
+    if let Some(record) = heap
+        .records
         .iter()
         .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
+    {
+        return record.layout.size_bytes;
+    }
+    heap.flat
+        .iter()
+        .find(|entry| entry.ptr().as_ptr() as usize == address.address_bits())
         .expect("heap record exists")
-        .layout
-        .size_bytes
+        .size_bytes()
 }
 
 fn record_layout_align(heap: &EvalHeap, value: Value) -> usize {
@@ -539,9 +545,10 @@ fn worker_region_cancel_mark_retires_innermost_without_reclaiming() {
 fn worker_region_pop_rejects_permanent_records_above_marker() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
     let mark = heap.worker_region_mark().expect("region mark records");
+    // A permanent record-backed value (strings are flat since FV-1).
     let permanent = heap
-        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
-        .expect("permanent string allocates");
+        .alloc_list(NixList::new(vec![Value::int(47)]))
+        .expect("permanent list allocates");
     let stats_before = heap.arena_stats();
     let permanent_stats_before = heap.permanent_arena_stats();
 
@@ -556,10 +563,32 @@ fn worker_region_pop_rejects_permanent_records_above_marker() {
     assert_eq!(heap.arena_stats(), stats_before);
     assert_eq!(heap.permanent_arena_stats(), permanent_stats_before);
     assert_eq!(
-        heap.get_string(permanent)
+        heap.get_list(permanent)
             .expect("permanent record remains")
-            .bytes(),
-        b"permanent"
+            .get(0)
+            .expect("element remains")
+            .as_int(),
+        Ok(47)
+    );
+}
+
+/// Flat strings (FV-1) live outside the record table and the worker arena, so
+/// allocating one above a worker-region marker no longer blocks the pop; the
+/// pop rewinds only worker storage and the string stays resolvable.
+#[test]
+fn worker_region_pop_ignores_flat_strings_above_marker() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let string = heap
+        .alloc_string(NixString::from_bytes(b"flat-permanent".to_vec()))
+        .expect("string allocates");
+
+    heap.pop_worker_region_if_disconnected(mark)
+        .expect("flat strings above the marker do not block the pop");
+
+    assert_eq!(
+        heap.get_string(string).expect("string remains").bytes(),
+        b"flat-permanent"
     );
 }
 
@@ -1401,9 +1430,11 @@ fn tier_b_admission_plan_maps_worker_records_to_old_generation() {
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
+    // A permanent record-backed value (strings are flat since FV-1, so a
+    // list stands in as the permanent heap record).
     let permanent = heap
-        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
-        .expect("permanent string allocates");
+        .alloc_list(NixList::new(vec![Value::int(53)]))
+        .expect("permanent list allocates");
     let worker_stats = heap.arena_stats();
     let permanent_stats = heap.permanent_arena_stats();
 
@@ -1491,9 +1522,11 @@ fn tier_b_admission_application_rewrites_worker_records_to_old_generation() {
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
+    // A permanent record-backed value (strings are flat since FV-1, so a
+    // list stands in as the permanent heap record).
     let permanent = heap
-        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
-        .expect("permanent string allocates");
+        .alloc_list(NixList::new(vec![Value::int(53)]))
+        .expect("permanent list allocates");
     let worker_stats = heap.arena_stats();
     let permanent_stats = heap.permanent_arena_stats();
     let plan = heap
@@ -4136,9 +4169,10 @@ fn collector_poll_minor_gc_forwarding_install_rejects_permanent_source_without_p
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first thunk allocates");
+    // A permanent record-backed value (strings are flat since FV-1).
     let permanent = heap
-        .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
-        .expect("permanent string allocates");
+        .alloc_list(NixList::new(vec![Value::int(43)]))
+        .expect("permanent list allocates");
     let first_forwarded = ResolvedValueGeneration::Heap {
         address: static_gc_address(0x1000_0000),
         generation: HeapGeneration::Young,
@@ -5552,9 +5586,11 @@ fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
 fn collector_poll_minor_gc_object_generation_writes_update_existing_destination_records() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
+    // A permanent record-backed value (strings are flat since FV-1, so a
+    // list stands in as the permanent heap record).
     let destination = heap
-        .alloc_string(NixString::from_bytes(b"destination".to_vec()))
-        .expect("destination string allocates");
+        .alloc_list(NixList::new(vec![Value::int(41)]))
+        .expect("destination list allocates");
     let source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("source thunk allocates");
@@ -8497,9 +8533,11 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_malformed_copy_reques
 #[test]
 fn collector_poll_minor_gc_object_generation_writes_reject_unknown_destination_without_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // A permanent record-backed value (strings are flat since FV-1, so a
+    // list stands in as the permanent heap record).
     let destination = heap
-        .alloc_string(NixString::from_bytes(b"destination".to_vec()))
-        .expect("destination string allocates");
+        .alloc_list(NixList::new(vec![Value::int(41)]))
+        .expect("destination list allocates");
     let first_source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first source thunk allocates");
@@ -10247,9 +10285,11 @@ fn collector_poll_minor_gc_plan_rejects_stale_remembered_edge_without_source_fie
     let child = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("child thunk allocates");
+    // A permanent record-backed value with no heap field pointing at the
+    // child (strings are flat since FV-1, so a list stands in).
     let root = heap
-        .alloc_string(NixString::from_bytes(b"root".to_vec()))
-        .expect("permanent string allocates");
+        .alloc_list(NixList::new(vec![Value::int(3)]))
+        .expect("permanent list allocates");
     let poll = heap
         .permanent_allocation_safepoints()
         .last_safepoint_collector_poll()
@@ -10257,7 +10297,7 @@ fn collector_poll_minor_gc_plan_rejects_stale_remembered_edge_without_source_fie
     let mut roots = EvalRootSet::new();
     roots
         .try_push_value_stack(0, root)
-        .expect("string root records");
+        .expect("list root records");
     let scan = heap
         .scan_collector_poll_roots(poll, &roots)
         .expect("collector-poll root scan succeeds");

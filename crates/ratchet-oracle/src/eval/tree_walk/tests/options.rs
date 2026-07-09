@@ -753,7 +753,10 @@ fn heap_memory_budget_tier_b_transition_preflight_admits_current_heap() {
         admission.heap_plan().permanent_stats(),
         outcome.heap().permanent_arena_stats()
     );
-    assert_eq!(admission.heap_plan().record_count(), outcome.heap().len());
+    assert_eq!(
+        admission.heap_plan().record_count(),
+        outcome.heap().record_count()
+    );
     assert_eq!(
         admission
             .heap_plan()

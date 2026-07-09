@@ -390,6 +390,7 @@ impl TreeWalk {
             scoped_globals: Vec::new(),
             options,
             stats: EvalStats::default(),
+            campaign_env_baseline: crate::eval::env::capture_stats::snapshot(),
             attr_telemetry: AttrTelemetry::new(),
             // Hidden-class shape projection stores dense `ShapeId`s in shared
             // heap attrs metadata. Under multi-worker parallel mode the demand

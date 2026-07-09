@@ -575,6 +575,8 @@ impl EvalHeap {
             return Ok(value);
         }
         self.alloc_counters.note_hashcons(false);
+        self.alloc_counters
+            .note_string_payload(string.len(), string.bytes().starts_with(b"/nix/store/"));
         let slot = self
             .string_cons
             .reserve_slot(hash)
@@ -621,6 +623,7 @@ impl EvalHeap {
             return Ok(value);
         }
         self.alloc_counters.note_hashcons(false);
+        self.alloc_counters.note_path_payload(path.len());
         let slot = self
             .path_cons
             .reserve_slot(hash)
@@ -667,6 +670,7 @@ impl EvalHeap {
             return Ok(value);
         }
         self.alloc_counters.note_hashcons(false);
+        self.alloc_counters.note_list_payload(list.len());
         let slot = self
             .list_cons
             .reserve_slot(hash)

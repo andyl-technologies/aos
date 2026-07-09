@@ -53,6 +53,14 @@ impl HotXxh3Hash {
         Self(raw)
     }
 
+    /// Returns the raw 64-bit hash word.
+    ///
+    /// Used by the flat-value heap (RFC-0007 doc 30 FV-1) to store the
+    /// hash-cons key inline in a flat object header.
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+
     /// Returns the raw hash value for tests that inspect surface leaks.
     #[cfg(test)]
     pub(crate) const fn raw_for_tests(self) -> u64 {

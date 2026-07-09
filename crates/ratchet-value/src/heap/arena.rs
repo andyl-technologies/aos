@@ -223,6 +223,23 @@ impl ArenaMemoryAdviceReport {
         }
     }
 
+    /// Returns the field-wise sum of two advice reports.
+    ///
+    /// Used when one logical allocation domain spans more than one arena
+    /// (the evaluator's permanent domain plus the flat-object store). Keeps
+    /// `self`'s advice kind; callers pass reports produced for the same kind.
+    pub fn merged(self, other: Self) -> Self {
+        Self {
+            kind: self.kind,
+            chunks: self.chunks.saturating_add(other.chunks),
+            requested_bytes: self.requested_bytes.saturating_add(other.requested_bytes),
+            applied: self.applied.saturating_add(other.applied),
+            unsupported: self.unsupported.saturating_add(other.unsupported),
+            empty: self.empty.saturating_add(other.empty),
+            rejected: self.rejected.saturating_add(other.rejected),
+        }
+    }
+
     /// Returns the advice kind requested for every chunk tail.
     pub const fn kind(self) -> MemoryAdviceKind {
         self.kind
@@ -322,6 +339,18 @@ impl BumpArena {
     /// Returns whether no allocation has been served yet.
     pub fn is_empty(&self) -> bool {
         self.chunks.is_empty()
+    }
+
+    /// Returns each chunk's `(start, end)` logical byte region.
+    ///
+    /// Regions cover the chunks' reserved bump capacity, so every address this
+    /// arena has handed out (and every address it can still hand out) lies in
+    /// exactly one region. Used by the flat-object store's membership check.
+    pub fn chunk_regions(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.chunks.iter().map(|chunk| {
+            let start = chunk.ptr.as_ptr() as usize;
+            (start, start.saturating_add(chunk.capacity_bytes()))
+        })
     }
 
     /// Captures the current bump position for a future lexical subregion pop.

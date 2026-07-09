@@ -53,6 +53,18 @@ pub(crate) struct EvalHeapAllocationCounters {
     /// The difference from [`Self::hashcons_attempts`] is the number of records
     /// that had to be freshly allocated.
     pub(crate) hashcons_hits: u64,
+    /// Payload bytes of freshly allocated (non-hash-cons-hit) string values.
+    ///
+    /// RFC-0007 doc 30 FV-0: per-kind payload byte mass, the denominator for
+    /// the flat-value stages and the §7.3 store-path-interning sizing probe.
+    pub(crate) string_payload_bytes: u64,
+    /// The subset of [`Self::string_payload_bytes`] whose bytes have the
+    /// store-path shape (a `/nix/store/` prefix), for the §7.3 probe.
+    pub(crate) string_store_path_payload_bytes: u64,
+    /// Payload bytes of freshly allocated path values.
+    pub(crate) path_payload_bytes: u64,
+    /// Spine elements of freshly allocated list values (16 bytes each).
+    pub(crate) list_payload_elements: u64,
     /// Forced thunks whose captures were shed by `AOS_NIX_GC=sweep`.
     ///
     /// Each shed drops the thunk's captured closure graph after its WHNF
@@ -107,6 +119,26 @@ impl EvalHeapAllocationCounters {
     /// Returns hash-cons lookups that reused an existing canonical value.
     pub(crate) const fn hashcons_hits(&self) -> u64 {
         self.hashcons_hits
+    }
+
+    /// Records the payload bytes of one freshly allocated string value.
+    pub(crate) fn note_string_payload(&mut self, bytes: usize, store_path_shaped: bool) {
+        self.string_payload_bytes = self.string_payload_bytes.saturating_add(bytes as u64);
+        if store_path_shaped {
+            self.string_store_path_payload_bytes = self
+                .string_store_path_payload_bytes
+                .saturating_add(bytes as u64);
+        }
+    }
+
+    /// Records the payload bytes of one freshly allocated path value.
+    pub(crate) fn note_path_payload(&mut self, bytes: usize) {
+        self.path_payload_bytes = self.path_payload_bytes.saturating_add(bytes as u64);
+    }
+
+    /// Records the spine length of one freshly allocated list value.
+    pub(crate) fn note_list_payload(&mut self, elements: usize) {
+        self.list_payload_elements = self.list_payload_elements.saturating_add(elements as u64);
     }
 
     /// Records that one forced thunk's captures were shed.

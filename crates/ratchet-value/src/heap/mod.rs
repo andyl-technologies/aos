@@ -9,6 +9,7 @@ pub mod advice;
 pub mod arena;
 pub mod budget;
 pub mod concurrent_gc;
+pub mod flat;
 pub mod gauges;
 pub mod gc;
 pub mod region;
@@ -24,6 +25,10 @@ pub use advice::{
 pub use arena::{
     ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionMark, ArenaRegionPopReport,
     ArenaStats, BumpArena, HeapObjectKind, ThreadLocalBumpArena,
+};
+pub use flat::{
+    FlatAllocation, FlatObjectError, FlatObjectKind, FlatObjectRef, FlatObjectStore,
+    FlatStoredObject,
 };
 pub use budget::{
     DEFAULT_BUDGET_HEADROOM_DENOMINATOR, HeapMemoryBudget, HeapMemoryBudgetError,

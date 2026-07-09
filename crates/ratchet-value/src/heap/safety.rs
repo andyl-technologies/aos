@@ -29,6 +29,7 @@ pub const HEAP_INNATE_UNSAFE_OPERATIONS: &[HeapInnateUnsafeOperation] = &[
     HeapInnateUnsafeOperation::ResidentMemoryProbe,
     HeapInnateUnsafeOperation::RegionPopHandoff,
     HeapInnateUnsafeOperation::AllocatorFreeMemoryRelease,
+    HeapInnateUnsafeOperation::FlatObjectPayloadAccess,
 ];
 
 /// Required audit tools for heap and GC unsafe code.
@@ -62,6 +63,9 @@ pub enum HeapInnateUnsafeOperation {
     /// Asks the process allocator to return dirty-but-free pages to the OS
     /// (`malloc_trim` on glibc targets).
     AllocatorFreeMemoryRelease,
+    /// Writes, reads, and drops flat header-plus-payload heap objects in
+    /// place inside store-owned arena chunks (RFC-0007 doc 30 stage FV-1).
+    FlatObjectPayloadAccess,
 }
 
 /// Standing controls required before unsafe heap or GC code can land.
@@ -266,9 +270,16 @@ mod tests {
         // both under the reviewed `ResidentMemoryProbe` innate operation.
         // advice.rs count 12 -> 13: the glibc `malloc_trim(0)` call under the
         // reviewed `AllocatorFreeMemoryRelease` innate operation.
+        // flat.rs count 0 -> 5 (RFC-0007 doc 30 stage FV-1): the flat-object
+        // store's sealed in-place operations under the reviewed
+        // `FlatObjectPayloadAccess` innate operation — one placement write
+        // (`alloc`), one header-word read (`kind_at`), two shared-reference
+        // constructions over validated objects (`resolve`, `iter`), and one
+        // `drop_in_place` sweep in `Drop`.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 12usize),
+            ("flat.rs", 5usize),
             ("resident.rs", 6usize),
         ] {
             let source_path = heap_root.join(file_name);
@@ -332,7 +343,7 @@ mod tests {
 
         matches!(
             relative_path.to_str(),
-            Some("advice.rs" | "arena.rs" | "resident.rs")
+            Some("advice.rs" | "arena.rs" | "flat.rs" | "resident.rs")
         )
     }
 

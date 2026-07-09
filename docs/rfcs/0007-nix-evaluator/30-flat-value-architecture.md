@@ -997,13 +997,19 @@ list only their *additional* gates.
 
 ### Stage FV-0 — instrumentation and prerequisites
 
-- [ ] Campaign counters: capture-array copies, environment allocations
-      by size class, per-kind payload byte mass (strings split by
+- [x] Campaign counters: capture-array copies, environment allocations,
+      per-kind payload byte mass (strings split by
       store-path shape for §7.3), deref-resolution counts — in
       `EvalStats` + the `AOS_NIX_EVAL_STATS` JSON dump
       (`eval/tree_walk/eval_stats.rs`, `eval/heap/alloc_counters.rs`).
       Exit: the §11-flagged session figures are reproducible from a
       stock build.
+      *Landed (FV-0): the nested `campaign` block
+      (`eval/tree_walk/campaign_counters.rs`) carries record-table probes
+      by kind, flat resolutions, payload `Arc` clones, capture-copy
+      count+bytes, frame-allocation count+bytes, and per-kind payload
+      byte mass with the store-path split. Environment-allocation
+      *size-class histograms* remain open.*
 - [ ] The `payload_bits` identity classification table: every §2.4 site
       tagged {address-identity-only | relocation-sensitive}, checked in
       as a reviewed table (extends the B1 audit). Exit: table complete;
@@ -1023,20 +1029,40 @@ list only their *additional* gates.
       sealed `ratchet-value` module family (e.g.
       `ratchet-value/src/heap/flat/` or `value/flat/`); arena writes
       real bytes behind the reserved `heap/arena.rs` layout constants.
+      *Partially landed (FV-1a): `ratchet-value/src/heap/flat.rs` writes
+      header (kind word, hash word, epoch word) + the `NixString`
+      payload struct in place for strings and paths, serial mode.
+      String *bytes* remain owned by the payload's `Vec` (one malloc
+      behind the flat object) — full bytes-inline needs the accessor
+      type to change from `&NixString`. Lists and shared mode are the
+      named remainder (list flattening must extend the B1 sweep's
+      permanent-edge seed phase, the worker-region-pop retained-edge
+      validation, and the collector-poll edge snapshots to a flat list
+      registry).*
 - [ ] Hash-cons migration: `hashcons.rs` collision confirmation over
       flat payload bytes; `structural_hash` resident in the header.
       Gate: interning-rate counters unchanged vs. baseline (same values
       intern), plus the standing battery.
-- [ ] `heap/safety.rs` audit-table extension: new
+      *Landed for strings/paths: confirmation compares the header hash
+      word + flat payload; dedup semantics unchanged (interning counters
+      byte-identical on the probe workloads). Lists still confirm
+      through records.*
+- [x] `heap/safety.rs` audit-table extension: new
       `HeapInnateUnsafeOperation` variants (inline payload access) +
       per-file token counts, second-reviewer sign-off, miri/ASan on the
       new modules (§8). Exit: safety tests green with the new counts.
+      *Landed: `FlatObjectPayloadAccess` variant; `flat.rs` allowlisted
+      at 5 audited unsafe operations.*
 - [ ] Record-table bypass for migrated kinds in
       `eval/heap/{mod,record_table}.rs` and the shared arena
       (`shared_arena.rs`, `shared_backend.rs`): resolution for
       string/path/list is one load; records no longer allocated for
       them. Exit: wide-eval record count and record-`Vec`/addr-map
       bytes drop by the string+list share (memory columns).
+      *Landed for strings/paths in serial mode
+      (`eval/heap/flat_values.rs`): no records allocated, resolution is
+      membership-check + header load. Lists and the shared arena are
+      the named remainder.*
 
 ### Stage FV-2 — flat attrsets
 

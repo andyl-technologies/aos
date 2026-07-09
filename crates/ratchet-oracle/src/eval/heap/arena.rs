@@ -613,6 +613,9 @@ impl EvalHeap {
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
             alloc_counters: EvalHeapAllocationCounters::default(),
+            deref_counters: EvalHeapDerefCounters::default(),
+            flat: FlatObjectStore::new(),
+            flat_cold_hashes: FlatColdHashStore::default(),
             shared: None,
         }
     }
@@ -649,6 +652,10 @@ impl EvalHeap {
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
             alloc_counters: EvalHeapAllocationCounters::default(),
+            deref_counters: EvalHeapDerefCounters::default(),
+            flat: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
+                .map_err(EvalHeapError::Arena)?,
+            flat_cold_hashes: FlatColdHashStore::default(),
             shared: None,
         })
     }
@@ -796,8 +803,12 @@ impl EvalHeap {
     }
 
     /// Returns current permanent shared allocation accounting.
+    ///
+    /// Includes the flat object store's arena (FV-1): flat strings and paths
+    /// are permanent-domain values, so their bytes stay in the permanent
+    /// columns of every budget decision and statistics surface.
     pub fn permanent_arena_stats(&self) -> ArenaStats {
-        self.permanent_allocator.stats()
+        merged_arena_stats(self.permanent_allocator.stats(), self.flat.arena_stats())
     }
 
     /// Returns the typed-value allocation work counters for this heap.
@@ -1043,11 +1054,18 @@ impl EvalHeap {
     /// interned records. It does not evict, page out, or rematerialize values.
     pub fn cold_hash_consed_bytes(&self, min_idle_epochs: u64) -> usize {
         let current_epoch = self.access_epoch();
-        self.records.iter().fold(0usize, |bytes, record| {
+        let record_bytes = self.records.iter().fold(0usize, |bytes, record| {
             if !Self::is_cold_hash_consed_record(record, current_epoch, min_idle_epochs) {
                 return bytes;
             }
             bytes.saturating_add(record.layout.size_bytes)
+        });
+        self.flat.iter().fold(record_bytes, |bytes, entry| {
+            let idle = current_epoch.saturating_sub(entry.object().last_touch_epoch());
+            if idle < min_idle_epochs {
+                return bytes;
+            }
+            bytes.saturating_add(entry.size_bytes())
         })
     }
 
@@ -1068,13 +1086,17 @@ impl EvalHeap {
         min_idle_epochs: u64,
     ) -> Result<Vec<EvalHeapColdHashConsedValue>, EvalHeapError> {
         let current_epoch = self.access_epoch();
+        let is_cold_flat = |entry: &crate::heap::flat::FlatStoredObject<'_, NixString>| {
+            current_epoch.saturating_sub(entry.object().last_touch_epoch()) >= min_idle_epochs
+        };
         let values = self
             .records
             .iter()
             .filter(|record| {
                 Self::is_cold_hash_consed_record(record, current_epoch, min_idle_epochs)
             })
-            .count();
+            .count()
+            .saturating_add(self.flat.iter().filter(is_cold_flat).count());
         let mut snapshot = Vec::new();
         snapshot
             .try_reserve_exact(values)
@@ -1087,6 +1109,19 @@ impl EvalHeap {
             snapshot.push(EvalHeapColdHashConsedValue::new(
                 Self::value_for_record(record)?,
                 record.layout.size_bytes,
+                idle_epochs,
+            ));
+        }
+        for entry in self.flat.iter() {
+            if !is_cold_flat(&entry) {
+                continue;
+            }
+            let idle_epochs =
+                current_epoch.saturating_sub(entry.object().last_touch_epoch());
+            let tag = flat_values::value_tag_for_flat_kind(entry.object().kind());
+            snapshot.push(EvalHeapColdHashConsedValue::new(
+                Value::heap(tag, entry.ptr())?,
+                entry.size_bytes(),
                 idle_epochs,
             ));
         }
@@ -1165,6 +1200,13 @@ impl EvalHeap {
                 advise(record.ptr, record.layout.size_bytes),
             );
         }
+        for entry in self.flat.iter() {
+            let idle = current_epoch.saturating_sub(entry.object().last_touch_epoch());
+            if idle < min_idle_epochs {
+                continue;
+            }
+            report.record(entry.size_bytes(), advise(entry.ptr(), entry.size_bytes()));
+        }
         report
     }
 
@@ -1176,7 +1218,9 @@ impl EvalHeap {
         EvalHeapMemoryAdviceReport::new(
             kind,
             self.allocator.advise_unused_tail(kind),
-            self.permanent_allocator.advise_unused_tail(kind),
+            self.permanent_allocator
+                .advise_unused_tail(kind)
+                .merged(self.flat.advise_unused_tail(kind)),
         )
     }
 
@@ -1206,6 +1250,7 @@ impl EvalHeap {
                 self.permanent_allocator
                     .supported_unused_tail_advice_bytes(),
             )
+            .saturating_add(self.flat.supported_unused_tail_advice_bytes())
     }
 
     /// Classifies memory pressure and applies the currently implemented cheap
@@ -1392,6 +1437,10 @@ impl EvalHeap {
             return shared.allocation_domain(value);
         }
         let (tag, ptr) = any_value_heap_ptr(value)?;
+        if matches!(tag, ValueTag::String | ValueTag::Path) {
+            self.flat_canonical_address(tag, ptr)?;
+            return Ok(HeapAllocationDomain::PermanentShared);
+        }
         let record = self.record_or_unknown(tag, ptr)?;
         let actual = record.object.tag();
         if actual == tag {
@@ -1414,6 +1463,10 @@ impl EvalHeap {
             return shared.generation(value);
         }
         let (tag, ptr) = any_value_heap_ptr(value)?;
+        if matches!(tag, ValueTag::String | ValueTag::Path) {
+            self.flat_canonical_address(tag, ptr)?;
+            return Ok(HeapGeneration::Permanent);
+        }
         let record = self.record_or_unknown(tag, ptr)?;
         let actual = record.object.tag();
         if actual == tag {
@@ -1458,12 +1511,25 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.published_len();
         }
-        self.records.len()
+        self.records.len().saturating_add(self.flat.len())
     }
 
     /// Returns whether this heap contains no typed objects.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns the number of typed objects in the record side table.
+    ///
+    /// Excludes flat string/path objects (doc 30 FV-1), which never enter the
+    /// record table; Tier-B admission plans cover exactly this population.
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Returns the number of flat string/path objects (doc 30 FV-1).
+    pub fn flat_object_count(&self) -> usize {
+        self.flat.len()
     }
 
     #[cfg(test)]
@@ -1492,53 +1558,7 @@ impl EvalHeap {
         if self.shared.is_some() {
             return self.shared_alloc_string(string);
         }
-        let hash = string.structural_hash_xxh3();
-        let cons_slot = match self.admit_string_cons(hash, &string)? {
-            HashConsReservation::Existing(value) => {
-                self.alloc_counters.note_hashcons(true);
-                self.touch_reusable_value(value)?;
-                return Ok(value);
-            }
-            HashConsReservation::Vacant(slot) => {
-                self.alloc_counters.note_hashcons(false);
-                slot
-            }
-        };
-        let allocation = match self
-            .permanent_allocator
-            .aos_alloc_string(string.len())
-            .map_err(EvalHeapError::Arena)
-        {
-            Ok(allocation) => allocation,
-            Err(error) => {
-                self.cancel_string_cons_slot(cons_slot);
-                return Err(error);
-            }
-        };
-        let value = match Value::string(allocation.ptr).map_err(EvalHeapError::Value) {
-            Ok(value) => value,
-            Err(error) => {
-                self.cancel_string_cons_slot(cons_slot);
-                return Err(error);
-            }
-        };
-        let last_touch_epoch = Cell::new(self.next_access_epoch());
-        self.records.push(HeapRecord {
-            ptr: allocation.ptr,
-            layout: HeapRecordLayout::from_allocation(allocation),
-            structural_hash: Some(hash),
-            allocation_domain: HeapAllocationDomain::PermanentShared,
-            generation: initial_generation_for_allocation_domain(
-                HeapAllocationDomain::PermanentShared,
-            ),
-            minor_gc_forwarding: Cell::new(None),
-            last_touch_epoch,
-            object: HeapObjectValue::String(string),
-        });
-        self.push_string_cons_value(cons_slot, value);
-        self.alloc_counters.note_value_allocated();
-        self.poll_memory_budget_after_allocation();
-        Ok(value)
+        self.flat_alloc_string(string)
     }
 
     /// Allocates a Nix path object and returns its opaque runtime value.
@@ -1555,53 +1575,7 @@ impl EvalHeap {
         if self.shared.is_some() {
             return self.shared_alloc_path(path);
         }
-        let hash = path.structural_hash_xxh3();
-        let cons_slot = match self.admit_path_cons(hash, &path)? {
-            HashConsReservation::Existing(value) => {
-                self.alloc_counters.note_hashcons(true);
-                self.touch_reusable_value(value)?;
-                return Ok(value);
-            }
-            HashConsReservation::Vacant(slot) => {
-                self.alloc_counters.note_hashcons(false);
-                slot
-            }
-        };
-        let allocation = match self
-            .permanent_allocator
-            .aos_alloc_string(path.len())
-            .map_err(EvalHeapError::Arena)
-        {
-            Ok(allocation) => allocation,
-            Err(error) => {
-                self.cancel_path_cons_slot(cons_slot);
-                return Err(error);
-            }
-        };
-        let value = match Value::path(allocation.ptr).map_err(EvalHeapError::Value) {
-            Ok(value) => value,
-            Err(error) => {
-                self.cancel_path_cons_slot(cons_slot);
-                return Err(error);
-            }
-        };
-        let last_touch_epoch = Cell::new(self.next_access_epoch());
-        self.records.push(HeapRecord {
-            ptr: allocation.ptr,
-            layout: HeapRecordLayout::from_allocation(allocation),
-            structural_hash: Some(hash),
-            allocation_domain: HeapAllocationDomain::PermanentShared,
-            generation: initial_generation_for_allocation_domain(
-                HeapAllocationDomain::PermanentShared,
-            ),
-            minor_gc_forwarding: Cell::new(None),
-            last_touch_epoch,
-            object: HeapObjectValue::Path(path),
-        });
-        self.push_path_cons_value(cons_slot, value);
-        self.alloc_counters.note_value_allocated();
-        self.poll_memory_budget_after_allocation();
-        Ok(value)
+        self.flat_alloc_path(path)
     }
 
     /// Allocates a Nix list object and returns its opaque runtime value.
@@ -1630,6 +1604,7 @@ impl EvalHeap {
                 slot
             }
         };
+        self.alloc_counters.note_list_payload(list.len());
         let allocation = match self
             .permanent_allocator
             .aos_alloc_list(list.len())
@@ -1997,6 +1972,11 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.cached_value_hash(value);
         }
+        let (tag, ptr) = value_heap_ptr(value)?;
+        if matches!(tag, ValueTag::String | ValueTag::Path) {
+            let address = self.flat_canonical_address(tag, ptr)?;
+            return Ok(self.flat_cold_value_hash(address));
+        }
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
         Ok(self.records.cold_value_hash(address))
     }
@@ -2023,6 +2003,21 @@ impl EvalHeap {
     ) -> Result<HeapValueHashCacheUpdate, EvalHeapError> {
         if let Some(shared) = &self.shared {
             return shared.cache_value_hash(value, hash);
+        }
+        let (tag, ptr) = value_heap_ptr(value)?;
+        if matches!(tag, ValueTag::String | ValueTag::Path) {
+            let address = self.flat_canonical_address(tag, ptr)?;
+            return match self.flat_cold_value_hash(address) {
+                Some(existing) if existing == hash => Ok(HeapValueHashCacheUpdate::AlreadyPresent),
+                Some(existing) => Err(EvalHeapError::ValueHashMismatch {
+                    existing,
+                    attempted: hash,
+                }),
+                None => {
+                    self.set_flat_cold_value_hash(address, Some(hash));
+                    Ok(HeapValueHashCacheUpdate::Inserted)
+                }
+            };
         }
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
         match self.records.cold_value_hash(address) {
@@ -2054,6 +2049,11 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.cached_captured_value_hash(value);
         }
+        let (tag, ptr) = value_heap_ptr(value)?;
+        if matches!(tag, ValueTag::String | ValueTag::Path) {
+            let address = self.flat_canonical_address(tag, ptr)?;
+            return Ok(self.flat_cold_captured_value_hash(address));
+        }
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
         Ok(self.records.cold_captured_value_hash(address))
     }
@@ -2074,6 +2074,12 @@ impl EvalHeap {
     ) -> Result<(), EvalHeapError> {
         if let Some(shared) = &self.shared {
             return shared.cache_captured_value_hash(value, hash);
+        }
+        let (tag, ptr) = value_heap_ptr(value)?;
+        if matches!(tag, ValueTag::String | ValueTag::Path) {
+            let address = self.flat_canonical_address(tag, ptr)?;
+            self.set_flat_cold_captured_value_hash(address, Some(hash));
+            return Ok(());
         }
         let address = self.record_for_value(value)?.ptr.as_ptr() as usize;
         self.records
@@ -2105,18 +2111,7 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_string_ptr(ptr);
         }
-        let record = self.record_or_unknown(ValueTag::String, ptr)?;
-        match &record.object {
-            HeapObjectValue::String(string) => {
-                self.touch_record(record);
-                Ok(string)
-            }
-            object => Err(EvalHeapError::record_type_mismatch(
-                ValueTag::String,
-                object.tag(),
-                ptr,
-            )),
-        }
+        self.flat_get(FlatObjectKind::String, ptr)
     }
 
     /// Returns the path object referenced by `value`.
@@ -2143,18 +2138,7 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_path_ptr(ptr);
         }
-        let record = self.record_or_unknown(ValueTag::Path, ptr)?;
-        match &record.object {
-            HeapObjectValue::Path(path) => {
-                self.touch_record(record);
-                Ok(path)
-            }
-            object => Err(EvalHeapError::record_type_mismatch(
-                ValueTag::Path,
-                object.tag(),
-                ptr,
-            )),
-        }
+        self.flat_get(FlatObjectKind::Path, ptr)
     }
 
     /// Returns the list object referenced by `value`.
@@ -2399,6 +2383,7 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Thunk(thunk) => {
                 self.touch_record(record);
+                self.deref_counters.note_payload_arc_clone();
                 Ok(Arc::clone(thunk))
             }
             object => Err(EvalHeapError::record_type_mismatch(
@@ -2420,6 +2405,7 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Lambda(lambda) => {
                 self.touch_record(record);
+                self.deref_counters.note_payload_arc_clone();
                 Ok(Arc::clone(lambda))
             }
             object => Err(EvalHeapError::record_type_mismatch(
@@ -2441,6 +2427,7 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Primop(primop) => {
                 self.touch_record(record);
+                self.deref_counters.note_payload_arc_clone();
                 Ok(Arc::clone(primop))
             }
             object => Err(EvalHeapError::record_type_mismatch(
@@ -2460,74 +2447,6 @@ impl EvalHeap {
         self.records
             .try_reserve_exact(1)
             .map_err(|_| EvalHeapError::RecordAllocationFailed { records })
-    }
-
-    fn admit_string_cons(
-        &mut self,
-        hash: HotXxh3Hash,
-        string: &NixString,
-    ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
-        let existing = {
-            let records = &self.records;
-            self.string_cons
-                .try_find(&hash, |value| {
-                    let value = *value;
-                    let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
-                    let record = records
-                        .find(ptr)
-                        .ok_or_else(|| EvalHeapError::unknown(ValueTag::String, ptr))?;
-                    let same_hash = record.structural_hash == Some(hash);
-                    let same_string = matches!(
-                        &record.object,
-                        HeapObjectValue::String(candidate) if candidate == string
-                    );
-                    Ok::<bool, EvalHeapError>(same_hash && same_string)
-                })?
-                .copied()
-        };
-        if let Some(value) = existing {
-            return Ok(HashConsReservation::Existing(value));
-        }
-        self.reserve_record_slot()?;
-        Ok(HashConsReservation::Vacant(
-            self.string_cons
-                .reserve_slot(hash)
-                .map_err(EvalHeapError::from)?,
-        ))
-    }
-
-    fn admit_path_cons(
-        &mut self,
-        hash: HotXxh3Hash,
-        path: &NixString,
-    ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
-        let existing = {
-            let records = &self.records;
-            self.path_cons
-                .try_find(&hash, |value| {
-                    let value = *value;
-                    let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
-                    let record = records
-                        .find(ptr)
-                        .ok_or_else(|| EvalHeapError::unknown(ValueTag::Path, ptr))?;
-                    let same_hash = record.structural_hash == Some(hash);
-                    let same_path = matches!(
-                        &record.object,
-                        HeapObjectValue::Path(candidate) if candidate == path
-                    );
-                    Ok::<bool, EvalHeapError>(same_hash && same_path)
-                })?
-                .copied()
-        };
-        if let Some(value) = existing {
-            return Ok(HashConsReservation::Existing(value));
-        }
-        self.reserve_record_slot()?;
-        Ok(HashConsReservation::Vacant(
-            self.path_cons
-                .reserve_slot(hash)
-                .map_err(EvalHeapError::from)?,
-        ))
     }
 
     fn admit_list_cons(
@@ -2692,7 +2611,12 @@ impl EvalHeap {
         }
     }
 
-    fn touch_reusable_value(&self, value: Value) -> Result<(), EvalHeapError> {
+    pub(super) fn touch_reusable_value(&self, value: Value) -> Result<(), EvalHeapError> {
+        let (tag, ptr) = value_heap_ptr(value)?;
+        if self.shared.is_none() && matches!(tag, ValueTag::String | ValueTag::Path) {
+            self.flat_canonical_address(tag, ptr)?;
+            return Ok(());
+        }
         self.record_for_value(value)?;
         Ok(())
     }
@@ -2872,7 +2796,7 @@ impl EvalHeap {
         self.worker_region_mark_stack.clear();
     }
 
-    fn next_access_epoch(&self) -> u64 {
+    pub(super) fn next_access_epoch(&self) -> u64 {
         let next_epoch = self.access_epoch.get().saturating_add(1);
         self.access_epoch.set(next_epoch);
         next_epoch
@@ -2901,9 +2825,21 @@ impl EvalHeap {
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
     ) -> Result<&HeapRecord, EvalHeapError> {
-        self.records
-            .find(ptr)
-            .ok_or_else(|| EvalHeapError::unknown(tag, ptr))
+        self.deref_counters.note_record_probe(tag);
+        self.records.find(ptr).ok_or_else(|| {
+            // Error fidelity: a flat string/path pointer handed to a
+            // record-kind getter still reports a record-type mismatch, as
+            // record-backed strings did before FV-1.
+            match self.flat_kind_tag(ptr) {
+                Some(actual) => EvalHeapError::record_type_mismatch(tag, actual, ptr),
+                None => EvalHeapError::unknown(tag, ptr),
+            }
+        })
+    }
+
+    /// Returns the dereference-chain volume counters for this heap (FV-0).
+    pub(crate) fn deref_counters_snapshot(&self) -> EvalHeapDerefCountersSnapshot {
+        self.deref_counters.snapshot()
     }
 }
 
@@ -2998,6 +2934,16 @@ fn next_heap_region_owner() -> u64 {
             Ok(owner) => return owner,
             Err(observed) => current = observed,
         }
+    }
+}
+
+/// Component-wise saturating sum of two arena accountings.
+fn merged_arena_stats(left: ArenaStats, right: ArenaStats) -> ArenaStats {
+    ArenaStats {
+        chunks: left.chunks.saturating_add(right.chunks),
+        reserved_bytes: left.reserved_bytes.saturating_add(right.reserved_bytes),
+        mapped_bytes: left.mapped_bytes.saturating_add(right.mapped_bytes),
+        used_bytes: left.used_bytes.saturating_add(right.used_bytes),
     }
 }
 

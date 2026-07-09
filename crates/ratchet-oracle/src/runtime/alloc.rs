@@ -2180,6 +2180,22 @@ impl PermanentSharedAllocator {
         self.allocation_vtable().aos_alloc_string(self, len)
     }
 
+    /// Records a permanent allocation safepoint for a flat string/path object.
+    ///
+    /// RFC-0007 doc 30 FV-1: flat strings and paths are allocated by the
+    /// evaluator heap's flat object store, which owns its own arena. The
+    /// permanent domain's safepoint sequence and GC-stress polling cadence
+    /// must keep observing those allocations exactly as they observed the
+    /// record-backed string allocations, so the heap replays each flat
+    /// allocation here under the same `aos_alloc_string` request shape.
+    pub(crate) fn record_flat_allocation_safepoint(
+        &mut self,
+        len: usize,
+        allocation: ArenaAllocation,
+    ) {
+        self.record_allocation_safepoint(RuntimeAllocationRequest::String { len }, allocation);
+    }
+
     fn record_allocation_safepoint(
         &mut self,
         request: RuntimeAllocationRequest,

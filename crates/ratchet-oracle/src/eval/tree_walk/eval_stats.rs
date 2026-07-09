@@ -7,6 +7,7 @@ impl TreeWalk {
         let arena = self.heap.arena_stats();
         let permanent_arena = self.heap.permanent_arena_stats();
         let alloc_counters = self.heap.allocation_counters();
+        let campaign = self.campaign_counters_snapshot();
         EvalStats {
             thunks_forced: self.stats.thunks_forced,
             thunks_allocated: self.stats.thunks_allocated,
@@ -104,6 +105,43 @@ impl TreeWalk {
             memo_net_misses: self.stats.memo_net_misses,
             memo_net_errors: self.stats.memo_net_errors,
             memo_net_reval_failures: self.stats.memo_net_reval_failures,
+            campaign,
+        }
+    }
+
+    /// Assembles the flat-value campaign counters (RFC-0007 doc 30 FV-0).
+    ///
+    /// Combines this evaluator's heap dereference counters, the heap's payload
+    /// byte-mass counters, and the process-wide environment capture counters
+    /// (as a delta from this evaluator's construction snapshot).
+    fn campaign_counters_snapshot(&self) -> CampaignCounters {
+        let deref = self.heap.deref_counters_snapshot();
+        let alloc = self.heap.allocation_counters();
+        let env = crate::eval::env::capture_stats::snapshot().delta_since(self.campaign_env_baseline);
+        CampaignCounters {
+            record_probes_string: deref.record_probes_string,
+            record_probes_path: deref.record_probes_path,
+            record_probes_list: deref.record_probes_list,
+            record_probes_attrs: deref.record_probes_attrs,
+            record_probes_lambda: deref.record_probes_lambda,
+            record_probes_primop: deref.record_probes_primop,
+            record_probes_thunk: deref.record_probes_thunk,
+            record_probes_other: deref.record_probes_other,
+            flat_string_resolutions: deref.flat_string_resolutions,
+            flat_path_resolutions: deref.flat_path_resolutions,
+            payload_arc_clones: deref.payload_arc_clones,
+            env_captures: env.env_captures,
+            env_capture_frame_handles: env.env_capture_frame_handles,
+            with_env_captures: env.with_env_captures,
+            with_env_capture_scopes: env.with_env_capture_scopes,
+            scoped_global_env_captures: env.scoped_global_env_captures,
+            scoped_global_env_capture_scopes: env.scoped_global_env_capture_scopes,
+            env_frame_allocs: env.env_frame_allocs,
+            env_frame_slot_bytes: env.env_frame_slot_bytes,
+            string_payload_bytes: alloc.string_payload_bytes,
+            string_store_path_payload_bytes: alloc.string_store_path_payload_bytes,
+            path_payload_bytes: alloc.path_payload_bytes,
+            list_payload_elements: alloc.list_payload_elements,
         }
     }
 
