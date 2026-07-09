@@ -1579,7 +1579,9 @@ mod store_validity;
 use store_validity::StoreValidityChecker;
 mod fold_genlist;
 mod tier1_publish;
-pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook, Tier2FoldHook};
+pub use tier1_publish::{
+    OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook, Tier2FilterHook, Tier2FoldHook,
+};
 mod tier2_apply;
 
 pub use eval_impure_inputs::{

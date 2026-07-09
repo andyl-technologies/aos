@@ -48,6 +48,7 @@ pub use lambda_chain::{
     JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary,
     JitTier2PinnedCallee, TIER2_MAX_CHAIN_ARITY, lower_tier2_curried_chain,
     lower_tier2_fold_genlist, scan_tier2_curried_chain, scan_tier2_pinned_callee,
+    scan_tier2_unary_predicate,
 };
 pub use lambda_rec::{
     AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,

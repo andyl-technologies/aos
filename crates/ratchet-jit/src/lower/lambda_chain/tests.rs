@@ -102,7 +102,7 @@ fn fold_op_arena() -> (IrArena, IrId, IrId, IrId, IrId) {
 #[test]
 fn fold_operator_chain_scans_and_lowers_with_pinned_inline() {
     let (arena, op_pattern, op_body, mod_pattern, mod_body) = fold_op_arena();
-    let scan = scan_tier2_curried_chain(&arena, op_pattern, op_body).expect("op chain scans");
+    let scan = scan_tier2_curried_chain(&arena, &[], op_pattern, op_body).expect("op chain scans");
     assert_eq!(scan.arity(), 2);
     assert_eq!(
         scan.callee_sites(),
@@ -122,7 +122,7 @@ fn fold_operator_chain_scans_and_lowers_with_pinned_inline() {
         arity: 2,
         body: callee_body,
     }];
-    let lowering = lower_tier2_curried_chain(&arena, &scan, None, &pinned, JitTier2EnvBoundary::OperatorEnv, 16)
+    let lowering = lower_tier2_curried_chain(&arena, &[], &scan, None, &pinned, JitTier2EnvBoundary::OperatorEnv, 16)
         .expect("fold operator lowers");
     assert_eq!(lowering.arity(), 2);
     assert_eq!(lowering.self_call_count(), 0);
@@ -221,7 +221,7 @@ fn tak_arena() -> (IrArena, IrId, IrId) {
 #[test]
 fn tak_chain_scans_and_lowers_with_direct_self_calls() {
     let (arena, root_pattern, root_body) = tak_arena();
-    let scan = scan_tier2_curried_chain(&arena, root_pattern, root_body).expect("tak scans");
+    let scan = scan_tier2_curried_chain(&arena, &[], root_pattern, root_body).expect("tak scans");
     assert_eq!(scan.arity(), 3);
     assert_eq!(
         scan.callee_sites(),
@@ -232,7 +232,7 @@ fn tak_chain_scans_and_lowers_with_direct_self_calls() {
         }]
     );
 
-    let lowering = lower_tier2_curried_chain(&arena, &scan, Some((3, 0)), &[], JitTier2EnvBoundary::InnerLambdaEnv, 32)
+    let lowering = lower_tier2_curried_chain(&arena, &[], &scan, Some((3, 0)), &[], JitTier2EnvBoundary::InnerLambdaEnv, 32)
         .expect("tak lowers");
     assert_eq!(lowering.arity(), 3);
     assert_eq!(lowering.self_call_count(), 4);
@@ -262,7 +262,7 @@ fn inconsistent_callee_chain_arity_is_rejected() {
         ),
     ];
     let arena = arena(nodes);
-    assert!(scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(9)).is_err());
+    assert!(scan_tier2_curried_chain(&arena, &[], IrId::new(0), IrId::new(9)).is_err());
 }
 
 /// A single-formal (arity-1) lambda is outside the chain lowerer's domain.
@@ -273,7 +273,7 @@ fn arity_one_lambda_is_rejected() {
         node(IrKind::LocalVar, IrData::Local { slot: 0 }),
     ];
     let arena = arena(nodes);
-    assert!(scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(1)).is_err());
+    assert!(scan_tier2_curried_chain(&arena, &[], IrId::new(0), IrId::new(1)).is_err());
 }
 
 /// A pinned callee whose body applies anything is rejected as call-free.
@@ -315,12 +315,12 @@ fn deep_upvalue_read_is_an_environment_read() {
     ];
     let arena = arena(nodes);
     let scan =
-        scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(3)).expect("env read scans");
+        scan_tier2_curried_chain(&arena, &[], IrId::new(0), IrId::new(3)).expect("env read scans");
     assert!(scan.reads_env());
     assert!(scan.callee_sites().is_empty());
 
     let lowering =
-        lower_tier2_curried_chain(&arena, &scan, None, &[], JitTier2EnvBoundary::OperatorEnv, 16)
+        lower_tier2_curried_chain(&arena, &[], &scan, None, &[], JitTier2EnvBoundary::OperatorEnv, 16)
             .expect("env read lowers");
     assert_eq!(lowering.arity(), 2);
     assert_eq!(lowering.self_call_count(), 0);
@@ -330,7 +330,7 @@ fn deep_upvalue_read_is_an_environment_read() {
 #[test]
 fn parameter_only_chain_reads_no_environment() {
     let (arena, op_pattern, op_body, _mod_pattern, _mod_body) = fold_op_arena();
-    let scan = scan_tier2_curried_chain(&arena, op_pattern, op_body).expect("op chain scans");
+    let scan = scan_tier2_curried_chain(&arena, &[], op_pattern, op_body).expect("op chain scans");
     assert!(!scan.reads_env());
 }
 
@@ -360,10 +360,10 @@ fn unary_negation_scans_and_lowers() {
     ];
     let arena = arena(nodes);
     let scan =
-        scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(6)).expect("negation scans");
+        scan_tier2_curried_chain(&arena, &[], IrId::new(0), IrId::new(6)).expect("negation scans");
     assert!(!scan.reads_env());
     let lowering =
-        lower_tier2_curried_chain(&arena, &scan, None, &[], JitTier2EnvBoundary::OperatorEnv, 16)
+        lower_tier2_curried_chain(&arena, &[], &scan, None, &[], JitTier2EnvBoundary::OperatorEnv, 16)
             .expect("negation lowers");
     assert_eq!(lowering.arity(), 2);
 }
@@ -388,7 +388,7 @@ fn boolean_negation_is_rejected() {
         ),
     ];
     let arena = arena(nodes);
-    assert!(scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(4)).is_err());
+    assert!(scan_tier2_curried_chain(&arena, &[], IrId::new(0), IrId::new(4)).is_err());
 }
 
 /// A pinned-callee (call-free) body must stay environment-free: its closure
@@ -407,7 +407,7 @@ fn pinned_callee_environment_read_is_rejected() {
 #[test]
 fn fold_genlist_lowering_fuses_an_identity_generator() {
     let (arena, op_pattern, op_body, mod_pattern, mod_body) = fold_op_arena();
-    let scan = scan_tier2_curried_chain(&arena, op_pattern, op_body).expect("op chain scans");
+    let scan = scan_tier2_curried_chain(&arena, &[], op_pattern, op_body).expect("op chain scans");
     let callee_body =
         scan_tier2_pinned_callee(&arena, mod_pattern, mod_body, 2).expect("mod chain validates");
     let pinned = [JitTier2PinnedCallee {
@@ -419,7 +419,7 @@ fn fold_genlist_lowering_fuses_an_identity_generator() {
     // identity generator `i: i` once scanned at arity 1.
     let generator_body = IrId::new(3);
 
-    let lowering = lower_tier2_fold_genlist(&arena, &scan, &pinned, generator_body, 16)
+    let lowering = lower_tier2_fold_genlist(&arena, &[], &scan, &pinned, generator_body, 16)
         .expect("fused genlist fold lowers");
     assert_eq!(lowering.arity(), 2);
     assert_eq!(lowering.self_call_count(), 0);
@@ -433,7 +433,166 @@ fn fold_genlist_lowering_fuses_an_identity_generator() {
 #[test]
 fn fold_genlist_lowering_rejects_non_fold_arity() {
     let (arena, root_pattern, root_body) = tak_arena();
-    let scan = scan_tier2_curried_chain(&arena, root_pattern, root_body).expect("tak scans");
+    let scan = scan_tier2_curried_chain(&arena, &[], root_pattern, root_body).expect("tak scans");
     assert_eq!(scan.arity(), 3);
-    assert!(lower_tier2_fold_genlist(&arena, &scan, &[], IrId::new(3), 16).is_err());
+    assert!(lower_tier2_fold_genlist(&arena, &[], &scan, &[], IrId::new(3), 16).is_err());
+}
+
+/// Builds an arena for `acc: i: let m = acc + i; in m * m` and returns
+/// `(arena, bindings, op_pattern, op_body)`.
+///
+/// Coordinates inside the let (both the body and the binding value, which
+/// counts its own frame): `m` is `LocalVar` slot 0, `i` is `Upval(1, 0)`
+/// (the call frame one let frame up), and `acc` is `Upval(2, 0)`.
+fn let_op_arena() -> (IrArena, Vec<ratchet_core::IrBinding>, IrId, IrId) {
+    use ratchet_core::{IrAttrPathSegment, IrBinding, IrBindingSlice};
+    let nodes = vec![
+        /* 0 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        /* 1 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(1), default: None }),
+        // Binding value `acc + i` (coordinates count the let frame).
+        /* 2 */ node(IrKind::UpvalVar, IrData::Upval { depth: 2, slot: 0 }),
+        /* 3 */ node(IrKind::UpvalVar, IrData::Upval { depth: 1, slot: 0 }),
+        /* 4 */
+        node(
+            IrKind::BinOp,
+            IrData::Binary { op: BinOpKind::Add, lhs: IrId::new(2), rhs: IrId::new(3) },
+        ),
+        /* 5 */ node(IrKind::ThunkAlloc, IrData::Node(IrId::new(4))),
+        // Let body `m * m`.
+        /* 6 */ node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+        /* 7 */ node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+        /* 8 */
+        node(
+            IrKind::BinOp,
+            IrData::Binary { op: BinOpKind::Mul, lhs: IrId::new(6), rhs: IrId::new(7) },
+        ),
+        /* 9 */
+        node(
+            IrKind::Let,
+            IrData::Let {
+                bindings: IrBindingSlice::new(0, 1),
+                body: IrId::new(8),
+                frame: None,
+            },
+        ),
+        /* 10 */
+        node(
+            IrKind::Lambda,
+            IrData::Lambda { pattern: IrId::new(1), body: IrId::new(9), frame: None },
+        ),
+    ];
+    let bindings = vec![IrBinding {
+        key: IrAttrPathSegment::Static(Symbol::new(2)),
+        position: None,
+        value: IrId::new(5),
+    }];
+    (arena(nodes), bindings, IrId::new(0), IrId::new(10))
+}
+
+/// A `let`-bound intermediate scans (parameter coordinates normalized by the
+/// let depth, no environment read) and lowers verified CLIF.
+#[test]
+fn let_bound_intermediate_scans_and_lowers() {
+    let (arena, bindings, op_pattern, op_body) = let_op_arena();
+    let scan =
+        scan_tier2_curried_chain(&arena, &bindings, op_pattern, op_body).expect("let body scans");
+    assert_eq!(scan.arity(), 2);
+    assert!(
+        !scan.reads_env(),
+        "parameter reads under a let must normalize onto the chain frames"
+    );
+    assert!(scan.callee_sites().is_empty());
+
+    let lowering =
+        lower_tier2_curried_chain(&arena, &bindings, &scan, None, &[], JitTier2EnvBoundary::OperatorEnv, 16)
+            .expect("let body lowers");
+    assert_eq!(lowering.arity(), 2);
+    assert_eq!(lowering.self_call_count(), 0);
+}
+
+/// A letrec self-reference (`let m = m + 1; in m`) is rejected by the scan's
+/// own-frame restriction.
+#[test]
+fn letrec_self_reference_is_rejected() {
+    use ratchet_core::{IrAttrPathSegment, IrBinding, IrBindingSlice};
+    let nodes = vec![
+        /* 0 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        /* 1 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(1), default: None }),
+        // Binding value `m + 1` reading its own frame.
+        /* 2 */ node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+        /* 3 */ node(IrKind::Int, IrData::Int(1)),
+        /* 4 */
+        node(
+            IrKind::BinOp,
+            IrData::Binary { op: BinOpKind::Add, lhs: IrId::new(2), rhs: IrId::new(3) },
+        ),
+        /* 5 */ node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+        /* 6 */
+        node(
+            IrKind::Let,
+            IrData::Let {
+                bindings: IrBindingSlice::new(0, 1),
+                body: IrId::new(5),
+                frame: None,
+            },
+        ),
+        /* 7 */
+        node(
+            IrKind::Lambda,
+            IrData::Lambda { pattern: IrId::new(1), body: IrId::new(6), frame: None },
+        ),
+    ];
+    let bindings = vec![IrBinding {
+        key: IrAttrPathSegment::Static(Symbol::new(2)),
+        position: None,
+        value: IrId::new(4),
+    }];
+    let arena = arena(nodes);
+    assert!(scan_tier2_curried_chain(&arena, &bindings, IrId::new(0), IrId::new(7)).is_err());
+}
+
+/// The unary predicate scan admits `x: x < pivot` (an env read at skew 1)
+/// and its lowering compiles verified CLIF at arity 1.
+#[test]
+fn unary_predicate_scans_and_lowers_with_env_read() {
+    let nodes = vec![
+        /* 0 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        /* 1 */ node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+        /* 2 */ node(IrKind::UpvalVar, IrData::Upval { depth: 1, slot: 0 }),
+        /* 3 */
+        node(
+            IrKind::BinOp,
+            IrData::Binary { op: BinOpKind::Lt, lhs: IrId::new(1), rhs: IrId::new(2) },
+        ),
+    ];
+    let arena = arena(nodes);
+    let scan =
+        scan_tier2_unary_predicate(&arena, &[], IrId::new(0), IrId::new(3)).expect("predicate scans");
+    assert_eq!(scan.arity(), 1);
+    assert!(scan.reads_env());
+
+    let lowering =
+        lower_tier2_curried_chain(&arena, &[], &scan, None, &[], JitTier2EnvBoundary::OperatorEnv, 16)
+            .expect("predicate lowers");
+    assert_eq!(lowering.arity(), 1);
+    // Frozen boundary ABI: (rt, env, argv); inner: (rt, env, tag, payload, budget).
+    assert_eq!(lowering.entry().signature.params.len(), 3);
+    assert_eq!(lowering.inner().signature.params.len(), 2 + 2 + 1);
+}
+
+/// The unary predicate scan rejects a curried (lambda) body.
+#[test]
+fn unary_predicate_rejects_a_lambda_body() {
+    let nodes = vec![
+        /* 0 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        /* 1 */ node(IrKind::Formal, IrData::Formal { name: Symbol::new(1), default: None }),
+        /* 2 */ node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+        /* 3 */
+        node(
+            IrKind::Lambda,
+            IrData::Lambda { pattern: IrId::new(1), body: IrId::new(2), frame: None },
+        ),
+    ];
+    let arena = arena(nodes);
+    assert!(scan_tier2_unary_predicate(&arena, &[], IrId::new(0), IrId::new(3)).is_err());
 }

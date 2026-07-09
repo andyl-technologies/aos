@@ -185,7 +185,7 @@ impl NixJitTier1Engine {
         };
 
         // Per-fold dispatch guards (never per element).
-        if !fold_pins_still_valid(eval, lambda, &entry.pinned) {
+        if !fold_pins_still_valid(eval, lambda, &entry.pinned, 2) {
             return fold_continued(promoted, false);
         }
         if eval.tier2_call_depth_headroom() < TIER2_FOLD_MIN_HEADROOM {
@@ -231,6 +231,7 @@ impl NixJitTier1Engine {
         let budget = self.tier2.borrow().budget;
         let Ok(lowering) = lower_tier2_curried_chain(
             &ir.arena,
+            &ir.bindings,
             &resolved.scan,
             None,
             &resolved.pinned_callees,
@@ -262,26 +263,45 @@ impl NixJitTier1Engine {
             return FoldOperatorResolution::Structural;
         };
         let arena = &ir.arena;
-        let Ok(scan) = scan_tier2_curried_chain(arena, lambda.pattern(), lambda.body()) else {
+        let Ok(scan) = scan_tier2_curried_chain(arena, &ir.bindings, lambda.pattern(), lambda.body())
+        else {
             return FoldOperatorResolution::Structural;
         };
         // The fold loop applies exactly two arguments per element.
         if scan.arity() != 2 {
             return FoldOperatorResolution::Structural;
         }
+        self.resolve_scanned_operator_callees(eval, lambda, scan)
+    }
 
-        // Every callee site must resolve to a pinned call-free callee out of
-        // the operator's captured environment. Site coordinates are relative
-        // to the inner-body environment (`op.env ++ [p0-frame] ++ call
-        // frame`); a site depth of at least the arity (guaranteed by the
-        // scan) always lands inside `op.env`.
+    /// Resolves a scanned operator's callee sites into pinned callees.
+    ///
+    /// Every callee site must resolve to a pinned call-free callee out of
+    /// the operator's captured environment. Site coordinates are relative to
+    /// the inner-body environment (`op.env ++ K-1 parameter frames ++ call
+    /// frame` for a chain of arity K); a site depth of at least the arity
+    /// (guaranteed by the scan) always lands inside `op.env`, at boundary
+    /// frame index `op_frames.len() + K - 1 - depth`. Shared by the fold
+    /// seam (K = 2) and the filter seam (K = 1, see
+    /// [`tier2_filter`](super::tier2_filter)).
+    pub(super) fn resolve_scanned_operator_callees(
+        &self,
+        eval: &TreeWalk,
+        lambda: &EvalLambda,
+        scan: JitTier2ChainScan,
+    ) -> FoldOperatorResolution {
+        let Some(ir) = eval.tier1_module_ir(lambda.module()) else {
+            return FoldOperatorResolution::Structural;
+        };
+        let arena = &ir.arena;
+        let arity = scan.arity() as usize;
         let op_frames = lambda.env().frames();
-        let conceptual_len = op_frames.len() + 1;
+        let conceptual_len = op_frames.len() + arity - 1;
         let mut pinned = Vec::new();
         let mut pinned_callees = Vec::new();
         for site in scan.callee_sites() {
             let (depth, slot) = site.upval;
-            if depth as usize > conceptual_len || (depth as usize) < 2 {
+            if depth as usize > conceptual_len || (depth as usize) < arity {
                 return FoldOperatorResolution::Structural;
             }
             let index = conceptual_len - depth as usize;
@@ -338,22 +358,26 @@ pub(super) fn fold_def_site_key(lambda: &EvalLambda) -> u64 {
     ((lambda.module().index() as u64) << 32) | u64::from(lambda.body().as_u32())
 }
 
-/// Re-validates every pinned callee for one fold call.
+/// Re-validates every pinned callee for one fold or filter call.
 ///
-/// Resolves each pin out of the operator instance's captured environment and
-/// compares def-site identity with the pin recorded at promotion. Pins may
-/// fail transiently for a *different* operator instance whose bindings are
-/// not forced yet; the fold then stays interpreted for that call only.
+/// Resolves each pin out of the operator instance's captured environment —
+/// at the boundary frame index `op_frames.len() + arity - 1 - depth`, the
+/// same coordinate translation as
+/// [`resolve_scanned_operator_callees`](NixJitTier1Engine::resolve_scanned_operator_callees)
+/// — and compares def-site identity with the pin recorded at promotion. Pins
+/// may fail transiently for a *different* operator instance whose bindings
+/// are not forced yet; the loop then stays interpreted for that call only.
 pub(super) fn fold_pins_still_valid(
     eval: &TreeWalk,
     lambda: &EvalLambda,
     pinned: &[Tier2PinIdentity],
+    arity: usize,
 ) -> bool {
     let op_frames = lambda.env().frames();
-    let conceptual_len = op_frames.len() + 1;
+    let conceptual_len = op_frames.len() + arity - 1;
     for pin in pinned {
         let (depth, slot) = pin.upval;
-        if depth as usize > conceptual_len || (depth as usize) < 2 {
+        if depth as usize > conceptual_len || (depth as usize) < arity {
             return false;
         }
         let Some(frame) = op_frames.get(conceptual_len - depth as usize) else {
@@ -525,6 +549,94 @@ mod tests {
         assert!(oracle.raw_eq(native));
         assert_eq!(stats.tier2_promoted(), 0, "got {stats:?}");
         assert_eq!(stats.tier2_dispatched(), 0, "got {stats:?}");
+    }
+
+    /// A fold operator with a `let`-bound intermediate compiles: the binding
+    /// becomes a virtual register and the fused genList loop still fires
+    /// (the improved sum-fold shape), matching the oracle with zero deopts.
+    #[test]
+    fn let_bound_intermediate_fold_operator_folds_natively() {
+        let source = "builtins.foldl'              (acc: i: let m = acc + i * i + 2654435761;               in m - 1000000007 * (m / 1000000007)) 0              (builtins.genList (i: i) 500)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(
+            oracle.raw_eq(native),
+            "let-local fold changed sum-fold: oracle {oracle:?} vs native {native:?}"
+        );
+        assert!(
+            stats.tier2_promoted() >= 1,
+            "the let-local operator must promote, got {stats:?}"
+        );
+        assert!(
+            stats.tier2_dispatched() >= 1,
+            "the let-local fold must run natively, got {stats:?}"
+        );
+        assert_eq!(
+            stats.tier2_deopted(),
+            0,
+            "an all-integer let-local fold must never deopt, got {stats:?}"
+        );
+    }
+
+    /// Nested dependent lets compile: an inner binding may read an outer
+    /// one, and both become virtual registers.
+    #[test]
+    fn nested_dependent_lets_fold_natively() {
+        let source = "builtins.foldl'              (acc: i: let a = acc + i; in let b = a * 3; in b + a) 0              (builtins.genList (i: i) 64)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(oracle.raw_eq(native), "nested-let fold changed a result");
+        assert!(
+            stats.tier2_dispatched() >= 1,
+            "the nested-let fold must run natively, got {stats:?}"
+        );
+        assert_eq!(stats.tier2_deopted(), 0, "got {stats:?}");
+    }
+
+    /// A binding never demanded on the taken path is never computed: its
+    /// value would divide by zero on every element, yet the native loop
+    /// must match the lazy interpreter with zero deopts.
+    #[test]
+    fn undemanded_let_binding_is_never_computed() {
+        let source = "builtins.foldl'              (acc: i: let d = 1 / (i - i); in if i < 1000 then acc + i else d) 0              (builtins.genList (i: i) 64)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(
+            oracle.raw_eq(native),
+            "compute-at-first-use changed a result: oracle {oracle:?} vs native {native:?}"
+        );
+        assert!(
+            stats.tier2_dispatched() >= 1,
+            "the guarded fold must run natively, got {stats:?}"
+        );
+        assert_eq!(
+            stats.tier2_deopted(),
+            0,
+            "an undemanded binding must never be computed (or deopt), got {stats:?}"
+        );
+    }
+
+    /// A `letrec` self-reference (own-frame read) blacklists the operator;
+    /// the interpreted result is unchanged.
+    #[test]
+    fn letrec_self_reference_blacklists_the_operator() {
+        let source = "builtins.foldl'              (acc: i: let a = 1; b = a + i; in acc + b) 0              (builtins.genList (i: i) 64)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(oracle.raw_eq(native), "letrec blacklist changed a result");
+        assert!(
+            stats.tier2_blacklisted() >= 1,
+            "a same-frame sibling read must blacklist, got {stats:?}"
+        );
+        assert_eq!(
+            stats.tier2_deopted(),
+            0,
+            "a blacklisted operator never dispatches, got {stats:?}"
+        );
     }
 
     /// The first-class (value-path) foldl' loop reaches the fold seam too.

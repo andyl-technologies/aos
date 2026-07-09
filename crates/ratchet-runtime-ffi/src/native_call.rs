@@ -439,6 +439,139 @@ pub fn run_context_finalized_native_fold_genlist_loop(
     )
 }
 
+/// The result of one native strict-filter loop over an element run.
+///
+/// `consumed` leading elements of the caller's run were decided natively and
+/// `kept` is the kept subsequence of that prefix, in element order. When
+/// `deopted` is true the loop stopped early — a guard failed, a forcing
+/// evaluator error was transferred, or the compiled predicate produced a
+/// non-boolean while deciding element `consumed` — and the caller must re-run
+/// that element (and everything after it) through the interpreted filter
+/// loop, which reproduces the exact tree-walk result or error.
+#[derive(Clone, Debug)]
+pub struct NativeFilterLoopOutcome {
+    consumed: usize,
+    kept: Vec<Value>,
+    deopted: bool,
+}
+
+impl NativeFilterLoopOutcome {
+    /// Returns how many leading elements were decided natively.
+    pub const fn consumed(&self) -> usize {
+        self.consumed
+    }
+
+    /// Returns the kept elements of the decided prefix, in element order.
+    pub fn kept(&self) -> &[Value] {
+        &self.kept
+    }
+
+    /// Consumes the outcome and returns the kept elements.
+    pub fn into_kept(self) -> Vec<Value> {
+        self.kept
+    }
+
+    /// Returns true when the loop stopped early on a deopt or error trap.
+    pub const fn deopted(&self) -> bool {
+        self.deopted
+    }
+}
+
+/// Runs a compiled arity-1 filter predicate natively over an element run.
+///
+/// This is the lean per-element boundary for the tier-2 filter seam,
+/// mirroring [`run_context_finalized_native_fold_loop`]: the
+/// [`RuntimeJitContext`] pin and the [`RuntimeTrapScope`] are set up **once**
+/// for the whole run, and each element costs one native call through the
+/// frozen `argv` entry ABI plus one thread-local trap probe. Each element
+/// (which may be a suspended thunk; the compiled predicate forces it at
+/// first strict use, exactly like the interpreted call) is passed as the
+/// entry's single argument, and a `true` result keeps the element.
+///
+/// Any transferred trap — a compiled-body deopt or a forcing evaluator error
+/// while deciding element `k` — stops the loop with `consumed == k`, as does
+/// a non-boolean predicate result (the interpreted re-run of that element
+/// reproduces the tree walk's type error byte-for-byte); the caller re-runs
+/// that element interpreted (see [`NativeFilterLoopOutcome`]).
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported
+/// native value ABI, the finalized body is not a tier-2 chain entry of arity
+/// 1, or a compiled call returns a value whose payload violates the runtime
+/// layout.
+pub fn run_context_finalized_native_filter_loop(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    elements: &[Value],
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeFilterLoopOutcome, JitCraneliftNativeCallError> {
+    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let rt = context.as_mut().as_mut_ptr();
+    let env = (env as *const EvalEnv) as *mut c_void;
+
+    let scope = RuntimeTrapScope::new();
+    let mut kept = Vec::with_capacity(elements.len());
+    for (index, element) in elements.iter().copied().enumerate() {
+        let argv = [element];
+        // SAFETY: `rt` is the pinned context over `eval`, `env` the caller-owned
+        // environment clone, the argv element a live value on `eval`'s heap; the
+        // caller keeps `body`'s module alive and the armed scope converts every trap.
+        let filter_step = unsafe { jit_cranelift_call_context_finalized_lambda_argv_entry(body, rt, env, &argv) };
+        let value = match filter_step {
+            Ok(value) => value,
+            Err(error) => {
+                if index == 0 {
+                    drop(scope);
+                    return Err(error);
+                }
+                // A mid-run boundary error abandons this element natively;
+                // the interpreted re-run of element `index` is authoritative.
+                drop(scope);
+                drop(context);
+                return Ok(NativeFilterLoopOutcome {
+                    consumed: index,
+                    kept,
+                    deopted: true,
+                });
+            }
+        };
+        if scope.take_trap().is_some() {
+            drop(scope);
+            drop(context);
+            return Ok(NativeFilterLoopOutcome {
+                consumed: index,
+                kept,
+                deopted: true,
+            });
+        }
+        match value.as_bool() {
+            Ok(true) => kept.push(element),
+            Ok(false) => {}
+            // A non-boolean predicate result is the tree walk's type error;
+            // deopt so the interpreted re-run reproduces it exactly.
+            Err(_) => {
+                drop(scope);
+                drop(context);
+                return Ok(NativeFilterLoopOutcome {
+                    consumed: index,
+                    kept,
+                    deopted: true,
+                });
+            }
+        }
+    }
+    drop(scope);
+    drop(context);
+    Ok(NativeFilterLoopOutcome {
+        consumed: elements.len(),
+        kept,
+        deopted: false,
+    })
+}
+
 /// The per-step element supply of one native fold run.
 #[derive(Clone, Copy)]
 enum FoldElementSource<'a> {

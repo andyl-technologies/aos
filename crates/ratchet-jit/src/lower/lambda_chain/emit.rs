@@ -26,6 +26,16 @@
 //!   (chain parameters occupy the frames below `depth == arity`, so a read
 //!   admitted by the scan can never alias a per-call argument frame).
 //!
+//! Landing 4 adds **let-bound locals**: a `let` inside a chain body compiles
+//! to *virtual registers*, not frames. Each binding value (validated free of
+//! own-frame reads by the scan's letrec restriction) is emitted at its first
+//! read on each dominating path — exactly where the interpreter would force
+//! the binding thunk — and cached in the per-path [`EmitState`] like
+//! parameter forces. Every coordinate under a let depth `L` (parameter
+//! reads, environment reads, callee heads) is normalized by `L` before the
+//! existing rules apply; see the [`scan`](super::scan) module docs for the
+//! coordinate model.
+//!
 //! Pinned-callee and fused-generator bodies remain **environment-free** by
 //! scan construction: their closures capture their *own* environments, which
 //! are not the boundary `env` the compiled code carries, so an env read
@@ -36,7 +46,9 @@ use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
     ir::{Function, InstBuilder, Signature, UserFuncName, condcodes::IntCC, types},
 };
-use ratchet_core::{IrArena, IrData, IrId, IrKind, syntax::BinOpKind, syntax::UnaryOpKind};
+use ratchet_core::{
+    IrArena, IrBinding, IrData, IrId, IrKind, syntax::BinOpKind, syntax::UnaryOpKind,
+};
 
 use super::super::{
     AOS_DEOPT_SYMBOL, AOS_FORCE_SYMBOL, AOS_UPVAL_GET_SYMBOL, JitLowerError,
@@ -44,7 +56,7 @@ use super::super::{
     clif_external_name_for_aos_upval_get, import_runtime_helper_function,
 };
 use super::super::lambda_rec::import_tier2_local_function;
-use super::scan::{flatten_apply_chain, require_static_bool_condition};
+use super::scan::{flatten_apply_chain, require_static_bool_condition, unwrap_thunk_alloc};
 use super::{
     JitTier2ChainScan, JitTier2EnvBoundary, JitTier2PinnedCallee, TAG_BOOL, TAG_INT,
     TIER2_DEOPT_SENTINEL_TAG,
@@ -66,7 +78,9 @@ pub(super) enum ChainInnerBody {
 }
 
 /// Shared CLIF references threaded through the fused body emitter.
-struct ChainCtx {
+struct ChainCtx<'a> {
+    /// The IR `let`-binding side-table of the compiled module.
+    bindings: &'a [IrBinding],
     /// Imported `aos_force` helper (forces parameters at first strict use).
     force: cranelift_codegen::ir::FuncRef,
     /// Imported `aos_deopt` helper called by the shared deopt block.
@@ -106,16 +120,40 @@ struct ChainCtx {
 /// The per-dominating-path evaluation state of the emitter.
 ///
 /// `forced_params` caches the forced value of each chain parameter along the
-/// current path and `forced_upvals` the forced value of each environment read
-/// (an `If` arm must not leak its forces past the join, so arms clone and
-/// restore both caches). `inline_params` is `Some` while emitting a pinned
-/// callee's (or fused generator's) inlined body, mapping the callee's own
-/// parameter reads to the already-evaluated argument pairs.
+/// current path, `forced_upvals` the forced value of each environment read
+/// (keyed by **normalized**, let-free coordinates), and `let_scopes` the
+/// virtual registers of the enclosing `let` frames (an `If` arm must not
+/// leak its forces or binding computations past the join, so arms clone and
+/// restore the whole state). `inline_params` is `Some` while emitting a
+/// pinned callee's (or fused generator's) inlined body, mapping the callee's
+/// own parameter reads to the already-evaluated argument pairs.
 #[derive(Clone)]
 struct EmitState {
     forced_params: Vec<Option<(ClifValue, ClifValue)>>,
     forced_upvals: Vec<((u32, u32), (ClifValue, ClifValue))>,
     inline_params: Option<Vec<(ClifValue, ClifValue)>>,
+    let_scopes: Vec<LetScope>,
+}
+
+/// One enclosing `let` frame compiled as virtual registers.
+#[derive(Clone)]
+struct LetScope {
+    /// The binding value expressions, by slot (`ThunkAlloc` unwrapped).
+    values: Vec<IrId>,
+    /// The per-path computation state of each slot.
+    computed: Vec<LetSlot>,
+}
+
+/// The per-path state of one `let`-binding virtual register.
+#[derive(Clone, Copy)]
+enum LetSlot {
+    /// Not computed on this path yet; computed at its first read.
+    Unevaluated,
+    /// Currently being computed: a read here is a (scan-rejected) letrec
+    /// reference, surfaced as a lowering error rather than a hang.
+    InProgress,
+    /// Computed on this path; reads reuse the register pair.
+    Ready(ClifValue, ClifValue),
 }
 
 /// Builds the compiled chain body and returns it with its self-call count.
@@ -125,6 +163,7 @@ struct EmitState {
 /// translation for environment reads.
 pub(super) fn build_inner_function(
     arena: &IrArena,
+    bindings: &[IrBinding],
     scan: &JitTier2ChainScan,
     signature: Signature,
     self_upval: Option<(u32, u32)>,
@@ -182,6 +221,7 @@ pub(super) fn build_inner_function(
     let budget = params[expected - 1];
 
     let mut ctx = ChainCtx {
+        bindings,
         force,
         deopt_fn,
         upval_get,
@@ -202,6 +242,7 @@ pub(super) fn build_inner_function(
         forced_params: vec![None; arity as usize],
         forced_upvals: Vec::new(),
         inline_params: None,
+        let_scopes: Vec::new(),
     };
 
     if let ChainInnerBody::FusedGenerator(generator_body) = body {
@@ -216,6 +257,7 @@ pub(super) fn build_inner_function(
             forced_params: vec![None; arity as usize],
             forced_upvals: Vec::new(),
             inline_params: Some(vec![index_pair]),
+            let_scopes: Vec::new(),
         };
         let element = emit_expr(&mut cursor, arena, &mut ctx, generator_body, &mut generator_state)?;
         // The generated element replaces the raw element parameter: it is by
@@ -250,7 +292,7 @@ pub(super) fn build_inner_function(
 fn emit_expr(
     cursor: &mut FuncCursor,
     arena: &IrArena,
-    ctx: &mut ChainCtx,
+    ctx: &mut ChainCtx<'_>,
     id: IrId,
     state: &mut EmitState,
 ) -> Result<(ClifValue, ClifValue), JitLowerError> {
@@ -269,33 +311,21 @@ fn emit_expr(
             let payload = cursor.ins().iconst(types::I64, i64::from(value));
             Ok((tag, payload))
         }
-        (IrKind::LocalVar, IrData::Local { slot: 0 }) => {
-            if let Some(inline) = &state.inline_params {
-                let arity = inline.len();
-                return Ok(inline[arity - 1]);
-            }
-            Ok(emit_forced_param(
-                cursor,
-                ctx,
-                (ctx.arity - 1) as usize,
-                state,
-            ))
+        (IrKind::LocalVar, IrData::Local { slot: 0 }) if state.inline_params.is_some() => {
+            let inline = state
+                .inline_params
+                .as_ref()
+                .ok_or(JitLowerError::MissingIrBody { body: id })?;
+            let arity = inline.len();
+            Ok(inline[arity - 1])
         }
-        (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 })
-            if state.inline_params.is_none() && depth < ctx.arity =>
-        {
-            // Chain parameter j at depth K-1-j: index = K-1-depth.
-            Ok(emit_forced_param(
-                cursor,
-                ctx,
-                (ctx.arity - 1 - depth) as usize,
-                state,
-            ))
+        (IrKind::LocalVar, IrData::Local { slot }) if state.inline_params.is_none() => {
+            emit_frame_read(cursor, arena, ctx, id, 0, slot, state)
         }
         (IrKind::UpvalVar, IrData::Upval { depth, slot })
-            if state.inline_params.is_none() && depth >= ctx.arity =>
+            if state.inline_params.is_none() =>
         {
-            emit_forced_upval(cursor, ctx, depth, slot, state)
+            emit_frame_read(cursor, arena, ctx, id, depth, slot, state)
         }
         (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 })
             if state.inline_params.is_some() =>
@@ -313,6 +343,42 @@ fn emit_expr(
                     kind: IrKind::UpvalVar,
                 })
             }
+        }
+        (
+            IrKind::Let,
+            IrData::Let {
+                bindings: run,
+                body,
+                ..
+            },
+        ) => {
+            // A pinned callee (or fused generator) body is let-free by
+            // validation; a let here means the classification drifted.
+            if state.inline_params.is_some() {
+                return Err(JitLowerError::UnsupportedArithOperand {
+                    operand: id,
+                    kind: IrKind::Let,
+                });
+            }
+            let start = run.start as usize;
+            let Some(run_bindings) = start
+                .checked_add(run.len as usize)
+                .and_then(|end| ctx.bindings.get(start..end))
+            else {
+                return Err(JitLowerError::UnsupportedArithOperand {
+                    operand: id,
+                    kind: IrKind::Let,
+                });
+            };
+            let mut values = Vec::with_capacity(run_bindings.len());
+            for binding in run_bindings {
+                values.push(unwrap_thunk_alloc(arena, binding.value)?);
+            }
+            let computed = vec![LetSlot::Unevaluated; values.len()];
+            state.let_scopes.push(LetScope { values, computed });
+            let result = emit_expr(cursor, arena, ctx, body, state);
+            state.let_scopes.pop();
+            result
         }
         (IrKind::BinOp, IrData::Binary { op, lhs, rhs }) => {
             emit_binop(cursor, arena, ctx, op, lhs, rhs, state)
@@ -337,10 +403,92 @@ fn emit_expr(
     }
 }
 
+/// Emits one frame read (`LocalVar` is distance 0, `UpvalVar { depth }`
+/// distance `depth`) under the current let context.
+///
+/// Mirrors the scan's coordinate model: a distance below the let depth is a
+/// `let`-binding virtual register, the next `arity` distances are chain
+/// parameters, and everything deeper is an environment read at the
+/// normalized (let-free) depth.
+fn emit_frame_read(
+    cursor: &mut FuncCursor,
+    arena: &IrArena,
+    ctx: &mut ChainCtx<'_>,
+    at: IrId,
+    distance: u32,
+    slot: u32,
+    state: &mut EmitState,
+) -> Result<(ClifValue, ClifValue), JitLowerError> {
+    let let_depth = state.let_scopes.len() as u32;
+    if distance < let_depth {
+        let scope_index = (let_depth - 1 - distance) as usize;
+        return emit_let_binding(cursor, arena, ctx, at, scope_index, slot as usize, state);
+    }
+    let normalized = distance - let_depth;
+    if normalized < ctx.arity {
+        if slot != 0 {
+            return Err(JitLowerError::UnsupportedArithOperand {
+                operand: at,
+                kind: IrKind::UpvalVar,
+            });
+        }
+        // Chain parameter j at normalized depth K-1-j: index = K-1-depth.
+        return Ok(emit_forced_param(
+            cursor,
+            ctx,
+            (ctx.arity - 1 - normalized) as usize,
+            state,
+        ));
+    }
+    emit_forced_upval(cursor, ctx, normalized, slot, state)
+}
+
+/// Emits a `let`-binding read as a compute-at-first-use virtual register.
+///
+/// The binding value expression is emitted — in the context of its own let
+/// frame, with the inner scopes temporarily set aside — at the first read on
+/// each dominating path, exactly where the interpreter would force the
+/// binding thunk, and the resulting register pair is cached in the path
+/// state for later reads. The scan's letrec restriction guarantees the value
+/// reads no slot of its own frame, so the recursion terminates; the
+/// `InProgress` marker turns any drift into a lowering error rather than a
+/// hang.
+fn emit_let_binding(
+    cursor: &mut FuncCursor,
+    arena: &IrArena,
+    ctx: &mut ChainCtx<'_>,
+    at: IrId,
+    scope_index: usize,
+    slot: usize,
+    state: &mut EmitState,
+) -> Result<(ClifValue, ClifValue), JitLowerError> {
+    let reject = JitLowerError::UnsupportedArithOperand {
+        operand: at,
+        kind: IrKind::UpvalVar,
+    };
+    let Some(scope) = state.let_scopes.get(scope_index) else {
+        return Err(reject);
+    };
+    let value = match scope.computed.get(slot).copied() {
+        Some(LetSlot::Ready(tag, payload)) => return Ok((tag, payload)),
+        Some(LetSlot::InProgress) | None => return Err(reject),
+        Some(LetSlot::Unevaluated) => scope.values[slot],
+    };
+    state.let_scopes[scope_index].computed[slot] = LetSlot::InProgress;
+    // The binding value's coordinates count its own frame as innermost:
+    // emit it with the inner scopes set aside, then restore them.
+    let inner_scopes = state.let_scopes.split_off(scope_index + 1);
+    let emitted = emit_expr(cursor, arena, ctx, value, state);
+    state.let_scopes.extend(inner_scopes);
+    let pair = emitted?;
+    state.let_scopes[scope_index].computed[slot] = LetSlot::Ready(pair.0, pair.1);
+    Ok(pair)
+}
+
 /// Emits a chain-parameter read, forcing it at first strict use on this path.
 fn emit_forced_param(
     cursor: &mut FuncCursor,
-    ctx: &ChainCtx,
+    ctx: &ChainCtx<'_>,
     index: usize,
     state: &mut EmitState,
 ) -> (ClifValue, ClifValue) {
@@ -355,14 +503,16 @@ fn emit_forced_param(
 
 /// Emits an environment read beyond the chain parameters.
 ///
-/// The body-relative `depth` is translated onto the boundary `env` pointer by
-/// subtracting the seam's frame skew (see [`ChainCtx::env_skew`]), read
-/// through `aos_upval_get`, and forced at first strict use on this dominating
-/// path — the same discipline as chain parameters, with the forced pair
-/// cached per `(depth, slot)` coordinate.
+/// `depth` is the **normalized** (let-free) body-relative depth; it is
+/// translated onto the boundary `env` pointer by subtracting the seam's
+/// frame skew (see [`ChainCtx::env_skew`]), read through `aos_upval_get`,
+/// and forced at first strict use on this dominating path — the same
+/// discipline as chain parameters, with the forced pair cached per
+/// normalized `(depth, slot)` coordinate so reads of one slot from
+/// different let depths share the register.
 fn emit_forced_upval(
     cursor: &mut FuncCursor,
-    ctx: &mut ChainCtx,
+    ctx: &mut ChainCtx<'_>,
     depth: u32,
     slot: u32,
     state: &mut EmitState,
@@ -409,7 +559,7 @@ fn emit_forced_upval(
 /// evaluator error as a trap the boundary converts to a deopt.
 fn emit_force_int_fast_path(
     cursor: &mut FuncCursor,
-    ctx: &ChainCtx,
+    ctx: &ChainCtx<'_>,
     raw_tag: ClifValue,
     raw_payload: ClifValue,
 ) -> (ClifValue, ClifValue) {
@@ -436,7 +586,7 @@ fn emit_force_int_fast_path(
 fn emit_binop(
     cursor: &mut FuncCursor,
     arena: &IrArena,
-    ctx: &mut ChainCtx,
+    ctx: &mut ChainCtx<'_>,
     op: BinOpKind,
     lhs: IrId,
     rhs: IrId,
@@ -522,7 +672,7 @@ fn emit_binop(
 fn emit_neg(
     cursor: &mut FuncCursor,
     arena: &IrArena,
-    ctx: &mut ChainCtx,
+    ctx: &mut ChainCtx<'_>,
     operand: IrId,
     state: &mut EmitState,
 ) -> Result<(ClifValue, ClifValue), JitLowerError> {
@@ -540,7 +690,7 @@ fn emit_neg(
 fn emit_if(
     cursor: &mut FuncCursor,
     arena: &IrArena,
-    ctx: &mut ChainCtx,
+    ctx: &mut ChainCtx<'_>,
     cond: IrId,
     then_id: IrId,
     else_id: IrId,
@@ -587,7 +737,7 @@ fn emit_if(
 fn emit_call_chain(
     cursor: &mut FuncCursor,
     arena: &IrArena,
-    ctx: &mut ChainCtx,
+    ctx: &mut ChainCtx<'_>,
     id: IrId,
     state: &mut EmitState,
 ) -> Result<(ClifValue, ClifValue), JitLowerError> {
@@ -599,7 +749,11 @@ fn emit_call_chain(
             kind: IrKind::Apply,
         });
     }
-    let (upval, arguments) = flatten_apply_chain(arena, id, ctx.arity)?;
+    let let_depth = state.let_scopes.len() as u32;
+    let (raw_upval, arguments) = flatten_apply_chain(arena, id, ctx.arity + let_depth)?;
+    // Callee classifications are recorded in normalized (let-free) coords;
+    // strip the enclosing let depth before matching.
+    let upval = (raw_upval.0 - let_depth, raw_upval.1);
 
     if ctx.self_upval == Some(upval) {
         if arguments.len() as u32 != ctx.arity {
@@ -638,6 +792,9 @@ fn emit_call_chain(
         forced_params: state.forced_params.clone(),
         forced_upvals: state.forced_upvals.clone(),
         inline_params: Some(argument_pairs),
+        // Pinned bodies are let-free by validation; argument emission above
+        // already ran in the caller's let context.
+        let_scopes: Vec::new(),
     };
     let result = emit_expr(cursor, arena, ctx, pinned.body, &mut inline_state)?;
     state.forced_params = inline_state.forced_params;
@@ -648,7 +805,7 @@ fn emit_call_chain(
 /// Emits one direct self-call with its depth guard and sentinel propagation.
 fn emit_self_call(
     cursor: &mut FuncCursor,
-    ctx: &mut ChainCtx,
+    ctx: &mut ChainCtx<'_>,
     argument_pairs: &[(ClifValue, ClifValue)],
 ) -> Result<(ClifValue, ClifValue), JitLowerError> {
     let has_budget = cursor

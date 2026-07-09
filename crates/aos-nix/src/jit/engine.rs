@@ -118,10 +118,13 @@ pub struct NixJitTier1Engine {
     tier2_fold: RefCell<tier2_fold::Tier2FoldState>,
     /// Tier-2 fused-list-generation bookkeeping (see [`tier2_fold_gen`]).
     tier2_fold_gen: RefCell<tier2_fold_gen::Tier2FoldGenState>,
+    /// Tier-2 filter-seam bookkeeping (see [`tier2_filter`]).
+    tier2_filter: RefCell<tier2_filter::Tier2FilterState>,
 }
 
 mod tier2;
 mod tier2_chain;
+mod tier2_filter;
 mod tier2_fold;
 mod tier2_fold_gen;
 
@@ -257,6 +260,7 @@ impl NixJitTier1Engine {
             tier2: RefCell::new(tier2::Tier2EngineState::default()),
             tier2_fold: RefCell::new(tier2_fold::Tier2FoldState::default()),
             tier2_fold_gen: RefCell::new(tier2_fold_gen::Tier2FoldGenState::default()),
+            tier2_filter: RefCell::new(tier2_filter::Tier2FilterState::default()),
         })
     }
 
@@ -782,6 +786,18 @@ impl Tier1Engine for NixJitTier1Engine {
         span: Span,
     ) -> ratchet_oracle::eval::Tier2FoldHook {
         self.on_foldl_strict_impl(eval, op, lambda, accumulator, elements, id, span)
+    }
+
+    fn on_filter_strict(
+        &self,
+        eval: &mut TreeWalk,
+        predicate: Value,
+        lambda: &ratchet_oracle::eval::heap::EvalLambda,
+        elements: &[Value],
+        id: IrId,
+        span: Span,
+    ) -> ratchet_oracle::eval::Tier2FilterHook {
+        self.on_filter_strict_impl(eval, predicate, lambda, elements, id, span)
     }
 
     fn on_foldl_strict_genlist(

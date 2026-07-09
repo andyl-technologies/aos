@@ -161,7 +161,7 @@ impl NixJitTier1Engine {
         // Per-fold dispatch guards (never per element), identical to the
         // plain fold seam: the generator needs no guard beyond its def-site
         // key (call-free bodies are environment-free).
-        if !fold_pins_still_valid(eval, op_lambda, &entry.pinned) {
+        if !fold_pins_still_valid(eval, op_lambda, &entry.pinned, 2) {
             return fold_gen_continued(promoted, false);
         }
         if eval.tier2_call_depth_headroom() < TIER2_FOLD_MIN_HEADROOM {
@@ -224,6 +224,7 @@ impl NixJitTier1Engine {
         let budget = self.tier2.borrow().budget;
         let Ok(lowering) = lower_tier2_fold_genlist(
             arena,
+            &ir.bindings,
             &resolved.scan,
             &resolved.pinned_callees,
             generator_body,

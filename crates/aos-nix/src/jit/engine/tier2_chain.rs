@@ -52,7 +52,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use ratchet_core::{IrArena, IrData, IrId, IrKind};
+use ratchet_core::{IrArena, IrBinding, IrData, IrId, IrKind};
 use ratchet_jit::{
     JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
     JitTier2ChainLowering, JitTier2EnvBoundary, JitTier2PinnedCallee, TIER2_MAX_CHAIN_ARITY,
@@ -212,7 +212,7 @@ impl NixJitTier1Engine {
         };
         let arena = &ir.arena;
         let mut candidates = Vec::new();
-        collect_chain_head_candidates(arena, lambda.body(), &mut candidates);
+        collect_chain_head_candidates(arena, &ir.bindings, lambda.body(), 0, &mut candidates);
         if candidates.is_empty() {
             return ChainPreparation::Structural;
         }
@@ -243,6 +243,7 @@ impl NixJitTier1Engine {
             }
             let Ok(scan) = scan_tier2_curried_chain(
                 arena,
+                &ir.bindings,
                 resolved_lambda.pattern(),
                 resolved_lambda.body(),
             ) else {
@@ -315,6 +316,7 @@ impl NixJitTier1Engine {
         // (root env + K-1 argument frames), so env reads translate by one.
         let Ok(lowering) = lower_tier2_curried_chain(
             arena,
+            &ir.bindings,
             &scan,
             Some(self_upval),
             &pinned_callees,
@@ -541,6 +543,41 @@ mod tests {
         );
     }
 
+    /// A self-recursive chain whose body nests the self-call inside a `let`
+    /// compiles: candidate discovery, callee classification, and emission
+    /// all agree on normalized (let-free) coordinates.
+    ///
+    /// The recursion keeps its arguments chain-free (each level forces its
+    /// result on return and passes `a` through unchanged) so the oracle's
+    /// interpreted run stays within the debug test-thread stack — the same
+    /// pre-existing interpreter depth caveat as the `addTo` fixture above.
+    #[test]
+    fn let_nested_self_call_chain_promotes_and_matches() {
+        let source = "let f = a: n: if n < 1 then a \
+             else (let s = n * n + a; in s - n * n - a + 1 + f a (n - 1)); \
+             in f 5 16";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(
+            oracle.raw_eq(native),
+            "let-nested chain changed a result: oracle {oracle:?} vs native {native:?}"
+        );
+        assert!(
+            stats.tier2_promoted() >= 1,
+            "the let-nested chain must promote, got {stats:?}"
+        );
+        assert!(
+            stats.tier2_dispatched() >= 1,
+            "the let-nested chain must dispatch natively, got {stats:?}"
+        );
+        assert_eq!(
+            stats.tier2_deopted(),
+            0,
+            "an all-integer let-nested chain must never deopt, got {stats:?}"
+        );
+    }
+
     /// An escaped partial application still dispatches correctly: the guard
     /// verifies the actual argument-frame spine, and `p 3` is exactly
     /// `sub 10 3` under it.
@@ -564,10 +601,16 @@ mod tests {
 /// A permissive pre-pass for root discovery only: it walks the shapes the
 /// fused grammar can contain, flattens every `Apply` chain headed by an
 /// upvalue read, and ignores anything else (an unsupported node simply fails
-/// the authoritative scan later).
+/// the authoritative scan later). `let` frames are descended (body and
+/// binding values alike) with `let_depth` tracking so heads are recorded in
+/// **normalized** (let-free) coordinates — the same normalization the scan
+/// applies to callee sites — and a head shallower than the enclosing lets
+/// (a `let`-binding call) is skipped rather than misread.
 fn collect_chain_head_candidates(
     arena: &IrArena,
+    bindings: &[IrBinding],
     id: IrId,
+    let_depth: u32,
     candidates: &mut Vec<ChainHeadCandidate>,
 ) {
     let Some(node) = arena.node(id).copied() else {
@@ -575,8 +618,8 @@ fn collect_chain_head_candidates(
     };
     match (node.kind, node.data) {
         (IrKind::BinOp, IrData::Binary { lhs, rhs, .. }) => {
-            collect_chain_head_candidates(arena, lhs, candidates);
-            collect_chain_head_candidates(arena, rhs, candidates);
+            collect_chain_head_candidates(arena, bindings, lhs, let_depth, candidates);
+            collect_chain_head_candidates(arena, bindings, rhs, let_depth, candidates);
         }
         (
             IrKind::If,
@@ -586,12 +629,37 @@ fn collect_chain_head_candidates(
                 third,
             },
         ) => {
-            collect_chain_head_candidates(arena, first, candidates);
-            collect_chain_head_candidates(arena, second, candidates);
-            collect_chain_head_candidates(arena, third, candidates);
+            collect_chain_head_candidates(arena, bindings, first, let_depth, candidates);
+            collect_chain_head_candidates(arena, bindings, second, let_depth, candidates);
+            collect_chain_head_candidates(arena, bindings, third, let_depth, candidates);
         }
         (IrKind::ThunkAlloc, IrData::Node(inner)) => {
-            collect_chain_head_candidates(arena, inner, candidates);
+            collect_chain_head_candidates(arena, bindings, inner, let_depth, candidates);
+        }
+        (
+            IrKind::Let,
+            IrData::Let {
+                bindings: run,
+                body,
+                ..
+            },
+        ) => {
+            let start = run.start as usize;
+            if let Some(run_bindings) = start
+                .checked_add(run.len as usize)
+                .and_then(|end| bindings.get(start..end))
+            {
+                for binding in run_bindings {
+                    collect_chain_head_candidates(
+                        arena,
+                        bindings,
+                        binding.value,
+                        let_depth + 1,
+                        candidates,
+                    );
+                }
+            }
+            collect_chain_head_candidates(arena, bindings, body, let_depth + 1, candidates);
         }
         (IrKind::Apply, _) => {
             let mut arguments = Vec::new();
@@ -605,9 +673,9 @@ fn collect_chain_head_candidates(
                         arguments.push(second);
                         cursor = first;
                     }
-                    (IrKind::UpvalVar, IrData::Upval { depth, slot }) => {
+                    (IrKind::UpvalVar, IrData::Upval { depth, slot }) if depth >= let_depth => {
                         let candidate = ChainHeadCandidate {
-                            upval: (depth, slot),
+                            upval: (depth - let_depth, slot),
                             arity: arguments.len() as u32,
                         };
                         if !candidates.contains(&candidate) {
@@ -619,7 +687,7 @@ fn collect_chain_head_candidates(
                 }
             }
             for argument in arguments {
-                collect_chain_head_candidates(arena, argument, candidates);
+                collect_chain_head_candidates(arena, bindings, argument, let_depth, candidates);
             }
         }
         _ => {}

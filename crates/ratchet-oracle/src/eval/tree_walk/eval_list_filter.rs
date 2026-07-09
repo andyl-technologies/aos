@@ -877,7 +877,26 @@ impl TreeWalk {
                 span,
             )
         })?;
-        for element in elements {
+        // Tier-2 filter seam: consult the engine at most twice — before the
+        // first element, and once more after one interpreted iteration has
+        // forced the predicate's callee bindings (see `Tier2FilterHook`). A
+        // native run advances the loop past its decided prefix, appending
+        // the kept subsequence; everything else proceeds through the
+        // interpreted steps byte-for-byte unchanged.
+        let mut index = 0usize;
+        let mut filter_consults = 0u32;
+        while index < elements.len() {
+            if filter_consults < 2 && self.tier1_engine.is_some() {
+                filter_consults += 1;
+                if let Some((consumed, kept)) =
+                    self.try_tier2_filter(id, span, predicate, &elements[index..])
+                {
+                    selected.extend(kept);
+                    index += consumed;
+                    continue;
+                }
+            }
+            let element = elements[index];
             let result = self.apply_lambda_value(
                 id,
                 span,
@@ -902,6 +921,7 @@ impl TreeWalk {
             if self.expect_bool(predicate_id, result, predicate_span)? {
                 selected.push(element);
             }
+            index += 1;
         }
 
         self.alloc_tree_walk_list(id, span, NixList::new(selected))

@@ -566,6 +566,11 @@ mod tests {
         "uns",
         "afe { jit_cranelift_call_context_finalized_lambda_argv_entry(body, rt, env, &argv) };"
     );
+    const CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE: &str = concat!(
+        "let filter_step = ",
+        "uns",
+        "afe { jit_cranelift_call_context_finalized_lambda_argv_entry(body, rt, env, &argv) };"
+    );
     const PRIMOP_CALL_FN_TYPE_LINE: &str = concat!(
         "uns",
         "afe ",
@@ -1014,6 +1019,7 @@ mod tests {
                 || trimmed == CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_FOLD_STEP_JIT_BOUNDARY_LINE
+                || trimmed == CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE
         } else {
             false
         }
@@ -1413,6 +1419,11 @@ mod unchecked_cfg;
             trimmed_line_occurrences(&native_call, CONTEXT_FINALIZED_FOLD_STEP_JIT_BOUNDARY_LINE),
             1,
             "shared-context finalized native fold-step jit boundary must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&native_call, CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE),
+            1,
+            "shared-context finalized native filter-step jit boundary must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&env, ENV_GET_FN_TYPE_LINE),
@@ -1976,6 +1987,11 @@ mod unchecked_cfg;
             &native_call_lines,
             CONTEXT_FINALIZED_FOLD_STEP_JIT_BOUNDARY_LINE,
             "shared-context finalized native fold-step jit boundary must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &native_call_lines,
+            CONTEXT_FINALIZED_FILTER_STEP_JIT_BOUNDARY_LINE,
+            "shared-context finalized native filter-step jit boundary must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &lines,

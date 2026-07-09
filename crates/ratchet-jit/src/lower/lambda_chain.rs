@@ -65,7 +65,7 @@ use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
     ir::{Function, InstBuilder, MemFlags, Signature, condcodes::IntCC, types},
 };
-use ratchet_core::{IrArena, IrId, runtime_lambda_argv_call_signature};
+use ratchet_core::{IrArena, IrBinding, IrId, runtime_lambda_argv_call_signature};
 
 use super::{
     JitLowerError, append_entry_block_params, clif_name_for_ir_root, verify_clif_function,
@@ -113,7 +113,11 @@ pub struct JitTier2ChainCalleeSite {
 /// into the self-callee and pinned callees before lowering.
 #[derive(Clone, Debug)]
 pub struct JitTier2ChainScan {
-    /// The chain arity K (between 2 and [`TIER2_MAX_CHAIN_ARITY`]).
+    /// The chain arity K.
+    ///
+    /// Between 2 and [`TIER2_MAX_CHAIN_ARITY`] for a chain produced by
+    /// [`scan_tier2_curried_chain`]; exactly 1 for a filter predicate
+    /// produced by [`scan_tier2_unary_predicate`].
     arity: u32,
     /// The innermost lambda's parameter pattern node.
     inner_pattern: IrId,
@@ -209,7 +213,7 @@ mod fold_gen;
 mod scan;
 
 pub use fold_gen::lower_tier2_fold_genlist;
-pub use scan::{scan_tier2_curried_chain, scan_tier2_pinned_callee};
+pub use scan::{scan_tier2_curried_chain, scan_tier2_pinned_callee, scan_tier2_unary_predicate};
 
 /// A verified fused lowering of one curried lambda chain.
 ///
@@ -270,7 +274,9 @@ impl JitTier2ChainLowering {
 
 /// Lowers a scanned curried chain into verified fused tier-2 CLIF.
 ///
-/// `scan` is the structural scan of the chain, `self_upval` the callee site
+/// `bindings` is the compiled module's `let`-binding side-table (`Ir::bindings`,
+/// read when the body contains `let` frames), `scan` the structural scan of
+/// the chain, `self_upval` the callee site
 /// the engine resolved to the chain's own def-site (its chains must be full
 /// arity; `None` for a non-recursive fold operator), and `pinned` the resolved
 /// pinned callees for every remaining callee site. `env_boundary` fixes the
@@ -288,6 +294,7 @@ impl JitTier2ChainLowering {
 /// generated function.
 pub fn lower_tier2_curried_chain(
     arena: &IrArena,
+    bindings: &[IrBinding],
     scan: &JitTier2ChainScan,
     self_upval: Option<(u32, u32)>,
     pinned: &[JitTier2PinnedCallee],
@@ -299,6 +306,7 @@ pub fn lower_tier2_curried_chain(
 
     let (inner, self_call_count) = emit::build_inner_function(
         arena,
+        bindings,
         scan,
         inner_signature.clone(),
         self_upval,

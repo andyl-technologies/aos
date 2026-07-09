@@ -238,6 +238,66 @@ impl TreeWalk {
         }
     }
 
+    /// Consults the tier-2 engine for one run of a strict `builtins.filter`.
+    ///
+    /// Called by the filter loop with the remaining element run (at most
+    /// twice per filter call — see [`Tier2FilterHook`]). Returns
+    /// `Some((consumed, kept))` when native code decided `consumed` leading
+    /// elements — `kept` is the kept subsequence of that prefix, in element
+    /// order — and `None` when the loop must proceed interpreted at its
+    /// current element (no engine, a non-lambda predicate, a short remaining
+    /// run, no dispatch, or a deopt before the first element).
+    ///
+    /// Runs shorter than [`TIER2_FOLDL_CONSULT_FLOOR`] never reach the
+    /// engine, for the same reason as the fold seam: package evaluation
+    /// performs thousands of short library filters whose per-consult cost (a
+    /// lambda-record clone and an engine probe) would be pure overhead.
+    pub(super) fn try_tier2_filter(
+        &mut self,
+        id: IrId,
+        span: Span,
+        predicate: Value,
+        elements: &[Value],
+    ) -> Option<(usize, Vec<Value>)> {
+        if elements.len() < TIER2_FOLDL_CONSULT_FLOOR || predicate.tag() != ValueTag::Lambda {
+            return None;
+        }
+        let engine = self.tier1_engine.clone()?;
+        let lambda = self.heap.clone_lambda(predicate).ok()?;
+        match engine.on_filter_strict(self, predicate, &lambda, elements, id, span) {
+            Tier2FilterHook::Ran {
+                consumed,
+                kept,
+                deopted,
+                promoted,
+            } => {
+                if promoted {
+                    self.increment_tier2_promoted();
+                }
+                if deopted {
+                    self.increment_tier2_deopted();
+                }
+                if consumed == 0 {
+                    return None;
+                }
+                self.increment_tier2_dispatched();
+                Some((consumed.min(elements.len()), kept))
+            }
+            Tier2FilterHook::Continued {
+                promoted,
+                blacklisted,
+            } => {
+                if promoted {
+                    self.increment_tier2_promoted();
+                }
+                if blacklisted {
+                    self.increment_tier2_blacklisted();
+                }
+                None
+            }
+        }
+    }
+
     /// Consults the tier-2 engine for one run of a fused `genList` fold.
     ///
     /// Called by the fused index loop (see

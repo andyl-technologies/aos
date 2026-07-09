@@ -128,6 +128,40 @@ pub enum Tier2FoldHook {
     },
 }
 
+/// The outcome of consulting a [`Tier1Engine`] at a strict `builtins.filter`.
+///
+/// The engine is consulted at most twice per `filter` call (once before the
+/// first element and once after one interpreted iteration, which forces the
+/// predicate's callee bindings and lets transient promotion guards pass). A
+/// `Ran` outcome reports that published tier-2 native code decided a prefix
+/// of the remaining elements, returning the kept subsequence of that prefix;
+/// the interpreted loop resumes after the prefix. `Continued` leaves the loop
+/// untouched.
+#[derive(Debug)]
+pub enum Tier2FilterHook {
+    /// Native code decided `consumed` leading elements of the remaining run.
+    Ran {
+        /// The number of leading elements the native loop decided.
+        consumed: usize,
+        /// The kept elements of the decided prefix, in element order.
+        kept: Vec<Value>,
+        /// True when the native loop stopped early on a deopt; the element at
+        /// `consumed` (and everything after it) must run interpreted.
+        deopted: bool,
+        /// True when this consult compiled and published a filter entry.
+        promoted: bool,
+    },
+    /// No native filter ran; the interpreted loop proceeds unchanged.
+    Continued {
+        /// True when this consult compiled and published a filter entry
+        /// (whose dispatch guard did not pass yet).
+        promoted: bool,
+        /// True when this consult permanently blacklisted the predicate's
+        /// def-site for filter compilation.
+        blacklisted: bool,
+    },
+}
+
 /// A pluggable tier-1 JIT engine consulted by the serial force path.
 ///
 /// The tree-walk evaluator owns no JIT machinery — the Cranelift lowerer,
@@ -202,6 +236,32 @@ pub trait Tier1Engine: fmt::Debug {
     ) -> Tier2FoldHook {
         let _ = (eval, op, lambda, accumulator, elements, id, span);
         Tier2FoldHook::Continued {
+            promoted: false,
+            blacklisted: false,
+        }
+    }
+
+    /// Consulted by the strict `builtins.filter` loop for one element run.
+    ///
+    /// This is the tier-2 filter seam: `predicate` is the filter predicate (a
+    /// [`Value::is_lambda`] closure), `lambda` its cloned heap record, and
+    /// `elements` the remaining raw element run. Like the fold seam, the loop
+    /// consults at most twice per filter call, so an engine pays no
+    /// per-element hook tax; a compiled predicate returns
+    /// [`Tier2FilterHook::Ran`] after natively deciding a prefix of
+    /// `elements`, carrying the kept subsequence of that prefix. The default
+    /// implementation leaves the loop untouched.
+    fn on_filter_strict(
+        &self,
+        eval: &mut TreeWalk,
+        predicate: Value,
+        lambda: &crate::eval::heap::EvalLambda,
+        elements: &[Value],
+        id: IrId,
+        span: Span,
+    ) -> Tier2FilterHook {
+        let _ = (eval, predicate, lambda, elements, id, span);
+        Tier2FilterHook::Continued {
             promoted: false,
             blacklisted: false,
         }

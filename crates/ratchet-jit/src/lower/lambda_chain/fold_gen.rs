@@ -34,7 +34,7 @@
 //!
 //! [`scan_tier2_pinned_callee`]: super::scan_tier2_pinned_callee
 
-use ratchet_core::{IrArena, IrId, runtime_lambda_argv_call_signature};
+use ratchet_core::{IrArena, IrBinding, IrId, runtime_lambda_argv_call_signature};
 
 use super::super::{JitLowerError, verify_clif_function};
 use super::emit::{ChainInnerBody, build_inner_function};
@@ -64,6 +64,7 @@ use crate::abi::clif_signature_for_runtime_call;
 /// verifier errors of [`lower_tier2_curried_chain`](super::lower_tier2_curried_chain).
 pub fn lower_tier2_fold_genlist(
     arena: &IrArena,
+    bindings: &[IrBinding],
     scan: &JitTier2ChainScan,
     pinned: &[JitTier2PinnedCallee],
     generator_body: IrId,
@@ -80,6 +81,7 @@ pub fn lower_tier2_fold_genlist(
 
     let (inner, self_call_count) = build_inner_function(
         arena,
+        bindings,
         scan,
         inner_signature.clone(),
         None,
