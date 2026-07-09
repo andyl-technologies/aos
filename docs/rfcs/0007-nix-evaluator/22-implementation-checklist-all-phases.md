@@ -10037,7 +10037,11 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       megamorphic plus monomorphic site states, and keep slow-select shaped
       hit/miss telemetry. This does not cover native lowering or `.drv` parity.
 - [x] Current heap-resident shaped record select path (`AOS_NIX_SHAPES=record`,
-      knob-gated pending the measured default decision): because `AttrShape`
+      knob-gated; the measured default stays `transient` — the record mode's
+      clean serial win on attr-fixpoint (cold/warm -7%/-11%, other benchmarks
+      within noise) is offset by a small consistent `K = 4` loss on short
+      package evals (zlib warm up to +20%) where the baseline disables
+      projection entirely): because `AttrShape`
       slots and `FlatAttrs` storage are both symbol-sorted, the flat entry
       array stored in the heap record *is* the shaped slot layout, and the
       projected `ShapeId` already stored in `EvalHeapAttrsMetadata` at

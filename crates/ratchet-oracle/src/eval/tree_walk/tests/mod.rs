@@ -220,6 +220,7 @@ use support::*;
 use support::lower;
 
 mod analysis_soundness;
+mod attr_shape_modes;
 mod attrs_1;
 mod attrs_2;
 mod attrs_3;

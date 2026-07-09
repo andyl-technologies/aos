@@ -1271,6 +1271,14 @@ pub enum TreeWalkErrorKind {
         /// The underlying shaped select-cache failure.
         source: ShapedSelectError,
     },
+    /// A record select-cache operation failed.
+    #[error("record select cache failed at node {id:?}: {source}")]
+    RecordSelectCache {
+        /// The select node id.
+        id: IrId,
+        /// The underlying record select-cache failure.
+        source: RecordSelectError,
+    },
     /// A HAMT attribute-set operation failed.
     #[error("HAMT attribute-set operation failed at node {id:?}: {source}")]
     HamtAttr {

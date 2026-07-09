@@ -766,6 +766,15 @@ impl TreeWalkOptions {
         self.parallel_shape_projection = enabled;
     }
 
+    /// Replaces the hidden-class shape strategy for heap attrset records.
+    ///
+    /// See [`AttrShapeMode`] for the modes. The strategy is byte-neutral:
+    /// it changes only how attrset selects and shape projection are served,
+    /// never the produced values or `.drv` bytes.
+    pub fn set_attr_shape_mode(&mut self, mode: AttrShapeMode) {
+        self.attr_shape_mode = mode;
+    }
+
     /// Enables or disables publishing promoted tier-1 native entries for dispatch.
     ///
     /// When disabled (the default), `publish_tier1_slot` is a no-op and installed
@@ -1028,6 +1037,11 @@ impl TreeWalkOptions {
     /// more than shaped lookups save, and the gap widens with worker count.
     pub const fn parallel_shape_projection(&self) -> bool {
         self.parallel_shape_projection
+    }
+
+    /// Returns the hidden-class shape strategy for heap attrset records.
+    pub const fn attr_shape_mode(&self) -> AttrShapeMode {
+        self.attr_shape_mode
     }
 
     /// Returns whether promoted tier-1 native entries may be published for dispatch.

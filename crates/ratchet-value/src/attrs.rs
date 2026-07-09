@@ -117,6 +117,16 @@ impl FlatAttrs {
         let len = entries.len();
         let len_u32 = u32::try_from(len).map_err(|_| AttrError::TooManyEntries { len })?;
 
+        // One- and two-entry attrsets order trivially by comparing resolved
+        // key bytes directly, with no symbol-table rank reads. This matters
+        // beyond the constant factor: the rank view rebuilds in `O(symbols)`
+        // on the first rank read after any intern, so update chains that
+        // intern a fresh key and then build a small `{ key = v; }` literal
+        // each iteration would otherwise pay a full rebuild per layer.
+        if len <= 2 {
+            return Self::new_small(entries, symbols);
+        }
+
         // Sort a permutation of source positions by interned symbol id rather
         // than the entries themselves. Retaining each binding's construction
         // position lets the source-order slots fall out of the inverse
@@ -187,6 +197,57 @@ impl FlatAttrs {
         })
     }
 
+    /// Builds a one- or two-entry attrset without symbol-table rank reads.
+    ///
+    /// Preserves [`FlatAttrs::new`]'s error semantics: duplicate keys are
+    /// rejected before unresolved symbols, and every key must resolve through
+    /// `symbols`. Ordering by resolved raw key bytes is definitionally
+    /// identical to ordering by the table's lexicographic ranks.
+    fn new_small(mut entries: Vec<AttrEntry>, symbols: &SymbolTable) -> Result<Self, AttrError> {
+        debug_assert!(entries.len() <= 2);
+        if entries.len() == 2 && entries[0].key == entries[1].key {
+            return Err(AttrError::DuplicateKey {
+                key: entries[0].key,
+            });
+        }
+        let resolve = |key: Symbol| symbols.resolve(key).ok_or(AttrError::UnknownSymbol { key });
+        let mut source_order = Vec::new();
+        let mut iteration_order = Vec::new();
+        let reserve = |slots: &mut Vec<u32>, len: usize| {
+            slots
+                .try_reserve_exact(len)
+                .map_err(|_| AttrError::AllocationFailed { entries: len })
+        };
+        reserve(&mut source_order, entries.len())?;
+        reserve(&mut iteration_order, entries.len())?;
+        match entries.len() {
+            0 => {}
+            1 => {
+                resolve(entries[0].key)?;
+                source_order.push(0);
+                iteration_order.push(0);
+            }
+            _ => {
+                let first = resolve(entries[0].key)?;
+                let second = resolve(entries[1].key)?;
+                // Storage stays sorted by symbol id; permutations are derived
+                // from which input entry sorts first on each axis.
+                let symbol_swap = entries[0].key > entries[1].key;
+                if symbol_swap {
+                    entries.swap(0, 1);
+                }
+                source_order.extend(if symbol_swap { [1, 0] } else { [0, 1] });
+                let byte_swap = (first > second) != symbol_swap;
+                iteration_order.extend(if byte_swap { [1, 0] } else { [0, 1] });
+            }
+        }
+        Ok(Self {
+            entries,
+            source_order,
+            iteration_order,
+        })
+    }
+
     /// Returns the number of bindings.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -224,6 +285,19 @@ impl FlatAttrs {
     /// attrset.
     pub fn contains_key(&self, key: Symbol) -> bool {
         self.get_entry(key).is_some()
+    }
+
+    /// Returns the symbol-order storage slot holding `key`, if present.
+    ///
+    /// The slot indexes [`FlatAttrs::entries_by_symbol`]; select-site caches
+    /// store it so later instances with the same key layout can load the
+    /// entry without repeating the binary search. `key` must come from the
+    /// same symbol universe used to construct this attrset.
+    pub fn symbol_slot(&self, key: Symbol) -> Option<u32> {
+        self.entries
+            .binary_search_by_key(&key, |entry| entry.key)
+            .ok()
+            .and_then(|slot| u32::try_from(slot).ok())
     }
 
     /// Returns entries in internal symbol-id order.
@@ -672,6 +746,53 @@ mod tests {
             Some(&b"c"[..])
         );
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn small_construction_matches_general_ordering_semantics() {
+        // Adversarial byte orderings where symbol-id order and lexicographic
+        // order diverge, in both construction orders. The two-entry path
+        // avoids rank reads; its permutations must match the documented
+        // semantics exactly.
+        let (symbols, ids) = symbols(&[b"b", b"a\xff", b"a", b"a\x00"]);
+        for (left, right) in [(0, 1), (1, 0), (1, 3), (3, 1), (2, 3), (3, 2)] {
+            let attrs = FlatAttrs::new(
+                vec![
+                    AttrEntry::new(ids[left], Value::int(left as i64)),
+                    AttrEntry::new(ids[right], Value::int(right as i64)),
+                ],
+                &symbols,
+            )
+            .expect("two-entry attrset builds");
+            // Storage sorted by symbol id.
+            let stored: Vec<Symbol> = attrs.iter_by_symbol().map(|entry| entry.key).collect();
+            let mut expected_storage = vec![ids[left], ids[right]];
+            expected_storage.sort();
+            assert_eq!(stored, expected_storage);
+            // Source order reproduces construction order.
+            let source: Vec<Symbol> = attrs.iter_source_order().map(|entry| entry.key).collect();
+            assert_eq!(source, vec![ids[left], ids[right]]);
+            // Lexicographic order follows raw bytes.
+            let lex: Vec<&[u8]> = attrs
+                .iter_lexicographic()
+                .map(|entry| symbols.resolve(entry.key).expect("symbol resolves"))
+                .collect();
+            let mut expected_lex =
+                vec![symbols.resolve(ids[left]).unwrap(), symbols.resolve(ids[right]).unwrap()];
+            expected_lex.sort();
+            assert_eq!(lex, expected_lex);
+        }
+        // Singleton path validates the symbol and orders trivially.
+        let single = FlatAttrs::new(vec![AttrEntry::new(ids[1], Value::int(7))], &symbols)
+            .expect("one-entry attrset builds");
+        assert_eq!(single.source_order(), &[0]);
+        assert_eq!(single.iteration_order(), &[0]);
+        let missing = Symbol::new(99);
+        assert_eq!(
+            FlatAttrs::new(vec![AttrEntry::new(missing, Value::int(1))], &symbols)
+                .expect_err("unknown key is invalid"),
+            AttrError::UnknownSymbol { key: missing }
+        );
     }
 
     #[test]

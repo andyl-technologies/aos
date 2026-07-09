@@ -35,8 +35,8 @@ use aos_nix::eval::tree_walk::NixSearchPathEntry;
 use aos_nix::{
     NativeCliFallbackReason, NativeDrvClosure, NativeEvalError, NixNative,
     eval::{
-        EvalGcMode, EvalMode, IfdRealizationError, IfdRealizer, MemoNetMode, MemoNetOptions,
-        MemoOptions, TreeWalkOptions,
+        AttrShapeMode, EvalGcMode, EvalMode, IfdRealizationError, IfdRealizer, MemoNetMode,
+        MemoNetOptions, MemoOptions, TreeWalkOptions,
     },
     heap::HeapMemoryBudget,
 };
@@ -741,11 +741,33 @@ pub struct NixEvalConfig {
     native_gc_sweep_threshold: Option<u64>,
     native_parallel_workers: Option<std::num::NonZeroUsize>,
     native_parallel_shape_projection: bool,
+    native_attr_shapes: NativeAttrShapesMode,
     native_memo: NativeMemoSettings,
     native_memo_disk_spec: Option<String>,
     native_memo_net: Option<NativeMemoNetSettings>,
     heap_memory_budget_bytes: Option<usize>,
     trace_verbose: bool,
+}
+
+/// Parsed `AOS_NIX_SHAPES` hidden-class strategy for heap attrset records.
+///
+/// Mirrors the native evaluator's `AttrShapeMode` with a plain enum so the
+/// configuration exists independently of the `native-eval` feature. The mode
+/// is a performance strategy only; every value produces byte-identical
+/// evaluation results.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NativeAttrShapesMode {
+    /// `AOS_NIX_SHAPES=off`: no shape projection at all.
+    Off,
+    /// The default: per-allocation shape projection with transient shaped
+    /// select views (the L2-P4 baseline).
+    #[default]
+    Transient,
+    /// `AOS_NIX_SHAPES=record`: heap-resident shaped layout - the projected
+    /// shape id in the record guards a constant-offset select over the flat
+    /// symbol-order payload, static literal sites memoize their shape, and
+    /// same-key-set `//` results keep the left operand's shape.
+    Record,
 }
 
 /// Parsed `AOS_NIX_MEMO*` settings for the native content-keyed memo tiers.
@@ -1069,6 +1091,20 @@ impl NixEvalConfig {
     /// Enables or disables hidden-class shape projection at `K >= 2`.
     pub fn set_native_parallel_shape_projection(&mut self, enabled: bool) {
         self.native_parallel_shape_projection = enabled;
+    }
+
+    /// Returns the hidden-class shape strategy for heap attrset records.
+    ///
+    /// Selected through the `AOS_NIX_SHAPES` environment variable
+    /// (`off` / `transient` / `record`); see [`NativeAttrShapesMode`]. This
+    /// is a performance strategy, never a semantics change.
+    pub const fn native_attr_shapes(&self) -> NativeAttrShapesMode {
+        self.native_attr_shapes
+    }
+
+    /// Replaces the hidden-class shape strategy for heap attrset records.
+    pub fn set_native_attr_shapes(&mut self, mode: NativeAttrShapesMode) {
+        self.native_attr_shapes = mode;
     }
 
     /// Returns whether native root-level early cutoff is enabled.
@@ -1467,6 +1503,7 @@ impl NixEvalConfig {
             native_gc_sweep_threshold: None,
             native_parallel_workers: None,
             native_parallel_shape_projection: false,
+            native_attr_shapes: NativeAttrShapesMode::default(),
             native_memo: NativeMemoSettings::default(),
             native_memo_disk_spec: None,
             native_memo_net: None,
@@ -1519,6 +1556,9 @@ impl NixEvalConfig {
                 "" | "0" | "false" | "off" | "no"
             ));
         }
+        if let Ok(value) = std::env::var("AOS_NIX_SHAPES") {
+            config.set_aos_nix_shapes_env_var(&value);
+        }
         if let Ok(value) = std::env::var("AOS_NIX_MAX_RSS") {
             config.set_aos_nix_max_rss_env_var(value);
         }
@@ -1558,6 +1598,23 @@ impl NixEvalConfig {
 
     fn set_aos_nix_gc_env_var(&mut self, value: &str) {
         self.set_native_gc_sweep(matches!(value.trim(), "sweep" | "1" | "true"));
+    }
+
+    fn set_aos_nix_shapes_env_var(&mut self, value: &str) {
+        match value.trim() {
+            "off" | "0" | "false" | "no" => {
+                self.set_native_attr_shapes(NativeAttrShapesMode::Off);
+            }
+            "record" => self.set_native_attr_shapes(NativeAttrShapesMode::Record),
+            "" | "transient" => self.set_native_attr_shapes(NativeAttrShapesMode::Transient),
+            other => {
+                tracing::warn!(
+                    value = other,
+                    "invalid AOS_NIX_SHAPES value; expected off|transient|record, using the default"
+                );
+                self.set_native_attr_shapes(NativeAttrShapesMode::default());
+            }
+        }
     }
 
     fn set_aos_nix_gc_threshold_env_var(&mut self, value: &str) {
@@ -3364,6 +3421,11 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         options.set_jit_tier1_publish_enabled(false);
     }
     options.set_parallel_shape_projection(config.native_parallel_shape_projection());
+    options.set_attr_shape_mode(match config.native_attr_shapes() {
+        NativeAttrShapesMode::Off => AttrShapeMode::Off,
+        NativeAttrShapesMode::Transient => AttrShapeMode::Transient,
+        NativeAttrShapesMode::Record => AttrShapeMode::Record,
+    });
     Ok(options)
 }
 

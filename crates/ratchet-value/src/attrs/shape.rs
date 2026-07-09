@@ -27,4 +27,6 @@ pub use plans::{
 pub use table::{ShapeHandle, ShapeTable, ShapeTableTransition};
 
 #[cfg(test)]
+mod order_tests;
+#[cfg(test)]
 mod tests;

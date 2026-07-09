@@ -189,11 +189,17 @@ impl TreeWalk {
 
     /// Merges two forced attrset operands without recording merge telemetry.
     ///
-    /// This is the production `//` path: a single [`FlatAttrs`] linear merge
-    /// over the operands' symbol-sorted storage, allocated with plain flat
-    /// metadata. It produces exactly the same attrset value bytes as the
-    /// telemetry path in [`TreeWalk::merge_attr_update_entries`], which stays
-    /// behind the [`Self::attr_update_telemetry_default`] toggle because its
+    /// This is the production `//` path: when `right`'s keys are a subset of
+    /// `left`'s, the shape-preserving [`FlatAttrs::update_right_biased_same_keys`]
+    /// fast path copies `left`'s layout and overwrites the overridden slots -
+    /// no permutation merge and, under [`AttrShapeMode::Record`], the result
+    /// keeps `left`'s projected hidden-class shape id so later selects stay
+    /// on the record-resident shaped fast path. Otherwise a single
+    /// [`FlatAttrs`] linear merge over the operands' symbol-sorted storage
+    /// allocates with plain flat metadata. Both paths produce exactly the
+    /// same attrset value bytes as the telemetry path in
+    /// [`TreeWalk::merge_attr_update_entries`], which stays behind the
+    /// [`Self::attr_update_telemetry_default`] toggle because its
     /// shape-census and representation-dispatch accounting re-walk every
     /// merge result.
     #[allow(clippy::too_many_arguments)]
@@ -220,21 +226,58 @@ impl TreeWalk {
                 ));
             }
         }
-        let merged = {
+        let (merged, projected_shape) = {
             let left_attrs = self.heap.get_attrs(left).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, lhs_span)
             })?;
             let right_attrs = self.heap.get_attrs(right).map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, rhs_span)
             })?;
-            left_attrs
-                .update_right_biased(right_attrs, &self.symbols)
+            let same_keys = left_attrs
+                .update_right_biased_same_keys(right_attrs)
                 .map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
-                })?
+                })?;
+            match same_keys {
+                Some(merged) => {
+                    // The result's key set is exactly `left`'s, so `left`'s
+                    // projected shape id describes the result verbatim.
+                    // Propagate it only in record mode: the transient shaped
+                    // select path is a measured net loss, so the baseline
+                    // keeps merge results on the flat select path.
+                    let projected_shape =
+                        if self.options.attr_shape_mode() == AttrShapeMode::Record {
+                            self.heap
+                                .get_attrs_metadata(left)
+                                .map_err(|source| {
+                                    TreeWalkError::new(
+                                        TreeWalkErrorKind::Heap { id, source },
+                                        lhs_span,
+                                    )
+                                })?
+                                .projected_shape()
+                        } else {
+                            None
+                        };
+                    (merged, projected_shape)
+                }
+                None => {
+                    let merged = left_attrs
+                        .update_right_biased(right_attrs, &self.symbols)
+                        .map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
+                        })?;
+                    (merged, None)
+                }
+            }
         };
         self.heap
-            .alloc_attrs_with_projected_shape_metadata(0, AttrSetReprKind::Flat, None, merged)
+            .alloc_attrs_with_projected_shape_metadata(
+                0,
+                AttrSetReprKind::Flat,
+                projected_shape,
+                merged,
+            )
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 

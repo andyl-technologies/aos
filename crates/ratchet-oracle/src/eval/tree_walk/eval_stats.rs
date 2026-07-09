@@ -444,6 +444,9 @@ impl TreeWalk {
         attrs: FlatAttrs,
         construction: AttrSetConstruction,
     ) -> Result<Value, TreeWalkError> {
+        if self.options.attr_shape_mode() == AttrShapeMode::Record {
+            return self.alloc_flat_attrs_record_shape_mode(id, span, shape, attrs, construction);
+        }
         let shape_telemetry = self.project_flat_attr_shape_telemetry(id, span, &attrs);
         let projected_shape = shape_telemetry.as_ref().map(|(shape, _)| shape.id());
         let decision = self.classify_attr_repr_decision(id, span, construction);
@@ -461,6 +464,86 @@ impl TreeWalk {
         }
         if let Some(decision) = decision {
             self.record_classified_attr_repr_decision_telemetry(id, span, construction, decision);
+        }
+        Ok(value)
+    }
+
+    /// Allocates a flat attrset under [`AttrShapeMode::Record`].
+    ///
+    /// A static literal's key sequence is fixed at its construction site, so
+    /// the transition-tree walk resolves once per `(module, node)` site and
+    /// later allocations reuse the interned [`ShapeHandle`] without touching
+    /// the transition tree (RFC-0007 §09 §4.2: compile-time shape resolution
+    /// for static literals). Dynamic constructions walk the tree as usual.
+    /// The census/representation telemetry re-walks stay behind the
+    /// per-merge telemetry toggle, matching the production `//` policy.
+    fn alloc_flat_attrs_record_shape_mode(
+        &mut self,
+        id: IrId,
+        span: Span,
+        shape: u32,
+        attrs: FlatAttrs,
+        construction: AttrSetConstruction,
+    ) -> Result<Value, TreeWalkError> {
+        let site = (self.current_module.as_u32(), id.as_u32());
+        let is_static_literal = matches!(construction, AttrSetConstruction::StaticLiteral { .. });
+        let memoized = if is_static_literal {
+            self.static_literal_shapes.get(&site).cloned()
+        } else {
+            None
+        };
+        let shape_telemetry = match memoized {
+            Some(handle) => {
+                debug_assert_eq!(
+                    handle.shape().len(),
+                    attrs.len(),
+                    "static literal site changed its key count"
+                );
+                Some((handle, 0))
+            }
+            None => {
+                let projected = self.project_flat_attr_shape_telemetry(id, span, &attrs);
+                if is_static_literal {
+                    if let Some((handle, _)) = &projected {
+                        self.static_literal_shapes.insert(site, handle.clone());
+                    }
+                }
+                projected
+            }
+        };
+        let projected_shape = shape_telemetry.as_ref().map(|(shape, _)| shape.id());
+        let telemetry_enabled = self.attr_update_telemetry_enabled;
+        let decision = if telemetry_enabled {
+            self.classify_attr_repr_decision(id, span, construction)
+        } else {
+            None
+        };
+        let repr = decision.map_or(AttrSetReprKind::Flat, AttrSetReprDecision::kind);
+        let value = self.alloc_tree_walk_attrs_with_projected_shape_metadata(
+            id,
+            span,
+            shape,
+            repr,
+            projected_shape,
+            attrs,
+        )?;
+        if telemetry_enabled {
+            if let Some((census_shape, transitions)) = shape_telemetry {
+                self.record_projected_attr_shape_telemetry(id, span, &census_shape, transitions);
+            }
+            if let Some(decision) = decision {
+                self.record_classified_attr_repr_decision_telemetry(
+                    id,
+                    span,
+                    construction,
+                    decision,
+                );
+            }
+        } else if let Some((_, transitions)) = shape_telemetry {
+            if transitions > 0 {
+                self.stats.shape_transitions =
+                    self.stats.shape_transitions.saturating_add(transitions);
+            }
         }
         Ok(value)
     }

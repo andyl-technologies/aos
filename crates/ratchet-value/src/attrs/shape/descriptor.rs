@@ -57,6 +57,14 @@ impl AttrShape {
         let len = keys.len();
         let len_u32 = u32::try_from(len).map_err(|_| ShapeError::TooManyKeys { len })?;
 
+        // One- and two-key shapes order trivially by comparing resolved key
+        // bytes, with no symbol-table rank reads (whose lazy rank view
+        // rebuilds in `O(symbols)` after any intern). Small dynamic literals
+        // build such shapes once per fresh key on projection-active paths.
+        if len <= 2 {
+            return Self::from_construction_order_small(keys, symbols);
+        }
+
         let mut sorted_keys = Vec::new();
         sorted_keys
             .try_reserve_exact(len)
@@ -121,6 +129,58 @@ impl AttrShape {
             source_order: source_order.into_boxed_slice(),
             iteration_order: iteration_order.into_boxed_slice(),
             lexicographic_rank_by_symbol_slot: lexicographic_rank_by_symbol_slot.into_boxed_slice(),
+            fingerprint,
+        })
+    }
+
+    /// Builds a one- or two-key shape without symbol-table rank reads.
+    ///
+    /// Preserves [`AttrShape::from_construction_order`]'s error semantics:
+    /// duplicate keys are rejected before unresolved symbols, and every key
+    /// must resolve through `symbols`. Ordering by resolved raw key bytes is
+    /// definitionally identical to ordering by cached lexicographic ranks.
+    fn from_construction_order_small(
+        keys: &[Symbol],
+        symbols: &SymbolTable,
+    ) -> Result<Self, ShapeError> {
+        debug_assert!(keys.len() <= 2);
+        if keys.len() == 2 && keys[0] == keys[1] {
+            return Err(ShapeError::DuplicateKey { key: keys[0] });
+        }
+        let resolve = |key: Symbol| symbols.resolve(key).ok_or(ShapeError::UnknownSymbol { key });
+        let (sorted_keys, source_order, iteration_order): (Vec<Symbol>, Vec<u32>, Vec<u32>) =
+            match keys {
+                [] => (Vec::new(), Vec::new(), Vec::new()),
+                &[key] => {
+                    resolve(key)?;
+                    (vec![key], vec![0], vec![0])
+                }
+                &[first_key, second_key, ..] => {
+                    let first = resolve(first_key)?;
+                    let second = resolve(second_key)?;
+                    // Storage stays sorted by symbol id; the permutations are
+                    // derived from which input key sorts first on each axis.
+                    let symbol_swap = first_key > second_key;
+                    let sorted = if symbol_swap {
+                        vec![second_key, first_key]
+                    } else {
+                        vec![first_key, second_key]
+                    };
+                    let source = if symbol_swap { vec![1, 0] } else { vec![0, 1] };
+                    let byte_swap = (first > second) != symbol_swap;
+                    let iteration = if byte_swap { vec![1, 0] } else { vec![0, 1] };
+                    (sorted, source, iteration)
+                }
+            };
+        // For two slots the lexicographic permutation is its own inverse.
+        let lexicographic_rank_by_symbol_slot = iteration_order.clone();
+        let fingerprint = fingerprint_keys(&sorted_keys);
+        Ok(Self {
+            keys: sorted_keys.into_boxed_slice(),
+            source_order: source_order.into_boxed_slice(),
+            iteration_order: iteration_order.into_boxed_slice(),
+            lexicographic_rank_by_symbol_slot: lexicographic_rank_by_symbol_slot
+                .into_boxed_slice(),
             fingerprint,
         })
     }

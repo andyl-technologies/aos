@@ -169,7 +169,8 @@ pub use thunk_wait::{
     ParallelThunkWaitStats, ParallelThunkWorkWait,
 };
 pub use tree_walk::{
-    EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,
+    AttrShapeMode, EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome,
+    EvalStats,
     IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, MemoNetMode,
     MemoNetOptions, MemoOptions, MemoTierEvents,
     OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook, Tier2FilterHook, Tier2FoldHook,

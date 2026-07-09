@@ -763,6 +763,28 @@ harness, never cut for scope.
       lexicographic permutations. This does not carry source-position metadata,
       allocate evaluator heap objects, replace `FlatAttrs`, or affect active
       evaluation / `.drv` bytes.
+- [x] Current heap-resident shaped record layout (`AOS_NIX_SHAPES=record`,
+      knob-gated; the measured default stays `transient` — the record mode's
+      clean serial win on attr-fixpoint (cold/warm -7%/-11% vs the pre-round
+      baseline, other benchmarks within noise) is offset by a small
+      consistent `K = 4` loss on short package evals (zlib warm up to +20%),
+      where the baseline disables projection entirely, so the default flips
+      only when that multi-worker tax is paid down): active flat attr
+      heap records store the projected `ShapeId` in their metadata at
+      construction, and because `AttrShape` slots and `FlatAttrs` storage are
+      both symbol-sorted, the flat entry array *is* the shaped slot layout —
+      no shaped view is materialized after construction or per select. Under
+      the record mode, every static `Select`/`HasAttr`/`WithVar`/
+      runtime-callable IC segment guards on the projected id through
+      `ratchet-value::attrs::pic::record::RecordSelectCache` (shape-id
+      compare + constant-offset entry load + key recheck), static literal
+      sites resolve their shape once per `(module, node)` site and reuse the
+      interned handle (the §4.2 static-resolution contract realized as a
+      first-allocation memo), and same-key-set `//` results keep the left
+      operand's shape id. Mode-differential render tests (serial and
+      parallel-pool) pin byte-identical output across `off`/`transient`/
+      `record`. Native `aos_select_ic` lowering, a per-instance shaped value
+      array replacing `FlatAttrs`, and default-on remain open.
 - [ ] Transition tree rooted at the empty shape; `Symbol -> &Shape` edges cached on each parent; pointer-identity shape equality ([§4.2](#42-the-transition-tree)) — P5, `S-10`.
 - [x] Current shape-transition precursor: `ratchet-value::attrs::shape`
       can locally plan a key insertion against an `AttrShape`. Existing keys
@@ -811,6 +833,19 @@ harness, never cut for scope.
       guard a runtime value, call `select_slow`, alter tree-walk behavior, or
       install deopt/uncommon-trap edges.
 - [ ] Monomorphic fast path: shape guard + constant-offset load, slow path widens the IC ([§5.2](#52-what-the-baseline-tier-emits)) — P5.
+- [x] Current record select-cache fast path: `ratchet-value::attrs::pic::record`
+      exposes `RecordSelectCache`, the select-site cache for heap-resident
+      shaped flat records. A cached hit is exactly §5.2's contract on the
+      tree-walk tier: guard the record's stored projected shape id, load the
+      entry at the cached constant symbol-order slot, recheck the key (which
+      keeps even a cross-table id collision sound), and return the value with
+      no transient view. Misses resolve by binary search and widen through
+      `Uninitialized -> Monomorphic -> Polymorphic -> Megamorphic` (cap 4).
+      The active tree-walk static select/hasAttr/with/runtime-callable
+      bridges route flat values carrying projected shape metadata through it
+      under `AOS_NIX_SHAPES=record`. This is not the native CLIF-emitted
+      guard, carries no deopt edge, and its terminal states are not yet in
+      the shaped-site telemetry histograms (stats counters only).
 - [x] Current shaped-select fast-path precursor:
       `ratchet-value::attrs::pic` exposes `ShapedSelectCache`, which guards
       one static key on `ShapedAttrs` by interned shape pointer, loads cached
@@ -883,6 +918,22 @@ harness, never cut for scope.
 ### The update operator `//`
 
 - [ ] Small / shape-stable case: result-shape via transition tree + flat copy, preserving a-then-new-b order ([§6.1](#61-small--shape-stable-case-transition--flat-copy)) — P5.
+- [x] Current shape-preserving `//` fast path + rank-free permutation merge:
+      `FlatAttrs::update_right_biased` now merges the operands' cached
+      lexicographic permutations by comparing resolved raw key bytes instead
+      of symbol-table ranks, taking the merge off the rank view whose lazy
+      rebuild is `O(symbols)` after any fresh intern (the dominant cost of
+      update chains that intern a new key per layer); and
+      `FlatAttrs::update_right_biased_same_keys` handles the right-keys-
+      subset case (the `state // { field = v; }` record-update pattern) as an
+      `O(slots)` entry copy + slot overwrite that reuses the left operand's
+      lexicographic permutation verbatim — no stream merge, no rank or byte
+      comparison. Both are proven representation-identical (`raw_eq`) to the
+      general merge, including a dense subset-mask sweep. The production `//`
+      evaluator path uses both; under `AOS_NIX_SHAPES=record` the same-key
+      result also keeps the left operand's projected shape id so selects on
+      merge chains stay on the record-resident fast path. Transition-tree
+      result-shape resolution for key-introducing merges remains open.
 - [x] Current shaped update precursor: `ratchet-value::attrs::shape`
       exposes `ShapedUpdatePlan`, which computes a small shaped `//` result
       shape through the transition tree and instantiates a shaped value array

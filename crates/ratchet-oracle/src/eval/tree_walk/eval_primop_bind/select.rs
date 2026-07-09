@@ -210,6 +210,19 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         match metadata.repr() {
             AttrSetReprKind::Flat => match metadata.projected_shape() {
+                Some(projected_shape)
+                    if self.options.attr_shape_mode() == AttrShapeMode::Record =>
+                {
+                    self.select_record_shaped_attr_with_cache(
+                        id,
+                        span,
+                        attrs_value,
+                        symbol,
+                        projected_shape,
+                        site,
+                        path_index,
+                    )
+                }
                 Some(projected_shape) => self.select_projected_shaped_attr_with_cache(
                     id,
                     span,
@@ -302,6 +315,72 @@ impl TreeWalk {
             FlatSelectOutcome::Missing => {
                 let select_outcome = AttrSelectOutcome::Missing {
                     repr: AttrSelectRepr::Flat,
+                };
+                self.increment_inline_cache_misses();
+                self.record_slow_select_telemetry(id, span, &select_outcome);
+                select_outcome
+            }
+        };
+        Ok(select_outcome)
+    }
+
+    /// Selects from a heap-resident shaped record through a static-site record cache.
+    ///
+    /// This is the [`AttrShapeMode::Record`] fast path: the projected shape
+    /// id stored in the record's metadata at construction is the guard, and
+    /// the flat symbol-order payload is the shaped slot layout itself, so a
+    /// cached hit is a shape-id compare, a constant-offset entry load, and a
+    /// key recheck - no transient [`ShapedAttrs`] view is materialized. Under
+    /// parallel mode a foreign shape id needs no replica resolution: the
+    /// per-hit key recheck keeps any id sound, so the id is used purely as an
+    /// opaque guard token.
+    pub(in crate::eval::tree_walk) fn select_record_shaped_attr_with_cache(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_value: Value,
+        symbol: Symbol,
+        projected_shape: ShapeId,
+        site: IrInlineCacheSiteId,
+        path_index: usize,
+    ) -> Result<AttrSelectOutcome, TreeWalkError> {
+        let key = (self.current_module.as_u32(), site.as_u32(), path_index);
+        let outcome = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            self.record_select_caches
+                .entry(key)
+                .or_default()
+                .select(projected_shape, attrs, symbol)
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::RecordSelectCache { id, source }, span)
+                })?
+        };
+        let select_outcome = match outcome {
+            RecordSelectOutcome::Hit {
+                value,
+                slot,
+                source,
+            } => {
+                let select_outcome = AttrSelectOutcome::Hit {
+                    value,
+                    source: AttrSelectSource::Shaped { slot },
+                };
+                match source {
+                    RecordSelectSource::Cached => {
+                        self.increment_inline_cache_hits();
+                    }
+                    RecordSelectSource::Resolved { .. } => {
+                        self.increment_inline_cache_misses();
+                        self.record_slow_select_telemetry(id, span, &select_outcome);
+                    }
+                }
+                select_outcome
+            }
+            RecordSelectOutcome::Missing => {
+                let select_outcome = AttrSelectOutcome::Missing {
+                    repr: AttrSelectRepr::Shaped,
                 };
                 self.increment_inline_cache_misses();
                 self.record_slow_select_telemetry(id, span, &select_outcome);

@@ -18,6 +18,8 @@
 //! Cached shape ids are opaque handles supplied by a future shape table. They
 //! are not fingerprints, not symbol ids, and not pointer provenance.
 
+pub mod record;
+
 use thiserror::Error;
 
 use super::FlatAttrs;

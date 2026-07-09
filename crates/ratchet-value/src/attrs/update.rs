@@ -112,10 +112,15 @@ impl FlatAttrs {
         source_order.extend_from_slice(&right_slots);
 
         // Lexicographic order: each operand's permutation is already sorted
-        // by rank, relative byte order of live symbols is invariant under
-        // symbol-table growth, and the merged key set has no duplicates, so
-        // merging the two rank-sorted streams reproduces a full re-sort.
-        let rank_of = |slot: u32| -> Result<u32, AttrError> {
+        // by raw key bytes, relative byte order of live symbols is invariant
+        // under symbol-table growth, and the merged key set has no
+        // duplicates, so merging the two byte-sorted streams reproduces a
+        // full re-sort. Comparing resolved key bytes directly (instead of
+        // cached lexicographic ranks) keeps this merge off the symbol-table
+        // rank view, whose lazy rebuild is `O(symbols)` whenever any key was
+        // interned since the last rank read - the dominant per-merge cost on
+        // update chains that intern a fresh key per iteration.
+        let bytes_of = |slot: u32| -> Result<&[u8], AttrError> {
             let key = entries
                 .get(slot as usize)
                 .ok_or(AttrError::SlotOutOfBounds {
@@ -124,7 +129,7 @@ impl FlatAttrs {
                 })?
                 .key;
             symbols
-                .lexicographic_rank(key)
+                .resolve(key)
                 .ok_or(AttrError::UnknownSymbol { key })
         };
         let remap = |slots: &[u32], order: &[u32]| -> Result<Vec<u32>, AttrError> {
@@ -144,35 +149,35 @@ impl FlatAttrs {
         let mut left_stream = left_lex.iter().copied().filter(|&slot| slot != DROPPED);
         let mut right_stream = right_lex.iter().copied();
         let mut left_head = match left_stream.next() {
-            Some(slot) => Some((slot, rank_of(slot)?)),
+            Some(slot) => Some((slot, bytes_of(slot)?)),
             None => None,
         };
         let mut right_head = match right_stream.next() {
-            Some(slot) => Some((slot, rank_of(slot)?)),
+            Some(slot) => Some((slot, bytes_of(slot)?)),
             None => None,
         };
         loop {
             match (left_head, right_head) {
-                (Some((left_slot, left_rank)), Some((_, right_rank)))
-                    if left_rank < right_rank =>
+                (Some((left_slot, left_bytes)), Some((_, right_bytes)))
+                    if left_bytes < right_bytes =>
                 {
                     iteration_order.push(left_slot);
                     left_head = match left_stream.next() {
-                        Some(slot) => Some((slot, rank_of(slot)?)),
+                        Some(slot) => Some((slot, bytes_of(slot)?)),
                         None => None,
                     };
                 }
                 (_, Some((right_slot, _))) => {
                     iteration_order.push(right_slot);
                     right_head = match right_stream.next() {
-                        Some(slot) => Some((slot, rank_of(slot)?)),
+                        Some(slot) => Some((slot, bytes_of(slot)?)),
                         None => None,
                     };
                 }
                 (Some((left_slot, _)), None) => {
                     iteration_order.push(left_slot);
                     left_head = match left_stream.next() {
-                        Some(slot) => Some((slot, rank_of(slot)?)),
+                        Some(slot) => Some((slot, bytes_of(slot)?)),
                         None => None,
                     };
                 }
@@ -185,7 +190,96 @@ impl FlatAttrs {
             source_order,
             iteration_order,
         })
-    }}
+    }
+
+    /// Merges `right` over `self` when `right`'s keys are a subset of `self`'s.
+    ///
+    /// This is the shape-preserving `//` fast path: when every key of `right`
+    /// already exists in `self`, the result has exactly `self`'s key set, so
+    /// its symbol-sorted storage layout and cached lexicographic permutation
+    /// are `self`'s verbatim - no stream merge, no rank or byte comparison,
+    /// no permutation rebuild. The result is representation-identical (see
+    /// [`FlatAttrs::raw_eq`]) to [`FlatAttrs::update_right_biased`] on the
+    /// same operands, which the tests in this module enforce.
+    ///
+    /// Returns `Ok(None)` when `right` contains a key absent from `self`; the
+    /// caller falls back to the general linear merge. Both operands must come
+    /// from the same symbol universe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AttrError::AllocationFailed`] if result storage cannot be
+    /// reserved.
+    pub fn update_right_biased_same_keys(&self, right: &Self) -> Result<Option<Self>, AttrError> {
+        if right.len() > self.len() {
+            return Ok(None);
+        }
+        let len = self.len();
+        let reserve = |len: usize| -> Result<Vec<u32>, AttrError> {
+            let mut slots = Vec::new();
+            slots
+                .try_reserve_exact(len)
+                .map_err(|_| AttrError::AllocationFailed { entries: len })?;
+            Ok(slots)
+        };
+
+        // Subset probe: every right key must resolve to an existing left
+        // slot. Both entry arrays are symbol-sorted, so right's keys map to
+        // strictly increasing left slots and one forward scan resolves them.
+        // The probe runs before any copying so a non-subset right (the common
+        // growth-merge case) rejects in `O(right * log left)` with no wasted
+        // allocation.
+        let mut right_slots = reserve(right.len())?;
+        let mut cursor = 0usize;
+        for right_entry in right.entries_by_symbol() {
+            match self.entries[cursor..].binary_search_by_key(&right_entry.key, |entry| entry.key)
+            {
+                Ok(offset) => {
+                    let slot = cursor + offset;
+                    right_slots.push(slot as u32);
+                    cursor = slot + 1;
+                }
+                Err(_) => return Ok(None),
+            }
+        }
+
+        // Overwrite pass: copy left's layout and land right's entries on
+        // their probed slots.
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(len)
+            .map_err(|_| AttrError::AllocationFailed { entries: len })?;
+        entries.extend_from_slice(&self.entries);
+        for (right_entry, &slot) in right.entries_by_symbol().iter().zip(&right_slots) {
+            entries[slot as usize] = *right_entry;
+        }
+
+        // Source order matches the general merge's construction order: left
+        // survivors in symbol order followed by right entries in symbol
+        // order. Right slots are ascending, so one merged scan suffices.
+        let mut source_order = reserve(len)?;
+        let mut overridden = right_slots.iter().copied().peekable();
+        for slot in 0..len as u32 {
+            if overridden.peek() == Some(&slot) {
+                overridden.next();
+                continue;
+            }
+            source_order.push(slot);
+        }
+        source_order.extend_from_slice(&right_slots);
+
+        // Same key set at the same slots: the cached lexicographic
+        // permutation is unchanged.
+        let mut iteration_order = reserve(len)?;
+        iteration_order.extend_from_slice(&self.iteration_order);
+
+        Ok(Some(Self {
+            entries,
+            source_order,
+            iteration_order,
+        }))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -286,6 +380,130 @@ mod tests {
                 .update_right_biased(b, &symbols)
                 .expect("linear merge builds");
             assert!(merged.raw_eq(&reference_update(a, b, &symbols)));
+        }
+    }
+
+    #[test]
+    fn update_right_biased_same_keys_matches_general_merge() {
+        let (mut symbols, ids) = symbols(&[b"z", b"a", b"m", b"b"]);
+        let left = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(1)),
+                AttrEntry::with_position(ids[1], Value::int(2), AttrPosition::new(0, Span::new(0, 1))),
+                AttrEntry::new(ids[2], Value::int(3)),
+                AttrEntry::new(ids[3], Value::int(4)),
+            ],
+            &symbols,
+        )
+        .expect("left attrset builds");
+        // Right keys are a subset; interleave a later intern so lexicographic
+        // rank state is exercised on the general path we compare against.
+        let _late = symbols.intern(b"aa").expect("late symbol interns");
+        let right = FlatAttrs::new(
+            vec![
+                AttrEntry::with_position(ids[1], Value::int(20), AttrPosition::new(1, Span::new(5, 9))),
+                AttrEntry::new(ids[3], Value::int(40)),
+            ],
+            &symbols,
+        )
+        .expect("right attrset builds");
+
+        let fast = left
+            .update_right_biased_same_keys(&right)
+            .expect("subset merge builds")
+            .expect("right keys are a subset");
+        let general = left
+            .update_right_biased(&right, &symbols)
+            .expect("general merge builds");
+        assert!(fast.raw_eq(&general));
+        assert!(fast.raw_eq(&reference_update(&left, &right, &symbols)));
+        assert_eq!(fast.get(ids[1]).expect("a survives").as_int(), Ok(20));
+        assert_eq!(
+            fast.get_entry(ids[1]).expect("a survives").position,
+            Some(AttrPosition::new(1, Span::new(5, 9))),
+        );
+    }
+
+    #[test]
+    fn update_right_biased_same_keys_rejects_new_keys() {
+        let (symbols, ids) = symbols(&[b"a", b"b", b"c"]);
+        let left = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(1)),
+                AttrEntry::new(ids[1], Value::int(2)),
+            ],
+            &symbols,
+        )
+        .expect("left attrset builds");
+        let right = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[2], Value::int(30)),
+            ],
+            &symbols,
+        )
+        .expect("right attrset builds");
+
+        assert!(left
+            .update_right_biased_same_keys(&right)
+            .expect("subset probe runs")
+            .is_none());
+        // Oversized right short-circuits before any scan.
+        let bigger = FlatAttrs::new(
+            vec![
+                AttrEntry::new(ids[0], Value::int(10)),
+                AttrEntry::new(ids[1], Value::int(20)),
+                AttrEntry::new(ids[2], Value::int(30)),
+            ],
+            &symbols,
+        )
+        .expect("bigger attrset builds");
+        assert!(left
+            .update_right_biased_same_keys(&bigger)
+            .expect("subset probe runs")
+            .is_none());
+    }
+
+    #[test]
+    fn update_right_biased_same_keys_matches_reference_on_dense_subsets() {
+        // Every subset pattern of a 6-key universe: right must be a subset of
+        // left for the fast path to engage; assert exact representation
+        // equality against both merge implementations.
+        let names: Vec<Vec<u8>> = (0..6u8).map(|i| vec![b'k', b'0' + i]).collect();
+        let name_refs: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
+        let (symbols, ids) = symbols(&name_refs);
+        let build = |mask: u32, base: i64| -> FlatAttrs {
+            let entries = ids
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| mask & (1 << index) != 0)
+                .map(|(index, &id)| AttrEntry::new(id, Value::int(base + index as i64)))
+                .collect();
+            FlatAttrs::new(entries, &symbols).expect("masked attrset builds")
+        };
+        for left_mask in 0..64u32 {
+            for right_mask in 0..64u32 {
+                let left = build(left_mask, 0);
+                let right = build(right_mask, 100);
+                let fast = left
+                    .update_right_biased_same_keys(&right)
+                    .expect("subset probe runs");
+                let is_subset = right_mask & !left_mask == 0;
+                assert_eq!(
+                    fast.is_some(),
+                    is_subset,
+                    "subset detection diverged for left {left_mask:#08b} right {right_mask:#08b}",
+                );
+                if let Some(fast) = fast {
+                    let general = left
+                        .update_right_biased(&right, &symbols)
+                        .expect("general merge builds");
+                    assert!(
+                        fast.raw_eq(&general),
+                        "representation diverged for left {left_mask:#08b} right {right_mask:#08b}",
+                    );
+                }
+            }
         }
     }
 

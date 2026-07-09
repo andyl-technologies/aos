@@ -372,6 +372,7 @@ impl TreeWalk {
         let memo_l0 = options
             .memo_l0_active()
             .then(|| super::memo::MemoL0Table::new(options.memo_options().l0_entries));
+        let attr_shape_mode = options.attr_shape_mode();
         Self {
             modules: vec![TreeWalkModule::new(
                 ir.clone(),
@@ -395,9 +396,16 @@ impl TreeWalk {
             // pool replaces this table with a prefix replica of one shared
             // shape log at spawn (see `parallel_shape`), so the ids are global
             // and foreign readers resolve them through their own replicas.
-            shape_table: ShapeTable::new().ok(),
+            // `AOS_NIX_SHAPES=off` runs without a table, which disables shape
+            // projection (and every shaped select path) entirely.
+            shape_table: match attr_shape_mode {
+                AttrShapeMode::Off => None,
+                AttrShapeMode::Transient | AttrShapeMode::Record => ShapeTable::new().ok(),
+            },
             flat_select_caches: SelectCacheMap::default(),
             shaped_select_caches: SelectCacheMap::default(),
+            record_select_caches: SelectCacheMap::default(),
+            static_literal_shapes: SelectCacheMap::default(),
             hamt_select_caches: SelectCacheMap::default(),
             attr_update_node_states: BTreeMap::new(),
             attr_update_telemetry_enabled: Self::attr_update_telemetry_default(),

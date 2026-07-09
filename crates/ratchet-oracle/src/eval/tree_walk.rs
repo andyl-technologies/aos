@@ -77,6 +77,7 @@ use crate::attrs::{
         FlatSelectCache, FlatSelectError, FlatSelectOutcome, FlatSelectSource, HamtSelectCache,
         HamtSelectError, HamtSelectOutcome, HamtSelectPolicy, HamtSelectSource, ShapedSelectCache,
         ShapedSelectCacheState, ShapedSelectError, ShapedSelectOutcome, ShapedSelectSource,
+        record::{RecordSelectCache, RecordSelectError, RecordSelectOutcome, RecordSelectSource},
     },
     repr::{
         AttrSetConstruction, AttrSetReprDecision, AttrSetReprKind, AttrSetReprPolicy,
@@ -560,6 +561,7 @@ pub struct TreeWalkOptions {
     parallel_thunk_payloads_enabled: bool,
     parallel_workers: Option<std::num::NonZeroUsize>,
     parallel_shape_projection: bool,
+    attr_shape_mode: AttrShapeMode,
     jit_tier1_publish_enabled: bool,
     parallel_thunk_worker_id: ParallelThunkWorkerId,
     heap_cheap_memory_advice_min_idle_epochs: Option<u64>,
@@ -610,6 +612,7 @@ impl Default for TreeWalkOptions {
             parallel_thunk_payloads_enabled: false,
             parallel_workers: None,
             parallel_shape_projection: false,
+            attr_shape_mode: AttrShapeMode::default(),
             jit_tier1_publish_enabled: false,
             parallel_thunk_worker_id: ParallelThunkWorkerId::FIRST,
             heap_cheap_memory_advice_min_idle_epochs: None,
@@ -621,6 +624,31 @@ impl Default for TreeWalkOptions {
             fetch_tree_url_responses: BTreeMap::new(),
         }
     }
+}
+
+/// Hidden-class shape strategy for heap attrset records (RFC-0007 §09).
+///
+/// Selected through `AOS_NIX_SHAPES` (`off` / `transient` / `record`).
+/// Every mode produces byte-identical evaluation results; the mode changes
+/// only how attrset selects are served.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AttrShapeMode {
+    /// No shape projection: attrset records carry no projected shape id and
+    /// every select uses the flat key-validated slot cache or binary search.
+    Off,
+    /// The L2-P4 baseline: allocations project shapes through the transition
+    /// tree and shaped selects rebuild a transient [`ShapedAttrs`] view per
+    /// lookup. Measured a net loss on the package corpus, retained as the
+    /// comparison baseline while the record mode is calibrated.
+    #[default]
+    Transient,
+    /// Heap-resident shaped layout: the projected shape id stored in the
+    /// record at construction is the select guard, and the flat symbol-order
+    /// payload is the slot layout itself - a shaped select is a shape-id
+    /// compare plus a constant-offset entry load, with no transient view.
+    /// Static literal sites resolve their shape once and reuse the handle,
+    /// and same-key-set `//` results keep the left operand's shape id.
+    Record,
 }
 
 /// Filesystem and impurity policy used by the tree-walk evaluator.
@@ -1153,7 +1181,13 @@ pub struct TreeWalk {
     shape_table: Option<ShapeTable>,
     flat_select_caches: SelectCacheMap<(u32, u32, usize), FlatSelectCache>,
     shaped_select_caches: SelectCacheMap<(u32, u32, usize), ShapedSelectCache>,
+    record_select_caches: SelectCacheMap<(u32, u32, usize), RecordSelectCache>,
     hamt_select_caches: SelectCacheMap<(u32, u32, usize), HamtSelectCache>,
+    /// Per-site resolved shapes for static attrset literals
+    /// ([`AttrShapeMode::Record`] only): a static site's key sequence is
+    /// fixed, so its transition-tree walk resolves once and later
+    /// allocations at the site reuse the interned handle.
+    static_literal_shapes: SelectCacheMap<(u32, u32), ShapeHandle>,
     attr_update_node_states: BTreeMap<AttrUpdateTelemetryNodeKey, AttrUpdateTelemetryState>,
     /// Whether `//` merges record per-merge attrset telemetry.
     ///

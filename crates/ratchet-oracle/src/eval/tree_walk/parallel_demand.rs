@@ -498,14 +498,18 @@ impl ParallelDemandPool {
         let arena = main.heap.shared_arena()?.clone();
         let registry = main.parallel_force_registry()?.clone();
         // Multi-worker shape projection is opt-in (see
-        // `TreeWalkOptions::parallel_shape_projection`). When enabled, seed
+        // `TreeWalkOptions::parallel_shape_projection`); the record shape
+        // mode also keeps projection on at `K >= 2` because its heap-resident
+        // select path is what the mode exists to measure. When enabled, seed
         // the authoritative shared shape table from the main worker's table:
         // record `Arc`s are shared, so main's existing handles remain valid
         // against the log. Whenever no shared log exists (default, or a
         // failed seed) projection is disabled everywhere - main's table is
         // dropped below - so no process-local id can ever reach shared attrs
         // metadata.
-        let shapes = if main.options.parallel_shape_projection() {
+        let shapes = if main.options.parallel_shape_projection()
+            || main.options.attr_shape_mode() == AttrShapeMode::Record
+        {
             parallel_shape::SharedShapeLog::seed(main.shape_table.as_ref())
         } else {
             None
