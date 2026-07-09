@@ -21,7 +21,10 @@ fn artifact_bundle_round_trips_complete_entry_payloads() {
     assert_eq!(decoded, bundle);
     assert_eq!(decoded.facts_bytes(), bundle.facts_bytes());
     assert!(decoded.facts_bytes().is_some());
-    assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 10"));
+    assert!(
+        String::from_utf8_lossy(decoded.meta_toml_bytes())
+            .contains(&format!("schema_version = {PARSE_CACHE_SCHEMA_VERSION}"))
+    );
     let meta = decoded.decode_meta().expect("bundle metadata decodes");
     assert_eq!(meta.schema_version, cache.schema_version());
     assert_eq!(meta.source_hint.as_deref(), Some("expr.nix"));

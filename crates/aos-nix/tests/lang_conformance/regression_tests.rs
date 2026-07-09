@@ -295,3 +295,115 @@ fn eval_fail_derivation_name_rejects_invalid_names() {
         "{error:?}"
     );
 }
+
+/// Evaluates a source expression to its raw printed bytes.
+fn eval_raw_case(source: &[u8]) -> Vec<u8> {
+    let parsed = parse_bytes(source).expect("source parses");
+    let resolved = resolve(parsed).expect("source resolves");
+    let ir = lower(resolved).expect("source lowers");
+    eval_raw_bytes_with_options(&ir, TreeWalkOptions::default()).expect("source evaluates")
+}
+
+// C++ Nix distinguishes the two dynamic attribute key forms: a plain
+// `${e}` key whose name evaluates to `null` is silently skipped (the
+// `${if cond then "x" else null}` idiom), while a quoted `"${e}"` key is a
+// string interpolation that always coerces its fragments — so `null` is a
+// "cannot coerce null to a string" error. The quoted form is also always a
+// dynamic attribute, even when the interpolant is a string literal.
+
+#[test]
+fn eval_fail_quoted_interp_null_attr_key_rejects_null() {
+    let source = br#"{ "${null}" = 1; }"#;
+
+    let parsed = parse_bytes(source).expect("source parses");
+    let resolved = resolve(parsed).expect("source resolves");
+    let ir = lower(resolved).expect("source lowers");
+    eval_whnf_owned_with_options(&ir, TreeWalkOptions::default())
+        .expect_err("attrset WHNF forces dynamic key names like C++ Nix");
+
+    let error = eval_strict_case(source, TreeWalkOptions::default())
+        .expect_err("quoted-interpolation null key must fail string coercion like C++ Nix");
+    assert!(
+        format!("{error:?}").contains("expected string, got Null"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn eval_okay_plain_null_dynamic_attr_key_skips_binding() {
+    assert_eq!(eval_raw_case(b"{ ${null} = 1; }"), b"{ }");
+    assert_eq!(
+        eval_raw_case(br#"{ ${if true then null else "x"} = 1; a = 2; }"#),
+        b"{ a = 2; }"
+    );
+}
+
+#[test]
+fn eval_okay_plain_null_dynamic_attr_key_keeps_nested_prefix() {
+    // The skipped segment still materializes the enclosing static prefix.
+    assert_eq!(eval_raw_case(b"{ a.${null} = 1; }"), b"{ a = { }; }");
+}
+
+#[test]
+fn eval_fail_quoted_interp_null_attr_key_rejects_nested_paths() {
+    let error = eval_strict_case(br#"{ a."${null}" = 1; }"#, TreeWalkOptions::default())
+        .expect_err("nested quoted-interpolation null key must fail like C++ Nix");
+    assert!(
+        format!("{error:?}").contains("expected string, got Null"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn eval_fail_plain_dynamic_attr_key_with_string_interp_rejects_null() {
+    // `${"${null}"}` is a plain dynamic key whose expression is itself a
+    // string interpolation: the inner coercion fails before the null-skip
+    // rule can apply, matching C++ Nix.
+    let error = eval_strict_case(br#"{ ${"${null}"} = 1; }"#, TreeWalkOptions::default())
+        .expect_err("string interpolation inside a plain dynamic key coerces like C++ Nix");
+    assert!(
+        format!("{error:?}").contains("expected string, got Null"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn eval_okay_quoted_interp_attr_key_still_binds_strings() {
+    assert_eq!(eval_raw_case(br#"{ "${"x"}" = 1; }"#), b"{ x = 1; }");
+    assert_eq!(
+        eval_raw_case(br#"{ "${"a"}${"b"}" = 1; }"#),
+        b"{ ab = 1; }"
+    );
+}
+
+#[test]
+fn resolve_fail_quoted_interp_let_binding_is_dynamic() {
+    // C++ Nix: "dynamic attributes not allowed in let" — the quoted form is
+    // never a static name, even over a string literal.
+    let parsed = parse_bytes(br#"let "${"b"}" = 1; in b"#).expect("source parses");
+    let error = resolve(parsed).expect_err("quoted-interpolation let binding must be dynamic");
+    assert!(
+        format!("{error:?}").contains("DynamicLetBinding"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn resolve_fail_quoted_interp_inherit_target_is_dynamic() {
+    // C++ Nix: "dynamic attributes not allowed in inherit".
+    let parsed = parse_bytes(br#"let x = { a = 1; }; in { inherit (x) "${"a"}"; }"#)
+        .expect("source parses");
+    let error = resolve(parsed).expect_err("quoted-interpolation inherit target must be dynamic");
+    assert!(
+        format!("{error:?}").contains("DynamicInheritTarget"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn resolve_fail_quoted_interp_rec_binding_is_not_in_scope() {
+    // Dynamic attributes never join the recursive scope in C++ Nix, so the
+    // quoted form cannot be referenced even when it folds to a constant.
+    let parsed = parse_bytes(br#"rec { "${"a"}" = 1; b = a; }"#).expect("source parses");
+    resolve(parsed).expect_err("quoted-interpolation rec binding must not be referencable");
+}

@@ -393,6 +393,21 @@ search paths, and store coercion.
 - [x] **Self-reference laziness** — `rec { a = b; b = a; }` only loops if forced
       (§10 black-holing). AOS matches pinned Nix for unforced cyclic members and
       reports infinite recursion when the cycle is forced.
+- [x] **Plain vs quoted dynamic keys under `null`** — the two dynamic-key
+      forms differ: a plain `${e}` binding whose name evaluates to `null` is
+      **silently skipped** (`{ ${null} = 1; }` is `{ }`; nested paths keep
+      the static prefix: `{ a.${null} = 1; }` is `{ a = { }; }` — this is the
+      `${if cond then "x" else null}` idiom), while a quoted `"${e}"` key is
+      a string interpolation that always coerces its fragments, so
+      `{ "${null}" = 1; }` is a **must-error** ("cannot coerce null to a
+      string"), as are `"a${null}"` and the plain-wrapping-a-string form
+      `${"${null}"}`. The quoted form is also always a *dynamic* attribute
+      even over a string literal: `let "${"b"}" = 1; in b` and
+      `inherit (x) "${"a"}";` are must-errors (dynamic attrs not allowed in
+      `let`/`inherit`), and `rec { "${"a"}" = 1; b = a; }` does not put `a`
+      in scope. AOS matches pinned Nix on all forms (the parser wraps a
+      quoted key that collapses to a single interpolation in a second
+      `Interp` layer so it never degrades to the plain skip-on-null form).
 
 ---
 

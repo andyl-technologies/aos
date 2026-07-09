@@ -423,6 +423,45 @@ fn temperature_requires_warmup(temperature: &str) -> bool {
     temperature == "warm"
 }
 
+/// Maximum `diff_closure` attempts before the parity gate reports an
+/// unstable comparison.
+const PARITY_GATE_MAX_ATTEMPTS: usize = 3;
+
+/// Verdict for a parity-gate attempt that reported divergences.
+#[derive(Debug, Eq, PartialEq)]
+enum ParityAttemptVerdict {
+    /// Two consecutive divergent attempts produced the same oracle root, so
+    /// the evaluated inputs were identical both times: the divergence is real.
+    RealDivergence,
+    /// The oracle root moved since the previous divergent attempt (or this
+    /// was the first attempt), so the evaluated sources may have changed
+    /// between the oracle and candidate instantiations: retry.
+    InputsDrifted,
+}
+
+/// Classifies one divergent parity-gate attempt against the previous one.
+///
+/// The gate's oracle and candidate instantiations are seconds apart on wide
+/// attributes (the oracle writes the whole `.drv` closure), and an evaluated
+/// source tree edited inside that window — `pkgs.aos` sources the live
+/// `crates/` directory, which sits in every `bench.wide` closure — yields two
+/// evaluations of *different* inputs. A drifted hash also reorders the sorted
+/// `inputDrvs` lists, so the order-paired closure walk cascades one moved
+/// node into tens of thousands of reported divergences. A divergence is only
+/// trusted as real when a repeat attempt reproduces it from the same oracle
+/// root, which pins the oracle-visible inputs as identical across both
+/// attempts.
+fn classify_divergent_attempt(
+    previous_divergent_root: &mut Option<Option<std::path::PathBuf>>,
+    oracle_root: &Option<std::path::PathBuf>,
+) -> ParityAttemptVerdict {
+    if previous_divergent_root.as_ref() == Some(oracle_root) {
+        return ParityAttemptVerdict::RealDivergence;
+    }
+    *previous_divergent_root = Some(oracle_root.clone());
+    ParityAttemptVerdict::InputsDrifted
+}
+
 fn run_parity_gate(
     oracle: &dyn NixEval,
     candidate: &dyn NixEval,
@@ -432,12 +471,26 @@ fn run_parity_gate(
     if skip_parity_gate_for_diagnostics() {
         return Ok(BenchmarkParity::skipped(candidate_name));
     }
-    let report = diff_closure(oracle, candidate, &spec.file, &spec.attr, DiffMode::Byte)
-        .with_context(|| format!("checking .drv parity for {}", spec.name))?;
-    if !report.divergences.is_empty() {
-        return Err(NixBenchParityFailure::new(spec, candidate_name, &report).into());
+    let mut previous_divergent_root = None;
+    for _ in 0..PARITY_GATE_MAX_ATTEMPTS {
+        let report = diff_closure(oracle, candidate, &spec.file, &spec.attr, DiffMode::Byte)
+            .with_context(|| format!("checking .drv parity for {}", spec.name))?;
+        if report.divergences.is_empty() {
+            return Ok(BenchmarkParity::matched(candidate_name, &report));
+        }
+        match classify_divergent_attempt(&mut previous_divergent_root, &report.oracle_root) {
+            ParityAttemptVerdict::RealDivergence => {
+                return Err(NixBenchParityFailure::new(spec, candidate_name, &report).into());
+            }
+            ParityAttemptVerdict::InputsDrifted => trace_phase("parity-gate-drift-retry"),
+        }
     }
-    Ok(BenchmarkParity::matched(candidate_name, &report))
+    Err(anyhow::anyhow!(
+        "nix benchmark parity gate for {} against {candidate_name} could not obtain a stable \
+         comparison: the oracle .drv root changed on every attempt, so the evaluated sources \
+         were being modified while the gate ran",
+        spec.name
+    ))
 }
 
 /// Runs one native instantiation for a timing/memory sample.

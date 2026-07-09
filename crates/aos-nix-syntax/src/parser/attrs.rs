@@ -316,10 +316,14 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenKind::Ident | TokenKind::Or => self.parse_attr_symbol_node(),
             TokenKind::StrStart => {
-                self.parse_string(TokenKind::StrEnd, NodeKind::Str, StringSyntax::Double)
+                let node =
+                    self.parse_string(TokenKind::StrEnd, NodeKind::Str, StringSyntax::Double)?;
+                self.wrap_quoted_interp_attr_segment(node)
             }
             TokenKind::IndStrStart => {
-                self.parse_string(TokenKind::IndStrEnd, NodeKind::Str, StringSyntax::Indented)
+                let node =
+                    self.parse_string(TokenKind::IndStrEnd, NodeKind::Str, StringSyntax::Indented)?;
+                self.wrap_quoted_interp_attr_segment(node)
             }
             TokenKind::DollarBrace => {
                 let start = self.bump()?.span;
@@ -339,5 +343,26 @@ impl<'a> Parser<'a> {
                 },
             )),
         }
+    }
+
+    /// Re-wraps a quoted attribute key that collapsed to a bare interpolation.
+    ///
+    /// [`Parser::parse_string`] collapses a single-interpolation string such
+    /// as `"${e}"` to the inner `Interp` node, which makes it structurally
+    /// identical to a plain dynamic key `${e}`. The two forms diverge in Nix:
+    /// a plain `${e}` binding whose name evaluates to `null` is skipped (and
+    /// the bare expression is a static key when it is a string literal),
+    /// while the quoted form is a string interpolation that always coerces —
+    /// erroring on `null` — and is always a dynamic key. Wrapping the
+    /// collapsed node in a second `Interp` layer preserves the string
+    /// coercion, matching the shape a plain `${"${e}"}` key already lowers
+    /// to. Literal strings and multi-fragment interpolations keep their
+    /// shape: both already carry the correct semantics.
+    fn wrap_quoted_interp_attr_segment(&mut self, node_id: NodeId) -> Result<NodeId, ParseError> {
+        let node = self.node(node_id)?;
+        if node.kind == NodeKind::Interp && matches!(node.data, NodeData::Node(_)) {
+            return self.push(NodeKind::Interp, node.span, NodeData::Node(node_id));
+        }
+        Ok(node_id)
     }
 }

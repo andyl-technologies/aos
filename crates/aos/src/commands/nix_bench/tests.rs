@@ -583,6 +583,148 @@ fn parity_gate_blocks_divergent_byte_diff() {
     );
 }
 
+/// Fake evaluator whose instantiation advances through a script of closures,
+/// mimicking a source tree edited between parity-gate attempts.
+struct ScriptedEval {
+    name: &'static str,
+    script: Vec<DrvClosure>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedEval {
+    fn new(name: &'static str, script: Vec<(PathBuf, Vec<u8>)>) -> Self {
+        let script = script
+            .into_iter()
+            .map(|(root, bytes)| {
+                let mut drvs = BTreeMap::new();
+                drvs.insert(root.clone(), bytes);
+                DrvClosure::new(root, drvs)
+            })
+            .collect();
+        Self {
+            name,
+            script,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn current(&self) -> DrvClosure {
+        let calls = self.calls.load(std::sync::atomic::Ordering::Relaxed);
+        let index = calls.min(self.script.len() - 1);
+        self.script[index].clone()
+    }
+}
+
+impl NixEval for ScriptedEval {
+    fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+        Ok(self.current().root().to_path_buf())
+    }
+
+    fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
+        Ok(self.current().root().to_path_buf())
+    }
+
+    fn instantiate_closure(&self, _file: &Path, _attr: &str) -> Result<Option<DrvClosure>> {
+        let closure = self.current();
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Some(closure))
+    }
+
+    fn eval_expr(&self, _expr: &str) -> Result<String> {
+        Ok("null".to_string())
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+#[test]
+fn parity_gate_retries_when_oracle_root_drifts_then_stabilizes() {
+    let stale = PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-stale.drv");
+    let fresh = PathBuf::from("/nix/store/cccccccccccccccccccccccccccccccc-root.drv");
+    // The oracle first sees the pre-edit sources, then converges with the
+    // candidate once the tree stops moving.
+    let oracle = ScriptedEval::new(
+        "oracle",
+        vec![
+            (stale, drv_bytes("stale")),
+            (fresh.clone(), drv_bytes("same")),
+        ],
+    );
+    let candidate = FakeEval::new("native-test", fresh, drv_bytes("same"));
+    let spec = parity_spec();
+
+    let parity = run_parity_gate(&oracle, &candidate, candidate.name(), &spec)
+        .expect("gate retries through input drift and matches");
+
+    assert!(parity.matched);
+    assert_eq!(
+        parity.oracle_root.as_deref(),
+        Some("/nix/store/cccccccccccccccccccccccccccccccc-root.drv")
+    );
+}
+
+#[test]
+fn parity_gate_reports_unstable_comparison_under_perpetual_drift() {
+    let candidate_root = PathBuf::from("/nix/store/cccccccccccccccccccccccccccccccc-root.drv");
+    // The oracle root moves on every attempt: the gate can never pin a
+    // stable pair of inputs and must say so rather than report divergences.
+    let oracle = ScriptedEval::new(
+        "oracle",
+        vec![
+            (
+                PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-one.drv"),
+                drv_bytes("one"),
+            ),
+            (
+                PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-two.drv"),
+                drv_bytes("two"),
+            ),
+            (
+                PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-three.drv"),
+                drv_bytes("three"),
+            ),
+        ],
+    );
+    let candidate = FakeEval::new("native-test", candidate_root, drv_bytes("same"));
+    let spec = parity_spec();
+
+    let error = run_parity_gate(&oracle, &candidate, candidate.name(), &spec)
+        .expect_err("perpetual drift cannot produce a parity verdict");
+
+    assert!(
+        error
+            .to_string()
+            .contains("could not obtain a stable comparison"),
+        "{error}"
+    );
+}
+
+#[test]
+fn classify_divergent_attempt_requires_a_repeat_root_to_trust_divergence() {
+    let root_a = Some(PathBuf::from("/nix/store/aaaa-a.drv"));
+    let root_b = Some(PathBuf::from("/nix/store/bbbb-b.drv"));
+    let mut previous = None;
+
+    // First divergent attempt never fails the gate outright.
+    assert_eq!(
+        classify_divergent_attempt(&mut previous, &root_a),
+        ParityAttemptVerdict::InputsDrifted
+    );
+    // A different oracle root means the inputs moved: retry again.
+    assert_eq!(
+        classify_divergent_attempt(&mut previous, &root_b),
+        ParityAttemptVerdict::InputsDrifted
+    );
+    // Reproducing the divergence from the same oracle root makes it real.
+    assert_eq!(
+        classify_divergent_attempt(&mut previous, &root_b),
+        ParityAttemptVerdict::RealDivergence
+    );
+}
+
 #[test]
 fn read_history_accepts_legacy_run_context_records() {
     let temp = tempfile::tempdir().expect("temporary directory is created");
