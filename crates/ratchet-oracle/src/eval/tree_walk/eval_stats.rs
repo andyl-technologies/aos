@@ -13,6 +13,8 @@ impl TreeWalk {
             thunks_allocated: self.stats.thunks_allocated,
             thunks_elided: self.stats.thunks_elided,
             binding_assembly_elisions: self.stats.binding_assembly_elisions,
+            single_entry_thunks_allocated: self.stats.single_entry_thunks_allocated,
+            single_entry_thunks_forced: self.stats.single_entry_thunks_forced,
             thunk_cache_hits: self.stats.thunk_cache_hits,
             inline_cache_hits: self.stats.inline_cache_hits,
             inline_cache_misses: self.stats.inline_cache_misses,
@@ -159,6 +161,8 @@ impl TreeWalk {
             thunks_allocated = stats.thunks_allocated(),
             thunks_elided = stats.thunks_elided(),
             binding_assembly_elisions = stats.binding_assembly_elisions(),
+            single_entry_thunks_allocated = stats.single_entry_thunks_allocated(),
+            single_entry_thunks_forced = stats.single_entry_thunks_forced(),
             thunk_cache_hits = stats.thunk_cache_hits(),
             inline_cache_hits = stats.inline_cache_hits(),
             inline_cache_misses = stats.inline_cache_misses(),
@@ -751,6 +755,18 @@ impl TreeWalk {
 
     pub(super) fn increment_thunks_forced(&mut self) {
         self.stats.thunks_forced = self.stats.thunks_forced.saturating_add(1);
+    }
+
+    /// Records one single-entry (cheap cell) thunk allocation.
+    pub(super) fn increment_single_entry_thunks_allocated(&mut self) {
+        self.stats.single_entry_thunks_allocated =
+            self.stats.single_entry_thunks_allocated.saturating_add(1);
+    }
+
+    /// Records one force served by the single-entry direct path.
+    pub(super) fn increment_single_entry_thunks_forced(&mut self) {
+        self.stats.single_entry_thunks_forced =
+            self.stats.single_entry_thunks_forced.saturating_add(1);
     }
 
     pub(crate) fn increment_tier1_promoted(&mut self) {

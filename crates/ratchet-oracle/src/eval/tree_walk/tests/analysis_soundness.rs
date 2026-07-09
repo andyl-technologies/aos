@@ -396,6 +396,68 @@ fn analysis_annotations_preserve_rec_let_forward_references() {
     }
 }
 
+/// Randomized per-builtin value-parity sources for the enabled per-argument
+/// escape signatures (R-9): each shape routes a once-used `let` binding into
+/// a consumed argument position of one enabled builtin, so the annotated run
+/// exercises the frame-local single-entry proof that signature licenses.
+fn consumed_signature_source_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        (-100_i64..=100).prop_map(|n| format!("let x = {} + 1; in builtins.isInt x", nix_int(n))),
+        prop::collection::vec(-20_i64..=20, 0..6)
+            .prop_map(|v| format!("let x = {}; in builtins.length x", nix_int_list(&v))),
+        ("[a-z]{0,12}").prop_map(|s| {
+            format!(r#"let x = "v" + "{s}"; in builtins.stringLength x"#)
+        }),
+        (-100_i64..=100, -100_i64..=100).prop_map(|(a, b)| {
+            format!("let x = {} + 0; in builtins.sub x {}", nix_int(a), nix_int(b))
+        }),
+        (-20_i64..=20, -20_i64..=20).prop_map(|(a, b)| {
+            format!("let x = {} + 0; in builtins.mul {} x", nix_int(a), nix_int(b))
+        }),
+        (-100_i64..=100, 1_i64..=20).prop_map(|(a, b)| {
+            format!("let x = {} + 0; in builtins.div x {}", nix_int(a), nix_int(b))
+        }),
+        (0_i64..=255, 0_i64..=255).prop_map(|(a, b)| {
+            format!("let x = {} + 0; in builtins.bitAnd x {}", nix_int(a), nix_int(b))
+        }),
+        (0_i64..=255, 0_i64..=255).prop_map(|(a, b)| {
+            format!("let x = {} + 0; in builtins.bitXor {} x", nix_int(a), nix_int(b))
+        }),
+        (-100_i64..=100, -100_i64..=100).prop_map(|(a, b)| {
+            format!("let x = {} + 0; in builtins.lessThan x {}", nix_int(a), nix_int(b))
+        }),
+        ("[0-9]{1,3}", "[0-9]{1,3}").prop_map(|(a, b)| {
+            format!(r#"let x = "1." + "{a}"; in builtins.compareVersions x "1.{b}""#)
+        }),
+        prop::collection::vec(-20_i64..=20, 0..6).prop_map(|v| {
+            format!("let x = {}; in builtins.any (e: e == 3) x", nix_int_list(&v))
+        }),
+        prop::collection::vec(-20_i64..=20, 0..6).prop_map(|v| {
+            format!("let x = {}; in builtins.all (e: e < 0) x", nix_int_list(&v))
+        }),
+        (-20_i64..=20, prop::collection::vec(-20_i64..=20, 0..6)).prop_map(|(n, v)| {
+            format!(
+                "let x = {} + 0; in builtins.elem x {}",
+                nix_int(n),
+                nix_int_list(&v)
+            )
+        }),
+        (-20_i64..=20).prop_map(|n| {
+            format!(
+                "let x = {{ a = {}; }}; in builtins.hasAttr \"a\" x",
+                nix_int(n)
+            )
+        }),
+        // Consumed-position ceil/floor over a float-typed binding.
+        (-100_i64..=100).prop_map(|n| {
+            format!("let x = 0.5 + {}; in builtins.ceil x", nix_int(n))
+        }),
+        (-100_i64..=100).prop_map(|n| {
+            format!("let x = 0.5 + {}; in builtins.floor x", nix_int(n))
+        }),
+    ]
+}
+
 proptest! {
     #[test]
     fn analysis_annotations_preserve_generated_json_observables(
@@ -403,6 +465,89 @@ proptest! {
     ) {
         assert_annotated_json_matches_conservative(&source);
     }
+
+    #[test]
+    fn consumed_escape_signatures_preserve_json_observables(
+        source in consumed_signature_source_strategy(),
+    ) {
+        assert_annotated_json_matches_conservative(&source);
+    }
+}
+
+#[test]
+fn analysis_annotations_preserve_single_entry_recomputation_traps() {
+    // Single-entry thunks re-evaluate their body on every force. Each shape
+    // below manufactures a once-per-frame binding whose handle could leak to
+    // a position that forces it more than once; a wrong frame-local proof
+    // would double the trace output (or double-throw).
+    for source in [
+        // The frame result is cached by an enclosing update thunk whose
+        // cached value is the inner thunk handle; two container reads force
+        // that handle twice.
+        r#"let outer = [ (let x = builtins.trace "t" 1; in x) ];
+           in (builtins.elemAt outer 0) + (builtins.elemAt outer 0)"#,
+        // Same trap through an attrset member instead of a list element.
+        r#"let outer = { m = (let x = builtins.trace "t" 1; in x); };
+           in outer.m + outer.m"#,
+        // The inner thunk escapes through a directly applied lambda result.
+        r#"let outer = [ ((x: x) (let y = builtins.trace "t" 2; in y)) ];
+           in (builtins.elemAt outer 0) + (builtins.elemAt outer 0)"#,
+        // A consumed-position use inside a shared closure entered twice.
+        r#"let x = builtins.trace "t" [ 1 2 ];
+           f = z: builtins.length x + z;
+           in f 1 + f 2"#,
+    ] {
+        assert_annotated_fallible_observation_matches_conservative(source);
+    }
+}
+
+#[test]
+fn single_entry_storage_preserves_observables_and_is_exercised() {
+    // A consumed-position once-used binding takes single-entry storage in
+    // the annotated run; per-call frames re-allocate it, so the trace count
+    // must match the conservative update-thunk schedule exactly.
+    let source = r#"let f = z: (let x = builtins.trace "t" [ 1 2 ];
+                                 in builtins.length x + z);
+                    in f 1 + f 2"#;
+    let json_source = format!("builtins.toJSON ({source})");
+    let conservative_ir = lower(&json_source);
+    let mut annotated_ir = lower(&json_source);
+    crate::compile::annotate_ir(&mut annotated_ir).expect("analysis succeeds");
+
+    let mut conservative_eval = TreeWalk::with_options(&conservative_ir, TreeWalkOptions::default());
+    let conservative_value = conservative_eval.eval_root().expect("conservative evaluates");
+    let mut annotated_eval = TreeWalk::with_options(&annotated_ir, TreeWalkOptions::default());
+    let annotated_value = annotated_eval.eval_root().expect("annotated evaluates");
+
+    let conservative_json = conservative_eval
+        .heap
+        .get_string(conservative_value)
+        .expect("toJSON returns a string")
+        .bytes()
+        .to_vec();
+    let annotated_json = annotated_eval
+        .heap
+        .get_string(annotated_value)
+        .expect("toJSON returns a string")
+        .bytes()
+        .to_vec();
+    assert_eq!(annotated_json, conservative_json);
+    assert_eq!(
+        annotated_eval.trace_output, conservative_eval.trace_output,
+        "single-entry storage must not change trace multiplicity"
+    );
+
+    assert_eq!(conservative_eval.stats().single_entry_thunks_allocated(), 0);
+    assert_eq!(
+        annotated_eval.stats().single_entry_thunks_allocated(),
+        2,
+        "one single-entry allocation per call frame"
+    );
+    assert_eq!(
+        annotated_eval.stats().single_entry_thunks_forced(),
+        2,
+        "each single-entry thunk forced exactly once"
+    );
 }
 
 #[test]
@@ -415,6 +560,174 @@ fn analysis_annotations_preserve_unforced_identity_call_results() {
     ] {
         assert_annotated_fallible_observation_matches_conservative(source);
     }
+}
+
+#[test]
+fn capture_plans_match_runtime_slot_reads() {
+    // FV-5 validation: every captured-prefix slot read performed while a
+    // planned thunk body runs must be inside the site's flat capture plan.
+    let mut total_reads_checked = 0;
+    for source in [
+        "let a = 1 + 1; b = a + 2; in b + a",
+        "(x: y: x + y) 3 4",
+        "let f = x: x + 1; in f (f 2)",
+        "let a = 1 + 1; in (x: a + x) 5",
+        "rec { m = n + 1; n = 2; }.m",
+        "let a = 1 + 1; in let b = a + 1; in (x: a + b + x) 1",
+        "({ x ? 1, y ? x }: x + y) {}",
+        "builtins.length (builtins.map (e: e + 1) [ 1 2 3 ])",
+        "let xs = [ 1 2 3 ]; in builtins.foldl' (acc: e: acc + e) 0 xs",
+        r#"let s = "a" + "b"; t = s + "c"; in builtins.stringLength t"#,
+    ] {
+        let mut ir = lower(source);
+        crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+        let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::default());
+        evaluator.enable_capture_plan_validation();
+        evaluator.eval_root().expect("source evaluates");
+        assert!(
+            evaluator.capture_plan_violations().is_empty(),
+            "{source}: {:?}",
+            evaluator.capture_plan_violations()
+        );
+        total_reads_checked += evaluator.capture_plan_reads_checked();
+    }
+    assert!(
+        total_reads_checked > 0,
+        "the validation harness must observe captured-prefix reads"
+    );
+}
+
+#[test]
+fn capture_plan_validation_detects_understated_plans() {
+    // Harness self-check: corrupt one thunk site's plan to claim an empty
+    // free-variable set; the body's real captured-prefix read must surface
+    // as a violation.
+    let source = "let a = 1 + 1; b = a + 2; in b";
+    let mut ir = lower(source);
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+    let mut corrupted = 0;
+    for index in 0..ir.arena.nodes().len() as u32 {
+        let id = crate::compile::IrId::new(index);
+        let node = ir.arena.node(id).expect("node exists");
+        if node.kind != crate::compile::IrKind::ThunkAlloc {
+            continue;
+        }
+        if let Some(crate::compile::CapturePlan::Flat(slots)) = ir.facts.capture_plan(id)
+            && !slots.is_empty()
+        {
+            ir.facts.set_capture_plan(
+                id,
+                Some(crate::compile::CapturePlan::Flat(Box::new([]))),
+            );
+            corrupted += 1;
+        }
+    }
+    assert!(corrupted > 0, "corpus must contain a capturing thunk site");
+
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::default());
+    evaluator.enable_capture_plan_validation();
+    evaluator.eval_root().expect("source evaluates");
+    assert!(
+        !evaluator.capture_plan_violations().is_empty(),
+        "an understated plan must be detected"
+    );
+}
+
+/// Measurement probe: aggregates the FV-5 free-variable histogram over every
+/// `.nix` file below `AOS_NIX_CAPTURE_HISTOGRAM_DIR` (recursively) and prints
+/// the distribution. Ignored by default; run explicitly:
+///
+/// ```text
+/// AOS_NIX_CAPTURE_HISTOGRAM_DIR=/path/to/repo cargo test -p ratchet-oracle \
+///   capture_plan_free_var_histogram -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "measurement probe; needs AOS_NIX_CAPTURE_HISTOGRAM_DIR"]
+fn capture_plan_free_var_histogram_over_corpus() {
+    use crate::compile::analysis::{FREE_VAR_HISTOGRAM_BUCKETS, annotate_capture_plans};
+
+    let Ok(root) = std::env::var("AOS_NIX_CAPTURE_HISTOGRAM_DIR") else {
+        panic!("set AOS_NIX_CAPTURE_HISTOGRAM_DIR to the corpus root");
+    };
+    let mut histogram = [0usize; FREE_VAR_HISTOGRAM_BUCKETS];
+    let mut lambda_sites = 0usize;
+    let mut thunk_sites = 0usize;
+    let mut flat = 0usize;
+    let mut shared = 0usize;
+    let mut silent = 0usize;
+    let mut max_free = 0usize;
+    let mut files = 0usize;
+    let mut skipped = 0usize;
+    let mut stack = vec![std::path::PathBuf::from(root)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name == ".git") {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "nix") {
+                continue;
+            }
+            let Ok(source) = std::fs::read(&path) else {
+                skipped += 1;
+                continue;
+            };
+            let Ok(parsed) = parse_bytes(&source) else {
+                skipped += 1;
+                continue;
+            };
+            let Ok(resolved) = resolve_ast(parsed) else {
+                skipped += 1;
+                continue;
+            };
+            let Ok(mut ir) = aos_nix_dialect::nix_lower(resolved) else {
+                skipped += 1;
+                continue;
+            };
+            let Ok(report) = annotate_capture_plans(&mut ir) else {
+                skipped += 1;
+                continue;
+            };
+            files += 1;
+            for (bucket, count) in report.free_var_histogram.iter().enumerate() {
+                histogram[bucket] += count;
+            }
+            lambda_sites += report.lambda_sites;
+            thunk_sites += report.thunk_sites;
+            flat += report.flat_plans;
+            shared += report.shared_chain_plans;
+            silent += report.pure_silent_thunk_bodies;
+            max_free = max_free.max(report.max_free_vars);
+        }
+    }
+    println!("files analyzed: {files} (skipped {skipped})");
+    println!("lambda sites: {lambda_sites}, thunk sites: {thunk_sites}");
+    println!("flat plans: {flat}, shared-chain plans: {shared}");
+    println!("pure-silent thunk bodies (call-by-name candidates): {silent}");
+    println!("max free vars: {max_free}");
+    let total: usize = histogram.iter().sum();
+    let mut cumulative = 0usize;
+    for (size, count) in histogram.iter().enumerate() {
+        cumulative += count;
+        let label = if size == FREE_VAR_HISTOGRAM_BUCKETS - 1 {
+            format!("{size}+")
+        } else {
+            size.to_string()
+        };
+        println!(
+            "free={label:>3}: {count:>7} ({:5.1}% cum {:5.1}%)",
+            100.0 * *count as f64 / total.max(1) as f64,
+            100.0 * cumulative as f64 / total.max(1) as f64,
+        );
+    }
+    assert!(files > 0, "corpus contained no analyzable .nix files");
 }
 
 /// Pins the `derivationStrict` dialect-op key the core strictness analysis

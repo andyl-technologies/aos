@@ -333,6 +333,8 @@ enum FindFileLookupOrigin {
 // re-exported here so siblings (and the public path) keep resolving them.
 mod api;
 mod campaign_counters;
+#[cfg(test)]
+mod capture_validation;
 mod error_kind;
 mod errors;
 mod op_types;
@@ -1369,6 +1371,10 @@ pub struct TreeWalk {
     tree_walk_list_wrapper_calls: usize,
     #[cfg(test)]
     gc_stress_permanent_root_allocation_dispatches: Vec<RuntimeAllocationEntryPoint>,
+    // Test-mode FV-5 capture-plan validation state. `None` (the default)
+    // keeps every hook a no-op; see `capture_validation`.
+    #[cfg(test)]
+    capture_plan_validation: Option<Box<std::cell::RefCell<capture_validation::CaptureValidationState>>>,
 }
 
 /// Reports cold hash-consed values ensured in the indexed persistent value pack.

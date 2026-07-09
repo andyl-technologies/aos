@@ -299,8 +299,13 @@ fn single_entry_thunk_plan_uses_direct_force_storage_without_parallel_payload_or
 }
 
 #[test]
-fn analyzer_produced_direct_body_let_thunk_uses_single_entry_storage() {
-    let mut ir = lower("let x = 1 + 6; in x");
+fn analyzer_produced_consumed_position_let_thunk_uses_single_entry_storage() {
+    // The binding is forced in place by the `+` operand position: consumed
+    // during the frame's own execution, so the per-frame reachability proof
+    // admits single-entry storage. (The former direct-body shape
+    // `let x = ...; in x` now fails closed: its frame result can be cached
+    // as a raw handle by an enclosing update thunk and re-forced.)
+    let mut ir = lower("let x = 1 + 6; in x + 1");
     let thunk_alloc = first_thunk_alloc_id(&ir);
     crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
     let facts = ir
@@ -310,12 +315,12 @@ fn analyzer_produced_direct_body_let_thunk_uses_single_entry_storage() {
     assert_eq!(
         facts.cardinality,
         crate::compile::Cardinality::Once,
-        "direct body use proves single entry"
+        "single operand use proves single entry"
     );
     assert_eq!(
         facts.escape,
         crate::compile::Escape::NoEscape,
-        "direct body use proves frame locality"
+        "consumed operand use proves frame locality"
     );
     assert_eq!(
         facts.strictness,
@@ -329,9 +334,9 @@ fn analyzer_produced_direct_body_let_thunk_uses_single_entry_storage() {
     );
     let value = evaluator
         .eval_root()
-        .expect("annotated direct-body let evaluates");
+        .expect("annotated consumed-position let evaluates");
 
-    assert_eq!(value.as_int(), Ok(7));
+    assert_eq!(value.as_int(), Ok(8));
     assert_eq!(evaluator.stats().thunks_allocated(), 1);
     assert_eq!(evaluator.stats().thunks_forced(), 1);
     assert_eq!(evaluator.stats().thunk_cache_hits(), 0);

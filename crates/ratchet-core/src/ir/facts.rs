@@ -24,6 +24,8 @@
 //! hint and by passes that need existence-of-demand, never as an eager
 //! license.
 
+use crate::scope::Upvalue;
+
 use super::IrId;
 
 /// Whether evaluating an enclosing expression is known to demand this node.
@@ -120,6 +122,17 @@ impl ExprFacts {
         }
     }
 
+    /// Returns whether this node is staged Strict+NoEscape for JIT tiers.
+    ///
+    /// A node that is both proven demanded before any observable event
+    /// (S1 + S2) and frame-local may be lowered by a compiling tier as an
+    /// eager, unboxed temporary: no thunk cell, no heap publication. This is
+    /// a staging fact only — no current tier consumes it; the tier-1/tier-2
+    /// lowering seams read it when their unboxed-temporary lowering lands.
+    pub const fn jit_strict_no_escape_stage(self) -> bool {
+        self.strictness.is_demanded_before_effect() && matches!(self.escape, Escape::NoEscape)
+    }
+
     /// Returns the thunk-sharing mode licensed by these facts.
     ///
     /// Single-entry thunks are only safe when the cardinality proof says the
@@ -165,11 +178,50 @@ pub enum ThunkSharing {
     Omit,
 }
 
+/// The free-variable capture plan computed for one allocation site.
+///
+/// A capture plan is produced for every lambda construction and thunk
+/// allocation node. It names the value representation a runtime may use for
+/// the site's captured lexical environment (the FV-5 flat-capture campaign's
+/// input fact):
+///
+/// - [`CapturePlan::Flat`] proves the site's body reads at most the listed
+///   `(depth, slot)` coordinates from the environment active at the
+///   allocation site, so a consumer may copy exactly those slots instead of
+///   retaining the whole shared frame chain. Coordinates are relative to the
+///   allocation-site environment: depth 0 is its innermost frame.
+/// - [`CapturePlan::SharedChain`] keeps the conservative whole-chain capture,
+///   with the reason the flat plan was declined.
+///
+/// The plan covers only the lexical frame chain. Dynamic `with` scopes and
+/// scoped-import globals are separate captures and are unaffected, except
+/// that a body probing dynamic scope declines the flat plan entirely (its
+/// probes fall back to lexically captured frames through the resolver's
+/// chain metadata).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CapturePlan {
+    /// Capture exactly these environment coordinates.
+    Flat(Box<[Upvalue]>),
+    /// Keep capturing the whole shared frame chain.
+    SharedChain(SharedChainReason),
+}
+
+/// Why a capture plan fell back to the shared frame chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SharedChainReason {
+    /// The free-variable set exceeded the flat-capture width cap.
+    TooManyFreeVars,
+    /// The body probes dynamic (`with`) scope.
+    DynamicScope,
+    /// A free-variable coordinate did not fit the plan encoding.
+    CoordinateOverflow,
+}
+
 /// Per-node analysis facts for one lowered IR artifact.
 ///
 /// Entries are indexed by [`IrId`] and are expected to stay in one-to-one order
 /// with the node arena. Alongside the per-node [`ExprFacts`] records the table
-/// carries two per-node bits:
+/// carries two per-node bits and one sparse per-node plan:
 ///
 /// - a `tryEval` barrier bit: nodes that root the argument subtree of a
 ///   `builtins.tryEval` application. No transform in the current pipeline
@@ -177,11 +229,14 @@ pub enum ThunkSharing {
 ///   computations must not be moved across a `tryEval` catch boundary).
 /// - an eager-assembly bit ([`Self::assembly_eager`]): binding-value thunk
 ///   allocations that a frame assembler may evaluate directly to WHNF.
+/// - a capture plan ([`Self::capture_plan`]): the free-variable capture plan
+///   for lambda construction and thunk allocation sites (FV-5 input).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IrFacts {
     nodes: Box<[ExprFacts]>,
     try_eval_barriers: Box<[bool]>,
     assembly_eager: Box<[bool]>,
+    capture_plans: Box<[Option<CapturePlan>]>,
 }
 
 impl IrFacts {
@@ -191,6 +246,7 @@ impl IrFacts {
             nodes: vec![ExprFacts::conservative(); node_count].into_boxed_slice(),
             try_eval_barriers: vec![false; node_count].into_boxed_slice(),
             assembly_eager: vec![false; node_count].into_boxed_slice(),
+            capture_plans: vec![None; node_count].into_boxed_slice(),
         }
     }
 
@@ -286,5 +342,30 @@ impl IrFacts {
     /// Returns all eager-assembly bits in IR node order.
     pub fn assembly_eager_bits(&self) -> &[bool] {
         &self.assembly_eager
+    }
+
+    /// Returns the capture plan computed for an allocation site, if any.
+    ///
+    /// Only lambda construction and thunk allocation nodes carry plans; every
+    /// other node (and out-of-range ids) returns `None`. A missing plan on an
+    /// allocation site means the capture analysis has not run (or declined
+    /// the whole module) and consumers must keep the shared-chain capture.
+    pub fn capture_plan(&self, id: IrId) -> Option<&CapturePlan> {
+        self.capture_plans.get(id.index())?.as_ref()
+    }
+
+    /// Installs the capture plan for an allocation site.
+    ///
+    /// Out-of-range ids are ignored; the plan table always mirrors the
+    /// node-fact table length.
+    pub fn set_capture_plan(&mut self, id: IrId, plan: Option<CapturePlan>) {
+        if let Some(slot) = self.capture_plans.get_mut(id.index()) {
+            *slot = plan;
+        }
+    }
+
+    /// Returns all capture plans in IR node order.
+    pub fn capture_plans(&self) -> &[Option<CapturePlan>] {
+        &self.capture_plans
     }
 }

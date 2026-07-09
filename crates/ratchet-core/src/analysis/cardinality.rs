@@ -1,11 +1,27 @@
 //! Cardinality and usage analysis over lowered IR.
 //!
-//! This first pass is intentionally local. It recognizes simple `let` frames
-//! whose same-frame slot uses can be counted syntactically, annotates binding
-//! value nodes as [`Cardinality::Absent`] or [`Cardinality::Once`] when proven,
-//! and leaves every obscured or multi-use binding at the conservative
-//! [`Cardinality::Many`] default. It does not yet perform the whole-program
-//! demand fixpoint or lower single-entry thunk representations.
+//! The pass counts, per `let` frame, how many times each binding's slot can be
+//! demanded during one execution of the frame, and annotates binding value
+//! nodes as [`Cardinality::Absent`] or [`Cardinality::Once`] when proven. The
+//! count is an upper bound: any position whose entry multiplicity cannot be
+//! bounded contributes [`UsageCount::Many`].
+//!
+//! The counter walks *through* nested frames instead of giving up on them
+//! (Phase 4 Chunk C widening):
+//!
+//! - references from a lambda body whose lambda is the direct callee of an
+//!   application count exactly once per application (the body runs once);
+//! - references from any other lambda body count as many-entry (the closure
+//!   may be called any number of times), instead of poisoning the whole
+//!   frame;
+//! - nested `let` frames and recursive attribute-set frames count through
+//!   with their depth shift: their binding-value thunks are update-shared, so
+//!   each body executes at most once per frame execution;
+//! - non-recursive attribute-set bindings were already counted in place.
+//!
+//! References to the analyzed frame's slots appear as [`IrData::Local`] at
+//! nesting depth zero and as [`IrData::Upval`] whose depth equals the number
+//! of intervening runtime frames; the walk tracks that depth exactly.
 
 use thiserror::Error;
 
@@ -84,9 +100,12 @@ pub enum CardinalityAnalysisError {
 
 /// Annotates binding values whose local usage cardinality is proven.
 ///
-/// The pass mutates `ir.facts` in place. It only refines `let` binding value
-/// nodes when all uses of the frame can be counted without crossing another
-/// frame-producing node.
+/// The pass mutates `ir.facts` in place. Slot uses are counted through nested
+/// pure expressions, nested frames (with exact depth adjustment), directly
+/// applied lambda bodies (once per application), other lambda bodies (as
+/// many-entry uses), and attribute-set bindings. Any structurally uncountable
+/// shape leaves the frame's bindings at the conservative
+/// [`Cardinality::Many`] default.
 ///
 /// # Errors
 ///
@@ -175,7 +194,7 @@ impl<'a> CardinalityAnalyzer<'a> {
     ) -> Result<(), CardinalityAnalysisError> {
         let bindings = self.binding_values(id, bindings)?;
         let mut counter = LocalUsageCounter::new(self, bindings.len());
-        counter.count_node(body)?;
+        counter.count_node(body, 0, UseMultiplicity::Once)?;
         counter.count_demanded_binding_values(&bindings)?;
         if !counter.complete {
             for binding in &bindings {
@@ -498,11 +517,34 @@ impl UsageCount {
     }
 }
 
+/// How many times one syntactic position may be entered per frame execution.
+///
+/// A [`UseMultiplicity::Once`] position runs at most once whenever the
+/// analyzed frame executes once (bodies, direct-call lambda bodies, lazy
+/// binding-value thunks). A [`UseMultiplicity::Many`] position may run any
+/// number of times (bodies of closures that escape into unknown call sites).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UseMultiplicity {
+    Once,
+    Many,
+}
+
+/// Node-visit budget per analyzed frame.
+///
+/// The counter walks through nested frames, so an enormous frame subtree
+/// (machine-generated modules, the whole-package attrset spine) could make
+/// per-frame counting super-linear across deeply nested `let`s. Exhausting
+/// the budget marks the count incomplete, which keeps every binding of the
+/// frame at the conservative [`Cardinality::Many`] — the same failure mode
+/// as any other uncountable shape.
+const FRAME_COUNT_BUDGET: usize = 4096;
+
 #[derive(Debug)]
 struct LocalUsageCounter<'a, 'b> {
     analyzer: &'a CardinalityAnalyzer<'b>,
     counts: Vec<UsageCount>,
     complete: bool,
+    budget: usize,
 }
 
 impl<'a, 'b> LocalUsageCounter<'a, 'b> {
@@ -511,12 +553,43 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
             analyzer,
             counts: vec![UsageCount::Zero; slots],
             complete: true,
+            budget: FRAME_COUNT_BUDGET,
         }
     }
 
-    fn count_node(&mut self, id: IrId) -> Result<(), CardinalityAnalysisError> {
+    fn record_use(&mut self, slot: usize, multiplicity: UseMultiplicity) {
+        let Some(count) = self.counts.get_mut(slot) else {
+            self.complete = false;
+            return;
+        };
+        *count = match multiplicity {
+            UseMultiplicity::Once => count.increment(),
+            UseMultiplicity::Many => UsageCount::Many,
+        };
+    }
+
+    /// Counts uses of the analyzed frame's slots inside `id`.
+    ///
+    /// `depth` is the number of runtime frames between the analyzed frame and
+    /// the position being counted (0 inside the frame's own body/values), so
+    /// a slot use appears as `Local` at depth 0 and as `Upval` whose depth
+    /// field equals `depth` otherwise. `multiplicity` bounds how many times
+    /// this position may execute per frame execution.
+    fn count_node(
+        &mut self,
+        id: IrId,
+        depth: u32,
+        multiplicity: UseMultiplicity,
+    ) -> Result<(), CardinalityAnalysisError> {
         if !self.complete {
             return Ok(());
+        }
+        match self.budget.checked_sub(1) {
+            Some(remaining) => self.budget = remaining,
+            None => {
+                self.complete = false;
+                return Ok(());
+            }
         }
         let node = *self.analyzer.node(id)?;
         match node.kind {
@@ -528,14 +601,61 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
                         "local slot payload",
                     ));
                 };
-                let Some(count) = self.counts.get_mut(slot as usize) else {
-                    self.complete = false;
-                    return Ok(());
-                };
-                *count = count.increment();
+                if depth == 0 {
+                    self.record_use(slot as usize, multiplicity);
+                }
             }
-            IrKind::Let | IrKind::Lambda | IrKind::FormalSet | IrKind::Formal => {
-                self.complete = false;
+            IrKind::UpvalVar => {
+                let IrData::Upval {
+                    depth: upval_depth,
+                    slot,
+                } = node.data
+                else {
+                    return Err(CardinalityAnalyzer::invalid_payload(
+                        id,
+                        node.kind,
+                        "upvalue slot payload",
+                    ));
+                };
+                if upval_depth == depth {
+                    self.record_use(slot as usize, multiplicity);
+                }
+            }
+            IrKind::Apply => {
+                let IrData::Pair {
+                    first: callee,
+                    second: argument,
+                } = node.data
+                else {
+                    return Err(CardinalityAnalyzer::invalid_payload(
+                        id,
+                        node.kind,
+                        "pair payload",
+                    ));
+                };
+                self.count_apply(callee, argument, depth, multiplicity)?;
+            }
+            IrKind::Lambda => {
+                // A closure whose call sites are unknown may run any number
+                // of times; its body's slot uses saturate instead of
+                // poisoning the frame.
+                self.count_lambda(id, node, depth, UseMultiplicity::Many)?;
+            }
+            IrKind::Let => {
+                let IrData::Let { bindings, body, .. } = node.data else {
+                    return Err(CardinalityAnalyzer::invalid_payload(
+                        id,
+                        node.kind,
+                        "let payload",
+                    ));
+                };
+                // A nested `let` pushes one runtime frame around both its
+                // binding values and its body. Each binding value is an
+                // update-shared thunk, so its body runs at most once per
+                // frame execution; counting every value (demanded or not) is
+                // a sound upper bound.
+                self.count_bindings(id, bindings, depth + 1, multiplicity)?;
+                self.count_node(body, depth + 1, multiplicity)?;
             }
             IrKind::If => {
                 let IrData::Triple {
@@ -550,8 +670,8 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
                         "triple payload",
                     ));
                 };
-                self.count_node(condition)?;
-                self.count_conditional_branches(then_branch, else_branch)?;
+                self.count_node(condition, depth, multiplicity)?;
+                self.count_conditional_branches(then_branch, else_branch, depth, multiplicity)?;
             }
             IrKind::AttrSet => {
                 let IrData::AttrSet {
@@ -566,39 +686,123 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
                         "attrset payload",
                     ));
                 };
-                if recursive {
-                    self.complete = false;
-                    return Ok(());
-                }
-                self.count_bindings(id, bindings)?;
+                // A recursive attrset pushes one runtime frame around its
+                // binding values; a plain literal evaluates them in place.
+                // Either way each value thunk is update-shared and runs at
+                // most once per frame execution.
+                let binding_depth = if recursive { depth + 1 } else { depth };
+                self.count_bindings(id, bindings, binding_depth, multiplicity)?;
+            }
+            IrKind::FormalSet | IrKind::Formal => {
+                // Patterns are only reachable through their lambda, which
+                // counts them explicitly with the body's frame depth. A
+                // pattern in any other position is uncountable.
+                self.complete = false;
             }
             _ => {
                 for child in self.analyzer.child_nodes(id, node)? {
-                    self.count_node(child)?;
+                    self.count_node(child, depth, multiplicity)?;
                 }
             }
         }
         Ok(())
     }
 
+    /// Counts an application, running a directly applied lambda body once.
+    ///
+    /// `(x: body) arg` executes `body` exactly once per evaluation of the
+    /// application, so outer-frame uses inside `body` count at the call
+    /// site's multiplicity instead of saturating to many.
+    fn count_apply(
+        &mut self,
+        callee: IrId,
+        argument: IrId,
+        depth: u32,
+        multiplicity: UseMultiplicity,
+    ) -> Result<(), CardinalityAnalysisError> {
+        self.count_node(argument, depth, multiplicity)?;
+        let callee_node = *self.analyzer.node(callee)?;
+        if callee_node.kind == IrKind::Lambda {
+            self.count_lambda(callee, callee_node, depth, multiplicity)
+        } else {
+            self.count_node(callee, depth, multiplicity)
+        }
+    }
+
+    /// Counts a lambda's pattern defaults and body at their frame depth.
+    ///
+    /// The lambda's runtime frame sits between the analyzed frame and the
+    /// body, so both the body and formal-default expressions count at
+    /// `depth + 1`. Defaults run at most once per call, so they share the
+    /// body's multiplicity.
+    fn count_lambda(
+        &mut self,
+        id: IrId,
+        node: crate::ir::IrNode,
+        depth: u32,
+        multiplicity: UseMultiplicity,
+    ) -> Result<(), CardinalityAnalysisError> {
+        let IrData::Lambda { pattern, body, .. } = node.data else {
+            return Err(CardinalityAnalyzer::invalid_payload(
+                id,
+                node.kind,
+                "lambda payload",
+            ));
+        };
+        self.count_pattern(pattern, depth + 1, multiplicity)?;
+        self.count_node(body, depth + 1, multiplicity)
+    }
+
+    fn count_pattern(
+        &mut self,
+        pattern: IrId,
+        depth: u32,
+        multiplicity: UseMultiplicity,
+    ) -> Result<(), CardinalityAnalysisError> {
+        if !self.complete {
+            return Ok(());
+        }
+        let node = *self.analyzer.node(pattern)?;
+        match (node.kind, node.data) {
+            (IrKind::Formal, IrData::Formal { default, .. }) => {
+                if let Some(default) = default {
+                    self.count_node(default, depth, multiplicity)?;
+                }
+                Ok(())
+            }
+            (IrKind::FormalSet, IrData::FormalSet { formals, .. }) => {
+                for formal in self.analyzer.child_ids(pattern, formals)? {
+                    self.count_pattern(formal, depth, multiplicity)?;
+                }
+                Ok(())
+            }
+            _ => {
+                self.complete = false;
+                Ok(())
+            }
+        }
+    }
+
     fn count_conditional_branches(
         &mut self,
         then_branch: IrId,
         else_branch: IrId,
+        depth: u32,
+        multiplicity: UseMultiplicity,
     ) -> Result<(), CardinalityAnalysisError> {
         // Branches are mutually exclusive, but both inherit the condition's
         // already-counted slot uses. Measure each branch delta from that shared
         // baseline, then apply the larger possible branch contribution.
         let counts_before_branches = self.counts.clone();
 
-        self.count_node(then_branch)?;
+        self.count_node(then_branch, depth, multiplicity)?;
         if !self.complete {
             return Ok(());
         }
         let then_counts = self.counts.clone();
 
         self.counts = counts_before_branches.clone();
-        self.count_node(else_branch)?;
+        self.count_node(else_branch, depth, multiplicity)?;
         if !self.complete {
             return Ok(());
         }
@@ -632,7 +836,7 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
                 return Ok(());
             };
             counted_values[slot] = true;
-            self.count_node(bindings[slot].value)?;
+            self.count_node(bindings[slot].value, 0, UseMultiplicity::Once)?;
         }
     }
 
@@ -647,12 +851,14 @@ impl<'a, 'b> LocalUsageCounter<'a, 'b> {
         &mut self,
         id: IrId,
         slice: IrBindingSlice,
+        depth: u32,
+        multiplicity: UseMultiplicity,
     ) -> Result<(), CardinalityAnalysisError> {
         for binding in self.analyzer.binding_values(id, slice)? {
             if let IrAttrPathSegment::Dynamic(key) = binding.key {
-                self.count_node(key)?;
+                self.count_node(key, depth, multiplicity)?;
             }
-            self.count_node(binding.value)?;
+            self.count_node(binding.value, depth, multiplicity)?;
         }
         Ok(())
     }

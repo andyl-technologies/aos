@@ -218,6 +218,79 @@ fn lowered_ir_fact_artifacts_roundtrip_boolean_fact_bits() {
 }
 
 #[test]
+fn lowered_ir_fact_artifacts_roundtrip_capture_plans() {
+    let mut facts = IrFacts::conservative(4);
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-capture-plan-test");
+    facts.set_capture_plan(
+        IrId::new(1),
+        Some(CapturePlan::Flat(Box::new([
+            Upvalue { depth: 0, slot: 2 },
+            Upvalue { depth: 3, slot: 1 },
+        ]))),
+    );
+    facts.set_capture_plan(
+        IrId::new(2),
+        Some(CapturePlan::SharedChain(SharedChainReason::DynamicScope)),
+    );
+    facts.set_capture_plan(IrId::new(3), Some(CapturePlan::Flat(Box::new([]))));
+
+    let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION)
+        .expect("fact artifact encodes");
+    let (decoded, analysis_version) =
+        decode_ir_facts(&encoded, 4, fingerprint).expect("fact artifact decodes");
+
+    assert_eq!(analysis_version, crate::compile::IR_ANALYSIS_VERSION);
+    assert_eq!(decoded, facts);
+    assert!(decoded.capture_plan(IrId::new(0)).is_none());
+    assert_eq!(
+        decoded.capture_plan(IrId::new(2)),
+        Some(&CapturePlan::SharedChain(SharedChainReason::DynamicScope))
+    );
+}
+
+#[test]
+fn lowered_ir_fact_artifacts_without_capture_section_decode_for_old_versions() {
+    // A version-3 sidecar (or a version-0 placeholder) ends after the
+    // per-node records; decoding hydrates the facts with no capture plans.
+    let mut facts = IrFacts::conservative(2);
+    facts.set_capture_plan(
+        IrId::new(0),
+        Some(CapturePlan::SharedChain(SharedChainReason::TooManyFreeVars)),
+    );
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-capture-version-test");
+
+    for version in [0u32, 2, 3] {
+        let encoded =
+            encode_ir_facts(&facts, fingerprint, version).expect("fact artifact encodes");
+        let (decoded, analysis_version) =
+            decode_ir_facts(&encoded, 2, fingerprint).expect("fact artifact decodes");
+        assert_eq!(analysis_version, version);
+        assert!(
+            decoded.capture_plans().iter().all(Option::is_none),
+            "pre-4 sidecars must decode with no capture plans"
+        );
+    }
+}
+
+#[test]
+fn lowered_ir_fact_artifacts_reject_invalid_capture_plan_tags() {
+    let mut facts = IrFacts::conservative(1);
+    facts.set_capture_plan(IrId::new(0), Some(CapturePlan::Flat(Box::new([]))));
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-capture-tag-test");
+    let mut encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION)
+        .expect("fact artifact encodes");
+    // magic + artifact version + analysis version + fingerprint + count +
+    // one per-node record (3 tags + flag byte) + plan count + node id puts
+    // the plan tag next.
+    let plan_tag_offset = FACTS_MAGIC.len() + 4 + 4 + 32 + 4 + 4 + 4 + 4;
+    encoded[plan_tag_offset] = 9;
+
+    let error = decode_ir_facts(&encoded, 1, fingerprint).expect_err("invalid plan tag errors");
+
+    assert!(error.contains("invalid capture plan tag"), "{error}");
+}
+
+#[test]
 fn lowered_ir_fact_artifacts_reject_invalid_flag_bytes() {
     let facts = IrFacts::conservative(1);
     let fingerprint = test_lowered_ir_fingerprint(b"fact-flag-test");

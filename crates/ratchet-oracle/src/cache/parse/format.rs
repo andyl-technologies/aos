@@ -17,11 +17,19 @@
 //! symbols.bin:  "AOSNIXSY" version symbol_count <len-prefixed symbol bytes>
 //! facts.bin:    "AOSNIXFT" version analysis_version ir_fingerprint fact_count
 //!               <strictness/cardinality/escape tags + flag byte>
+//!               capture_plan_count
+//!               <node_id plan_tag [reason | slot_count <depth slot>*]>
 //! ```
 //!
 //! The per-node `facts.bin` flag byte packs the boolean fact bits: bit 0 is
 //! the `tryEval` barrier and bit 1 the eager-assembly license (written by
 //! analysis version 3 producers; older sidecars only ever wrote bit 0).
+//!
+//! The capture-plan section exists only in sidecars whose `analysis_version`
+//! is 4 or newer. Each entry names an allocation-site node id, a plan tag
+//! (`0` = flat capture followed by a `(depth, slot)` coordinate list, `1` =
+//! shared chain followed by a reason tag). Version 3 and older sidecars end
+//! after the per-node records and decode with no capture plans.
 //!
 //! Per-element encoders and the [`BinaryReader`] live in the sibling
 //! [`mod@codec`] module; structural validation of decoded artifacts lives in
@@ -245,7 +253,102 @@ pub(super) fn encode_ir_facts(
         let id = IrId::new(index as u32);
         out.push(node_fact_flags(facts, id));
     }
+    // The capture-plan section is part of the version-4 layout; placeholder
+    // sidecars stamped with older analysis versions (notably the version-0
+    // conservative tables) keep the pre-4 byte stream so their readers'
+    // version-gated decoding sees exactly the sections the stamp promises.
+    if analysis_version >= 4 {
+        encode_capture_plans(&mut out, facts)?;
+    }
     Ok(out)
+}
+
+/// Plan tag for [`CapturePlan::Flat`] entries.
+const CAPTURE_PLAN_FLAT: u8 = 0;
+
+/// Plan tag for [`CapturePlan::SharedChain`] entries.
+const CAPTURE_PLAN_SHARED_CHAIN: u8 = 1;
+
+fn encode_capture_plans(out: &mut Vec<u8>, facts: &IrFacts) -> Result<(), ParseCacheError> {
+    let planned = facts
+        .capture_plans()
+        .iter()
+        .filter(|plan| plan.is_some())
+        .count();
+    write_len(out, planned, "IR capture plan count")?;
+    for (index, plan) in facts.capture_plans().iter().enumerate() {
+        let Some(plan) = plan else {
+            continue;
+        };
+        write_u32(out, index as u32);
+        match plan {
+            CapturePlan::Flat(slots) => {
+                out.push(CAPTURE_PLAN_FLAT);
+                write_len(out, slots.len(), "IR capture plan slot count")?;
+                for slot in slots.as_ref() {
+                    out.extend_from_slice(&slot.depth.to_le_bytes());
+                    out.extend_from_slice(&slot.slot.to_le_bytes());
+                }
+            }
+            CapturePlan::SharedChain(reason) => {
+                out.push(CAPTURE_PLAN_SHARED_CHAIN);
+                out.push(shared_chain_reason_tag(*reason));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn shared_chain_reason_tag(reason: SharedChainReason) -> u8 {
+    match reason {
+        SharedChainReason::TooManyFreeVars => 0,
+        SharedChainReason::DynamicScope => 1,
+        SharedChainReason::CoordinateOverflow => 2,
+    }
+}
+
+fn decode_shared_chain_reason(tag: u8) -> Result<SharedChainReason, String> {
+    match tag {
+        0 => Ok(SharedChainReason::TooManyFreeVars),
+        1 => Ok(SharedChainReason::DynamicScope),
+        2 => Ok(SharedChainReason::CoordinateOverflow),
+        tag => Err(format!("invalid capture plan shared-chain reason tag {tag}")),
+    }
+}
+
+fn decode_capture_plans(
+    reader: &mut BinaryReader<'_>,
+    facts: &mut IrFacts,
+    expected_node_count: usize,
+) -> Result<(), String> {
+    let plan_count = reader.read_len("IR capture plan count")?;
+    for _ in 0..plan_count {
+        let index = reader.read_u32()? as usize;
+        if index >= expected_node_count {
+            return Err(format!(
+                "IR capture plan node id {index} exceeds node count {expected_node_count}"
+            ));
+        }
+        let plan = match reader.read_u8()? {
+            CAPTURE_PLAN_FLAT => {
+                let slot_count = reader.read_len("IR capture plan slot count")?;
+                let mut slots = Vec::with_capacity(slot_count);
+                for _ in 0..slot_count {
+                    slots.push(Upvalue {
+                        depth: reader.read_u16()?,
+                        slot: reader.read_u16()?,
+                    });
+                }
+                CapturePlan::Flat(slots.into_boxed_slice())
+            }
+            CAPTURE_PLAN_SHARED_CHAIN => {
+                CapturePlan::SharedChain(decode_shared_chain_reason(reader.read_u8()?)?)
+            }
+            tag => return Err(format!("invalid capture plan tag {tag}")),
+        };
+        facts.set_capture_plan(IrId::new(index as u32), Some(plan));
+    }
+    Ok(())
 }
 
 /// Bit 0 of the per-node flag byte: `tryEval` barrier.
@@ -309,6 +412,11 @@ pub(super) fn decode_ir_facts(
         let flags = decode_node_fact_flags(reader.read_u8()?)?;
         facts.set_try_eval_barrier(id, flags & FACT_FLAG_TRY_EVAL_BARRIER != 0);
         facts.set_assembly_eager(id, flags & FACT_FLAG_ASSEMBLY_EAGER != 0);
+    }
+    // The capture-plan section was introduced by analysis version 4; older
+    // sidecars end after the per-node records and hydrate with no plans.
+    if analysis_version >= 4 {
+        decode_capture_plans(&mut reader, &mut facts, expected_node_count)?;
     }
     reader.expect_eof()?;
     Ok((facts, analysis_version))

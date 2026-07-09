@@ -798,6 +798,16 @@ impl TreeWalk {
         let Some(shared) = self.shared.as_ref() else {
             return;
         };
+        // Defensive single-entry filter (S7): a single-entry thunk carries no
+        // parallel payload cell, so handing one to a helper would let two
+        // workers run its body concurrently. The C-8 frame-local proof keeps
+        // such thunks off every fan-out surface, but the publish boundary
+        // re-checks rather than trusting the analysis.
+        let values: Vec<Value> = values
+            .iter()
+            .copied()
+            .filter(|value| !self.is_single_entry_thunk_value(*value))
+            .collect();
         if values.is_empty() || (kind == DemandTaskKind::Force && values.len() < 2) {
             return;
         }
@@ -819,6 +829,20 @@ impl TreeWalk {
             .counters
             .dropped
             .fetch_add((published - accepted) as u64, Ordering::Relaxed);
+    }
+
+    /// Returns whether `value` is a thunk using single-entry force storage.
+    ///
+    /// Unreadable heap handles answer `true` (filtered) so the publish path
+    /// fails closed; the publisher performs the same work serially anyway.
+    fn is_single_entry_thunk_value(&self, value: Value) -> bool {
+        if value.tag() != ValueTag::Thunk {
+            return false;
+        }
+        match self.heap.get_thunk(value) {
+            Ok(thunk) => thunk.is_single_entry_force_storage(),
+            Err(_) => true,
+        }
     }
 
     /// Publishes coercion fan-out for a list-valued derivation attribute.

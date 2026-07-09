@@ -567,6 +567,8 @@ impl TreeWalk {
                 node.span,
             ));
         };
+        #[cfg(test)]
+        self.capture_validation_on_slot_read(0, slot);
         frame
             .get(slot)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span))
@@ -588,6 +590,8 @@ impl TreeWalk {
             ));
         }
         let index = self.env.len() - 1 - depth;
+        #[cfg(test)]
+        self.capture_validation_on_slot_read(depth, slot);
         self.env[index]
             .get(slot)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span))
@@ -687,7 +691,12 @@ impl TreeWalk {
         span: Span,
     ) -> Result<Value, TreeWalkError> {
         let thunk = self.thunk_for_node(id, body, span)?.into_single_entry();
-        let value = self.alloc_tree_walk_thunk(id, span, thunk)?;
+        // Single-entry storage bypasses the parallel payload-cell admission
+        // entirely (S7): the C-8 frame-local proof keeps the thunk off every
+        // cross-thread path, so it gets a plain cell with no CAS protocol and
+        // skips the admission's per-allocation claim-error construction.
+        let value = self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk)?;
+        self.increment_single_entry_thunks_allocated();
         let region_plan = self.region_plan_for_allocation(id, RegionRuntimeTier::OneShotArena);
         self.record_source_thunk_region_plan_decision(region_plan);
         Ok(value)
@@ -904,14 +913,35 @@ impl TreeWalk {
         span: Span,
         thunk: EvalThunk,
     ) -> Result<Value, TreeWalkError> {
+        let thunk = self.admit_parallel_thunk_payload_cell(id, span, thunk);
+        self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk)
+    }
+
+    /// Allocates a thunk record without consulting the parallel payload-cell
+    /// admission.
+    ///
+    /// This is the single-entry allocation path: the C-8 frame-local proof
+    /// already guarantees the record is unreachable from other workers, so
+    /// the shared claim protocol (and the admission's eagerly built
+    /// claim-drop error) is skipped.
+    fn alloc_tree_walk_thunk_without_parallel_cell(
+        &mut self,
+        id: IrId,
+        span: Span,
+        thunk: EvalThunk,
+    ) -> Result<Value, TreeWalkError> {
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_thunk_allocation_safepoint(id, &thunk);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
+        #[cfg(test)]
+        let kind_is_node = matches!(thunk.kind(), EvalThunkKind::Node { .. });
         let value = self
             .heap
-            .alloc_thunk(self.admit_parallel_thunk_payload_cell(id, span, thunk))
+            .alloc_thunk(thunk)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        #[cfg(test)]
+        self.capture_validation_record_alloc(id, value, kind_is_node);
         self.increment_thunks_allocated();
         if dispatch_gc_stress_safepoint {
             self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
@@ -1697,13 +1727,24 @@ impl TreeWalk {
         thunk: &EvalThunk,
     ) -> Result<Value, TreeWalkError> {
         if thunk.is_single_entry_force_storage() {
-            return self.force_single_entry_thunk_value(
-                id,
-                span,
-                source_thunk,
-                forced_payload,
-                thunk,
-            );
+            #[cfg(test)]
+            self.capture_validation_arm_force(source_thunk, thunk.kind());
+            #[cfg(test)]
+            let result = {
+                let result = self.force_single_entry_thunk_value(
+                    id,
+                    span,
+                    source_thunk,
+                    forced_payload,
+                    thunk,
+                );
+                self.capture_validation_disarm();
+                result
+            };
+            #[cfg(not(test))]
+            let result =
+                self.force_single_entry_thunk_value(id, span, source_thunk, forced_payload, thunk);
+            return result;
         }
         match thunk
             .cell()
@@ -1717,6 +1758,8 @@ impl TreeWalk {
             }
             ForceClaim::Claimed(guard) => {
                 self.push_active_force_root(id, span, source_thunk)?;
+                #[cfg(test)]
+                self.capture_validation_arm_force(source_thunk, thunk.kind());
                 let result = self.force_claimed_thunk_with_tier1(
                     id,
                     span,
@@ -1726,6 +1769,8 @@ impl TreeWalk {
                     guard,
                 );
                 self.pop_active_force_root(source_thunk);
+                #[cfg(test)]
+                self.capture_validation_disarm();
                 result
             }
         }
@@ -1805,6 +1850,7 @@ impl TreeWalk {
         self.push_active_force_root(id, span, source_thunk)?;
         let result = (|| -> Result<Value, TreeWalkError> {
             self.increment_thunks_forced();
+            self.increment_single_entry_thunks_forced();
             self.eval_thunk_body(id, span, thunk)
         })();
         self.pop_active_force_root(source_thunk);

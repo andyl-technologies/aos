@@ -485,6 +485,8 @@ impl TreeWalk {
             tree_walk_list_wrapper_calls: 0,
             #[cfg(test)]
             gc_stress_permanent_root_allocation_dispatches: Vec::new(),
+            #[cfg(test)]
+            capture_plan_validation: None,
         }
     }
 

@@ -31,8 +31,9 @@ use thiserror::Error;
 use crate::cache::hashing::ParseCacheSourceHash;
 use crate::cache::{DurableBlake3Hash, LoweredIrFingerprint, ParseFileContentHash};
 use crate::compile::{
-    Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo, IR_ANALYSIS_VERSION,
-    InheritGroupId,
+    CapturePlan, Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo,
+    IR_ANALYSIS_VERSION,
+    InheritGroupId, SharedChainReason,
     InheritResolution, InheritSource, Ir, IrAnalysisError, IrAnalysisReport, IrArena, IrAttrPathId,
     IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError,
     IrFacts, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain,
@@ -481,7 +482,23 @@ impl CachedParse {
     ///
     /// Returns [`ParseFactRefreshError`] if analysis rejects malformed IR.
     pub fn refresh_facts(&mut self) -> Result<IrAnalysisReport, ParseFactRefreshError> {
-        annotate_ir(&mut self.ir).map_err(|source| ParseFactRefreshError::Analyze { source })
+        let report =
+            annotate_ir(&mut self.ir).map_err(|source| ParseFactRefreshError::Analyze { source })?;
+        // Capture-plan distribution telemetry (RFC-0007 Phase 4 Chunk D):
+        // per-module free-variable histogram for FLAT_CAPTURE_MAX_SLOTS
+        // sizing. Debug-level so production evals pay one disabled check.
+        tracing::debug!(
+            target: "aos_nix::analysis::capture",
+            lambda_sites = report.capture.lambda_sites,
+            thunk_sites = report.capture.thunk_sites,
+            flat_plans = report.capture.flat_plans,
+            shared_chain_plans = report.capture.shared_chain_plans,
+            max_free_vars = report.capture.max_free_vars,
+            pure_silent_thunk_bodies = report.capture.pure_silent_thunk_bodies,
+            free_var_histogram = ?report.capture.free_var_histogram,
+            "capture-plan analysis report"
+        );
+        Ok(report)
     }
 
     /// Refreshes this parsed module's analysis facts and writes its sidecar.

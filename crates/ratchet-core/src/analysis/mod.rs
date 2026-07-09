@@ -4,6 +4,7 @@
 //! records after lowering. Each pass is required to prove facts positively:
 //! uncertainty leaves the existing conservative fact unchanged.
 
+pub mod capture;
 pub mod cardinality;
 pub mod dead_binding;
 pub mod escape;
@@ -14,6 +15,10 @@ pub mod strictness;
 pub mod thunk_sharing;
 pub mod worker_wrapper;
 
+pub use capture::{
+    CaptureAnalysisError, CaptureAnalysisReport, FLAT_CAPTURE_MAX_SLOTS,
+    FREE_VAR_HISTOGRAM_BUCKETS, annotate_capture_plans,
+};
 pub use cardinality::{CardinalityAnalysisError, CardinalityAnalysisReport, annotate_cardinality};
 pub use dead_binding::{
     DeadBindingElimination, DeadBindingEliminationError, DeadBindingEliminationPlan,
@@ -21,7 +26,10 @@ pub use dead_binding::{
     dead_binding_elimination_plan,
 };
 pub use escape::{EscapeAnalysisError, EscapeAnalysisReport, annotate_escape};
-pub use escape_signature::{PrimOpEscapeSignature, primop_escape_signature};
+pub use escape_signature::{
+    PrimOpArgumentEscape, PrimOpEscapeSignature, primop_argument_escape_signature,
+    primop_escape_signature,
+};
 pub use full_laziness::{
     FullLazinessAnalysisError, FullLazinessAnalysisReport, FullLazinessCandidate,
     analyze_full_laziness,

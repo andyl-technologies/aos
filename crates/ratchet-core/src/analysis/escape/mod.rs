@@ -1,16 +1,14 @@
 //! Escape analysis over lowered IR.
 //!
-//! This first pass only proves the allocation-free bottom cases: immediate
-//! scalar literals that cannot allocate a heap object and therefore cannot
-//! publish one outside the current frame. Aggregate values, thunks, strings,
-//! paths, variables, and most nodes whose result depends on another expression
-//! stay conservative unless the current primitive-operation escape signature
-//! table proves an immediate scalar result, a strict aggregate allocation is
-//! uniquely consumed by such a scalar-result primitive operation, or a strict
-//! thunk allocation is the unique argument reference to a direct simple identity
-//! lambda and wraps a value that is already proven not to escape. Lazy `let`
-//! thunks are proven frame-local only for the narrow body-only shape
-//! `let x = ...; in x`.
+//! The pass proves the allocation-free bottom cases — immediate scalar
+//! literals, scalar-result primitive operations (via the escape-signature
+//! table), strict aggregates uniquely consumed by such operations, and strict
+//! thunk wrappers around already-proven bodies — plus, in the
+//! [`mod@frame_local`] submodule, a per-frame reachability proof for lazy
+//! `let` binding thunks: a binding thunk is frame-local when every reference
+//! to its slot across the frame sits in a consuming position (the S9
+//! result/primop clauses) and no reference is reachable from a closure
+//! capture, a container, an unknown call argument, or an interning boundary.
 
 use thiserror::Error;
 
@@ -22,6 +20,8 @@ use crate::ir::{
     IrId, IrKind,
 };
 use crate::syntax::Symbol;
+
+mod frame_local;
 
 /// Summary of one escape annotation run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -120,13 +120,12 @@ pub enum EscapeAnalysisError {
 /// [`Escape::NoEscape`]. The current positive proofs are allocation-free
 /// immediate scalar literals, direct primops whose escape signatures return an
 /// immediate scalar result, strict aggregate allocations uniquely consumed by
-/// such scalar-result primops, and strict thunk allocations that are the unique
+/// such scalar-result primops, strict thunk allocations that are the unique
 /// argument reference to a direct simple identity lambda whose body result is
-/// already proven not to escape. It also proves frame-locality for lazy `let`
-/// thunks only when the `let` body is exactly the binding's same-frame local
-/// slot, every binding key in that frame is static, and no sibling binding
-/// value captures that slot, with exactly one direct IR reference to the thunk
-/// allocation node.
+/// already proven not to escape, and lazy `let` binding thunks admitted by the
+/// per-frame reachability proof in [`mod@frame_local`] (every slot reference
+/// sits in a consuming or result-flow position; captures, containers, unknown
+/// call arguments, and interning boundaries decline).
 ///
 /// # Errors
 ///
@@ -182,7 +181,7 @@ pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalys
         facts.escape = Escape::NoEscape;
         report.nodes_marked_no_escape += 1;
     }
-    for thunk in local_let_thunks_used_once_in_body(ir)? {
+    for thunk in frame_local::frame_local_let_thunks(ir)? {
         let facts = ir
             .facts
             .get_mut(thunk)
@@ -244,260 +243,7 @@ pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalys
     Ok(report)
 }
 
-fn local_let_thunks_used_once_in_body(ir: &Ir) -> Result<Vec<IrId>, EscapeAnalysisError> {
-    let mut thunks = Vec::new();
-    for (index, node) in ir.arena.nodes().iter().copied().enumerate() {
-        if node.kind != IrKind::Let {
-            continue;
-        }
-        let let_node = IrId::new(index as u32);
-        let IrData::Let { bindings, body, .. } = node.data else {
-            return Err(EscapeAnalysisError::InvalidPayload {
-                id: let_node,
-                kind: node.kind,
-                expected: expected_payload(node.kind),
-            });
-        };
-        validate_node(ir, body)?;
-        let bindings = binding_values(ir, let_node, bindings)?;
-        for (slot, binding) in bindings.iter().copied().enumerate() {
-            if local_let_thunk_is_body_only_use(ir, &bindings, slot, binding, body)? {
-                thunks.push(binding.value);
-            }
-        }
-    }
-    Ok(thunks)
-}
-
-fn local_let_thunk_is_body_only_use(
-    ir: &Ir,
-    bindings: &[IrBinding],
-    slot: usize,
-    binding: IrBinding,
-    body: IrId,
-) -> Result<bool, EscapeAnalysisError> {
-    let IrAttrPathSegment::Static(_) = binding.key else {
-        return Ok(false);
-    };
-    if bindings
-        .iter()
-        .any(|binding| matches!(binding.key, IrAttrPathSegment::Dynamic(_)))
-    {
-        return Ok(false);
-    }
-    if !body_is_direct_local_slot(ir, body, slot)? {
-        return Ok(false);
-    }
-    let value_node = *ir
-        .arena
-        .node(binding.value)
-        .ok_or(EscapeAnalysisError::InvalidNode { id: binding.value })?;
-    let (IrKind::ThunkAlloc, IrData::Node(thunk_body)) = (value_node.kind, value_node.data) else {
-        return Ok(false);
-    };
-    validate_node(ir, thunk_body)?;
-    if thunk_body == binding.value {
-        return Ok(false);
-    }
-    if direct_reference_count(ir, binding.value)? != 1 {
-        return Ok(false);
-    }
-
-    for other in bindings {
-        let scan = binding_slot_reference_scan(ir, *other, slot)?;
-        if !scan.complete || scan.references != 0 {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn body_is_direct_local_slot(
-    ir: &Ir,
-    body: IrId,
-    slot: usize,
-) -> Result<bool, EscapeAnalysisError> {
-    let node = *ir
-        .arena
-        .node(body)
-        .ok_or(EscapeAnalysisError::InvalidNode { id: body })?;
-    Ok(matches!(
-        (node.kind, node.data),
-        (IrKind::LocalVar, IrData::Local { slot: body_slot }) if body_slot as usize == slot
-    ))
-}
-
-fn binding_slot_reference_scan(
-    ir: &Ir,
-    binding: IrBinding,
-    slot: usize,
-) -> Result<SlotReferenceScan, EscapeAnalysisError> {
-    let mut scan = SlotReferenceScan::empty();
-    if let IrAttrPathSegment::Dynamic(key) = binding.key {
-        scan.add(node_slot_reference_scan(ir, key, slot)?);
-    }
-    scan.add(node_slot_reference_scan(ir, binding.value, slot)?);
-    Ok(scan)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SlotReferenceScan {
-    references: usize,
-    complete: bool,
-}
-
-impl SlotReferenceScan {
-    const fn empty() -> Self {
-        Self {
-            references: 0,
-            complete: true,
-        }
-    }
-
-    fn add(&mut self, other: Self) {
-        self.references = self.references.saturating_add(other.references);
-        self.complete &= other.complete;
-    }
-}
-
-fn node_slot_reference_scan(
-    ir: &Ir,
-    id: IrId,
-    slot: usize,
-) -> Result<SlotReferenceScan, EscapeAnalysisError> {
-    let node = *ir
-        .arena
-        .node(id)
-        .ok_or(EscapeAnalysisError::InvalidNode { id })?;
-    validate_payload(id, node)?;
-    let mut scan = SlotReferenceScan::empty();
-    match node.data {
-        IrData::None
-        | IrData::Int(_)
-        | IrData::Float(_)
-        | IrData::Bool(_)
-        | IrData::Symbol(_)
-        | IrData::GlobalVar { .. }
-        | IrData::Upval { .. }
-        | IrData::DialectScopeVar { .. } => {}
-        IrData::Local { slot: local_slot } => {
-            if local_slot as usize == slot {
-                scan.references = 1;
-            }
-        }
-        IrData::SearchPath { search_path, .. } => {
-            if let Some(search_path) = search_path {
-                scan.add(node_slot_reference_scan(ir, search_path, slot)?);
-            }
-        }
-        IrData::Node(child) => scan.add(node_slot_reference_scan(ir, child, slot)?),
-        IrData::Pair { first, second } => {
-            scan.add(node_slot_reference_scan(ir, first, slot)?);
-            scan.add(node_slot_reference_scan(ir, second, slot)?);
-        }
-        IrData::Triple {
-            first,
-            second,
-            third,
-        } => {
-            scan.add(node_slot_reference_scan(ir, first, slot)?);
-            scan.add(node_slot_reference_scan(ir, second, slot)?);
-            scan.add(node_slot_reference_scan(ir, third, slot)?);
-        }
-        IrData::Children(slice) | IrData::PrimOp { args: slice, .. } => {
-            for child in child_ids(ir, id, slice)? {
-                scan.add(node_slot_reference_scan(ir, *child, slot)?);
-            }
-        }
-        IrData::Bindings(slice)
-        | IrData::AttrSet {
-            bindings: slice, ..
-        } => {
-            scan.add(binding_slice_slot_reference_scan(ir, id, slice, slot)?);
-        }
-        IrData::Binary { lhs, rhs, .. } => {
-            scan.add(node_slot_reference_scan(ir, lhs, slot)?);
-            scan.add(node_slot_reference_scan(ir, rhs, slot)?);
-        }
-        IrData::Unary { operand, .. } => scan.add(node_slot_reference_scan(ir, operand, slot)?),
-        IrData::Select {
-            receiver,
-            path,
-            default,
-            ..
-        } => {
-            scan.add(node_slot_reference_scan(ir, receiver, slot)?);
-            if let Some(default) = default {
-                scan.add(node_slot_reference_scan(ir, default, slot)?);
-            }
-            scan.add(attr_path_slot_reference_scan(ir, id, path, slot)?);
-        }
-        IrData::HasAttr { receiver, path, .. } => {
-            scan.add(node_slot_reference_scan(ir, receiver, slot)?);
-            scan.add(attr_path_slot_reference_scan(ir, id, path, slot)?);
-        }
-        IrData::DialectNode { argument, .. } => {
-            scan.add(node_slot_reference_scan(ir, argument, slot)?);
-        }
-        IrData::Lambda { pattern, body, .. } => {
-            validate_node(ir, pattern)?;
-            validate_node(ir, body)?;
-            scan.complete = false;
-        }
-        IrData::Let { bindings, body, .. } => {
-            binding_values(ir, id, bindings)?;
-            validate_node(ir, body)?;
-            scan.complete = false;
-        }
-        IrData::FormalSet { formals, .. } => {
-            for formal in child_ids(ir, id, formals)? {
-                validate_node(ir, *formal)?;
-            }
-            scan.complete = false;
-        }
-        IrData::Formal { default, .. } => {
-            if let Some(default) = default {
-                validate_node(ir, default)?;
-            }
-            scan.complete = false;
-        }
-    }
-    Ok(scan)
-}
-
-fn binding_slice_slot_reference_scan(
-    ir: &Ir,
-    id: IrId,
-    slice: IrBindingSlice,
-    slot: usize,
-) -> Result<SlotReferenceScan, EscapeAnalysisError> {
-    let mut scan = SlotReferenceScan::empty();
-    for binding in binding_values(ir, id, slice)? {
-        scan.add(binding_slot_reference_scan(ir, *binding, slot)?);
-    }
-    Ok(scan)
-}
-
-fn attr_path_slot_reference_scan(
-    ir: &Ir,
-    id: IrId,
-    path: IrAttrPathId,
-    slot: usize,
-) -> Result<SlotReferenceScan, EscapeAnalysisError> {
-    let segments = ir
-        .attr_paths
-        .get(path.index())
-        .ok_or(EscapeAnalysisError::InvalidAttrPath { id, path })?;
-    let mut scan = SlotReferenceScan::empty();
-    for segment in segments {
-        if let IrAttrPathSegment::Dynamic(dynamic) = segment {
-            scan.add(node_slot_reference_scan(ir, *dynamic, slot)?);
-        }
-    }
-    Ok(scan)
-}
-
-fn binding_values(
+pub(super) fn binding_values(
     ir: &Ir,
     id: IrId,
     slice: IrBindingSlice,
@@ -521,7 +267,7 @@ fn is_allocation_free_scalar(node: crate::ir::IrNode) -> bool {
     )
 }
 
-fn validate_payload(id: IrId, node: crate::ir::IrNode) -> Result<(), EscapeAnalysisError> {
+pub(super) fn validate_payload(id: IrId, node: crate::ir::IrNode) -> Result<(), EscapeAnalysisError> {
     let valid = match node.kind {
         IrKind::Int => matches!(node.data, IrData::Int(_)),
         IrKind::Float => matches!(node.data, IrData::Float(_)),
@@ -643,7 +389,7 @@ fn unique_direct_identity_lambda_argument(
     Ok(reference_count == 1 && identity_argument_count == 1)
 }
 
-fn direct_reference_count(ir: &Ir, target: IrId) -> Result<usize, EscapeAnalysisError> {
+pub(super) fn direct_reference_count(ir: &Ir, target: IrId) -> Result<usize, EscapeAnalysisError> {
     let mut reference_count = count_id(ir.root, target);
 
     for with_chain in &ir.with_chains {
@@ -793,13 +539,13 @@ fn count_attr_path_references(
     Ok(count)
 }
 
-fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], EscapeAnalysisError> {
+pub(super) fn child_ids(ir: &Ir, id: IrId, slice: IrChildSlice) -> Result<&[IrId], EscapeAnalysisError> {
     ir.arena
         .child_slice(slice)
         .ok_or(EscapeAnalysisError::InvalidChildSlice { id, slice })
 }
 
-fn validate_node(ir: &Ir, id: IrId) -> Result<(), EscapeAnalysisError> {
+pub(super) fn validate_node(ir: &Ir, id: IrId) -> Result<(), EscapeAnalysisError> {
     ir.arena
         .node(id)
         .ok_or(EscapeAnalysisError::InvalidNode { id })?;
@@ -867,7 +613,7 @@ fn unique_scalar_primop_argument(ir: &Ir, argument: IrId) -> Result<bool, Escape
     Ok(reference_count == 1 && scalar_argument_count == 1)
 }
 
-fn primop_signature(
+pub(super) fn primop_signature(
     ir: &Ir,
     id: IrId,
     data: IrData,
@@ -911,7 +657,7 @@ fn validate_child_slice(
     Ok(children.len())
 }
 
-fn expected_payload(kind: IrKind) -> &'static str {
+pub(super) fn expected_payload(kind: IrKind) -> &'static str {
     match kind {
         IrKind::Int => "integer payload",
         IrKind::Float => "float payload",

@@ -311,6 +311,8 @@ impl TreeWalk {
         frames: Vec<Arc<EvalFrame>>,
     ) -> Vec<Arc<EvalFrame>> {
         self.env_generation = self.env_generation.wrapping_add(1);
+        #[cfg(test)]
+        self.capture_validation_on_swap(frames.len());
         std::mem::replace(&mut self.env, frames)
     }
 
@@ -320,6 +322,8 @@ impl TreeWalk {
     #[inline]
     pub(in crate::eval::tree_walk) fn restore_env_frames(&mut self, frames: Vec<Arc<EvalFrame>>) {
         self.env_generation = self.env_generation.wrapping_add(1);
+        #[cfg(test)]
+        self.capture_validation_on_restore();
         self.env = frames;
     }
 

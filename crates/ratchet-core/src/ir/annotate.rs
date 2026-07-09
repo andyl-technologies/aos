@@ -8,8 +8,9 @@
 use thiserror::Error;
 
 use crate::analysis::{
-    CardinalityAnalysisError, CardinalityAnalysisReport, EscapeAnalysisError, EscapeAnalysisReport,
-    StrictnessAnalysisError, StrictnessAnalysisReport, annotate_cardinality, annotate_escape,
+    CaptureAnalysisError, CaptureAnalysisReport, CardinalityAnalysisError,
+    CardinalityAnalysisReport, EscapeAnalysisError, EscapeAnalysisReport, StrictnessAnalysisError,
+    StrictnessAnalysisReport, annotate_capture_plans, annotate_cardinality, annotate_escape,
     annotate_strictness,
 };
 use crate::scope::{FrameId, Upvalue};
@@ -39,7 +40,12 @@ use super::{Ir, IrFacts, IrId};
 ///   values, `derivationStrict`'s argument demand is `Forced`, and the
 ///   per-node eager-assembly bit
 ///   ([`crate::ir::IrFacts::assembly_eager`]) is produced.
-pub const IR_ANALYSIS_VERSION: u32 = 3;
+/// - `4` — Phase 4 Chunk C/D: intra-frame cardinality counts through nested
+///   frames and directly applied lambda bodies, per-frame escape reachability
+///   consumes per-argument primop escape signatures, and per-site
+///   free-variable capture plans ([`crate::ir::IrFacts::capture_plan`]) are
+///   produced and persisted in `facts.bin`.
+pub const IR_ANALYSIS_VERSION: u32 = 4;
 
 /// Summary of one complete IR fact annotation run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -50,6 +56,8 @@ pub struct IrAnalysisReport {
     pub cardinality: CardinalityAnalysisReport,
     /// Report returned by the escape analysis pass.
     pub escape: EscapeAnalysisReport,
+    /// Report returned by the capture-plan analysis pass.
+    pub capture: CaptureAnalysisReport,
     /// Deterministic dependency-footprint material derived from analyzed facts.
     pub dependency_footprint: IrDependencyFootprint,
 }
@@ -149,6 +157,9 @@ pub enum IrAnalysisError {
     /// Escape analysis rejected the IR.
     #[error(transparent)]
     Escape(#[from] EscapeAnalysisError),
+    /// Capture-plan analysis rejected the IR.
+    #[error(transparent)]
+    Capture(#[from] CaptureAnalysisError),
 }
 
 /// Refreshes all currently implemented per-node IR analysis facts.
@@ -179,11 +190,13 @@ fn run_analyses(ir: &mut Ir) -> Result<IrAnalysisReport, IrAnalysisError> {
     let strictness = annotate_strictness(ir)?;
     let cardinality = annotate_cardinality(ir)?;
     let escape = annotate_escape(ir)?;
+    let capture = annotate_capture_plans(ir)?;
     let dependency_footprint = IrDependencyFootprint::from_ir(ir);
     Ok(IrAnalysisReport {
         strictness,
         cardinality,
         escape,
+        capture,
         dependency_footprint,
     })
 }

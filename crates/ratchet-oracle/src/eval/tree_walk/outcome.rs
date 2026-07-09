@@ -13346,6 +13346,11 @@ pub struct EvalStats {
     pub(crate) thunks_allocated: u64,
     pub(crate) thunks_elided: u64,
     pub(crate) binding_assembly_elisions: u64,
+    /// Thunks allocated with single-entry storage (no update, no blackhole,
+    /// no parallel payload cell) under the C-8 frame-local proof.
+    pub(crate) single_entry_thunks_allocated: u64,
+    /// Forces served by the single-entry direct-evaluation path.
+    pub(crate) single_entry_thunks_forced: u64,
     pub(crate) thunk_cache_hits: u64,
     pub(crate) inline_cache_hits: u64,
     pub(crate) inline_cache_misses: u64,
@@ -13478,6 +13483,20 @@ impl EvalStats {
     /// [`Self::thunks_elided`]).
     pub const fn binding_assembly_elisions(&self) -> u64 {
         self.binding_assembly_elisions
+    }
+
+    /// Returns the number of thunks allocated with single-entry storage.
+    ///
+    /// Single-entry thunks skip the update write-back, the blackhole
+    /// transition, and the parallel payload cell; they are admitted only
+    /// under the C-8 frame-local once-entered proof.
+    pub const fn single_entry_thunks_allocated(&self) -> u64 {
+        self.single_entry_thunks_allocated
+    }
+
+    /// Returns the number of forces served by the single-entry direct path.
+    pub const fn single_entry_thunks_forced(&self) -> u64 {
+        self.single_entry_thunks_forced
     }
 
     /// Returns the number of already-forced thunk cell reuses.
@@ -13730,6 +13749,8 @@ impl EvalStats {
             thunks_allocated,
             thunks_elided,
             binding_assembly_elisions,
+            single_entry_thunks_allocated,
+            single_entry_thunks_forced,
             thunk_cache_hits,
             inline_cache_hits,
             inline_cache_misses,
@@ -13810,6 +13831,12 @@ impl EvalStats {
         self.binding_assembly_elisions = self
             .binding_assembly_elisions
             .saturating_add(binding_assembly_elisions);
+        self.single_entry_thunks_allocated = self
+            .single_entry_thunks_allocated
+            .saturating_add(single_entry_thunks_allocated);
+        self.single_entry_thunks_forced = self
+            .single_entry_thunks_forced
+            .saturating_add(single_entry_thunks_forced);
         self.thunk_cache_hits = self.thunk_cache_hits.saturating_add(thunk_cache_hits);
         self.inline_cache_hits = self.inline_cache_hits.saturating_add(inline_cache_hits);
         self.inline_cache_misses = self.inline_cache_misses.saturating_add(inline_cache_misses);

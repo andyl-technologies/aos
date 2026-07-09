@@ -272,17 +272,80 @@ fn cardinality_resets_stale_facts_when_binding_value_becomes_absent() {
 }
 
 #[test]
-fn cardinality_keeps_incomplete_demanded_binding_values_conservative() {
+fn cardinality_saturates_uses_inside_escaping_lambda_values() {
+    // The closure bound to `y` may be called any number of times, so `x`
+    // saturates to many -- but `y` itself is still proven once instead of
+    // the whole frame being abandoned.
     let ir = annotate_usage("let x = 1; y = (z: x + z); in y");
     let bindings = let_binding_values(&ir, ir.root);
 
     assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
-    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Many);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Once);
 }
 
 #[test]
-fn cardinality_stays_conservative_across_nested_frames() {
+fn cardinality_saturates_uses_inside_escaping_lambda_bodies() {
     let ir = annotate_usage("let x = 1; in (y: x + y)");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_ignores_lambdas_that_do_not_use_the_frame() {
+    // Pre-widening, any lambda in the frame poisoned every binding to many.
+    let ir = annotate_usage("let x = 1 + 2; f = (y: y); in x");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+    assert_eq!(cardinality(&ir, bindings[1]), Cardinality::Absent);
+}
+
+#[test]
+fn cardinality_counts_directly_applied_lambda_bodies_once() {
+    let ir = annotate_usage("let x = 1 + 2; in (y: x + y) 3");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+}
+
+#[test]
+fn cardinality_sums_directly_applied_lambda_body_uses() {
+    let ir = annotate_usage("let x = 1 + 2; in (y: x + y) x");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_counts_through_nested_let_frames() {
+    let ir = annotate_usage("let x = 1 + 2; in let y = x; in y");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+}
+
+#[test]
+fn cardinality_counts_nested_let_values_as_upper_bound() {
+    // Both nested binding values reference `x`; each nested update thunk runs
+    // at most once, so the upper bound is two entries -> many.
+    let ir = annotate_usage("let x = 1 + 2; in let y = x; z = x; in y");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+#[test]
+fn cardinality_counts_through_recursive_attrset_frames() {
+    let ir = annotate_usage("let x = 1 + 2; in rec { a = x; b = a; }");
+    let bindings = let_binding_values(&ir, ir.root);
+
+    assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Once);
+}
+
+#[test]
+fn cardinality_counts_attrset_binding_uses() {
+    let ir = annotate_usage("let x = 1 + 2; in { a = x; b = x; }");
     let bindings = let_binding_values(&ir, ir.root);
 
     assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
@@ -300,6 +363,179 @@ fn cardinality_resets_stale_facts_when_frame_becomes_incomplete() {
     annotate_cardinality(&mut ir).expect("cardinality analysis succeeds");
 
     assert_eq!(cardinality(&ir, bindings[0]), Cardinality::Many);
+}
+
+fn annotate_captures(source: &str) -> Ir {
+    let mut ir = lowered(source);
+    annotate_capture_plans(&mut ir).expect("capture analysis succeeds");
+    ir
+}
+
+fn flat_plan_slots(ir: &Ir, id: IrId) -> Vec<(u16, u16)> {
+    match ir.facts.capture_plan(id) {
+        Some(crate::ir::CapturePlan::Flat(slots)) => slots
+            .iter()
+            .map(|capture| (capture.depth, capture.slot))
+            .collect(),
+        other => panic!("expected flat capture plan, got {other:?}"),
+    }
+}
+
+fn lambda_nodes(ir: &Ir) -> Vec<IrId> {
+    (0..ir.arena.nodes().len() as u32)
+        .map(IrId::new)
+        .filter(|id| node(ir, *id).kind == IrKind::Lambda)
+        .collect()
+}
+
+#[test]
+fn capture_plans_cover_lambda_and_thunk_sites() {
+    let ir = annotate_captures("let a = 1 + 1; in (x: a + x)");
+    let mut planned_lambdas = 0;
+    let mut planned_thunks = 0;
+    for index in 0..ir.arena.nodes().len() as u32 {
+        let id = IrId::new(index);
+        let kind = node(&ir, id).kind;
+        let plan = ir.facts.capture_plan(id);
+        match kind {
+            IrKind::Lambda => {
+                assert!(plan.is_some(), "lambda site {id:?} must carry a plan");
+                planned_lambdas += 1;
+            }
+            IrKind::ThunkAlloc => {
+                assert!(plan.is_some(), "thunk site {id:?} must carry a plan");
+                planned_thunks += 1;
+            }
+            _ => assert!(plan.is_none(), "non-site {id:?} must not carry a plan"),
+        }
+    }
+    assert!(planned_lambdas >= 1);
+    assert!(planned_thunks >= 1);
+}
+
+#[test]
+fn capture_plans_translate_nested_lambda_coordinates() {
+    // `x: y: x` — the inner lambda captures the outer parameter at depth 0
+    // of its allocation environment; the outer lambda captures nothing.
+    let ir = annotate_captures("x: y: x");
+    let lambdas = lambda_nodes(&ir);
+    assert_eq!(lambdas.len(), 2);
+    let mut slot_sets: Vec<Vec<(u16, u16)>> = lambdas
+        .iter()
+        .map(|id| flat_plan_slots(&ir, *id))
+        .collect();
+    slot_sets.sort();
+    assert_eq!(slot_sets, vec![vec![], vec![(0, 0)]]);
+}
+
+#[test]
+fn capture_plans_record_thunk_free_variables() {
+    // `b`'s deferred body reads `a` from the frame active at allocation.
+    let ir = annotate_captures("let a = 1; b = a + 1; in b");
+    let bindings = let_binding_values(&ir, ir.root);
+    assert_eq!(flat_plan_slots(&ir, bindings[1]), vec![(0, 0)]);
+}
+
+#[test]
+fn capture_plans_flow_transitively_through_nested_closures() {
+    // The thunk body allocates a lambda that reads two enclosing frames; both
+    // coordinates surface in the thunk's own plan, shifted to its boundary.
+    let ir = annotate_captures("let a = 1; in let b = 2; c = (x: a + b + x); in c");
+    let bindings = let_binding_values(
+        &ir,
+        {
+            // The outer let's body is the inner let.
+            let IrData::Let { body, .. } = node(&ir, ir.root).data else {
+                panic!("outer let expected");
+            };
+            body
+        },
+    );
+    // Binding `c` is slot 1 of the inner let: its thunk reads `b` from its
+    // own frame (depth 0) and `a` from the outer frame (depth 1).
+    assert_eq!(flat_plan_slots(&ir, bindings[1]), vec![(0, 0), (1, 0)]);
+}
+
+#[test]
+fn capture_plans_decline_dynamic_scope_probes() {
+    let ir = {
+        let mut ir = lowered_with_dynamic_scope("with { a = 1; }; (x: a)");
+        annotate_capture_plans(&mut ir).expect("capture analysis succeeds");
+        ir
+    };
+    let declined = lambda_nodes(&ir)
+        .into_iter()
+        .filter(|id| {
+            matches!(
+                ir.facts.capture_plan(*id),
+                Some(crate::ir::CapturePlan::SharedChain(
+                    crate::ir::SharedChainReason::DynamicScope
+                ))
+            )
+        })
+        .count();
+    assert_eq!(declined, 1);
+}
+
+#[test]
+fn capture_plans_cap_flat_width() {
+    // Eleven distinct free variables exceed FLAT_CAPTURE_MAX_SLOTS = 8.
+    let source = "let a=1; b=2; c=3; d=4; e=5; f=6; g=7; h=8; i=9; j=10; k=11; \
+                  in (x: a+b+c+d+e+f+g+h+i+j+k)";
+    let ir = annotate_captures(source);
+    let lambdas = lambda_nodes(&ir);
+    assert_eq!(lambdas.len(), 1);
+    assert_eq!(
+        ir.facts.capture_plan(lambdas[0]),
+        Some(&crate::ir::CapturePlan::SharedChain(
+            crate::ir::SharedChainReason::TooManyFreeVars
+        ))
+    );
+}
+
+/// Cross-validates the capture walk against the resolver: for every lambda
+/// site with a flat plan, the plan's coordinate set must equal the resolver's
+/// independently computed frame capture set.
+#[test]
+fn capture_plans_match_resolver_lambda_captures() {
+    for source in [
+        "x: y: x",
+        "let a = 1; in (x: a + x)",
+        "let a = 1; b = 2; in (x: (y: a + y) (x + b))",
+        "let f = x: x + 1; in f 2",
+        "let a = 1; in let b = a; in (x: a + b)",
+        "({ x ? 1, y ? x }: x + y) {}",
+        "let lib = { inc = x: x + 1; }; in lib.inc 2",
+        "let a = 1; in rec { m = x: a + x; n = m; }",
+    ] {
+        let ir = annotate_captures(source);
+        for id in lambda_nodes(&ir) {
+            let IrData::Lambda { frame, .. } = node(&ir, id).data else {
+                panic!("lambda payload expected");
+            };
+            let Some(frame) = frame else {
+                continue;
+            };
+            let plan_slots = flat_plan_slots(&ir, id);
+            // Resolver capture coordinates are body-relative (depth counts
+            // the lambda's own parameter frame); the plan is relative to the
+            // allocation environment, one frame shallower.
+            let mut resolver_slots: Vec<(u16, u16)> = ir.frames[frame.index()]
+                .captures
+                .iter()
+                .map(|capture| {
+                    assert!(
+                        capture.depth >= 1,
+                        "{source}: resolver capture inside the lambda's own frame"
+                    );
+                    (capture.depth - 1, capture.slot)
+                })
+                .collect();
+            resolver_slots.sort_unstable();
+            resolver_slots.dedup();
+            assert_eq!(plan_slots, resolver_slots, "{source}: lambda {id:?}");
+        }
+    }
 }
 
 #[test]
@@ -1026,7 +1262,10 @@ fn escape_propagates_no_escape_bodies_to_strict_wrapping_thunks() {
 }
 
 #[test]
-fn escape_keeps_lazy_wrapping_thunks_conservative() {
+fn escape_marks_unreferenced_let_thunks_frame_local() {
+    // No slot reference exists, so the reachability proof is vacuous: the
+    // thunk dies with its frame. Sharing still resolves to omission through
+    // the absent cardinality, never to single-entry storage.
     let mut ir = lowered("let x = builtins.sub 3 1; in 1");
     let binding = let_binding_values(&ir, ir.root)[0];
     let IrData::Node(body) = node(&ir, binding).data else {
@@ -1036,24 +1275,94 @@ fn escape_keeps_lazy_wrapping_thunks_conservative() {
     annotate_escape(&mut ir).expect("escape analysis succeeds");
 
     assert_eq!(escape(&ir, body), Escape::NoEscape);
-    assert_eq!(escape(&ir, binding), Escape::Escapes);
+    assert_eq!(escape(&ir, binding), Escape::NoEscape);
 }
 
 #[test]
-fn escape_marks_direct_body_let_thunks_frame_local() {
+fn escape_keeps_direct_body_let_thunks_conservative() {
+    // The result clause fails closed: an enclosing update thunk whose body
+    // is this `let` caches the raw handle, and every cache re-read re-forces
+    // it — a single-entry representation would re-evaluate. (This binding is
+    // `DemandedBeforeEffect`, so its thunk elides eagerly anyway.)
     let mut ir = lowered("let x = builtins.sub 3 1; in x");
     let binding = let_binding_values(&ir, ir.root)[0];
 
     annotate_ir(&mut ir).expect("analysis succeeds");
 
     assert_eq!(cardinality(&ir, binding), Cardinality::Once);
-    assert_eq!(escape(&ir, binding), Escape::NoEscape);
-    let decision =
-        frame_local_single_entry_thunk_downgrade(&ir, binding).expect("preflight succeeds");
-    assert!(matches!(
-        decision,
-        FrameLocalThunkDowngrade::SingleEntry(single_entry) if single_entry.thunk() == binding
-    ));
+    assert_eq!(escape(&ir, binding), Escape::Escapes);
+    assert_eq!(
+        frame_local_single_entry_thunk_downgrade(&ir, binding).expect("preflight succeeds"),
+        FrameLocalThunkDowngrade::KeepUpdate(FrameLocalThunkUpdateReason::EscapesFrame)
+    );
+}
+
+#[test]
+fn escape_marks_consumed_position_let_thunks_frame_local() {
+    // Every reference is forced in place during the frame's own execution:
+    // operator operands, condition positions, select receivers, and
+    // consumed-signature primop arguments.
+    for source in [
+        "let x = 1 + 2; in x + 1",
+        "let x = 1 + 2; in if builtins.lessThan x 3 then 1 else 2",
+        "let x = { a = 1; }; in x.a",
+        "let x = [ 1 2 ]; in builtins.length x",
+        "let x = 1 + 2; in builtins.lessThan 1 x",
+    ] {
+        let mut ir = lowered(source);
+        let binding = let_binding_values(&ir, ir.root)[0];
+
+        annotate_ir(&mut ir).expect("analysis succeeds");
+
+        assert_eq!(escape(&ir, binding), Escape::NoEscape, "{source}");
+    }
+}
+
+#[test]
+fn escape_declines_retaining_position_let_thunks() {
+    for source in [
+        // Result flow: the frame result can be cached as a raw handle.
+        "let x = 1 + 2; in x",
+        "let x = 1 + 2; in if true then x else 1",
+        // Containers retain their elements.
+        "let x = 1 + 2; in [ x ]",
+        "let x = 1 + 2; in { a = x; }",
+        // Unknown call argument and callee (functor protocol).
+        "let x = 1 + 2; in (f: f x) (y: y)",
+        "let x = z: z; in x 1",
+        // Closure capture (S7).
+        "let x = 1 + 2; in (y: x + y) 1",
+        // Retained-signature primop argument (interned attribute name).
+        r#"let x = "a" + "b"; in builtins.hasAttr x { ab = 1; }"#,
+        // Interning through string interpolation.
+        r#"let x = 1 + 2; in "${toString x}""#,
+        // `with` scrutinee is retained in the dynamic scope.
+        "let x = { a = 1; }; in with x; 2",
+    ] {
+        let mut ir = lowered(source);
+        let binding = let_binding_values(&ir, ir.root)[0];
+
+        annotate_ir(&mut ir).expect("analysis succeeds");
+
+        assert_eq!(escape(&ir, binding), Escape::Escapes, "{source}");
+    }
+}
+
+#[test]
+fn escape_declines_self_referential_and_sibling_captured_slots() {
+    for source in [
+        // Self-reference through the binding's own thunk body.
+        "let x = x; in 1",
+        // A sibling thunk body captures the slot beyond this execution.
+        "let x = 1 + 2; y = x + 1; in 1",
+    ] {
+        let mut ir = lowered(source);
+        let binding = let_binding_values(&ir, ir.root)[0];
+
+        annotate_ir(&mut ir).expect("analysis succeeds");
+
+        assert_eq!(escape(&ir, binding), Escape::Escapes, "{source}");
+    }
 }
 
 #[test]

@@ -1488,6 +1488,65 @@ mod loom_model_tests {
         });
     }
 
+    /// Models the Chunk C single-entry CAS bypass (S7).
+    ///
+    /// A single-entry thunk carries a plain cell: no blackhole CAS, no
+    /// update write-back, no parallel payload cell. Its safety argument is
+    /// that every cross-thread path to it flows through an enclosing update
+    /// thunk's claim protocol — the enclosing CAS cell's release publish
+    /// happens-after the single force's relaxed reads and writes, so exactly
+    /// one worker ever enters the plain cell and every other worker replays
+    /// the enclosing published value without touching it.
+    #[test]
+    fn loom_single_entry_plain_cell_behind_enclosing_claim_runs_once() {
+        loom::model(|| {
+            let enclosing = Arc::new(LoomThunk::new());
+            // The single-entry thunk: a captured payload and an entry
+            // counter with no ordering of their own (Relaxed everywhere).
+            let captured = Arc::new(AtomicU64::new(77));
+            let entries = Arc::new(AtomicUsize::new(0));
+
+            let spawn_worker = |id: u64| {
+                let enclosing = Arc::clone(&enclosing);
+                let captured = Arc::clone(&captured);
+                let entries = Arc::clone(&entries);
+                thread::spawn(move || {
+                    // Forcing the enclosing thunk runs its body at most once;
+                    // the body is the only reader of the single-entry cell.
+                    let winner_value = captured.load(LoomOrdering::Relaxed);
+                    match enclosing.try_claim(worker(id)) {
+                        LoomClaim::Claimed => {
+                            // Single-entry force: plain relaxed entry, no CAS.
+                            entries.fetch_add(1, LoomOrdering::Relaxed);
+                            enclosing.write_forced_payload(winner_value);
+                            enclosing
+                                .publish_terminal(worker(id), ParallelThunkTerminalState::Forced);
+                            Ok(winner_value)
+                        }
+                        LoomClaim::AlreadyForced => Ok(enclosing.read_forced_payload()),
+                        LoomClaim::Foreign => enclosing.wait_for_terminal(worker(id)),
+                        other => panic!("unexpected claim outcome {other:?}"),
+                    }
+                })
+            };
+
+            let first = spawn_worker(1);
+            let second = spawn_worker(2);
+            let first = first.join().expect("first worker joins");
+            let second = second.join().expect("second worker joins");
+
+            assert_eq!(first, Ok(77));
+            assert_eq!(second, Ok(77));
+            assert_eq!(
+                entries.load(LoomOrdering::Relaxed),
+                1,
+                "the plain single-entry cell must be entered exactly once"
+            );
+            assert_eq!(enclosing.state(), ParallelThunkState::Forced);
+            assert_waiters_were_not_stranded(&enclosing);
+        });
+    }
+
     #[test]
     fn loom_bounded_three_racing_claimants_have_one_body_owner() {
         let builder = bounded_three_worker_claimant_model();
