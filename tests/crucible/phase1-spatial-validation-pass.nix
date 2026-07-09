@@ -82,15 +82,15 @@
       }
       {
         label = "TOML parser validates plan against parsed world";
-        needle = "let plan = plan_from_toml(&world, toml.plan)?;";
+        needle = "let plan = plan_from_toml_with_assertions(\n        &world,";
       }
       {
         label = "TOML parser validates properties against parsed world";
-        needle = "let properties = properties_from_toml(&world, toml.properties)?;";
+        needle = "let raw_properties = Properties::from_assertions_for_world(&world, assertions)?;";
       }
       {
         label = "TOML parser constructs validated scenario before id check";
-        needle = "let form = ScenarioDefForm::from_components(&world, &plan, &properties, seed)?;";
+        needle = "let form = ScenarioDefForm::from_components_with_app_random_draw_cap(\n        &world,\n        &plan,\n        &properties,\n        seed,";
       }
       {
         label = "TOML scenario id checked after validation";
@@ -102,7 +102,7 @@
       }
       {
         label = "binary parser validates plan against world";
-        needle = "let plan = read_plan_binary(&world, reader)?;";
+        needle = "let plan = read_plan_binary_for_scenario(&world, reader)?;";
       }
       {
         label = "binary parser validates properties against world";

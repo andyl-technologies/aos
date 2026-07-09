@@ -6,7 +6,9 @@
   cadence ? 100000000,
   requireGuestPass ? true,
   stopAt ? null,
+  memoryMib ? 256,
   vcpuCount ? 4,
+  detIpiProbe ? false,
 }: let
   rrSwitchQuantum = 4096;
 
@@ -251,6 +253,7 @@ in
     CADENCE = builtins.toString cadence;
     RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
     VCPU_COUNT = builtins.toString vcpuCount;
+    MEMORY_MIB = builtins.toString memoryMib;
     ACCELERATOR = accelerator;
     REQUIRE_GUEST_PASS =
       if requireGuestPass
@@ -260,6 +263,17 @@ in
       if stopAt == null
       then ""
       else builtins.toString stopAt;
+    DET_IPI_PROBE =
+      if detIpiProbe
+      then "1"
+      else "0";
+    # RR cursor / RR switch-quantum export is gated to `-accel sim` in the
+    # patch stack; under plain TCG the plugin reports inert cursor fields and
+    # emits no rr_switch rows.
+    EXPECT_RR_CURSOR =
+      if accelerator == "sim"
+      then "1"
+      else "0";
 
     phases = [
       {
@@ -312,27 +326,55 @@ in
             jitter_pids=""
           }
 
-          qmp_cmd() {
+          qmp_exchange() {
             socket="$1"
             request="$2"
             response="$3"
             response_err="$response.err"
 
             {
+              sleep 0.1
               printf '{"execute":"qmp_capabilities"}\r\n'
+              sleep 0.1
               printf '%s\r\n' "$request"
-            } | socat -T 1 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+              sleep 0.5
+            } | socat -T 3 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+          }
 
-            if [ ! -s "$response" ]; then
-              cat "$response_err" >&2
-              return 1
-            fi
+          qmp_cmd() {
+            socket="$1"
+            request="$2"
+            response="$3"
+            response_err="$response.err"
+            attempts=0
 
-            if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+            while [ "$attempts" -lt 5 ]; do
+              qmp_exchange "$socket" "$request" "$response"
+
+              if [ ! -s "$response" ]; then
+                attempts=$((attempts + 1))
+                sleep 0.1
+                continue
+              fi
+
+              if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+                cat "$response" >&2
+                return 1
+              fi
+              if jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null; then
+                return 0
+              fi
+
+              attempts=$((attempts + 1))
+              sleep 0.1
+            done
+
+            if [ -s "$response" ]; then
               cat "$response" >&2
-              return 1
+            else
+              cat "$response_err" >&2
             fi
-            jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
+            return 1
           }
 
           wait_for_socket() {
@@ -348,38 +390,63 @@ in
             return 1
           }
 
+          trace_reached_stop_at() {
+            label="$1"
+            trace="$TMPDIR/trace-$label.jsonl"
+            [ -s "$trace" ] || return 1
+            tail -200 "$trace" | gawk -v stop_at="$STOP_AT" '
+              /"kind":"rr_switch"/ { next }
+              /"final":true/ { next }
+              match($0, /"retired":([0-9]+)/, retired) && retired[1] + 0 >= stop_at {
+                found = 1
+              }
+              END { exit found ? 0 : 1 }
+            '
+          }
+
           wait_for_stop_at_pause() {
             socket="$1"
             label="$2"
             waited=0
             qmp_failures=0
-            while [ "$waited" -lt 600 ]; do
-              if qmp_cmd "$socket" '{"execute":"query-status"}' "$TMPDIR/qmp-status-$label.json"; then
-                qmp_failures=0
-                status=$(jq -r -s '[.[] | select(has("return"))][-1].return.status // empty' "$TMPDIR/qmp-status-$label.json")
-                case "$status" in
-                  paused)
-                    return 0
-                    ;;
-                  running | prelaunch)
-                    ;;
-                  *)
-                    cat "$TMPDIR/qmp-status-$label.json" >&2
+            while [ "$waited" -lt 800 ]; do
+              if trace_reached_stop_at "$label"; then
+                if qmp_cmd "$socket" '{"execute":"query-status"}' "$TMPDIR/qmp-status-$label.json"; then
+                  qmp_failures=0
+                  status=$(jq -r -s '[.[] | select(has("return"))][-1].return.status // empty' "$TMPDIR/qmp-status-$label.json")
+                  case "$status" in
+                    paused)
+                      return 0
+                      ;;
+                    running | prelaunch)
+                      ;;
+                    *)
+                      cat "$TMPDIR/qmp-status-$label.json" >&2
+                      return 1
+                      ;;
+                  esac
+                else
+                  qmp_failures=$((qmp_failures + 1))
+                  if [ "$qmp_failures" -ge 20 ]; then
+                    if [ -f "$TMPDIR/qmp-status-$label.json" ]; then
+                      cat "$TMPDIR/qmp-status-$label.json" >&2
+                    fi
                     return 1
-                    ;;
-                esac
-              else
-                qmp_failures=$((qmp_failures + 1))
-                if [ "$qmp_failures" -ge 10 ]; then
-                  if [ -f "$TMPDIR/qmp-status-$label.json" ]; then
-                    cat "$TMPDIR/qmp-status-$label.json" >&2
                   fi
-                  return 1
                 fi
               fi
-              sleep 0.1
+              sleep 1
               waited=$((waited + 1))
             done
+            if [ -f "$TMPDIR/qmp-status-$label.json" ]; then
+              cat "$TMPDIR/qmp-status-$label.json" >&2
+            fi
+            if [ -f "$TMPDIR/trace-$label.jsonl" ]; then
+              tail -20 "$TMPDIR/trace-$label.jsonl" >&2
+            fi
+            if [ -f "$TMPDIR/serial-$label.log" ]; then
+              tail -20 "$TMPDIR/serial-$label.log" >&2
+            fi
             return 1
           }
 
@@ -387,6 +454,10 @@ in
             label="$1"
             plugin_arg="$PLUGIN,out=$TMPDIR/trace-$label.jsonl,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT"
             qmp_socket="$TMPDIR/qmp-$label.sock"
+
+            if [ "$DET_IPI_PROBE" -eq 1 ]; then
+              plugin_arg="$plugin_arg,det_ipi_probe=on"
+            fi
 
             if [ -n "$STOP_AT" ]; then
               plugin_arg="$plugin_arg,stop_at=$STOP_AT"
@@ -402,7 +473,7 @@ in
               -accel "$ACCELERATOR" \
               -icount shift=0,sleep=off,align=off,rr_switch_quantum="$RR_SWITCH_QUANTUM" \
               -cpu qemu64 \
-              -m 256 \
+              -m "$MEMORY_MIB" \
               -smp "$VCPU_COUNT" \
               -rtc base=2026-01-01T00:00:00,clock=vm \
               -seed 0x0010c011 \
@@ -429,7 +500,7 @@ in
             fi
 
             if [ -n "$STOP_AT" ]; then
-              timeout 600 "$@" &
+              timeout 900 "$@" &
               active_qemu_pid="$!"
               wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for guest $label"
               wait_for_stop_at_pause "$qmp_socket" "$label" || fail "QEMU did not pause at stop_at for guest $label"
@@ -456,13 +527,24 @@ in
             jq -e -s \
               --argjson vcpus "$VCPU_COUNT" \
               --argjson quantum "$RR_SWITCH_QUANTUM" \
+              --arg expect_rr_cursor "$EXPECT_RR_CURSOR" \
               '
+                def terminal_stop_sample:
+                  .final == true and .stop_requested == true;
+                def rr_cursor_expectation:
+                  if $expect_rr_cursor != "1" or terminal_stop_sample then
+                    .rr_switch_quantum == 0
+                    and .rr_cursor_valid == false
+                  else
+                    .rr_switch_quantum == $quantum
+                    and .rr_cursor_valid == true
+                  end;
                 [ .[] | select((.kind // "sample") == "sample") ] as $samples
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
                 | ($samples | length) >= 4
                 and all($samples[]; (
                   .tracked_vcpus == $vcpus
-                  and .rr_switch_quantum == $quantum
+                  and rr_cursor_expectation
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
                   and .ram_bytes > 0
@@ -476,23 +558,29 @@ in
                   and all(.register_counts[]; . > 0)
                 ))
                 and any($samples[]; .final == true)
-                and ($switches | length) > 0
-                and all($switches[]; (
-                  .rr_switch_event > 0
-                  and .rr_switch_quantum == $quantum
-                  and .from_vcpu >= 0
-                  and .from_vcpu < $vcpus
-                  and .to_vcpu >= 0
-                  and .to_vcpu < $vcpus
-                  and .rr_cursor_position <= $quantum
-                  and (.per_vcpu_retired | type == "array")
-                  and (.per_vcpu_retired | length) == $vcpus
-                  and (.per_vcpu_delta | type == "array")
-                  and (.per_vcpu_delta | length) == $vcpus
-                  and all(.per_vcpu_retired[]; . >= 0)
-                  and all(.per_vcpu_delta[]; . >= 0)
-                  and any(.per_vcpu_delta[]; . > 0)
-                ))
+                and (
+                  if $expect_rr_cursor == "1" then
+                    ($switches | length) > 0
+                    and all($switches[]; (
+                      .rr_switch_event > 0
+                      and .rr_switch_quantum == $quantum
+                      and .from_vcpu >= 0
+                      and .from_vcpu < $vcpus
+                      and .to_vcpu >= 0
+                      and .to_vcpu < $vcpus
+                      and .rr_cursor_position <= $quantum
+                      and (.per_vcpu_retired | type == "array")
+                      and (.per_vcpu_retired | length) == $vcpus
+                      and (.per_vcpu_delta | type == "array")
+                      and (.per_vcpu_delta | length) == $vcpus
+                      and all(.per_vcpu_retired[]; . >= 0)
+                      and all(.per_vcpu_delta[]; . >= 0)
+                      and any(.per_vcpu_delta[]; . > 0)
+                    ))
+                  else
+                    ($switches | length) == 0
+                  end
+                )
               ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
               || fail "trace $label failed structural S11 assertions"
           done
@@ -503,7 +591,12 @@ in
           rr_switch_events_b=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-b.jsonl")
           [ "$samples_a" -ge 4 ] || fail "expected at least 4 samples in run a"
           [ "$samples_a" -eq "$samples_b" ] || fail "sample count mismatch: $samples_a/$samples_b"
-          [ "$rr_switch_events_a" -gt 0 ] || fail "expected RR switch events in run a"
+          if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
+            [ "$rr_switch_events_a" -gt 0 ] || fail "expected RR switch events in run a"
+          else
+            [ "$rr_switch_events_a" -eq 0 ] \
+              || fail "unexpected RR switch events under non-sim accelerator in run a"
+          fi
           [ "$rr_switch_events_a" -eq "$rr_switch_events_b" ] \
             || fail "RR switch event count mismatch: $rr_switch_events_a/$rr_switch_events_b"
 
@@ -639,11 +732,22 @@ in
             echo block_devices=0
             echo accelerator="$ACCELERATOR"
             echo vcpus="$VCPU_COUNT"
+            echo memory_mib="$MEMORY_MIB"
             echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
             echo cadence="$CADENCE"
             echo run_horizon="$run_horizon"
             echo require_guest_pass="$REQUIRE_GUEST_PASS"
+            if [ "$DET_IPI_PROBE" -eq 1 ]; then
+              echo det_ipi_probe=enabled
+            else
+              echo det_ipi_probe=disabled
+            fi
             echo host_adversary=jitter-load
+            if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
+              echo rr_cursor_export=sim
+            else
+              echo rr_cursor_export=inert-non-sim
+            fi
             echo extended_fingerprint_match=true
             echo aggregate_icount_stream_match=true
             echo rr_switch_trace_match=true

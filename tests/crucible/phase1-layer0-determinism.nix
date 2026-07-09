@@ -325,12 +325,13 @@ in
               "hwrng_same_seed_reproducible=true" \
               "guest_csprng_same_seed_reproducible=true" \
               "cpu_entropy_features=rdrand-disabled,rdseed-disabled" \
-              "kernel_random_trust=random.trust_cpu=off,random.trust_bootloader=off" \
+              "guest_entropy_seal=host-side-qemu-icount-seeded-entropy" \
               "host_guest_entropy_sources=disabled"
             require_leaf ${kaslrAslrDefault} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-6" \
-              "global_default=nokaslr,norandmaps"
+              "global_default=stock-no-entropy-suppression" \
+              "determinism_mechanism=host-side-qemu-icount-seeded-entropy"
             require_leaf ${decisionRecording} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-31" \

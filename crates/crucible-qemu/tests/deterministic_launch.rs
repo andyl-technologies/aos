@@ -3,6 +3,9 @@
 //! These tests lock the public Contract-A launch API to the deterministic
 //! launch surface required by RFC-0010 T-DET-1.
 
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use crucible::{ClockDriftRate, ContentHash, NodeClockSkew, ScenarioDef, SimOffset};
 use crucible_qemu::{
     DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode,
@@ -136,12 +139,7 @@ fn default_launch_profile_pins_contract_a_arguments() {
         .windows(2)
         .find_map(|window| (window[0] == "-append").then_some(window[1].as_str()))
         .unwrap_or_default();
-    assert!(append.split_ascii_whitespace().any(|arg| arg == "nokaslr"));
-    assert!(
-        append
-            .split_ascii_whitespace()
-            .any(|arg| arg == "norandmaps")
-    );
+    assert_eq!(append, "console=ttyS0 reboot=k panic=1 quiet");
     assert!(args.iter().any(|arg| arg == "-nodefaults"));
     assert!(args.iter().any(|arg| arg == "-no-user-config"));
 }
@@ -648,90 +646,6 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
         Err(LaunchProfileError::RtcClockNotVm { .. })
     ));
     assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet")
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelCpuRandomTrustNotDisabled)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off")
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelBootloaderRandomTrustNotDisabled)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=on",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelTrustsBootloaderRandom)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_cpu=1 random.trust_bootloader=off",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelCpuRandomTrustAmbiguous)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=1 random.trust_bootloader=off",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelTrustsHostCpuRandom)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=off random.trust_bootloader=1",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelBootloaderRandomTrustAmbiguous)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet norandmaps random.trust_cpu=off random.trust_bootloader=off",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelKaslrNotDisabled)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet nokaslr random.trust_cpu=off random.trust_bootloader=off",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::UserspaceAslrNotDisabled)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet kaslr nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelKaslrExplicitlyEnabled)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet nokaslr nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::KernelKaslrFlagAmbiguous)
-    );
-    assert_eq!(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline(
-                "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps=0 random.trust_cpu=off random.trust_bootloader=off",
-            )
-            .try_into_deterministic(),
-        Err(LaunchProfileError::UserspaceAslrFlagAmbiguous)
-    );
-    assert_eq!(
         LaunchProfileCandidate {
             run_seed: 0x1234,
             ..LaunchProfileCandidate::default()
@@ -742,6 +656,31 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
             run_seed: 0x1234,
         })
     );
+}
+
+#[test]
+fn launch_profile_accepts_any_guest_kernel_cmdline() {
+    // Determinism is delivered host-side (seeded fw_cfg entropy + builtin RNG),
+    // so the guest kernel command line is the guest's own choice. A stock
+    // cmdline with no entropy-suppression flags validates, and a cmdline that
+    // itself opts into `nokaslr`/`norandmaps`/`random.trust_*` is equally legal.
+    for cmdline in [
+        "console=ttyS0 reboot=k panic=1 quiet",
+        "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off",
+        "console=ttyS0 reboot=k panic=1 quiet kaslr random.trust_cpu=on",
+        "root=/dev/vda1 rw",
+    ] {
+        let profile = deterministic(LaunchProfileCandidate::default().with_kernel_cmdline(cmdline));
+        assert_eq!(
+            option_value(&profile.canonical_qemu_args(), "-append"),
+            cmdline,
+            "the launch profile passes the guest cmdline through unchanged"
+        );
+        assert!(
+            validate_pre_spawn_qemu_launch_args(&profile.canonical_qemu_args()).is_ok(),
+            "any guest cmdline must pass pre-spawn validation with host-side seals intact"
+        );
+    }
 }
 
 #[test]
@@ -1031,7 +970,7 @@ fn launch_hash_material_records_every_determinism_field() {
         "per_vcpu_rng_source=scenario-seed-and-run-seed",
         "per_vcpu_rng_timing_axis=node-icount",
         "secondary_vcpu_bringup=rr-tcg-icount-deterministic",
-        "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off",
+        "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet",
     ] {
         assert!(material.contains(expected), "missing {expected}");
     }
@@ -1060,9 +999,10 @@ fn launch_hash_material_records_every_determinism_field() {
     let epoch =
         deterministic(LaunchProfileCandidate::default().with_rtc_epoch_utc("2026-01-02T00:00:00"))
             .scenario_hash_material();
-    let cmdline = deterministic(LaunchProfileCandidate::default().with_kernel_cmdline(
-        "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off net.ifnames=0",
-    ))
+    let cmdline = deterministic(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet net.ifnames=0"),
+    )
     .scenario_hash_material();
     let scenario_seed = deterministic(LaunchProfileCandidate::default().with_scenario_seed(0x1234))
         .scenario_hash_material();
@@ -1377,6 +1317,12 @@ fn launch_command_builder_rejects_invalid_tool_or_plugin_paths() {
 
 fn qemu_args<const N: usize>(parts: [&str; N]) -> Vec<String> {
     parts.iter().map(|part| (*part).to_owned()).collect()
+}
+
+fn option_value(args: &[String], option: &str) -> String {
+    args.windows(2)
+        .find_map(|window| (window[0] == option).then(|| window[1].clone()))
+        .unwrap_or_else(|| panic!("missing QEMU option {option}"))
 }
 
 fn replace_option_value(args: &mut [String], option: &str, replacement: &str) {

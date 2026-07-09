@@ -251,7 +251,7 @@
       }
       {
         label = "ceil conversion";
-        needle = "virtual_time.to_icount_ceil(shift)";
+        needle = "horizon.to_icount_ceil(self.shift)";
       }
       {
         label = "exact deadline horizon test";

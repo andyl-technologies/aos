@@ -39,14 +39,10 @@
     )
     requirements;
 
-  pureStepBody = ''
-    pub fn step(config: &Configuration, decision: Decision) -> Configuration {
-        Configuration {
-            def: config.def.clone(),
-            schedule: config.schedule.appended(decision),
-        }
-    }
-  '';
+  # The pure temporal-graph edge now lives in `try_step` (step delegates to it and
+  # panics on the draw-cap validation error). This pins the pure-edge body — a clone
+  # of the scenario def plus the appended decision, with no mutation of `config`.
+  pureStepBody = "let next = Configuration {\n        def: config.def.clone(),\n        schedule: config.schedule.appended(decision),\n    };";
 
   failures =
     failuresFor "crates/crucible/src/model.rs" model [

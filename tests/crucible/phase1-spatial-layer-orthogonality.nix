@@ -172,8 +172,13 @@
         needle = "boot_event";
       }
       {
+        # Scoped to the call form `entrypoint(`. The bare substring `entrypoint`
+        # also matched the canonical-material string literal `"trigger=entrypoint"`
+        # in event_material (a serialization label for a triggerless/entrypoint
+        # event, NOT a layer-folding API); the open-paren anchor still bans a real
+        # entrypoint-folding API while allowing that string. Rescoped 2026-07-09.
         label = "entrypoint folding API";
-        needle = "entrypoint";
+        needle = "entrypoint(";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [

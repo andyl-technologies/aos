@@ -292,6 +292,8 @@ pub struct ListScenariosResponse {
 
 /// Scenario input accepted by `CreateSession`.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::large_enum_variant)]
 pub enum CreateSessionSource {
     /// Resolve a named scenario from the server registry.
     ScenarioRef {
@@ -850,9 +852,9 @@ pub enum LifecycleApiError {
     #[error("inline scenario payload identity mismatch: expected={expected:?} actual={actual:?}")]
     InlineScenarioIdentityMismatch {
         /// Advertised scenario definition handle.
-        expected: ScenarioDef,
+        expected: Box<ScenarioDef>,
         /// Scenario definition handle reconstructed from the inline payload.
-        actual: ScenarioDef,
+        actual: Box<ScenarioDef>,
     },
     /// The genesis temporal graph could not be created.
     #[error("failed to create genesis temporal graph: {message}")]
@@ -920,6 +922,10 @@ pub enum LifecycleApiError {
 pub type LifecycleLoopFactory<L> =
     Box<dyn Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> L + Send + Sync>;
 
+/// Callback type used to derive node white-box policies for a scenario.
+pub type WhiteBoxPolicyProvider =
+    Box<dyn Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync>;
+
 /// In-process lifecycle control plane for unary API methods.
 pub struct LifecycleControlPlane<L, F> {
     server_name: String,
@@ -928,8 +934,7 @@ pub struct LifecycleControlPlane<L, F> {
     next_session_id: u64,
     next_epoch: u64,
     loop_factory: F,
-    white_box_policy_provider:
-        Box<dyn Fn(&ScenarioDef) -> BTreeMap<NodeId, WhiteBoxPolicy> + Send + Sync>,
+    white_box_policy_provider: WhiteBoxPolicyProvider,
     mailbox_capacity: usize,
     startup_max_actor_yields: u64,
     max_sessions: Option<usize>,
@@ -1075,10 +1080,10 @@ where
         &mut self,
         request: CreateSessionRequest,
     ) -> Result<CreateSessionResponse, LifecycleApiError> {
-        if let Some(limit) = self.max_sessions {
-            if self.sessions.len() >= limit {
-                return Err(LifecycleApiError::SessionLimitReached { limit });
-            }
+        if let Some(limit) = self.max_sessions
+            && self.sessions.len() >= limit
+        {
+            return Err(LifecycleApiError::SessionLimitReached { limit });
         }
         let scenario = self.resolve_scenario(&request)?;
         let scenario_form = inline_scenario_form(&request);
@@ -1141,10 +1146,10 @@ where
         &mut self,
         request: ResumeSessionRequest,
     ) -> Result<ResumeSessionResponse, LifecycleApiError> {
-        if let Some(limit) = self.max_sessions {
-            if self.sessions.len() >= limit {
-                return Err(LifecycleApiError::SessionLimitReached { limit });
-            }
+        if let Some(limit) = self.max_sessions
+            && self.sessions.len() >= limit
+        {
+            return Err(LifecycleApiError::SessionLimitReached { limit });
         }
         if request.scenario.seed() != request.seed {
             return Err(LifecycleApiError::ScenarioSeedMismatch {
@@ -1253,14 +1258,14 @@ where
                 actual: request.session.epoch,
             });
         }
-        if let Some(expected_epoch) = request.expected_epoch {
-            if runtime.session.epoch != expected_epoch {
-                return Err(LifecycleApiError::EpochMismatch {
-                    session_id: request.session.id,
-                    expected: runtime.session.epoch,
-                    actual: expected_epoch,
-                });
-            }
+        if let Some(expected_epoch) = request.expected_epoch
+            && runtime.session.epoch != expected_epoch
+        {
+            return Err(LifecycleApiError::EpochMismatch {
+                session_id: request.session.id,
+                expected: runtime.session.epoch,
+                actual: expected_epoch,
+            });
         }
 
         let runtime = self.sessions.remove(&request.session.id).ok_or(
@@ -1323,8 +1328,8 @@ where
                     let source_scenario = scenario_form.scenario_def();
                     if source_scenario != *scenario {
                         return Err(LifecycleApiError::InlineScenarioIdentityMismatch {
-                            expected: scenario.clone(),
-                            actual: source_scenario,
+                            expected: Box::new(scenario.clone()),
+                            actual: Box::new(source_scenario),
                         });
                     }
                 }
@@ -1378,14 +1383,14 @@ where
         if runtime.session != requested {
             return Err(LifecycleApiError::SessionNotFound { session: requested });
         }
-        if let Some(expected_epoch) = expected_epoch {
-            if runtime.session.epoch != expected_epoch {
-                return Err(LifecycleApiError::EpochMismatch {
-                    session_id: requested.id,
-                    expected: runtime.session.epoch,
-                    actual: expected_epoch,
-                });
-            }
+        if let Some(expected_epoch) = expected_epoch
+            && runtime.session.epoch != expected_epoch
+        {
+            return Err(LifecycleApiError::EpochMismatch {
+                session_id: requested.id,
+                expected: runtime.session.epoch,
+                actual: expected_epoch,
+            });
         }
         Ok(runtime)
     }

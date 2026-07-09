@@ -1,6 +1,8 @@
 //! Checks T-TRIG-12 deterministic trigger action application.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Action, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event, EventGraph,
@@ -241,13 +243,12 @@ fn trigger_actions_apply_full_set_in_group_order_without_schedule_decisions() {
     let log_entries = append
         .entries
         .iter()
-        .filter_map(|entry| match entry.payload() {
-            SchedulerEventLogPayload::TriggerActionApplied(application)
-                if application.is_observational() =>
-            {
-                Some(entry)
-            }
-            _ => None,
+        .filter(|entry| {
+            matches!(
+                entry.payload(),
+                SchedulerEventLogPayload::TriggerActionApplied(application)
+                    if application.is_observational()
+            )
         })
         .collect::<Vec<_>>();
     assert_eq!(log_entries.len(), 1);

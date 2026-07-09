@@ -104,7 +104,18 @@ pub(super) fn collect_signature(lines: &[&str], start: usize) -> String {
 }
 
 pub(super) fn signature_returns_result(signature: &str) -> bool {
-    signature.contains("->") && signature.contains("Result")
+    let Some((_before_arrow, after_arrow)) = signature.split_once("->") else {
+        return false;
+    };
+    let return_type = after_arrow
+        .split(" where ")
+        .next()
+        .unwrap_or(after_arrow)
+        .split('{')
+        .next()
+        .unwrap_or(after_arrow)
+        .trim();
+    return_type.contains("Result")
 }
 
 pub(super) fn function_name(signature: &str) -> String {
@@ -169,7 +180,10 @@ pub(super) fn doc_block_before(lines: &[&str], item_line: usize) -> Vec<String> 
         cursor -= 1;
         let trimmed = lines[cursor].trim_start();
 
-        if trimmed.is_empty() || trimmed.starts_with("#[") {
+        if trimmed.is_empty()
+            || trimmed.starts_with("#[")
+            || trimmed.starts_with("// crucible-lint: allow ")
+        {
             continue;
         }
 

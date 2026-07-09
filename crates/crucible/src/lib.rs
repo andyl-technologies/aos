@@ -270,7 +270,7 @@ pub use trigger::{
     resolve_ready_point,
 };
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support {
     //! Debug-build helpers for integration tests.
@@ -383,10 +383,14 @@ pub mod test_support {
     #[must_use]
     pub fn condition_prefix_at_quantum_boundary_for_test(ticks: u64) -> ConditionEventLogPrefix {
         let at = VirtualTime { ticks };
-        ConditionEventLogPrefix::from_scheduler_event_log_entries(vec![
+        match ConditionEventLogPrefix::from_scheduler_event_log_entries(vec![
             condition_boundary_entry_for_test(0, at, SchedulerEvaluationBoundaryKind::Quantum),
-        ])
-        .expect("test scheduler boundary entry should form a checked prefix")
+        ]) {
+            Ok(prefix) => prefix,
+            Err(error) => {
+                panic!("test scheduler boundary entry should form a checked prefix: {error}")
+            }
+        }
     }
 
     /// Builds a checked condition prefix from observable events for integration tests.
@@ -406,13 +410,13 @@ pub mod test_support {
             .enumerate()
             .map(|(sequence, (_, event))| {
                 condition_observation_entry_for_test(
-                    u64::try_from(sequence).expect("test observable event index should fit in u64"),
+                    u64::try_from(sequence).unwrap_or(u64::MAX),
                     event,
                 )
             })
             .collect::<Vec<_>>();
         entries.push(condition_boundary_entry_for_test(
-            u64::try_from(entries.len()).expect("test observable event count should fit in u64"),
+            u64::try_from(entries.len()).unwrap_or(u64::MAX),
             VirtualTime { ticks },
             SchedulerEvaluationBoundaryKind::Quantum,
         ));

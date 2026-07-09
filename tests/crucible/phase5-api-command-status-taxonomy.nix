@@ -61,10 +61,6 @@
         label = "T-API-10 completion note";
         needle = "Completed by `checks.crucible.phase5.apiCommandStatusTaxonomy`";
       }
-      {
-        label = "reference client remains pending";
-        needle = "- [ ] **T-API-13**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {

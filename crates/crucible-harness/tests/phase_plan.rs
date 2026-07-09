@@ -179,18 +179,18 @@ fn layer_gate_precedences_keep_lower_layer_checks_first() {
     assert!(layer_gate_precedence_failures(phase_gate_order(), LAYER_GATE_PRECEDENCES).is_empty());
 
     let mut drifted_plan = phase_gate_order().to_vec();
-    let lower_index = drifted_plan
-        .iter()
-        .position(|occurrence| {
-            occurrence.attr_path == "checks.crucible.phase2.gates.layer1Injection"
-        })
-        .expect("lower layer gate should be present");
-    let higher_index = drifted_plan
-        .iter()
-        .position(|occurrence| {
-            occurrence.attr_path == "checks.crucible.phase2.gates.singleVmFingerprint"
-        })
-        .expect("higher layer gate should be present");
+    let lower_index = match drifted_plan.iter().position(|occurrence| {
+        occurrence.attr_path == "checks.crucible.phase2.gates.layer1Injection"
+    }) {
+        Some(index) => index,
+        None => panic!("lower layer gate should be present"),
+    };
+    let higher_index = match drifted_plan.iter().position(|occurrence| {
+        occurrence.attr_path == "checks.crucible.phase2.gates.singleVmFingerprint"
+    }) {
+        Some(index) => index,
+        None => panic!("higher layer gate should be present"),
+    };
     drifted_plan.swap(lower_index, higher_index);
 
     let failures = layer_gate_precedence_failures(&drifted_plan, LAYER_GATE_PRECEDENCES);
@@ -390,14 +390,14 @@ fn advanced_feature_schedule_rejects_phase6_import_without_explicit_task_ids() {
 #[test]
 fn advanced_feature_ladder_rejects_fuzzing_before_coverage() {
     let mut drifted = advanced_feature_task_order().to_vec();
-    let fuzz_index = drifted
-        .iter()
-        .position(|task| task.task_id == "T-ADV-12")
-        .expect("fuzz task should be present");
-    let coverage_index = drifted
-        .iter()
-        .position(|task| task.task_id == "T-ADV-11")
-        .expect("coverage task should be present");
+    let fuzz_index = match drifted.iter().position(|task| task.task_id == "T-ADV-12") {
+        Some(index) => index,
+        None => panic!("fuzz task should be present"),
+    };
+    let coverage_index = match drifted.iter().position(|task| task.task_id == "T-ADV-11") {
+        Some(index) => index,
+        None => panic!("coverage task should be present"),
+    };
     drifted.swap(fuzz_index, coverage_index);
 
     let failures = advanced_feature_ladder_failures(phase_gate_order(), &drifted);
@@ -414,10 +414,13 @@ fn advanced_feature_ladder_rejects_fuzzing_before_coverage() {
 #[test]
 fn advanced_feature_ladder_rejects_tasks_before_foundation_gates() {
     let mut drifted_plan = phase_gate_order().to_vec();
-    let phase4_e2e = drifted_plan
+    let phase4_e2e = match drifted_plan
         .iter_mut()
         .find(|occurrence| occurrence.attr_path == "checks.crucible.phase4.gates.e2eDeterminism")
-        .expect("phase4 e2e gate should be present");
+    {
+        Some(occurrence) => occurrence,
+        None => panic!("phase4 e2e gate should be present"),
+    };
     phase4_e2e.phase = PhasePlanPhase::Phase6;
 
     let failures = advanced_feature_ladder_failures(&drifted_plan, advanced_feature_task_order());

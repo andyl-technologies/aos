@@ -13,7 +13,11 @@
 
   protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   protocolTest = builtins.readFile ../../crates/crucible-protocol/tests/setup_completion.rs;
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  # The setup-region mmap surface was split out of lib.rs into
+  # mapped_setup_region.rs; scan both so the needles survive file moves.
+  shmemLib =
+    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs;
   shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/setup_validation.rs;
   pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
@@ -148,7 +152,7 @@
       }
       {
         label = "setup geometry validation";
-        needle = "validate_setup_region_geometry";
+        needle = "validate_setup_region_header";
       }
       {
         label = "computed layout length validation";

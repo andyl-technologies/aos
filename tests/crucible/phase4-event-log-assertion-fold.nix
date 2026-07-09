@@ -12,6 +12,7 @@
   };
 
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
   assertionLogFoldTest = builtins.readFile ../../crates/crucible/tests/assertion_log_fold.rs;
   classCatalogTest = builtins.readFile ../../crates/crucible/tests/event_log_class_catalog.rs;
@@ -67,11 +68,17 @@
         needle = "same `HostAssertionEvaluator` fold live and\n  offline";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/src/event_catalog.rs" eventCatalog [
       {
-        label = "assertion evaluation catalog kind";
-        needle = "\"assertion_evaluated\" | \"assertion_state_changed\" => Some(SchedulerEventLogClass::Causal)";
+        label = "assertion evaluated catalog kind is causal";
+        needle = "kind: \"assertion_evaluated\",\n        class: SchedulerEventLogClass::Causal,";
       }
+      {
+        label = "assertion state changed catalog kind is causal";
+        needle = "kind: \"assertion_state_changed\",\n        class: SchedulerEventLogClass::Causal,";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
         label = "guest assertion marker projects through guest_marker kind";
         needle = "EventPayload::new(\"guest_marker\", attributes)";

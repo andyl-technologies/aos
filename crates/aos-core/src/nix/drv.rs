@@ -15,6 +15,7 @@
 //! escapes).
 
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 
 /// A fixed-output derivation discovered from a .drv file.
 #[derive(Debug, Clone)]
@@ -90,8 +91,8 @@ pub fn parse_drv_for_fod(drv_path: &str) -> Result<Option<FixedOutputDrv>> {
 /// (skipping over quoted strings, which may contain brackets) and the
 /// final one is taken as the env. Each `("key","value")` pair within it
 /// is then decoded with [`parse_aterm_string`].
-fn parse_drv_env(content: &str) -> Result<std::collections::HashMap<String, String>> {
-    let mut env = std::collections::HashMap::new();
+fn parse_drv_env(content: &str) -> Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
 
     let bytes = content.as_bytes();
     let len = bytes.len();

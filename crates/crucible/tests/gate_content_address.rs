@@ -1,6 +1,8 @@
 //! Implements `gate:content-address` over the execution-model identity spine.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
@@ -1026,13 +1028,13 @@ fn gate_content_address_gc_missing_root_errors_without_deleting_store_objects() 
         .garbage_collect_store(&store, &TemporalGraphGcRoots::new().with_live_tip(missing))
         .unwrap_err();
 
-    assert!(matches!(
-        error,
-        TemporalGraphStoreError::Engine {
-            source: EngineError::CheckpointNotRecorded { checkpoint },
-            ..
-        } if checkpoint == missing
-    ));
+    match error {
+        TemporalGraphStoreError::Engine { source, .. } => match source.as_ref() {
+            EngineError::CheckpointNotRecorded { checkpoint } => assert_eq!(*checkpoint, missing),
+            other => panic!("unexpected engine error: {other}"),
+        },
+        other => panic!("unexpected temporal graph store error: {other}"),
+    }
     assert_eq!(graph.checkpoint_node_count(), before_checkpoints);
     assert_eq!(
         store.object_count().unwrap_or_else(|error| panic!(
@@ -1537,7 +1539,7 @@ fn gate_content_address_temporal_graph_partial_order_reduction_skips_noncanonica
     assert_eq!(report.covered[0].configuration.id(), covered.id());
     assert_eq!(report.covered[0].representative, representative.id());
     assert!(!graph.contains_configuration(&covered));
-    assert!(!graph.checkpoint_node(covered.id()).is_some());
+    assert!(graph.checkpoint_node(covered.id()).is_none());
 }
 
 #[test]
@@ -1947,7 +1949,7 @@ fn generated_decision(seed: u64, index: u64) -> Decision {
             fault: FaultId {
                 name: format!("fault-{seed}-{index}"),
             },
-            fired: index % 2 == 0,
+            fired: index.is_multiple_of(2),
         }),
         _ => Decision::RngDraw(RngDecision {
             stream: RngStreamId::from_name(format!("stream-{seed}")),

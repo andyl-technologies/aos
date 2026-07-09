@@ -1,6 +1,8 @@
 //! Checks the engine-side aggregate owner for `gate:abi-conformance`.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
 
@@ -17,6 +19,8 @@ use crucible_protocol::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::enum_variant_names)]
 enum BoundaryAbi {
     ShmemLayoutAbi,
     GuestHostProtocolAbi,

@@ -108,7 +108,7 @@
       }
       {
         label = "exact local wakeup inspection";
-        needle = "next_exact_local_event(\n                &node.id,";
+        needle = "next_exact_local_event(\n            &node.id,";
       }
       {
         label = "idle wake candidate";

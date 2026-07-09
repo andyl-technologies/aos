@@ -101,6 +101,38 @@
         label = "crate-local prefix constructor validates scheduler event-log entries";
         needle = "pub(crate) fn from_scheduler_event_log_entries";
       }
+      # Invariant pins for the public prefix constructors. `from_scheduler_event_log_entries`
+      # and `from_evaluation_boundary` were originally pub(crate) but were widened to `pub`
+      # (06f17151d "Implement session breakpoints") for legitimate crucible-session/-cli
+      # callers. Enforcement was downgraded from crate-boundary to invariant-pinning on
+      # 2026-07-09: rather than forbid the public surface, require that every prefix
+      # constructor routes through the checked base helper that raises these validation
+      # errors, so a future refactor cannot remove the dense-prefix/hash/ordering/future
+      # checks while staying green (a public caller still cannot mint an unchecked prefix).
+      {
+        label = "public prefix constructors delegate to the checked base helper";
+        needle = "Self::from_scheduler_event_log_entries_with_base";
+      }
+      {
+        label = "checked base helper rejects empty prefixes";
+        needle = "ConditionEvaluationError::EmptyEventLogPrefix";
+      }
+      {
+        label = "checked base helper rejects non-dense sequences";
+        needle = "ConditionEvaluationError::NonPrefixEventLogSequence";
+      }
+      {
+        label = "checked base helper rejects invalid entry hashes";
+        needle = "ConditionEvaluationError::InvalidEventLogEntryHash";
+      }
+      {
+        label = "checked base helper rejects out-of-order observations";
+        needle = "ConditionEvaluationError::OutOfOrderEventLogEntry";
+      }
+      {
+        label = "checked base helper rejects future entries past the evaluation point";
+        needle = "ConditionEvaluationError::FutureEventLogEntry";
+      }
       {
         label = "condition evaluator built from prefix";
         needle = "pub fn from_log_prefix(prefix: ConditionEventLogPrefix, oracle: O) -> Self";
@@ -307,10 +339,14 @@
         label = "public free condition evaluator";
         needle = "pub fn evaluate_condition<E>";
       }
-      {
-        label = "public raw scheduler event-log prefix constructor";
-        needle = "pub fn from_scheduler_event_log_entries";
-      }
+      # `pub fn from_scheduler_event_log_entries` and `from_evaluation`(_boundary) are
+      # intentionally NOT forbidden here. Both were widened from pub(crate) to `pub`
+      # (06f17151d) for legitimate crucible-session/-cli callers; the safety they provide
+      # lives in the full validation the base helper performs, which is pinned by the
+      # required needles above (dense-prefix/hash/ordering/future error variants), not by
+      # keeping the constructors crate-private. Enforcement downgraded from crate-boundary
+      # to invariant-pinning on 2026-07-09. The remaining forbidden constructors below have
+      # no such validation contract, so their public raw surface stays banned.
       {
         label = "public scheduler observable constructor";
         needle = "pub fn observable(";
@@ -340,8 +376,13 @@
         needle = "/// Content address of this entry's canonical material.\n    pub content_hash: ContentHash,";
       }
       {
+        # Scoped to the raw bypass form `from_evaluation(`. The bare substring
+        # `from_evaluation` also matched the legitimate checked constructor
+        # `from_evaluation_boundary` (widened to `pub` in 06f17151d for crucible-session);
+        # the open-paren anchor still bans a configured-evaluator bypass while allowing the
+        # boundary constructor, whose validation is pinned above. Rescoped 2026-07-09.
         label = "pass from configured evaluator bypass";
-        needle = "from_evaluation";
+        needle = "from_evaluation(";
       }
       {
         label = "mutable underlying evaluator escape hatch";

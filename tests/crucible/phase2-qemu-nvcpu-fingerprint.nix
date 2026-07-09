@@ -476,7 +476,7 @@ in
               -rtc base=2026-01-01T00:00:00,clock=vm \
               -seed 0x0010c016 \
               -qmp "unix:$qmp_socket,server=on,wait=off" \
-              -plugin "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so",out="$trace",cadence=5000,stop_at=5000,extended=on,mem_events=off,vcpus=4 \
+              -plugin "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so",out="$trace",cadence=4096,stop_at=4096,extended=on,mem_events=off,rr_switch_events=off,vcpus=4 \
               -no-shutdown \
               -no-reboot &
             qemu_pid="$!"
@@ -488,11 +488,22 @@ in
             qemu_pid=""
 
             jq -e -s '
+              def terminal_stop_sample:
+                .final == true and .stop_requested == true;
+
               [ .[] | select((.kind // "sample") == "sample") ] as $samples
               | ($samples | length) >= 2
               and all($samples[]; (
                 .tracked_vcpus == 4
-                and .rr_switch_quantum == 4096
+                and (
+                  if terminal_stop_sample then
+                    .rr_switch_quantum == 0
+                    and .rr_cursor_valid == false
+                  else
+                    .rr_switch_quantum == 4096
+                    and .rr_cursor_valid == true
+                  end
+                )
                 and .sample_register_failures == 0
                 and .register_read_failures == 0
                 and (.register_hashes | type == "array")
@@ -509,7 +520,7 @@ in
                 and .rr_cursor_position >= 0
                 and .rr_cursor_position < .rr_switch_quantum
               ))
-              and any($samples[]; .final != true and .retired == 5000)
+              and any($samples[]; .final != true and .retired == 4096)
               and any($samples[]; .final == true)
             ' "$trace" >/dev/null \
               || fail "real QEMU N-vCPU trace failed structural assertions"

@@ -8,14 +8,15 @@
 //! - [`NetLink`] has its own `emit(frame, draws, policy)` / `advance_to(limit)` /
 //!   `next_delivery(limit)`.
 //!
-//! This module owns one thin [`HarnessDevice`](super::HarnessDevice) adapter per
+//! This module owns one thin [`HarnessDevice`] adapter per
 //! kind — [`BlockHarness`], [`NinepHarness`], [`NetLinkHarness`] — that projects
 //! each surface onto the harness's three uniform operations (apply a request,
-//! advance the clock, drain normalized [`DeliveryRecord`](super::DeliveryRecord)s)
+//! advance the clock, drain normalized [`DeliveryRecord`]s)
 //! so the run-twice/divergence/idle-busy-poll machinery is written once and
 //! reused across all three ([IO-27]). Each adapter drains through the device's
-//! own [`IoCore`]/in-flight queue, so the delivery key (`delivery_icount`,
-//! `src_node`, `seq`) is preserved verbatim in every record ([IO-10]).
+//! own [`IoCore`](crate::subnode::IoCore)/in-flight queue, so the delivery key
+//! (`delivery_icount`, `src_node`, `seq`) is preserved verbatim in every record
+//! ([IO-10]).
 
 use crate::block::BlockDevice;
 use crate::block::codec::BlockRequest;

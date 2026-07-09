@@ -139,8 +139,16 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "time vocabulary exports";
-        needle = "SimDuration, SimInstant, SimOffset";
+        label = "SimDuration export";
+        needle = "SimDuration,";
+      }
+      {
+        label = "SimInstant export";
+        needle = "SimInstant,";
+      }
+      {
+        label = "SimOffset export";
+        needle = "SimOffset,";
       }
       {
         label = "conversion test";

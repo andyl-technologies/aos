@@ -127,7 +127,7 @@
       }
       {
         label = "test-only crucible dependency";
-        needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
+        needle = "crucible = { path = \"../crucible\", features = [\"test-double\", \"test-support\"] }";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [

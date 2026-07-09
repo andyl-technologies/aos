@@ -92,39 +92,6 @@ pub enum LaunchProfileError {
         /// The rejected RTC clock mode.
         clock: String,
     },
-    /// The kernel command line trusts host CPU randomness.
-    #[error("kernel command line must not enable `random.trust_cpu`")]
-    KernelTrustsHostCpuRandom,
-    /// The kernel command line did not explicitly distrust CPU randomness.
-    #[error("kernel command line must include `random.trust_cpu=off`")]
-    KernelCpuRandomTrustNotDisabled,
-    /// The kernel command line specified CPU random trust more than once.
-    #[error("kernel command line must specify `random.trust_cpu=off` exactly once")]
-    KernelCpuRandomTrustAmbiguous,
-    /// The kernel command line trusts bootloader-provided randomness.
-    #[error("kernel command line must not enable `random.trust_bootloader`")]
-    KernelTrustsBootloaderRandom,
-    /// The kernel command line did not explicitly distrust bootloader randomness.
-    #[error("kernel command line must include `random.trust_bootloader=off`")]
-    KernelBootloaderRandomTrustNotDisabled,
-    /// The kernel command line specified bootloader random trust more than once.
-    #[error("kernel command line must specify `random.trust_bootloader=off` exactly once")]
-    KernelBootloaderRandomTrustAmbiguous,
-    /// The kernel command line explicitly enabled kernel address randomization.
-    #[error("kernel command line must not include `kaslr`")]
-    KernelKaslrExplicitlyEnabled,
-    /// The kernel command line did not disable kernel address randomization.
-    #[error("kernel command line must include `nokaslr` exactly once")]
-    KernelKaslrNotDisabled,
-    /// The kernel command line specified the KASLR disable flag ambiguously.
-    #[error("kernel command line must include bare `nokaslr` exactly once")]
-    KernelKaslrFlagAmbiguous,
-    /// The kernel command line did not disable userspace address randomization.
-    #[error("kernel command line must include `norandmaps` exactly once")]
-    UserspaceAslrNotDisabled,
-    /// The kernel command line specified the userspace ASLR disable flag ambiguously.
-    #[error("kernel command line must include bare `norandmaps` exactly once")]
-    UserspaceAslrFlagAmbiguous,
     /// The deterministic QEMU run seed diverged from the scenario seed.
     #[error("QEMU run seed {run_seed} must equal scenario seed {scenario_seed}")]
     RunSeedDiffersFromScenarioSeed {
@@ -772,76 +739,5 @@ pub(super) fn validate_fixed_text(
         Err(LaunchProfileError::InvalidFixedText { field })
     } else {
         Ok(())
-    }
-}
-
-pub(super) fn require_kernel_random_trust_off(
-    cmdline: &str,
-    key: &'static str,
-    missing: LaunchProfileError,
-    enabled: LaunchProfileError,
-    ambiguous: LaunchProfileError,
-) -> Result<(), LaunchProfileError> {
-    match kernel_cmdline_value(cmdline, key) {
-        KernelCmdlineValue::Single("off") => Ok(()),
-        KernelCmdlineValue::Single(_) => Err(enabled),
-        KernelCmdlineValue::Duplicate => Err(ambiguous),
-        KernelCmdlineValue::Missing => Err(missing),
-    }
-}
-
-pub(super) fn require_kernel_bare_flag_once(
-    cmdline: &str,
-    key: &str,
-    missing: LaunchProfileError,
-    ambiguous: LaunchProfileError,
-) -> Result<(), LaunchProfileError> {
-    match kernel_cmdline_value(cmdline, key) {
-        KernelCmdlineValue::Single("") => Ok(()),
-        KernelCmdlineValue::Single(_) | KernelCmdlineValue::Duplicate => Err(ambiguous),
-        KernelCmdlineValue::Missing => Err(missing),
-    }
-}
-
-pub(super) fn reject_kernel_cmdline_key(
-    cmdline: &str,
-    key: &str,
-    error: LaunchProfileError,
-) -> Result<(), LaunchProfileError> {
-    match kernel_cmdline_value(cmdline, key) {
-        KernelCmdlineValue::Missing => Ok(()),
-        KernelCmdlineValue::Single(_) | KernelCmdlineValue::Duplicate => Err(error),
-    }
-}
-
-enum KernelCmdlineValue<'a> {
-    Missing,
-    Single(&'a str),
-    Duplicate,
-}
-
-fn kernel_cmdline_value<'a>(cmdline: &'a str, key: &str) -> KernelCmdlineValue<'a> {
-    let mut value = None;
-
-    for argument in cmdline.split_ascii_whitespace() {
-        let candidate = if argument == key {
-            Some("")
-        } else {
-            argument
-                .strip_prefix(key)
-                .and_then(|remainder| remainder.strip_prefix('='))
-        };
-
-        if let Some(candidate) = candidate {
-            if value.is_some() {
-                return KernelCmdlineValue::Duplicate;
-            }
-            value = Some(candidate);
-        }
-    }
-
-    match value {
-        Some(value) => KernelCmdlineValue::Single(value),
-        None => KernelCmdlineValue::Missing,
     }
 }

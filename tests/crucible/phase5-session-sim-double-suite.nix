@@ -176,8 +176,8 @@
     ++ forbiddenFor "crates/crucible-session/src/lib.rs" sessionLib qemuBackendForbidden
     ++ failuresFor "crates/crucible-session/Cargo.toml" sessionManifest [
       {
-        label = "session test-double dev feature";
-        needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
+        label = "session test-double and test-support dev features";
+        needle = "crucible = { path = \"../crucible\", features = [\"test-double\", \"test-support\"] }";
       }
       {
         label = "session protocol dev dependency";
@@ -259,8 +259,12 @@
     ++ forbiddenFor "crates/crucible-session/tests/gate_exploration_lifecycle.rs" sessionExplorationLifecycleTest qemuBackendForbidden
     ++ failuresFor "crates/crucible-api/Cargo.toml" apiManifest [
       {
-        label = "API test-double dev feature";
-        needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
+        label = "API test-double and test-support dev features";
+        needle = "crucible = { path = \"../crucible\", features = [\"test-double\", \"test-support\"] }";
+      }
+      {
+        label = "API session test-support dev feature";
+        needle = "crucible-session = { path = \"../crucible-session\", features = [\"test-support\"] }";
       }
       {
         label = "API protocol dev dependency";

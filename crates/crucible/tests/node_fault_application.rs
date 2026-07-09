@@ -1,6 +1,8 @@
 //! Checks T-FAULT-7 node timing fault application on VM scheduler nodes.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     CombinedNodeFaults, Decision, ExactLocalEvent, FaultSlowdownFactorBasisPoints, Icount,
@@ -283,7 +285,7 @@ fn block_sub_node(
         target.clone(),
         device_id,
         block,
-        crucible::Seed::from_u64(0xd15c_0de),
+        crucible::Seed::from_u64(0x0d15_c0de),
     );
     ok(sub_node.submit(request_icount, &BlockRequest::read(1, 0, count)));
     sub_node

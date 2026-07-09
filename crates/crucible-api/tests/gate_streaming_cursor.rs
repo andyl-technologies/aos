@@ -1,6 +1,8 @@
 //! Checks the RFC-0010 T-API-6 streaming cursor contract.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -128,7 +130,7 @@ impl CursorFixture {
         let scenario = generated_scenario(seed);
         let config = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario);
-        let engine = Engine::new(config, graph, CursorLoop::default());
+        let engine = Engine::new(config, graph, CursorLoop);
         let (sender, receiver) = mpsc::channel::<SessionCommand>(16);
         let actor = SessionActor::new(engine, receiver);
         let live = actor.live_snapshot();

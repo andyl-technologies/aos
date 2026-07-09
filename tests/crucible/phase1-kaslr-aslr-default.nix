@@ -53,83 +53,93 @@
     )
     requirements;
 
+  # The any-guest contract (D-31): guest entropy-suppression flags MUST NOT be
+  # baked into the shipped default cmdline or gated on by the launch layer.
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  # Launch-source strings that only exist under the old conservative-default
+  # contract (suppression flags appended, KASLR/ASLR error variants that gate a
+  # launch on their presence). None may appear in the flipped launch layer.
+  forbiddenLaunchSource = [
+    {
+      label = "shipped default appends nokaslr";
+      needle = "nokaslr";
+    }
+    {
+      label = "shipped default appends norandmaps";
+      needle = "norandmaps";
+    }
+    {
+      label = "shipped default forces random.trust_cpu";
+      needle = "random.trust_cpu";
+    }
+    {
+      label = "shipped default forces random.trust_bootloader";
+      needle = "random.trust_bootloader";
+    }
+    {
+      label = "launch gates on missing KASLR suppression";
+      needle = "KernelKaslrNotDisabled";
+    }
+    {
+      label = "launch gates on explicit KASLR enablement";
+      needle = "KernelKaslrExplicitlyEnabled";
+    }
+    {
+      label = "launch gates on missing ASLR suppression";
+      needle = "UserspaceAslrNotDisabled";
+    }
+  ];
+
   failures =
     failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust [
       {
-        label = "conservative default disables KASLR";
-        needle = "nokaslr norandmaps random.trust_cpu=off";
-      }
-      {
-        label = "explicit KASLR enablement rejected";
-        needle = "KernelKaslrExplicitlyEnabled";
-      }
-      {
-        label = "missing nokaslr rejected";
-        needle = "KernelKaslrNotDisabled";
-      }
-      {
-        label = "ambiguous nokaslr rejected";
-        needle = "KernelKaslrFlagAmbiguous";
-      }
-      {
-        label = "missing norandmaps rejected";
-        needle = "UserspaceAslrNotDisabled";
-      }
-      {
-        label = "ambiguous norandmaps rejected";
-        needle = "UserspaceAslrFlagAmbiguous";
-      }
-      {
-        label = "bare flag parser";
-        needle = "fn require_kernel_bare_flag_once";
-      }
-      {
-        label = "opposing kaslr parser";
-        needle = "reject_kernel_cmdline_key(";
+        label = "stock guest kernel cmdline default (no entropy suppression)";
+        needle = "const DEFAULT_KERNEL_CMDLINE: &str = \"console=ttyS0 reboot=k panic=1 quiet\";";
       }
     ]
+    ++ forbiddenFor "crates/crucible-qemu/src/launch*.rs" launchRust forbiddenLaunchSource
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
       {
-        label = "append includes nokaslr";
-        needle = "any(|arg| arg == \"nokaslr\")";
+        label = "any-guest cmdline pass-through test";
+        needle = "fn launch_profile_accepts_any_guest_kernel_cmdline()";
       }
       {
-        label = "append includes norandmaps";
-        needle = "any(|arg| arg == \"norandmaps\")";
+        label = "guest cmdline passed through unchanged";
+        needle = "the launch profile passes the guest cmdline through unchanged";
       }
       {
-        label = "hash material includes conservative flags";
-        needle = "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps";
+        label = "any cmdline validates with host-side seals intact";
+        needle = "any guest cmdline must pass pre-spawn validation with host-side seals intact";
       }
       {
-        label = "missing nokaslr assertion";
-        needle = "LaunchProfileError::KernelKaslrNotDisabled";
+        label = "guest-set suppression flags are legal but not required";
+        needle = "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off";
       }
       {
-        label = "missing norandmaps assertion";
-        needle = "LaunchProfileError::UserspaceAslrNotDisabled";
+        label = "guest-set opt-in randomization is legal";
+        needle = "console=ttyS0 reboot=k panic=1 quiet kaslr random.trust_cpu=on";
       }
       {
-        label = "explicit kaslr assertion";
-        needle = "LaunchProfileError::KernelKaslrExplicitlyEnabled";
-      }
-      {
-        label = "ambiguous nokaslr assertion";
-        needle = "LaunchProfileError::KernelKaslrFlagAmbiguous";
-      }
-      {
-        label = "ambiguous norandmaps assertion";
-        needle = "LaunchProfileError::UserspaceAslrFlagAmbiguous";
+        label = "stock cmdline enters hash material unchanged";
+        needle = "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-deterministic-launch.nix" deterministicLaunchCheck [
       {
-        label = "deterministic launch tracks T-DET-6";
-        needle = "KernelKaslrNotDisabled";
+        label = "deterministic launch asserts stock cmdline default";
+        needle = "stock guest kernel cmdline default";
       }
       {
-        label = "deterministic launch tracks userspace ASLR";
-        needle = "UserspaceAslrNotDisabled";
+        label = "deterministic launch forbids appended suppression flags";
+        needle = "shipped default appends nokaslr";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
@@ -148,16 +158,12 @@
         needle = "**RISK-13** is retired by `T-RISK-6`";
       }
       {
-        label = "per-image capability decision";
-        needle = "default_decision=randomization_may_be_enabled_per_image";
+        label = "D-31 flip on S6 evidence";
+        needle = "On this evidence, **D-31** made the stock guest cmdline";
       }
       {
         label = "no fallback adopted";
         needle = "fallback_adopted=none";
-      }
-      {
-        label = "global default not flipped";
-        needle = "it is not a global default flip";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -192,12 +198,13 @@ in
             check=checks.crucible.phase1.kaslrAslrDefault
             gate=gate:layer0-determinism
             tasks=T-DET-6
-            default_kernel_randomization=nokaslr
-            default_userspace_randomization=norandmaps
+            default_kernel_randomization=kaslr-enabled-stock
+            default_userspace_randomization=aslr-enabled-stock
             spike=RISK-13/T-RISK-6
             spike_result=randomization_reproducible_with_fully_seeded_entropy
-            default_decision=randomization_may_be_enabled_per_image
-            global_default=nokaslr,norandmaps
+            default_decision=stock-guest-cmdline-host-side-sealed
+            global_default=stock-no-entropy-suppression
+            determinism_mechanism=host-side-qemu-icount-seeded-entropy
             fallback_adopted=none
             RESULT
           '';

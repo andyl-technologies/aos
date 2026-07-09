@@ -2122,15 +2122,15 @@ impl ConditionEventLogPrefix {
                 });
             }
             if scheduler_entry_black_box_observation_kind(entry).is_some() {
-                if let Some(previous) = previous_black_box_observation {
-                    if entry.at().ticks < previous.at().ticks {
-                        return Err(ConditionEvaluationError::OutOfOrderEventLogEntry {
-                            previous_sequence: previous.sequence(),
-                            previous_at: previous.at(),
-                            sequence: entry.sequence(),
-                            event_at: entry.at(),
-                        });
-                    }
+                if let Some(previous) = previous_black_box_observation
+                    && entry.at().ticks < previous.at().ticks
+                {
+                    return Err(ConditionEvaluationError::OutOfOrderEventLogEntry {
+                        previous_sequence: previous.sequence(),
+                        previous_at: previous.at(),
+                        sequence: entry.sequence(),
+                        event_at: entry.at(),
+                    });
                 }
                 previous_black_box_observation = Some(entry);
             }
@@ -2520,7 +2520,7 @@ impl<O> LintedHostAssertionOracle<O> {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "test-support"))]
 pub(crate) fn unchecked_host_assertion_oracle_for_test<O>(oracle: O) -> LintedHostAssertionOracle<O>
 where
     O: HostAssertionPredicate,
@@ -3195,9 +3195,9 @@ pub enum AssertionViolationReplayError {
     /// Replay evidence was reduced from a different artifact tuple.
     ReplayArtifactMismatch {
         /// Artifact replay expected from the checked reproduction artifact.
-        expected: ReproductionReplay,
+        expected: Box<ReproductionReplay>,
         /// Artifact replay supplied with the reproduced assertion log.
-        reproduced: ReproductionReplay,
+        reproduced: Box<ReproductionReplay>,
     },
     /// The original retained log did not contain an assertion violation.
     MissingRecordedViolation {
@@ -3399,8 +3399,8 @@ where
             })?;
     if reproduced.replay() != &replay {
         return Err(AssertionViolationReplayError::ReplayArtifactMismatch {
-            expected: replay,
-            reproduced: reproduced.replay().clone(),
+            expected: Box::new(replay),
+            reproduced: Box::new(reproduced.replay().clone()),
         });
     }
     let properties = artifact.scenario_form().properties();
@@ -4601,6 +4601,8 @@ where
     }
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn observe_eventually_assertion<O>(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
@@ -4773,14 +4775,11 @@ where
     );
     state.observe_proximity(prefix, distance);
 
-    let Some(expired) = state
+    let expired = state
         .pending_eventually
         .iter()
         .copied()
-        .find(|obligation| at.ticks >= obligation.deadline.ticks)
-    else {
-        return None;
-    };
+        .find(|obligation| at.ticks >= obligation.deadline.ticks)?;
     state.terminal_with_evidence(
         HostAssertionOutcomeKind::Violated,
         expired.deadline,
@@ -4797,6 +4796,8 @@ where
     )
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn observe_reachability_assertion<O>(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
@@ -4863,6 +4864,8 @@ where
     }
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn finalize_host_assertion_state<O>(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
@@ -5136,6 +5139,8 @@ fn host_assertion_report_with_reproduction_artifact(
     report
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn assertion_violation_replay_divergence(
     artifact: ContentHash,
     schedule: &Schedule,
@@ -6022,10 +6027,7 @@ fn io_kind_label(kind: IoEventKind) -> &'static str {
 
 fn eventually_deadline(triggered_at: VirtualTime, deadline: VirtualTime) -> VirtualTime {
     VirtualTime {
-        ticks: triggered_at
-            .ticks
-            .checked_add(deadline.ticks)
-            .unwrap_or(u64::MAX),
+        ticks: triggered_at.ticks.saturating_add(deadline.ticks),
     }
 }
 
@@ -6552,19 +6554,13 @@ fn external_observable_event_payload_material(observable: &ObservableEventPayloa
                 marker.details.len()
             ));
             for (index, detail) in marker.details.iter().enumerate() {
-                lines.push(format!(
-                    "{}",
-                    external_string_material(
-                        &format!("observable.marker.detail.{index}.key"),
-                        &detail.key,
-                    )
+                lines.push(external_string_material(
+                    &format!("observable.marker.detail.{index}.key"),
+                    &detail.key,
                 ));
-                lines.push(format!(
-                    "{}",
-                    external_string_material(
-                        &format!("observable.marker.detail.{index}.value"),
-                        &detail.value,
-                    )
+                lines.push(external_string_material(
+                    &format!("observable.marker.detail.{index}.value"),
+                    &detail.value,
                 ));
             }
             lines.push(external_string_material(
@@ -7399,6 +7395,8 @@ where
     }
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn host_condition_is_true<O>(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
@@ -7426,6 +7424,8 @@ where
     )
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn host_condition_is_true_with_cache<O>(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
@@ -7482,6 +7482,8 @@ fn property_proximity_is_reportable(
     }
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn host_condition_distance_to_satisfaction<O>(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
@@ -10211,6 +10213,8 @@ fn enabled_white_box_nodes(world: &World) -> BTreeSet<NodeId> {
         .collect()
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn validate_condition_references(
     event: &Event,
     condition: &Condition,
@@ -10328,6 +10332,8 @@ fn validate_condition_references(
     }
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn validate_compound_condition_references(
     event: &Event,
     kind: &'static str,
@@ -10633,17 +10639,18 @@ fn possible_dependency_alternatives(
 ) -> Vec<BTreeSet<EventId>> {
     match condition {
         Condition::After { of, .. } => vec![BTreeSet::from([of.clone()])],
-        Condition::Timer { name } => timer_names
-            .contains(name)
-            .then(|| {
+        Condition::Timer { name } => {
+            if timer_names.contains(name) {
                 armers
                     .get(name)
                     .into_iter()
                     .flat_map(|timer_armers| timer_armers.iter().cloned())
                     .map(|event| BTreeSet::from([event]))
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default(),
+            } else {
+                Vec::new()
+            }
+        }
         Condition::AllOf { predicates } => {
             let mut alternatives = vec![BTreeSet::new()];
             for predicate in predicates {
@@ -10692,6 +10699,8 @@ fn combine_dependency_alternatives(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use std::collections::BTreeMap;
 

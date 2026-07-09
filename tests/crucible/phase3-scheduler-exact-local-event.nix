@@ -85,7 +85,7 @@
       }
       {
         label = "advance window exact local reducer wiring";
-        needle = "let exact_local_event = next_exact_local_event";
+        needle = "let mut exact_local_event = next_exact_local_event";
       }
       {
         label = "backend input exclusion";

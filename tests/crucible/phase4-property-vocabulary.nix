@@ -221,8 +221,12 @@
         needle = "PROPERTY_SCHEMA_VERSION";
       }
       {
+        label = "action export";
+        needle = "Action,";
+      }
+      {
         label = "condition export";
-        needle = "Action, Condition, ConditionEvaluation";
+        needle = "Condition, ConditionEvaluation";
       }
     ]
     ++ failuresFor "crates/crucible/tests/property_vocabulary.rs" propertyTest [

@@ -56,10 +56,6 @@
         label = "T-API-13 completion note";
         needle = "Completed by `checks.crucible.phase5.apiReferenceClientConformance`";
       }
-      {
-        label = "API nondeterminism proof remains pending";
-        needle = "- [ ] **T-API-14**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {

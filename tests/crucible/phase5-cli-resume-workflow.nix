@@ -61,12 +61,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-10 remains open";
-        needle = "- [ ] **T-CLI-10** Implement `resume`";
+        label = "T-CLI-10 checklist complete";
+        needle = "- [x] **T-CLI-10** Implement `resume`";
       }
       {
-        label = "T-CLI-10 progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliResumeWorkflow`";
+        label = "T-CLI-10 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
         label = "T-CLI-10 local resume progress";
@@ -107,8 +107,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI resume progress note";
-        needle = "`T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently";
+        label = "phase5 CLI resume completion note";
+        needle = "`T-CLI-10` is green through `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
         label = "phase5 CLI resume local-QEMU coordinator progress";
@@ -397,6 +397,10 @@
       {
         label = "resume API VM realization derivation";
         needle = "realize_model_checkpoint_vm_resume_from_savepoint";
+      }
+      {
+        label = "resume API injectable QEMU executor hook";
+        needle = "realize_qemu_vm_resume_from_savepoint_with_executor";
       }
       {
         label = "resume API-owned QEMU coordinator invocation";

@@ -172,8 +172,12 @@
         needle = "pub id: ContentHash,\n    /// The root entropy carried by this scenario definition.";
       }
       {
+        # Scoped to the ScenarioDef seed field via its unique doc comment. The bare
+        # `pub seed: Seed,\n}` matched four OTHER structs that legitimately carry a
+        # public seed as their last field; the doc-comment anchor pins this to
+        # ScenarioDef's own field. Rescoped 2026-07-09.
         label = "public scenario seed field";
-        needle = "pub seed: Seed,\n}";
+        needle = "/// The root entropy carried by this scenario definition.\n    pub seed: Seed,";
       }
       {
         label = "host wall-clock API";

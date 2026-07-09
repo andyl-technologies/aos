@@ -2,8 +2,8 @@
 //!
 //! This module owns [`NetLink`], the link sub-node of RFC-0010 §15.4. A link
 //! carries [`Frame`]s from a source VM node to a destination over the
-//! [`SLOT_NET_ROUTER`](crucible_shmem::SLOT_NET_ROUTER) shmem slot: given a frame
-//! emitted by the source at icount `t`, the link computes the destination
+//! [`SLOT_NET_ROUTER`] shmem slot: given a frame emitted by the source at icount
+//! `t`, the link computes the destination
 //! `delivery_icount = ic(vt(t) + effective_latency)` and applies the effective
 //! fault table at RESOLVE ([IO-20]).
 //!

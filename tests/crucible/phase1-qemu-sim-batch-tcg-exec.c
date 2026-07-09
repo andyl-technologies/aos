@@ -27,6 +27,7 @@ typedef struct Trace {
 
 static bool fixture_sim_mode;
 static bool fixture_shmem_dispatch_registered;
+static int fixture_cpu_count;
 static unsigned int fixture_batch_limit;
 static unsigned int fixture_timer_runs;
 static unsigned int fixture_budget_refreshes;
@@ -104,7 +105,7 @@ static void icount_handle_deadline(void)
 
 static int rr_cpu_count(void)
 {
-    return 1;
+    return fixture_cpu_count;
 }
 
 static int64_t icount_percpu_budget(int cpu_count)
@@ -215,7 +216,10 @@ static void cpu_exec_step_atomic(CPUState *cpu)
 
 static unsigned int rr_crucible_sim_tcg_batch_limit(void)
 {
-    return rr_crucible_sim_mode() ? fixture_batch_limit : 1;
+    if (!rr_crucible_sim_mode() || rr_cpu_count() > 1) {
+        return 1;
+    }
+    return fixture_batch_limit;
 }
 
 static bool rr_crucible_sim_tcg_batch_continue(CPUState *cpu,
@@ -309,7 +313,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
             bql_lock();
             return true;
         } else if (r == EXCP_HALTED) {
-            return true;
+            return false;
         }
 
         if (!rr_crucible_sim_tcg_batch_continue(cpu, runs, r)) {
@@ -325,6 +329,7 @@ static void reset_fixture(const int *exits, const uint64_t *deltas,
 {
     fixture_sim_mode = true;
     fixture_shmem_dispatch_registered = false;
+    fixture_cpu_count = 1;
     fixture_batch_limit = RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT;
     fixture_timer_runs = 0;
     fixture_budget_refreshes = 0;
@@ -394,10 +399,15 @@ int main(void)
     int64_t cpu_budget;
 
     fixture_sim_mode = true;
+    fixture_cpu_count = 1;
     fixture_batch_limit = RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT;
     require_bool(rr_crucible_sim_tcg_batch_limit() == 4,
-                 "sim batch limit is not the fixed TCG batch size");
+                 "single-vCPU sim batch limit is not the fixed TCG batch size");
+    fixture_cpu_count = 2;
+    require_bool(rr_crucible_sim_tcg_batch_limit() == 1,
+                 "multi-vCPU sim mode did not retain one tcg exec per RR slot");
     fixture_sim_mode = false;
+    fixture_cpu_count = 1;
     require_bool(rr_crucible_sim_tcg_batch_limit() == 1,
                  "non-sim mode did not retain one tcg exec per loop");
 
@@ -414,8 +424,8 @@ int main(void)
 
     reset_fixture(halted_exits, small_deltas, 3);
     cpu_budget = fixture_next_budget;
-    require_bool(rr_crucible_sim_run_tcg_batch(&cpu, &cpu_budget),
-                 "EXCP_HALTED did not break the batch");
+    require_bool(!rr_crucible_sim_run_tcg_batch(&cpu, &cpu_budget),
+                 "EXCP_HALTED did not return to the RR handoff");
     require_bool(fixture_exit_index == 2,
                  "EXCP_HALTED did not stop before the next fixture exec");
 
@@ -452,9 +462,11 @@ int main(void)
 
     puts("PASS");
     puts("stock_negative_control=true");
-    puts("sim_batch_tcg_exec_fixed_limit=true");
+    puts("sim_batch_tcg_exec_single_vcpu_fixed_limit=true");
+    puts("sim_batch_tcg_exec_multivcpu_limit_guard=true");
     puts("sim_batch_tcg_exec_on_off_icount_trace_identical=true");
-    puts("sim_batch_tcg_exec_breaks_on_halted_debug_atomic=true");
+    puts("sim_batch_tcg_exec_halted_returns_to_rr_handoff=true");
+    puts("sim_batch_tcg_exec_breaks_on_debug_atomic=true");
     puts("sim_batch_tcg_exec_timer_between_slots=true");
     puts("sim_batch_tcg_exec_shmem_ceiling_guard=true");
     return 0;

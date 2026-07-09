@@ -1,6 +1,8 @@
 //! Checks T-ASRT-4 observed-state materialization from event-log prefixes.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Action, AppRandomDecision, BackendInput, ConditionEvaluationError, ConditionEvaluationPass,

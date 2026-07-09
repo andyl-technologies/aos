@@ -479,8 +479,8 @@
         needle = "policy.proves_independent(left, right)";
       }
       {
-        label = "POR representative must exist";
-        needle = "if !graph.contains_configuration(&representative)";
+        label = "POR representative recorded on demand";
+        needle = "graph.record_checkpoint_closure(&representative)?;";
       }
       {
         label = "POR proof insertion API";

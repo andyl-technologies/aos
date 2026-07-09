@@ -1,6 +1,8 @@
 //! Checks T-FAULT-15 fault determinism gate wiring.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
 
@@ -662,6 +664,8 @@ fn probe_live_links(scheduler: &mut SingleScheduler) -> Vec<LinkEffectProbe> {
     ]
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn probe_link(
     scheduler: &mut SingleScheduler,
     sequence: u64,

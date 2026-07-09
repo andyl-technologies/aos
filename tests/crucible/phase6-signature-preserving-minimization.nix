@@ -5,14 +5,22 @@
   pkgs,
   taskIds ? ["T-TRI-5"],
 }: let
-  escapeRegex = value:
-    builtins.replaceStrings
-    ["." "+" "*" "?" "^" "$" "(" ")" "[" "]" "{" "}" "|"]
-    ["[.]" "[+]" "[*]" "[?]" "[^]" "[$]" "[(]" "[)]" "[[]" "[]]" "[{]" "[}]" "[|]"]
-    value;
-
-  hasInfix = needle: haystack:
-    needle == "" || builtins.match ".*${escapeRegex needle}.*" haystack != null;
+  # Substring scan by index. The regex form (builtins.match ".*needle.*")
+  # overflows the Nix regex engine's stack on large haystacks such as the CLI
+  # main.rs, so use a linear index walk instead.
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index: builtins.substring index needleLen haystack == needle)
+    indexes;
 
   failuresFor = fileLabel: content: requirements:
     lib.concatMap (

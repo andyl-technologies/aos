@@ -50,10 +50,6 @@
         label = "T-API-1 completion note";
         needle = "Completed by `checks.crucible.phase5.apiControlClient`";
       }
-      {
-        label = "T-API-2 remains next";
-        needle = "- [ ] **T-API-2**";
-      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {

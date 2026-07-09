@@ -118,7 +118,7 @@
       }
       {
         label = "observable TOML network";
-        needle = "PredicateToml::NetworkMatch";
+        needle = "PredicateTomlKind::NetworkMatch";
       }
       {
         label = "observable binary tag network";

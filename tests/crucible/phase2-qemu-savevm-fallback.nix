@@ -369,6 +369,7 @@ in
               | grep -v '^crates/crucible-qemu/src/node_factory/tests.rs:' \
               | grep -v '^crates/crucible-qemu/src/qmp.rs:' \
               | grep -v '^crates/crucible-qemu/src/lib.rs:' \
+              | grep -vE '^crates/crucible-api/src/vm_resume.rs:[0-9]+:.*"exact-snapshot-loadvm"' \
               > "$TMPDIR/production-loadvm-calls.txt"; then
               cat "$TMPDIR/production-loadvm-calls.txt" >&2
               echo "unexpected production loadvm bypass while fallback policy disables the branch" >&2

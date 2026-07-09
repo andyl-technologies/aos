@@ -1,6 +1,8 @@
 //! Checks T-ASRT-10 assertion evaluation timing.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::cell::RefCell;
 
@@ -179,7 +181,7 @@ fn synthetic_deadline_prefix_preserves_retained_event_log_offset() {
         },
     )]);
     let trigger = ObservableEvent::network_delivered(time(3), None, b"trigger".to_vec());
-    let event_log = vec![
+    let event_log = [
         crucible::test_support::condition_observation_entry_for_test(0, &trigger),
         crucible::test_support::condition_boundary_entry_for_test(
             1,

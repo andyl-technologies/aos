@@ -14,6 +14,14 @@
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
   quantumLib = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  # Production-only slice for the no-unwrap/no-expect forbids (test code is
+  # allowed panic shortcuts, matching the workspace clippy allow policy).
+  # splitString uses a regex separator, so route through a regex-safe sentinel.
+  quantumProd = builtins.head (
+    lib.splitString "@@CFGTEST@@" (
+      builtins.replaceStrings ["\n#[cfg(test)]"] ["@@CFGTEST@@"] quantumLib
+    )
+  );
   pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
   pluginDeviceIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/device_io.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
@@ -237,7 +245,7 @@
         needle = "idle_loop_rx_queue_failure_does_not_commit_inbound_ring_reads";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
+    ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumProd [
       {
         label = "production unwrap";
         needle = ".unwrap()";

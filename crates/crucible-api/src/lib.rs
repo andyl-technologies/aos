@@ -80,6 +80,12 @@ pub use rpc_abi::{
     encode_rpc_hello_request, encode_rpc_hello_response, encode_rpc_message,
     negotiate_rpc_protocol, rpc_status_code_from_wire_name, rpc_status_code_wire_name,
 };
+// Re-exported so control-plane clients (e.g. the CLI) record the *shared*
+// guest-host protocol version in a reproduction artifact's provenance triple
+// without reaching past the control plane into `crucible-protocol` directly
+// (control-plane boundary): the CLI depends on `crucible-api`, which legally
+// depends on `crucible-protocol`.
+pub use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 pub use server::{
     LifecycleServerMode, serve_lifecycle_http2, serve_lifecycle_http2_with_mode,
     serve_lifecycle_http2_with_mode_until_shutdown,
@@ -101,5 +107,4 @@ pub use streaming::{
 pub use vm_resume::{
     ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError,
     realize_model_checkpoint_vm_resume_from_savepoint,
-    realize_qemu_vm_resume_from_savepoint_with_executor,
 };

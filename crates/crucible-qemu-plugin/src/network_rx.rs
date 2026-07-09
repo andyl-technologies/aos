@@ -970,6 +970,8 @@ mod tests {
         schedule
     }
 
+    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+    #[allow(clippy::too_many_arguments)]
     fn append_real_idle_rx_delivery(
         schedule: &mut Vec<SimDoubleHostScheduleEvent>,
         slot: &NodeSlot,

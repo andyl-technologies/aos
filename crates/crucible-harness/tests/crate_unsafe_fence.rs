@@ -30,6 +30,12 @@ struct FenceSpec {
 
 const FENCE_SPECS: &[FenceSpec] = &[
     FenceSpec {
+        package: "crucible-cas",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
         package: "crucible-sim",
         root: "src/lib.rs",
         unsafe_boundary: false,

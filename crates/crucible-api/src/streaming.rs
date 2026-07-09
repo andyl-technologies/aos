@@ -698,13 +698,13 @@ impl InProcessStreamingSession {
                 actual: self.session,
             });
         }
-        if let Some(expected) = expected_epoch {
-            if expected != self.session.epoch {
-                return Err(StreamingApiError::EpochMismatch {
-                    expected,
-                    actual: self.session.epoch,
-                });
-            }
+        if let Some(expected) = expected_epoch
+            && expected != self.session.epoch
+        {
+            return Err(StreamingApiError::EpochMismatch {
+                expected,
+                actual: self.session.epoch,
+            });
         }
         Ok(())
     }

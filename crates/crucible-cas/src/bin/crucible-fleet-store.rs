@@ -978,7 +978,7 @@ fn prove_campaign_continuity_gate(root: &Path) -> Result<(), Box<dyn Error>> {
                 || event.fresh_manifest.coverage_map_root == next_manifest.coverage_map_root
                 || event.fresh_manifest.findings_root == next_manifest.findings_root
                 || event.fresh_manifest.genesis_pin == next_manifest.genesis_pin
-                || recorded_event != event
+                || recorded_event != *event
                 || !campaign.manifest_store().has(&event.baseline_event_hash)?
                 || !campaign.manifest_store().has(&event.fresh_manifest_hash)?
             {

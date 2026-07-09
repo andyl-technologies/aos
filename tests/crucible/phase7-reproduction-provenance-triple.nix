@@ -278,8 +278,12 @@
         needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v2\";";
       }
       {
+        # Needle evolution: the CLI now reads the shared guest-host protocol
+        # version through `crucible-api`'s re-export (control-plane boundary),
+        # not directly from `crucible-protocol`. The provenance triple still
+        # records the SHARED constant; only the import path moved.
         label = "CLI reads guest-host protocol constant";
-        needle = "use crucible_protocol::CONTROL_PROTOCOL_VERSION;";
+        needle = "CONTROL_PROTOCOL_VERSION, CommandResultStatus";
       }
       {
         label = "CLI reads RPC ABI constants";

@@ -1382,6 +1382,8 @@ fn authorize_sim_double_delivery_ceiling(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::NodeId;

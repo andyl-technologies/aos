@@ -1,6 +1,8 @@
 //! Checks T-ASRT-13 assertion determinism and non-perturbation.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     AssertionDef, AssertionId, AssertionRunVerdict, ConditionLeaf, GuestAssertionDetail,
@@ -137,7 +139,7 @@ fn merged_host_and_guest_outcomes_are_bit_identical_online_offline_and_repeated(
         RecordedAssertionLog::from_segments(vec![event_log[..1].to_vec(), event_log[1..].to_vec()])
             .expect("recorded assertion determinism log should fold");
 
-    let mut online_oracle = linted_host_oracle(DeterministicOracle::default());
+    let mut online_oracle = linted_host_oracle(DeterministicOracle);
     let mut online_evaluator = HostAssertionEvaluator::new(&properties)
         .with_world_white_box_policies(&world)
         .with_guest_assertion_catalog(vec![guest_marker()]);
@@ -148,11 +150,11 @@ fn merged_host_and_guest_outcomes_are_bit_identical_online_offline_and_repeated(
     let checker = OfflineAssertionChecker::new()
         .with_world_white_box_policies(&world)
         .with_guest_assertion_catalog(vec![guest_marker()]);
-    let mut first_oracle = linted_host_oracle(DeterministicOracle::default());
+    let mut first_oracle = linted_host_oracle(DeterministicOracle);
     let first_offline = checker
         .check_run_with_oracle(&properties, &recorded_log, &mut first_oracle)
         .expect("first offline assertion determinism check should grade");
-    let mut second_oracle = linted_host_oracle(DeterministicOracle::default());
+    let mut second_oracle = linted_host_oracle(DeterministicOracle);
     let second_offline = checker
         .check_run_with_oracle(&properties, &recorded_log, &mut second_oracle)
         .expect("second offline assertion determinism check should grade");
@@ -203,7 +205,7 @@ fn assertion_evaluation_is_side_effect_free_for_backend_fingerprints() {
         .expect("fingerprint before assertion evaluation should read");
 
     let mut evaluator = HostAssertionEvaluator::new(&properties);
-    let mut oracle = linted_host_oracle(DeterministicOracle::default());
+    let mut oracle = linted_host_oracle(DeterministicOracle);
     let report = evaluator.finalize_prefix(&prefix(event_log()), &mut oracle);
 
     let after = backend

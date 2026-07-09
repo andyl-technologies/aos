@@ -134,6 +134,41 @@
     }
   ];
 
+  # Determinism shaping is now forbidden on the shipped fixture cmdline: the
+  # fixture kernel is stock and no guest cmdline param may be load-bearing for
+  # reproducibility. These are checked against the fixture cmdline only (the
+  # host-side QEMU launch, owned elsewhere, is what actually seeds determinism).
+  forbiddenCmdlineShaping = [
+    {
+      label = "KASLR suppression";
+      needle = "nokaslr";
+    }
+    {
+      label = "randomized-mmap suppression";
+      needle = "norandmaps";
+    }
+    {
+      label = "CPU RNG trust cmdline";
+      needle = "random.trust_cpu=";
+    }
+    {
+      label = "bootloader RNG trust cmdline";
+      needle = "random.trust_bootloader=";
+    }
+    {
+      label = "pinned clocksource";
+      needle = "clocksource=";
+    }
+    {
+      label = "timer check suppression";
+      needle = "no_timer_check";
+    }
+    {
+      label = "SMP suppression";
+      needle = "nosmp";
+    }
+  ];
+
   failures =
     lib.optionals (linuxCruciblePname != "linux-crucible") [
       "pkgs.linux-crucible: expected pname linux-crucible, got ${linuxCruciblePname}"
@@ -141,8 +176,8 @@
     ++ lib.optionals (!linuxCrucibleFixtureOnly) [
       "pkgs.linux-crucible: passthru.crucibleFixtureOnly must be true so it is not mistaken for a user-guest precondition"
     ]
-    ++ lib.optionals (linuxCrucibleDeterminismMechanism != "qemu-seed-icount-plus-bootloader-entropy") [
-      "pkgs.linux-crucible: passthru.crucibleDeterminismMechanism must name the QEMU-seeded entropy mechanism"
+    ++ lib.optionals (linuxCrucibleDeterminismMechanism != "host-side-qemu-icount-seeded-entropy") [
+      "pkgs.linux-crucible: passthru.crucibleDeterminismMechanism must name the host-side QEMU-seeded entropy mechanism"
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
       {
@@ -205,26 +240,6 @@
     )
     ++ failuresFor "pkgs.linux-crucible.passthru.crucibleExtraConfig" linuxCrucibleExtraConfig [
       {
-        label = "single-vCPU kernel";
-        needle = "# CONFIG_SMP is not set";
-      }
-      {
-        label = "single CPU upper bound";
-        needle = "CONFIG_NR_CPUS=1";
-      }
-      {
-        label = "periodic tick";
-        needle = "CONFIG_HZ_PERIODIC=y";
-      }
-      {
-        label = "fixed 100 Hz timer";
-        needle = "CONFIG_HZ_100=y";
-      }
-      {
-        label = "fixed timer rate value";
-        needle = "CONFIG_HZ=100";
-      }
-      {
         label = "serial console";
         needle = "CONFIG_SERIAL_8250_CONSOLE=y";
       }
@@ -257,18 +272,6 @@
         needle = "CONFIG_EXT4_FS=y";
       }
       {
-        label = "bootloader entropy trust";
-        needle = "CONFIG_RANDOM_TRUST_BOOTLOADER=y";
-      }
-      {
-        label = "no CPU RNG trust";
-        needle = "# CONFIG_RANDOM_TRUST_CPU is not set";
-      }
-      {
-        label = "no virtio RNG reliance";
-        needle = "# CONFIG_HW_RANDOM_VIRTIO is not set";
-      }
-      {
         label = "no loadable modules";
         needle = "# CONFIG_MODULES is not set";
       }
@@ -287,28 +290,10 @@
         label = "serial console cmdline";
         needle = "console=ttyS0";
       }
-      {
-        label = "single-vCPU cmdline";
-        needle = "nosmp";
-      }
-      {
-        label = "fixed clocksource";
-        needle = "clocksource=tsc";
-      }
-      {
-        label = "stable TSC";
-        needle = "tsc=reliable";
-      }
-      {
-        label = "timer check suppression";
-        needle = "no_timer_check";
-      }
-      {
-        label = "bootloader entropy trust cmdline";
-        needle = "random.trust_bootloader=on";
-      }
     ]
-    ++ forbiddenFor "pkgs.linux-crucible.passthru.crucibleFixtureKernelCmdline" linuxCrucibleCmdline forbiddenKernelSuppression
+    ++ forbiddenFor "pkgs.linux-crucible.passthru.crucibleFixtureKernelCmdline" linuxCrucibleCmdline (
+      forbiddenKernelSuppression ++ forbiddenCmdlineShaping
+    )
     ++ failuresFor "pkgs/kernel/linux.nix" linuxNix [
       {
         label = "module build guarded by final config";
@@ -398,11 +383,6 @@ in
               fi
             }
 
-            require_config '^# CONFIG_SMP is not set$' 'single-vCPU kernel'
-            require_config '^CONFIG_NR_CPUS=1$' 'single CPU upper bound'
-            require_config '^CONFIG_HZ_PERIODIC=y$' 'periodic tick'
-            require_config '^CONFIG_HZ_100=y$' 'fixed 100 Hz timer'
-            require_config '^CONFIG_HZ=100$' 'fixed timer rate value'
             require_config '^CONFIG_SERIAL_8250_CONSOLE=y$' 'serial console'
             require_config '^CONFIG_VIRTIO=y$' 'virtio bus'
             require_config '^CONFIG_VIRTIO_PCI=y$' 'virtio PCI'
@@ -411,9 +391,6 @@ in
             require_config '^CONFIG_NET_9P_VIRTIO=y$' 'virtio 9p transport'
             require_config '^CONFIG_9P_FS=y$' '9p filesystem built in'
             require_config '^CONFIG_EXT4_FS=y$' 'ext4 fixture root image support'
-            require_config '^CONFIG_RANDOM_TRUST_BOOTLOADER=y$' 'bootloader entropy trust'
-            require_config '^# CONFIG_RANDOM_TRUST_CPU is not set$' 'no CPU RNG trust'
-            require_config '^# CONFIG_HW_RANDOM_VIRTIO is not set$' 'no virtio RNG reliance'
             require_config '^# CONFIG_MODULES is not set$' 'no loadable modules'
             require_config '^# CONFIG_ACPI is not set$' 'no ACPI'
 
@@ -427,8 +404,8 @@ in
             forbid_config '^# CONFIG_ARCH_RANDOM is not set$' 'disabled architecture RNG'
 
             case " ${linuxCrucibleCmdline} " in
-              *" nokaslr "*|*" norandmaps "*|*" clearcpuid "*|*" rdrand=off "*)
-                echo "linux-crucible: fixture cmdline contains forbidden entropy/KASLR suppression" >&2
+              *" nokaslr "*|*" norandmaps "*|*" clearcpuid "*|*" rdrand=off "*|*" nosmp "*|*" no_timer_check "*|*clocksource=*|*random.trust_cpu=*|*random.trust_bootloader=*)
+                echo "linux-crucible: fixture cmdline contains forbidden entropy/KASLR/determinism-shaping suppression" >&2
                 exit 1
                 ;;
             esac
@@ -445,12 +422,11 @@ in
             final_config=$config_file
             kernel_image=$vmlinuz
             any_guest_gate=${anyGuestGate}
-            single_vcpu=true
-            fixed_timer=clocksource=tsc,tsc=reliable,no_timer_check
-            bootloader_entropy=CONFIG_RANDOM_TRUST_BOOTLOADER
+            stock_kernel=true
+            determinism_mechanism=host-side-qemu-icount-seeded-entropy
             module_policy=built-in-only
             acpi=false
-            forbids=nokaslr,CONFIG_RANDOM=n,RDRAND-disable
+            forbids=nokaslr,norandmaps,nosmp,clocksource=,no_timer_check,random.trust_cpu=,random.trust_bootloader=,CONFIG_RANDOM=n,RDRAND-disable
             RESULT
           '';
         }

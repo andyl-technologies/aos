@@ -107,8 +107,11 @@
         needle = "Only scalar fields are copied before the pointer lifetime ends.";
       }
       {
-        label = "install safety section";
-        needle = "# Safety";
+        # The install entry point was safe-shimmed: its signature is safe, so
+        # rustdoc conventions replace `# Safety` with the ABI-contract section;
+        # block-level `// SAFETY:` comments carry the pointer justifications.
+        label = "install ABI contract section";
+        needle = "# ABI contract";
       }
       {
         label = "dlsym safety";
@@ -125,12 +128,14 @@
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/setup.rs" pluginSetup [
       {
+        # The doc sentence wraps across comment lines; anchor on the unwrapped
+        # prefix of each clause.
         label = "descriptor handoff validity";
-        needle = "Descriptor validity comes from the fixed SCM_RIGHTS handoff";
+        needle = "Descriptor validity comes from the fixed SCM_RIGHTS";
       }
       {
         label = "mmap lifetime token";
-        needle = "lifetime is owned by the returned [`PluginSetupCompletion`] token";
+        needle = "mmap lifetime is owned by the returned";
       }
       {
         label = "mapped region lifetime";

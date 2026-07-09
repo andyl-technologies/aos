@@ -383,9 +383,9 @@ pub enum E2eGateError {
     /// The reproduction artifact was produced by a different build identity.
     BuildIdentityMismatch {
         /// Expected build identity.
-        expected: E2eBuildIdentity,
+        expected: Box<E2eBuildIdentity>,
         /// Build identity in the artifact.
-        actual: E2eBuildIdentity,
+        actual: Box<E2eBuildIdentity>,
     },
     /// The adversarial host fixture failed.
     HostAdversary(HostAdversaryError),
@@ -864,8 +864,8 @@ impl E2eReproductionArtifact {
     fn validate(&self, expected_build_identity: &E2eBuildIdentity) -> Result<(), E2eGateError> {
         if &self.build_identity != expected_build_identity {
             return Err(E2eGateError::BuildIdentityMismatch {
-                expected: expected_build_identity.clone(),
-                actual: self.build_identity.clone(),
+                expected: Box::new(expected_build_identity.clone()),
+                actual: Box::new(self.build_identity.clone()),
             });
         }
         if self.scenario.nodes.len() < 2 {

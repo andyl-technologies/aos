@@ -11,6 +11,7 @@ workspace = true
 axum = { workspace = true }
 bytes = { workspace = true }
 crucible = { path = "../crucible" }
+crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-session = { path = "../crucible-session" }
 futures-util = { workspace = true }
@@ -19,6 +20,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-crucible = { path = "../crucible", features = ["test-double"] }
-crucible-protocol = { path = "../crucible-protocol" }
+crucible = { path = "../crucible", features = ["test-double", "test-support"] }
 crucible-qemu = { path = "../crucible-qemu" }
+crucible-session = { path = "../crucible-session", features = ["test-support"] }

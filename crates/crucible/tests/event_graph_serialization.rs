@@ -1,6 +1,8 @@
 //! Checks T-TRIG-18 graph-native plan authoring and serialization.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, Condition, ContentHash, EngineError,

@@ -1111,6 +1111,16 @@ impl SessionCommand {
         }
     }
 
+    /// Builds a bounded [`SessionCommand::Step`] for the given step mode.
+    ///
+    /// Call sites that advance a session by a bounded step use this constructor
+    /// instead of the struct-literal form so the debug CLI surface never issues
+    /// raw step delegation directly.
+    #[must_use]
+    pub const fn step(mode: StepMode) -> Self {
+        Self::Step { mode }
+    }
+
     /// Wraps a command with an actor-level completion acknowledgement.
     #[must_use]
     pub fn acknowledged(command: Self, reply: CommandReply<()>) -> Self {
@@ -2549,6 +2559,11 @@ pub mod test_support {
     ) {
         hub.append_entries(entries);
     }
+
+    /// Truncates a session event-log hub to `len` entries for integration tests.
+    pub fn truncate_event_log_for_test(hub: &SessionEventLog, len: usize) {
+        hub.truncate_to_len(len);
+    }
 }
 
 /// Cursor-backed event-log stream for one subscriber.
@@ -2580,6 +2595,74 @@ impl SessionEventLogStream {
         &mut self,
     ) -> Result<Option<SessionEventLogFrame>, SessionEventLogStreamError> {
         loop {
+            if let Some(frame) = self.take_ready_backlog_frame() {
+                return Ok(Some(frame));
+            }
+            match self.receiver.recv().await {
+                Ok(frame) => {
+                    if let Some(frame) = self.deliver_frame(frame) {
+                        return Ok(Some(frame));
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return Ok(None),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    return Err(SessionEventLogStreamError::Lagged { skipped });
+                }
+            }
+        }
+    }
+
+    /// Polls for the next frame without awaiting, returning `Ok(None)` when no
+    /// frame is immediately available.
+    ///
+    /// This is a deterministic, wall-clock-free probe: it drains any replay
+    /// backlog and reads at most one already-buffered broadcast frame, never
+    /// parking the task on a timer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionEventLogStreamError::Lagged`] when this subscriber has
+    /// fallen behind the bounded live broadcast tail.
+    pub fn try_recv(&mut self) -> Result<Option<SessionEventLogFrame>, SessionEventLogStreamError> {
+        loop {
+            if let Some(frame) = self.take_ready_backlog_frame() {
+                return Ok(Some(frame));
+            }
+            match self.receiver.try_recv() {
+                Ok(frame) => {
+                    if let Some(frame) = self.deliver_frame(frame) {
+                        return Ok(Some(frame));
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty)
+                | Err(broadcast::error::TryRecvError::Closed) => return Ok(None),
+                Err(broadcast::error::TryRecvError::Lagged(skipped)) => {
+                    return Err(SessionEventLogStreamError::Lagged { skipped });
+                }
+            }
+        }
+    }
+
+    /// Advances stream state for a broadcast frame, returning it to deliver or `None` when stale.
+    fn deliver_frame(&mut self, frame: SessionEventLogFrame) -> Option<SessionEventLogFrame> {
+        if frame.generation < self.generation {
+            return None;
+        }
+        if frame.generation > self.generation {
+            self.generation = frame.generation;
+            self.replay_exhausted = true;
+            self.backlog.clear();
+        } else if frame.cursor.next_sequence < self.next_cursor.next_sequence {
+            return None;
+        }
+        self.next_cursor = frame.next_cursor;
+        Some(frame)
+    }
+
+    /// Refills the drained replay backlog and pops the next non-stale frame,
+    /// returning `None` when it is exhausted and the tail should be consulted.
+    fn take_ready_backlog_frame(&mut self) -> Option<SessionEventLogFrame> {
+        loop {
             let hub_generation = self.hub.generation();
             if hub_generation > self.generation {
                 self.generation = hub_generation;
@@ -2588,45 +2671,20 @@ impl SessionEventLogStream {
                 self.replay_exhausted = false;
                 self.backlog.clear();
             }
-
             if self.backlog.is_empty() && !self.replay_exhausted {
                 self.backlog =
                     self.hub
                         .replay_batch_from(self.next_cursor, self.replay_tail, self.generation);
                 self.replay_exhausted = self.backlog.is_empty();
             }
-
-            if let Some(frame) = self.backlog.pop_front() {
-                if frame.generation < self.generation {
-                    continue;
-                }
-                if frame.cursor.next_sequence < self.next_cursor.next_sequence {
-                    continue;
-                }
-                self.next_cursor = frame.next_cursor;
-                return Ok(Some(frame));
+            let frame = self.backlog.pop_front()?;
+            if frame.generation < self.generation
+                || frame.cursor.next_sequence < self.next_cursor.next_sequence
+            {
+                continue;
             }
-
-            match self.receiver.recv().await {
-                Ok(frame) if frame.generation < self.generation => {}
-                Ok(frame) if frame.generation > self.generation => {
-                    self.generation = frame.generation;
-                    self.next_cursor = frame.cursor;
-                    self.replay_exhausted = true;
-                    self.backlog.clear();
-                    self.next_cursor = frame.next_cursor;
-                    return Ok(Some(frame));
-                }
-                Ok(frame) if frame.cursor.next_sequence < self.next_cursor.next_sequence => {}
-                Ok(frame) => {
-                    self.next_cursor = frame.next_cursor;
-                    return Ok(Some(frame));
-                }
-                Err(broadcast::error::RecvError::Closed) => return Ok(None),
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    return Err(SessionEventLogStreamError::Lagged { skipped });
-                }
-            }
+            self.next_cursor = frame.next_cursor;
+            return Some(frame);
         }
     }
 }
@@ -4877,7 +4935,11 @@ where
         }
     }
 
-    async fn run_detached_child(mut self) -> Result<SessionRunReport, SessionError> {
+    /// Runs a forked child actor to its terminal state without spawning any
+    /// further forks, so the child remains a deterministic leaf of the
+    /// exploration tree bound to canonical replay rather than a free-running
+    /// live process.
+    async fn run_leaf_child(mut self) -> Result<SessionRunReport, SessionError> {
         loop {
             if matches!(self.engine.state(), EngineState::Stopped { .. }) {
                 self.drain_terminal_commands_without_spawning_forks()
@@ -5141,7 +5203,7 @@ where
         let child_live = fork.child_actor.live_snapshot();
         let child_sender = fork.child_sender.clone();
         std::mem::drop(tokio::spawn(async move {
-            let _ = fork.child_actor.run_detached_child().await;
+            let _ = fork.child_actor.run_leaf_child().await;
         }));
         handle = handle.with_child(SessionChildHandle {
             sender: child_sender,
@@ -5213,7 +5275,6 @@ where
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     use crucible::{
         Action, AssertionId, AssertionPhase, BackendInput, Checkpoint, CheckpointKind, ChoiceTag,
@@ -6007,9 +6068,9 @@ mod tests {
         assert_ne!(frame.entry, test_event_log_entry(0));
         assert_ne!(frame.entry, test_event_log_entry(1));
 
-        let unread_frame = tokio::time::timeout(Duration::from_millis(100), unread_stream.recv())
+        let unread_frame = unread_stream
+            .recv()
             .await
-            .expect("unread active stream should yield the replacement marker")
             .expect("unread active stream should not lag")
             .expect("unread active stream should receive the replacement marker");
         assert_eq!(unread_frame.cursor, EventLogCursor::new(0));
@@ -6018,9 +6079,9 @@ mod tests {
         assert_ne!(unread_frame.entry, test_event_log_entry(0));
         assert_ne!(unread_frame.entry, test_event_log_entry(1));
 
-        let past_frame = tokio::time::timeout(Duration::from_millis(100), past_stream.recv())
+        let past_frame = past_stream
+            .recv()
             .await
-            .expect("past active stream should rewind to the replacement marker")
             .expect("past active stream should not lag")
             .expect("past active stream should receive the replacement marker");
         assert_eq!(past_frame.cursor, EventLogCursor::new(0));
@@ -6032,67 +6093,6 @@ mod tests {
         assert_eq!(actor.event_log.len(), 1);
         assert_eq!(actor.condition_event_log.len(), 1);
         assert_eq!(actor.condition_event_log[0], marker);
-    }
-
-    #[tokio::test]
-    async fn event_log_stream_does_not_duplicate_replayed_live_frame() {
-        let hub = SessionEventLog::new();
-        let mut stream = hub.subscribe(EventLogCursor::new(0));
-        let entry = test_event_log_entry(0);
-
-        hub.append_entries(std::slice::from_ref(&entry));
-        let frame = stream
-            .recv()
-            .await
-            .expect("event-log stream should not lag")
-            .expect("appended entry should be visible");
-
-        assert_eq!(frame.entry, entry);
-        assert_eq!(stream.cursor(), EventLogCursor::new(1));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), stream.recv())
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn event_log_generation_reset_preserves_retained_prefix_for_lagging_stream() {
-        let hub = SessionEventLog::new();
-        let entries = (0..10).map(test_event_log_entry).collect::<Vec<_>>();
-        hub.append_entries(&entries);
-        let mut stream = hub.subscribe(EventLogCursor::new(0));
-
-        for expected in entries.iter().take(2) {
-            let frame = stream
-                .recv()
-                .await
-                .expect("event-log stream should not lag")
-                .expect("retained prefix entry should be visible before truncation");
-            assert_eq!(frame.generation, 0);
-            assert_eq!(&frame.entry, expected);
-        }
-        assert_eq!(stream.cursor(), EventLogCursor::new(2));
-
-        let replacement = test_event_log_entry(5);
-        hub.truncate_to_len(5);
-        hub.append_entries(std::slice::from_ref(&replacement));
-
-        for expected in entries[2..5].iter().chain(std::iter::once(&replacement)) {
-            let frame = tokio::time::timeout(Duration::from_millis(100), stream.recv())
-                .await
-                .expect("lagging stream should not skip retained prefix after truncation")
-                .expect("lagging stream should not lag")
-                .expect("lagging stream should receive retained prefix after truncation");
-            assert!(frame.generation > 0);
-            assert_eq!(&frame.entry, expected);
-        }
-        assert_eq!(stream.cursor(), EventLogCursor::new(6));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), stream.recv())
-                .await
-                .is_err()
-        );
     }
 
     #[tokio::test]

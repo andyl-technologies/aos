@@ -35,6 +35,8 @@
 //! at a frontier above it through the injectable delivery-stamp hook).
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     BackendInput, ConcurrentQuantumLoop, ContentHash, Decision, DeviceId, DeviceSchedulingSubNode,
@@ -375,7 +377,7 @@ fn gate_adversarial_determinism_disk_completions_land_at_independently_computed_
     // reads in forward vs reversed host order yields a BYTE-IDENTICAL fingerprint,
     // and BOTH completions land at icounts computed INDEPENDENTLY from the request +
     // modeled latency — never the consumer frontier.
-    let seed = Seed::from_u64(0x4adb_e57);
+    let seed = Seed::from_u64(0x04ad_be57);
     let forward = run(seed, 0).fingerprint;
     let skewed = run(seed, 3).fingerprint;
     assert_eq!(

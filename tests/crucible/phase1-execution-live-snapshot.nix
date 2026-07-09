@@ -89,7 +89,7 @@
       }
       {
         label = "actor-only publish helper";
-        needle = "fn publish(&self, snapshot: &EngineSnapshot)";
+        needle = "fn publish(&self, snapshot: &EngineSnapshot, control_acknowledgements: u64)";
       }
       {
         label = "session actor owns live snapshot";
@@ -155,7 +155,7 @@
       }
       {
         label = "resolved event publication";
-        needle = "resolved_events: vec![resolved_control_event(self.quanta)]";
+        needle = "resolved_events.push(resolved_control_event(self.quanta))";
       }
     ]
     ++ forbiddenFailuresFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGate [

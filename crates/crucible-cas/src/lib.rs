@@ -3,10 +3,12 @@
 //! `crucible-cas` owns the small standalone substrate required by RFC-0010:
 //! BLAKE3 content keys, a minimal `put`/`get`/`has` store interface, local and
 //! in-memory implementations, a fleet-visible shared implementation, and a
-//! dependency-gated invalidation query. The crate intentionally has no
-//! dependency on RFC-0007 `ratchet` crates; any future shared substrate must
+//! dependency-gated invalidation query. The crate intentionally has
+//! no dependency on RFC-0007 `ratchet` crates; any future shared substrate must
 //! adapt behind this crate's public interface and pass `gate:content-address`
 //! and `gate:replay-oracle` unchanged.
+//!
+//! Spec index: RFC-0010 files 35.
 //!
 //! Future RFC-0007 integration marker: RFC-0007 is the future home for a shared
 //! content-addressed store plus dependency-gated invalidation substrate. The
@@ -805,7 +807,7 @@ impl SharedFrontier {
                             path: entry_path.clone(),
                             reason: "frontier marker name is not UTF-8",
                         })?;
-                    let node = ContentHash::from_hex(name).ok_or_else(|| {
+                    let node = ContentHash::from_hex(name).ok_or({
                         CasError::InvalidFrontierRecord {
                             path: entry_path,
                             reason: "frontier marker name is not a content hash",
@@ -1224,7 +1226,7 @@ impl SharedDedupIndex {
         let mut new_entries = Vec::new();
         let mut duplicate_entries = Vec::new();
         for entry in &entries {
-            let path = self.coverage_path(&entry);
+            let path = self.coverage_path(entry);
             let material = coverage_record_material(&coverage_fingerprint, entry);
             if create_content_record(&path, &material)? {
                 new_entries.push(*entry);
@@ -1663,7 +1665,9 @@ impl SharedCampaignStore {
         }
 
         self.fork_fresh_campaign_lineage(manifest, run_provenance.clone(), fresh_lineage_roots)
-            .map(CampaignContinuitySeedDecision::RefuseCrossProvenanceReuse)
+            .map(|event| {
+                CampaignContinuitySeedDecision::RefuseCrossProvenanceReuse(Box::new(event))
+            })
     }
 
     fn seed_next_run_from_prior_corpus(
@@ -2748,6 +2752,7 @@ impl SharedCampaignStore {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&path)
             .map_err(|source| CasError::Io {
                 operation: "open",
@@ -3082,7 +3087,7 @@ pub enum CampaignContinuitySeedDecision {
         provenance_key: ContentHash,
     },
     /// The prior corpus was refused and a fresh lineage baseline was recorded.
-    RefuseCrossProvenanceReuse(CampaignFreshLineageBaselineEvent),
+    RefuseCrossProvenanceReuse(Box<CampaignFreshLineageBaselineEvent>),
 }
 
 impl CampaignContinuitySeedDecision {
@@ -4542,7 +4547,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(hex: &str) -> Option<Vec<u8>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
     let mut decoded = Vec::with_capacity(hex.len() / 2);

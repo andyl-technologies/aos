@@ -26,8 +26,6 @@ crucible-device/src/ninep/server.rs	contains non-ASCII comment/doc text	8
 crucible-device/src/ninep/tree.rs	contains non-ASCII comment/doc text	8
 crucible-device/src/request.rs	contains non-ASCII comment/doc text	1
 crucible-device/src/subnode.rs	contains non-ASCII comment/doc text	7
-crucible-qemu-plugin/src/abi.rs	public Result-returning function `install_required_runtime_api_scaffold_from_qemu_info` is missing `# Errors`	1
-crucible-qemu-plugin/src/abi.rs	public Result-returning function `install_required_runtime_api_scaffold` is missing `# Errors`	1
 crucible-qemu-plugin/src/ninep_io.rs	public Result-returning function `request` is missing `# Errors`	1
 crucible-qemu-plugin/src/registration.rs	public Result-returning function `record_test_ready_setup_ack` is missing `# Errors`	1
 crucible-qemu/src/shutdown.rs	public Result-returning function `signal_child` is missing `# Errors`	1
@@ -38,7 +36,6 @@ crucible-session/src/lib.rs	public Result-returning function `query` is missing 
 crucible/src/backend.rs	contains non-ASCII comment/doc text	1
 crucible/src/device.rs	contains non-ASCII comment/doc text	6
 crucible/src/device_subnode.rs	contains non-ASCII comment/doc text	13
-crucible/src/model.rs	public Result-returning function `between` is missing `# Errors`	1
 crucible/src/model.rs	public Result-returning function `compare_to` is missing `# Errors`	1
 crucible/src/scheduler.rs	contains non-ASCII comment/doc text	14
 crucible/src/scheduler.rs	public panicking function `scheduler_event_log_segment_bytes` is missing `# Panics`	1

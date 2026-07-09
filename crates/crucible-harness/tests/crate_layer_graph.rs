@@ -66,6 +66,11 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
         in_vm: false,
     },
     LayerSpec {
+        package: "crucible-cas",
+        layer: 3,
+        in_vm: false,
+    },
+    LayerSpec {
         package: "crucible-session",
         layer: 4,
         in_vm: false,

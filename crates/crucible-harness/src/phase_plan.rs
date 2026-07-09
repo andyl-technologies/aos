@@ -760,13 +760,13 @@ pub fn phase_plan_invariant_failures(
     let mut last_phase = None;
 
     for occurrence in plan {
-        if let Some(previous) = last_phase {
-            if occurrence.phase < previous {
-                failures.push(failure_for(
-                    PhasePlanInvariantFailureKind::OutOfOrderPhase,
-                    occurrence,
-                ));
-            }
+        if let Some(previous) = last_phase
+            && occurrence.phase < previous
+        {
+            failures.push(failure_for(
+                PhasePlanInvariantFailureKind::OutOfOrderPhase,
+                occurrence,
+            ));
         }
         last_phase = Some(occurrence.phase);
 

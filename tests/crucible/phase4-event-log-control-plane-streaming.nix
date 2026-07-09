@@ -118,7 +118,7 @@
       }
       {
         label = "running quantum publishes entries";
-        needle = "self.event_log.append_entries(&entries);";
+        needle = "self.event_log.append_entries(entries);";
       }
       {
         label = "actor yields after quantum";

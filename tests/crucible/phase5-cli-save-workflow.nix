@@ -74,7 +74,7 @@
       }
       {
         label = "T-CLI-9 backend-executed QEMU savepoint completion";
-        needle = "backend-executed patched-QEMU `snapshot-save` smoke";
+        needle = "backend-executed patched-QEMU `snapshot-save`\n  smoke";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -84,23 +84,23 @@
       }
       {
         label = "phase5 CLI remote save progress";
-        needle = "routes remote-daemon quiescence and virtual-time saves over the RPC control API";
+        needle = "routes\n  remote-daemon quiescence and virtual-time saves over the RPC control API";
       }
       {
         label = "phase5 CLI remote selector proof progress";
-        needle = "routes remote selector proof queries over RPC breakpoint-firing payloads";
+        needle = "routes remote selector proof\n  queries over RPC breakpoint-firing payloads";
       }
       {
         label = "phase5 CLI process qemu save progress";
-        needle = "process-tests real-binary `save --backend qemu` JSONL output and handle export";
+        needle = "process-tests real-binary\n  `save --backend qemu` JSONL output and handle export";
       }
       {
         label = "phase5 CLI remote selector source transfer progress";
-        needle = "transfers arbitrary scenario selector sources";
+        needle = "transfers arbitrary scenario\n  selector sources";
       }
       {
         label = "phase5 CLI backend-executed QEMU savepoint completion";
-        needle = "backend-executed patched-QEMU `snapshot-save` smoke";
+        needle = "backend-executed patched-QEMU\n  `snapshot-save` smoke";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -332,7 +332,7 @@
     ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
       {
         label = "RPC snapshot query decoder";
-        needle = "QueryResult::Snapshot(EngineSnapshot";
+        needle = "QueryResult::Snapshot(Box::new(EngineSnapshot";
       }
       {
         label = "RPC snapshot scenario identity";
@@ -478,7 +478,7 @@
       }
       {
         label = "machine-readable save export kind";
-        needle = "\\\"kind\\\":\\\"save_export\\\"";
+        needle = "assert_machine_readable_jsonl(&stdout, &[\"save_export\"])?";
       }
       {
         label = "machine-readable save output path";

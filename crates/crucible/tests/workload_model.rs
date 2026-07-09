@@ -1,6 +1,8 @@
 //! Checks RFC-0010 T-WL-1 in-guest workload model invariants.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,7 +29,7 @@ fn workload_model_declares_supported_in_guest_binaries() {
         ]
     );
     assert_eq!(WORKLOAD_SCENARIO_PARAMETER, "crucible.workload");
-    assert!(APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST);
+    const { assert!(APPLICATION_TRAFFIC_ORIGINATES_IN_GUEST) };
     assert_eq!(
         WORKLOAD_ENGINE_ROLE,
         WorkloadEngineRole::ObservationAndSteeringOnly
@@ -108,8 +110,8 @@ fn workload_seed_changes_scenario_identity_without_changing_global_seed() {
 
 #[test]
 fn workload_seed_black_box_config_path_suffices_without_white_box() {
-    assert!(WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES);
-    assert!(!WORKLOAD_SEED_REQUIRES_WHITE_BOX);
+    const { assert!(WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES) };
+    const { assert!(!WORKLOAD_SEED_REQUIRES_WHITE_BOX) };
 
     let cmdline = GuestWorkloadSeed::from_u64(0x1234)
         .selected_cmdline(&GuestWorkloadBinary::ClientLoop.selected_cmdline("console=ttyS0"));

@@ -90,7 +90,7 @@
       }
       {
         label = "memory TOML";
-        needle = "PredicateToml::MemoryPredicate";
+        needle = "PredicateTomlKind::MemoryPredicate";
       }
       {
         label = "memory place TOML";

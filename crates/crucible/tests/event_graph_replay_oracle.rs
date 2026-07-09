@@ -1,6 +1,8 @@
 //! Checks T-TRIG-20 event-graph replay and end-to-end determinism.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, AssertionRunVerdict, ChoiceTag, CodePoint,
@@ -557,12 +559,11 @@ fn replay_trigger_applications_from_event_log(
 ) -> Vec<TriggerActionApplication> {
     entries
         .iter()
-        .map(|entry| {
+        .inspect(|entry| {
             assert!(
                 entry.has_valid_content_hash(),
                 "trigger replay oracle must reject corrupt event-log entries"
             );
-            entry
         })
         .filter_map(|entry| match entry.payload() {
             SchedulerEventLogPayload::TriggerActionApplied(application) => {
@@ -689,12 +690,12 @@ fn fired_event_names_from_records(records: &[TriggerFiringRecord]) -> Vec<&str> 
 fn check_event_graph_replay_oracle(
     artifact: &EventGraphReplayArtifact,
     recorded_firings: &[TriggerFiringRecord],
-) -> Result<EventGraphRun, EventGraphReplayMismatch> {
+) -> Result<EventGraphRun, Box<EventGraphReplayMismatch>> {
     let replay = replay_event_graph_artifact(artifact);
     if let Some(divergence) =
         first_trigger_firing_divergence(recorded_firings, &replay.trigger_firings)
     {
-        return Err(EventGraphReplayMismatch { divergence });
+        return Err(Box::new(EventGraphReplayMismatch { divergence }));
     }
     Ok(replay)
 }

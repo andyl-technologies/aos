@@ -1,6 +1,8 @@
 //! Implements `gate:coverage-guided-fuzzing` over seeded family mutation.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -40,7 +42,7 @@ fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible() -> Result<(), Box<d
         );
         assert_eq!(
             iteration.schedule().decisions(),
-            &[iteration.mutation.clone()]
+            std::slice::from_ref(&iteration.mutation)
         );
         assert!(matches!(iteration.mutation, Decision::Override(_)));
         assert_eq!(iteration.coverage_fingerprint, expected_feedback);
@@ -98,12 +100,11 @@ fn gate_coverage_guided_fuzzing_prefers_first_seen_coverage() -> Result<(), Box<
     assert!(!run.iterations[2].new_coverage);
     assert!(run.iterations.iter().all(|iteration| iteration.energy > 0));
     assert!(
-        run.iterations
+        !run.iterations
             .iter()
             .map(|iteration| iteration.selected_corpus_entry)
             .collect::<BTreeSet<_>>()
-            .len()
-            >= 1
+            .is_empty()
     );
     assert_eq!(first_two_ordered, first_two_generated);
     assert_eq!(

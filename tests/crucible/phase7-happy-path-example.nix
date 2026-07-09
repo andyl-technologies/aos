@@ -312,14 +312,18 @@
         needle = "run.replayed_canonical_event_log";
       }
       {
+        # Drift: the corpus panic message says "example corpus", not
+        # "happy path" — same D-31 invariant (no guest markers required).
         label = "guest marker rejection";
-        needle = "happy path must not require guest markers";
+        needle = "example corpus must not require guest markers";
       }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
       {
+        # Drift: the CLI dependency now enables the corpus test-double
+        # feature; keep the needle pinned to the full dependency line.
         label = "CLI depends on crucible corpus";
-        needle = "crucible = { path = \"../crucible\" }";
+        needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [

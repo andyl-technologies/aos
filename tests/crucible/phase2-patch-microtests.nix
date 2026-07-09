@@ -208,6 +208,18 @@
         patchName = "0030-crucible-preemption-inject.patch";
       };
     }
+    {
+      patch = "0031-crucible-det-rng-delivery.patch";
+      check = import ./phase1-qemu-det-rng-delivery.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
+    {
+      patch = "0032-crucible-det-virtio-ioeventfd.patch";
+      check = import ./phase1-qemu-det-virtio-ioeventfd.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

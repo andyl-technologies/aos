@@ -16,7 +16,11 @@
   pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
   pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  shmem = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  # The setup-region mmap surface was split out of lib.rs into
+  # mapped_setup_region.rs; scan both so the needles survive file moves.
+  shmem =
+    builtins.readFile ../../crates/crucible-shmem/src/lib.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;

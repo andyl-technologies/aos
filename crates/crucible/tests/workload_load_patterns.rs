@@ -1,6 +1,8 @@
 //! Checks RFC-0010 T-WL-4 and T-WL-5 load-pattern mappings.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Action, EngineError, Fault, FaultPlanEntry, GuestWorkloadBinary,
@@ -29,10 +31,10 @@ fn load_pattern_mappings_are_plain_cmdline_parameters() {
     assert_eq!(WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER, "load_pattern");
     assert_eq!(WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER, "spike_mode");
     assert_eq!(WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER, "load_time_source");
-    assert!(WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES);
-    assert!(!WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX);
-    assert!(WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME);
-    assert!(!WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED);
+    const { assert!(WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES) };
+    const { assert!(!WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX) };
+    const { assert!(WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME) };
+    const { assert!(!WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED) };
 
     let selected = GuestWorkloadPattern::Steady.selected_cmdline("console=ttyS0 quiet");
     assert_eq!(selected, "console=ttyS0 quiet load_pattern=steady");

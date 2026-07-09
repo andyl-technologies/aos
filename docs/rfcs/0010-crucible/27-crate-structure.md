@@ -27,7 +27,7 @@ that crate.
 
 ## 1. The crate map (L0–L4)
 
-Crucible is **thirteen runtime crates** plus the test-only `crucible-harness`
+Crucible is **fourteen runtime crates** plus the test-only `crucible-harness`
 package in the AOS Rust workspace, partitioned into five Crucible layers. The
 `CRATE-*` "exactly" and "only" requirements in this file are scoped to the
 Crucible package set, not to the pre-existing `aos-*` packages that share the
@@ -49,6 +49,8 @@ split.)
   L3  ENGINE
     crucible           scenario model, the single scheduler, faults, assertions,
                        temporal graph, event log; the pure reduction
+    crucible-cas       standalone content-addressed store, fleet store, and
+                       campaign-continuity substrate
 
   L2  QEMU INTEGRATION
     crucible-qemu        host-side launch/control of QEMU; concrete VM driver
@@ -79,6 +81,7 @@ One-line responsibilities:
 | L2 | `crucible-qemu-plugin` | The in-VM `cdylib` loaded via `-plugin`; owns virtual-time control (`qemu_plugin_request_time_control`) and the device/channel callbacks. |
 | L2 | `crucible-guest` | OPTIONAL in-guest agent for white-box markers via the doorbell; never required for any core capability (`G-3`). |
 | L3 | `crucible` | The engine: scenario model, the single authoritative scheduler, fault injection, assertion evaluation, temporal graph, event log — the pure `reduce`. |
+| L3 | `crucible-cas` | The standalone content-addressed store, fleet-visible DAG store, and campaign-continuity substrate. |
 | L4 | `crucible-session` | The session actor: owns one live `RuntimeState`, drives the engine quantum loop, services control messages at quantum boundaries. |
 | L4 | `crucible-api` | The versioned programmatic API surface (session lifecycle, stepping, event-log query, temporal-graph ops). |
 | L4 | `crucible-daemon` | The long-lived host process that hosts sessions and serves the API over a transport. |
@@ -127,7 +130,7 @@ trait and QEMU realization flow, but no in-VM crate may do so and no other
 upward edge is allowed. The layer lint encodes this named exception.
 
 - **[CRATE-1]** The AOS Rust workspace's Crucible package set MUST contain
-  exactly the thirteen runtime crates above, partitioned into the five layers
+  exactly the fourteen runtime crates above, partitioned into the five layers
   L0–L4 as listed. Pre-existing non-Crucible `aos-*` workspace members are outside
   this count. *Gate:* `gate:harness-lint` (workspace-shape lint). *Spec:* §1.
 - **[CRATE-2]** Each crate MUST depend only on crates in its own layer or a lower
@@ -169,6 +172,7 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 | `crucible-qemu-plugin` | **UNSAFE** | The `cdylib` is the QEMU TCG plugin C ABI: `extern "C"` entry points, raw QEMU/guest memory, time-control FFI. |
 | `crucible-guest` | **UNSAFE** | The in-guest agent issues the trapped doorbell instruction and touches the shmem ABI directly; bare-metal/no-std-ish concerns. |
 | `crucible` | **SAFE** `#![forbid(unsafe_code)]` | The engine is a pure reduction; it must be a clean island. All unsafe is *below* it behind traits. |
+| `crucible-cas` | **SAFE** | Content-addressed store and fleet/campaign data structures; no raw memory or FFI. |
 | `crucible-session` | **SAFE** | Actor over channels; no raw memory. |
 | `crucible-api` | **SAFE** | Versioned API types + dispatch. |
 | `crucible-daemon` | **SAFE** | Host process; transport via safe libraries. |
@@ -177,12 +181,12 @@ discipline of [`28-engineering-standards.md`](28-engineering-standards.md).
 So: **five UNSAFE crates** (`crucible-shmem`, `crucible-protocol`,
 `crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`) — exactly the crates
 that touch raw QEMU/guest memory, the mmap/atomics ABI, Unix descriptor
-handover, or FFI — and **eight SAFE crates**,
+handover, or FFI — and **nine SAFE crates**,
 including the entire engine and the entire control plane. The unsafe surface is
 small, named, and confined to L1/L2.
 
 - **[CRATE-4]** Every SAFE crate (`crucible-sim`, `crucible-assert`,
-  `crucible-device`, `crucible`, `crucible-session`, `crucible-api`,
+  `crucible-device`, `crucible`, `crucible-cas`, `crucible-session`, `crucible-api`,
   `crucible-daemon`, `crucible-cli`) MUST carry
   `#![forbid(unsafe_code)]` at its crate root. A CI lint asserts the attribute is
   present. *Gate:* `gate:harness-lint`. *Spec:* §2.
@@ -461,6 +465,7 @@ contract and which crate realizes a file.
 | `crucible-qemu-plugin` | [`11`](11-qemu-patches.md), [`12`](12-qemu-plugin.md) | `gate:single-vm-fingerprint`, `gate:patch-microtests` |
 | `crucible-guest` | [`16`](16-guest-host-channel.md) | `gate:single-vm-fingerprint` (markers excluded from comparison) |
 | `crucible` | [`05`](05-execution-model.md), [`06`](06-spatial-graph.md), [`07`](07-temporal-graph.md), [`08`](08-scheduling.md), [`17`](17-fault-injection.md), [`18`](18-assertions-properties.md), [`19`](19-observability-event-log.md) | `gate:replay-oracle`, `gate:content-address`, `gate:scheduler-liveness`, `gate:divergence-bisect`, `gate:harness-lint` |
+| `crucible-cas` | [`35`](35-distributed-continuous-exploration.md) | `gate:fleet-equivalence`, `gate:campaign-continuity`, `gate:content-address` |
 | `crucible-session` | [`20`](20-session-control-plane.md) | `gate:control-responsive`, `gate:harness-lint` |
 | `crucible-api` | [`21`](21-api.md) | `gate:abi-conformance`, `gate:control-responsive` |
 | `crucible-daemon` | [`20`](20-session-control-plane.md), [`21`](21-api.md) | `gate:control-responsive` |
@@ -522,8 +527,9 @@ edition = "2021"
 license = "see AOS"
 ```
 
-`crucible-qemu-plugin` builds a `cdylib`; the rest build `lib`s except
-`crucible-cli`, which builds the `crucible` binary:
+`crucible-qemu-plugin` builds a `cdylib`; most crates build `lib`s.
+`crucible-cli` builds the `crucible` binary, and `crucible-cas` builds the
+supporting `crucible-fleet-store` binary:
 
 ```toml
 # crates/crucible-qemu-plugin/Cargo.toml
@@ -534,9 +540,14 @@ crate-type = ["cdylib"]
 [[bin]]
 name = "crucible"
 path = "src/main.rs"
+
+# crates/crucible-cas/Cargo.toml
+[[bin]]
+name = "crucible-fleet-store"
+path = "src/bin/crucible-fleet-store.rs"
 ```
 
-There is a **fourteenth, test-only crate**, `crucible-harness` (not part of the
+There is a **fifteenth, test-only crate**, `crucible-harness` (not part of the
 L0–L4 layering and not shipped), that hosts the cross-crate determinism gates of
 [`24`](24-determinism-harness-testing.md): the execution-fingerprint comparator,
 the divergence bisector, the replay-oracle checker, the ABI golden-vector runner,
@@ -570,7 +581,8 @@ enters a release build.
 - **[CRATE-14]** The Crucible package set MUST live in the single AOS virtual
   Cargo workspace that pins one toolchain and one dependency-version set. Within
   the Crucible package set, the only `cdylib` MUST be `crucible-qemu-plugin`, and
-  the only shipped Crucible binary MUST be `crucible` (from `crucible-cli`).
+  the shipped Crucible binaries MUST be exactly `crucible` (from
+  `crucible-cli`) and `crucible-fleet-store` (from `crucible-cas`).
   Pre-existing `aos-*` binaries are outside this Crucible binary count. *Gate:*
   `gate:harness-lint`. *Satisfies* `G-7`, `G-8`. *Spec:* §7.
 - **[CRATE-15]** A test-only crate `crucible-harness` MUST host the cross-crate
@@ -600,12 +612,13 @@ mirrors ratchet's *crate-level fence convention* (one root attribute per crate,
 no module-level ambiguity) but ships standalone. Any shared content-addressed-store
 substrate is gated behind a future integration
 ([`26-packaging-aos-integration.md`](26-packaging-aos-integration.md) §"ratchet
-gate"); until then `crucible-sim` carries the small content-hash/CoW primitives
-Crucible needs and marks the seam.
+gate"); until then `crucible-cas` carries the standalone content-addressed store
+surface and marks the seam, while `crucible-sim` carries deterministic core
+primitives.
 
 - **[CRATE-18]** No Crucible crate MUST depend on any `ratchet-*` / `aos-nix-*`
-  crate; the content-addressing primitives Crucible needs MUST live in
-  `crucible-sim` (marked as a candidate seam for a later ratchet integration).
+  crate; the content-addressed store primitives Crucible needs MUST live in
+  `crucible-cas` (marked as a candidate seam for a later ratchet integration).
   *Gate:* `gate:harness-lint`. *Satisfies* `NG-7`. *Spec:* §7, README §"Relationship
   to RFC-0007".
 
@@ -618,12 +631,12 @@ Crucible needs and marks the seam.
 > wiring so every later subsystem lands in a fixed frame.
 
 - [x] **T-CRATE-1** Create the Crucible package-set skeleton in the AOS Cargo
-  virtual workspace with the thirteen L0–L4 crates plus the test-only
+  virtual workspace with the fourteen L0–L4 crates plus the test-only
   `crucible-harness`, each as an empty, compiling crate carrying its `//!` crate
   doc naming its owning RFC file(s). — satisfies [CRATE-1], [CRATE-13],
   [CRATE-14]; spec §1, §6, §7.
 - [x] **T-CRATE-2** Apply the crate-level safe/unsafe fence: `#![forbid(unsafe_code)]`
-  on the eight SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the five UNSAFE
+  on the nine SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the five UNSAFE
   crates, with a CI lint asserting the attribute on every crate root. — satisfies
   [CRATE-4], [CRATE-5]; spec §2.
 - [x] **T-CRATE-3** Implement the layer-dependency + acyclicity lint that reads
@@ -656,8 +669,9 @@ Crucible needs and marks the seam.
   `crucible-session`, never `step`/`reduce`/`instantiate` directly. — satisfies
   [CRATE-8]; spec §3.
 - [x] **T-CRATE-10** Configure crate artifact types: `crucible-qemu-plugin` as the
-  sole `cdylib`, `crucible-cli` as the sole `[[bin]] name = "crucible"`, the rest
-  as libs. — satisfies [CRATE-14]; spec §7.
+  sole `cdylib`, `crucible-cli` as `[[bin]] name = "crucible"`, `crucible-cas` as
+  `[[bin]] name = "crucible-fleet-store"`, and the rest as libs. — satisfies
+  [CRATE-14]; spec §7.
 - [x] **T-CRATE-11** Stand up the `crucible-harness` test crate hosting the
   cross-crate gates (fingerprint comparator, divergence bisector, replay-oracle
   checker, ABI golden-vector runner, adversarial driver) as a dev-dependency-only

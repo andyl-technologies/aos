@@ -91,7 +91,7 @@
       }
       {
         label = "RUN plan uses shared timeline helper";
-        needle = "max_advance_icount_for_horizon(candidate.target_time)";
+        needle = "node_counter_for_time_ceil(selected_runtime_node, candidate.target_time)";
       }
       {
         label = "publication records fixed shift";

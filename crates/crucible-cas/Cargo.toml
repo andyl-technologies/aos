@@ -7,6 +7,10 @@ publish = false
 [lints]
 workspace = true
 
+[[bin]]
+name = "crucible-fleet-store"
+path = "src/bin/crucible-fleet-store.rs"
+
 [dependencies]
 blake3 = { workspace = true }
 rustix = { workspace = true }

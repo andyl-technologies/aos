@@ -1022,6 +1022,40 @@ impl RpcControlClient {
             })
     }
 
+    async fn post_hello_rpc_body(&self, body: Vec<u8>) -> Result<Vec<u8>, ControlClientError> {
+        let response = self
+            .http
+            .post(self.endpoint.rpc_url(HELLO_RPC_PATH))
+            .header(reqwest::header::CONTENT_TYPE, RPC_CONTENT_TYPE)
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| ControlClientError::HttpRequest {
+                message: error.to_string(),
+            })?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = response
+                .bytes()
+                .await
+                .map(|body| body.to_vec())
+                .map_err(|error| ControlClientError::HttpRequest {
+                    message: error.to_string(),
+                })?;
+            if let Ok(error) = decode_error_response(&body) {
+                return Err(error);
+            }
+            return Err(ControlClientError::HttpStatus { status });
+        }
+        response
+            .bytes()
+            .await
+            .map(|body| body.to_vec())
+            .map_err(|error| ControlClientError::HttpRequest {
+                message: error.to_string(),
+            })
+    }
+
     async fn post_rpc_stream(
         &self,
         path: &str,
@@ -1068,10 +1102,7 @@ impl ControlClient for RpcControlClient {
         Box::pin(async move {
             let _version = negotiate_rpc_protocol(request.version)?;
             let body = self
-                .post_rpc_body(
-                    HELLO_RPC_PATH,
-                    self.wire_model.encode_hello_request(&request),
-                )
+                .post_hello_rpc_body(self.wire_model.encode_hello_request(&request))
                 .await?;
             decode_hello_response(&body, self.transport())
         })
@@ -2915,7 +2946,7 @@ fn parse_hex_string(value: &str) -> Result<String, ControlClientError> {
 }
 
 fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, ControlClientError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(rpc_decode(format!(
             "hex string has odd length {}",
             value.len()

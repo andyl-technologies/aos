@@ -7,6 +7,12 @@
 
   specs = [
     {
+      package = "crucible-cas";
+      root = "src/lib.rs";
+      specFiles = ["35"];
+      section6 = true;
+    }
+    {
       package = "crucible-sim";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
@@ -27,7 +33,7 @@
     {
       package = "crucible-protocol";
       root = "src/lib.rs";
-      specFiles = ["14"];
+      specFiles = ["14" "16"];
       section6 = true;
     }
     {
@@ -201,7 +207,7 @@
       else section6BlockLines rest false;
   section6Lines = section6BlockLines (linesOf section6Content) false;
   marker = file: "[`${file}`]";
-  knownSpecFiles = ["04" "05" "06" "07" "08" "09" "10" "11" "12" "13" "14" "15" "16" "17" "18" "19" "20" "21" "23" "24" "27"];
+  knownSpecFiles = ["04" "05" "06" "07" "08" "09" "10" "11" "12" "13" "14" "15" "16" "17" "18" "19" "20" "21" "23" "24" "27" "35"];
 
   rowForPackage = package:
     builtins.filter (line: lib.hasPrefix "| `${package}` |" line) section6Lines;
@@ -308,8 +314,8 @@ in
             PASS
             check=checks.crucible.phase1.crateSpecIndex
             tasks=T-CRATE-13
-            crate_roots=14
-            section6_rows=13
+            crate_roots=15
+            section6_rows=14
             RESULT
           '';
         }

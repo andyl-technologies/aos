@@ -108,7 +108,7 @@
       }
       {
         label = "fault apply source extractor";
-        needle = "fn apply_trigger_effect_token_range";
+        needle = "function_token_range(&tokens, \"apply_trigger_effect\")";
       }
       {
         label = "host filesystem rejected";

@@ -1603,18 +1603,18 @@ mod tests {
 
     #[test]
     fn block_request_decode_rejects_nonzero_reserved_and_trailing_payload() {
-        let mut reserved = BlockRequest::read(4096, 512)
-            .encode(7)
-            .expect("read request should encode");
+        let Ok(mut reserved) = BlockRequest::read(4096, 512).encode(7) else {
+            panic!("read request should encode");
+        };
         reserved[2] = 1;
         assert_eq!(
             BlockRequest::decode(&reserved),
             Err(BlockWireError::NonZeroReserved { reserved: 1 })
         );
 
-        let mut trailing = BlockRequest::read(4096, 512)
-            .encode(7)
-            .expect("read request should encode");
+        let Ok(mut trailing) = BlockRequest::read(4096, 512).encode(7) else {
+            panic!("read request should encode");
+        };
         trailing.push(b'!');
         assert_eq!(
             BlockRequest::decode(&trailing),

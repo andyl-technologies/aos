@@ -50,6 +50,7 @@ enum TestShape {
     AdversarialCompare,
     FleetEquivalence,
     CampaignContinuity,
+    PerfBenchRegression,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -206,6 +207,16 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         shape: TestShape::CampaignContinuity,
         backend: TestBackend::InProcess,
     },
+    // The perf-bench regression gate runs the harness cost-model substrate with
+    // no QEMU; it is cross-cutting (Phase >= L2, after the determinism gates) and
+    // is a per-metric regression gate, not a byte-identity compare.
+    GateTestingStandard {
+        gate: "gate:perf-bench",
+        owner_packages: &["crucible-harness"],
+        layers: &[Layer::CrossCutting],
+        shape: TestShape::PerfBenchRegression,
+        backend: TestBackend::InProcess,
+    },
 ];
 
 const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
@@ -290,6 +301,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:harness-lint",
             "gate:abi-conformance",
             "gate:divergence-bisect",
+            "gate:perf-bench",
         ],
     },
 ];

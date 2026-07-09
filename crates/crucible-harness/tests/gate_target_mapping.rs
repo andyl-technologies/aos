@@ -270,6 +270,7 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-cas",
                 "gate_campaign_continuity"
             ),
+            ("gate:perf-bench", "crucible-harness", "gate_perf_bench"),
         ])
     );
 }

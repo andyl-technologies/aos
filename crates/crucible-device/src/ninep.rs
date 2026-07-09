@@ -27,9 +27,10 @@
 //! Every value the server returns is a pure function of the served tree's content
 //! and the request ([IO-13]): QIDs are path-hashed not inode-derived, directory
 //! enumeration is lexicographically sorted, attributes are a fixed epoch / root
-//! ownership / content-derived sizes, and the fid table is a [`BTreeMap`] so its
-//! iteration never depends on host hashing ([IO-24]). No host clock, host
-//! filesystem ordering, or host inode ever participates.
+//! ownership / content-derived sizes, and the fid table is a
+//! [`BTreeMap`](std::collections::BTreeMap) so its iteration never depends on
+//! host hashing ([IO-24]). No host clock, host filesystem ordering, or host inode
+//! ever participates.
 //!
 //! ```text
 //! 9p message frame (little-endian) — size[4] type[1] tag[2] body...

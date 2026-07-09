@@ -43,10 +43,11 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
          if (icount_enabled()) {
              /*
               * Advancing the virtual clock from the host main-loop poll can make
-@@ -166,10 +191,15 @@ static void rr_wait_io_event(void)
+@@ -166,10 +191,16 @@ static void rr_wait_io_event(void)
               */
              icount_start_warp_timer();
              icount_handle_deadline();
++            qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
 +            if (!all_cpu_threads_idle()) {
 +                break;
 +            }

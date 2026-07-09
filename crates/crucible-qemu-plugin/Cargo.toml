@@ -18,4 +18,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 # Test-only HARN-16 cross-check: production plugin dependencies stay L1-only.
-crucible = { path = "../crucible", features = ["test-double"] }
+crucible = { path = "../crucible", features = ["test-double", "test-support"] }

@@ -1,6 +1,8 @@
 //! Checks T-SCHED-19 EMIT event-log entries and STEP frontier advancement.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent, FaultId,

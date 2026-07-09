@@ -84,8 +84,8 @@
         needle = "*out_register_len = offset;";
       }
       {
-        label = "raw icount sample stamp";
-        needle = "*out_retired_instruction_count = qemu_plugin_icount_raw();";
+        label = "register export leaves icount ownership to caller";
+        needle = "The aggregate sample icount belongs to the caller's trace sample.";
       }
       {
         label = "cursor current-vCPU read";
@@ -279,6 +279,8 @@ in
             #include "disas/disas.h"
             #include "plugin.h"
 
+            uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
+
             static GArray *create_register_handles(GArray *gdbstub_regs)
             {
                 GArray *find_data = g_array_new(true, true,
@@ -388,7 +390,8 @@ in
                 return status + qemu_plugin_rr_cursor(&cursor);
             }
             STOCK_NEGATIVE
-            if cc -std=c11 -Wall -Werror \
+            if env -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH -u CPATH \
+              cc -std=c11 -Wall -Werror -Werror=implicit-function-declaration \
               -I${referenceQemu}/include $(pkg-config --cflags glib-2.0) \
               -c stock-vcpu-introspect-negative.c \
               -o stock-vcpu-introspect-negative.o \

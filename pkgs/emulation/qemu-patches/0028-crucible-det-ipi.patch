@@ -9,7 +9,15 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
  /* Kick all RR vCPUs */
  void rr_kick_vcpu_thread(CPUState *unused)
-@@ -483,12 +484,16 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -160,6 +161,7 @@ static void rr_crucible_sim_refresh_batch_budget(int64_t *cpu_budget)
+     icount_account_warp_timer();
+     qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+     icount_handle_deadline();
++    crucible_sim_det_ipi_drain_pending();
+     cpu_count = rr_cpu_count();
+     *cpu_budget = icount_percpu_budget(cpu_count);
+ 
+@@ -487,12 +489,16 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  

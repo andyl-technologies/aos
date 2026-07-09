@@ -230,6 +230,20 @@
       enforces = "PATCH-47,DET-1,PLUG-50";
       capability = "sim-mode commanded vCPU-switch and interrupt preemption injection";
     }
+    {
+      file = "0031-crucible-det-rng-delivery.patch";
+      catalogName = "crucible-det-rng-delivery";
+      class = "D";
+      enforces = "DET-1,E7,E9";
+      capability = "deterministic synchronous virtio-rng entropy completion at request icount";
+    }
+    {
+      file = "0032-crucible-det-virtio-ioeventfd.patch";
+      catalogName = "crucible-det-virtio-ioeventfd";
+      class = "D";
+      enforces = "DET-1,E7";
+      capability = "synchronous virtio-pci vq-kick dispatch under icount (ioeventfd disabled)";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

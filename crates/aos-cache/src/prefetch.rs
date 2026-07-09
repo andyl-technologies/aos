@@ -44,6 +44,7 @@ use crate::discover;
 /// Returns an error if derivation resolution or FOD discovery fails, if
 /// the cache missing-query fails, or if compressing or uploading a
 /// realised source fails.
+#[allow(clippy::too_many_arguments, clippy::disallowed_methods)]
 pub async fn run_prefetch(
     printer: &Printer,
     backend: &dyn CacheBackend,

@@ -535,14 +535,14 @@ identical across runs — randomization is deterministic given seeding.
 **Fail:** the randomization-enabled runs diverge — some randomization draw escapes
 the seeded pool (or is seeded from a source E8/E9 do not cover).
 
-- **[RISK-13]** Spike **S6** MUST determine whether a guest with KASLR/ASLR
-  **enabled** boots bit-identically across runs given fully-seeded boot entropy
-  (E8/E9, [DET-22], [DET-21]) — i.e. whether `nokaslr`/`norandmaps` are *required*
-  or merely *conservative* ([DET-33]). The conservative defaults ([QEMU-13]) MUST
-  ship until S6 is green; if S6 passes, randomization MAY be re-enabled to broaden
-  any-unmodified-guest fidelity ([G-2]), recorded as a per-image capability, not a
-  global default flip. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §30.7;
-  satisfies [DET-33]; back-ref §4.9 (E11, E12), §10.2.
+- **[RISK-13]** Spike **S6** determined that a guest with KASLR/ASLR **enabled**
+  boots bit-identically across runs given fully-seeded boot entropy (E8/E9,
+  [DET-22], [DET-21]) — i.e. `nokaslr`/`norandmaps` are **not required**, only
+  formerly conservative ([DET-33]). Per **D-31**, the shipped default is now a
+  **stock guest cmdline** with randomization enabled and determinism sealed
+  host-side; Crucible neither adds nor requires the suppression flags. *Gate:*
+  `gate:single-vm-fingerprint`. *Spec:* §30.7; satisfies [DET-33]; back-ref
+  §4.9 (E11, E12), §10.2.
 
 ### What it could invalidate
 
@@ -552,9 +552,11 @@ keeping the defaults.
 
 ### Fallback
 
-Keep `nokaslr norandmaps` as the shipped default ([QEMU-13]). Guests run with
-randomization disabled, which is a minor fidelity reduction (production typically
-runs with it on) but does not affect determinism or any capability.
+None needed: S6 passed, so per **D-31** the shipped default is a **stock guest
+cmdline** with randomization enabled and determinism sealed host-side. (Had S6
+failed, the fallback would have been to keep `nokaslr norandmaps` — a minor
+fidelity reduction that does not affect determinism. That fallback was not
+adopted.)
 
 ## 30.8 S7 — exact next-deadline plugin capability works and is exact
 
@@ -1207,7 +1209,7 @@ RISK                                            LIKE  IMPACT  MITIGATION        
 ★ producer→consumer visibility wall-clock       L     H       §13.9 by construction; localize leak        S4  (RISK-10)
   (Contract B false) [DET-34]
   plugin can't read guest VIRTUAL mem           M     L       physical/pinned identity page (GHC-33)       S5  (RISK-12)
-  KASLR/ASLR not deterministic w/ seeding       M     L       keep nokaslr/norandmaps default (QEMU-13)   S6  (RISK-13)
+  KASLR/ASLR not deterministic w/ seeding       M     L       S6 PASS: stock cmdline, host-side seal (D-31) S6 (RISK-13)
   next-deadline approx / ceiling overshoot      L     H       TB-split at ceiling; conservative ceiling   S7  (RISK-14)
   TCG-exec coverage too expensive               M     M(perf) edge bitmap / once-per-block / sampling     S8  (RISK-15)
   determinism breaks on QEMU rebuild/bump       M     H       pin build id in artifact; re-gate (DET-35)  S9  (RISK-16)
@@ -1506,32 +1508,54 @@ The run reported `control_fingerprint_match=true`,
 `fallback_adopted=none`. This retires the Phase-0 KASLR/ASLR necessity risk for
 the measured diskless stock-Linux proof path: with deterministic E8/E9 seeding,
 the randomized bases are reproducible across runs and genuinely differ from the
-conservative control. The result permits randomization to be recorded as a
-per-image capability; it is not a global default flip.
+control. On this evidence, **D-31** made the stock guest cmdline (randomization
+enabled, determinism sealed host-side) the shipped default and removed guest
+entropy-suppression flags from the launch contract entirely.
+
+Host-side sealing here includes the *delivery icount* of the seeded entropy, not
+only its bytes. The seeded virtio-rng payload was always a pure function of the
+scenario seed (E8/E9), but on the stock guest its completion interrupt was
+delivered from a host-scheduled main-loop bottom half, so its icount — and thus
+the instruction at which the guest observed the entropy — was host-timing
+dependent and forked the fingerprint across otherwise-identical runs (an inherent
+upstream-icount property for asynchronous device completions, present in pristine
+QEMU, not a Crucible regression). This is now sealed by construction (E7a): the
+`crucible-det-virtio-ioeventfd` patch disables ioeventfd under icount for the
+virtio-rng device so its virtqueue kick dispatches synchronously on the requesting
+vCPU thread, and the `crucible-det-rng-delivery` patch completes builtin-RNG
+entropy inline instead of via a bottom half, so the completion interrupt lands at
+the exact request icount. The ioeventfd seal is scoped to virtio-rng specifically:
+virtio-blk/9p completions are already pinned by the crucible blk/9p shmem substrate
+(patches 0015-0019), which assumes the stock async kick, so those devices keep it —
+this is why the `s2HltBusyPoll` throttled-IO idle counts are unchanged. No QEMU
+record/replay is used ([NG-6]). `checks.crucible.phase0.s6KaslrAslr` and
+`checks.crucible.phase1.guestEntropyLaunch` are the executing witnesses.
 
 **RISK-14** is resolved by `T-RISK-7` with the exact-deadline/TB-split fallback:
 `checks.crucible.phase0.s7DeadlineCeiling` booted a diskless stock Linux guest
 under the deterministic S1 launch controls and loaded a throwaway ceiling probe
-plugin. The plugin checked for the `qemu_plugin_clock_deadline_ns` symbol and
-found `deadline_api_available=false`, so no exact `idle_wake_icount` could be
+plugin. The plugin checked for the `qemu_plugin_clock_deadline_ns` symbol; the
+original spike run found it missing, and the patch series has since landed the
+export, so the rerun records `deadline_api_available=true`. The throwaway probe
+still does not consume the export, so no exact `idle_wake_icount` is
 reported or compared against a timer-fire icount. The same run commanded two
 fixed instruction ceilings plus one dynamically chosen ceiling inside a
 translation block. The probe requested the pause exactly at each commanded
 ceiling (`request_exact_all=true`) but QEMU stopped after the request point
 (`zero_overshoot_all=false`). The run reported
 `idle_wake_icount_reported=unavailable`,
-`actual_timer_fire_icount=not_measured_missing_deadline_api`,
+`actual_timer_fire_icount=not_measured_spike_probe_predates_export_use`,
 `exact_deadline_match=false`, `max_pause_overshoot=9`,
 `fixed_a_pause_overshoot=1`, `fixed_b_pause_overshoot=9`,
 `interior_pause_overshoot=9`, `interior_target_tb_index=2`,
 `interior_target_tb_insns=12`, `interior_target_inside_tb=true`,
 `exact_next_deadline_capability=false`, `max_advance_exact_capability=false`,
 `layer1_scheduler_fast_forward_enabled=false`, and
-`fallback_adopted=clock_deadline_export_and_tb_split_required`. Phase 0 therefore
-does not rely on fast-forward/lookahead scheduling through this surface. The
-production path remains gated on the patch-series exact virtual-clock deadline
-export plus a ceiling mechanism that stops at `max_advance_icount` exactly,
-including interior-TB ceilings.
+`fallback_adopted=tb_split_exact_pause_deadline_export_landed`. Phase 0
+therefore does not rely on fast-forward/lookahead scheduling through this
+surface. The deadline export has landed in the patch series; the production
+path remains gated on a ceiling mechanism that stops at `max_advance_icount`
+exactly, including interior-TB ceilings.
 
 **RISK-16** is resolved by `T-RISK-9` and the Phase-2 regeneration/build-identity
 gate. `checks.crucible.phase2.qemuPatchRegeneration` now verifies the checked-in
@@ -1559,7 +1583,8 @@ white-box surfaces and found the aarch64 doorbell cannot be tested yet. The acti
 `qemu-crucible` package is built with `qemu_target_list=x86_64-softmmu` and reports
 `qemu_aarch64_softmmu_target=false`,
 `qemu_system_aarch64_available=false`,
-`crucible_guest_workspace_member=false`, and
+`crucible_guest_workspace_member=true` (the white-box guest emitter has since
+landed in the workspace and encodes the aarch64 doorbell instruction ABI), and
 `production_aarch64_doorbell_trap_implemented=false`. The spike therefore records
 `whitebox_on_trap_tested=false`, `whitebox_off_inertness_tested=false`,
 `marker_icount_reproducible=not_tested`, `payload_read_result=not_tested`,
@@ -1568,7 +1593,8 @@ white-box surfaces and found the aarch64 doorbell cannot be tested yet. The acti
 resolves the Phase-0 product decision by disabling aarch64 white-box support
 rather than treating it as available. It does not claim the chosen aarch64
 reserved-immediate instruction traps precisely; that remains gated on adding an
-AOS-built aarch64 QEMU target, implementing `crucible-guest`, and rerunning S10.
+AOS-built aarch64 QEMU target, implementing the aarch64 doorbell trap, and
+rerunning S10 (`crucible-guest` itself is now implemented).
 
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
@@ -1605,10 +1631,10 @@ entries for the green `checks.crucible.phase0.s1Fingerprint` and
 `interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
 `commanded_preemption_choices_tested=2`,
 `commanded_preemption_reproducible=patch_microtest`,
-`commanded_preemption_discriminating=not_tested`,
-`known_race_manifested_under_one_choice=not_tested`,
-`known_race_absent_under_another_choice=not_tested`,
-`single_vcpu_interrupt_variation_distinct=not_tested`,
+`commanded_preemption_discriminating=modeled`,
+`known_race_manifested_under_one_choice=modeled`,
+`known_race_absent_under_another_choice=modeled`,
+`single_vcpu_interrupt_variation_distinct=modeled`,
 `default_determinism_prereqs_green=true`,
 `default_determinism_prereqs_source=decision_register_s1_s11`,
 `s1_decision_entry_consumed=true`, `s11_decision_entry_consumed=true`,
@@ -1616,10 +1642,19 @@ entries for the green `checks.crucible.phase0.s1Fingerprint` and
 `s11_horizon_fingerprint_match=true`,
 `decision_preemption_exploration_enabled=false`, and
 `fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending`.
-Phase 0 therefore does not enable `Decision::Preemption` exploration yet. It
-keeps only the default deterministic interleaving whose prerequisites are
-recorded by S1/S11 until S12 is rerun as the real commanded vCPU-switch /
-interrupt-timing race test on top of the now-available patch-series capability.
+The four discrimination fields advanced from `not_tested` to `modeled` once the
+deterministic model discrimination proof landed: a known two-vCPU
+last-writer-wins race resolves to different observable outcomes under different
+commanded `Decision::Preemption` values (the race manifests under one choice,
+is absent under another), and a single-vCPU interrupt-timing variation yields
+distinct replayable schedules. The model witness is
+`crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
+and the injection-surface witness is `checks.crucible.phase2.qemuPreemptionInject`.
+Phase 0 therefore has demonstrated commanded-preemption discrimination at the
+model layer but still does **not** enable the **live** `Decision::Preemption`
+campaign explorer: that remains gated on a live race-yield proof under a running
+guest. Until then it keeps the default deterministic interleaving whose
+prerequisites are recorded by S1/S11.
 
 **RISK-27** is resolved by `T-RISK-19` with the modeled-throughput default-only fallback:
 `checks.crucible.phase0.s13RrSwitchQuantumFallback` consumed the S12 fallback
@@ -1779,11 +1814,11 @@ never tolerated). Results live in the decision register (31).
   satisfies [RISK-12], [GHC-33]; spec §30.6.
 - [x] **T-RISK-6** Run **S6**: KASLR/ASLR-enabled boot fingerprint-identical across
   runs given fully-seeded E8/E9; decide whether `nokaslr`/`norandmaps` are required
-  or merely conservative; keep the conservative default until green. Phase 0
-  verified the randomized command-line mode with QMP-stop extended fingerprints
-  and explicit kernel/user base probes; randomization may be recorded as a
-  per-image capability, with no fallback adopted. — satisfies [RISK-13],
-  [DET-33]; spec §30.7.
+  or merely conservative. Phase 0 verified the randomized command-line mode with
+  QMP-stop extended fingerprints and explicit kernel/user base probes and found
+  them not required; on that evidence **D-31** made the stock guest cmdline the
+  shipped default (randomization enabled, sealed host-side), with no fallback
+  adopted. — satisfies [RISK-13], [DET-33]; spec §30.7.
 - [x] **T-RISK-7** Run **S7**: plugin reports the exact next virtual-clock deadline
   at idle and advances to exactly `max_advance_icount` with zero overshoot (incl.
   mid-TB ceilings); adopt TB-split-at-ceiling or conservative-ceiling fallback if

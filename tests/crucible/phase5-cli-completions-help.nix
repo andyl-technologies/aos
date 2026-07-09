@@ -50,16 +50,20 @@
         needle = "**T-CLI-16** Implement `completions`";
       }
       {
-        label = "T-CLI-16 progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliCompletionsHelp`";
+        label = "T-CLI-16 checklist complete";
+        needle = "- [x] **T-CLI-16** Implement `completions`";
+      }
+      {
+        label = "T-CLI-16 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliCompletionsHelp`";
       }
       {
         label = "T-CLI-16 process coverage note";
         needle = "process-tests the real binary's\n  top-level `--help`, `--version`, bash completion script, missing-shell usage";
       }
       {
-        label = "T-CLI-16 remaining blocker range";
-        needle = "remaining command-behavior gates (`T-CLI-10 … T-CLI-13`)";
+        label = "T-CLI-16 certified blocker range";
+        needle = "command-behavior gates (`T-CLI-10 … T-CLI-13`) are green";
       }
       {
         label = "CLI help discipline";
@@ -154,8 +158,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI completions/help progress note";
-        needle = "`T-CLI-16` remains open. `checks.crucible.phase5.cliCompletionsHelp` currently";
+        label = "phase5 CLI completions/help completion note";
+        needle = "`T-CLI-16` is green through `checks.crucible.phase5.cliCompletionsHelp`";
       }
       {
         label = "phase5 CLI completions/help process progress";

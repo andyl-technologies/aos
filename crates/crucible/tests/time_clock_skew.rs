@@ -1,6 +1,8 @@
 //! Public API tests for deterministic guest-visible clock skew.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     ClockDriftRate, NodeClockSkew, ScenarioDef, SimOffset, TimeConversionError, VirtualInstant,

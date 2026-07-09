@@ -663,12 +663,24 @@ genuinely unresolved and is tracked as a spike in
     `T = f(Configuration)` model; it must be a branch in the temporal graph.
 - **Affects:** [G-11], the EXEC Decision taxonomy, [SCHED-46], [ADV-39]; files 03,
   07, 08, 22.
-- **Phase-0 S12 outcome:** `checks.crucible.phase0.s12PreemptionDecision` now
-  finds the `qemu_plugin_inject_preemption` QEMU/plugin surface and the phase2
-  patch microtest covers deterministic commanded landing. This decision remains a
-  target architecture decision rather than an enabled explorer surface until S12
-  is rerun as a full race-yield proof. Crucible keeps default deterministic
-  interleaving only until that non-fallback proof lands.
+- **Phase-0 S12 outcome:** `checks.crucible.phase0.s12PreemptionDecision` finds
+  the `qemu_plugin_inject_preemption` QEMU/plugin surface, the phase2 patch
+  microtest (`checks.crucible.phase2.qemuPreemptionInject`) covers deterministic
+  commanded landing, and — as of the T-D-4 spike — the commanded-preemption
+  **discrimination** is now demonstrated at the **deterministic model layer**:
+  the four S12 discrimination fields advanced from `not_tested` to `modeled`
+  (`commanded_preemption_discriminating`, `known_race_manifested_under_one_choice`,
+  `known_race_absent_under_another_choice`, `single_vcpu_interrupt_variation_distinct`).
+  The model witness is
+  `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`:
+  a known two-vCPU last-writer-wins race resolves to different observable outcomes
+  under different commanded `Decision::Preemption` values (the race manifests under
+  one choice, is absent under another, and the choices produce distinct replayable
+  schedules), and a single-vCPU interrupt-timing variation yields distinct
+  schedules. This decision remains a target architecture decision whose **live**
+  campaign-explorer surface is still gated: the model discrimination proof is not
+  a live race-yield proof under a running guest, so Crucible keeps default
+  deterministic interleaving only until that live proof lands.
 - **Engine schedule surface:** T-EXEC-19 now implements the Rust execution-model
   recording discipline: nonzero RR-boundary default preemptions are derived
   without schedule entries, while explorer-supplied `Decision::Preemption`
@@ -816,6 +828,477 @@ genuinely unresolved and is tracked as a spike in
   Live read-only attach neutrality and gdb single-step routing are not claimed
   until a hermetic gdb client, CLI live attach path, and S14 gate pass without fallback.
 
+### D-31 — Stock guest cmdline; guest entropy suppression removed from the launch contract
+
+- **Status:** Decided
+- **Decision:** Crucible ships **stock guest cmdlines** and delivers determinism
+  **entirely host-side**. The previous "conservative default" of appending
+  `nokaslr`/`norandmaps` (and by extension `random.trust_cpu=off` /
+  `random.trust_bootloader=off`) to guest cmdlines is **revoked**. Crucible
+  **neither adds nor requires** any guest entropy-suppression flag; a guest may
+  still set such flags itself, but they are no longer part of the launch
+  contract. KASLR/ASLR (E11/E12) stay **enabled** and are reproducible because
+  all boot entropy is seeded deterministically host-side (E8/E9: patched-QEMU
+  icount, fixed `-seed`, `fw_cfg` random-seed / controlled RDRAND as a pure
+  function of the scenario seed, with no host-entropy passthrough).
+- **Rationale:** The any-guest contract ([G-2], D-6) requires that **0% of guest
+  configuration or payload be load-bearing for determinism** — determinism is a
+  property Crucible delivers at the QEMU/host boundary, not something a guest
+  must opt into. Shipping suppression flags on the guest cmdline made a slice of
+  guest configuration load-bearing, contradicting that contract. Because the S6
+  spike proved KASLR/ASLR bit-stability under fully seeded boot entropy, the
+  suppression flags buy no determinism and only reduce fidelity to a real guest,
+  so removing them from the launch contract is strictly better.
+- **Evidence:** Phase-0 **S6 / T-RISK-6** ([RISK-13], [DET-33]) ran the
+  single-VM fingerprint procedure twice with randomization enabled under fully
+  seeded boot entropy and obtained bit-identical extended fingerprints (nonzero
+  kernel text base and userspace ASLR bases confirmed enabled), demonstrating
+  reproducibility does not depend on `nokaslr`/`norandmaps`. Bit-stability here
+  required sealing not just the seeded-entropy *bytes* but its *delivery icount*
+  (E7a): the `crucible-det-rng-delivery` and virtio-rng-scoped
+  `crucible-det-virtio-ioeventfd` patches deliver the virtio-rng completion
+  synchronously at the request icount rather than from a host-scheduled bottom
+  half. See file 30 (RISK-13 / T-RISK-6) for the mechanism and the
+  five-consecutive `--check` reproduction.
+- **Alternatives considered:**
+  - *Keep suppression flags as the shipped default and gate re-enablement as a
+    per-image capability.* Rejected: this is the position D-31 supersedes. It
+    left guest cmdline configuration load-bearing for determinism, violating the
+    any-guest contract, despite S6 showing the flags are unnecessary.
+  - *Require guests to omit entropy-suppression flags.* Rejected: that too would
+    make guest configuration load-bearing (in the opposite direction). Crucible
+    is indifferent to whether a guest sets them — it neither adds nor requires
+    them.
+- **Affects:** [DET-33], E11/E12, [QEMU-13], [PKG-39], [PKG-24], [G-2], D-6;
+  files 04 (§4.6/§4.9), 10 (§10.2), 26 (§26.7), 30 (S6).
+- **Supersedes:** the conservative-default position previously recorded under
+  [DET-33] / [QEMU-13].
+- **Date:** 2026-07-08.
+- **Decided by:** project owner.
+
+### D-32 — Remote checkpoint store is the same `crucible-cas` interface, not a separate backend
+
+- **Status:** Decided
+- **Decision:** The remote/shared checkpoint store is **in scope** and is
+  satisfied by the **existing `crucible-cas` `DagStore` interface** — the same
+  backend-agnostic `put`/`get`/`has`(-by-content-hash) trait Crucible already
+  ships — **not** by a second, separately-designed store. The fleet-visible and
+  team-shared backend is `crucible_cas::SharedDagStore` today; a future RFC-0007
+  (`ratchet`) shared substrate is a **drop-in replacement of the interface's
+  internals**, gated behind D-17 and expressed only as documented merge-marker
+  text, never as a build- or run-time dependency. This resolves the D-20
+  either/or ("gated ratchet substrate *or* a separate store") in favor of
+  **neither a separate store nor a ratchet dependency**: one interface, a
+  local backend now, a remote/durable backend behind the same trait, and the
+  ratchet integration as a later contained refactor behind that unchanged seam.
+- **Rationale — the spike's findings, with code citations:**
+  - *(a) The store interface is backend-pluggable today.* The seam is the
+    object-safe `pub trait DagStore: Send + Sync` with exactly
+    `put(&[u8]) -> ContentHash`, `get(&ContentHash) -> Vec<u8>`, and
+    `has(&ContentHash) -> bool`
+    (`crates/crucible-cas/src/lib.rs:195`). Three interchangeable
+    implementations already exist behind it —
+    `MemoryDagStore` (`:251`), the filesystem `LocalDagStore` (`:316`), and the
+    fleet-visible `SharedDagStore` (`:449`) — proving the backend is a swap-in
+    behind an unchanged trait and unchanged BLAKE3 content keys
+    (`ContentHash::from_bytes`, `:93`). A remote/durable backend is a fourth impl
+    of the same three methods; keys are pure functions of content
+    (`from_bytes`), so identity never depends on which backend or host produced an
+    object. This matches the normative store contract in
+    [`07-temporal-graph.md`](07-temporal-graph.md) §7 ([TEMP-21], [TEMP-22]: "the
+    store interface MUST be backend-agnostic so future remote backends … can be
+    added behind the same trait without changing keys").
+  - *(b) The remote backend role is filled by the same interface; the ratchet
+    seam is a later drop-in, not a prerequisite, and no separate store is
+    needed.* `SharedDagStore` is precisely the fleet backend: it uses the same
+    two-level object layout as `LocalDagStore` but publishes via a per-writer
+    temporary path and atomic hard-link, so **concurrent writers of identical
+    bytes converge on one object** and a writer that finds different bytes under a
+    key **fails loudly with `CasError::ContentMismatch`** (`:449`–`:494`) — the
+    location-independent, idempotent, immutable-on-conflict semantics
+    [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md)
+    §35.2.1 ([DCE-3], [DCE-4]) and §35.6.2 ([DCE-28]) require of a shared fleet
+    store. The four weighed axes all resolve to "the existing interface already
+    carries the role":
+    - *Content-addressing compatibility:* keys are BLAKE3 of content
+      (`ContentHash`, `:93`), identical across every backend, so a remote store is
+      byte-compatible with the local one by construction ([INV-6], [INV-9]).
+    - *Immutability / GC semantics:* objects are immutable
+      (content-addressed, conflict ⇒ `ContentMismatch`); GC is
+      reference-counting/mark-and-sweep over pins on the *cache*, never on
+      identity ([TEMP-24]–[TEMP-26], and the campaign-scoped roots
+      `CampaignGcRoots` / `CampaignGcPlan` at `:3194`/`:3251`, [DCE-14]). These
+      are backend-independent and unchanged by a remote backend.
+    - *Auth story:* authorization is **not** a property of the store trait — the
+      three methods carry no principal — but of the surrounding transport and the
+      **provenance triple** that keys every campaign and refuses cross-provenance
+      corpus reuse (`CAMPAIGN_PROVENANCE_SCHEMA`, `:79`;
+      `CAMPAIGN_CROSS_PROVENANCE_REFUSAL_REASON`, `:89`; [DCE-26], [DCE-27]). A
+      remote backend adds its own transport auth **without touching the trait**,
+      so it is not a reason to design a separate store.
+    - *What a shared fleet store must provide* (per §35): a single
+      content-addressed backend with idempotent dedup, location-independent
+      identity, work-stealing frontier leases, four-layer dedup, and a durable
+      campaign head. All of these are already built on this one interface —
+      `SharedFrontier` (`:558`), `SharedDedupIndex` (`:1145`), and
+      `SharedCampaignStore` (`:1375`) — so a remote backend inherits them for
+      free.
+  - The crate itself pins this resolution: its module docs name the RFC-0007
+    merge as replacing **`DagStore::put`/`get`/`has` + `InvalidationQuery::evaluate`**
+    internals behind an unchanged interface, "a thin adapter behind that unchanged
+    interface," with **"no RFC-0007 dependency exists"** until the merge
+    (`crates/crucible-cas/src/lib.rs:1`–`:24`), and encodes the seam as the
+    conformance constants `FUTURE_RATCHET_INTEGRATION_SEAM` (`:61`),
+    `FUTURE_RATCHET_MERGE_BAR` (`:64`), and `FUTURE_RATCHET_SEAM_INTERFACE`
+    (`:75`). The merge is therefore a contained refactor behind an unchanged
+    trait — exactly the "cheap to integrate later" posture D-17 promised — and
+    **choosing a separate remote backend now is unnecessary and would duplicate
+    that seam.**
+- **Alternatives considered:**
+  - *Design a separate remote checkpoint store distinct from `crucible-cas`.*
+    Rejected: the store role is fully expressed by the backend-agnostic
+    `DagStore` trait, and `SharedDagStore` already provides fleet-visible,
+    location-independent, idempotent, immutable-on-conflict semantics. A second
+    store would duplicate the interface, the GC/immutability contract, and the
+    fleet layers (`SharedFrontier`/`SharedDedupIndex`/`SharedCampaignStore`) for
+    no gain, and would fork the merge seam.
+  - *Take a dependency on the RFC-0007 (`ratchet`) substrate now to supply the
+    remote backend.* Rejected by D-17 / [NG-7]: `ratchet` is still in flight;
+    depending on it couples two unstable schedules. The remote backend is
+    satisfied *today* by a further `DagStore` impl behind the unchanged trait,
+    and ratchet slots in later as an internals swap behind the same seam
+    (`FUTURE_RATCHET_INTEGRATION_SEAM`), re-gated by `gate:content-address` /
+    `gate:replay-oracle` / `gate:e2e-determinism`.
+  - *Leave the decision Open (local-only, defer the backend choice).* Rejected:
+    the spike shows there is no genuinely-unresolved backend *choice* left — the
+    interface is proven pluggable and the remote role is already filled by the
+    same interface, so the question D-20 tracked is answered rather than merely
+    deferred.
+- **Affects:** [INV-6], [G-6], [NG-7]; [TEMP-21], [TEMP-22], [TEMP-24]–[TEMP-26];
+  [DCE-3], [DCE-4], [DCE-28], [DCE-29]; files 07 (§7, §8), 35 (§35.2.1, §35.6.2),
+  26 (§26.9); crates `crucible-cas` (`DagStore`, `SharedDagStore`,
+  `SharedFrontier`, `SharedDedupIndex`, `SharedCampaignStore`, the
+  `FUTURE_RATCHET_*` seam constants). References D-17, D-28.
+- **Supersedes:** [D-20] (the Open provisional local-only default and its
+  either/or backend question).
+- **Date:** 2026-07-09.
+- **Decided by:** T-D-2 remote-checkpoint-store spike.
+
+### D-33 — Architecture matrix: aarch64 is a committed target with a derived seal map; riscv64 is feasible-but-deferred
+
+- **Status:** Decided
+- **Decision:** The architecture matrix is resolved as: **x86_64** (green, the
+  established contract) and **aarch64** (a **committed** second target) are in
+  scope; **riscv64** is judged **feasible but deferred** (no committed schedule).
+  The §4.6 entropy-elimination set (E1–E24) is **re-derived for aarch64
+  seal-by-seal** in the matrix below — each x86_64 seal is classified as
+  *arch-neutral* (the mechanism is architecture-independent and carries over
+  unchanged), *arch-specific-with-known-analogue* (the seal exists on aarch64 but
+  binds to a different instruction/device, named below), or *empirical-gate*
+  (correct-by-derivation but must be **gated** by running the x86_64 procedure on
+  an aarch64 image before it is claimed). Because AOS builds **no aarch64 QEMU
+  target today** (S10 ground truth: `qemu_target_list=x86_64-softmmu`,
+  `qemu_system_aarch64_available=false`), the aarch64 gates **cannot run yet**;
+  the derived matrix is therefore recorded as **conditional on an AOS-built
+  aarch64 `qemu-system-aarch64` target landing**, with
+  `checks.crucible.phase0.s10Aarch64Doorbell` as the **activation trigger** (the
+  same gate that flips `qemu_system_aarch64_available` to `true` unblocks the
+  aarch64 black-box S1 fingerprint run and the white-box doorbell). This
+  supersedes D-19's "whether/which further architectures … is unresolved" with a
+  committed aarch64 target, a derived seal map, and a named riscv64 verdict.
+- **Rationale — the derived aarch64 seal map (E1–E24):** the elimination
+  *mechanisms* in §4.6 fall into two groups. The ones rooted in **icount as the
+  clock** (D-2) and **single-threaded round-robin TCG** (D-22) are
+  architecture-neutral by construction — they are properties of how Crucible
+  drives QEMU, not of the guest ISA — so they carry to aarch64 unchanged. The
+  ones rooted in a **specific instruction or device** have a known aarch64
+  analogue that binds the same mechanism to the aarch64 equivalent. Concretely:
+  - *Arch-neutral (carry over unchanged):* **E2** (wall-clock warp suppression —
+    plugin owns the clock), **E3** (icount budget from virtual-clock deadlines
+    only), **E5**/**E6** (fixed RTC epoch, virtual-clock-driven timer devices —
+    the *devices* differ but the "driven by the icount-derived virtual clock"
+    mechanism does not), **E7** (interrupts delivered at deterministic
+    translation-block boundaries under icount), **E13**/**E21**/**E14**
+    (single-threaded RR-TCG interleaving, fixed `rr_switch_quantum`, host-thread
+    scheduling irrelevance — all properties of the accel/scheduler, not the ISA),
+    **E16** (deterministic machine reset), **E17** (no async input; injection
+    contract), **E18**/**E19** (network/IO delivery via the injection contract and
+    I/O sub-nodes — transport-timing-independent), **E20** (snapshot completeness
+    — a QEMU savevm property), **E22** (inter-vCPU IPI at modeled node-icount
+    latency), **E24** (fixed topology, no hotplug). These are the majority and
+    they need **no aarch64-specific derivation** beyond re-gating.
+  - *Arch-specific-with-known-analogue:* **E1** (hardware RNG) — x86 `RDRAND`/
+    `RDSEED` become aarch64 **`RNDR`/`RNDRRS`** (the `FEAT_RNG` registers);
+    sealed the same way, by pinning a `-cpu` model that does not advertise the
+    feature *or* emulating it from the seeded stream. **E4**/**E23** (timestamp
+    counter) — x86 `RDTSC`/`RDTSCP` become the aarch64 virtual counter
+    **`CNTVCT_EL0`** (and `CNTFRQ_EL0`), derived from icount identically. **E8**
+    (guest entropy seeding) — same `fw_cfg` random-seed path; the aarch64 kernel
+    consumes it via the same firmware channel. **E9** (QEMU-internal host RNG) —
+    a QEMU-internal seal, arch-independent, but its device set (e.g. the aarch64
+    **GICv2/GICv3** interrupt controller vs x86 LAPIC/IOAPIC) must be seeded/reset
+    deterministically, so it is re-gated. **E10**/**E15** (CPU model / FP) — fixed
+    `-cpu` (an aarch64 model, never `-cpu host`) makes FP deterministic under TCG
+    soft-float exactly as on x86. **E11**/**E12** (KASLR/ASLR) — aarch64 KASLR
+    seeds from the same deterministic boot entropy (E8/E9); reproducibility is the
+    **empirical-gate** item that most needs an aarch64 S6-style run to confirm,
+    since the aarch64 kernel's randomization path differs in detail from x86's.
+  - *Empirical-gate (correct-by-derivation, must run before claimed):* the whole
+    set becomes **gated** by (i) an aarch64 **S1** extended-fingerprint run
+    (black-box determinism on an aarch64 image, per RISK-17's note that "aarch64
+    black-box determinism is covered by S1 run on an aarch64 image") and (ii) an
+    aarch64 **S6** KASLR/ASLR bit-stability run (E11/E12), plus (iii) the aarch64
+    **S10** doorbell for the *white-box* channel. None can run without the target.
+- **Evidence — why the aarch64 gates cannot run yet (S10 ground truth):**
+  `checks.crucible.phase0.s10Aarch64Doorbell` records that the active
+  `qemu-crucible` package is built with `qemu_target_list=x86_64-softmmu` and
+  reports `qemu_aarch64_softmmu_target=false`,
+  `qemu_system_aarch64_available=false`, and
+  `production_aarch64_doorbell_trap_implemented=false`, while
+  `crucible_guest_workspace_member=true` (the white-box guest emitter has landed
+  and already encodes the aarch64 doorbell instruction ABI). The active fallback
+  is `fallback_adopted=aarch64_black_box_only_until_qemu_target_and_doorbell`.
+  This is exactly why the aarch64 seal map is recorded as **derived and
+  conditional**, not empirically claimed: the derivation is sound, but the
+  contract is only *established* for an architecture once its S1/S6/S10 gates run
+  green, and those are blocked on adding the AOS-built aarch64 QEMU target.
+- **Evidence — riscv64 feasibility (assessment only):** riscv64 is judged
+  **feasible** under the same contract shape — it is a well-supported QEMU TCG
+  softmmu target, `-icount` applies, and it has direct analogues for the
+  arch-specific seals (hardware RNG via the **Zkr** `seed` CSR for E1, the
+  **`time`/`rdtime`** CSR for E4/E23 derived from icount, virtual timers via
+  **`sstc`**/CLINT for E6/E7, and the same `fw_cfg`/firmware seed path for E8).
+  No riscv64-specific blocker to the elimination set is identified. It is
+  **deferred** rather than committed because (a) it adds a third per-arch gating
+  cost (its own S1/S6/S10 runs and an AOS-built `qemu-system-riscv64` target)
+  that is not yet scheduled, and (b) aarch64 must be green first to validate the
+  "derive-then-gate" method on one non-x86 arch before a second is committed.
+  This is a **feasibility verdict**, not an empirical result — no riscv64
+  fingerprint has been produced.
+- **Alternatives considered:**
+  - *Leave the matrix Open (D-19's position).* Rejected: the seal-by-seal
+    derivation is tractable now and yields a committed aarch64 target and a named
+    riscv64 verdict; the only genuinely-unresolvable part (empirical aarch64
+    gating) is bounded and named (blocked on the aarch64 QEMU target), which is a
+    resolved *plan*, not an open *question*.
+  - *Claim aarch64 as green now on the strength of the derivation.* Rejected as
+    dishonest: no aarch64 QEMU target exists, so S1/S6/S10 cannot run; a derived
+    seal is correct-by-construction but the contract is only *established* by a
+    green gate. The matrix is recorded as conditional-on-target for exactly this
+    reason.
+  - *Commit riscv64 now alongside aarch64.* Rejected: premature; it triples the
+    per-arch gating cost before the derive-then-gate method is validated on
+    aarch64, and no riscv64 target is built. Feasible-but-deferred is the honest
+    verdict.
+  - *x86_64-only forever.* Rejected (as in D-19): too narrow given AOS's
+    multi-arch posture; aarch64 is committed.
+- **Affects:** [DET-18] (per-arch entropy set E1–E24), [DET-20], [G-2]; files 04
+  (§4.6, the E1–E24 table), 10, 16 ([GHC-16] aarch64 doorbell), 30 (S10 / RISK-17);
+  gate `checks.crucible.phase0.s10Aarch64Doorbell` (the activation trigger).
+  References D-2, D-22, D-31 (KASLR/ASLR seeded host-side), and the aarch64
+  black-box-only fallback recorded under RISK-17 / T-RISK-10.
+- **Supersedes:** [D-19] (the Open "whether/which further architectures … is
+  unresolved" framing) — for the aarch64 and riscv64 dimensions. D-19's *general*
+  principle ("each architecture's §4.6 set must be re-derived and re-gated") is
+  **retained and honored**; D-33 performs that derivation for aarch64 and gives
+  riscv64 a feasibility verdict.
+- **Date:** 2026-07-09.
+- **Decided by:** T-D-1 architecture-matrix spike.
+
+### D-34 — `rr_switch_quantum` default is 4096; commanded-preemption discrimination is demonstrated at the model layer; live-telemetry tuning is post-acceptance follow-up
+
+- **Status:** Decided
+- **Decision:** The shipped default round-robin vCPU-switch quantum (D-22) is
+  **`rr_switch_quantum = 4096`** node-icount. This is the **decision**, not a
+  fallback: S13's deterministic RR-switch-overhead model selected 4096 as the
+  **smallest S11-green quantum above the modeled throughput floor**
+  (modeled efficiency `984/1000` vs the `980/1000` target, against a coarse
+  `16384` baseline at `996/1000`), and — the quantum being **correctness-neutral**
+  (every fixed quantum is deterministic, D-22, [RISK-25]) — the default is a pure
+  throughput/race-surface tuning choice that the modeled analysis is sufficient to
+  settle. Commanded-preemption **discrimination** (the capability that gives a
+  finer quantum its race-surfacing value) is **demonstrated at the deterministic
+  model layer** by the T-D-4 spike, with the QEMU injection surface
+  (`checks.crucible.phase2.qemuPreemptionInject`) as the landing witness.
+  **Further refinement of the default from live campaign telemetry** (measuring
+  real multi-vCPU throughput and empirical race yield under a running guest with
+  the live explorer enabled) is an explicit **post-acceptance follow-up**, **not
+  an open condition** blocking this decision: 4096 ships as the default now, and a
+  future telemetry-driven re-tune is a normal per-branch `rr_switch_quantum`
+  override (the override mechanism is the standing escape hatch), not a reopening
+  of D-34.
+- **Rationale:** D-25 left the default "open until S13 can measure empirical
+  throughput plus race-surfacing yield," which entangled a **correctness-neutral
+  tuning default** with the **live-explorer race-yield proof**. The T-D-4 spike
+  disentangles them. (i) The default value is decidable from the modeled
+  throughput sweep alone, because the quantum cannot affect correctness — S13
+  already computed that 4096 is the smallest quantum clearing the throughput
+  floor, which is exactly the "small enough to surface races, large enough not to
+  crater throughput" criterion D-25 named. (ii) The race-surfacing *capability*
+  the finer quantum buys is now proven to *discriminate*: the model discrimination
+  test resolves a known two-vCPU race to different observable outcomes under
+  different commanded `Decision::Preemption` values (race manifests under one
+  choice, absent under another; distinct replayable schedules), and single-vCPU
+  interrupt-timing variation is distinct — so a smaller quantum demonstrably
+  explores more, which is the whole reason the default matters. (iii) The only
+  thing genuinely requiring a live guest — *empirical* race yield and *empirical*
+  throughput under the live campaign explorer — is a **refinement** of an
+  already-shipping default, so it is correctly classified as post-acceptance work,
+  not a gate on the decision. A decision that says "default is 4096, refinement is
+  future telemetry" is a real, actionable decision; deferring the default
+  indefinitely on a correctness-neutral knob would be the false-openness
+  anti-pattern.
+- **Evidence — code and gate citations:**
+  - *Model discrimination proof (T-D-4):*
+    `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`,
+    `commanded_preemption_discrimination_is_reproducible`, and
+    `single_vcpu_interrupt_timing_variation_is_distinct` in
+    `crates/crucible/src/decision.rs` — built on the real `DecisionRecorder`
+    machinery (`record_preemption_override` appending `Decision::Preemption`,
+    `default_rr_preemption` deriving the RR boundary's `to_vcpu`,
+    `Schedule::content_hash` distinguishing the branches).
+  - *S12 record:* `checks.crucible.phase0.s12PreemptionDecision` now reports
+    `commanded_preemption_discriminating=modeled`,
+    `known_race_manifested_under_one_choice=modeled`,
+    `known_race_absent_under_another_choice=modeled`,
+    `single_vcpu_interrupt_variation_distinct=modeled`, with the model and
+    injection witnesses.
+  - *S13 default derivation:* `checks.crucible.phase0.s13RrSwitchQuantumFallback`
+    selects `selected_phase0_default_rr_switch_quantum=4096` on
+    `selected_default_basis=s11_green_smallest_quantum_above_throughput_floor`.
+  - *Scope boundary:* S13 still records `race_yield_tested=false` and
+    `d25_status=open_until_preemption_explorer_enabled` — these describe the
+    **S13 spike's own** posture (a *modeled* sweep, and the **live**-explorer
+    race-yield refinement being pending), **not** the default-value decision. D-34
+    closes the default-value question; the `d25_status=open…` field refers to the
+    live-telemetry refinement that D-34 reclassifies as post-acceptance follow-up.
+- **Alternatives considered:**
+  - *Leave the default open until live telemetry (D-25's position).* Rejected:
+    the quantum is correctness-neutral, so blocking the default on a live proof
+    conflates a tuning knob with a capability proof; the modeled sweep is
+    sufficient to pick a shippable default, and the per-branch override absorbs any
+    later re-tune.
+  - *Record discrimination as "possible via the existing injection gate" without
+    demonstrating it.* Rejected as the vacuous-gate anti-pattern: a real modeled
+    discrimination test is a genuine artifact; "possible in principle" is not.
+  - *Claim the default is validated by live race yield now.* Rejected as
+    dishonest: no live campaign telemetry exists yet (no live explorer run); the
+    default rests on the modeled throughput analysis, and the live refinement is
+    named as follow-up rather than asserted.
+- **Affects:** [SCHED-45], [PLUG-3], [G-9], [G-11]; [DET-12], [SCHED-46]; files 08,
+  22, 25, 30 (S13 / RISK-27), 03/07 (the `Decision::Preemption` taxonomy);
+  gates `checks.crucible.phase0.s13RrSwitchQuantumFallback`,
+  `checks.crucible.phase0.s12PreemptionDecision`,
+  `checks.crucible.phase2.qemuPreemptionInject`; test
+  `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`.
+  References D-22, D-24, [RISK-25], [RISK-27].
+- **Supersedes:** [D-25] (the Open provisional-default framing that deferred the
+  `rr_switch_quantum` default to a live measurement).
+- **Date:** 2026-07-09.
+- **Decided by:** T-D-4 preemption-discrimination spike.
+
+### D-35 — Minimum link-latency floor is a strictly-positive `MIN_LINK_LATENCY = 1` ns; sub-floor base latency is rejected, sub-floor latency *faults* are clamped
+
+- **Status:** Decided
+- **Decision:** The minimum link-latency floor is **`MIN_LINK_LATENCY`, a
+  strictly-positive `SimDuration { nanos: 1 }`** (one virtual nanosecond). The
+  clamp-vs-reject question is resolved as a **two-part policy keyed to the source
+  of the sub-floor value**:
+  - A **statically-configured base link latency** at or below zero — or, more
+    generally, below the strictly-positive floor — is **rejected loudly at
+    construction** (`CrucibleModelError::LinkLatencyBelowFloor`), because the base
+    latency is exactly the scalar that supplies the scheduler's conservative
+    lookahead bound ([SCHED-6], [SCHED-20]); a zero-latency link would give a peer
+    zero lookahead and collapse the system to single-instruction lockstep, so it
+    must never be silently accepted.
+  - A **dynamic latency-reducing fault** that would push an already-valid link's
+    effective latency below the floor is **clamped up to the floor**
+    (`subfloor_latency_is_clamped_to_floor`), not rejected — a fault must not be
+    able to break scheduler liveness, and clamping keeps the conservative minimum
+    latency ≥ 1 ns so lookahead stays positive. Faults that *raise* the effective
+    minimum only widen lookahead (always safe); jitter/reorder/bandwidth add a
+    *minimum* additional delay of zero and so never lower the scalar lookahead
+    edge.
+
+  Zero-latency links are therefore **rejected** (at the static/base layer) rather
+  than clamped: a scenario that declares a zero base latency is a modeling error
+  the harness surfaces, while a *fault* that transiently dips below the floor is
+  absorbed by clamping. The floor value itself must also be strictly positive for
+  the same lookahead reason.
+- **Rationale — the benchmark evidence (T-D-3 / w8 perf suite):** the resolved
+  floor is exactly the smallest value that keeps the conservative lookahead budget
+  positive. w8's landed perf suite (`gate:perf-bench`,
+  `checks.crucible.phase7.gates.perfBench`, 21/21 green) includes the
+  **latency-parallelism sweep** (`crucible_harness::perf::latency_parallelism_sweep`,
+  [PERF-4]) which measures the **parallelism-is-the-lookahead-budget identity**:
+  realized parallelism `P` scales with the minimum link latency and *degrades
+  toward single-TB lockstep as the latency approaches the floor* (the cost model
+  notes "halving the latency floor roughly halves `P` down to the floor"). This is
+  the measured per-quantum-overhead-vs-parallelism relation D-21 said the decision
+  depended on: it shows (a) the floor must be **strictly positive** (at zero,
+  lookahead and therefore `P` collapse), and (b) the *recommended operating point*
+  for good parallelism is **well above** the floor (the perf corpus places links
+  "well above the floor"), so the floor is a **correctness/liveness minimum**, not
+  a performance target — the value `1` ns is the least value that preserves the
+  strictly-positive invariant while capping fidelity as little as possible.
+  Choosing a *larger* fixed floor (e.g. the modeled `512`-tick operating point the
+  phase-0 parallelism cost model uses for its scenario) would needlessly forbid
+  scenarios from expressing sub-512 latencies for no correctness gain; the
+  liveness floor and the recommended operating point are distinct, and only the
+  former belongs in the hard minimum.
+- **Evidence — the decision is already implemented and gated:**
+  - *Floor value:* `pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };`
+    (`crates/crucible/src/model.rs:57`).
+  - *Reject (static base):* `CrucibleModelError::LinkLatencyBelowFloor { base_latency_ns, floor_ns }`
+    with the rustdoc "a link's base latency MUST be strictly positive and at or
+    above the configured minimum link-latency floor … rejected at construction
+    rather than silently accepted" (`crates/crucible-device/src/error.rs:171`).
+  - *Clamp (dynamic fault):* the `NetLink` sub-node "enforces the
+    strictly-positive latency floor, clamps sub-floor latency faults, raises the
+    scheduler lookahead-recompute signal when the conservative minimum latency
+    bound changes ([IO-33])" (`crates/crucible-device/src/netlink.rs:12`), with
+    the `subfloor_latency_is_clamped_to_floor` regression test
+    (`crates/crucible-device/src/netlink.rs:140`).
+  - *Gate:* `checks.crucible.phase3.schedulerLinkLatencyFloor` needles the
+    `MIN_LINK_LATENCY` constant, the "a link MUST have a strictly positive
+    latency" rule, the constructor floor rejection, and the
+    `scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world_material`
+    regression; the phase-0 parallelism cost model additionally records
+    `declared_zero_latency_rejected=1` and `declared_subfloor_latency_rejected=1`.
+- **Alternatives considered:**
+  - *A large fixed floor (e.g. 512 ns).* Rejected: conflates the liveness minimum
+    with the recommended operating point; it would needlessly forbid low-latency
+    scenarios for no correctness benefit. The sweep shows fidelity is best
+    preserved by the smallest strictly-positive floor, with operators free to run
+    links well above it for throughput.
+  - *Clamp everything (including static zero-latency base) rather than reject.*
+    Rejected: silently clamping a declared zero-latency link would hide a modeling
+    error and change the scenario's meaning without the author's knowledge; a
+    declared base latency below the floor is surfaced loudly. Clamping is reserved
+    for *faults*, where fail-loud would let a fault break liveness.
+  - *Reject everything (including sub-floor faults) rather than clamp faults.*
+    Rejected: a latency-reducing fault that dips below the floor is a legitimate
+    fault whose effect must be bounded, not a fatal error; clamping keeps lookahead
+    positive and the run alive.
+  - *No floor / allow zero-latency links (D-21's rejected alternative).* Rejected:
+    zero lookahead forces lock-step and can create same-virtual-time delivery
+    cycles the total order alone may not break — confirmed by the sweep's collapse
+    of `P` toward the floor.
+- **Affects:** [INV-3], [DET-12], [SCHED-6], [SCHED-20], [G-9]; [IO-33], [IO-34],
+  [PERF-4]; files 08, 15 (§15.4.2), 25; constant
+  `crucible::MIN_LINK_LATENCY` (`model.rs:57`); errors
+  `CrucibleModelError::LinkLatencyBelowFloor` (`crucible-device/src/error.rs`);
+  the `NetLink` sub-node (`crucible-device/src/netlink.rs`); gates
+  `checks.crucible.phase3.schedulerLinkLatencyFloor`,
+  `checks.crucible.phase0.multiVmParallelism`,
+  `checks.crucible.phase7.gates.perfBench`; the sweep
+  `crucible_harness::perf::latency_parallelism_sweep`. References D-10 (lookahead
+  is the parallelism budget).
+- **Supersedes:** [D-21] (the Open provisional framing that left the floor value
+  and the clamp-vs-reject choice unresolved pending benchmarks).
+- **Date:** 2026-07-09.
+- **Decided by:** T-D-3 lookahead-floor spike (w8 perf-suite data).
+
 ---
 
 ## Open
@@ -827,7 +1310,16 @@ becomes a new `Decided` entry referencing the one it supersedes).
 
 ### D-19 — Architecture matrix beyond x86_64 and aarch64
 
-- **Status:** Open
+> **Superseded by [D-33].** The T-D-1 spike re-derived the §4.6 entropy-elimination
+> set (E1–E24) for **aarch64** seal-by-seal (most seals arch-neutral; the rest
+> bind to known aarch64 analogues — `RNDR`/`RNDRRS`, `CNTVCT_EL0`, GICv2/v3), made
+> aarch64 a **committed** target recorded as **conditional on an AOS-built
+> `qemu-system-aarch64` target** (the aarch64 gates cannot run today —
+> `qemu_target_list=x86_64-softmmu`), and judged **riscv64 feasible-but-deferred**.
+> D-19's general "re-derive and re-gate per arch" principle is retained; D-33
+> performs that derivation. D-19 is kept below as the original Open framing.
+
+- **Status:** Superseded by D-33
 - **Decision (provisional):** The first determinism contract is established and
   gated for **x86_64**, with **aarch64** as the second target. Whether and which
   further guest architectures (e.g. riscv64) are in scope — and whether each meets
@@ -848,7 +1340,14 @@ becomes a new `Decided` entry referencing the one it supersedes).
 
 ### D-20 — Remote checkpoint-store backend
 
-- **Status:** Open
+> **Superseded by [D-32].** The T-D-2 spike confirmed the store interface is
+> backend-pluggable today and that the remote/shared backend is satisfied by the
+> **same `crucible-cas` `DagStore` interface** (`SharedDagStore`), with the
+> RFC-0007 (`ratchet`) substrate as a later drop-in behind the unchanged seam —
+> **not** a separate store and **not** a ratchet dependency. D-20 is retained
+> below as the original Open provisional framing; D-32 is the current decision.
+
+- **Status:** Superseded by D-32
 - **Decision (provisional):** The temporal graph's checkpoint store is **local /
   filesystem-backed** for the first cut, content-addressed so a remote backend is
   a drop-in later. Whether a **remote/shared checkpoint store** (for distributed
@@ -869,7 +1368,17 @@ becomes a new `Decided` entry referencing the one it supersedes).
 
 ### D-21 — Minimum link-latency floor value
 
-- **Status:** Open
+> **Superseded by [D-35].** The T-D-3 spike, using w8's landed perf-suite
+> latency-parallelism sweep, resolved the floor to the strictly-positive
+> `MIN_LINK_LATENCY = 1` ns and the clamp-vs-reject question to a source-keyed
+> split: a static sub-floor base latency is **rejected** at construction, a
+> dynamic sub-floor latency **fault** is **clamped** to the floor. The decision is
+> already implemented (`crates/crucible/src/model.rs:57`,
+> `crucible-device` netlink/error) and gated
+> (`checks.crucible.phase3.schedulerLinkLatencyFloor`). D-21 is retained below as
+> the original Open provisional framing; D-35 is the current decision.
+
+- **Status:** Superseded by D-35
 - **Decision (provisional):** The conservative CMB lookahead is the minimum
   inbound link latency to a node, so a link latency of *zero* would collapse the
   parallelism window and force lock-step. There is therefore a **minimum
@@ -893,7 +1402,17 @@ becomes a new `Decided` entry referencing the one it supersedes).
 
 ### D-25 — Default `rr_switch_quantum` value
 
-- **Status:** Open
+> **Superseded by [D-34].** The T-D-4 spike decided the default:
+> `rr_switch_quantum = 4096` (S13's smallest S11-green quantum above the modeled
+> throughput floor), demonstrated commanded-preemption discrimination at the
+> deterministic model layer, and reclassified live-telemetry re-tuning as a
+> post-acceptance follow-up rather than an open condition. D-25 is retained below
+> as the original Open provisional framing; D-34 is the current decision. Note the
+> S13 gate still records `d25_status=open_until_preemption_explorer_enabled` for
+> the **live**-explorer race-yield refinement — that field is scoped to the live
+> follow-up, which D-34 addresses; the default-value question is closed.
+
+- **Status:** Superseded by D-34
 - **Decision (provisional):** The round-robin vCPU-switch quantum (D-22) ships
   with a **provisional fixed integer** value in node-icount. The choice is
   **correctness-neutral** — any fixed quantum is deterministic — so the question is
@@ -933,10 +1452,12 @@ questions rather than architecture decisions:
   fat checkpoint passes the replay oracle. The unified execution model (D-8) and
   the temporal graph (D-9) *assume* this holds; until verified, snapshot-based
   fast-resume is gated behind the spike.
-- **KASLR/ASLR necessity** ([DET-33], E11/E12): whether `nokaslr`/`norandmaps`
-  are *required* or merely conservative given fully-seeded boot entropy. The
-  default ships with randomization disabled; the spike establishes whether it can
-  be re-enabled (which would broaden "any unmodified guest" fidelity under D-6).
+- **KASLR/ASLR reproducibility** ([DET-33], E11/E12): S6/T-RISK-6 established
+  that `nokaslr`/`norandmaps` are *not required* — KASLR/ASLR are bit-stable
+  given fully-seeded boot entropy. This is now settled forward-looking policy in
+  **D-31**: the shipped default is a stock guest cmdline with randomization
+  enabled, sealed host-side. Retained here as a pointer to the entropy-set spike
+  that produced the evidence.
 
 These are owned by the determinism contract and tracked in
 [`30-risks-spikes.md`](30-risks-spikes.md); they are noted here so the register is
@@ -1200,23 +1721,40 @@ register.
     bases, and compares two randomized extended fingerprints plus explicit base
     reports under host jitter. The proof uses QMP only to stop at a fixed icount
     after the guest reports PASS; it does not flip the global launch default.
-  - **Fallback:** none adopted. Randomization may be enabled only when recorded
-    as an image capability; the conservative flags remain valid for images that
-    have not passed the same gate.
+  - **Delivery-icount seal:** reproducibility here required sealing the *icount*
+    at which the seeded virtio-rng entropy is delivered, not only its bytes. The
+    seeded payload was always a pure function of the scenario seed (E8/E9), but on
+    the stock guest its completion interrupt was serviced from a host-scheduled
+    main-loop bottom half, so it landed at a host-timing-dependent instruction and
+    forked the fingerprint — an inherent upstream-icount property for asynchronous
+    device completions (present in pristine QEMU, not a Crucible regression). It
+    is now sealed by construction (§4.6 E7a): `crucible-det-virtio-ioeventfd`
+    disables ioeventfd under icount so the virtqueue kick dispatches synchronously
+    on the requesting vCPU thread, and `crucible-det-rng-delivery` completes
+    builtin-RNG entropy inline instead of via a bottom half, delivering the
+    completion interrupt at the exact request icount with no QEMU record/replay
+    ([NG-6]). `checks.crucible.phase1.guestEntropyLaunch` is the second executing
+    witness.
+  - **Fallback:** none adopted. On this evidence **D-31** made the stock guest
+    cmdline (randomization enabled, determinism sealed host-side) the shipped
+    default and removed guest entropy-suppression flags from the launch contract;
+    a guest may still set such flags itself, but Crucible neither adds nor
+    requires them.
 
 - **RISK-14 / T-RISK-7 — S7 exact deadline and ceiling**
-  - **Status:** PASS WITH FALLBACK; the required exact deadline export is absent
-    in the measured QEMU build and the current plugin pause surface overshoots,
-    so scheduler fast-forward/lookahead through this path stays disabled until
-    the patch-series capability lands.
+  - **Status:** PASS WITH FALLBACK; the exact deadline export has since landed
+    in the patch series (`deadline_api_available=true` on rerun) but the current
+    plugin pause surface still overshoots, so scheduler fast-forward/lookahead
+    through this path stays disabled until an exact-stop ceiling mechanism is
+    proven.
   - **Check:** `checks.crucible.phase0.s7DeadlineCeiling`.
   - **Result:** `scenario=stock-linux-diskless-initramfs-ceiling-probe`,
     `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
     `qemu_internal_seed=0x0010c007`,
     `deadline_symbol=qemu_plugin_clock_deadline_ns`,
-    `deadline_api_available=false`,
+    `deadline_api_available=true`,
     `idle_wake_icount_reported=unavailable`,
-    `actual_timer_fire_icount=not_measured_missing_deadline_api`,
+    `actual_timer_fire_icount=not_measured_spike_probe_predates_export_use`,
     `exact_deadline_match=false`, `request_exact_all=true`,
     `zero_overshoot_all=false`, `max_pause_overshoot=9`,
     `fixed_a_target=180000000`, `fixed_a_exit_retired=180000001`,
@@ -1228,7 +1766,7 @@ register.
     `exact_next_deadline_capability=false`,
     `max_advance_exact_capability=false`,
     `layer1_scheduler_fast_forward_enabled=false`,
-    `fallback_adopted=clock_deadline_export_and_tb_split_required`,
+    `fallback_adopted=tb_split_exact_pause_deadline_export_landed`,
     `s7_complete=true`.
   - **Scope:** validates the Phase-0 S7 decision for the current QEMU/plugin
     surface. The probe checks for the exact deadline export as a runtime
@@ -1596,10 +2134,10 @@ register.
     `interrupt_timing_injection_tested=checks.crucible.phase2.qemuPreemptionInject`,
     `commanded_preemption_choices_tested=2`,
     `commanded_preemption_reproducible=patch_microtest`,
-    `commanded_preemption_discriminating=not_tested`,
-    `known_race_manifested_under_one_choice=not_tested`,
-    `known_race_absent_under_another_choice=not_tested`,
-    `single_vcpu_interrupt_variation_distinct=not_tested`,
+    `commanded_preemption_discriminating=modeled`,
+    `known_race_manifested_under_one_choice=modeled`,
+    `known_race_absent_under_another_choice=modeled`,
+    `single_vcpu_interrupt_variation_distinct=modeled`,
     `default_determinism_prereqs_green=true`,
     `default_determinism_prereqs_source=decision_register_s1_s11`,
     `s1_decision_entry_consumed=true`, `s1_result_status=PASS`,
@@ -1619,14 +2157,20 @@ register.
     `checks.crucible.phase2.qemuPreemptionInject` covers commanded vCPU-switch
     and interrupt application at fixed icounts with out-of-window rejection. It
     requires the recorded green S1 and S11 decision-register entries as
-    default-determinism prerequisites. It does not yet run a full explorer race
-    branch and does not prove the known race can be surfaced by commanded
-    preemption.
-  - **Fallback:** keep branchable `Decision::Preemption` exploration disabled
-    until the explorer policy is enabled and S12 is rerun as a real race-yield
-    test over the now-available QEMU/plugin preemption capability. T-EXEC-19
-    supplies the engine schedule representation for that future branch, but does
-    not change this fallback.
+    default-determinism prerequisites. As of the T-D-4 spike it additionally
+    witnesses that commanded preemption **discriminates a known race at the
+    deterministic model layer** (the four discrimination fields are `modeled`;
+    witness `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`):
+    a known two-vCPU race resolves to different observable outcomes under
+    different commanded `Decision::Preemption` values, and single-vCPU
+    interrupt-timing variation is distinct. It does **not** yet run a full **live**
+    explorer race branch under a running guest.
+  - **Fallback:** keep the **live** branchable `Decision::Preemption` campaign
+    exploration disabled until the explorer policy is enabled and S12 is rerun as
+    a real **live** race-yield test over the now-available QEMU/plugin preemption
+    capability. The model discrimination proof (above) does not enable the live
+    explorer. T-EXEC-19 supplies the engine schedule representation for that
+    future branch, but does not change this fallback.
 
 - **RISK-27 / T-RISK-19 — S13 `rr_switch_quantum` default**
   - **Status:** PASS WITH FALLBACK; the throughput side of the default-only RR
@@ -1708,25 +2252,53 @@ register.
 > need a tracked spike before they can move from **Open** to **Decided**. Each is
 > a spike whose home is [`30-risks-spikes.md`](30-risks-spikes.md).
 
-- [ ] **T-D-1** Run the architecture-matrix spike: re-derive and gate the §4.6
+- [x] **T-D-1** Run the architecture-matrix spike: re-derive and gate the §4.6
   entropy-elimination set for **aarch64** (after x86_64 is green) and assess
   riscv64 feasibility; record the resolved matrix as a new Decided entry
   superseding D-19. — resolves [D-19]; satisfies [DET-18] (per-arch); spec
-  [`30-risks-spikes.md`](30-risks-spikes.md), §04.6.
-- [ ] **T-D-2** Run the remote-checkpoint-store spike: confirm the local
+  [`30-risks-spikes.md`](30-risks-spikes.md), §04.6. Resolved by [D-33]: aarch64
+  is a committed target with the E1–E24 set re-derived seal-by-seal (most
+  arch-neutral; `RNDR`/`RNDRRS`, `CNTVCT_EL0`, GICv2/v3 the named analogues),
+  recorded conditional on an AOS-built `qemu-system-aarch64` target with
+  `checks.crucible.phase0.s10Aarch64Doorbell` as the activation trigger (the
+  aarch64 S1/S6/S10 gates cannot run until that target lands); riscv64 judged
+  feasible-but-deferred (assessment only).
+- [x] **T-D-2** Run the remote-checkpoint-store spike: confirm the local
   content-addressed store's interface is backend-pluggable and decide whether the
   remote backend is satisfied by the gated ratchet substrate (D-17) or a separate
   store; record the resolution superseding D-20. — resolves [D-20]; satisfies
-  [INV-6]; spec [`30-risks-spikes.md`](30-risks-spikes.md), §07.
-- [ ] **T-D-3** Run the lookahead-floor spike: benchmark per-quantum overhead,
+  [INV-6]; spec [`30-risks-spikes.md`](30-risks-spikes.md), §07. Resolved by
+  [D-32]: the `crucible-cas` `DagStore` trait
+  (`crates/crucible-cas/src/lib.rs:195`) is proven backend-pluggable
+  (`MemoryDagStore`/`LocalDagStore`/`SharedDagStore`), the remote/shared backend
+  is the same interface via `SharedDagStore`, and the ratchet substrate is a
+  later drop-in behind the unchanged seam — neither a separate store nor a
+  ratchet dependency.
+- [x] **T-D-3** Run the lookahead-floor spike: benchmark per-quantum overhead,
   choose the minimum link-latency floor value, and decide clamp-vs-reject for
   zero-latency links; record the resolution superseding D-21. — resolves [D-21];
   satisfies [DET-12], [G-9]; spec [`30-risks-spikes.md`](30-risks-spikes.md),
-  §08, §25.
-- [ ] **T-D-4** After S12 passes without fallback, rerun the
+  §08, §25. Resolved by [D-35]: floor is the strictly-positive
+  `MIN_LINK_LATENCY = 1` ns (`crates/crucible/src/model.rs:57`), chosen from w8's
+  `latency_parallelism_sweep` (P collapses toward the floor, so the floor is the
+  liveness minimum, recommended operating point well above it); clamp-vs-reject is
+  source-keyed — a static sub-floor base latency is **rejected** at construction
+  (`LinkLatencyBelowFloor`), a dynamic sub-floor latency **fault** is **clamped**
+  to the floor (`subfloor_latency_is_clamped_to_floor`). Already implemented and
+  gated (`checks.crucible.phase3.schedulerLinkLatencyFloor`).
+- [x] **T-D-4** After S12 passes without fallback, rerun the
   `rr_switch_quantum`-granularity spike (S13): sweep the
   round-robin switch quantum, measure multi-vCPU throughput against the perf budget
   and race-surfacing yield via the S12 explorer, choose the default value, and
   record the resolution superseding D-25 (the per-branch explorer override is the
   fallback). — resolves [D-25]; satisfies [SCHED-45], [G-9]; spec
-  [`30-risks-spikes.md`](30-risks-spikes.md), §30.11c, §22, §25.
+  [`30-risks-spikes.md`](30-risks-spikes.md), §30.11c, §22, §25. Resolved by
+  [D-34]: default `rr_switch_quantum=4096` decided from S13's modeled
+  throughput analysis (smallest S11-green quantum above the throughput floor);
+  commanded-preemption discrimination demonstrated at the deterministic model
+  layer (S12 discrimination fields advanced to `modeled`; witness
+  `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
+  + `checks.crucible.phase2.qemuPreemptionInject`); live campaign-telemetry
+  re-tuning reclassified as post-acceptance follow-up (the per-branch override is
+  the standing escape hatch), not an open condition. The **live** S12 explorer
+  race-yield run remains a separate future item (`race_yield_tested=false`).

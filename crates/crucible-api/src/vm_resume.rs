@@ -198,17 +198,22 @@ pub fn realize_model_checkpoint_vm_resume_from_savepoint(
 
 /// Realizes a process-local VM resume proof through a caller-owned QEMU executor.
 ///
-/// This entry point lets local-QEMU callers select the concrete runtime
-/// executor while reusing the API-owned savepoint validation and QEMU
-/// coordinator store shape. The `executor` argument may be a test/model backend
-/// adapter or a concrete QEMU node executor; the emitted proof records
-/// `executor_label` verbatim.
+/// This crate-internal entry point lets the model-checkpoint resume path select
+/// the concrete runtime executor while reusing the API-owned savepoint
+/// validation and QEMU coordinator store shape. The `executor` argument may be a
+/// test/model backend adapter or a concrete QEMU node executor; the emitted
+/// proof records `executor_label` verbatim.
+///
+/// It is deliberately not part of the public `crucible-api` surface: the QEMU
+/// executor seam stays behind the crate boundary so that the versioned API
+/// re-exports only the backend-agnostic
+/// [`realize_model_checkpoint_vm_resume_from_savepoint`] entry point.
 ///
 /// # Errors
 ///
 /// Returns [`VmResumeRealizationError`] when the source checkpoint is not on
 /// the target resume path or when coordinator branch selection or replay fails.
-pub fn realize_qemu_vm_resume_from_savepoint_with_executor(
+pub(crate) fn realize_qemu_vm_resume_from_savepoint_with_executor(
     scenario: &ScenarioDefForm,
     source_configuration: &Configuration,
     source_checkpoint: &Checkpoint,
@@ -249,6 +254,8 @@ fn format_optional_content_hash_ref(hash: Option<ContentHash>) -> String {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use std::collections::BTreeMap;
 

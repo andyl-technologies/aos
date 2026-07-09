@@ -142,7 +142,7 @@
     qemu_shmem_header_hash=${shmemHeaderHash}
   '';
   qemuBuildIdentity = builtins.hashString "sha256" qemuBuildIdentityMaterial;
-  patchCommand = file: "      patch -p1 < ${patchPath file}\n";
+  patchCommand = file: "      patch --batch --forward --fuzz=0 --no-backup-if-mismatch -p1 < ${patchPath file}\n";
   patchPhase =
     if applyCruciblePatches
     then builtins.concatStringsSep "" (map patchCommand series.patchFiles)
@@ -180,6 +180,8 @@
   # patch -p1 < ${./qemu-patches/0028-crucible-det-ipi.patch}
   # patch -p1 < ${./qemu-patches/0029-crucible-vcpu-introspect.patch}
   # patch -p1 < ${./qemu-patches/0030-crucible-preemption-inject.patch}
+  # patch -p1 < ${./qemu-patches/0031-crucible-det-rng-delivery.patch}
+  # patch -p1 < ${./qemu-patches/0032-crucible-det-virtio-ioeventfd.patch}
 in
   mkDerivation {
     inherit pname;

@@ -398,6 +398,8 @@ fn hydrate_streams(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::{
@@ -567,10 +569,11 @@ mod tests {
         let stream = rng_stream("node-a/app");
         let mut recorder = DecisionRecorder::new(config);
 
-        assert!(matches!(
-            recorder.serve_app_random_request(node("node-a"), stream.clone(), 7, 8),
-            Ok(_)
-        ));
+        assert!(
+            recorder
+                .serve_app_random_request(node("node-a"), stream.clone(), 7, 8)
+                .is_ok()
+        );
         assert_eq!(
             recorder.serve_app_random_request(node("node-a"), stream, 8, 8),
             Err(DecisionRecordError::AppRandomDrawCapExceeded {
@@ -590,10 +593,11 @@ mod tests {
         let stream = rng_stream("node-a/app");
         let mut recorder = DecisionRecorder::new(config);
 
-        assert!(matches!(
-            recorder.serve_app_random(node("node-a"), stream.clone(), 8),
-            Ok(_)
-        ));
+        assert!(
+            recorder
+                .serve_app_random(node("node-a"), stream.clone(), 8)
+                .is_ok()
+        );
         let mut resumed = DecisionRecorder::new(recorder.into_configuration());
 
         assert_eq!(

@@ -203,7 +203,8 @@ in
                     1, 1, 2, QEMU_PLUGIN_PREEMPTION_KIND_VCPU_SWITCH, 0, 1, 0);
             }
             STOCK_NEGATIVE
-            if cc -std=c11 -Wall -Werror \
+            if env -u C_INCLUDE_PATH -u CPLUS_INCLUDE_PATH -u CPATH \
+              cc -std=c11 -Wall -Werror -Werror=implicit-function-declaration \
               -I${referenceQemu}/include $(pkg-config --cflags glib-2.0) \
               -c stock-preemption-negative.c \
               -o stock-preemption-negative.o \

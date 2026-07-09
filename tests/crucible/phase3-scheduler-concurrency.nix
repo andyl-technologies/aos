@@ -109,7 +109,11 @@
       }
       {
         label = "serialized concurrent completions";
-        needle = "for plan in plans";
+        needle = "for (_, _, plan, preemptions) in ordered_plans";
+      }
+      {
+        label = "concurrent completions serialized by deterministic order key";
+        needle = "concurrent_completion_order_key(&plan, &preemptions, self.timeline.shift())?";
       }
       {
         label = "common frontier selection";

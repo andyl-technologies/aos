@@ -162,13 +162,13 @@
       }
       {
         label = "artifact override helper";
-        needle = "with_reproduction_artifact";
+        needle = ".with_reproduction_artifact(";
       }
     ]
     ++ forbiddenFor "crates/crucible/src/trigger.rs" trigger [
       {
         label = "artifact override helper";
-        needle = "with_reproduction_artifact";
+        needle = ".with_reproduction_artifact(";
       }
       {
         label = "synthetic fallback artifact";

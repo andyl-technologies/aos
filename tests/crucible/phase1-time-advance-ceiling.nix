@@ -211,12 +211,16 @@
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "horizon ceiling conversion";
-        needle = "ceiling: virtual_time.to_icount_ceil(shift)?";
+        label = "horizon ceiling conversion uses ceil timeline helper";
+        needle = "ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?";
+      }
+      {
+        label = "timeline ceiling helper uses fixed-shift ceil conversion";
+        needle = "horizon.to_icount_ceil(self.shift)";
       }
       {
         label = "scheduler horizon ceiling field";
-        needle = "pub ceiling: Icount";
+        needle = "ceiling: Icount,";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [

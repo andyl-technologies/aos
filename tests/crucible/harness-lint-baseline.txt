@@ -31,6 +31,10 @@ confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	S
 confinement	crates/crucible-cli/src/main.rs	host nondeterminism reaching State	drive_quantum		4
 confinement	crates/crucible-qemu/src/async_driver.rs	host nondeterminism reaches API/session route	ExecutionHorizon		6
 confinement	crates/crucible-qemu/src/async_driver.rs	host nondeterminism reaching State	ExecutionHorizon		6
+confinement	crates/crucible-qemu/src/mapped_quantum.rs	host nondeterminism reaches API/session route	BackendInput		2
+confinement	crates/crucible-qemu/src/mapped_quantum.rs	host nondeterminism reaches API/session route	ExecutionHorizon		2
+confinement	crates/crucible-qemu/src/mapped_quantum.rs	host nondeterminism reaching State	BackendInput		2
+confinement	crates/crucible-qemu/src/mapped_quantum.rs	host nondeterminism reaching State	ExecutionHorizon		2
 confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaches API/session route	Backend		11
 confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaches API/session route	BackendInput		7
 confinement	crates/crucible-qemu/src/node.rs	host nondeterminism reaches API/session route	ExecutionHorizon		11
@@ -42,9 +46,10 @@ confinement	crates/crucible-qemu/src/node_factory/tests.rs	host nondeterminism r
 confinement	crates/crucible-qemu/src/qmp.rs	host monotonic time	Instant	; host nondeterminism outside supervision/diagnostics path	3
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	const		18
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	enum		2
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	fn		11
-confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	struct		6
+confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	fn		8
+confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	struct		5
 confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	trait		1
+confinement	crates/crucible-qemu/src/qmp.rs	public export from nondeterministic boundary source	use		2
 confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaches API/session route	BackendInput		6
 confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaches API/session route	ExecutionHorizon		6
 confinement	crates/crucible-qemu/src/quantum.rs	host nondeterminism reaching State	BackendInput		6

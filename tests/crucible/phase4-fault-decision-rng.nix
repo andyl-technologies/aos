@@ -177,7 +177,7 @@
       }
       {
         label = "device RNG from seed and device id";
-        needle = "crate::device::device_rng(self.seed, &self.device_id, 0)";
+        needle = "crate::device::device_rng(self.seed, &self.device_id, before)";
       }
       {
         label = "device stream id";
