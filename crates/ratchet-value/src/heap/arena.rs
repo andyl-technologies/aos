@@ -281,6 +281,14 @@ impl ArenaMemoryAdviceReport {
 pub struct BumpArena {
     chunks: Vec<Chunk>,
     next_chunk_bytes: usize,
+    /// Optional ceiling on geometric chunk growth.
+    ///
+    /// The default (`None`) doubles every chunk without bound, which keeps
+    /// chunk counts logarithmic but lets the *mapped* peak run ahead of the
+    /// used bytes by up to one whole doubling step. Byte-heavy owners (the
+    /// flat object stores, doc 30 FV-1) cap growth so their mapped peak
+    /// tracks the payload mass linearly past the cap.
+    max_chunk_bytes: Option<usize>,
 }
 
 thread_local! {
@@ -299,6 +307,7 @@ impl BumpArena {
         Self {
             chunks: Vec::new(),
             next_chunk_bytes: DEFAULT_CHUNK_BYTES,
+            max_chunk_bytes: None,
         }
     }
 
@@ -317,7 +326,21 @@ impl BumpArena {
         Ok(Self {
             chunks: Vec::new(),
             next_chunk_bytes: round_up(chunk_bytes, WORD_BYTES)?,
+            max_chunk_bytes: None,
         })
+    }
+
+    /// Caps geometric chunk growth at `max_chunk_bytes` per chunk.
+    ///
+    /// Growth still doubles up to the cap and single oversized allocations
+    /// still get a chunk of their own exact size; only the *default* next
+    /// chunk size stops doubling. A zero cap is ignored.
+    pub fn limit_chunk_growth(&mut self, max_chunk_bytes: usize) {
+        if max_chunk_bytes == 0 {
+            return;
+        }
+        self.max_chunk_bytes = Some(max_chunk_bytes);
+        self.next_chunk_bytes = self.next_chunk_bytes.min(max_chunk_bytes);
     }
 
     /// Returns current chunk and byte accounting.
@@ -611,7 +634,10 @@ impl BumpArena {
         let chunk = Chunk::new(chunk_bytes)?;
         self.chunks.push(chunk);
         if let Some(next_chunk_bytes) = self.next_chunk_bytes.checked_mul(2) {
-            self.next_chunk_bytes = next_chunk_bytes;
+            self.next_chunk_bytes = match self.max_chunk_bytes {
+                Some(max_chunk_bytes) => next_chunk_bytes.min(max_chunk_bytes),
+                None => next_chunk_bytes,
+            };
         }
         Ok(())
     }

@@ -7,10 +7,14 @@
 //! representation/shape metadata, [`EvalLambda`], [`EvalPrimOp`], and
 //! [`EvalThunk`] values.
 //!
-//! Strings and paths are the exception since RFC-0007 doc 30 stage FV-1: in
-//! serial mode their [`NixString`] payloads live *flat* behind the value
-//! address (header plus payload in the flat object store) and never enter the
-//! record table; see the `flat_values` module for the seam.
+//! Strings, paths, and lists are the exception since RFC-0007 doc 30 stage
+//! FV-1: their payloads live *flat* behind the value address (header plus
+//! payload in a flat object store) and never enter the record table — in
+//! serial mode with string bytes inlined after the payload (FV-1b), and in
+//! shared mode as per-shard published flat slots. Lists carry heap edges, so
+//! the serial flat list store participates in the B1 sweep's permanent-edge
+//! seeding, worker-region-pop retained-edge validation, collector-poll edge
+//! snapshots/writebacks, and edge scans; see `flat_values` for the seam.
 
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -276,8 +280,24 @@ pub struct EvalHeap {
     /// Owns its own arena; payload drop glue runs in the store's `Drop`
     /// before that arena unmaps. See `flat_values` for the integration seam.
     flat: FlatObjectStore<NixString>,
+    /// Flat list objects (doc 30 FV-1, serial mode).
+    ///
+    /// Lists are permanent-domain like strings but their element spines carry
+    /// heap **edges**, so this store participates in the B1 sweep's
+    /// permanent-edge seeding, worker-region-pop retained-edge validation,
+    /// collector-poll edge snapshots/writebacks, and edge scans. See
+    /// `flat_values::lists` for the integration seam.
+    flat_lists: FlatObjectStore<NixList>,
     /// Sparse cutoff-cache hash side map for flat objects.
     flat_cold_hashes: FlatColdHashStore,
+    /// Flat list addresses whose header hash word went stale after a
+    /// collector-poll heap-field writeback rewrote an element in place (the
+    /// flat analog of a record's `structural_hash = None` at commit);
+    /// hash-cons admission must skip these addresses for dedup.
+    flat_list_stale_hashes: std::collections::HashSet<
+        usize,
+        std::hash::BuildHasherDefault<record_table::AddressHasher>,
+    >,
     /// Parallel-mode shared-arena backend. `None` in serial mode, where every
     /// allocation and resolution path keeps its unchanged serial behavior
     /// behind one branch-predictable check of this option.
@@ -552,6 +572,11 @@ impl EvalHeapAttrsMetadata {
 #[derive(Clone, Debug)]
 enum HeapObjectValue {
     String(NixString),
+    /// Never constructed since doc 30 FV-1 moved paths into the flat stores
+    /// (serial and shared); the variant remains so record-generic machinery
+    /// (edge scans, staged writebacks, shared-arena convenience allocators)
+    /// keeps its exhaustive shape until the record table itself retires.
+    #[allow(dead_code)]
     Path(NixString),
     List(NixList),
     Attrs {

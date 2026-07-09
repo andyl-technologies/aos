@@ -91,6 +91,8 @@ use std::sync::OnceLock;
 use thiserror::Error;
 
 use crate::attrs::FlatAttrs;
+use crate::heap::flat::FlatObjectKind;
+use crate::heap::flat::shared::{SharedFlatObject, SharedFlatObjectStore};
 use crate::list::NixList;
 use crate::string::NixString;
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
@@ -180,6 +182,8 @@ const _: fn() = || {
     assert_send_sync::<SharedHeapRecord>();
     assert_send_sync::<SharedHeapShard>();
     assert_send_sync::<SharedHeapArena>();
+    assert_send_sync::<SharedFlatObjectStore<NixString>>();
+    assert_send_sync::<SharedFlatObjectStore<NixList>>();
 };
 
 /// A boxed, never-moved run of record slots.
@@ -195,6 +199,15 @@ type HeapChunk = Box<[OnceLock<SharedHeapRecord>]>;
 pub struct SharedHeapShard {
     /// This shard's index within its arena.
     shard_id: usize,
+    /// Flat string/path objects (doc 30 FV-1, shared mode): header + payload
+    /// published at stable slot addresses with the same release/acquire
+    /// protocol as record slots, resolved by membership arithmetic with no
+    /// address index. Holds both `String` and `Path` kinds.
+    flat_strings: SharedFlatObjectStore<NixString>,
+    /// Flat list objects (doc 30 FV-1, shared mode). GC is quiesced under
+    /// parallel evaluation, so none of the serial list GC couplings apply;
+    /// published spines are immutable.
+    flat_lists: SharedFlatObjectStore<NixList>,
     /// Fixed table of chunk levels. Level `c` is boxed on demand with
     /// `CHUNK_LEN << c` slots and then never moves, so slot addresses are
     /// stable while total capacity grows geometrically.
@@ -244,6 +257,8 @@ impl SharedHeapShard {
         let chunks = (0..levels).map(|_| OnceLock::new()).collect();
         Self {
             shard_id,
+            flat_strings: SharedFlatObjectStore::with_capacity(capacity),
+            flat_lists: SharedFlatObjectStore::with_capacity(capacity),
             chunks,
             next: AtomicUsize::new(0),
             published: AtomicUsize::new(0),
@@ -265,7 +280,10 @@ impl SharedHeapShard {
 
     /// Returns the number of records published into this shard so far.
     pub fn published_len(&self) -> usize {
-        self.published.load(Ordering::Acquire)
+        self.published
+            .load(Ordering::Acquire)
+            .saturating_add(self.flat_strings.len())
+            .saturating_add(self.flat_lists.len())
     }
 
     /// Returns the approximate payload bytes published into this shard.
@@ -273,7 +291,10 @@ impl SharedHeapShard {
     /// This is a logical-size estimate for arena-fallback memory accounting;
     /// the primary parallel-mode budget source is the process resident set.
     pub fn published_payload_bytes(&self) -> usize {
-        self.payload_bytes.load(Ordering::Acquire)
+        self.payload_bytes
+            .load(Ordering::Acquire)
+            .saturating_add(self.flat_strings.payload_bytes())
+            .saturating_add(self.flat_lists.payload_bytes())
     }
 
     /// Publishes `object` into the next free slot and returns its runtime
@@ -380,6 +401,93 @@ impl SharedHeapShard {
         );
         Some(record)
     }
+
+    /// Publishes a flat string/path object and returns its runtime value.
+    ///
+    /// The doc 30 FV-1 shared-mode allocation: the payload is written into a
+    /// flat slot whose stable address becomes the handle, published with the
+    /// same once-set release the record slots use, and resolved later by
+    /// membership arithmetic instead of an address index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SharedHeapError::ShardFull`] when the flat store's slot
+    /// capacity is exhausted, or [`SharedHeapError::Value`] if the slot
+    /// address cannot form a valid heap value.
+    pub(super) fn publish_flat_string(
+        &self,
+        kind: FlatObjectKind,
+        hash: u64,
+        string: NixString,
+    ) -> Result<Value, SharedHeapError> {
+        let tag = match kind {
+            FlatObjectKind::Path => ValueTag::Path,
+            _ => ValueTag::String,
+        };
+        let payload_bytes = string.len();
+        let ptr = self
+            .flat_strings
+            .publish(kind, hash, payload_bytes, string)
+            .map_err(|_| SharedHeapError::ShardFull {
+                shard: self.shard_id,
+                capacity: self.capacity,
+            })?;
+        Ok(Value::heap(tag, ptr)?)
+    }
+
+    /// Publishes a flat list object and returns its runtime value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SharedHeapError::ShardFull`] when the flat store's slot
+    /// capacity is exhausted, or [`SharedHeapError::Value`] if the slot
+    /// address cannot form a valid heap value.
+    pub(super) fn publish_flat_list(
+        &self,
+        hash: u64,
+        list: NixList,
+    ) -> Result<Value, SharedHeapError> {
+        let payload_bytes = list.len().saturating_mul(std::mem::size_of::<Value>());
+        let ptr = self
+            .flat_lists
+            .publish(FlatObjectKind::List, hash, payload_bytes, list)
+            .map_err(|_| SharedHeapError::ShardFull {
+                shard: self.shard_id,
+                capacity: self.capacity,
+            })?;
+        Ok(Value::heap(ValueTag::List, ptr)?)
+    }
+
+    /// Resolves `ptr` as a published flat string/path of `kind` in this shard.
+    pub(super) fn resolve_flat_string(
+        &self,
+        ptr: NonNull<HeapObject>,
+        kind: FlatObjectKind,
+    ) -> Option<&SharedFlatObject<NixString>> {
+        self.flat_strings.resolve(ptr, kind)
+    }
+
+    /// Resolves `ptr` as a published flat list in this shard.
+    pub(super) fn resolve_flat_list(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&SharedFlatObject<NixList>> {
+        self.flat_lists.resolve(ptr, FlatObjectKind::List)
+    }
+
+    /// Returns the value tag of the flat object at `ptr` in this shard.
+    pub(super) fn flat_tag_at(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
+        if let Some(object) = self.flat_strings.resolve_any(ptr) {
+            return object.kind().map(|kind| match kind {
+                FlatObjectKind::Path => ValueTag::Path,
+                _ => ValueTag::String,
+            });
+        }
+        self.flat_lists
+            .resolve_any(ptr)
+            .and_then(|object| object.kind())
+            .map(|_| ValueTag::List)
+    }
 }
 
 /// Estimates the resident payload bytes of one typed record.
@@ -461,6 +569,32 @@ impl SharedHeapArena {
             .fold(0usize, usize::saturating_add)
     }
 
+    /// Resolves `ptr` as a flat string/path of `kind`, across all shards.
+    pub(super) fn resolve_flat_string(
+        &self,
+        ptr: NonNull<HeapObject>,
+        kind: FlatObjectKind,
+    ) -> Option<&SharedFlatObject<NixString>> {
+        self.shards
+            .iter()
+            .find_map(|shard| shard.resolve_flat_string(ptr, kind))
+    }
+
+    /// Resolves `ptr` as a flat list, across all shards.
+    pub(super) fn resolve_flat_list(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&SharedFlatObject<NixList>> {
+        self.shards
+            .iter()
+            .find_map(|shard| shard.resolve_flat_list(ptr))
+    }
+
+    /// Returns the value tag of the flat object at `ptr`, across all shards.
+    pub(super) fn flat_tag_at(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
+        self.shards.iter().find_map(|shard| shard.flat_tag_at(ptr))
+    }
+
     /// Resolves an opaque heap pointer to its typed object, across all shards.
     ///
     /// This is the cross-worker dereference primitive used by the production
@@ -507,6 +641,16 @@ impl SharedHeapArena {
     /// [`SharedHeapError::UnknownPointer`] if no shard owns the handle, or
     /// [`SharedHeapError::RecordTypeMismatch`] if it is not a string.
     pub fn get_string(&self, value: Value) -> Result<&NixString, SharedHeapError> {
+        let ptr = heap_ptr(value)?;
+        if let Some(object) = self.resolve_flat_string(ptr, FlatObjectKind::String) {
+            return Ok(object.payload());
+        }
+        if let Some(actual) = self.flat_tag_at(ptr) {
+            return Err(SharedHeapError::RecordTypeMismatch {
+                expected: ValueTag::String,
+                actual,
+            });
+        }
         match self.resolve_value(value)? {
             HeapObjectValue::String(string) => Ok(string),
             other => Err(SharedHeapError::RecordTypeMismatch {
@@ -524,6 +668,16 @@ impl SharedHeapArena {
     /// [`SharedHeapError::UnknownPointer`] if no shard owns the handle, or
     /// [`SharedHeapError::RecordTypeMismatch`] if it is not a list.
     pub fn get_list(&self, value: Value) -> Result<&NixList, SharedHeapError> {
+        let ptr = heap_ptr(value)?;
+        if let Some(object) = self.resolve_flat_list(ptr) {
+            return Ok(object.payload());
+        }
+        if let Some(actual) = self.flat_tag_at(ptr) {
+            return Err(SharedHeapError::RecordTypeMismatch {
+                expected: ValueTag::List,
+                actual,
+            });
+        }
         match self.resolve_value(value)? {
             HeapObjectValue::List(list) => Ok(list),
             other => Err(SharedHeapError::RecordTypeMismatch {

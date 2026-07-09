@@ -165,6 +165,153 @@ fn dropping_the_store_runs_payload_drop_glue_exactly_once() {
     assert_eq!(drops.get(), 64);
 }
 
+/// A payload holding an inline-bytes witness, with observable drop glue.
+#[derive(Debug)]
+struct BytesPayload {
+    bytes: FlatBytes,
+    drops: Rc<Cell<usize>>,
+}
+
+impl Drop for BytesPayload {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+
+#[test]
+fn trailing_bytes_are_written_inline_and_resolve_by_witness() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let source = b"inline bytes behind the payload".to_vec();
+    let allocation = store
+        .alloc_with_trailing_bytes(FlatObjectKind::String, 0xbeef, 3, &source, |bytes| {
+            BytesPayload {
+                bytes,
+                drops: Rc::clone(&drops),
+            }
+        })
+        .expect("allocation succeeds");
+
+    let object = store
+        .resolve(allocation.ptr, FlatObjectKind::String)
+        .expect("resolution succeeds");
+    assert_eq!(object.payload().bytes.as_slice(), source.as_slice());
+    assert_eq!(object.payload().bytes.len(), source.len());
+    assert!(!object.payload().bytes.is_empty());
+    assert_eq!(object.structural_hash(), 0xbeef);
+
+    // The inline bytes live inside this allocation's reservation, directly
+    // after the payload struct.
+    let bytes_address = object.payload().bytes.as_slice().as_ptr() as usize;
+    let object_start = allocation.ptr.as_ptr() as usize;
+    assert_eq!(
+        bytes_address,
+        object_start + std::mem::size_of::<FlatObject<BytesPayload>>()
+    );
+    assert!(allocation.allocation.reserved_size >= source.len());
+
+    drop(store);
+    assert_eq!(drops.get(), 1, "payload drop glue ran exactly once");
+}
+
+#[test]
+fn trailing_bytes_allocations_interleave_with_plain_allocations() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store: FlatObjectStore<BytesPayload> =
+        FlatObjectStore::with_initial_chunk_bytes(256).expect("store creates");
+    let mut allocated = Vec::new();
+    for index in 0..128usize {
+        let source = format!("payload-{index}").into_bytes();
+        let allocation = store
+            .alloc_with_trailing_bytes(
+                FlatObjectKind::String,
+                index as u64,
+                0,
+                &source,
+                |bytes| BytesPayload {
+                    bytes,
+                    drops: Rc::clone(&drops),
+                },
+            )
+            .expect("allocation succeeds");
+        allocated.push((allocation.ptr, source));
+    }
+    assert!(store.arena_stats().chunks > 1, "growth crossed a chunk");
+    for (ptr, source) in &allocated {
+        let object = store
+            .resolve(*ptr, FlatObjectKind::String)
+            .expect("resolution succeeds");
+        assert_eq!(object.payload().bytes.as_slice(), source.as_slice());
+    }
+}
+
+#[test]
+fn empty_trailing_bytes_produce_an_empty_witness() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let allocation = store
+        .alloc_with_trailing_bytes(FlatObjectKind::Path, 5, 0, &[], |bytes| BytesPayload {
+            bytes,
+            drops: Rc::clone(&drops),
+        })
+        .expect("allocation succeeds");
+    let object = store
+        .resolve(allocation.ptr, FlatObjectKind::Path)
+        .expect("resolution succeeds");
+    assert!(object.payload().bytes.is_empty());
+    assert_eq!(object.payload().bytes.as_slice(), &[] as &[u8]);
+}
+
+#[test]
+fn list_kind_allocates_and_resolves_mutably() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let allocation = store
+        .alloc(FlatObjectKind::List, 0xabc, 1, payload("spine", &drops))
+        .expect("allocation succeeds");
+
+    let object = store
+        .resolve(allocation.ptr, FlatObjectKind::List)
+        .expect("resolution succeeds");
+    assert_eq!(object.kind(), FlatObjectKind::List);
+    assert_eq!(object.payload().text, "spine");
+
+    // The writeback door rewrites the payload in place under `&mut self`.
+    {
+        let payload = store
+            .resolve_mut(allocation.ptr, FlatObjectKind::List)
+            .expect("mutable resolution succeeds");
+        payload.text = "rewritten".to_string();
+    }
+    let object = store
+        .resolve(allocation.ptr, FlatObjectKind::List)
+        .expect("resolution succeeds");
+    assert_eq!(object.payload().text, "rewritten");
+    assert_eq!(
+        object.structural_hash(),
+        0xabc,
+        "payload rewrite leaves the header intact"
+    );
+
+    let error = store
+        .resolve_mut(allocation.ptr, FlatObjectKind::String)
+        .expect_err("kind mismatch is rejected mutably too");
+    assert_eq!(
+        error,
+        FlatObjectError::KindMismatch {
+            expected: FlatObjectKind::String,
+            actual: FlatObjectKind::List,
+            address: allocation.ptr.as_ptr() as usize,
+        }
+    );
+
+    drop(store);
+    // The original payload was overwritten (dropping it) and the replacement
+    // dropped with the store: the assignment through `resolve_mut` only
+    // replaced the `text` field, so exactly one payload drop runs.
+    assert_eq!(drops.get(), 1);
+}
+
 #[test]
 fn addresses_stay_stable_across_chunk_growth() {
     let drops = Rc::new(Cell::new(0));

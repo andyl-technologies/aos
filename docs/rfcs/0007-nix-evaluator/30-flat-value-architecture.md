@@ -1024,45 +1024,74 @@ list only their *additional* gates.
 
 ### Stage FV-1 — flat strings, paths, lists
 
-- [ ] Flat object header (kind, size class, GC bits, hash word) +
+- [x] Flat object header (kind, size class, GC bits, hash word) +
       inline string/path byte payloads and list `Value` spines, in a new
       sealed `ratchet-value` module family (e.g.
       `ratchet-value/src/heap/flat/` or `value/flat/`); arena writes
       real bytes behind the reserved `heap/arena.rs` layout constants.
-      *Partially landed (FV-1a): `ratchet-value/src/heap/flat.rs` writes
-      header (kind word, hash word, epoch word) + the `NixString`
-      payload struct in place for strings and paths, serial mode.
-      String *bytes* remain owned by the payload's `Vec` (one malloc
-      behind the flat object) — full bytes-inline needs the accessor
-      type to change from `&NixString`. Lists and shared mode are the
-      named remainder (list flattening must extend the B1 sweep's
-      permanent-edge seed phase, the worker-region-pop retained-edge
-      validation, and the collector-poll edge snapshots to a flat list
-      registry).*
-- [ ] Hash-cons migration: `hashcons.rs` collision confirmation over
+      *Landed (FV-1a/FV-1b/FV-1 lists): `ratchet-value/src/heap/flat.rs`
+      writes header (kind word, hash word, atomic epoch word) + payload
+      in place for strings, paths, and lists (serial mode). String and
+      path *bytes* are inlined after the payload struct
+      (`alloc_with_trailing_bytes` + the sealed `FlatBytes` witness in
+      `heap/flat/bytes.rs`) up to a 4 KiB inline cap — the measured
+      `string-builder` worst case shows inlining oversized quadratic
+      accumulator products pays an O(bytes) copy and bloats the arena
+      peak, so large payloads keep their moved owned buffer as FV-1a
+      stored them. The accessor stays `&NixString` via an internal
+      owned-vs-flat byte-storage representation whose
+      equality/hash/clone semantics are slice-defined and
+      representation-independent; the flat stores also cap their
+      arenas' chunk doubling (32 MiB) so the mapped peak tracks the
+      payload mass. Shared mode publishes flat objects
+      per shard through `heap/flat/shared.rs`
+      (`SharedFlatObjectStore`): safe chunked `OnceLock` slots whose
+      stable address is the handle, resolved by membership arithmetic
+      with no address index, preserving the P3a release/acquire
+      publication protocol exactly (shared bytes stay `Vec`-owned).
+      List spines remain `Vec<Value>` behind the flat object — the
+      inline `Value`-spine layout rides with FV-2's inline attrs slots.
+      The four list GC couplings are wired: the B1 sweep's
+      permanent-edge seeding (`eval/heap/gc.rs`), worker-region-pop
+      retained-edge validation over the flat registry
+      (`eval/heap/arena.rs`), collector-poll edge snapshots plus
+      staged direct heap-field writebacks committed through the flat
+      store's exclusive `resolve_mut` door (`eval/heap/roots.rs`,
+      `HeapFieldWriteTarget`), and `scan_flat_list_edges` beside
+      `scan_record_edges`.*
+- [x] Hash-cons migration: `hashcons.rs` collision confirmation over
       flat payload bytes; `structural_hash` resident in the header.
       Gate: interning-rate counters unchanged vs. baseline (same values
       intern), plus the standing battery.
-      *Landed for strings/paths: confirmation compares the header hash
-      word + flat payload; dedup semantics unchanged (interning counters
-      byte-identical on the probe workloads). Lists still confirm
-      through records.*
+      *Landed for strings/paths/lists: confirmation compares the header
+      hash word + flat payload; dedup semantics unchanged (interning
+      counters byte-identical on the probe workloads). A collector-poll
+      writeback that rewrites a flat list element marks the address's
+      header hash stale in a sparse side set (the flat analog of a
+      record commit's `structural_hash = None`), so admission never
+      dedups against a rewritten spine.*
 - [x] `heap/safety.rs` audit-table extension: new
       `HeapInnateUnsafeOperation` variants (inline payload access) +
       per-file token counts, second-reviewer sign-off, miri/ASan on the
       new modules (§8). Exit: safety tests green with the new counts.
       *Landed: `FlatObjectPayloadAccess` variant; `flat.rs` allowlisted
-      at 5 audited unsafe operations.*
-- [ ] Record-table bypass for migrated kinds in
+      at 5 audited unsafe operations. Extended for FV-1b/lists: `flat.rs`
+      now 8 (trailing-bytes copy + placement write, `resolve_mut`) and
+      `flat/bytes.rs` 3 (the `FlatBytes` witness read + `Send`/`Sync`
+      impls); `heap/flat/shared.rs` is deliberately safe code only.*
+- [x] Record-table bypass for migrated kinds in
       `eval/heap/{mod,record_table}.rs` and the shared arena
       (`shared_arena.rs`, `shared_backend.rs`): resolution for
       string/path/list is one load; records no longer allocated for
       them. Exit: wide-eval record count and record-`Vec`/addr-map
       bytes drop by the string+list share (memory columns).
-      *Landed for strings/paths in serial mode
-      (`eval/heap/flat_values.rs`): no records allocated, resolution is
-      membership-check + header load. Lists and the shared arena are
-      the named remainder.*
+      *Landed for strings/paths/lists in both modes: serial resolution
+      is membership-check + header load (`eval/heap/flat_values.rs` +
+      `flat_values/lists.rs`); shared-mode resolution is per-shard flat
+      slot membership with no private-index or cross-shard `RwLock`
+      probe (`shared_backend.rs` over `heap/flat/shared.rs`). No
+      records or record slots are allocated for the three kinds in
+      either mode.*
 
 ### Stage FV-2 — flat attrsets
 

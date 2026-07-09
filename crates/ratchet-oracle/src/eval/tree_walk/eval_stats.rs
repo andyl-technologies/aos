@@ -129,6 +129,7 @@ impl TreeWalk {
             record_probes_other: deref.record_probes_other,
             flat_string_resolutions: deref.flat_string_resolutions,
             flat_path_resolutions: deref.flat_path_resolutions,
+            flat_list_resolutions: deref.flat_list_resolutions,
             payload_arc_clones: deref.payload_arc_clones,
             env_captures: env.env_captures,
             env_capture_frame_handles: env.env_capture_frame_handles,

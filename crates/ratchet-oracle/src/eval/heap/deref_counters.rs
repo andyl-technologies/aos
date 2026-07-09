@@ -33,6 +33,7 @@ pub(crate) struct EvalHeapDerefCounters {
     record_probes_other: Cell<u64>,
     flat_string_resolutions: Cell<u64>,
     flat_path_resolutions: Cell<u64>,
+    flat_list_resolutions: Cell<u64>,
     payload_arc_clones: Cell<u64>,
 }
 
@@ -59,6 +60,7 @@ impl EvalHeapDerefCounters {
         let counter = match tag {
             ValueTag::String => &self.flat_string_resolutions,
             ValueTag::Path => &self.flat_path_resolutions,
+            ValueTag::List => &self.flat_list_resolutions,
             _ => return,
         };
         counter.set(counter.get().saturating_add(1));
@@ -84,6 +86,7 @@ impl EvalHeapDerefCounters {
             record_probes_other: self.record_probes_other.get(),
             flat_string_resolutions: self.flat_string_resolutions.get(),
             flat_path_resolutions: self.flat_path_resolutions.get(),
+            flat_list_resolutions: self.flat_list_resolutions.get(),
             payload_arc_clones: self.payload_arc_clones.get(),
         }
     }
@@ -112,6 +115,8 @@ pub(crate) struct EvalHeapDerefCountersSnapshot {
     pub(crate) flat_string_resolutions: u64,
     /// Path resolutions served by the flat store without a record probe.
     pub(crate) flat_path_resolutions: u64,
+    /// List resolutions served by the flat store without a record probe.
+    pub(crate) flat_list_resolutions: u64,
     /// `Arc` payload-handle clones handed out by thunk/lambda/primop resolution.
     pub(crate) payload_arc_clones: u64,
 }

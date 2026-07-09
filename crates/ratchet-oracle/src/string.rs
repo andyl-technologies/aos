@@ -8,40 +8,138 @@
 //! the generic string value [`NixString`] on top, adding the engine-local
 //! structural hash used as a hash-cons key.
 
+use std::hash::{Hash, Hasher};
+
 use crate::cache::HotXxh3Hash;
+use crate::heap::flat::FlatBytes;
 
 pub use aos_nix_dialect::string_context::{
     ContextElement, ContextKind, NixStringError, StringContext, try_clone_bytes,
 };
 
+/// The byte storage behind one [`NixString`].
+///
+/// RFC-0007 doc 30 stage FV-1b: strings interned into the evaluator heap's
+/// flat object store keep their bytes *inline* in the flat allocation, behind
+/// a [`FlatBytes`] witness, instead of a per-string `Vec` allocation. Every
+/// other string — evaluator temporaries, cache payloads, shared-mode slot
+/// payloads — keeps the owned `Vec`. The variant is invisible through the
+/// public API: `bytes()` is the only reader and all equality/hash/clone
+/// behavior is defined over the byte slice, so the two representations are
+/// observationally identical.
+///
+/// A clone always deep-copies into [`NixStringBytes::Owned`]: the witness is
+/// valid only inside the flat store's payload, so no flat-backed string can
+/// escape the store by cloning.
+#[derive(Debug)]
+enum NixStringBytes {
+    /// Bytes owned by a process-allocator `Vec`.
+    Owned(Vec<u8>),
+    /// Bytes inlined in a flat-object allocation (heap-resident strings only).
+    Flat(FlatBytes),
+}
+
+impl NixStringBytes {
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Flat(bytes) => bytes.as_slice(),
+        }
+    }
+}
+
 /// A Nix byte string with its dependency context.
 ///
-/// Derived equality and hashing include both the raw bytes and the full context.
-/// That matches representation identity and future hash-cons keys; the eventual
-/// Nix language equality operator belongs in the evaluator layer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+/// Equality and hashing include both the raw bytes and the full context, and
+/// are defined over the byte *slice* so they are independent of the storage
+/// representation (see [`NixStringBytes`]); the slice-based hash is
+/// bit-identical to the previous derived `Vec<u8>` hash, keeping structural
+/// hash-cons keys stable. The eventual Nix language equality operator belongs
+/// in the evaluator layer.
 pub struct NixString {
-    bytes: Vec<u8>,
+    bytes: NixStringBytes,
     context: StringContext,
+}
+
+impl Eq for NixString {}
+
+impl std::fmt::Debug for NixString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Keep the pre-FV-1b derived shape (bytes rendered as a byte list)
+        // regardless of the storage representation.
+        f.debug_struct("NixString")
+            .field("bytes", &self.bytes.as_slice())
+            .field("context", &self.context)
+            .finish()
+    }
+}
+
+impl Clone for NixString {
+    fn clone(&self) -> Self {
+        // Deep-copy into owned storage: a flat-backed string must never
+        // propagate its inline-bytes witness outside the flat store payload.
+        Self {
+            bytes: NixStringBytes::Owned(self.bytes.as_slice().to_vec()),
+            context: self.context.clone(),
+        }
+    }
+}
+
+impl Default for NixString {
+    fn default() -> Self {
+        Self::from_bytes(Vec::new())
+    }
+}
+
+impl PartialEq for NixString {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes.as_slice() == other.bytes.as_slice() && self.context == other.context
+    }
+}
+
+impl Hash for NixString {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Matches the previous `#[derive(Hash)]` over `Vec<u8>` exactly:
+        // `Vec<T>` hashing delegates to the `[T]` slice impl.
+        self.bytes.as_slice().hash(state);
+        self.context.hash(state);
+    }
 }
 
 impl NixString {
     /// Creates a string from bytes and an already-normalized context.
     pub fn new(bytes: Vec<u8>, context: StringContext) -> Self {
-        Self { bytes, context }
+        Self {
+            bytes: NixStringBytes::Owned(bytes),
+            context,
+        }
     }
 
     /// Creates a context-free string from raw bytes.
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self {
-            bytes,
+            bytes: NixStringBytes::Owned(bytes),
             context: StringContext::empty(),
+        }
+    }
+
+    /// Creates a string over flat-object inline bytes (doc 30 FV-1b).
+    ///
+    /// Only the evaluator heap's flat store constructs these: the witness is
+    /// valid exactly as long as the flat allocation that carries the string,
+    /// and every escape path (clone, [`NixString::into_parts`]) deep-copies
+    /// back into owned storage.
+    pub fn from_flat_bytes(bytes: FlatBytes, context: StringContext) -> Self {
+        Self {
+            bytes: NixStringBytes::Flat(bytes),
+            context,
         }
     }
 
     /// Returns the string's raw bytes.
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_slice()
     }
 
     /// Returns the string's context.
@@ -51,12 +149,12 @@ impl NixString {
 
     /// Returns the byte length of this string.
     pub fn len(&self) -> usize {
-        self.bytes.len()
+        self.bytes.as_slice().len()
     }
 
     /// Returns whether this string has no bytes.
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.bytes.as_slice().is_empty()
     }
 
     /// Returns whether this string carries any context elements.
@@ -84,21 +182,24 @@ impl NixString {
     /// [`NixStringError::ContextLengthOverflow`] if the resulting string or
     /// context cannot be built.
     pub fn concat(&self, other: &Self) -> Result<Self, NixStringError> {
-        let len = self.bytes.len().checked_add(other.bytes.len()).ok_or(
-            NixStringError::StringLengthOverflow {
-                left: self.bytes.len(),
-                right: other.bytes.len(),
-            },
-        )?;
+        let left = self.bytes.as_slice();
+        let right = other.bytes.as_slice();
+        let len =
+            left.len()
+                .checked_add(right.len())
+                .ok_or(NixStringError::StringLengthOverflow {
+                    left: left.len(),
+                    right: right.len(),
+                })?;
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(len)
             .map_err(|_| NixStringError::ByteAllocationFailed { len })?;
-        bytes.extend_from_slice(&self.bytes);
-        bytes.extend_from_slice(&other.bytes);
+        bytes.extend_from_slice(left);
+        bytes.extend_from_slice(right);
 
         Ok(Self {
-            bytes,
+            bytes: NixStringBytes::Owned(bytes),
             context: self.context.union(&other.context)?,
         })
     }
@@ -120,22 +221,48 @@ impl NixString {
     /// byte buffer cannot grow, or [`NixStringError::ContextAllocationFailed`] /
     /// [`NixStringError::ContextLengthOverflow`] if the context union fails.
     pub fn append_in_place(&mut self, other: &Self) -> Result<(), NixStringError> {
-        let additional = other.bytes.len();
-        self.bytes
-            .len()
+        let additional = other.bytes.as_slice().len();
+        self.len()
             .checked_add(additional)
             .ok_or(NixStringError::StringLengthOverflow {
-                left: self.bytes.len(),
+                left: self.len(),
                 right: additional,
             })?;
-        self.bytes
+        // Flat-backed strings are immutable heap payloads; an accumulator is
+        // always owned. Materialize defensively so the invariant is local.
+        let bytes = self.owned_bytes_mut(additional)?;
+        bytes
             .try_reserve(additional)
             .map_err(|_| NixStringError::ByteAllocationFailed { len: additional })?;
-        self.bytes.extend_from_slice(&other.bytes);
+        bytes.extend_from_slice(other.bytes.as_slice());
         if !other.context.is_empty() {
             self.context = self.context.union(&other.context)?;
         }
         Ok(())
+    }
+
+    /// Returns the owned byte buffer, materializing flat-backed storage.
+    ///
+    /// `additional` sizes the reservation when a flat-backed string must be
+    /// copied into owned storage before mutation.
+    fn owned_bytes_mut(&mut self, additional: usize) -> Result<&mut Vec<u8>, NixStringError> {
+        if let NixStringBytes::Flat(flat) = &self.bytes {
+            let source = flat.as_slice();
+            let len = source.len().saturating_add(additional);
+            let mut owned = Vec::new();
+            owned
+                .try_reserve_exact(len)
+                .map_err(|_| NixStringError::ByteAllocationFailed { len })?;
+            owned.extend_from_slice(source);
+            self.bytes = NixStringBytes::Owned(owned);
+        }
+        match &mut self.bytes {
+            NixStringBytes::Owned(bytes) => Ok(bytes),
+            // Unreachable: the flat arm above just replaced the storage.
+            NixStringBytes::Flat(flat) => Err(NixStringError::ByteAllocationFailed {
+                len: flat.len(),
+            }),
+        }
     }
 
     /// Returns a byte substring while preserving the whole string context.
@@ -154,9 +281,10 @@ impl NixString {
         start: usize,
         len: usize,
     ) -> Result<Self, NixStringError> {
-        let start = start.min(self.bytes.len());
-        let end = start.saturating_add(len).min(self.bytes.len());
-        let source = &self.bytes[start..end];
+        let slice = self.bytes.as_slice();
+        let start = start.min(slice.len());
+        let end = start.saturating_add(len).min(slice.len());
+        let source = &slice[start..end];
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(source.len())
@@ -164,7 +292,7 @@ impl NixString {
         bytes.extend_from_slice(source);
 
         Ok(Self {
-            bytes,
+            bytes: NixStringBytes::Owned(bytes),
             context: self.context.try_clone_context()?,
         })
     }
@@ -177,7 +305,7 @@ impl NixString {
     /// cannot be copied.
     pub fn discard_context(&self) -> Result<Self, NixStringError> {
         Ok(Self {
-            bytes: try_clone_bytes(&self.bytes)?,
+            bytes: NixStringBytes::Owned(try_clone_bytes(self.bytes.as_slice())?),
             context: StringContext::empty(),
         })
     }
@@ -191,8 +319,15 @@ impl NixString {
     }
 
     /// Consumes the string and returns its byte storage and context.
+    ///
+    /// Flat-backed strings (doc 30 FV-1b) copy their inline bytes into a
+    /// fresh `Vec`: byte storage handed to a caller always owns its bytes.
     pub fn into_parts(self) -> (Vec<u8>, StringContext) {
-        (self.bytes, self.context)
+        let bytes = match self.bytes {
+            NixStringBytes::Owned(bytes) => bytes,
+            NixStringBytes::Flat(flat) => flat.as_slice().to_vec(),
+        };
+        (bytes, self.context)
     }
 }
 

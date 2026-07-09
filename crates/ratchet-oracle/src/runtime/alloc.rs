@@ -2196,6 +2196,22 @@ impl PermanentSharedAllocator {
         self.record_allocation_safepoint(RuntimeAllocationRequest::String { len }, allocation);
     }
 
+    /// Records a permanent allocation safepoint for a flat list object.
+    ///
+    /// The list analog of
+    /// [`PermanentSharedAllocator::record_flat_allocation_safepoint`]: flat
+    /// lists are allocated by the evaluator heap's flat list store, and the
+    /// permanent domain's safepoint sequence and GC-stress polling cadence
+    /// must observe them exactly as they observed record-backed list
+    /// allocations, under the same `aos_alloc_list` request shape.
+    pub(crate) fn record_flat_list_allocation_safepoint(
+        &mut self,
+        len: usize,
+        allocation: ArenaAllocation,
+    ) {
+        self.record_allocation_safepoint(RuntimeAllocationRequest::List { len }, allocation);
+    }
+
     fn record_allocation_safepoint(
         &mut self,
         request: RuntimeAllocationRequest,

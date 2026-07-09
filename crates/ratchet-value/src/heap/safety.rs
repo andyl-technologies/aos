@@ -276,10 +276,21 @@ mod tests {
         // (`alloc`), one header-word read (`kind_at`), two shared-reference
         // constructions over validated objects (`resolve`, `iter`), and one
         // `drop_in_place` sweep in `Drop`.
+        // flat.rs count 5 -> 8 (doc 30 FV-1 lists + FV-1b bytes-inline): the
+        // trailing-bytes allocation's inline byte copy and placement write
+        // (`alloc_with_trailing_bytes`), plus the exclusive payload
+        // reconstruction behind `&mut self` (`resolve_mut`, the collector
+        // writeback door), all under `FlatObjectPayloadAccess`.
+        // flat/bytes.rs count 0 -> 3 (doc 30 FV-1b): the `FlatBytes` inline
+        // byte witness — one `from_raw_parts` read over the sealed
+        // construction contract (`as_slice`) and the `Send`/`Sync` impls
+        // justified by post-construction immutability, all under
+        // `FlatObjectPayloadAccess`.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 12usize),
-            ("flat.rs", 5usize),
+            ("flat.rs", 8usize),
+            ("flat/bytes.rs", 3usize),
             ("resident.rs", 6usize),
         ] {
             let source_path = heap_root.join(file_name);
@@ -343,7 +354,7 @@ mod tests {
 
         matches!(
             relative_path.to_str(),
-            Some("advice.rs" | "arena.rs" | "flat.rs" | "resident.rs")
+            Some("advice.rs" | "arena.rs" | "flat.rs" | "flat/bytes.rs" | "resident.rs")
         )
     }
 

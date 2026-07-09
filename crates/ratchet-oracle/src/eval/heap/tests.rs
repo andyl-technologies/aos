@@ -110,6 +110,17 @@ fn static_gc_address(address_bits: usize) -> GcHeapAddress {
 }
 
 fn replace_list_record(heap: &mut EvalHeap, value: Value, list: NixList) {
+    let ptr = value.as_list_ptr().expect("value is a list");
+    // Flat lists (doc 30 FV-1) have no record; rewrite the flat payload
+    // through the store's exclusive writeback door. The bypass deliberately
+    // skips hash-cons admission, exactly as the record rewrite did.
+    if heap.shared.is_none() {
+        *heap
+            .flat_lists
+            .resolve_mut(ptr, crate::heap::flat::FlatObjectKind::List)
+            .expect("flat list exists") = list;
+        return;
+    }
     let address = gc_address(value);
     let record = heap
         .records
@@ -121,6 +132,22 @@ fn replace_list_record(heap: &mut EvalHeap, value: Value, list: NixList) {
 
 fn set_allocation_domain(heap: &mut EvalHeap, value: Value, domain: HeapAllocationDomain) {
     let address = gc_address(value);
+    // Flat values (doc 30 FV-1) are permanent-shared by construction and
+    // carry no record to rewrite; requesting their intrinsic domain is a
+    // fixture no-op, anything else is a test bug.
+    if heap.shared.is_none()
+        && matches!(
+            value.tag(),
+            ValueTag::String | ValueTag::Path | ValueTag::List
+        )
+    {
+        assert_eq!(
+            domain,
+            HeapAllocationDomain::PermanentShared,
+            "flat values are permanently PermanentShared"
+        );
+        return;
+    }
     let record = heap
         .records
         .iter_mut()
@@ -132,6 +159,19 @@ fn set_allocation_domain(heap: &mut EvalHeap, value: Value, domain: HeapAllocati
 
 fn set_heap_generation(heap: &mut EvalHeap, value: Value, generation: HeapGeneration) {
     let address = gc_address(value);
+    if heap.shared.is_none()
+        && matches!(
+            value.tag(),
+            ValueTag::String | ValueTag::Path | ValueTag::List
+        )
+    {
+        assert_eq!(
+            generation,
+            HeapGeneration::Permanent,
+            "flat values are permanently Permanent"
+        );
+        return;
+    }
     let record = heap
         .records
         .iter_mut()
@@ -149,7 +189,14 @@ fn record_layout_size(heap: &EvalHeap, value: Value) -> usize {
     {
         return record.layout.size_bytes;
     }
-    heap.flat
+    if let Some(entry) = heap
+        .flat
+        .iter()
+        .find(|entry| entry.ptr().as_ptr() as usize == address.address_bits())
+    {
+        return entry.size_bytes();
+    }
+    heap.flat_lists
         .iter()
         .find(|entry| entry.ptr().as_ptr() as usize == address.address_bits())
         .expect("heap record exists")
@@ -158,12 +205,15 @@ fn record_layout_size(heap: &EvalHeap, value: Value) -> usize {
 
 fn record_layout_align(heap: &EvalHeap, value: Value) -> usize {
     let address = gc_address(value);
-    heap.records
+    if let Some(record) = heap
+        .records
         .iter()
         .find(|record| record.ptr.as_ptr() as usize == address.address_bits())
-        .expect("heap record exists")
-        .layout
-        .align
+    {
+        return record.layout.align;
+    }
+    // Flat objects (doc 30 FV-1) are placed at the arena word alignment.
+    std::mem::align_of::<u64>()
 }
 
 fn object_copy_request_for_values(
@@ -545,10 +595,11 @@ fn worker_region_cancel_mark_retires_innermost_without_reclaiming() {
 fn worker_region_pop_rejects_permanent_records_above_marker() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
     let mark = heap.worker_region_mark().expect("region mark records");
-    // A permanent record-backed value (strings are flat since FV-1).
+    // A permanent record-backed value (strings and lists are flat since
+    // FV-1; attrsets are the remaining record-backed permanent kind).
     let permanent = heap
-        .alloc_list(NixList::new(vec![Value::int(47)]))
-        .expect("permanent list allocates");
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("permanent attrset allocates");
     let stats_before = heap.arena_stats();
     let permanent_stats_before = heap.permanent_arena_stats();
 
@@ -563,12 +614,14 @@ fn worker_region_pop_rejects_permanent_records_above_marker() {
     assert_eq!(heap.arena_stats(), stats_before);
     assert_eq!(heap.permanent_arena_stats(), permanent_stats_before);
     assert_eq!(
-        heap.get_list(permanent)
+        heap.get_attrs(permanent)
             .expect("permanent record remains")
-            .get(0)
-            .expect("element remains")
+            .entries_by_symbol()
+            .first()
+            .expect("entry remains")
+            .value
             .as_int(),
-        Ok(47)
+        Ok(7)
     );
 }
 
@@ -1430,11 +1483,11 @@ fn tier_b_admission_plan_maps_worker_records_to_old_generation() {
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
-    // A permanent record-backed value (strings are flat since FV-1, so a
-    // list stands in as the permanent heap record).
+    // A permanent record-backed value (strings and lists are flat since
+    // FV-1, so an attrset stands in as the permanent heap record).
     let permanent = heap
-        .alloc_list(NixList::new(vec![Value::int(53)]))
-        .expect("permanent list allocates");
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("permanent attrset allocates");
     let worker_stats = heap.arena_stats();
     let permanent_stats = heap.permanent_arena_stats();
 
@@ -1522,11 +1575,11 @@ fn tier_b_admission_application_rewrites_worker_records_to_old_generation() {
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
-    // A permanent record-backed value (strings are flat since FV-1, so a
-    // list stands in as the permanent heap record).
+    // A permanent record-backed value (strings and lists are flat since
+    // FV-1, so an attrset stands in as the permanent heap record).
     let permanent = heap
-        .alloc_list(NixList::new(vec![Value::int(53)]))
-        .expect("permanent list allocates");
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("permanent attrset allocates");
     let worker_stats = heap.arena_stats();
     let permanent_stats = heap.permanent_arena_stats();
     let plan = heap
@@ -4169,10 +4222,11 @@ fn collector_poll_minor_gc_forwarding_install_rejects_permanent_source_without_p
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first thunk allocates");
-    // A permanent record-backed value (strings are flat since FV-1).
+    // A permanent record-backed value (strings and lists are flat since
+    // FV-1, so an attrset stands in as the permanent heap record).
     let permanent = heap
-        .alloc_list(NixList::new(vec![Value::int(43)]))
-        .expect("permanent list allocates");
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("permanent attrset allocates");
     let first_forwarded = ResolvedValueGeneration::Heap {
         address: static_gc_address(0x1000_0000),
         generation: HeapGeneration::Young,
@@ -5586,11 +5640,11 @@ fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
 fn collector_poll_minor_gc_object_generation_writes_update_existing_destination_records() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
-    // A permanent record-backed value (strings are flat since FV-1, so a
-    // list stands in as the permanent heap record).
+    // A permanent record-backed value (strings and lists are flat since
+    // FV-1, so an attrset stands in as the permanent heap record).
     let destination = heap
-        .alloc_list(NixList::new(vec![Value::int(41)]))
-        .expect("destination list allocates");
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("destination attrset allocates");
     let source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("source thunk allocates");
@@ -6005,7 +6059,10 @@ fn collector_poll_minor_gc_object_body_writes_reject_malformed_plan_without_muta
 }
 
 #[test]
-fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_list_fields() {
+fn collector_poll_minor_gc_copied_heap_field_writes_reject_flat_list_writeback_objects() {
+    // Lists are flat and permanent since FV-1, so they are never minor-GC
+    // survivors: a copied heap-field write naming a flat list as its
+    // relocated writeback object must fail loudly without mutation.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let child = heap
         .alloc_lambda(EvalLambda::new(
@@ -6029,7 +6086,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_list_fields() 
     let parent_destination = heap
         .alloc_list(NixList::new(vec![Value::int(0)]))
         .expect("parent destination list allocates");
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
 
     let parent_request = object_copy_request_for_values(
         &heap,
@@ -6043,17 +6099,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_list_fields() 
         child_destination,
         MinorGcSurvivorAction::PromoteToOld,
     );
-    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
-        parent_request,
-        child_request,
-    ]);
-    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
-        .expect("object bodies bind");
-    let generation_plan = copy_plan
-        .object_generation_write_plan()
-        .expect("generation write plan builds");
-    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
-        .expect("destination generations write");
     let write = AllocationCollectorPollCopiedHeapFieldWrite::new(
         HeapAllocationDomain::Worker,
         gc_address(parent),
@@ -6068,19 +6113,18 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_list_fields() 
         parent_request,
     );
 
-    let report = heap
+    let err = heap
         .apply_collector_poll_minor_gc_copied_heap_field_writes(&[write])
-        .expect("copied list field write applies");
+        .expect_err("flat-list copied writeback object is rejected");
 
-    assert_eq!(report.fields(), 1);
-    let list = heap
-        .get_list(parent_destination)
-        .expect("destination list remains typed");
-    assert!(
-        list.get(0)
-            .expect("rewritten element exists")
-            .raw_eq(child_destination)
+    assert_eq!(
+        err,
+        EvalHeapError::UnknownCollectorPollSurvivorAddress {
+            address: gc_address(parent),
+        }
     );
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(list.get(0).expect("original element exists").raw_eq(child));
 }
 
 #[test]
@@ -6163,7 +6207,10 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_thunk_select_r
 }
 
 #[test]
-fn collector_poll_minor_gc_copied_heap_field_writes_merge_same_object_list_fields() {
+fn collector_poll_minor_gc_direct_heap_field_writes_merge_same_flat_list_fields() {
+    // Two direct writes against the SAME flat list must merge through one
+    // staged spine (doc 30 FV-1 coupling (c)): the second write sees the
+    // first write's staged element, and one commit publishes both.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let first_child = heap
         .alloc_lambda(EvalLambda::new(
@@ -6200,17 +6247,7 @@ fn collector_poll_minor_gc_copied_heap_field_writes_merge_same_object_list_field
     let parent = heap
         .alloc_list(NixList::new(vec![first_child, second_child]))
         .expect("parent list allocates");
-    let parent_destination = heap
-        .alloc_list(NixList::new(vec![Value::int(0), Value::int(0)]))
-        .expect("parent destination list allocates");
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
 
-    let parent_request = object_copy_request_for_values(
-        &heap,
-        parent,
-        parent_destination,
-        MinorGcSurvivorAction::CopyToNursery,
-    );
     let first_request = object_copy_request_for_values(
         &heap,
         first_child,
@@ -6224,7 +6261,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_merge_same_object_list_field
         MinorGcSurvivorAction::PromoteToOld,
     );
     let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
-        parent_request,
         first_request,
         second_request,
     ]);
@@ -6236,10 +6272,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_merge_same_object_list_field
     heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
         .expect("destination generations write");
     let writes = [
-        AllocationCollectorPollCopiedHeapFieldWrite::new(
-            HeapAllocationDomain::Worker,
+        AllocationCollectorPollDirectHeapFieldWrite::new(
+            HeapAllocationDomain::PermanentShared,
             gc_address(parent),
-            gc_address(parent_destination),
             0,
             HeapEdgeSource::ListElement { index: 0 },
             ResolvedValueGeneration::Heap {
@@ -6247,12 +6282,10 @@ fn collector_poll_minor_gc_copied_heap_field_writes_merge_same_object_list_field
                 generation: HeapGeneration::Old,
             },
             first_request,
-            parent_request,
         ),
-        AllocationCollectorPollCopiedHeapFieldWrite::new(
-            HeapAllocationDomain::Worker,
+        AllocationCollectorPollDirectHeapFieldWrite::new(
+            HeapAllocationDomain::PermanentShared,
             gc_address(parent),
-            gc_address(parent_destination),
             1,
             HeapEdgeSource::ListElement { index: 1 },
             ResolvedValueGeneration::Heap {
@@ -6260,18 +6293,15 @@ fn collector_poll_minor_gc_copied_heap_field_writes_merge_same_object_list_field
                 generation: HeapGeneration::Old,
             },
             second_request,
-            parent_request,
         ),
     ];
 
     let report = heap
-        .apply_collector_poll_minor_gc_copied_heap_field_writes(&writes)
-        .expect("copied list field writes apply");
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&writes)
+        .expect("merged flat list field writes apply");
 
     assert_eq!(report.fields(), 2);
-    let list = heap
-        .get_list(parent_destination)
-        .expect("destination list remains typed");
+    let list = heap.get_list(parent).expect("parent list remains typed");
     assert!(
         list.get(0)
             .expect("first rewritten element exists")
@@ -6282,6 +6312,7 @@ fn collector_poll_minor_gc_copied_heap_field_writes_merge_same_object_list_field
             .expect("second rewritten element exists")
             .raw_eq(second_destination)
     );
+    assert_eq!(heap_generation(&heap, parent), HeapGeneration::Permanent);
 }
 
 #[test]
@@ -6632,7 +6663,10 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_lambda_capture_field
 }
 
 #[test]
-fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_list_fields() {
+fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_lists() {
+    // Lists are flat and permanent since FV-1: a direct write that claims a
+    // list is worker-domain (the pre-FV-1 "old worker list" shape) must fail
+    // the generation gate loudly without mutating the flat payload.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let child = heap
         .alloc_lambda(EvalLambda::new(
@@ -6653,8 +6687,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_list_fields() {
     let parent = heap
         .alloc_list(NixList::new(vec![child]))
         .expect("parent list allocates");
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
-    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
 
     let child_request = object_copy_request_for_values(
         &heap,
@@ -6683,18 +6715,21 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_list_fields() {
         child_request,
     );
 
-    let report = heap
+    let err = heap
         .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
-        .expect("direct old list field write applies");
+        .expect_err("worker-domain flat-list write is rejected");
 
-    assert_eq!(report.fields(), 1);
-    let list = heap.get_list(parent).expect("parent list remains typed");
-    assert!(
-        list.get(0)
-            .expect("rewritten element exists")
-            .raw_eq(child_destination)
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollDirectHeapFieldWriteObjectGenerationMismatch {
+            allocation_domain: HeapAllocationDomain::Worker,
+            writeback_object: gc_address(parent),
+            expected: HeapGeneration::Old,
+            actual: HeapGeneration::Permanent,
+        }
     );
-    assert_eq!(heap_generation(&heap, parent), HeapGeneration::Old);
+    let list = heap.get_list(parent).expect("parent list remains typed");
+    assert!(list.get(0).expect("original element exists").raw_eq(child));
 }
 
 #[test]
@@ -7029,8 +7064,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_stale_field_value_wit
     let parent = heap
         .alloc_list(NixList::new(vec![stale_child]))
         .expect("parent list allocates");
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
-    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
 
     let child_request = object_copy_request_for_values(
         &heap,
@@ -7048,7 +7081,7 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_stale_field_value_wit
     heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
         .expect("replacement generation writes");
     let write = AllocationCollectorPollDirectHeapFieldWrite::new(
-        HeapAllocationDomain::Worker,
+        HeapAllocationDomain::PermanentShared,
         gc_address(parent),
         0,
         HeapEdgeSource::ListElement { index: 0 },
@@ -7157,7 +7190,12 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_permanent_list_field
 
 #[test]
 fn collector_poll_minor_gc_heap_field_writes_merge_mixed_same_record_fields() {
+    // Lists are flat since FV-1, so a partially applied builtin carries the
+    // mixed copied+direct writes against one record.
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let builtin = lookup_builtin(b"length").expect("length builtin is registered");
     let first_child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -7191,22 +7229,25 @@ fn collector_poll_minor_gc_heap_field_writes_merge_mixed_same_record_fields() {
         ))
         .expect("second destination lambda allocates");
     let copied_source_parent = heap
-        .alloc_list(NixList::new(vec![first_child, Value::int(0)]))
-        .expect("copied source parent list allocates");
+        .alloc_primop(EvalPrimOp::registered_with_args(
+            symbol,
+            builtin,
+            vec![
+                EvalPrimOpArg::new(IrId::new(7), Span::new(9, 12), first_child),
+                EvalPrimOpArg::new(IrId::new(8), Span::new(13, 16), second_child),
+            ],
+        ))
+        .expect("copied source parent primop allocates");
     let parent = heap
-        .alloc_list(NixList::new(vec![first_child, second_child]))
-        .expect("parent list allocates");
-    replace_list_record(
-        &mut heap,
-        copied_source_parent,
-        NixList::new(vec![first_child, second_child]),
-    );
-    set_allocation_domain(
-        &mut heap,
-        copied_source_parent,
-        HeapAllocationDomain::Worker,
-    );
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+        .alloc_primop(EvalPrimOp::registered_with_args(
+            symbol,
+            builtin,
+            vec![
+                EvalPrimOpArg::new(IrId::new(7), Span::new(9, 12), first_child),
+                EvalPrimOpArg::new(IrId::new(8), Span::new(13, 16), second_child),
+            ],
+        ))
+        .expect("parent primop allocates");
     set_heap_generation(&mut heap, parent, HeapGeneration::Old);
 
     let parent_request = object_copy_request_for_values(
@@ -7244,7 +7285,7 @@ fn collector_poll_minor_gc_heap_field_writes_merge_mixed_same_record_fields() {
         gc_address(copied_source_parent),
         gc_address(parent),
         1,
-        HeapEdgeSource::ListElement { index: 1 },
+        HeapEdgeSource::PrimopArgument { index: 1 },
         ResolvedValueGeneration::Heap {
             address: gc_address(second_destination),
             generation: HeapGeneration::Old,
@@ -7256,7 +7297,7 @@ fn collector_poll_minor_gc_heap_field_writes_merge_mixed_same_record_fields() {
         HeapAllocationDomain::Worker,
         gc_address(parent),
         0,
-        HeapEdgeSource::ListElement { index: 0 },
+        HeapEdgeSource::PrimopArgument { index: 0 },
         ResolvedValueGeneration::Heap {
             address: gc_address(first_destination),
             generation: HeapGeneration::Old,
@@ -7270,17 +7311,11 @@ fn collector_poll_minor_gc_heap_field_writes_merge_mixed_same_record_fields() {
 
     assert_eq!(copied_report.fields(), 1);
     assert_eq!(direct_report.fields(), 1);
-    let list = heap.get_list(parent).expect("parent list remains typed");
-    assert!(
-        list.get(0)
-            .expect("first rewritten element exists")
-            .raw_eq(first_destination)
-    );
-    assert!(
-        list.get(1)
-            .expect("second rewritten element exists")
-            .raw_eq(second_destination)
-    );
+    let primop = heap
+        .get_primop(parent)
+        .expect("parent primop remains typed");
+    assert!(primop.args()[0].value().raw_eq(first_destination));
+    assert!(primop.args()[1].value().raw_eq(second_destination));
 }
 
 #[test]
@@ -7377,8 +7412,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_young_replacements_wi
     let parent = heap
         .alloc_list(NixList::new(vec![child]))
         .expect("parent list allocates");
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
-    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
 
     let child_request = object_copy_request_for_values(
         &heap,
@@ -7396,7 +7429,7 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_young_replacements_wi
     heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
         .expect("replacement generation writes");
     let write = AllocationCollectorPollDirectHeapFieldWrite::new(
-        HeapAllocationDomain::Worker,
+        HeapAllocationDomain::PermanentShared,
         gc_address(parent),
         0,
         HeapEdgeSource::ListElement { index: 0 },
@@ -7429,7 +7462,12 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_young_replacements_wi
 
 #[test]
 fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_replacement() {
+    // Lists are flat since FV-1, so an old worker primop carries the direct
+    // old-to-young write whose barrier must publish.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.intern(b"length").expect("symbol interns");
+    let builtin = lookup_builtin(b"length").expect("length builtin is registered");
     let child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -7447,9 +7485,12 @@ fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_re
         ))
         .expect("child destination lambda allocates");
     let parent = heap
-        .alloc_list(NixList::new(vec![child]))
-        .expect("parent list allocates");
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
+        .alloc_primop(EvalPrimOp::registered_with_args(
+            symbol,
+            builtin,
+            vec![EvalPrimOpArg::new(IrId::new(7), Span::new(9, 12), child)],
+        ))
+        .expect("parent primop allocates");
     set_heap_generation(&mut heap, parent, HeapGeneration::Old);
 
     let child_request = object_copy_request_for_values(
@@ -7471,7 +7512,7 @@ fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_re
         HeapAllocationDomain::Worker,
         gc_address(parent),
         0,
-        HeapEdgeSource::ListElement { index: 0 },
+        HeapEdgeSource::PrimopArgument { index: 0 },
         ResolvedValueGeneration::Heap {
             address: gc_address(child_destination),
             generation: HeapGeneration::Young,
@@ -7492,12 +7533,10 @@ fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_re
 
     assert_eq!(copied_report.fields(), 0);
     assert_eq!(direct_report.fields(), 1);
-    let list = heap.get_list(parent).expect("parent list remains typed");
-    assert!(
-        list.get(0)
-            .expect("rewritten element exists")
-            .raw_eq(child_destination)
-    );
+    let primop = heap
+        .get_primop(parent)
+        .expect("parent primop remains typed");
+    assert!(primop.args()[0].value().raw_eq(child_destination));
     assert_eq!(
         remembered_set.edges(),
         &[RememberedEdge::new(
@@ -8533,11 +8572,11 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_malformed_copy_reques
 #[test]
 fn collector_poll_minor_gc_object_generation_writes_reject_unknown_destination_without_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
-    // A permanent record-backed value (strings are flat since FV-1, so a
-    // list stands in as the permanent heap record).
+    // A permanent record-backed value (strings and lists are flat since
+    // FV-1, so an attrset stands in as the permanent heap record).
     let destination = heap
-        .alloc_list(NixList::new(vec![Value::int(41)]))
-        .expect("destination list allocates");
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("destination attrset allocates");
     let first_source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first source thunk allocates");
@@ -10984,10 +11023,11 @@ fn collector_poll_minor_gc_plan_uses_remembered_old_edge() {
     let child = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("child thunk allocates");
+    // Lists are flat and permanent since FV-1; a permanent source is the
+    // remaining non-young remembered-edge source shape a list can take.
     let root = heap
         .alloc_list(NixList::new(vec![child]))
-        .expect("old list allocates");
-    set_heap_generation(&mut heap, root, HeapGeneration::Old);
+        .expect("permanent flat list allocates");
     let poll = heap
         .allocation_safepoints()
         .last_safepoint_collector_poll()

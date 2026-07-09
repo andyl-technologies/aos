@@ -2309,7 +2309,7 @@ struct CollectorPollCopiedHeapFieldWrite {
 }
 
 struct CollectorPollDirectHeapFieldWrite {
-    record_index: usize,
+    target: HeapFieldWriteTarget,
     writeback_object: GcHeapAddress,
     field_index: usize,
     source: HeapEdgeSource,
@@ -2317,11 +2317,25 @@ struct CollectorPollDirectHeapFieldWrite {
     remembered_edge: Option<RememberedEdge>,
 }
 
+/// The staged destination of one direct heap-field write.
+///
+/// Records stage by table index (the pre-FV-1 shape); flat lists (doc 30
+/// FV-1) have no record and stage by their stable flat-store address, whose
+/// commit goes through the flat store's exclusive `resolve_mut` door.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HeapFieldWriteTarget {
+    /// A record-table object, staged by record index.
+    Record(usize),
+    /// A flat list object, staged by its stable heap address.
+    FlatList(NonNull<HeapObject>),
+}
+
 /// Staged live heap writes for a tree-walk minor-GC publication.
 pub(crate) struct AllocationCollectorPollLiveHeapFieldWriteStage {
     object_body_writes: Vec<CollectorPollObjectBodyWrite>,
     object_generation_writes: Vec<(usize, HeapGeneration)>,
     staged_heap_field_writes: Vec<(usize, HeapObjectValue)>,
+    staged_flat_list_writes: Vec<(NonNull<HeapObject>, NixList)>,
     staged_barriers: Option<(RememberedSet, GcCardTable)>,
     object_body_and_generation_write_report:
         AllocationCollectorPollObjectBodyAndGenerationWriteReport,
@@ -4046,6 +4060,20 @@ impl EvalHeap {
                 push_object_scan(&mut scan.objects, HeapObjectScan::new(value, Vec::new()))?;
                 continue;
             }
+            // Flat lists (doc 30 FV-1) carry edges in their element spine:
+            // synthesize the same `ListElement`-labelled edges a record scan
+            // produced and keep traversing through them.
+            if self.shared.is_none() && tag == ValueTag::List {
+                let edges = self.scan_flat_list_edges(self.flat_list_payload(ptr)?)?;
+                if !push_visited(&mut visited, address)? {
+                    continue;
+                }
+                for edge in &edges {
+                    push_worklist(&mut worklist, edge.value())?;
+                }
+                push_object_scan(&mut scan.objects, HeapObjectScan::new(value, edges))?;
+                continue;
+            }
             let record = self.record_or_unknown(tag, ptr)?;
             let actual = record.object.tag();
             if actual != tag {
@@ -5210,8 +5238,10 @@ impl EvalHeap {
     ) -> Result<AllocationCollectorPollDirectHeapFieldWriteReport, EvalHeapError> {
         let (planned, report) =
             self.plan_collector_poll_minor_gc_direct_heap_field_writes(writes, false)?;
-        let staged = self.stage_collector_poll_minor_gc_direct_heap_field_writes(&planned)?;
+        let (staged, staged_flat_lists) =
+            self.stage_collector_poll_minor_gc_direct_heap_field_writes(&planned)?;
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
+        self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_lists);
 
         Ok(report)
     }
@@ -5362,6 +5392,7 @@ impl EvalHeap {
                 table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
                 entries,
             })?;
+        let mut staged_flat_lists: Vec<(NonNull<HeapObject>, NixList)> = Vec::new();
         self.stage_collector_poll_minor_gc_copied_heap_field_writes_into(
             &planned_copied,
             &mut staged,
@@ -5370,6 +5401,7 @@ impl EvalHeap {
         self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
             &planned_direct,
             &mut staged,
+            &mut staged_flat_lists,
             entries,
         )?;
         let staged_barriers = self.stage_collector_poll_minor_gc_direct_heap_field_write_barriers(
@@ -5382,6 +5414,7 @@ impl EvalHeap {
             object_body_writes,
             object_generation_writes,
             staged_heap_field_writes: staged,
+            staged_flat_list_writes: staged_flat_lists,
             staged_barriers,
             object_body_and_generation_write_report:
                 AllocationCollectorPollObjectBodyAndGenerationWriteReport::new(
@@ -5408,6 +5441,7 @@ impl EvalHeap {
             object_body_writes,
             object_generation_writes,
             staged_heap_field_writes,
+            staged_flat_list_writes,
             staged_barriers,
             object_body_and_generation_write_report,
             copied_report,
@@ -5421,6 +5455,7 @@ impl EvalHeap {
             *card_table = staged_card_table;
         }
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged_heap_field_writes);
+        self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_list_writes);
 
         (
             object_body_and_generation_write_report,
@@ -5466,6 +5501,7 @@ impl EvalHeap {
                 table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
                 entries,
             })?;
+        let mut staged_flat_lists: Vec<(NonNull<HeapObject>, NixList)> = Vec::new();
         self.stage_collector_poll_minor_gc_copied_heap_field_writes_into(
             &planned_copied,
             &mut staged,
@@ -5474,6 +5510,7 @@ impl EvalHeap {
         self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
             &planned_direct,
             &mut staged,
+            &mut staged_flat_lists,
             entries,
         )?;
 
@@ -5485,6 +5522,7 @@ impl EvalHeap {
             )?;
         }
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
+        self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_lists);
 
         Ok((copied_report, direct_report))
     }
@@ -5543,11 +5581,18 @@ impl EvalHeap {
     ) -> Result<CollectorPollDirectHeapFieldWrite, EvalHeapError> {
         self.validate_direct_heap_field_write_requests(write, allow_young_replacements)?;
 
-        let record_index = self.record_index_for_reference_slot_object(write.writeback_object())?;
-        let record = &self.records[record_index];
-        self.validate_direct_heap_field_writeback_generation(write, record)?;
-
-        let edges = self.scan_record_edges(record)?;
+        let target = self.heap_field_write_target_for_reference_slot_object(write.writeback_object())?;
+        let edges = match target {
+            HeapFieldWriteTarget::Record(record_index) => {
+                let record = &self.records[record_index];
+                self.validate_direct_heap_field_writeback_generation(write, record)?;
+                self.scan_record_edges(record)?
+            }
+            HeapFieldWriteTarget::FlatList(ptr) => {
+                self.validate_flat_list_direct_heap_field_writeback_generation(write)?;
+                self.scan_flat_list_edges(self.flat_list_payload(ptr)?)?
+            }
+        };
         let Some(edge) = edges.get(write.field_index()) else {
             return Err(EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
                 index: write.field_index(),
@@ -5588,7 +5633,17 @@ impl EvalHeap {
         self.validate_direct_heap_field_replacement_generation(write)?;
         let replacement_value =
             value_for_resolved_generation(replacement_tag, write.replacement())?;
-        validate_direct_heap_field_write_object_source(&record.object, write)?;
+        match target {
+            HeapFieldWriteTarget::Record(record_index) => {
+                validate_direct_heap_field_write_object_source(
+                    &self.records[record_index].object,
+                    write,
+                )?;
+            }
+            HeapFieldWriteTarget::FlatList(_) => {
+                validate_flat_list_direct_heap_field_write_source(write)?;
+            }
+        }
         let remembered_edge = match write.replacement() {
             ResolvedValueGeneration::Heap {
                 address: target,
@@ -5598,13 +5653,55 @@ impl EvalHeap {
         };
 
         Ok(CollectorPollDirectHeapFieldWrite {
-            record_index,
+            target,
             writeback_object: write.writeback_object(),
             field_index: write.field_index(),
             source: write.source().clone(),
             replacement: replacement_value,
             remembered_edge,
         })
+    }
+
+    /// Resolves a direct heap-field writeback object to its staged target.
+    fn heap_field_write_target_for_reference_slot_object(
+        &self,
+        address: GcHeapAddress,
+    ) -> Result<HeapFieldWriteTarget, EvalHeapError> {
+        if let Some(index) = self.records.index_of_address(address.address_bits()) {
+            return Ok(HeapFieldWriteTarget::Record(index));
+        }
+        if let Some(ptr) = NonNull::new(address.address_bits() as *mut HeapObject)
+            && self.flat_lists.kind_of(ptr).is_some()
+        {
+            return Ok(HeapFieldWriteTarget::FlatList(ptr));
+        }
+        Err(EvalHeapError::UnknownCollectorPollReferenceSlotAddress { address })
+    }
+
+    /// Generation/domain validation for a flat-list direct writeback target.
+    ///
+    /// The flat analog of `validate_direct_heap_field_writeback_generation`:
+    /// flat lists are permanent-shared by construction.
+    fn validate_flat_list_direct_heap_field_writeback_generation(
+        &self,
+        write: &AllocationCollectorPollDirectHeapFieldWrite,
+    ) -> Result<(), EvalHeapError> {
+        let expected = expected_direct_heap_field_write_generation(write.allocation_domain());
+        let actual = HeapGeneration::Permanent;
+        if write.allocation_domain() != HeapAllocationDomain::PermanentShared
+            || actual != expected
+        {
+            return Err(
+                EvalHeapError::CollectorPollDirectHeapFieldWriteObjectGenerationMismatch {
+                    allocation_domain: write.allocation_domain(),
+                    writeback_object: write.writeback_object(),
+                    expected,
+                    actual,
+                },
+            );
+        }
+
+        Ok(())
     }
 
     fn plan_collector_poll_minor_gc_direct_heap_field_writes_for_live_destinations(
@@ -5663,11 +5760,18 @@ impl EvalHeap {
     ) -> Result<CollectorPollDirectHeapFieldWrite, EvalHeapError> {
         self.validate_direct_heap_field_write_requests(write, allow_young_replacements)?;
 
-        let record_index = self.record_index_for_reference_slot_object(write.writeback_object())?;
-        let record = &self.records[record_index];
-        self.validate_direct_heap_field_writeback_generation(write, record)?;
-
-        let edges = self.scan_record_edges(record)?;
+        let target = self.heap_field_write_target_for_reference_slot_object(write.writeback_object())?;
+        let edges = match target {
+            HeapFieldWriteTarget::Record(record_index) => {
+                let record = &self.records[record_index];
+                self.validate_direct_heap_field_writeback_generation(write, record)?;
+                self.scan_record_edges(record)?
+            }
+            HeapFieldWriteTarget::FlatList(ptr) => {
+                self.validate_flat_list_direct_heap_field_writeback_generation(write)?;
+                self.scan_flat_list_edges(self.flat_list_payload(ptr)?)?
+            }
+        };
         let Some(edge) = edges.get(write.field_index()) else {
             return Err(EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
                 index: write.field_index(),
@@ -5703,7 +5807,17 @@ impl EvalHeap {
         let replacement_tag = edge.value().tag();
         let replacement_value =
             value_for_resolved_generation(replacement_tag, write.replacement())?;
-        validate_direct_heap_field_write_object_source(&record.object, write)?;
+        match target {
+            HeapFieldWriteTarget::Record(record_index) => {
+                validate_direct_heap_field_write_object_source(
+                    &self.records[record_index].object,
+                    write,
+                )?;
+            }
+            HeapFieldWriteTarget::FlatList(_) => {
+                validate_flat_list_direct_heap_field_write_source(write)?;
+            }
+        }
         let remembered_edge = match write.replacement() {
             ResolvedValueGeneration::Heap {
                 address: target,
@@ -5713,7 +5827,7 @@ impl EvalHeap {
         };
 
         Ok(CollectorPollDirectHeapFieldWrite {
-            record_index,
+            target,
             writeback_object: write.writeback_object(),
             field_index: write.field_index(),
             source: write.source().clone(),
@@ -5723,10 +5837,17 @@ impl EvalHeap {
     }
 
     #[cfg(test)]
+    #[allow(clippy::type_complexity)]
     fn stage_collector_poll_minor_gc_direct_heap_field_writes(
         &self,
         writes: &[CollectorPollDirectHeapFieldWrite],
-    ) -> Result<Vec<(usize, HeapObjectValue)>, EvalHeapError> {
+    ) -> Result<
+        (
+            Vec<(usize, HeapObjectValue)>,
+            Vec<(NonNull<HeapObject>, NixList)>,
+        ),
+        EvalHeapError,
+    > {
         let mut staged: Vec<(usize, HeapObjectValue)> = Vec::new();
         staged.try_reserve_exact(writes.len()).map_err(|_| {
             EvalHeapError::RootScanAllocationFailed {
@@ -5734,35 +5855,95 @@ impl EvalHeap {
                 entries: writes.len(),
             }
         })?;
+        let mut staged_flat_lists: Vec<(NonNull<HeapObject>, NixList)> = Vec::new();
 
         self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
             writes,
             &mut staged,
+            &mut staged_flat_lists,
             writes.len(),
         )?;
 
-        Ok(staged)
+        Ok((staged, staged_flat_lists))
     }
 
     fn stage_collector_poll_minor_gc_direct_heap_field_writes_into(
         &self,
         writes: &[CollectorPollDirectHeapFieldWrite],
         staged: &mut Vec<(usize, HeapObjectValue)>,
+        staged_flat_lists: &mut Vec<(NonNull<HeapObject>, NixList)>,
         entries: usize,
     ) -> Result<(), EvalHeapError> {
         for write in writes {
-            let object = self.staged_collector_poll_minor_gc_heap_field_write_object_mut(
-                staged,
-                write.record_index,
-                MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
-                entries,
-            )?;
-            *object =
-                record_owned_heap_field_write_object(object, &write.source, write.replacement)
+            match write.target {
+                HeapFieldWriteTarget::Record(record_index) => {
+                    let object = self.staged_collector_poll_minor_gc_heap_field_write_object_mut(
+                        staged,
+                        record_index,
+                        MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                        entries,
+                    )?;
+                    *object = record_owned_heap_field_write_object(
+                        object,
+                        &write.source,
+                        write.replacement,
+                    )
                     .map_err(|error| direct_heap_field_write_object_error(write, error))?;
+                }
+                HeapFieldWriteTarget::FlatList(ptr) => {
+                    let list = self.staged_flat_list_heap_field_write_object_mut(
+                        staged_flat_lists,
+                        ptr,
+                        MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                        entries,
+                    )?;
+                    *list = flat_list_heap_field_write_object(list, &write.source, write.replacement)
+                        .map_err(|error| direct_heap_field_write_object_error(write, error))?;
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Returns the staged flat-list spine for `ptr`, cloning the live payload
+    /// on first touch (the flat analog of the record staging buffer).
+    fn staged_flat_list_heap_field_write_object_mut<'a>(
+        &self,
+        staged: &'a mut Vec<(NonNull<HeapObject>, NixList)>,
+        ptr: NonNull<HeapObject>,
+        table: &'static str,
+        entries: usize,
+    ) -> Result<&'a mut NixList, EvalHeapError> {
+        if let Some(index) = staged.iter().position(|(existing, _)| *existing == ptr) {
+            return Ok(&mut staged[index].1);
+        }
+
+        let base = self.flat_list_payload(ptr)?.clone();
+        staged.push((ptr, base));
+        let Some((_, list)) = staged.last_mut() else {
+            return Err(EvalHeapError::RootScanAllocationFailed { table, entries });
+        };
+        Ok(list)
+    }
+
+    /// Commits staged flat-list spines through the flat store's exclusive
+    /// writeback door.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a staged address no longer resolves as a flat list, which
+    /// staging validated under the same exclusive borrow — the flat analog of
+    /// the record commit's index panic on a broken commit invariant.
+    fn commit_collector_poll_minor_gc_staged_flat_list_writes(
+        &mut self,
+        staged: Vec<(NonNull<HeapObject>, NixList)>,
+    ) {
+        for (ptr, list) in staged {
+            if let Err(error) = self.flat_list_commit_writeback(ptr, list) {
+                unreachable!("staged flat-list writeback failed to commit: {error}");
+            }
+        }
     }
 
     fn staged_collector_poll_minor_gc_heap_field_write_object_mut<'a>(
@@ -6685,6 +6866,24 @@ impl EvalHeap {
         Ok(edges)
     }
 
+    /// Synthesizes precise edges for a flat list's element spine.
+    ///
+    /// The flat analog of the [`HeapObjectValue::List`] arm of
+    /// [`EvalHeap::scan_record_edges`]: one `ListElement`-labelled edge per
+    /// scannable element, in element order, so every consumer (sweep seeding,
+    /// pop validation, poll snapshots, staleness comparison) observes the
+    /// identical edge stream a record-backed list produced.
+    pub(super) fn scan_flat_list_edges(
+        &self,
+        list: &NixList,
+    ) -> Result<Vec<HeapEdge>, EvalHeapError> {
+        let mut edges = Vec::new();
+        for (index, value) in list.iter().copied().enumerate() {
+            push_heap_edge(&mut edges, HeapEdgeSource::ListElement { index }, value)?;
+        }
+        Ok(edges)
+    }
+
     fn validate_collector_poll_scan_is_current(
         &self,
         poll_scan: &AllocationCollectorPollScan,
@@ -6700,6 +6899,17 @@ impl EvalHeap {
                 // that recorded them with no edges is always current.
                 self.flat_verify(tag, ptr)?;
                 if !object.edges().is_empty() {
+                    return Err(EvalHeapError::CollectorPollScanStaleObject {
+                        address: gc_address_for_value(object.value())?,
+                    });
+                }
+                continue;
+            }
+            if self.shared.is_none() && tag == ValueTag::List {
+                // Flat lists carry edges; re-synthesize them and compare, the
+                // exact staleness check a record-backed list received.
+                let current_edges = self.scan_flat_list_edges(self.flat_list_payload(ptr)?)?;
+                if current_edges != object.edges() {
                     return Err(EvalHeapError::CollectorPollScanStaleObject {
                         address: gc_address_for_value(object.value())?,
                     });
@@ -6724,13 +6934,18 @@ impl EvalHeap {
     /// invalidates an outstanding snapshot exactly as string records did
     /// before FV-1.
     fn scannable_object_count(&self) -> usize {
-        self.records.len().saturating_add(self.flat.len())
+        self.records
+            .len()
+            .saturating_add(self.flat.len())
+            .saturating_add(self.flat_lists.len())
     }
 
     /// Validates a scan root value against either heap domain.
     fn validate_scannable_value(&self, value: Value) -> Result<(), EvalHeapError> {
         let (tag, ptr) = heap_ptr(value)?;
-        if self.shared.is_none() && matches!(tag, ValueTag::String | ValueTag::Path) {
+        if self.shared.is_none()
+            && matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List)
+        {
             return self.flat_verify(tag, ptr);
         }
         self.record_for_scannable_value(value).map(|_| ())
@@ -6830,6 +7045,30 @@ impl EvalHeap {
                 }
             }
         }
+        // Flat lists are permanent edge carriers (doc 30 FV-1): their
+        // permanent-to-young edges must be remembered exactly as
+        // record-backed permanent lists' edges were.
+        for entry in self.flat_lists.iter() {
+            let source = GcHeapAddress::new(entry.ptr().as_ptr() as usize)
+                .map_err(EvalHeapError::GenerationalGc)?;
+            for edge in self.scan_flat_list_edges(entry.object().payload())? {
+                let target = self.resolved_generation_for_value(edge.value())?;
+                let ResolvedValueGeneration::Heap {
+                    address: target,
+                    generation: HeapGeneration::Young,
+                } = target
+                else {
+                    continue;
+                };
+                let remembered_edge = RememberedEdge::new(source, target);
+                if !remembered_set.edges().contains(&remembered_edge) {
+                    return Err(EvalHeapError::MissingCollectorPollRememberedEdge {
+                        source_address: source,
+                        target_address: target,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -6847,6 +7086,38 @@ impl EvalHeap {
             let edges = self.scan_record_edges(record)?;
 
             for edge in edges {
+                let target = self.resolved_generation_for_value(edge.value())?;
+                let ResolvedValueGeneration::Heap {
+                    address: target,
+                    generation: HeapGeneration::Young,
+                } = target
+                else {
+                    continue;
+                };
+                let remembered_edge = RememberedEdge::new(source, target);
+                if remembered_set.edges().contains(&remembered_edge) {
+                    continue;
+                }
+                if card_table.covers_source(source)
+                    && plan
+                        .survivors()
+                        .iter()
+                        .any(|survivor| survivor.address() == target)
+                {
+                    continue;
+                }
+                return Err(EvalHeapError::MissingCollectorPollRememberedEdge {
+                    source_address: source,
+                    target_address: target,
+                });
+            }
+        }
+        // Flat lists: same permanent-to-young coverage requirement, with the
+        // same dirty-card survivor escape hatch.
+        for entry in self.flat_lists.iter() {
+            let source = GcHeapAddress::new(entry.ptr().as_ptr() as usize)
+                .map_err(EvalHeapError::GenerationalGc)?;
+            for edge in self.scan_flat_list_edges(entry.object().payload())? {
                 let target = self.resolved_generation_for_value(edge.value())?;
                 let ResolvedValueGeneration::Heap {
                     address: target,
@@ -7011,6 +7282,45 @@ impl EvalHeap {
                 address, generation, fields,
             )?);
         }
+        // Flat lists are permanent edge carriers and contribute old-field
+        // snapshots exactly as record-backed permanent lists did.
+        for entry in self.flat_lists.iter() {
+            let address = GcHeapAddress::new(entry.ptr().as_ptr() as usize)
+                .map_err(EvalHeapError::GenerationalGc)?;
+            let edges = self.scan_flat_list_edges(entry.object().payload())?;
+            let mut fields = Vec::new();
+            fields.try_reserve_exact(edges.len()).map_err(|_| {
+                EvalHeapError::RootScanAllocationFailed {
+                    table: MINOR_GC_OLD_FIELD_VALUES_TABLE,
+                    entries: edges.len(),
+                }
+            })?;
+            for edge in edges {
+                fields.push(AllocationCollectorPollOldField::new(
+                    edge.source().clone(),
+                    self.resolved_generation_for_value(edge.value())?,
+                ));
+            }
+
+            let entries =
+                old_fields
+                    .len()
+                    .checked_add(1)
+                    .ok_or(EvalHeapError::RootScanLengthOverflow {
+                        table: MINOR_GC_OLD_FIELDS_TABLE,
+                    })?;
+            old_fields.try_reserve_exact(1).map_err(|_| {
+                EvalHeapError::RootScanAllocationFailed {
+                    table: MINOR_GC_OLD_FIELDS_TABLE,
+                    entries,
+                }
+            })?;
+            old_fields.push(AllocationCollectorPollOldFields::new(
+                address,
+                HeapGeneration::Permanent,
+                fields,
+            )?);
+        }
         Ok(old_fields)
     }
 
@@ -7095,8 +7405,13 @@ impl EvalHeap {
         reference_slots: &mut Vec<AllocationCollectorPollReferenceSlot>,
         edge: RememberedEdge,
     ) -> Result<(), EvalHeapError> {
-        let source_record = self.record_for_gc_address(edge.source(), "source")?;
-        let source_edges = self.scan_record_edges(source_record)?;
+        let source_edges = match self.flat_list_payload_at_gc_address(edge.source()) {
+            Some(list) => self.scan_flat_list_edges(list)?,
+            None => {
+                let source_record = self.record_for_gc_address(edge.source(), "source")?;
+                self.scan_record_edges(source_record)?
+            }
+        };
         let mut matched = false;
 
         for (field_index, source_edge) in source_edges.iter().enumerate() {
@@ -7179,8 +7494,13 @@ impl EvalHeap {
         field_index: usize,
         expected_source: &HeapEdgeSource,
     ) -> Result<ResolvedValueGeneration, EvalHeapError> {
-        let record = self.record_for_reference_slot_object(object)?;
-        let edges = self.scan_record_edges(record)?;
+        let edges = match self.flat_list_payload_at_gc_address(object) {
+            Some(list) => self.scan_flat_list_edges(list)?,
+            None => {
+                let record = self.record_for_reference_slot_object(object)?;
+                self.scan_record_edges(record)?
+            }
+        };
         let Some(edge) = edges.get(field_index) else {
             return Err(EvalHeapError::CollectorPollReferenceSlotSourceMismatch {
                 index,
@@ -7214,7 +7534,9 @@ impl EvalHeap {
         value: Value,
     ) -> Result<ResolvedValueGeneration, EvalHeapError> {
         let (tag, ptr) = heap_ptr(value)?;
-        if self.shared.is_none() && matches!(tag, ValueTag::String | ValueTag::Path) {
+        if self.shared.is_none()
+            && matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List)
+        {
             self.flat_verify(tag, ptr)?;
             return Ok(ResolvedValueGeneration::Heap {
                 address: GcHeapAddress::new(ptr.as_ptr() as usize)
@@ -7244,6 +7566,11 @@ impl EvalHeap {
         address: GcHeapAddress,
         role: &'static str,
     ) -> Result<HeapGeneration, EvalHeapError> {
+        // Flat strings/paths/lists (doc 30 FV-1) are permanent by
+        // construction and have no record.
+        if self.flat_tag_at_gc_address(address).is_some() {
+            return Ok(HeapGeneration::Permanent);
+        }
         let record = self.record_for_gc_address(address, role)?;
         Ok(generation_for_record(record))
     }
@@ -7253,8 +7580,23 @@ impl EvalHeap {
         address: GcHeapAddress,
         role: &'static str,
     ) -> Result<HeapAllocationDomain, EvalHeapError> {
+        if self.flat_tag_at_gc_address(address).is_some() {
+            return Ok(HeapAllocationDomain::PermanentShared);
+        }
         let record = self.record_for_gc_address(address, role)?;
         Ok(record.allocation_domain)
+    }
+
+    /// Returns the flat-object tag at a GC address, if a flat store owns it.
+    fn flat_tag_at_gc_address(&self, address: GcHeapAddress) -> Option<ValueTag> {
+        let ptr = NonNull::new(address.address_bits() as *mut HeapObject)?;
+        self.flat_kind_tag(ptr)
+    }
+
+    /// Returns the flat list payload at a GC address, if one is stored there.
+    fn flat_list_payload_at_gc_address(&self, address: GcHeapAddress) -> Option<&NixList> {
+        let ptr = NonNull::new(address.address_bits() as *mut HeapObject)?;
+        self.flat_list_payload(ptr).ok()
     }
 
     fn record_for_gc_address(
@@ -7802,6 +8144,47 @@ fn validate_copied_heap_field_write_object_source(
             },
         ),
     }
+}
+
+/// Source-shape validation for a flat-list direct writeback target.
+///
+/// The flat analog of the `(List, ListElement)` arm of
+/// [`validate_direct_heap_field_write_object_source`]: a flat list only
+/// carries `ListElement` fields.
+fn validate_flat_list_direct_heap_field_write_source(
+    write: &AllocationCollectorPollDirectHeapFieldWrite,
+) -> Result<(), EvalHeapError> {
+    if matches!(write.source(), HeapEdgeSource::ListElement { .. }) {
+        return Ok(());
+    }
+    Err(
+        EvalHeapError::CollectorPollDirectHeapFieldWriteUnsupportedSource {
+            writeback_object: write.writeback_object(),
+            field_index: write.field_index(),
+            field_source: write.source().clone(),
+        },
+    )
+}
+
+/// Rewrites one element of a staged flat-list spine.
+///
+/// The flat analog of [`record_owned_heap_field_write_object`]'s
+/// `(List, ListElement)` arm: clone-and-replace over the staged spine, so
+/// nothing observable mutates until the staged commit.
+fn flat_list_heap_field_write_object(
+    list: &NixList,
+    source: &HeapEdgeSource,
+    replacement: Value,
+) -> Result<NixList, RecordOwnedHeapFieldWriteObjectError> {
+    let HeapEdgeSource::ListElement { index } = source else {
+        return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+    };
+    let mut elements = list.clone().into_vec();
+    let Some(slot) = elements.get_mut(*index) else {
+        return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
+    };
+    *slot = replacement;
+    Ok(NixList::new(elements))
 }
 
 fn validate_direct_heap_field_write_object_source(

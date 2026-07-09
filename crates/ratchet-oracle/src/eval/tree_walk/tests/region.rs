@@ -244,13 +244,17 @@ fn discard_worker_region_scope_retires_mark_after_pop_error() {
 
     let error = evaluator
         .discard_worker_region_if_plan_permits(plan, |eval| {
-            // A permanent record-backed value (strings are flat since FV-1,
-            // so a list stands in as the permanent heap record).
+            // A permanent record-backed value (strings and lists are flat
+            // since FV-1, so an attrset stands in as the permanent record).
+            let mut symbols = SymbolTable::new();
+            let key = symbols.intern(b"name").expect("symbol interns");
+            let attrs = FlatAttrs::new(vec![AttrEntry::new(key, Value::int(59))], &symbols)
+                .expect("attrset builds");
             let value = eval
                 .heap
-                .alloc_list(NixList::new(vec![Value::int(59)]))
-                .expect("permanent list allocates");
-            assert_eq!(value.tag(), ValueTag::List);
+                .alloc_attrs(42, attrs)
+                .expect("permanent attrset allocates");
+            assert_eq!(value.tag(), ValueTag::Attrs);
         })
         .expect_err("permanent suffix rejects lexical worker-region pop");
 

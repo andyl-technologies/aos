@@ -44,6 +44,8 @@ pub struct CampaignCounters {
     pub flat_string_resolutions: u64,
     /// Path resolutions served by the flat store without a record probe.
     pub flat_path_resolutions: u64,
+    /// List resolutions served by the flat store without a record probe.
+    pub flat_list_resolutions: u64,
     /// `Arc` payload-handle clones handed out by thunk/lambda/primop resolution.
     pub payload_arc_clones: u64,
     /// Lexical frame-array capture copies (`EvalEnv::capture`).
@@ -108,6 +110,9 @@ impl CampaignCounters {
             flat_path_resolutions: self
                 .flat_path_resolutions
                 .saturating_add(other.flat_path_resolutions),
+            flat_list_resolutions: self
+                .flat_list_resolutions
+                .saturating_add(other.flat_list_resolutions),
             payload_arc_clones: self
                 .payload_arc_clones
                 .saturating_add(other.payload_arc_clones),

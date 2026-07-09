@@ -9,11 +9,13 @@
 //!
 //! # Mode coverage
 //!
-//! Serial mode only. Parallel heaps are constructed fresh with the shared
-//! backend installed (`EvalHeap::with_shared_shard`) and every entry point
-//! dispatches to the shared backend before the flat store is consulted, so a
-//! shared heap never contains flat objects. Flattening the shared arena's
-//! slot-address publication protocol is the named shared-mode follow-up.
+//! Serial mode. Parallel heaps are constructed fresh with the shared backend
+//! installed (`EvalHeap::with_shared_shard`) and every entry point dispatches
+//! to the shared backend before this store is consulted; shared mode has its
+//! own flat stores (`heap::flat::shared`, published per shard with the
+//! OnceLock release/acquire protocol) so string/path/list resolution is
+//! index-free in both modes. Bytes-inline (FV-1b) is serial-only: shared
+//! flat strings keep owned byte buffers inside their published slots.
 //!
 //! # What stays where
 //!
@@ -39,11 +41,28 @@ use crate::heap::flat::{FlatObjectError, FlatObjectKind, FlatObjectRef};
 use super::record_table::AddressHasher;
 use super::*;
 
+mod lists;
+
+/// Byte-length ceiling for inlining string/path bytes into the flat
+/// allocation (doc 30 FV-1b).
+///
+/// Inlining copies the byte run into the arena; for the short strings that
+/// dominate package evaluation (store paths, attr names, interpolation
+/// fragments) that copy is cheaper than the retired per-string `Vec`
+/// allocation and buys header/byte locality. For large strings — the
+/// quadratic accumulator products of `bench.compute.string-builder` are the
+/// measured worst case — the extra copy is pure loss and the byte mass would
+/// bloat the flat arena's mapped peak, so oversized payloads keep their
+/// already-owned buffer, moved (not copied) behind the flat object exactly
+/// as FV-1a stored them.
+const FLAT_INLINE_BYTES_MAX: usize = 4096;
+
 /// Maps a flat object kind to the runtime value tag it resolves under.
 pub(super) const fn value_tag_for_flat_kind(kind: FlatObjectKind) -> ValueTag {
     match kind {
         FlatObjectKind::String => ValueTag::String,
         FlatObjectKind::Path => ValueTag::Path,
+        FlatObjectKind::List => ValueTag::List,
     }
 }
 
@@ -89,6 +108,11 @@ impl FlatColdHashStore {
             map.insert(address, slot);
         }
     }
+
+    /// Drops every cached hash for `address` (writeback commits).
+    pub(super) fn clear(&self, address: usize) {
+        self.map.borrow_mut().remove(&address);
+    }
 }
 
 impl EvalHeap {
@@ -111,17 +135,30 @@ impl EvalHeap {
             .note_string_payload(string.len(), string.bytes().starts_with(b"/nix/store/"));
         let len = string.len();
         let epoch = self.next_access_epoch();
-        let allocation =
-            match self
-                .flat
+        // FV-1b: short byte runs are copied inline into the flat allocation
+        // and the stored payload keeps only the witness — no `Vec` survives
+        // behind an interned small string. Oversized runs keep their moved
+        // owned buffer (see `FLAT_INLINE_BYTES_MAX`).
+        let allocation = if len <= FLAT_INLINE_BYTES_MAX {
+            let (bytes, context) = string.into_parts();
+            self.flat.alloc_with_trailing_bytes(
+                FlatObjectKind::String,
+                hash.raw(),
+                epoch,
+                &bytes,
+                |flat_bytes| NixString::from_flat_bytes(flat_bytes, context),
+            )
+        } else {
+            self.flat
                 .alloc(FlatObjectKind::String, hash.raw(), epoch, string)
-            {
-                Ok(allocation) => allocation,
-                Err(error) => {
-                    self.cancel_string_cons_slot(cons_slot);
-                    return Err(flat_alloc_error(error));
-                }
-            };
+        };
+        let allocation = match allocation {
+            Ok(allocation) => allocation,
+            Err(error) => {
+                self.cancel_string_cons_slot(cons_slot);
+                return Err(flat_alloc_error(error));
+            }
+        };
         self.permanent_allocator
             .record_flat_allocation_safepoint(len, allocation.allocation);
         let value = match Value::string(allocation.ptr).map_err(EvalHeapError::Value) {
@@ -155,7 +192,19 @@ impl EvalHeap {
         self.alloc_counters.note_path_payload(path.len());
         let len = path.len();
         let epoch = self.next_access_epoch();
-        let allocation = match self.flat.alloc(FlatObjectKind::Path, hash.raw(), epoch, path) {
+        let allocation = if len <= FLAT_INLINE_BYTES_MAX {
+            let (bytes, context) = path.into_parts();
+            self.flat.alloc_with_trailing_bytes(
+                FlatObjectKind::Path,
+                hash.raw(),
+                epoch,
+                &bytes,
+                |flat_bytes| NixString::from_flat_bytes(flat_bytes, context),
+            )
+        } else {
+            self.flat.alloc(FlatObjectKind::Path, hash.raw(), epoch, path)
+        };
+        let allocation = match allocation {
             Ok(allocation) => allocation,
             Err(error) => {
                 self.cancel_path_cons_slot(cons_slot);
@@ -207,15 +256,16 @@ impl EvalHeap {
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
     ) -> Result<(), EvalHeapError> {
-        let kind = match tag {
-            ValueTag::String => FlatObjectKind::String,
-            ValueTag::Path => FlatObjectKind::Path,
+        let result = match tag {
+            ValueTag::String => self.flat.resolve(ptr, FlatObjectKind::String).map(|_| ()),
+            ValueTag::Path => self.flat.resolve(ptr, FlatObjectKind::Path).map(|_| ()),
+            ValueTag::List => self
+                .flat_lists
+                .resolve(ptr, FlatObjectKind::List)
+                .map(|_| ()),
             _ => return Err(EvalHeapError::unknown(tag, ptr)),
         };
-        match self.flat.resolve(ptr, kind) {
-            Ok(_) => Ok(()),
-            Err(error) => Err(self.flat_resolution_error(tag, ptr, error)),
-        }
+        result.map_err(|error| self.flat_resolution_error(tag, ptr, error))
     }
 
     /// Resolves a flat object of `kind` and stamps its access epoch.
@@ -236,11 +286,12 @@ impl EvalHeap {
 
     /// Maps a flat resolution failure to the heap's error vocabulary.
     ///
-    /// Kind mismatches translate directly. Unknown addresses fall back to one
-    /// record-table probe so a pointer that names a *record* of another type
-    /// still fails as a record-type mismatch (today's contract), and only a
-    /// pointer no domain knows fails as an unknown pointer.
-    fn flat_resolution_error(
+    /// Kind mismatches translate directly. Unknown addresses fall back to the
+    /// *other* flat store and then one record-table probe, so a pointer that
+    /// names a flat object or record of another type still fails as a
+    /// record-type mismatch (today's contract), and only a pointer no domain
+    /// knows fails as an unknown pointer.
+    pub(super) fn flat_resolution_error(
         &self,
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
@@ -252,11 +303,16 @@ impl EvalHeap {
                 value_tag_for_flat_kind(actual),
                 ptr,
             ),
-            FlatObjectError::UnknownAddress { .. } => match self.records.find(ptr) {
-                Some(record) => {
-                    EvalHeapError::record_type_mismatch(tag, record.object.tag(), ptr)
+            FlatObjectError::UnknownAddress { .. } => match self.flat_kind_tag(ptr) {
+                Some(actual) if actual != tag => {
+                    EvalHeapError::record_type_mismatch(tag, actual, ptr)
                 }
-                None => EvalHeapError::unknown(tag, ptr),
+                _ => match self.records.find(ptr) {
+                    Some(record) => {
+                        EvalHeapError::record_type_mismatch(tag, record.object.tag(), ptr)
+                    }
+                    None => EvalHeapError::unknown(tag, ptr),
+                },
             },
             error @ (FlatObjectError::Arena(_)
             | FlatObjectError::RegistryAllocationFailed { .. }) => {
@@ -269,10 +325,14 @@ impl EvalHeap {
 
     /// Returns the value tag of the flat object at `ptr`, if there is one.
     ///
-    /// Used by [`EvalHeap::record_or_unknown`]'s error path so a flat pointer
-    /// handed to a record-kind getter still reports a record-type mismatch.
+    /// Consults both flat stores (strings/paths and lists). Used by
+    /// [`EvalHeap::record_or_unknown`]'s error path so a flat pointer handed
+    /// to a record-kind getter still reports a record-type mismatch.
     pub(super) fn flat_kind_tag(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
-        self.flat.kind_of(ptr).map(value_tag_for_flat_kind)
+        self.flat
+            .kind_of(ptr)
+            .or_else(|| self.flat_lists.kind_of(ptr))
+            .map(value_tag_for_flat_kind)
     }
 
     /// Hash-cons admission for serial strings over the flat store.
@@ -335,19 +395,20 @@ impl EvalHeap {
         ))
     }
 
-    /// Resolves the canonical address of a reusable serial string/path value,
-    /// stamping its access epoch (the flat analog of `record_for_value`).
+    /// Resolves the canonical address of a reusable serial flat value
+    /// (string, path, or list), stamping its access epoch (the flat analog of
+    /// `record_for_value`).
     pub(super) fn flat_canonical_address(
         &self,
         tag: ValueTag,
         ptr: NonNull<HeapObject>,
     ) -> Result<usize, EvalHeapError> {
-        let kind = match tag {
-            ValueTag::String => FlatObjectKind::String,
-            ValueTag::Path => FlatObjectKind::Path,
+        match tag {
+            ValueTag::String => self.flat_touch(FlatObjectKind::String, ptr).map(|_| ())?,
+            ValueTag::Path => self.flat_touch(FlatObjectKind::Path, ptr).map(|_| ())?,
+            ValueTag::List => self.flat_touch_list(ptr).map(|_| ())?,
             _ => return Err(EvalHeapError::unknown(tag, ptr)),
-        };
-        self.flat_touch(kind, ptr)?;
+        }
         Ok(ptr.as_ptr() as usize)
     }
 
