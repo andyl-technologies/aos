@@ -1133,7 +1133,7 @@ list only their *additional* gates.
 
 ### Stage FV-3 — flat thunks, lambdas, primops
 
-- [ ] Thunk claim protocol as flat header/state words: suspend → claim
+- [x] Thunk claim protocol as flat header/state words: suspend → claim
       → publish → shed transitions with the existing release/acquire
       contract; serial `ThunkCell`, `SingleEntry` mode, and the boxed
       parallel payload cell re-expressed (`eval/heap/thunk.rs`,
@@ -1141,11 +1141,96 @@ list only their *additional* gates.
       **plus** `AOS_NIX_GC=sweep` + stress-threshold-0 + K=4 claim/park
       parity, and loom/miri on the changed protocol (C-12/R-4
       discipline).
-- [ ] B1 sweep over flat objects: header marks, per-size-class free
+      *Landed (FV-3) with two documented divergences from the sketch,
+      both decided by code reality (`eval/heap/flat_values/closures.rs`
+      records the rationale):*
+      1. *Interior-`Arc` payload, not in-place state words.* The flat
+         closure object is header + `FlatClosurePayload` (an `Arc`
+         handle per kind). `get_thunk` (229 call sites) hands out
+         `&EvalThunk` and `clone_thunk` hands out `Arc` clones the
+         force paths hold across `eval_thunk_body` re-entry and across
+         the shed swap; making the flat object the shared mutable site
+         would have been a viral borrow rewrite of the whole tree walk.
+         The claim protocol therefore stays in the payload's interior
+         `ThunkCell`/parallel-cell atomics exactly as it was, and the
+         shed/retire transitions are whole-payload swaps through the
+         store's exclusive `resolve_mut` door — the same swap the
+         record slot hosted. The record *probe* dies now (the FV-3
+         target); the payload `Arc` dies in FV-6 (arena-owned
+         payloads), keeping one representation variable per landing.
+      2. *Placement is mode-selected, not total.* The collector-poll /
+         minor-GC machinery (destination reservation, byte copies,
+         forwarding headers, generation writes — the Tier-B B2
+         relocation proving ground) and the Tier-B transition-admission
+         generation rewrites operate on record-table worker objects,
+         and after FV-2 the young population is exactly these kinds.
+         Porting relocation to flat objects *is* B2, which this campaign
+         gates rather than delivers. Worker-closure placement is
+         therefore `WorkerClosurePlacement::{Flat, Record}`: every
+         production heap allocates flat (serial and shared), and heaps
+         under an installed `GcStressPolicy`, a generational
+         write-barrier tier, or the explicit
+         `TreeWalkOptions::set_record_worker_closures_for_gc_scaffolding`
+         option keep the record layout so the B2 scaffolding and its
+         proving-ground tests stay green. Resolution, region pops, and
+         the sweep handle both populations (each empty in the other
+         mode).
+      *Serial mode: one `FlatObjectStore<FlatClosurePayload>` hosts all
+      three kinds (`FlatObjectKind::{Thunk,Lambda,Primop}`), so one
+      registry mark covers a worker lexical region across kinds; worker
+      arena stats/advice fold the store's arena. Shared mode publishes
+      closures per shard through `SharedFlatObjectStore` (the FV-2
+      protocol, `OnceLock` release/acquire): sound because the payload
+      handle is never swapped after publication — shedding and the
+      sweep are serial-only by the existing quiescence pins — while
+      thunk force state keeps mutating through the payload's interior
+      atomics. This retires the shard record slots' worker population
+      and the worker-private address mirror; cross-worker closure
+      resolution is membership arithmetic with no `RwLock` index
+      probe.*
+- [x] B1 sweep over flat objects: header marks, per-size-class free
       lists, epoch/kind fail-loud checks replacing `UnknownPointer`
       map-miss semantics (`eval/heap/gc.rs`, `eval/gc_*`). Gate: the
       re-derived stress suite (§11 item 6); shed/retire counts match
       baseline behavior on zlib and `bench.wide`.
+      *Landed with a simpler reclamation shape than the sketch: no
+      free lists and no header state bits. Sweep retirement swaps the
+      payload for a `FlatClosurePayload::Retired` tombstone in place —
+      the entry, header, and address remain, addresses are **never
+      reissued** (stronger than §2.5's epoch-guard alternative; §11
+      item 6's re-derivation is unnecessary because the loud-failure
+      shape did not weaken: a retired address fails as
+      `UnknownPointer` from the payload check, and any resolution of a
+      wiped/popped address fails the header magic check). Slot
+      recycling is deliberately dropped: the tombstone is
+      header+handle-sized (~40 B) versus the recycled 160 B record, so
+      retire-in-place costs less than the machinery it replaces; exact
+      per-size-class free lists remain FV-6/§7.4 material if daemon
+      workloads ever need them. Region pops reclaim for real:
+      `FlatObjectStore::pop_region` drops payloads, wipes header kind
+      words, and rewinds the store's arena (LIFO address reuse, the
+      record-table pop contract), fenced against retirement by the
+      same `RegionPopAfterSweep` interlock extended with the flat
+      retired count. Pop validation checks retained edges in both
+      directions across both populations (records, flat lists/attrs,
+      and flat closures as sources; record suffix plus flat-closure
+      suffix as targets).*
+- [x] Retirement (the FV-2 handoff's enumerated fodder): the dead
+      permanent-shared typed-allocation vtable family
+      (`runtime/alloc.rs`: `PermanentSharedAllocationVTable`, its
+      entrypoint/ABI tables, routing fns, and vtable tests — a
+      test-only `test_alloc_string` keeps the permanent domain's
+      accounting/advice/poll machinery covered) and the
+      never-constructed `HeapObjectValue::{Path, Attrs}` variants with
+      every match arm. **`HeapRecordTable` and its address map are
+      retained, unpopulated in production**: their only remaining
+      population is the B2 proving ground's record-placed closures, so
+      `record_table_records` reads 0 on every production workload
+      (including `bench.compute.lambda-interp`'s former 11M-record
+      peak) while the relocation scaffolding keeps its subjects. The
+      table retires outright when B2 lands on flat objects (or is
+      abandoned). The `record_or_unknown` per-kind fallback survives
+      only on the flat-miss path, which production never takes.
 
 ### Stage FV-4 — value-word compression
 

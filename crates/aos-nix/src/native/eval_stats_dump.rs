@@ -33,6 +33,8 @@
 //!  "record_probes_primop":0,"record_probes_thunk":0,"record_probes_other":0,
 //!  "flat_string_resolutions":0,"flat_path_resolutions":0,
 //!  "flat_list_resolutions":0,"flat_attrs_resolutions":0,
+//!  "flat_thunk_resolutions":0,"flat_lambda_resolutions":0,
+//!  "flat_primop_resolutions":0,
 //!  "payload_arc_clones":0,"env_captures":0,"env_capture_frame_handles":0,
 //!  "with_env_captures":0,"with_env_capture_scopes":0,
 //!  "scoped_global_env_captures":0,"scoped_global_env_capture_scopes":0,
@@ -118,6 +120,9 @@ impl NixNative {
 \"flat_path_resolutions\":{},\
 \"flat_list_resolutions\":{},\
 \"flat_attrs_resolutions\":{},\
+\"flat_thunk_resolutions\":{},\
+\"flat_lambda_resolutions\":{},\
+\"flat_primop_resolutions\":{},\
 \"payload_arc_clones\":{},\
 \"env_captures\":{},\
 \"env_capture_frame_handles\":{},\
@@ -190,6 +195,9 @@ impl NixNative {
             stats.campaign().flat_path_resolutions,
             stats.campaign().flat_list_resolutions,
             stats.campaign().flat_attrs_resolutions,
+            stats.campaign().flat_thunk_resolutions,
+            stats.campaign().flat_lambda_resolutions,
+            stats.campaign().flat_primop_resolutions,
             stats.campaign().payload_arc_clones,
             stats.campaign().env_captures,
             stats.campaign().env_capture_frame_handles,

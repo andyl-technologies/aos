@@ -685,6 +685,18 @@ impl TreeWalkOptions {
         self.heap_tier_b_transition_admission_enabled = enabled;
     }
 
+    /// Selects the record-table worker-closure placement (doc 30 FV-3).
+    ///
+    /// This is the Tier-B B2 proving ground's options-level admission door:
+    /// generation-rewrite and record-relocation harnesses need worker
+    /// closures allocated as record-table records instead of flat objects.
+    /// Production never sets this; heaps running under a GC-stress policy or
+    /// a generational write-barrier tier select the record placement
+    /// automatically.
+    pub fn set_record_worker_closures_for_gc_scaffolding(&mut self, enabled: bool) {
+        self.record_worker_closures_for_gc_scaffolding = enabled;
+    }
+
     /// Enables or disables thread-local Tier-A worker storage.
     ///
     /// When enabled, the tree-walk heap still uses the Tier-A one-shot
@@ -987,6 +999,11 @@ impl TreeWalkOptions {
     /// Returns whether owned outcomes automatically apply Tier-B admission.
     pub const fn heap_tier_b_transition_admission_enabled(&self) -> bool {
         self.heap_tier_b_transition_admission_enabled
+    }
+
+    /// Returns whether worker closures use the record-table placement.
+    pub const fn record_worker_closures_for_gc_scaffolding(&self) -> bool {
+        self.record_worker_closures_for_gc_scaffolding
     }
 
     /// Returns whether tree-walk worker storage uses the current thread's Tier-A arena.

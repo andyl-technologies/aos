@@ -617,6 +617,9 @@ impl EvalHeap {
             flat: FlatObjectStore::new(),
             flat_lists: FlatObjectStore::new(),
             flat_attrs: FlatObjectStore::new(),
+            flat_closures: FlatObjectStore::new(),
+            flat_closures_retired: 0,
+            worker_closure_placement: WorkerClosurePlacement::default(),
             flat_cold_hashes: FlatColdHashStore::default(),
             flat_stale_hashes: std::collections::HashSet::default(),
             shared: None,
@@ -662,6 +665,10 @@ impl EvalHeap {
                 .map_err(EvalHeapError::Arena)?,
             flat_attrs: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
+            flat_closures: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
+                .map_err(EvalHeapError::Arena)?,
+            flat_closures_retired: 0,
+            worker_closure_placement: WorkerClosurePlacement::default(),
             flat_cold_hashes: FlatColdHashStore::default(),
             flat_stale_hashes: std::collections::HashSet::default(),
             shared: None,
@@ -806,8 +813,12 @@ impl EvalHeap {
     }
 
     /// Returns current runtime allocator accounting.
+    ///
+    /// Includes the flat worker-closure store's arena (doc 30 FV-3): flat
+    /// closures are worker-domain values, so their bytes stay in the worker
+    /// columns of every budget decision and statistics surface.
     pub fn arena_stats(&self) -> ArenaStats {
-        self.allocator.stats()
+        merged_arena_stats(self.allocator.stats(), self.flat_closures.arena_stats())
     }
 
     /// Returns current permanent shared allocation accounting.
@@ -867,6 +878,7 @@ impl EvalHeap {
             self.worker_allocator_epoch,
             mark_id,
             self.records.len(),
+            self.flat_closures.region_mark(),
         ))
     }
 
@@ -910,13 +922,33 @@ impl EvalHeap {
             .allocator
             .pop_caller_validated_region(mark.allocator, reclaimed_records)
             .map_err(EvalHeapError::Arena)?;
+        // Flat worker closures above the marker were validated unreferenced
+        // together with the record suffix; drop their payloads and rewind the
+        // flat store's arena (doc 30 FV-3). The pop cannot fail here: the
+        // marker was structurally validated against both the registry and the
+        // store's arena before any state changed.
+        let flat_report = self
+            .flat_closures
+            .pop_region(mark.flat_closures)
+            .map_err(|error| match error {
+                crate::heap::flat::FlatObjectError::Arena(source) => EvalHeapError::Arena(source),
+                _ => EvalHeapError::WorkerRegionPopStaleMark {
+                    reason: "flat closure region mark does not match the store",
+                    marker_records: mark.records.saturating_add(mark.flat_closures.entries()),
+                    current_records: self
+                        .records
+                        .len()
+                        .saturating_add(self.flat_closures.len()),
+                },
+            })?;
         self.records.truncate(mark.records);
         let _ = self.worker_region_mark_stack.pop();
         self.advance_worker_region_epoch();
         self.last_memory_budget_action = None;
         Ok(EvalHeapWorkerRegionPopReport::new(
-            arena_report,
-            reclaimed_records,
+            arena_report.merged(flat_report.arena_report()),
+            flat_report,
+            reclaimed_records.saturating_add(flat_report.popped_entries()),
             self.records.len(),
         ))
     }
@@ -999,7 +1031,8 @@ impl EvalHeap {
             .filter(|record| {
                 record.allocation_domain == HeapAllocationDomain::Worker && !record.is_retired()
             })
-            .count();
+            .count()
+            .saturating_add(self.live_flat_closures());
         if live_worker_records != 0 {
             return Err(EvalHeapError::WorkerResetLiveRecords {
                 records: live_worker_records,
@@ -1007,7 +1040,13 @@ impl EvalHeap {
         }
 
         let permanent_stats = self.permanent_arena_stats();
-        let dropped_worker_stats = self.allocator.reset_to_empty();
+        // Replace the flat closure store together with the worker arena: its
+        // objects are worker-domain and provably dead here (no live closures
+        // remain; retired tombstones die with their arena, and their
+        // addresses keep failing as unknown pointers in the fresh store).
+        let dropped_flat_closures = std::mem::take(&mut self.flat_closures).arena_stats();
+        let dropped_worker_stats =
+            merged_arena_stats(self.allocator.reset_to_empty(), dropped_flat_closures);
         let worker_stats_after = self.arena_stats();
         self.worker_region_mark_stack.clear();
         self.advance_worker_allocator_epoch();
@@ -1293,7 +1332,9 @@ impl EvalHeap {
     pub fn advise_unused_tails(&self, kind: MemoryAdviceKind) -> EvalHeapMemoryAdviceReport {
         EvalHeapMemoryAdviceReport::new(
             kind,
-            self.allocator.advise_unused_tail(kind),
+            self.allocator
+                .advise_unused_tail(kind)
+                .merged(self.flat_closures.advise_unused_tail(kind)),
             self.permanent_allocator
                 .advise_unused_tail(kind)
                 .merged(self.flat.advise_unused_tail(kind))
@@ -1466,6 +1507,13 @@ impl EvalHeap {
     pub fn set_gc_stress_policy(&mut self, policy: GcStressPolicy) {
         self.allocator.set_gc_stress_policy(policy);
         self.permanent_allocator.set_gc_stress_policy(policy);
+        // The GC-stress proving ground relocates young *record-table*
+        // objects (the Tier-B B2 scaffolding), so heaps under stress keep
+        // allocating worker closures as records (doc 30 FV-3 placement
+        // decision; see `flat_values::closures`).
+        if !policy.is_disabled() {
+            self.worker_closure_placement = WorkerClosurePlacement::Record;
+        }
     }
 
     /// Returns the worker allocation-domain GC-stress polling policy.
@@ -1524,6 +1572,16 @@ impl EvalHeap {
             self.flat_canonical_address(tag, ptr)?;
             return Ok(HeapAllocationDomain::PermanentShared);
         }
+        // Flat worker closures (doc 30 FV-3) are worker-domain by
+        // construction; the record path below serves the Tier-B B2 proving
+        // ground's record placement.
+        if let Some(actual) = self.flat_closure_tag(ptr) {
+            return if actual == tag {
+                Ok(HeapAllocationDomain::Worker)
+            } else {
+                Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
+            };
+        }
         let record = self.record_or_unknown(tag, ptr)?;
         let actual = record.object.tag();
         if actual == tag {
@@ -1552,6 +1610,18 @@ impl EvalHeap {
         ) {
             self.flat_canonical_address(tag, ptr)?;
             return Ok(HeapGeneration::Permanent);
+        }
+        // Flat worker closures (doc 30 FV-3) stay in their initial worker
+        // generation: production never runs minor collections, and the B2
+        // proving ground's generation machinery uses the record placement.
+        if let Some(actual) = self.flat_closure_tag(ptr) {
+            return if actual == tag {
+                Ok(initial_generation_for_allocation_domain(
+                    HeapAllocationDomain::Worker,
+                ))
+            } else {
+                Err(EvalHeapError::record_type_mismatch(tag, actual, ptr))
+            };
         }
         let record = self.record_or_unknown(tag, ptr)?;
         let actual = record.object.tag();
@@ -1618,6 +1688,7 @@ impl EvalHeap {
             .saturating_add(self.flat.len())
             .saturating_add(self.flat_lists.len())
             .saturating_add(self.flat_attrs.len())
+            .saturating_add(self.flat_closures.len())
     }
 
     /// Returns whether this heap contains no typed objects.
@@ -1627,20 +1698,24 @@ impl EvalHeap {
 
     /// Returns the number of typed objects in the record side table.
     ///
-    /// Excludes flat string/path/list/attrset objects (doc 30 FV-1/FV-2),
-    /// which never enter the record table; Tier-B admission plans cover
-    /// exactly this population.
+    /// Excludes flat objects (strings/paths/lists/attrsets per doc 30
+    /// FV-1/FV-2 and worker closures per FV-3), which never enter the record
+    /// table; Tier-B admission plans cover exactly this population. In
+    /// production this reads zero — the table's only remaining population is
+    /// the Tier-B B2 relocation proving ground's record-placed closures.
     pub fn record_count(&self) -> usize {
         self.records.len()
     }
 
-    /// Returns the number of flat string/path/list/attrset objects (doc 30
-    /// FV-1/FV-2).
+    /// Returns the number of flat objects across every flat store: strings,
+    /// paths, lists, attrsets (doc 30 FV-1/FV-2), and worker closures
+    /// (doc 30 FV-3).
     pub fn flat_object_count(&self) -> usize {
         self.flat
             .len()
             .saturating_add(self.flat_lists.len())
             .saturating_add(self.flat_attrs.len())
+            .saturating_add(self.flat_closures.len())
     }
 
     #[cfg(test)]
@@ -1653,6 +1728,21 @@ impl EvalHeap {
         &self,
     ) -> impl Iterator<Item = Result<Value, EvalHeapError>> + '_ {
         self.records.iter().map(Self::value_for_record)
+    }
+
+    /// Enumerates live flat worker-closure values (doc 30 FV-3), for tests
+    /// that inspect the worker population regardless of placement.
+    #[cfg(test)]
+    pub(crate) fn test_flat_closure_values(
+        &self,
+    ) -> impl Iterator<Item = Result<Value, EvalHeapError>> + '_ {
+        self.flat_closures.iter().filter_map(|entry| {
+            let payload = entry.object().payload();
+            if payload.is_retired() {
+                return None;
+            }
+            Some(Value::heap(payload.tag(), entry.ptr()).map_err(EvalHeapError::Value))
+        })
     }
 
     /// Allocates a Nix string object and returns its opaque runtime value.
@@ -1790,6 +1880,9 @@ impl EvalHeap {
         if self.shared.is_some() {
             return self.shared_alloc_lambda(lambda);
         }
+        if self.worker_closure_placement == WorkerClosurePlacement::Flat {
+            return self.flat_alloc_lambda(lambda);
+        }
         self.reserve_record_slot()?;
         let allocation = self
             .allocator
@@ -1826,6 +1919,9 @@ impl EvalHeap {
         if self.shared.is_some() {
             return self.shared_alloc_primop(primop);
         }
+        if self.worker_closure_placement == WorkerClosurePlacement::Flat {
+            return self.flat_alloc_primop(primop);
+        }
         self.reserve_record_slot()?;
         let allocation = self
             .allocator
@@ -1861,6 +1957,9 @@ impl EvalHeap {
     pub fn alloc_thunk(&mut self, thunk: EvalThunk) -> Result<Value, EvalHeapError> {
         if self.shared.is_some() {
             return self.shared_alloc_thunk(thunk);
+        }
+        if self.worker_closure_placement == WorkerClosurePlacement::Flat {
+            return self.flat_alloc_thunk(thunk);
         }
         self.reserve_record_slot()?;
         let allocation = self
@@ -2277,6 +2376,16 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_lambda_ptr(ptr);
         }
+        if let Some(payload) = self.flat_closure_probe(ValueTag::Lambda, FlatObjectKind::Lambda, ptr)? {
+            return match payload {
+                FlatClosurePayload::Lambda(lambda) => Ok(lambda.as_ref()),
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Lambda,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
+        }
         let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
         match &record.object {
             HeapObjectValue::Lambda(lambda) => {
@@ -2314,6 +2423,16 @@ impl EvalHeap {
     pub fn get_primop_ptr(&self, ptr: NonNull<HeapObject>) -> Result<&EvalPrimOp, EvalHeapError> {
         if let Some(shared) = &self.shared {
             return shared.get_primop_ptr(ptr);
+        }
+        if let Some(payload) = self.flat_closure_probe(ValueTag::Primop, FlatObjectKind::Primop, ptr)? {
+            return match payload {
+                FlatClosurePayload::Primop(inner) => Ok(inner.as_ref()),
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Primop,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
         }
         let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
         match &record.object {
@@ -2353,6 +2472,16 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_thunk_ptr(ptr);
         }
+        if let Some(payload) = self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)? {
+            return match payload {
+                FlatClosurePayload::Thunk(inner) => Ok(inner.as_ref()),
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Thunk,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
+        }
         let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
         match &record.object {
             HeapObjectValue::Thunk(thunk) => {
@@ -2373,6 +2502,19 @@ impl EvalHeap {
         let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
         if let Some(shared) = &self.shared {
             return shared.clone_thunk_ptr(ptr);
+        }
+        if let Some(payload) = self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)? {
+            return match payload {
+                FlatClosurePayload::Thunk(inner) => {
+                    self.deref_counters.note_payload_arc_clone();
+                    Ok(Arc::clone(inner))
+                }
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Thunk,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
         }
         let record = self.record_or_unknown(ValueTag::Thunk, ptr)?;
         match &record.object {
@@ -2396,6 +2538,19 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.clone_lambda_ptr(ptr);
         }
+        if let Some(payload) = self.flat_closure_probe(ValueTag::Lambda, FlatObjectKind::Lambda, ptr)? {
+            return match payload {
+                FlatClosurePayload::Lambda(inner) => {
+                    self.deref_counters.note_payload_arc_clone();
+                    Ok(Arc::clone(inner))
+                }
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Lambda,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
+        }
         let record = self.record_or_unknown(ValueTag::Lambda, ptr)?;
         match &record.object {
             HeapObjectValue::Lambda(lambda) => {
@@ -2417,6 +2572,19 @@ impl EvalHeap {
         let ptr = value.as_primop_ptr().map_err(EvalHeapError::Value)?;
         if let Some(shared) = &self.shared {
             return shared.clone_primop_ptr(ptr);
+        }
+        if let Some(payload) = self.flat_closure_probe(ValueTag::Primop, FlatObjectKind::Primop, ptr)? {
+            return match payload {
+                FlatClosurePayload::Primop(inner) => {
+                    self.deref_counters.note_payload_arc_clone();
+                    Ok(Arc::clone(inner))
+                }
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Primop,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
         }
         let record = self.record_or_unknown(ValueTag::Primop, ptr)?;
         match &record.object {
@@ -2562,13 +2730,31 @@ impl EvalHeap {
         // additionally breaks the "records are in allocation order" tail
         // assumption this validation depends on. Region pops and the sweep are
         // therefore mutually exclusive within one heap (RFC-0007 06 SS3.3/SS5).
-        if self.records.retired_total() != 0 {
+        let retired_total = self
+            .records
+            .retired_total()
+            .saturating_add(self.flat_closures_retired);
+        if retired_total != 0 {
             return Err(EvalHeapError::RegionPopAfterSweep {
-                retired: self.records.retired_total(),
+                retired: retired_total,
             });
         }
 
         let reclaimed = self.records.len() - mark.records;
+        // The reclaimed suffix spans both worker-object populations: the
+        // record-table suffix above `mark.records` and the flat closures
+        // above the flat store's registry mark (doc 30 FV-3). Retained-edge
+        // validation must reject an edge into either.
+        let flat_suffix_start = mark.flat_closures.entries();
+        let flat_suffix: std::collections::HashSet<
+            usize,
+            std::hash::BuildHasherDefault<record_table::AddressHasher>,
+        > = self
+            .flat_closures
+            .iter()
+            .skip(flat_suffix_start)
+            .map(|entry| entry.ptr().as_ptr() as usize)
+            .collect();
         let reclaimed_records = &self.records[mark.records..];
         let non_worker_records = reclaimed_records
             .iter()
@@ -2580,11 +2766,37 @@ impl EvalHeap {
             });
         }
 
+        let target_in_suffix = |target_ptr: NonNull<HeapObject>| {
+            Self::record_in(reclaimed_records, target_ptr).is_some()
+                || (!flat_suffix.is_empty()
+                    && flat_suffix.contains(&(target_ptr.as_ptr() as usize)))
+        };
+
         for record in &self.records[..mark.records] {
             let source_address = gc_address_for_heap_record(record)?;
             for edge in self.scan_record_edges(record)? {
                 let (_tag, target_ptr) = any_value_heap_ptr(edge.value())?;
-                if Self::record_in(reclaimed_records, target_ptr).is_some() {
+                if target_in_suffix(target_ptr) {
+                    return Err(EvalHeapError::WorkerRegionPopRetainedEdge {
+                        source_address,
+                        edge_source: edge.source().clone(),
+                        target_address: GcHeapAddress::new(target_ptr.as_ptr() as usize)
+                            .map_err(EvalHeapError::GenerationalGc)?,
+                    });
+                }
+            }
+        }
+
+        // Flat worker closures below the marker are retained sources exactly
+        // like retained records: their captured environments, application
+        // operands, and primop arguments must not reference the reclaimed
+        // suffix (doc 30 FV-3).
+        for entry in self.flat_closures.iter().take(flat_suffix_start) {
+            let source_address = GcHeapAddress::new(entry.ptr().as_ptr() as usize)
+                .map_err(EvalHeapError::GenerationalGc)?;
+            for edge in self.scan_flat_closure_edges(entry.ptr(), entry.object().payload())? {
+                let (_tag, target_ptr) = any_value_heap_ptr(edge.value())?;
+                if target_in_suffix(target_ptr) {
                     return Err(EvalHeapError::WorkerRegionPopRetainedEdge {
                         source_address,
                         edge_source: edge.source().clone(),
@@ -2607,7 +2819,7 @@ impl EvalHeap {
                 .map_err(EvalHeapError::GenerationalGc)?;
             for edge in self.scan_flat_list_edges(entry.object().payload())? {
                 let (_tag, target_ptr) = any_value_heap_ptr(edge.value())?;
-                if Self::record_in(reclaimed_records, target_ptr).is_some() {
+                if target_in_suffix(target_ptr) {
                     return Err(EvalHeapError::WorkerRegionPopRetainedEdge {
                         source_address,
                         edge_source: edge.source().clone(),
@@ -2622,7 +2834,7 @@ impl EvalHeap {
                 .map_err(EvalHeapError::GenerationalGc)?;
             for edge in self.scan_flat_attrs_edges(entry.object().payload())? {
                 let (_tag, target_ptr) = any_value_heap_ptr(edge.value())?;
-                if Self::record_in(reclaimed_records, target_ptr).is_some() {
+                if target_in_suffix(target_ptr) {
                     return Err(EvalHeapError::WorkerRegionPopRetainedEdge {
                         source_address,
                         edge_source: edge.source().clone(),
@@ -2699,32 +2911,44 @@ impl EvalHeap {
         &self,
         mark: EvalHeapWorkerRegionMark,
     ) -> Result<(), EvalHeapError> {
+        // Stale-mark diagnostics count typed worker objects across both
+        // placements (record-table records plus flat closures, doc 30 FV-3)
+        // so the figures read the same whichever placement allocated them.
+        let marker_records = mark.records.saturating_add(mark.flat_closures.entries());
+        let current_records = self.records.len().saturating_add(self.flat_closures.len());
         if mark.owner != self.region_owner {
             return Err(EvalHeapError::WorkerRegionPopStaleMark {
                 reason: "marker was captured from another heap",
-                marker_records: mark.records,
-                current_records: self.records.len(),
+                marker_records,
+                current_records,
             });
         }
         if mark.allocator_epoch != self.worker_allocator_epoch {
             return Err(EvalHeapError::WorkerRegionPopStaleMark {
                 reason: "worker allocator epoch changed",
-                marker_records: mark.records,
-                current_records: self.records.len(),
+                marker_records,
+                current_records,
             });
         }
         if self.worker_region_mark_stack.last().copied() != Some(mark.mark_id) {
             return Err(EvalHeapError::WorkerRegionPopStaleMark {
                 reason: "worker region mark is not innermost",
-                marker_records: mark.records,
-                current_records: self.records.len(),
+                marker_records,
+                current_records,
             });
         }
         if mark.records > self.records.len() {
             return Err(EvalHeapError::WorkerRegionPopStaleMark {
                 reason: "marker record prefix exceeds current records",
-                marker_records: mark.records,
-                current_records: self.records.len(),
+                marker_records,
+                current_records,
+            });
+        }
+        if mark.flat_closures.entries() > self.flat_closures.len() {
+            return Err(EvalHeapError::WorkerRegionPopStaleMark {
+                reason: "marker flat-closure prefix exceeds current flat closures",
+                marker_records,
+                current_records,
             });
         }
 

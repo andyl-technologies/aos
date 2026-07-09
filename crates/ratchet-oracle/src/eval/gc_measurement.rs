@@ -471,6 +471,9 @@ fn cold_aware_budget_options() -> Result<TreeWalkOptions, HeapGcMeasurementSmoke
 fn per_invocation_admission_options() -> Result<TreeWalkOptions, HeapGcMeasurementSmokeError> {
     let mut options = TreeWalkOptions::with_heap_memory_budget(measurement_budget()?);
     options.set_heap_tier_b_transition_admission_enabled(true);
+    // Generation rewrites live on record-table worker objects (doc 30
+    // FV-3 scaffolding placement).
+    options.set_record_worker_closures_for_gc_scaffolding(true);
     Ok(options)
 }
 

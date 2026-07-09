@@ -98,7 +98,7 @@ use crate::string::NixString;
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
 use super::record_table::AddressHasher;
-use super::{FlatAttrsPayload, HeapObjectValue};
+use super::{FlatAttrsPayload, FlatClosurePayload, HeapObjectValue};
 
 /// Records in the first (level-0) chunk. Level `c` holds `CHUNK_LEN << c`
 /// records, so chunk sizes grow geometrically like a `Vec`'s doubling while
@@ -185,6 +185,7 @@ const _: fn() = || {
     assert_send_sync::<SharedFlatObjectStore<NixString>>();
     assert_send_sync::<SharedFlatObjectStore<NixList>>();
     assert_send_sync::<SharedFlatObjectStore<FlatAttrsPayload>>();
+    assert_send_sync::<SharedFlatObjectStore<FlatClosurePayload>>();
 };
 
 /// A boxed, never-moved run of record slots.
@@ -213,6 +214,15 @@ pub struct SharedHeapShard {
     /// GC contract as flat lists; published entries and metadata are
     /// immutable.
     flat_attrs: SharedFlatObjectStore<FlatAttrsPayload>,
+    /// Flat worker-closure objects (doc 30 FV-3, shared mode): thunks,
+    /// lambdas, and partially applied builtins published at stable slot
+    /// addresses with the same release/acquire protocol. The payload handle
+    /// is never swapped after publication — capture shedding and the B1
+    /// sweep are serial-only (GC is quiesced under parallel evaluation), so
+    /// the `OnceLock` slot's write-once contract holds; thunk force state
+    /// mutates through the payload's interior `ThunkCell`/parallel cell
+    /// atomics exactly as it did behind record slots.
+    flat_closures: SharedFlatObjectStore<FlatClosurePayload>,
     /// Fixed table of chunk levels. Level `c` is boxed on demand with
     /// `CHUNK_LEN << c` slots and then never moves, so slot addresses are
     /// stable while total capacity grows geometrically.
@@ -265,6 +275,7 @@ impl SharedHeapShard {
             flat_strings: SharedFlatObjectStore::with_capacity(capacity),
             flat_lists: SharedFlatObjectStore::with_capacity(capacity),
             flat_attrs: SharedFlatObjectStore::with_capacity(capacity),
+            flat_closures: SharedFlatObjectStore::with_capacity(capacity),
             chunks,
             next: AtomicUsize::new(0),
             published: AtomicUsize::new(0),
@@ -291,6 +302,7 @@ impl SharedHeapShard {
             .saturating_add(self.flat_strings.len())
             .saturating_add(self.flat_lists.len())
             .saturating_add(self.flat_attrs.len())
+            .saturating_add(self.flat_closures.len())
     }
 
     /// Returns the approximate payload bytes published into this shard.
@@ -303,6 +315,7 @@ impl SharedHeapShard {
             .saturating_add(self.flat_strings.payload_bytes())
             .saturating_add(self.flat_lists.payload_bytes())
             .saturating_add(self.flat_attrs.payload_bytes())
+            .saturating_add(self.flat_closures.payload_bytes())
     }
 
     /// Publishes `object` into the next free slot and returns its runtime
@@ -385,15 +398,6 @@ impl SharedHeapShard {
         let (level, slot_idx) = slot_location(id);
         let chunk = self.chunks.get(level)?.get()?;
         chunk.get(slot_idx)?.get()
-    }
-
-    /// Returns the typed object of the published record at `id`.
-    ///
-    /// This is the owning worker's lock-free fast path: it pairs with the
-    /// record id returned by [`SharedHeapShard::alloc_object`], so the caller
-    /// already proved the id names a published record of this shard.
-    pub(super) fn object_at(&self, id: usize) -> Option<&HeapObjectValue> {
-        Some(&self.record(id)?.object)
     }
 
     /// Resolves `address` to its record within this shard, if it owns it.
@@ -493,6 +497,42 @@ impl SharedHeapShard {
         Ok(Value::heap(ValueTag::Attrs, ptr)?)
     }
 
+    /// Publishes a flat worker closure and returns its runtime value
+    /// (doc 30 FV-3, shared mode).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SharedHeapError::ShardFull`] when the flat store's slot
+    /// capacity is exhausted, or [`SharedHeapError::Value`] if the slot
+    /// address cannot form a valid heap value.
+    pub(super) fn publish_flat_closure(
+        &self,
+        kind: FlatObjectKind,
+        payload: FlatClosurePayload,
+    ) -> Result<Value, SharedHeapError> {
+        let tag = payload.tag();
+        let payload_bytes = std::mem::size_of::<SharedFlatObject<FlatClosurePayload>>();
+        let ptr = self
+            .flat_closures
+            .publish(kind, 0, payload_bytes, payload)
+            .map_err(|_| SharedHeapError::ShardFull {
+                shard: self.shard_id,
+                capacity: self.capacity,
+            })?;
+        Ok(Value::heap(tag, ptr)?)
+    }
+
+    /// Resolves `ptr` as a published flat worker closure in this shard.
+    ///
+    /// The closure store hosts all three worker kinds; the caller matches on
+    /// the payload for kind fidelity.
+    pub(super) fn resolve_flat_closure(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&SharedFlatObject<FlatClosurePayload>> {
+        self.flat_closures.resolve_any(ptr)
+    }
+
     /// Resolves `ptr` as a published flat string/path of `kind` in this shard.
     pub(super) fn resolve_flat_string(
         &self,
@@ -534,10 +574,17 @@ impl SharedHeapShard {
         {
             return Some(ValueTag::List);
         }
-        self.flat_attrs
+        if self
+            .flat_attrs
             .resolve_any(ptr)
             .and_then(|object| object.kind())
-            .map(|_| ValueTag::Attrs)
+            .is_some()
+        {
+            return Some(ValueTag::Attrs);
+        }
+        self.flat_closures
+            .resolve_any(ptr)
+            .map(|object| object.payload().tag())
     }
 }
 
@@ -548,9 +595,8 @@ impl SharedHeapShard {
 fn payload_size_estimate(object: &HeapObjectValue) -> usize {
     let inline = std::mem::size_of::<SharedHeapRecord>();
     let out_of_line = match object {
-        HeapObjectValue::String(string) | HeapObjectValue::Path(string) => string.len(),
+        HeapObjectValue::String(string) => string.len(),
         HeapObjectValue::List(list) => list.len() * std::mem::size_of::<Value>(),
-        HeapObjectValue::Attrs { attrs, .. } => attrs.len() * 2 * std::mem::size_of::<Value>(),
         HeapObjectValue::Lambda(_)
         | HeapObjectValue::Primop(_)
         | HeapObjectValue::Thunk(_)
@@ -649,6 +695,16 @@ impl SharedHeapArena {
         self.shards
             .iter()
             .find_map(|shard| shard.resolve_flat_attrs(ptr))
+    }
+
+    /// Resolves `ptr` as a flat worker closure, across all shards.
+    pub(super) fn resolve_flat_closure(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&SharedFlatObject<FlatClosurePayload>> {
+        self.shards
+            .iter()
+            .find_map(|shard| shard.resolve_flat_closure(ptr))
     }
 
     /// Returns the value tag of the flat object at `ptr`, across all shards.
@@ -766,13 +822,12 @@ impl SharedHeapArena {
                 actual,
             });
         }
-        match self.resolve_value(value)? {
-            HeapObjectValue::Attrs { attrs, .. } => Ok(attrs),
-            other => Err(SharedHeapError::RecordTypeMismatch {
+        Err(match self.resolve_value(value)? {
+            other => SharedHeapError::RecordTypeMismatch {
                 expected: ValueTag::Attrs,
                 actual: other.tag(),
-            }),
-        }
+            },
+        })
     }
 }
 

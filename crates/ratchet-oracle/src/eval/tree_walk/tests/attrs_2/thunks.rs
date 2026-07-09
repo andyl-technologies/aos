@@ -335,10 +335,11 @@ fn analyzer_produced_direct_body_let_thunk_uses_single_entry_storage() {
     assert_eq!(evaluator.stats().thunks_allocated(), 1);
     assert_eq!(evaluator.stats().thunks_forced(), 1);
     assert_eq!(evaluator.stats().thunk_cache_hits(), 0);
+    // FV-3: production thunks are flat worker closures, not records.
     let thunk_values = evaluator
         .heap()
-        .test_record_values()
-        .map(|value| value.expect("heap record value rebuilds"))
+        .test_flat_closure_values()
+        .map(|value| value.expect("flat closure value rebuilds"))
         .filter(|value| value.tag() == ValueTag::Thunk)
         .collect::<Vec<_>>();
     assert_eq!(thunk_values.len(), 1);

@@ -8348,6 +8348,9 @@ mod root_writeback_destination_binding_tests {
     #[test]
     fn live_outcome_root_writebacks_reject_source_tag_mismatch_before_body_write() {
         let mut eval_heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+        // FV-3: object-copy requests describe record-table worker objects
+        // (the Tier-B B2 relocation scaffolding placement).
+        eval_heap.use_record_worker_closures_for_gc_scaffolding();
         let source = eval_heap
             .alloc_lambda(EvalLambda::new(
                 IrId::new(7),

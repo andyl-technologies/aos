@@ -67,8 +67,10 @@ pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};
 use flat_values::FlatColdHashStore;
 pub(crate) use flat_values::attrs::FlatAttrsPayload;
+pub(crate) use flat_values::closures::FlatClosurePayload;
+pub use flat_values::closures::WorkerClosurePlacement;
 
-use crate::heap::flat::{FlatObjectKind, FlatObjectStore};
+use crate::heap::flat::{FlatObjectKind, FlatObjectStore, FlatStorePopReport, FlatStoreRegionMark};
 pub use gc::{EvalGcMode, EvalHeapSweepReport};
 use record_table::HeapRecordTable;
 use shared_backend::SharedHeapBackend;
@@ -300,6 +302,30 @@ pub struct EvalHeap {
     /// decision). The store participates in the same four GC couplings as
     /// the flat list store; see `flat_values::attrs` for the seam.
     flat_attrs: FlatObjectStore<FlatAttrsPayload>,
+    /// Flat worker-domain closure objects (doc 30 FV-3, serial mode).
+    ///
+    /// Thunks, lambdas, and partially applied builtins — the mutable,
+    /// claim-carrying, region-popped worker kinds — live flat behind their
+    /// value addresses with interior `Arc` payload handles. One store hosts
+    /// all three kinds so a single registry mark covers a worker lexical
+    /// region across kinds. The store participates in region pops
+    /// (`FlatObjectStore::pop_region`) and the B1 sweep (payload retirement
+    /// in place); see `flat_values::closures` for the placement decision and
+    /// the reclamation contract.
+    flat_closures: FlatObjectStore<FlatClosurePayload>,
+    /// Running total of flat closures retired by the Tier-B sweep.
+    ///
+    /// The flat half of the region-pop interlock: pops rewind the flat
+    /// closure arena and may reuse addresses, which is only sound while no
+    /// retirement has pinned an address as permanently unknown. Mirrors
+    /// `HeapRecordTable::retired_total` and is never reset.
+    flat_closures_retired: u64,
+    /// Where newly allocated worker closures are placed (doc 30 FV-3).
+    ///
+    /// `Flat` in production; `Record` under an installed GC-stress policy so
+    /// the Tier-B B2 relocation proving ground keeps operating on
+    /// record-table objects. See `flat_values::closures`.
+    worker_closure_placement: WorkerClosurePlacement,
     /// Sparse cutoff-cache hash side map for flat objects.
     flat_cold_hashes: FlatColdHashStore,
     /// Flat object addresses (lists or attrsets) whose header hash word went
@@ -434,6 +460,7 @@ pub struct EvalHeapWorkerRegionMark {
     allocator_epoch: u64,
     mark_id: u64,
     records: usize,
+    flat_closures: FlatStoreRegionMark,
 }
 
 impl EvalHeapWorkerRegionMark {
@@ -443,6 +470,7 @@ impl EvalHeapWorkerRegionMark {
         allocator_epoch: u64,
         mark_id: u64,
         records: usize,
+        flat_closures: FlatStoreRegionMark,
     ) -> Self {
         Self {
             allocator,
@@ -450,6 +478,7 @@ impl EvalHeapWorkerRegionMark {
             allocator_epoch,
             mark_id,
             records,
+            flat_closures,
         }
     }
 
@@ -457,12 +486,26 @@ impl EvalHeapWorkerRegionMark {
     pub const fn records(self) -> usize {
         self.records
     }
+
+    /// Returns the flat worker-closure count captured at the marker.
+    pub const fn flat_closures(self) -> usize {
+        self.flat_closures.entries()
+    }
+
+    /// Returns the typed worker-object count captured at the marker.
+    ///
+    /// Counts record-table records and flat worker closures together
+    /// (doc 30 FV-3), matching the stale-mark diagnostics.
+    pub const fn typed_objects(self) -> usize {
+        self.records + self.flat_closures.entries()
+    }
 }
 
 /// Accounting returned after reclaiming one worker lexical region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvalHeapWorkerRegionPopReport {
     arena: ArenaRegionPopReport,
+    flat_closures: FlatStorePopReport,
     reclaimed_records: usize,
     records_after: usize,
 }
@@ -470,22 +513,36 @@ pub struct EvalHeapWorkerRegionPopReport {
 impl EvalHeapWorkerRegionPopReport {
     const fn new(
         arena: ArenaRegionPopReport,
+        flat_closures: FlatStorePopReport,
         reclaimed_records: usize,
         records_after: usize,
     ) -> Self {
         Self {
             arena,
+            flat_closures,
             reclaimed_records,
             records_after,
         }
     }
 
-    /// Returns the lower-level arena reclamation report.
+    /// Returns the whole worker domain's arena reclamation accounting.
+    ///
+    /// Merges the worker allocator's rewind with the flat closure store's
+    /// (doc 30 FV-3), so before/after stats line up with
+    /// [`EvalHeap::arena_stats`].
     pub const fn arena_report(self) -> ArenaRegionPopReport {
         self.arena
     }
 
-    /// Returns the number of typed worker records removed from the side table.
+    /// Returns the flat closure store's reclamation report (doc 30 FV-3).
+    pub const fn flat_closures_report(self) -> FlatStorePopReport {
+        self.flat_closures
+    }
+
+    /// Returns the number of typed worker objects reclaimed by the pop.
+    ///
+    /// Counts record-table records and flat worker closures together, so the
+    /// figure reads the same across worker-closure placements.
     pub const fn reclaimed_records(self) -> usize {
         self.reclaimed_records
     }
@@ -584,22 +641,12 @@ impl EvalHeapAttrsMetadata {
 
 #[derive(Clone, Debug)]
 enum HeapObjectValue {
+    /// Retained for the Tier-B B2 relocation proving ground's record
+    /// fixtures; production strings are flat (doc 30 FV-1). The `Path` and
+    /// `Attrs` variants FV-1/FV-2 left as never-constructed placeholders
+    /// were retired by FV-3.
     String(NixString),
-    /// Never constructed since doc 30 FV-1 moved paths into the flat stores
-    /// (serial and shared); the variant remains so record-generic machinery
-    /// (edge scans, staged writebacks, shared-arena convenience allocators)
-    /// keeps its exhaustive shape until the record table itself retires.
-    #[allow(dead_code)]
-    Path(NixString),
     List(NixList),
-    /// Never constructed since doc 30 FV-2 moved attrsets into the flat
-    /// stores (serial and shared); retained for the same record-generic
-    /// exhaustiveness reasons as [`HeapObjectValue::Path`].
-    #[allow(dead_code)]
-    Attrs {
-        metadata: EvalHeapAttrsMetadata,
-        attrs: FlatAttrs,
-    },
     Lambda(Arc<EvalLambda>),
     Primop(Arc<EvalPrimOp>),
     Thunk(Arc<EvalThunk>),
@@ -622,9 +669,7 @@ impl HeapObjectValue {
     const fn tag(&self) -> ValueTag {
         match self {
             Self::String(_) => ValueTag::String,
-            Self::Path(_) => ValueTag::Path,
             Self::List(_) => ValueTag::List,
-            Self::Attrs { .. } => ValueTag::Attrs,
             Self::Lambda(_) => ValueTag::Lambda,
             Self::Primop(_) => ValueTag::Primop,
             Self::Thunk(_) => ValueTag::Thunk,

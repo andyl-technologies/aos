@@ -613,6 +613,9 @@ fn tier_b_options() -> Result<TreeWalkOptions, GcConformanceSmokeError> {
         .map_err(|_| GcConformanceSmokeError::InvalidMemoryBudget { bytes: 1 })?;
     let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
     options.set_heap_tier_b_transition_admission_enabled(true);
+    // The conformance harness asserts generation rewrites, which live on
+    // record-table worker objects (doc 30 FV-3 scaffolding placement).
+    options.set_record_worker_closures_for_gc_scaffolding(true);
     Ok(options)
 }
 
@@ -621,6 +624,7 @@ fn tier_b_case_options() -> Result<TreeWalkOptions, GcConformanceCaseError> {
         .map_err(|_| GcConformanceCaseError::InvalidMemoryBudget { bytes: 1 })?;
     let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
     options.set_heap_tier_b_transition_admission_enabled(true);
+    options.set_record_worker_closures_for_gc_scaffolding(true);
     Ok(options)
 }
 

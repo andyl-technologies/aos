@@ -333,6 +333,15 @@ impl TreeWalk {
             options.gc_stress_policy()
         };
         heap.set_gc_stress_policy(gc_stress_policy);
+        // The generational thunk-resolve write barrier resolves published
+        // values against record generations, so barrier-exercising tiers keep
+        // the record-table worker placement alongside the GC-stress proving
+        // ground (doc 30 FV-3; see `flat_values::closures`).
+        if options.thunk_resolve_barrier_tier() != GenerationalGcTier::OneShotArena
+            || options.record_worker_closures_for_gc_scaffolding()
+        {
+            heap.use_record_worker_closures_for_gc_scaffolding();
+        }
         // Tier-B live reclamation (AOS_NIX_GC=sweep) is likewise pinned OFF
         // under parallel evaluation: capture shedding and the quiescent sweep
         // both require the serial heap's single-mutator invariants, and the

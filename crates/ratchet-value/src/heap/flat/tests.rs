@@ -406,3 +406,120 @@ fn attrs_kind_allocates_and_resolves_mutably_with_stable_metadata() {
     drop(store);
     assert_eq!(drops.get(), 1);
 }
+
+#[test]
+fn pop_region_drops_popped_payloads_and_keeps_the_retained_prefix() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let retained = store
+        .alloc(FlatObjectKind::Thunk, 0, 0, payload("retained", &drops))
+        .expect("retained allocation succeeds");
+    let mark = store.region_mark();
+    let popped_a = store
+        .alloc(FlatObjectKind::Thunk, 0, 0, payload("popped-a", &drops))
+        .expect("popped allocation succeeds");
+    let popped_b = store
+        .alloc(FlatObjectKind::Lambda, 0, 0, payload("popped-b", &drops))
+        .expect("popped allocation succeeds");
+    assert_eq!(store.len(), 3);
+
+    let report = store.pop_region(mark).expect("pop succeeds");
+    assert_eq!(report.popped_entries(), 2);
+    assert_eq!(store.len(), 1);
+    assert_eq!(drops.get(), 2, "popped payloads drop exactly once");
+
+    // The retained object still resolves; the popped addresses fail loudly
+    // through the wiped header magic (they stay inside the retained chunk's
+    // membership region).
+    let object = store
+        .resolve(retained.ptr, FlatObjectKind::Thunk)
+        .expect("retained object resolves");
+    assert_eq!(object.payload().text, "retained");
+    for stale in [popped_a.ptr, popped_b.ptr] {
+        let error = store
+            .resolve(stale, FlatObjectKind::Thunk)
+            .map(|object| object.kind())
+            .expect_err("stale popped address fails loudly");
+        assert_eq!(
+            error,
+            FlatObjectError::UnknownAddress {
+                address: stale.as_ptr() as usize,
+            }
+        );
+    }
+
+    drop(store);
+    assert_eq!(drops.get(), 3, "no double drop at store teardown");
+}
+
+#[test]
+fn pop_region_allows_address_reuse_by_later_allocations() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    // Anchor the chunk below the marker: the pop then rewinds the retained
+    // chunk's bump cursor instead of dropping the whole chunk, so the next
+    // allocation deterministically reuses the popped address (a dropped
+    // chunk's replacement mapping has no stable address, on any platform).
+    store
+        .alloc(FlatObjectKind::Primop, 0, 0, payload("anchor", &drops))
+        .expect("anchor allocation succeeds");
+    let mark = store.region_mark();
+    let first = store
+        .alloc(FlatObjectKind::Primop, 0, 0, payload("first", &drops))
+        .expect("allocation succeeds");
+    store.pop_region(mark).expect("pop succeeds");
+
+    let second = store
+        .alloc(FlatObjectKind::Primop, 0, 0, payload("second", &drops))
+        .expect("reallocation succeeds");
+    assert_eq!(
+        first.ptr, second.ptr,
+        "the bump cursor rewound, so the address is reused"
+    );
+    let object = store
+        .resolve(second.ptr, FlatObjectKind::Primop)
+        .expect("new object resolves");
+    assert_eq!(object.payload().text, "second");
+}
+
+#[test]
+fn pop_region_rejects_stale_marks_before_dropping_anything() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let mark = store.region_mark();
+    store
+        .alloc(FlatObjectKind::Thunk, 0, 0, payload("live", &drops))
+        .expect("allocation succeeds");
+    let inner = store.region_mark();
+    store.pop_region(mark).expect("outer pop succeeds");
+
+    // The inner mark now describes a longer registry than the store has;
+    // rejection happens before any payload drop.
+    let error = store.pop_region(inner).expect_err("stale mark is rejected");
+    assert_eq!(
+        error,
+        FlatObjectError::InvalidRegionMark {
+            marked_entries: 1,
+            current_entries: 0,
+        }
+    );
+    assert_eq!(drops.get(), 1, "only the outer pop dropped a payload");
+}
+
+#[test]
+fn worker_kinds_round_trip_through_kind_words() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    for kind in [
+        FlatObjectKind::Thunk,
+        FlatObjectKind::Lambda,
+        FlatObjectKind::Primop,
+    ] {
+        let allocation = store
+            .alloc(kind, 0, 0, payload("closure", &drops))
+            .expect("allocation succeeds");
+        assert_eq!(store.kind_of(allocation.ptr), Some(kind));
+        let object = store.resolve(allocation.ptr, kind).expect("resolves");
+        assert_eq!(object.kind(), kind);
+    }
+}

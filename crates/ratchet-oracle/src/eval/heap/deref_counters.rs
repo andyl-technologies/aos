@@ -35,6 +35,9 @@ pub(crate) struct EvalHeapDerefCounters {
     flat_path_resolutions: Cell<u64>,
     flat_list_resolutions: Cell<u64>,
     flat_attrs_resolutions: Cell<u64>,
+    flat_thunk_resolutions: Cell<u64>,
+    flat_lambda_resolutions: Cell<u64>,
+    flat_primop_resolutions: Cell<u64>,
     payload_arc_clones: Cell<u64>,
 }
 
@@ -63,6 +66,9 @@ impl EvalHeapDerefCounters {
             ValueTag::Path => &self.flat_path_resolutions,
             ValueTag::List => &self.flat_list_resolutions,
             ValueTag::Attrs => &self.flat_attrs_resolutions,
+            ValueTag::Thunk => &self.flat_thunk_resolutions,
+            ValueTag::Lambda => &self.flat_lambda_resolutions,
+            ValueTag::Primop => &self.flat_primop_resolutions,
             _ => return,
         };
         counter.set(counter.get().saturating_add(1));
@@ -90,6 +96,9 @@ impl EvalHeapDerefCounters {
             flat_path_resolutions: self.flat_path_resolutions.get(),
             flat_list_resolutions: self.flat_list_resolutions.get(),
             flat_attrs_resolutions: self.flat_attrs_resolutions.get(),
+            flat_thunk_resolutions: self.flat_thunk_resolutions.get(),
+            flat_lambda_resolutions: self.flat_lambda_resolutions.get(),
+            flat_primop_resolutions: self.flat_primop_resolutions.get(),
             payload_arc_clones: self.payload_arc_clones.get(),
         }
     }
@@ -122,6 +131,12 @@ pub(crate) struct EvalHeapDerefCountersSnapshot {
     pub(crate) flat_list_resolutions: u64,
     /// Attrset resolutions served by the flat store without a record probe.
     pub(crate) flat_attrs_resolutions: u64,
+    /// Thunk resolutions served by the flat store without a record probe.
+    pub(crate) flat_thunk_resolutions: u64,
+    /// Lambda resolutions served by the flat store without a record probe.
+    pub(crate) flat_lambda_resolutions: u64,
+    /// Partially-applied-builtin resolutions served by the flat store.
+    pub(crate) flat_primop_resolutions: u64,
     /// `Arc` payload-handle clones handed out by thunk/lambda/primop resolution.
     pub(crate) payload_arc_clones: u64,
 }

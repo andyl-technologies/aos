@@ -112,7 +112,10 @@ fn sweep_retires_unreachable_worker_records_and_fails_stale_handles_loudly() {
     assert_eq!(report.swept(), 1);
     assert_eq!(report.live_worker_records, 1);
     assert_eq!(report.retired_total, 1);
-    assert_eq!(report.free_slots, 1);
+    // FV-3: flat closures retire in place with no slot recycling — the
+    // record table's free list stays empty (its population is the Tier-B B2
+    // proving ground's records only).
+    assert_eq!(report.free_slots, 0);
     // The retired payload dropped its captured frame.
     assert_eq!(Arc::strong_count(&frame_b), 1);
     // The survivor still resolves; the retired handle fails loudly.
@@ -122,15 +125,18 @@ fn sweep_retires_unreachable_worker_records_and_fails_stale_handles_loudly() {
         .expect_err("stale handle fails loudly");
     assert!(matches!(error, EvalHeapError::UnknownPointer { .. }));
 
-    // The retired slot is recycled by the next allocation: the record table
-    // does not grow, and the fresh record resolves at its own new address.
+    // FV-3: a retired flat closure's entry is a tombstone, not a recycled
+    // slot — the next allocation appends (the typed-object count grows by
+    // one) and resolves at its own fresh address, while the retired address
+    // is never reissued.
     let (fresh, _frame_c) = alloc_capturing_thunk(&mut heap);
-    assert_eq!(heap.len(), records_before);
-    heap.get_thunk(fresh).expect("recycled-slot record resolves");
-    // The stale handle still fails after recycling (no address reuse).
+    assert_eq!(heap.len(), records_before + 1);
+    heap.get_thunk(fresh).expect("fresh flat closure resolves");
+    // The stale handle still fails after further allocation (no address
+    // reuse).
     let error = heap
         .get_thunk(unreachable)
-        .expect_err("stale handle keeps failing after slot recycling");
+        .expect_err("stale handle keeps failing after retirement");
     assert!(matches!(error, EvalHeapError::UnknownPointer { .. }));
 }
 
@@ -277,4 +283,83 @@ fn shed_then_sweep_reports_cycle_counters() {
     assert_eq!(counters.thunks_shed(), 2);
     assert_eq!(counters.gc_sweeps(), 1);
     assert_eq!(counters.gc_records_swept(), 1);
+}
+
+/// A retained flat closure below the marker whose forced result references
+/// the reclaimed suffix rejects the pop, exactly as a retained record did.
+#[test]
+fn flat_closure_region_pop_rejects_retained_closure_edge_into_suffix() {
+    let mut heap = EvalHeap::new();
+    let (retained, _frame) = alloc_capturing_thunk(&mut heap);
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let above = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(20),
+            IrId::new(21),
+            FrameId::new(0),
+            EvalEnv::default(),
+        ))
+        .expect("suffix lambda allocates");
+    // Force the retained thunk to the suffix lambda: its cached-result edge
+    // now points into the reclaimed region.
+    force_thunk_to(&heap, retained, above);
+
+    let error = heap
+        .pop_worker_region_if_disconnected(mark)
+        .expect_err("retained cached-result edge rejects the pop");
+    assert!(matches!(
+        error,
+        EvalHeapError::WorkerRegionPopRetainedEdge { .. }
+    ));
+    // Nothing was reclaimed: both objects still resolve.
+    heap.get_thunk(retained).expect("retained thunk resolves");
+    heap.get_lambda(above).expect("suffix lambda resolves");
+}
+
+/// Cross-kind resolution over flat closures keeps record error fidelity:
+/// a live closure of another kind is a type mismatch, and any retired
+/// closure address is an unknown pointer under every requested kind.
+#[test]
+fn flat_closure_resolution_keeps_mismatch_and_retired_fidelity() {
+    let mut heap = EvalHeap::new();
+    let (thunk, _frame) = alloc_capturing_thunk(&mut heap);
+    let thunk_ptr_bits = thunk.payload_bits();
+
+    let error = heap
+        .get_lambda(Value::heap(
+            ValueTag::Lambda,
+            std::ptr::NonNull::new(thunk_ptr_bits as *mut crate::value::HeapObject)
+                .expect("thunk address is non-null"),
+        )
+        .expect("lambda-tagged handle rebuilds"))
+        .expect_err("live thunk under a lambda getter is a type mismatch");
+    assert!(matches!(
+        error,
+        EvalHeapError::RecordTypeMismatch {
+            expected: ValueTag::Lambda,
+            actual: ValueTag::Thunk,
+            ..
+        }
+    ));
+
+    // Retire the thunk through a sweep; every getter then reports unknown.
+    force_thunk_to(&heap, thunk, Value::int(1));
+    let roots = EvalRootSet::new();
+    let report = heap
+        .sweep_unreachable_worker_records(&roots)
+        .expect("sweep succeeds");
+    assert_eq!(report.swept_thunks, 1);
+    assert!(matches!(
+        heap.get_thunk(thunk).expect_err("retired thunk is unknown"),
+        EvalHeapError::UnknownPointer { .. }
+    ));
+    let error = heap
+        .get_lambda(Value::heap(
+            ValueTag::Lambda,
+            std::ptr::NonNull::new(thunk_ptr_bits as *mut crate::value::HeapObject)
+                .expect("thunk address is non-null"),
+        )
+        .expect("lambda-tagged handle rebuilds"))
+        .expect_err("retired closure is unknown under every kind");
+    assert!(matches!(error, EvalHeapError::UnknownPointer { .. }));
 }

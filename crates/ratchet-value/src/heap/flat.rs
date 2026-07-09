@@ -28,11 +28,16 @@
 //! [`FlatObjectStore`] owns its own [`BumpArena`], so the safe API cannot
 //! outlive the memory it hands out: payload drop glue runs in the store's
 //! [`Drop`] (in registry order) strictly before the owned arena unmaps its
-//! chunks (struct fields drop after `Drop::drop` returns). Objects are never
-//! individually freed: flat objects model the evaluator's hash-consed
-//! permanent domain, which is immortal for the store's lifetime, so no mark
-//! bits or free lists exist here (thunks arrive in stage FV-3 with their own
-//! state machinery).
+//! chunks (struct fields drop after `Drop::drop` returns). Permanent-domain
+//! stores (strings/paths/lists/attrsets) never free objects individually:
+//! they model the evaluator's hash-consed immortal domain. Worker-domain
+//! stores (doc 30 stage FV-3: thunks, lambdas, primops) reclaim through
+//! exactly two doors, mirroring the record table's two mutually-exclusive
+//! reclaimers: [`FlatObjectStore::pop_region`] (LIFO lexical-region pops,
+//! addresses may be reused afterwards) and payload retirement in place
+//! through [`FlatObjectStore::resolve_mut`] (the B1 sweep swaps the payload
+//! for a retired tombstone; the entry, header, and address remain, and the
+//! address is never reissued).
 //!
 //! # Lists and attrsets (edge-carrying payloads) and the writeback door
 //!
@@ -87,7 +92,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use super::arena::{ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaStats, BumpArena};
+use super::arena::{
+    ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionMark, ArenaRegionPopReport,
+    ArenaStats, BumpArena,
+};
 use super::advice::MemoryAdviceKind;
 use crate::value::HeapObject;
 
@@ -132,6 +140,12 @@ pub enum FlatObjectKind {
     List = 0x03,
     /// A Nix attribute-set payload (entry values carry heap edges).
     Attrs = 0x04,
+    /// A suspended-thunk payload (doc 30 stage FV-3; worker domain).
+    Thunk = 0x05,
+    /// A lambda-closure payload (doc 30 stage FV-3; worker domain).
+    Lambda = 0x06,
+    /// A builtin / partially-applied-builtin payload (doc 30 stage FV-3).
+    Primop = 0x07,
 }
 
 impl FlatObjectKind {
@@ -145,6 +159,9 @@ impl FlatObjectKind {
             0x02 => Some(Self::Path),
             0x03 => Some(Self::List),
             0x04 => Some(Self::Attrs),
+            0x05 => Some(Self::Thunk),
+            0x06 => Some(Self::Lambda),
+            0x07 => Some(Self::Primop),
             _ => None,
         }
     }
@@ -276,6 +293,45 @@ impl<'a, T> FlatStoredObject<'a, T> {
     /// Returns the resolved object view.
     pub fn object(self) -> FlatObjectRef<'a, T> {
         self.object
+    }
+}
+
+/// A LIFO marker over a flat store's registry and owned arena.
+///
+/// Produced by [`FlatObjectStore::region_mark`] and consumed by
+/// [`FlatObjectStore::pop_region`] once the caller has proven every object
+/// above the marker unreferenced. Worker-domain stores (doc 30 stage FV-3)
+/// use this to reclaim flat closures on lexical-region pops exactly where the
+/// record table used index truncation; permanent-domain stores never pop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlatStoreRegionMark {
+    entries: usize,
+    arena: ArenaRegionMark,
+}
+
+impl FlatStoreRegionMark {
+    /// Returns the registry length captured by the marker.
+    pub const fn entries(self) -> usize {
+        self.entries
+    }
+}
+
+/// Accounting returned after popping a flat store's lexical subregion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlatStorePopReport {
+    popped_entries: usize,
+    arena: ArenaRegionPopReport,
+}
+
+impl FlatStorePopReport {
+    /// Returns the number of flat objects dropped by the pop.
+    pub const fn popped_entries(self) -> usize {
+        self.popped_entries
+    }
+
+    /// Returns the owned arena's reclamation accounting.
+    pub const fn arena_report(self) -> ArenaRegionPopReport {
+        self.arena
     }
 }
 
@@ -602,6 +658,81 @@ impl<T> FlatObjectStore<T> {
         })
     }
 
+    /// Captures the current registry and arena position for a future
+    /// lexical-region pop.
+    pub fn region_mark(&self) -> FlatStoreRegionMark {
+        FlatStoreRegionMark {
+            entries: self.entries.len(),
+            arena: self.arena.region_mark(),
+        }
+    }
+
+    /// Pops every object allocated after `mark`, dropping payloads and
+    /// rewinding the owned arena (doc 30 stage FV-3, worker-domain stores).
+    ///
+    /// This is the flat analog of the record table's region truncation: the
+    /// popped objects' payloads are dropped exactly once, their header kind
+    /// words are wiped so a stale resolution of a popped address in a
+    /// retained chunk fails the magic check loudly (dropped whole chunks
+    /// leave the membership regions entirely), and the arena cursor rewinds
+    /// so later allocations may reuse the addresses — the same reuse contract
+    /// the record-table pop documents. The caller owns the reachability
+    /// proof: no retained object or live root may still reference the popped
+    /// suffix (the evaluator's region-pop validation establishes this before
+    /// calling), and marker freshness/ownership is the caller's region-mark
+    /// discipline (the evaluator wraps flat markers in its owner/epoch
+    /// checked region marks).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlatObjectError::InvalidRegionMark`] if `mark`'s registry
+    /// length exceeds the store's, or [`FlatObjectError::Arena`] if the arena
+    /// marker cannot describe the arena's current prefix. Both are rejected
+    /// before any payload is dropped.
+    pub fn pop_region(
+        &mut self,
+        mark: FlatStoreRegionMark,
+    ) -> Result<FlatStorePopReport, FlatObjectError> {
+        if mark.entries > self.entries.len() {
+            return Err(FlatObjectError::InvalidRegionMark {
+                marked_entries: mark.entries,
+                current_entries: self.entries.len(),
+            });
+        }
+        self.arena
+            .validate_region_mark(mark.arena)
+            .map_err(FlatObjectError::Arena)?;
+        for entry in &self.entries[mark.entries..] {
+            // SAFETY: `entry.ptr` was placement-written by an allocation
+            // method as a `FlatObject<T>` in the store-owned arena and is
+            // dropped exactly once: the registry entry is truncated below, so
+            // neither a later pop nor the store's `Drop` revisits it. The
+            // arena mapping is still live because the rewind happens after
+            // this loop.
+            unsafe { std::ptr::drop_in_place(entry.ptr.as_ptr() as *mut FlatObject<T>) };
+            // SAFETY: same in-bounds, exclusively owned allocation; wiping
+            // the kind word makes a stale resolution of this address fail the
+            // header magic check loudly instead of reading a dropped payload.
+            unsafe { (entry.ptr.as_ptr() as *mut u64).write(0) };
+        }
+        let popped_entries = self.entries.len() - mark.entries;
+        self.entries.truncate(mark.entries);
+        // SAFETY: the marker was structurally validated above and every
+        // object above it was just dropped and unregistered, so no registry
+        // entry or payload borrow refers to the rewound range; the caller's
+        // region discipline proves no live runtime value still names those
+        // addresses (stale handles fail loudly per the wipe above).
+        let arena = unsafe { self.arena.pop_region_to_mark(mark.arena) }
+            .map_err(FlatObjectError::Arena)?;
+        self.regions.clear();
+        self.regions.extend(self.arena.chunk_regions());
+        self.regions.sort_unstable();
+        Ok(FlatStorePopReport {
+            popped_entries,
+            arena,
+        })
+    }
+
     /// Validates that `ptr` names one of this store's objects and reads its
     /// kind.
     #[inline]
@@ -673,6 +804,16 @@ pub enum FlatObjectError {
     UnknownAddress {
         /// The rejected address.
         address: usize,
+    },
+    /// A region marker did not describe the store's current prefix.
+    #[error(
+        "flat store region mark is invalid: marked {marked_entries} entries, store has {current_entries}"
+    )]
+    InvalidRegionMark {
+        /// The registry length captured by the marker.
+        marked_entries: usize,
+        /// The store's current registry length.
+        current_entries: usize,
     },
     /// The address names a flat object of a different kind.
     #[error("flat object kind mismatch at 0x{address:x}: expected {expected:?}, got {actual:?}")]

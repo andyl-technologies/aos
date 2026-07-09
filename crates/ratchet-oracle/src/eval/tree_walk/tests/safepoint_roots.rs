@@ -2465,6 +2465,11 @@ fn tree_walk_with_periodic_poll_before_single_young_reservation()
 -> (TreeWalk, AllocationCollectorPoll, [Value; 1]) {
     let ir = lower("x: x");
     let mut evaluator = TreeWalk::new(&ir);
+    // FV-3: this fixture drives collector-poll minor-GC plan application,
+    // which relocates record-table worker objects (scaffolding placement).
+    evaluator
+        .heap
+        .use_record_worker_closures_for_gc_scaffolding();
     let retained = evaluator
         .heap
         .alloc_lambda(EvalLambda::new(

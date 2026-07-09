@@ -83,14 +83,13 @@ use crate::heap::flat::FlatObjectKind;
 use crate::heap::flat::shared::SharedFlatObject;
 use super::record_table::AddressHasher;
 use super::{
+    FlatClosurePayload,
     EvalHeap, EvalHeapAttrsMetadata, EvalHeapError, EvalLambda, EvalPrimOp, EvalThunk,
     FlatAttrsPayload, HeapAllocationDomain, HeapObjectValue, HeapValueHashCacheUpdate,
     SharedHeapArena, SharedHeapShard, initial_generation_for_allocation_domain,
 };
 use crate::heap::HeapGeneration;
 
-/// A worker-private address map (record address -> shard record id).
-type PrivateAddressIndex = HashMap<usize, usize, BuildHasherDefault<AddressHasher>>;
 
 /// A worker-private cutoff-hash side map (record address -> cached hash).
 type ColdHashIndex = HashMap<usize, ValueHash, BuildHasherDefault<AddressHasher>>;
@@ -106,8 +105,6 @@ pub(super) struct SharedHeapBackend {
     arena: Arc<SharedHeapArena>,
     /// This worker's single-writer allocation shard.
     shard: Arc<SharedHeapShard>,
-    /// Lock-free mirror of this worker's own allocations.
-    local_index: PrivateAddressIndex,
     /// Worker-private canonical value hashes (serial: record-table side map).
     cold_value_hashes: RefCell<ColdHashIndex>,
     /// Worker-private force-capture value hashes.
@@ -120,7 +117,6 @@ impl SharedHeapBackend {
         Self {
             arena,
             shard,
-            local_index: PrivateAddressIndex::default(),
             cold_value_hashes: RefCell::new(ColdHashIndex::default()),
             cold_captured_value_hashes: RefCell::new(ColdHashIndex::default()),
         }
@@ -136,32 +132,13 @@ impl SharedHeapBackend {
         self.shard.published_len()
     }
 
-    /// Publishes `object` into the worker's shard and mirrors its address in
-    /// the private index.
+    /// Resolves an opaque heap pointer to its typed record object.
     ///
-    /// # Errors
-    ///
-    /// Returns [`EvalHeapError::SharedArena`] if the shard rejects the
-    /// allocation (capacity exhausted or a single-writer contract violation).
-    pub(super) fn alloc_object(&mut self, object: HeapObjectValue) -> Result<Value, EvalHeapError> {
-        let (value, id) = self
-            .shard
-            .alloc_object(object)
-            .map_err(EvalHeapError::SharedArena)?;
-        self.local_index
-            .insert(value.payload_bits() as usize, id);
-        Ok(value)
-    }
-
-    /// Resolves an opaque heap pointer to its typed object, from any shard.
-    ///
-    /// Own-shard allocations hit the lock-free private index; everything else
-    /// probes the arena's cross-shard indexes.
+    /// FV-3 moved every worker-object publication into the shards' flat
+    /// closure stores, so no production path publishes record slots anymore
+    /// (the worker-private address mirror that served them is retired); this
+    /// probe remains for the shard record machinery's remaining fixtures.
     pub(super) fn resolve_ptr(&self, ptr: NonNull<HeapObject>) -> Option<&HeapObjectValue> {
-        let address = ptr.as_ptr() as usize;
-        if let Some(&id) = self.local_index.get(&address) {
-            return self.shard.object_at(id);
-        }
         self.arena.resolve_object(ptr)
     }
 
@@ -210,6 +187,32 @@ impl SharedHeapBackend {
         self.shard
             .resolve_flat_attrs(ptr)
             .or_else(|| self.arena.resolve_flat_attrs(ptr))
+    }
+
+    /// Publishes a flat worker closure into this worker's shard.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::SharedArena`] if the shard's flat closure
+    /// slots are exhausted.
+    pub(super) fn publish_flat_closure(
+        &self,
+        kind: FlatObjectKind,
+        payload: FlatClosurePayload,
+    ) -> Result<Value, EvalHeapError> {
+        self.shard
+            .publish_flat_closure(kind, payload)
+            .map_err(EvalHeapError::SharedArena)
+    }
+
+    /// Resolves `ptr` as a flat worker closure, own shard first.
+    fn resolve_flat_closure(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&SharedFlatObject<FlatClosurePayload>> {
+        self.shard
+            .resolve_flat_closure(ptr)
+            .or_else(|| self.arena.resolve_flat_closure(ptr))
     }
 
     /// Returns the value tag of the flat object at `ptr`, if any shard owns
@@ -391,6 +394,16 @@ impl SharedHeapBackend {
     }
 
     fn thunk_arc_ref(&self, ptr: NonNull<HeapObject>) -> Result<&Arc<EvalThunk>, EvalHeapError> {
+        if let Some(object) = self.resolve_flat_closure(ptr) {
+            return match object.payload() {
+                FlatClosurePayload::Thunk(thunk) => Ok(thunk),
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Thunk,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
+        }
         match self.resolve_or_unknown(ValueTag::Thunk, ptr)? {
             HeapObjectValue::Thunk(thunk) => Ok(thunk),
             object => Err(EvalHeapError::record_type_mismatch(
@@ -402,6 +415,16 @@ impl SharedHeapBackend {
     }
 
     fn lambda_arc_ref(&self, ptr: NonNull<HeapObject>) -> Result<&Arc<EvalLambda>, EvalHeapError> {
+        if let Some(object) = self.resolve_flat_closure(ptr) {
+            return match object.payload() {
+                FlatClosurePayload::Lambda(lambda) => Ok(lambda),
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Lambda,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
+        }
         match self.resolve_or_unknown(ValueTag::Lambda, ptr)? {
             HeapObjectValue::Lambda(lambda) => Ok(lambda),
             object => Err(EvalHeapError::record_type_mismatch(
@@ -413,6 +436,16 @@ impl SharedHeapBackend {
     }
 
     fn primop_arc_ref(&self, ptr: NonNull<HeapObject>) -> Result<&Arc<EvalPrimOp>, EvalHeapError> {
+        if let Some(object) = self.resolve_flat_closure(ptr) {
+            return match object.payload() {
+                FlatClosurePayload::Primop(primop) => Ok(primop),
+                payload => Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Primop,
+                    payload.tag(),
+                    ptr,
+                )),
+            };
+        }
         match self.resolve_or_unknown(ValueTag::Primop, ptr)? {
             HeapObjectValue::Primop(primop) => Ok(primop),
             object => Err(EvalHeapError::record_type_mismatch(
@@ -838,7 +871,10 @@ impl EvalHeap {
     ///
     /// Returns [`EvalHeapError`] if the shard rejects the allocation.
     pub(super) fn shared_alloc_lambda(&mut self, lambda: EvalLambda) -> Result<Value, EvalHeapError> {
-        self.shared_alloc_worker_object(HeapObjectValue::Lambda(Arc::new(lambda)))
+        self.shared_alloc_flat_closure(
+            FlatObjectKind::Lambda,
+            FlatClosurePayload::Lambda(Arc::new(lambda)),
+        )
     }
 
     /// Shared-mode [`EvalHeap::alloc_primop`].
@@ -847,7 +883,10 @@ impl EvalHeap {
     ///
     /// Returns [`EvalHeapError`] if the shard rejects the allocation.
     pub(super) fn shared_alloc_primop(&mut self, primop: EvalPrimOp) -> Result<Value, EvalHeapError> {
-        self.shared_alloc_worker_object(HeapObjectValue::Primop(Arc::new(primop)))
+        self.shared_alloc_flat_closure(
+            FlatObjectKind::Primop,
+            FlatClosurePayload::Primop(Arc::new(primop)),
+        )
     }
 
     /// Shared-mode [`EvalHeap::alloc_thunk`].
@@ -856,16 +895,26 @@ impl EvalHeap {
     ///
     /// Returns [`EvalHeapError`] if the shard rejects the allocation.
     pub(super) fn shared_alloc_thunk(&mut self, thunk: EvalThunk) -> Result<Value, EvalHeapError> {
-        self.shared_alloc_worker_object(HeapObjectValue::Thunk(Arc::new(thunk)))
+        self.shared_alloc_flat_closure(
+            FlatObjectKind::Thunk,
+            FlatClosurePayload::Thunk(Arc::new(thunk)),
+        )
     }
 
-    /// Publishes a worker-domain (non-hash-consed) record into the shard.
-    fn shared_alloc_worker_object(
+    /// Publishes a worker-domain flat closure into the shard (doc 30 FV-3).
+    ///
+    /// The flat analog of the retired record-slot worker path: the payload
+    /// handle publishes once behind the slot's release edge and is never
+    /// swapped (shedding and the sweep are serial-only), so cross-worker
+    /// readers resolve it by membership arithmetic with no address-index
+    /// probe.
+    fn shared_alloc_flat_closure(
         &mut self,
-        object: HeapObjectValue,
+        kind: FlatObjectKind,
+        payload: FlatClosurePayload,
     ) -> Result<Value, EvalHeapError> {
         let value = match self.shared.as_mut() {
-            Some(shared) => shared.alloc_object(object)?,
+            Some(shared) => shared.publish_flat_closure(kind, payload)?,
             None => return Err(EvalHeapError::SharedBackendMissing),
         };
         self.alloc_counters.note_value_allocated();

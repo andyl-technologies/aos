@@ -1,0 +1,370 @@
+//! Flat worker-domain closures for the serial evaluator heap.
+//!
+//! RFC-0007 doc 30 stage FV-3: thunks, lambdas, and partially applied
+//! builtins — the mutable, claim-carrying, region-popped worker kinds — move
+//! out of the record side table into one flat closure store. One allocation
+//! holds the flat header plus the payload handle at the value's address, so
+//! resolution is a membership check plus one header load with no address-hash
+//! probe and no record `Vec` load.
+//!
+//! # The interior-`Arc` payload (the recorded FV-3 mutability decision)
+//!
+//! The stored payload is `Arc<EvalThunk>` (respectively `EvalLambda` /
+//! `EvalPrimOp`), not the closure struct in place. This is the honest cut
+//! doc 30 anticipates: resolution handles (`get_thunk` and its ~229 call
+//! sites return `&EvalThunk`; `clone_thunk` hands out `Arc` clones that the
+//! force paths hold across `eval_thunk_body` re-entry and that must survive
+//! the shed swap) outlive any single borrow of the store, and the payload
+//! swap sites — capture shedding to [`EvalThunkKind::Released`] and B1 sweep
+//! retirement — replace the whole handle exactly as the record table swapped
+//! `HeapObjectValue`. Keeping the interior `Arc` preserves every call-site
+//! contract while eliminating the record probe, which is FV-3's target; the
+//! `Arc` allocation itself is FV-6's arena-owned-payload stage, per the
+//! campaign staging (one representation variable per landing).
+//!
+//! # Placement and the Tier-B B2 relocation proving ground
+//!
+//! The collector-poll / minor-GC machinery (destination reservation, object
+//! byte copies, forwarding headers, generation writes) is Tier-B B2
+//! scaffolding that relocates *young record-table objects* — and after FV-2
+//! the young population is exactly these worker kinds. That machinery is
+//! driven only by an installed [`GcStressPolicy`]; production never installs
+//! one. Worker-closure placement is therefore mode-selected
+//! ([`WorkerClosurePlacement`]): heaps default to flat closures, and
+//! [`EvalHeap::set_gc_stress_policy`] switches new worker allocations to the
+//! record-table layout so the B2 proving ground keeps relocating real
+//! records. Resolution, region pops, and the B1 sweep handle both
+//! populations (each empty in the other mode), so the placement switch is a
+//! per-allocation choice, never a correctness seam.
+//!
+//! # Reclamation (both record-table doors, re-expressed)
+//!
+//! - **Region pops**: the flat closure store participates in worker
+//!   lexical-region pops through [`FlatObjectStore::pop_region`] — payloads
+//!   drop, headers are wiped so stale addresses fail loudly, and the store's
+//!   arena rewinds (addresses may be reused afterwards, the record-table pop
+//!   contract). Pops remain mutually exclusive with sweep retirement.
+//! - **B1 sweep**: retirement swaps the payload for
+//!   [`FlatClosurePayload::Retired`] in place through the exclusive
+//!   `resolve_mut` door. The entry, header, and address remain; the address
+//!   is never reissued; any later resolution fails as
+//!   [`EvalHeapError::UnknownPointer`] — the same loud-failure class the
+//!   record table produced via its index removal.
+//!
+//! [`GcStressPolicy`]: crate::runtime::alloc::GcStressPolicy
+//! [`FlatObjectStore::pop_region`]: crate::heap::flat::FlatObjectStore::pop_region
+//! [`EvalThunkKind::Released`]: super::super::EvalThunkKind::Released
+
+use super::*;
+
+/// Where a heap places newly allocated worker-domain closures (doc 30 FV-3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkerClosurePlacement {
+    /// Flat closure objects in the heap's flat closure store (production).
+    #[default]
+    Flat,
+    /// Record-table records (the pre-FV-3 layout), kept for the Tier-B B2
+    /// relocation proving ground: minor-GC plans reserve, copy, and forward
+    /// record-table objects, so heaps running under a GC-stress policy
+    /// allocate worker kinds as records.
+    Record,
+}
+
+/// The payload handle stored in one flat worker-closure object.
+///
+/// The variant always matches the flat header's kind word as allocated;
+/// retirement keeps the header intact and swaps only the payload, so a
+/// retired address stays recognizable (and fails loudly) without reissuing
+/// header state.
+#[derive(Clone, Debug)]
+pub(crate) enum FlatClosurePayload {
+    /// A suspended (or forced, or shed) thunk handle.
+    Thunk(Arc<EvalThunk>),
+    /// A lambda closure handle.
+    Lambda(Arc<EvalLambda>),
+    /// A builtin or partially applied builtin handle.
+    Primop(Arc<EvalPrimOp>),
+    /// The object was reclaimed by the Tier-B sweep; the payload handle was
+    /// dropped and the address is never reissued. `ValueTag` preserves the
+    /// retired object's original type for diagnostics.
+    Retired(ValueTag),
+}
+
+impl FlatClosurePayload {
+    /// Returns the runtime tag this payload resolves under.
+    pub(in crate::eval::heap) const fn tag(&self) -> ValueTag {
+        match self {
+            Self::Thunk(_) => ValueTag::Thunk,
+            Self::Lambda(_) => ValueTag::Lambda,
+            Self::Primop(_) => ValueTag::Primop,
+            Self::Retired(tag) => *tag,
+        }
+    }
+
+    /// Returns `true` when the payload was reclaimed by the Tier-B sweep.
+    pub(in crate::eval::heap) const fn is_retired(&self) -> bool {
+        matches!(self, Self::Retired(_))
+    }
+}
+
+impl EvalHeap {
+    /// Returns the placement newly allocated worker closures receive.
+    pub fn worker_closure_placement(&self) -> WorkerClosurePlacement {
+        self.worker_closure_placement
+    }
+
+    /// Switches new worker-closure allocations to the record-table layout.
+    ///
+    /// This is the Tier-B B2 relocation proving ground's admission door; see
+    /// [`WorkerClosurePlacement::Record`]. Existing flat closures (if any)
+    /// stay flat and keep resolving — placement is a per-allocation choice.
+    pub fn use_record_worker_closures_for_gc_scaffolding(&mut self) {
+        self.worker_closure_placement = WorkerClosurePlacement::Record;
+    }
+
+    /// Serial flat thunk allocation (no heap record, no address-map insert).
+    pub(in crate::eval::heap) fn flat_alloc_thunk(
+        &mut self,
+        thunk: EvalThunk,
+    ) -> Result<Value, EvalHeapError> {
+        let epoch = self.next_access_epoch();
+        let allocation = self
+            .flat_closures
+            .alloc(
+                FlatObjectKind::Thunk,
+                0,
+                epoch,
+                FlatClosurePayload::Thunk(Arc::new(thunk)),
+            )
+            .map_err(flat_alloc_error)?;
+        self.allocator
+            .record_flat_thunk_allocation_safepoint(allocation.allocation);
+        let value = Value::thunk(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.alloc_counters.note_value_allocated();
+        self.poll_memory_budget_after_allocation();
+        Ok(value)
+    }
+
+    /// Serial flat lambda allocation (no heap record, no address-map insert).
+    pub(in crate::eval::heap) fn flat_alloc_lambda(
+        &mut self,
+        lambda: EvalLambda,
+    ) -> Result<Value, EvalHeapError> {
+        let epoch = self.next_access_epoch();
+        let allocation = self
+            .flat_closures
+            .alloc(
+                FlatObjectKind::Lambda,
+                0,
+                epoch,
+                FlatClosurePayload::Lambda(Arc::new(lambda)),
+            )
+            .map_err(flat_alloc_error)?;
+        self.allocator
+            .record_flat_lambda_allocation_safepoint(allocation.allocation);
+        let value = Value::lambda(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.alloc_counters.note_value_allocated();
+        self.poll_memory_budget_after_allocation();
+        Ok(value)
+    }
+
+    /// Serial flat primop allocation (no heap record, no address-map insert).
+    pub(in crate::eval::heap) fn flat_alloc_primop(
+        &mut self,
+        primop: EvalPrimOp,
+    ) -> Result<Value, EvalHeapError> {
+        let epoch = self.next_access_epoch();
+        let allocation = self
+            .flat_closures
+            .alloc(
+                FlatObjectKind::Primop,
+                0,
+                epoch,
+                FlatClosurePayload::Primop(Arc::new(primop)),
+            )
+            .map_err(flat_alloc_error)?;
+        self.allocator.record_flat_primop_allocation_safepoint(
+            PRIMOP_HANDLE_BYTES,
+            PRIMOP_HANDLE_ALIGN,
+            PRIMOP_TYPE_TAG,
+            allocation.allocation,
+        );
+        let value = Value::primop(allocation.ptr).map_err(EvalHeapError::Value)?;
+        self.alloc_counters.note_value_allocated();
+        self.poll_memory_budget_after_allocation();
+        Ok(value)
+    }
+
+    /// Probes the flat closure store for an object of `kind`.
+    ///
+    /// One membership check plus one header load on the hit path. Returns
+    /// `Ok(Some(payload))` for a live flat closure of the requested kind
+    /// (with the flat-resolution counter and access epoch stamped), and
+    /// `Ok(None)` when the address is not a flat closure at all — the caller
+    /// then falls back to the record-table layout (the Tier-B B2 proving
+    /// ground's placement) with its full error fidelity.
+    ///
+    /// # Errors
+    ///
+    /// A retired payload fails as [`EvalHeapError::UnknownPointer`] (the
+    /// record table's index-miss shape); a flat closure of another kind
+    /// fails as a record-type mismatch, unless that object is itself retired
+    /// (then unknown), matching record resolution's fidelity.
+    #[inline]
+    pub(in crate::eval::heap) fn flat_closure_probe(
+        &self,
+        tag: ValueTag,
+        kind: FlatObjectKind,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<Option<&FlatClosurePayload>, EvalHeapError> {
+        match self.flat_closures.resolve(ptr, kind) {
+            Ok(object) => match object.payload() {
+                payload @ (FlatClosurePayload::Thunk(_)
+                | FlatClosurePayload::Lambda(_)
+                | FlatClosurePayload::Primop(_)) => {
+                    self.deref_counters.note_flat_resolution(tag);
+                    object.touch(self.next_access_epoch());
+                    Ok(Some(payload))
+                }
+                FlatClosurePayload::Retired(_) => Err(EvalHeapError::unknown(tag, ptr)),
+            },
+            Err(FlatObjectError::KindMismatch { actual, .. }) => {
+                match self.flat_closures.resolve(ptr, actual) {
+                    Ok(object) if object.payload().is_retired() => {
+                        Err(EvalHeapError::unknown(tag, ptr))
+                    }
+                    _ => Err(EvalHeapError::record_type_mismatch(
+                        tag,
+                        value_tag_for_flat_kind(actual),
+                        ptr,
+                    )),
+                }
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Resolves a flat closure without stamping its access epoch (scan
+    /// paths), tolerating any closure kind at the address.
+    pub(in crate::eval::heap) fn flat_closure_payload_any(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&FlatClosurePayload> {
+        let kind = self.flat_closures.kind_of(ptr)?;
+        let object = self.flat_closures.resolve(ptr, kind).ok()?;
+        Some(object.payload())
+    }
+
+    /// Returns the value tag of the live flat closure at `ptr`, if any.
+    ///
+    /// Retired addresses report `None`: a retired object's address must keep
+    /// failing as an unknown pointer, exactly like a retired record's removed
+    /// index entry.
+    pub(in crate::eval::heap) fn flat_closure_tag(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
+        let payload = self.flat_closure_payload_any(ptr)?;
+        if payload.is_retired() {
+            return None;
+        }
+        Some(payload.tag())
+    }
+
+    /// Swaps a live flat thunk's payload handle in place (capture shedding).
+    ///
+    /// The flat analog of the record table's `HeapObjectValue` swap at shed
+    /// time: the header (address identity, kind) is untouched and only the
+    /// payload handle is replaced, so outstanding `Arc` clones keep their
+    /// snapshot while later resolutions observe the released thunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` is not a live flat
+    /// thunk of this heap (retired payloads included).
+    pub(in crate::eval::heap) fn flat_swap_thunk_payload(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+        thunk: Arc<EvalThunk>,
+    ) -> Result<(), EvalHeapError> {
+        match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
+            Ok(payload @ FlatClosurePayload::Thunk(_)) => {
+                *payload = FlatClosurePayload::Thunk(thunk);
+                Ok(())
+            }
+            Ok(_) => Err(EvalHeapError::unknown(ValueTag::Thunk, ptr)),
+            Err(error) => Err(self.closure_resolution_error(ValueTag::Thunk, ptr, error)),
+        }
+    }
+
+    /// Retires the flat closure at `ptr` in place (the B1 sweep door).
+    ///
+    /// Drops the payload handle (releasing the closure graph), swaps in the
+    /// [`FlatClosurePayload::Retired`] tombstone, clears the address's
+    /// cutoff-cache hashes, and counts the retirement for the region-pop
+    /// interlock. Returns the retired object's original tag, or `None` if
+    /// the object was already retired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::UnknownPointer`] if `ptr` is not a flat
+    /// closure of this heap.
+    pub(in crate::eval::heap) fn flat_retire_closure(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+    ) -> Result<Option<ValueTag>, EvalHeapError> {
+        let Some(kind) = self.flat_closures.kind_of(ptr) else {
+            return Err(EvalHeapError::unknown(ValueTag::Thunk, ptr));
+        };
+        let payload = match self.flat_closures.resolve_mut(ptr, kind) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let tag = value_tag_for_flat_kind(kind);
+                return Err(self.closure_resolution_error(tag, ptr, error));
+            }
+        };
+        if payload.is_retired() {
+            return Ok(None);
+        }
+        let tag = payload.tag();
+        *payload = FlatClosurePayload::Retired(tag);
+        self.flat_cold_hashes.clear(ptr.as_ptr() as usize);
+        self.flat_closures_retired = self.flat_closures_retired.saturating_add(1);
+        Ok(Some(tag))
+    }
+
+    /// Maps a flat-closure resolution failure to the heap error vocabulary.
+    ///
+    /// Kind mismatches inside the closure store first check whether the
+    /// actual object is retired — a retired address is *unknown* (today's
+    /// index-miss contract), not a type mismatch. Unknown addresses fall
+    /// through the shared flat/record error path so cross-domain mismatches
+    /// keep their fidelity.
+    pub(in crate::eval::heap) fn closure_resolution_error(
+        &self,
+        tag: ValueTag,
+        ptr: NonNull<HeapObject>,
+        error: FlatObjectError,
+    ) -> EvalHeapError {
+        match error {
+            FlatObjectError::KindMismatch { actual, .. } => {
+                match self.flat_closures.resolve(ptr, actual) {
+                    Ok(object) if object.payload().is_retired() => {
+                        EvalHeapError::unknown(tag, ptr)
+                    }
+                    _ => EvalHeapError::record_type_mismatch(
+                        tag,
+                        value_tag_for_flat_kind(actual),
+                        ptr,
+                    ),
+                }
+            }
+            error => self.flat_resolution_error(tag, ptr, error),
+        }
+    }
+
+    /// Counts live (non-retired) flat worker closures.
+    pub(in crate::eval::heap) fn live_flat_closures(&self) -> usize {
+        self.flat_closures
+            .iter()
+            .filter(|entry| !entry.object().payload().is_retired())
+            .count()
+    }
+}

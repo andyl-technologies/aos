@@ -941,6 +941,9 @@ mod tests {
     #[test]
     fn write_barrier_rust_callable_routes_through_runtime_vtable() {
         let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+        // FV-3: generational write barriers resolve their source against
+        // record generations (Tier-B B2 scaffolding placement).
+        heap.use_record_worker_closures_for_gc_scaffolding();
         let source = heap
             .alloc_thunk(EvalThunk::new(IrId::new(1)))
             .expect("source thunk allocates");
@@ -990,6 +993,9 @@ mod tests {
     #[test]
     fn daemon_write_barrier_vtable_routes_to_heap_adapter() {
         let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+        // FV-3: generational write barriers resolve their source against
+        // record generations (Tier-B B2 scaffolding placement).
+        heap.use_record_worker_closures_for_gc_scaffolding();
         let source = heap
             .alloc_thunk(EvalThunk::new(IrId::new(1)))
             .expect("source thunk allocates");
@@ -1020,6 +1026,9 @@ mod tests {
     #[test]
     fn daemon_write_barrier_vtable_can_attach_card_table() {
         let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+        // FV-3: generational write barriers resolve their source against
+        // record generations (Tier-B B2 scaffolding placement).
+        heap.use_record_worker_closures_for_gc_scaffolding();
         let source = heap
             .alloc_thunk(EvalThunk::new(IrId::new(1)))
             .expect("source thunk allocates");

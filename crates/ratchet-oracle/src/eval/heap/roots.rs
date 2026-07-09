@@ -6916,23 +6916,10 @@ impl EvalHeap {
     ) -> Result<Vec<HeapEdge>, EvalHeapError> {
         let mut edges = Vec::new();
         match &record.object {
-            HeapObjectValue::String(_) | HeapObjectValue::Path(_) => {}
+            HeapObjectValue::String(_) => {}
             HeapObjectValue::List(list) => {
                 for (index, value) in list.iter().copied().enumerate() {
                     push_heap_edge(&mut edges, HeapEdgeSource::ListElement { index }, value)?;
-                }
-            }
-            HeapObjectValue::Attrs { metadata, attrs } => {
-                for (slot, entry) in attrs.entries_by_symbol().iter().enumerate() {
-                    push_heap_edge(
-                        &mut edges,
-                        HeapEdgeSource::AttrBinding {
-                            shape: metadata.shape(),
-                            slot,
-                            key: entry.key,
-                        },
-                        entry.value,
-                    )?;
                 }
             }
             HeapObjectValue::Lambda(lambda) => {
@@ -7023,6 +7010,70 @@ impl EvalHeap {
         Ok(edges)
     }
 
+    /// Synthesizes precise edges for a flat worker closure (doc 30 FV-3).
+    ///
+    /// The flat analog of the [`HeapObjectValue::Lambda`],
+    /// [`HeapObjectValue::Primop`], and [`HeapObjectValue::Thunk`] arms of
+    /// [`EvalHeap::scan_record_edges`], so every consumer (sweep marking, pop
+    /// validation) observes the identical edge stream a record-backed
+    /// closure produced: capture edges for lambdas, `PrimopArgument` edges
+    /// for builtins, and state-dependent thunk edges (kind captures while
+    /// suspended or blackholed, the cached result once forced, plus the
+    /// parallel payload edge in both states).
+    ///
+    /// # Errors
+    ///
+    /// A retired payload fails as [`EvalHeapError::UnknownPointer`] — a scan
+    /// can only reach one through a stale root, which must fail loudly —
+    /// and a released thunk's deferred work fails as
+    /// [`EvalHeapError::ReleasedThunkWork`] exactly as the record arm did.
+    pub(super) fn scan_flat_closure_edges(
+        &self,
+        ptr: NonNull<HeapObject>,
+        payload: &FlatClosurePayload,
+    ) -> Result<Vec<HeapEdge>, EvalHeapError> {
+        let mut edges = Vec::new();
+        match payload {
+            FlatClosurePayload::Lambda(lambda) => {
+                push_capture_edges(
+                    &mut edges,
+                    CapturedRootOwner::Lambda,
+                    lambda.env(),
+                    lambda.with_scope_env(),
+                    lambda.scoped_global_env(),
+                )?;
+            }
+            FlatClosurePayload::Primop(primop) => {
+                for (index, arg) in primop.args().iter().enumerate() {
+                    push_heap_edge(
+                        &mut edges,
+                        HeapEdgeSource::PrimopArgument { index },
+                        arg.value(),
+                    )?;
+                }
+            }
+            FlatClosurePayload::Thunk(thunk) => match thunk.cell().state()? {
+                ThunkState::Suspended | ThunkState::Blackhole => {
+                    push_thunk_kind_edges(&mut edges, thunk.kind())?;
+                    push_parallel_thunk_payload_edge(&mut edges, thunk)?;
+                }
+                ThunkState::Forced => {
+                    if let Some(value) = thunk.cell().cached_value()? {
+                        push_heap_edge(&mut edges, HeapEdgeSource::ThunkCachedResult, value)?;
+                    }
+                    push_parallel_thunk_payload_edge(&mut edges, thunk)?;
+                }
+            },
+            FlatClosurePayload::Retired(tag) => {
+                return Err(EvalHeapError::UnknownPointer {
+                    tag: *tag,
+                    address: ptr.as_ptr() as usize,
+                });
+            }
+        }
+        Ok(edges)
+    }
+
     fn validate_collector_poll_scan_is_current(
         &self,
         poll_scan: &AllocationCollectorPollScan,
@@ -7088,6 +7139,7 @@ impl EvalHeap {
             .saturating_add(self.flat.len())
             .saturating_add(self.flat_lists.len())
             .saturating_add(self.flat_attrs.len())
+            .saturating_add(self.flat_closures.len())
     }
 
     /// Validates a scan root value against either heap domain.
@@ -8282,19 +8334,8 @@ const fn expected_direct_heap_field_write_generation(
 
 fn heap_object_value_raw_eq(left: &HeapObjectValue, right: &HeapObjectValue) -> bool {
     match (left, right) {
-        (HeapObjectValue::String(left), HeapObjectValue::String(right))
-        | (HeapObjectValue::Path(left), HeapObjectValue::Path(right)) => left == right,
+        (HeapObjectValue::String(left), HeapObjectValue::String(right)) => left == right,
         (HeapObjectValue::List(left), HeapObjectValue::List(right)) => left.raw_eq(right),
-        (
-            HeapObjectValue::Attrs {
-                metadata: left_metadata,
-                attrs: left_attrs,
-            },
-            HeapObjectValue::Attrs {
-                metadata: right_metadata,
-                attrs: right_attrs,
-            },
-        ) => left_metadata == right_metadata && left_attrs.raw_eq(right_attrs),
         (HeapObjectValue::Lambda(left), HeapObjectValue::Lambda(right)) => {
             Arc::ptr_eq(left, right)
         }
@@ -8335,13 +8376,6 @@ fn validate_copied_heap_field_write_object_source(
 ) -> Result<(), EvalHeapError> {
     match (object, write.source()) {
         (HeapObjectValue::List(_), HeapEdgeSource::ListElement { .. }) => Ok(()),
-        (
-            HeapObjectValue::Attrs { metadata, .. },
-            HeapEdgeSource::AttrBinding {
-                shape: expected_shape,
-                ..
-            },
-        ) if metadata.shape() == *expected_shape => Ok(()),
         (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index })
             if *index < primop.args().len() =>
         {
@@ -8479,13 +8513,6 @@ fn validate_direct_heap_field_write_object_source(
 ) -> Result<(), EvalHeapError> {
     match (object, write.source()) {
         (HeapObjectValue::List(_), HeapEdgeSource::ListElement { .. }) => Ok(()),
-        (
-            HeapObjectValue::Attrs { metadata, .. },
-            HeapEdgeSource::AttrBinding {
-                shape: expected_shape,
-                ..
-            },
-        ) if metadata.shape() == *expected_shape => Ok(()),
         (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index })
             if *index < primop.args().len() =>
         {
@@ -8590,20 +8617,6 @@ fn record_owned_heap_field_write_object(
             *slot = replacement;
             Ok(HeapObjectValue::List(NixList::new(elements)))
         }
-        (
-            HeapObjectValue::Attrs { metadata, attrs },
-            HeapEdgeSource::AttrBinding {
-                shape: expected_shape,
-                slot,
-                key,
-            },
-        ) if metadata.shape() == *expected_shape => attrs
-            .with_symbol_slot_value(*slot, *key, replacement)
-            .map(|attrs| HeapObjectValue::Attrs {
-                metadata: *metadata,
-                attrs,
-            })
-            .map_err(RecordOwnedHeapFieldWriteObjectError::Attr),
         (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index }) => {
             let mut args = primop.args().to_vec();
             let Some(arg) = args.get_mut(*index) else {

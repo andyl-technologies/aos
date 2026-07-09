@@ -770,9 +770,12 @@ fn heap_memory_budget_tier_b_transition_preflight_admits_current_heap() {
 fn heap_memory_budget_tier_b_transition_application_admits_worker_records() {
     let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
     let ir = lower("x: x");
+    // FV-3: generation rewrites live on record-table worker objects, so
+    // this fixture selects the Tier-B B2 scaffolding placement.
+    let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
+    options.set_record_worker_closures_for_gc_scaffolding(true);
     let mut outcome =
-        eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_heap_memory_budget(budget))
-            .expect("lambda expression evaluates");
+        eval_whnf_owned_with_options(&ir, options).expect("lambda expression evaluates");
     let value = outcome.value();
 
     assert_eq!(
@@ -831,6 +834,8 @@ fn heap_memory_budget_tier_b_transition_admission_option_admits_owned_outcome() 
     let ir = lower("x: x");
     let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
     options.set_heap_tier_b_transition_admission_enabled(true);
+    // FV-3: generation rewrites live on record-table worker objects.
+    options.set_record_worker_closures_for_gc_scaffolding(true);
     let outcome = eval_whnf_owned_with_options(&ir, options).expect("lambda expression evaluates");
     let value = outcome.value();
 
@@ -1086,6 +1091,8 @@ fn attr_path_eval_tier_b_transition_admission_option_admits_selected_value() {
     let ir = lower("{ value = x: x; }");
     let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
     options.set_heap_tier_b_transition_admission_enabled(true);
+    // FV-3: generation rewrites live on record-table worker objects.
+    options.set_record_worker_closures_for_gc_scaffolding(true);
     let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
         &ir,
         &[b"value".to_vec()],
@@ -5427,6 +5434,12 @@ fn gc_stress_map_attrs_symbol_names_preserve_live_locals() {
     let ir = lower("name: value: value");
     let span = ir.arena.node(ir.root).expect("root exists").span;
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    // FV-3: the GC-stress scan machinery operates on record-table worker
+    // objects; select the scaffolding placement before any allocation so
+    // the late stress-policy install below sees a record population.
+    evaluator
+        .heap
+        .use_record_worker_closures_for_gc_scaffolding();
     let function = evaluator
         .eval_node(ir.root)
         .expect("mapAttrs function allocates");
@@ -5520,6 +5533,12 @@ fn gc_stress_map_attrs_symbol_names_dispatch_with_active_function_argument_root(
     let ir = lower("name: value: value");
     let span = ir.arena.node(ir.root).expect("root exists").span;
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::new());
+    // FV-3: the GC-stress scan machinery operates on record-table worker
+    // objects; select the scaffolding placement before any allocation so
+    // the late stress-policy install below sees a record population.
+    evaluator
+        .heap
+        .use_record_worker_closures_for_gc_scaffolding();
     let function = evaluator
         .eval_node(ir.root)
         .expect("mapAttrs function allocates");

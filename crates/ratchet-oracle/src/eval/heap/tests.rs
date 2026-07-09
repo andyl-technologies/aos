@@ -312,6 +312,9 @@ fn gc_stress_policy_installs_across_heap_allocation_domains() {
 #[test]
 fn heap_records_store_generation_separately_from_allocation_domain() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let permanent = heap
         .alloc_string(NixString::from_bytes(b"permanent".to_vec()))
         .expect("string allocates");
@@ -509,7 +512,7 @@ fn worker_region_plan_pop_cancels_until_region_plan_permits() {
         error,
         EvalHeapError::WorkerRegionPopStaleMark {
             reason: "worker region mark is not innermost",
-            marker_records: mark.records(),
+            marker_records: mark.typed_objects(),
             current_records: heap.len(),
         }
     );
@@ -601,6 +604,10 @@ fn worker_region_cancel_mark_retires_innermost_without_reclaiming() {
 #[test]
 fn worker_region_pop_rejects_permanent_records_above_marker() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    // Domain flipping is a record-table concept: FV-3 worker closures are
+    // flat (and always worker-domain), so this fixture uses the Tier-B B2
+    // proving ground's record placement.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let mark = heap.worker_region_mark().expect("region mark records");
     // Since FV-2 no allocation path creates a permanent record (strings,
     // paths, lists, and attrsets are all flat), so the fixture manufactures
@@ -997,6 +1004,9 @@ fn worker_allocator_epoch_overflow_rotates_region_owner() {
 #[test]
 fn thunk_resolve_write_barrier_records_permanent_to_young_forced_value() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("source thunk allocates");
@@ -1043,6 +1053,9 @@ fn thunk_resolve_write_barrier_records_permanent_to_young_forced_value() {
 #[test]
 fn thunk_resolve_write_barrier_marks_card_for_permanent_to_young_forced_value() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("source thunk allocates");
@@ -1081,6 +1094,9 @@ fn thunk_resolve_write_barrier_marks_card_for_permanent_to_young_forced_value() 
 #[test]
 fn thunk_resolve_write_barrier_skips_inline_forced_values() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("source thunk allocates");
@@ -1109,6 +1125,9 @@ fn thunk_resolve_write_barrier_skips_inline_forced_values() {
 #[test]
 fn thunk_resolve_write_barrier_skips_external_forced_values() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("source thunk allocates");
@@ -1139,6 +1158,9 @@ fn thunk_resolve_write_barrier_skips_external_forced_values() {
 #[test]
 fn thunk_resolve_write_barrier_records_its_source_when_guard_is_mispaired() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let barrier_source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("barrier source thunk allocates");
@@ -1548,6 +1570,9 @@ fn whole_heap_memory_budget_classification_includes_both_allocation_domains() {
 #[test]
 fn tier_b_admission_plan_maps_worker_records_to_old_generation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
@@ -1620,6 +1645,9 @@ fn tier_b_admission_plan_maps_worker_records_to_old_generation() {
 #[test]
 fn tier_b_admission_plan_keeps_existing_old_worker_generation_stable() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
@@ -1643,6 +1671,9 @@ fn tier_b_admission_plan_keeps_existing_old_worker_generation_stable() {
 #[test]
 fn tier_b_admission_application_rewrites_worker_records_to_old_generation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
@@ -1684,6 +1715,9 @@ fn tier_b_admission_application_rewrites_worker_records_to_old_generation() {
 #[test]
 fn tier_b_admission_application_rejects_stale_worker_stats_before_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
@@ -1713,6 +1747,9 @@ fn tier_b_admission_application_rejects_stale_worker_stats_before_mutation() {
 #[test]
 fn tier_b_admission_application_rejects_stale_record_generation_before_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("first worker thunk allocates");
@@ -2709,6 +2746,9 @@ fn permanent_container_records_can_reference_worker_domain_children() {
     let mut symbols = SymbolTable::new();
     let key = symbols.intern(b"child").expect("child symbol interns");
     let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let thunk = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("thunk allocates");
@@ -4174,6 +4214,9 @@ fn collector_poll_minor_gc_plan_tracks_worker_survivor_frontier() {
 #[test]
 fn collector_poll_minor_gc_forwarding_install_writes_valid_slots() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first thunk allocates");
@@ -4221,6 +4264,9 @@ fn collector_poll_minor_gc_forwarding_install_writes_valid_slots() {
 #[test]
 fn collector_poll_minor_gc_forwarding_install_rejects_empty_slot_without_partial_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first thunk allocates");
@@ -4259,6 +4305,9 @@ fn collector_poll_minor_gc_forwarding_install_rejects_empty_slot_without_partial
 #[test]
 fn collector_poll_minor_gc_forwarding_install_rejects_duplicate_source_without_partial_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first thunk allocates");
@@ -4293,6 +4342,9 @@ fn collector_poll_minor_gc_forwarding_install_rejects_duplicate_source_without_p
 #[test]
 fn collector_poll_minor_gc_forwarding_install_rejects_permanent_source_without_partial_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first thunk allocates");
@@ -4340,6 +4392,9 @@ fn collector_poll_minor_gc_forwarding_install_rejects_permanent_source_without_p
 fn collector_poll_minor_gc_forwarding_install_rejects_occupied_later_slot_without_partial_mutation()
 {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first thunk allocates");
@@ -5810,6 +5865,9 @@ fn collector_poll_minor_gc_object_generation_writes_update_existing_destination_
 #[test]
 fn collector_poll_minor_gc_object_body_writes_bind_existing_destination_records() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let source = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(7),
@@ -5861,6 +5919,9 @@ fn collector_poll_minor_gc_object_body_writes_bind_existing_destination_records(
 #[test]
 fn collector_poll_minor_gc_object_body_and_generation_writes_bind_body_and_promote_destination() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let source = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(7),
@@ -5912,6 +5973,9 @@ fn collector_poll_minor_gc_object_body_and_generation_writes_bind_body_and_promo
 #[test]
 fn collector_poll_minor_gc_object_body_and_generation_writes_validate_without_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let source = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(7),
@@ -5960,6 +6024,9 @@ fn collector_poll_minor_gc_object_body_and_generation_writes_validate_without_mu
 fn collector_poll_minor_gc_object_body_and_generation_writes_reject_duplicate_destination_without_mutation()
  {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first_source = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -6041,6 +6108,9 @@ fn collector_poll_minor_gc_object_body_and_generation_writes_reject_duplicate_de
 #[test]
 fn collector_poll_minor_gc_object_body_writes_reject_malformed_plan_without_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first_source = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -6144,6 +6214,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_flat_list_writeback_o
     // survivors: a copied heap-field write naming a flat list as its
     // relocated writeback object must fail loudly without mutation.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -6210,6 +6283,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_flat_list_writeback_o
 #[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_thunk_select_receiver() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let receiver = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("receiver thunk allocates");
@@ -6292,6 +6368,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_merge_same_flat_list_fields(
     // staged spine (doc 30 FV-1 coupling (c)): the second write sees the
     // first write's staged element, and one commit publishes both.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let first_child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -6401,6 +6480,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_flat_attrs_writeback_
     // survivors: a copied heap-field write naming a flat attrset as its
     // relocated writeback object must fail loudly without mutation.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let mut symbols = SymbolTable::new();
     let key = symbols.intern(b"name").expect("symbol interns");
     let child = heap
@@ -6479,6 +6561,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_flat_attrs_writeback_
 #[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_primop_args() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let mut symbols = SymbolTable::new();
     let symbol = symbols.intern(b"length").expect("symbol interns");
     let builtin = lookup_builtin(b"length").expect("length builtin is registered");
@@ -6566,6 +6651,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_primop_args() 
 #[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_lambda_capture_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let lexical_child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(0),
@@ -6738,6 +6826,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_li
     // list is worker-domain (the pre-FV-1 "old worker list" shape) must fail
     // the generation gate loudly without mutating the flat payload.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -6808,6 +6899,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_merge_same_flat_attrs_fields
     // staged entry storage (doc 30 FV-2 coupling (c)): the second write sees
     // the first write's staged entry, and one commit publishes both.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let mut symbols = SymbolTable::new();
     let first_key = symbols.intern(b"alpha").expect("alpha interns");
     let second_key = symbols.intern(b"beta").expect("beta interns");
@@ -6938,6 +7032,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_at
     // an attrset is worker-domain (the pre-FV-2 "old worker attrs" shape)
     // must fail the generation gate loudly without mutating the flat payload.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let mut symbols = SymbolTable::new();
     let key = symbols.intern(b"name").expect("symbol interns");
     let child = heap
@@ -7014,6 +7111,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_at
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_primop_args() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let mut symbols = SymbolTable::new();
     let symbol = symbols.intern(b"length").expect("symbol interns");
     let builtin = lookup_builtin(b"length").expect("length builtin is registered");
@@ -7090,6 +7190,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_primop_args() {
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_lambda_capture_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let lexical_child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(0),
@@ -7242,6 +7345,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_lambda_capture_f
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_reject_stale_field_value_without_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -7331,6 +7437,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_stale_field_value_wit
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_permanent_list_fields() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -7398,6 +7507,9 @@ fn collector_poll_minor_gc_heap_field_writes_merge_mixed_same_record_fields() {
     // Lists are flat since FV-1, so a partially applied builtin carries the
     // mixed copied+direct writes against one record.
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let mut symbols = SymbolTable::new();
     let symbol = symbols.intern(b"length").expect("symbol interns");
     let builtin = lookup_builtin(b"length").expect("length builtin is registered");
@@ -7598,6 +7710,9 @@ fn collector_poll_minor_gc_heap_field_writes_reject_cross_branch_malformed_reque
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_reject_young_replacements_without_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -7670,6 +7785,9 @@ fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_re
     // Lists are flat since FV-1, so an old worker primop carries the direct
     // old-to-young write whose barrier must publish.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let mut symbols = SymbolTable::new();
     let symbol = symbols.intern(b"length").expect("symbol interns");
     let builtin = lookup_builtin(b"length").expect("length builtin is registered");
@@ -7755,6 +7873,9 @@ fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_direct_young_re
 #[test]
 fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_permanent_young_replacement() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -7836,6 +7957,9 @@ fn collector_poll_minor_gc_heap_field_writes_publish_barrier_for_permanent_young
 #[test]
 fn collector_poll_minor_gc_heap_field_writes_publish_lambda_capture_barrier() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let lexical_child = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(0),
@@ -7953,6 +8077,9 @@ fn collector_poll_minor_gc_heap_field_writes_publish_lambda_capture_barrier() {
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_suspended_thunk_apply_argument() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let function = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(1),
@@ -8033,6 +8160,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_suspended_thunk_appl
 fn collector_poll_minor_gc_direct_heap_field_writes_preserve_parallel_payload_on_suspended_thunk_write()
  {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let argument = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("argument thunk allocates");
@@ -8104,6 +8234,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_preserve_parallel_payload_on
 #[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_suspended_thunk_captures() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let with_child = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("with child thunk allocates");
@@ -8268,6 +8401,9 @@ fn assert_forced_apply_thunk_cached_result(
 #[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_forced_thunk_cached_result() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let function = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(10),
@@ -8366,6 +8502,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_forced_thunk_cached_
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_field() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let argument = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("argument thunk allocates");
@@ -8438,6 +8577,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_fiel
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_cached_result() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let argument = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("argument thunk allocates");
@@ -8502,6 +8644,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_blackholed_thunk_cach
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_forced_thunk_cached_result() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let function = heap
         .alloc_lambda(EvalLambda::new(
             IrId::new(10),
@@ -8578,6 +8723,9 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_forced_thunk_cached_
 #[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_parallel_thunk_payload() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let forced = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("parallel payload thunk allocates");
@@ -8648,6 +8796,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_parallel_thunk_paylo
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_parallel_thunk_payload() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let forced = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("parallel payload thunk allocates");
@@ -8777,6 +8928,9 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_malformed_copy_reques
 #[test]
 fn collector_poll_minor_gc_object_generation_writes_reject_unknown_destination_without_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     // Since FV-2 no allocation path creates a permanent record, so the
     // destination fixture manufactures one: a worker record flipped to the
     // permanent-shared domain.
@@ -11406,6 +11560,9 @@ fn collector_poll_minor_gc_plan_rejects_heap_growth_after_scan() {
 #[test]
 fn precise_root_scan_tracks_thunk_state_instead_of_stale_captures() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let captured = heap
         .alloc_string(NixString::from_bytes(b"captured".to_vec()))
         .expect("captured string allocates");
@@ -11462,6 +11619,9 @@ fn precise_root_scan_tracks_thunk_state_instead_of_stale_captures() {
 #[test]
 fn precise_root_scan_reports_parallel_thunk_payload_value() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let captured = heap
         .alloc_string(NixString::from_bytes(b"captured".to_vec()))
         .expect("captured string allocates");
@@ -11511,6 +11671,9 @@ fn precise_root_scan_reports_parallel_thunk_payload_value() {
 #[test]
 fn precise_root_scan_reports_lambda_captured_scopes() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let lexical = heap
         .alloc_string(NixString::from_bytes(b"lexical".to_vec()))
         .expect("lexical string allocates");
@@ -11594,6 +11757,9 @@ fn precise_root_scan_reports_primop_heap_arguments() {
     let symbol = symbols.intern(b"length").expect("symbol interns");
     let builtin = lookup_builtin(b"length").expect("length builtin is registered");
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let argument_value = heap
         .alloc_string(NixString::from_bytes(b"arg".to_vec()))
         .expect("argument string allocates");
@@ -11629,6 +11795,9 @@ fn precise_root_scan_reports_suspended_thunk_capture_variants() {
     let symbol = symbols.intern(b"length").expect("symbol interns");
     let builtin = lookup_builtin(b"length").expect("length builtin is registered");
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let function_value = heap
         .alloc_string(NixString::from_bytes(b"function".to_vec()))
         .expect("function string allocates");
@@ -11736,6 +11905,9 @@ fn precise_root_scan_reports_suspended_thunk_capture_variants() {
 #[test]
 fn precise_root_scan_reports_blackholed_thunk_captures() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
+    // FV-3: this fixture exercises the Tier-B B2 record-relocation
+    // scaffolding, which operates on record-table worker objects.
+    heap.use_record_worker_closures_for_gc_scaffolding();
     let captured = heap
         .alloc_string(NixString::from_bytes(b"captured".to_vec()))
         .expect("captured string allocates");

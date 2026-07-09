@@ -95,6 +95,22 @@ pub struct ArenaStats {
     pub used_bytes: usize,
 }
 
+impl ArenaStats {
+    /// Returns the field-wise saturating sum of `self` and `other`.
+    ///
+    /// Used to fold multiple arenas of one allocation domain into a single
+    /// accounting view (for example the worker allocator's arena plus the
+    /// flat closure store's).
+    pub fn merged(self, other: Self) -> Self {
+        Self {
+            chunks: self.chunks.saturating_add(other.chunks),
+            reserved_bytes: self.reserved_bytes.saturating_add(other.reserved_bytes),
+            mapped_bytes: self.mapped_bytes.saturating_add(other.mapped_bytes),
+            used_bytes: self.used_bytes.saturating_add(other.used_bytes),
+        }
+    }
+}
+
 /// A LIFO marker for a future lexical allocation subregion.
 ///
 /// Markers are produced by [`BumpArena::region_mark`] and can be passed back to
@@ -176,6 +192,34 @@ impl ArenaRegionPopReport {
     /// Returns the advisory outcome for the retained-chunk dead range.
     pub const fn dead_range_outcome(self) -> MemoryAdviceOutcome {
         self.dead_range_outcome
+    }
+
+    /// Merges two pop reports into one whole-domain accounting view.
+    ///
+    /// Used when one logical region pop rewinds more than one arena (doc 30
+    /// FV-3: the worker allocator's arena plus the flat closure store's).
+    /// Stats and byte counters add field-wise; the dead-range advisory
+    /// outcome keeps whichever side actually advised a non-empty range,
+    /// preferring `self` when both did (the composite outcome is
+    /// diagnostics-only).
+    pub fn merged(self, other: Self) -> Self {
+        let dead_range_outcome = if self.dead_range_bytes != 0 || other.dead_range_bytes == 0 {
+            self.dead_range_outcome
+        } else {
+            other.dead_range_outcome
+        };
+        Self {
+            before: self.before.merged(other.before),
+            after: self.after.merged(other.after),
+            used_bytes_released: self
+                .used_bytes_released
+                .saturating_add(other.used_bytes_released),
+            released_mapped_bytes: self
+                .released_mapped_bytes
+                .saturating_add(other.released_mapped_bytes),
+            dead_range_bytes: self.dead_range_bytes.saturating_add(other.dead_range_bytes),
+            dead_range_outcome,
+        }
     }
 }
 
@@ -642,7 +686,13 @@ impl BumpArena {
         Ok(())
     }
 
-    fn validate_region_mark(&self, mark: ArenaRegionMark) -> Result<(), ArenaError> {
+    /// Structurally validates a region marker against the arena's current
+    /// prefix without mutating anything.
+    ///
+    /// Crate-visible so the flat-object store can prove a marker acceptable
+    /// *before* it drops the payloads above it: `FlatObjectStore::pop_region`
+    /// must not reach the arena rewind with payload state half-destroyed.
+    pub(crate) fn validate_region_mark(&self, mark: ArenaRegionMark) -> Result<(), ArenaError> {
         if mark.chunk_count == 0 {
             if mark.cursor == 0 {
                 return Ok(());

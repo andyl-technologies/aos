@@ -47,6 +47,7 @@ use super::record_table::AddressHasher;
 use super::*;
 
 pub(super) mod attrs;
+pub(super) mod closures;
 mod lists;
 
 /// Byte-length ceiling for inlining string/path bytes into the flat
@@ -70,6 +71,9 @@ pub(super) const fn value_tag_for_flat_kind(kind: FlatObjectKind) -> ValueTag {
         FlatObjectKind::Path => ValueTag::Path,
         FlatObjectKind::List => ValueTag::List,
         FlatObjectKind::Attrs => ValueTag::Attrs,
+        FlatObjectKind::Thunk => ValueTag::Thunk,
+        FlatObjectKind::Lambda => ValueTag::Lambda,
+        FlatObjectKind::Primop => ValueTag::Primop,
     }
 }
 
@@ -326,7 +330,8 @@ impl EvalHeap {
                 },
             },
             error @ (FlatObjectError::Arena(_)
-            | FlatObjectError::RegistryAllocationFailed { .. }) => {
+            | FlatObjectError::RegistryAllocationFailed { .. }
+            | FlatObjectError::InvalidRegionMark { .. }) => {
                 // Unreachable from resolution; keep a loud mapping anyway.
                 debug_assert!(false, "flat resolution returned an allocation error: {error}");
                 EvalHeapError::unknown(tag, ptr)
@@ -345,6 +350,7 @@ impl EvalHeap {
             .or_else(|| self.flat_lists.kind_of(ptr))
             .or_else(|| self.flat_attrs.kind_of(ptr))
             .map(value_tag_for_flat_kind)
+            .or_else(|| self.flat_closure_tag(ptr))
     }
 
     /// Hash-cons admission for serial strings over the flat store.
@@ -458,7 +464,9 @@ fn flat_alloc_error(error: FlatObjectError) -> EvalHeapError {
         FlatObjectError::RegistryAllocationFailed { entries } => {
             EvalHeapError::RecordAllocationFailed { records: entries }
         }
-        FlatObjectError::UnknownAddress { .. } | FlatObjectError::KindMismatch { .. } => {
+        FlatObjectError::UnknownAddress { .. }
+        | FlatObjectError::KindMismatch { .. }
+        | FlatObjectError::InvalidRegionMark { .. } => {
             // Unreachable from allocation; surface a record failure loudly.
             debug_assert!(false, "flat allocation returned a resolution error: {error}");
             EvalHeapError::RecordAllocationFailed { records: 1 }

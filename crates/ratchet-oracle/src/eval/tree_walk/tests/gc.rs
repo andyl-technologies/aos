@@ -21,11 +21,16 @@ fn force_permanent_attr_thunk(options: TreeWalkOptions) -> (TreeWalk, Value, Val
 fn force_attr_thunk(
     source: &str,
     attr_name: &[u8],
-    options: TreeWalkOptions,
+    mut options: TreeWalkOptions,
     source_domain: Option<HeapAllocationDomain>,
 ) -> (TreeWalk, Value, Value) {
     let ir = lower(source);
     let attr = symbol_for(&ir, attr_name);
+    if source_domain.is_some() {
+        // FV-3: domain flipping is a record-table concept; fixtures that
+        // re-home the source thunk need the Tier-B B2 record placement.
+        options.set_record_worker_closures_for_gc_scaffolding(true);
+    }
     let mut evaluator = TreeWalk::with_options(&ir, options);
     let root = evaluator.eval_root().expect("attrset evaluates");
     let thunk_value = {

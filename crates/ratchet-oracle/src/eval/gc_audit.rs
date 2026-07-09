@@ -452,6 +452,9 @@ fn gc_stress_admission_options() -> Result<TreeWalkOptions, GcSafetyAuditSmokeEr
         .map_err(|_| GcSafetyAuditSmokeError::InvalidMemoryBudget { bytes: 1 })?;
     options.set_heap_memory_budget(budget);
     options.set_heap_tier_b_transition_admission_enabled(true);
+    // Generation rewrites live on record-table worker objects (doc 30
+    // FV-3 scaffolding placement).
+    options.set_record_worker_closures_for_gc_scaffolding(true);
     Ok(options)
 }
 

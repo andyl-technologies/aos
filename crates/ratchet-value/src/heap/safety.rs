@@ -286,10 +286,17 @@ mod tests {
         // construction contract (`as_slice`) and the `Send`/`Sync` impls
         // justified by post-construction immutability, all under
         // `FlatObjectPayloadAccess`.
+        // flat.rs count 8 -> 11 (doc 30 FV-3 worker-domain pops): the
+        // lexical-region pop (`pop_region`) — one `drop_in_place` over each
+        // popped object (registry-truncated so it cannot be revisited), one
+        // header kind-word wipe making stale resolutions fail the magic check
+        // loudly, and the owned-arena rewind call whose reachability proof is
+        // the evaluator's retained-edge validation, all under
+        // `FlatObjectPayloadAccess`.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 12usize),
-            ("flat.rs", 8usize),
+            ("flat.rs", 11usize),
             ("flat/bytes.rs", 3usize),
             ("resident.rs", 6usize),
         ] {

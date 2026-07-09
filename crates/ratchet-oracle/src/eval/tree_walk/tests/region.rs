@@ -237,6 +237,12 @@ fn discard_worker_region_scope_cancels_when_plan_is_conservative() {
 fn discard_worker_region_scope_retires_mark_after_pop_error() {
     let ir = lower("1 + 2");
     let mut evaluator = TreeWalk::new(&ir);
+    // FV-3: domain flipping is a record-table concept; worker closures are
+    // flat (and always worker-domain), so this fixture uses the Tier-B B2
+    // proving ground's record placement.
+    evaluator
+        .heap
+        .use_record_worker_closures_for_gc_scaffolding();
     let plan = RegionPlan::classify(
         RegionRuntimeTier::OneShotArena,
         AllocationRegionFacts::lexical_no_escape(),

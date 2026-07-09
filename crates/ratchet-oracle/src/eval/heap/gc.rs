@@ -140,6 +140,48 @@ impl EvalHeap {
         }
         let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
         let address = ptr.as_ptr() as usize;
+        // Flat placement first (production; doc 30 FV-3): the shed swap is
+        // the same payload replacement, through the flat store's exclusive
+        // mutation door instead of the record slot.
+        let flat_result = if let Some(payload) = self.flat_closure_payload_any(ptr) {
+            let FlatClosurePayload::Thunk(thunk) = payload else {
+                if payload.is_retired() {
+                    return Err(EvalHeapError::unknown(ValueTag::Thunk, ptr));
+                }
+                return Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Thunk,
+                    payload.tag(),
+                    ptr,
+                ));
+            };
+            if !thunk_kind_has_reclaimable_captures(thunk.kind()) {
+                return Ok(false);
+            }
+            if !thunk.has_serial_only_force_storage() {
+                return Ok(false);
+            }
+            let state = thunk.cell().state().map_err(EvalHeapError::Thunk)?;
+            if state != ThunkState::Forced {
+                return Err(EvalHeapError::ShedRejected {
+                    address,
+                    reason: "thunk is not forced",
+                });
+            }
+            let Some(result) = thunk.cell().cached_value().map_err(EvalHeapError::Thunk)? else {
+                return Err(EvalHeapError::ShedRejected {
+                    address,
+                    reason: "forced thunk has no published result",
+                });
+            };
+            Some(result)
+        } else {
+            None
+        };
+        if let Some(result) = flat_result {
+            self.flat_swap_thunk_payload(ptr, Arc::new(EvalThunk::released_forced(result)))?;
+            self.alloc_counters.note_thunk_shed();
+            return Ok(true);
+        }
         let Some(position) = self.records.index_of_address(address) else {
             return Err(EvalHeapError::unknown(ValueTag::Thunk, ptr));
         };
@@ -254,14 +296,6 @@ impl EvalHeap {
                         }
                     }
                 }
-                HeapObjectValue::Attrs { attrs, .. } => {
-                    for entry in attrs.entries_by_symbol() {
-                        if is_worker_domain_tag(entry.value.tag()) {
-                            report.permanent_edge_seeds += 1;
-                            worklist.push(entry.value);
-                        }
-                    }
-                }
                 _ => {}
             }
         }
@@ -301,16 +335,26 @@ impl EvalHeap {
             if !visited.insert(address) {
                 continue;
             }
-            let Some(position) = self.records.index_of_address(address) else {
-                // A stale root or stale live edge: fail loudly rather than
-                // sweep against an incomplete root set.
-                return Err(EvalHeapError::unknown(value.tag(), ptr));
-            };
-            let Some(record) = self.records.get(position) else {
-                return Err(EvalHeapError::unknown(value.tag(), ptr));
+            // Flat worker closures first (production placement); retired
+            // payloads and unknown addresses are stale roots or stale live
+            // edges and must fail loudly rather than sweep against an
+            // incomplete root set.
+            let edges = if let Some(payload) = self.flat_closure_payload_any(ptr) {
+                if payload.is_retired() {
+                    return Err(EvalHeapError::unknown(value.tag(), ptr));
+                }
+                self.scan_flat_closure_edges(ptr, payload)?
+            } else {
+                let Some(position) = self.records.index_of_address(address) else {
+                    return Err(EvalHeapError::unknown(value.tag(), ptr));
+                };
+                let Some(record) = self.records.get(position) else {
+                    return Err(EvalHeapError::unknown(value.tag(), ptr));
+                };
+                self.scan_record_edges(record)?
             };
             report.marked += 1;
-            for edge in self.scan_record_edges(record)? {
+            for edge in edges {
                 if is_worker_domain_tag(edge.value().tag()) {
                     worklist.push(edge.value());
                 }
@@ -345,6 +389,34 @@ impl EvalHeap {
             unreachable.push((position, record.object.tag()));
         }
 
+        // The same validate-then-retire pass over the flat closure store
+        // (doc 30 FV-3): unreachable live closures are collected first so a
+        // quiescence violation aborts before anything is reclaimed.
+        let mut flat_unreachable: Vec<(NonNull<HeapObject>, ValueTag)> = Vec::new();
+        for entry in self.flat_closures.iter() {
+            let payload = entry.object().payload();
+            if payload.is_retired() {
+                continue;
+            }
+            let address = entry.ptr().as_ptr() as usize;
+            if visited.contains(&address) {
+                live_worker_records += 1;
+                continue;
+            }
+            if let FlatClosurePayload::Thunk(thunk) = payload
+                && thunk.cell().state().map_err(EvalHeapError::Thunk)? == ThunkState::Blackhole
+            {
+                return Err(EvalHeapError::ShedRejected {
+                    address,
+                    reason: "sweep found an unreachable blackholed thunk; caller not quiescent",
+                });
+            }
+            flat_unreachable
+                .try_reserve(1)
+                .map_err(|_| EvalHeapError::RecordAllocationFailed { records: 1 })?;
+            flat_unreachable.push((entry.ptr(), payload.tag()));
+        }
+
         for (position, tag) in unreachable {
             if self.records.retire_at_position(position).is_none() {
                 continue;
@@ -356,9 +428,23 @@ impl EvalHeap {
                 _ => {}
             }
         }
+        for (ptr, tag) in flat_unreachable {
+            if self.flat_retire_closure(ptr)?.is_none() {
+                continue;
+            }
+            match tag {
+                ValueTag::Thunk => report.swept_thunks += 1,
+                ValueTag::Lambda => report.swept_lambdas += 1,
+                ValueTag::Primop => report.swept_primops += 1,
+                _ => {}
+            }
+        }
 
         report.live_worker_records = live_worker_records;
-        report.retired_total = self.records.retired_total();
+        report.retired_total = self
+            .records
+            .retired_total()
+            .saturating_add(self.flat_closures_retired);
         report.free_slots = self.records.free_slot_count();
         self.alloc_counters.note_sweep(report.swept() as u64);
         Ok(report)

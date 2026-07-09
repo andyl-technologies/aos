@@ -109,6 +109,9 @@ fn native_expression_eval_reports_heap_tier_b_admission_stats() -> Result<()> {
     let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
     let mut options = TreeWalkOptions::with_heap_memory_budget(budget);
     options.set_heap_tier_b_transition_admission_enabled(true);
+    // FV-3: generation rewrites live on record-table worker objects, so this
+    // fixture selects the Tier-B B2 scaffolding placement.
+    options.set_record_worker_closures_for_gc_scaffolding(true);
     let native = NixNative::with_options(0, options)?;
 
     let (json, stats) =
