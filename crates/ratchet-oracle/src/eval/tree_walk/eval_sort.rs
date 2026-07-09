@@ -408,6 +408,19 @@ impl TreeWalk {
         let op = self.eval_node(op_id)?;
         let op = self.force_callable_value(op_id, op_span, op)?;
 
+        // Fused list generation (tier-2 landing 3): a direct `genList` list
+        // argument is a pure local temporary here, so the fold can run as an
+        // observationally identical index loop that never materializes the
+        // list — and, with an engine installed, can fold generated elements
+        // entirely in native code. See `fold_genlist` for the argument.
+        if self.tier1_engine.is_some()
+            && let Some(candidate) = self.foldl_genlist_fusion_candidate(list_id)
+        {
+            return self.eval_foldl_strict_over_genlist(
+                id, span, op_id, op_span, op, initial_id, list_id, candidate,
+            );
+        }
+
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
         if list_value.tag() != ValueTag::List {

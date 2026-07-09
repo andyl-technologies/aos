@@ -55,8 +55,9 @@ use std::sync::Arc;
 use ratchet_core::{IrArena, IrData, IrId, IrKind};
 use ratchet_jit::{
     JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
-    JitTier2ChainLowering, JitTier2PinnedCallee, TIER2_MAX_CHAIN_ARITY, estimate_tier1_body_cost,
-    lower_tier2_curried_chain, scan_tier2_curried_chain, scan_tier2_pinned_callee,
+    JitTier2ChainLowering, JitTier2EnvBoundary, JitTier2PinnedCallee, TIER2_MAX_CHAIN_ARITY,
+    estimate_tier1_body_cost, lower_tier2_curried_chain, scan_tier2_curried_chain,
+    scan_tier2_pinned_callee,
 };
 use ratchet_oracle::eval::heap::EvalLambda;
 use ratchet_oracle::eval::tree_walk::TreeWalk;
@@ -310,9 +311,16 @@ impl NixJitTier1Engine {
         }
 
         let budget = self.tier2.borrow().budget;
-        let Ok(lowering) =
-            lower_tier2_curried_chain(arena, &scan, Some(self_upval), &pinned_callees, budget)
-        else {
+        // The apply seam dispatches with the innermost closure's environment
+        // (root env + K-1 argument frames), so env reads translate by one.
+        let Ok(lowering) = lower_tier2_curried_chain(
+            arena,
+            &scan,
+            Some(self_upval),
+            &pinned_callees,
+            JitTier2EnvBoundary::InnerLambdaEnv,
+            budget,
+        ) else {
             return ChainPreparation::Structural;
         };
         ChainPreparation::Ready(Box::new(PreparedChain {

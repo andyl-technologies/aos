@@ -9,10 +9,18 @@
 //! ([`flatten_apply_chain`], [`require_static_bool_condition`]) so scan and
 //! emission agree on the grammar by construction.
 
-use ratchet_core::{IrArena, IrData, IrId, IrKind, syntax::BinOpKind};
+use ratchet_core::{IrArena, IrData, IrId, IrKind, syntax::BinOpKind, syntax::UnaryOpKind};
 
 use super::{JitTier2ChainCalleeSite, JitTier2ChainScan, TIER2_MAX_CHAIN_ARITY};
 use crate::lower::JitLowerError;
+
+/// Mutable scan output threaded through the chain-body walk.
+struct ChainBodyScan {
+    /// The distinct callee upvalue sites found so far.
+    callee_sites: Vec<JitTier2ChainCalleeSite>,
+    /// Whether any value operand read the environment beyond the parameters.
+    reads_env: bool,
+}
 
 /// Scans a curried lambda chain rooted at `(root_pattern, root_body)`.
 ///
@@ -72,13 +80,17 @@ pub fn scan_tier2_curried_chain(
         });
     }
 
-    let mut callee_sites: Vec<JitTier2ChainCalleeSite> = Vec::new();
-    scan_chain_expr(arena, body, arity, &mut callee_sites)?;
+    let mut body_scan = ChainBodyScan {
+        callee_sites: Vec::new(),
+        reads_env: false,
+    };
+    scan_chain_expr(arena, body, arity, &mut body_scan)?;
     Ok(JitTier2ChainScan {
         arity,
         inner_pattern: pattern,
         inner_body: body,
-        callee_sites,
+        callee_sites: body_scan.callee_sites,
+        reads_env: body_scan.reads_env,
     })
 }
 
@@ -153,12 +165,13 @@ fn require_bare_formal(arena: &IrArena, pattern: IrId) -> Result<(), JitLowerErr
     }
 }
 
-/// Walks one grammar expression of the chain body, collecting callee sites.
+/// Walks one grammar expression of the chain body, collecting callee sites
+/// and environment-read facts.
 fn scan_chain_expr(
     arena: &IrArena,
     id: IrId,
     arity: u32,
-    callee_sites: &mut Vec<JitTier2ChainCalleeSite>,
+    body_scan: &mut ChainBodyScan,
 ) -> Result<(), JitLowerError> {
     let node = arena
         .node(id)
@@ -168,10 +181,24 @@ fn scan_chain_expr(
         (IrKind::Int | IrKind::Bool, _) => Ok(()),
         (IrKind::LocalVar, IrData::Local { slot: 0 }) => Ok(()),
         (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 }) if depth < arity => Ok(()),
-        (IrKind::BinOp, IrData::Binary { lhs, rhs, .. }) => {
-            scan_chain_expr(arena, lhs, arity, callee_sites)?;
-            scan_chain_expr(arena, rhs, arity, callee_sites)
+        // A value read of an upvalue beyond the chain parameters is an
+        // environment read against the boundary env pointer; the emitter
+        // forces it at first strict use and guards it as an integer.
+        (IrKind::UpvalVar, IrData::Upval { depth, .. }) if depth >= arity => {
+            body_scan.reads_env = true;
+            Ok(())
         }
+        (IrKind::BinOp, IrData::Binary { lhs, rhs, .. }) => {
+            scan_chain_expr(arena, lhs, arity, body_scan)?;
+            scan_chain_expr(arena, rhs, arity, body_scan)
+        }
+        (
+            IrKind::UnaryOp,
+            IrData::Unary {
+                op: UnaryOpKind::Neg,
+                operand,
+            },
+        ) => scan_chain_expr(arena, operand, arity, body_scan),
         (
             IrKind::If,
             IrData::Triple {
@@ -181,15 +208,15 @@ fn scan_chain_expr(
             },
         ) => {
             require_static_bool_condition(arena, first)?;
-            scan_chain_expr(arena, first, arity, callee_sites)?;
-            scan_chain_expr(arena, second, arity, callee_sites)?;
-            scan_chain_expr(arena, third, arity, callee_sites)
+            scan_chain_expr(arena, first, arity, body_scan)?;
+            scan_chain_expr(arena, second, arity, body_scan)?;
+            scan_chain_expr(arena, third, arity, body_scan)
         }
         (IrKind::Apply, _) => {
             let (upval, arguments) = flatten_apply_chain(arena, id, arity)?;
-            record_callee_site(callee_sites, upval, arguments.len() as u32, id)?;
+            record_callee_site(&mut body_scan.callee_sites, upval, arguments.len() as u32, id)?;
             for argument in arguments {
-                scan_chain_expr(arena, argument, arity, callee_sites)?;
+                scan_chain_expr(arena, argument, arity, body_scan)?;
             }
             Ok(())
         }
@@ -211,6 +238,13 @@ fn scan_call_free_expr(arena: &IrArena, id: IrId, arity: u32) -> Result<(), JitL
             scan_call_free_expr(arena, lhs, arity)?;
             scan_call_free_expr(arena, rhs, arity)
         }
+        (
+            IrKind::UnaryOp,
+            IrData::Unary {
+                op: UnaryOpKind::Neg,
+                operand,
+            },
+        ) => scan_call_free_expr(arena, operand, arity),
         (
             IrKind::If,
             IrData::Triple {

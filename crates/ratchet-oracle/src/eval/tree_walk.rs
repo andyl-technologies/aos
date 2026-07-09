@@ -1577,6 +1577,7 @@ use select_cache_hash::SelectCacheMap;
 mod serialize_xml;
 mod store_validity;
 use store_validity::StoreValidityChecker;
+mod fold_genlist;
 mod tier1_publish;
 pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook, Tier2FoldHook};
 mod tier2_apply;

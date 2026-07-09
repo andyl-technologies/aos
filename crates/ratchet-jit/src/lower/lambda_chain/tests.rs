@@ -2,8 +2,8 @@
 
 use super::*;
 use ratchet_core::{
-    EffectClass, IrNode,
-    syntax::{Span, Symbol},
+    EffectClass, IrArena, IrData, IrKind, IrNode,
+    syntax::{BinOpKind, Span, Symbol},
 };
 
 fn node(kind: IrKind, data: IrData) -> IrNode {
@@ -122,7 +122,7 @@ fn fold_operator_chain_scans_and_lowers_with_pinned_inline() {
         arity: 2,
         body: callee_body,
     }];
-    let lowering = lower_tier2_curried_chain(&arena, &scan, None, &pinned, 16)
+    let lowering = lower_tier2_curried_chain(&arena, &scan, None, &pinned, JitTier2EnvBoundary::OperatorEnv, 16)
         .expect("fold operator lowers");
     assert_eq!(lowering.arity(), 2);
     assert_eq!(lowering.self_call_count(), 0);
@@ -232,7 +232,7 @@ fn tak_chain_scans_and_lowers_with_direct_self_calls() {
         }]
     );
 
-    let lowering = lower_tier2_curried_chain(&arena, &scan, Some((3, 0)), &[], 32)
+    let lowering = lower_tier2_curried_chain(&arena, &scan, Some((3, 0)), &[], JitTier2EnvBoundary::InnerLambdaEnv, 32)
         .expect("tak lowers");
     assert_eq!(lowering.arity(), 3);
     assert_eq!(lowering.self_call_count(), 4);
@@ -298,7 +298,12 @@ fn pinned_callee_with_a_call_is_rejected() {
 /// A stray upvalue read beyond the parameter frames (not a call head) is
 /// outside the fused grammar.
 #[test]
-fn stray_deep_upvalue_read_is_rejected() {
+fn deep_upvalue_read_is_an_environment_read() {
+    // Landing 3 widened the grammar: a value read of an upvalue beyond the
+    // chain parameters is admitted as an environment read (the emitter
+    // translates it onto the boundary env and forces it at first use), and
+    // the scan records the env dependence so the lowering imports
+    // `aos_upval_get`.
     let nodes = vec![
         node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
         node(IrKind::Formal, IrData::Formal { name: Symbol::new(1), default: None }),
@@ -309,5 +314,126 @@ fn stray_deep_upvalue_read_is_rejected() {
         ),
     ];
     let arena = arena(nodes);
-    assert!(scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(3)).is_err());
+    let scan =
+        scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(3)).expect("env read scans");
+    assert!(scan.reads_env());
+    assert!(scan.callee_sites().is_empty());
+
+    let lowering =
+        lower_tier2_curried_chain(&arena, &scan, None, &[], JitTier2EnvBoundary::OperatorEnv, 16)
+            .expect("env read lowers");
+    assert_eq!(lowering.arity(), 2);
+    assert_eq!(lowering.self_call_count(), 0);
+}
+
+/// A parameter-only chain reports no environment dependence.
+#[test]
+fn parameter_only_chain_reads_no_environment() {
+    let (arena, op_pattern, op_body, _mod_pattern, _mod_body) = fold_op_arena();
+    let scan = scan_tier2_curried_chain(&arena, op_pattern, op_body).expect("op chain scans");
+    assert!(!scan.reads_env());
+}
+
+/// Unary negation is admitted by both grammars and lowers verified CLIF.
+#[test]
+fn unary_negation_scans_and_lowers() {
+    let nodes = vec![
+        node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        node(IrKind::Formal, IrData::Formal { name: Symbol::new(1), default: None }),
+        node(IrKind::UpvalVar, IrData::Upval { depth: 1, slot: 0 }),
+        node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+        node(
+            IrKind::UnaryOp,
+            IrData::Unary {
+                op: ratchet_core::syntax::UnaryOpKind::Neg,
+                operand: IrId::new(3),
+            },
+        ),
+        node(
+            IrKind::BinOp,
+            IrData::Binary { op: BinOpKind::Add, lhs: IrId::new(2), rhs: IrId::new(4) },
+        ),
+        node(
+            IrKind::Lambda,
+            IrData::Lambda { pattern: IrId::new(1), body: IrId::new(5), frame: None },
+        ),
+    ];
+    let arena = arena(nodes);
+    let scan =
+        scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(6)).expect("negation scans");
+    assert!(!scan.reads_env());
+    let lowering =
+        lower_tier2_curried_chain(&arena, &scan, None, &[], JitTier2EnvBoundary::OperatorEnv, 16)
+            .expect("negation lowers");
+    assert_eq!(lowering.arity(), 2);
+}
+
+/// Boolean negation stays out of the grammar (only `Neg` was widened).
+#[test]
+fn boolean_negation_is_rejected() {
+    let nodes = vec![
+        node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        node(IrKind::Formal, IrData::Formal { name: Symbol::new(1), default: None }),
+        node(IrKind::LocalVar, IrData::Local { slot: 0 }),
+        node(
+            IrKind::UnaryOp,
+            IrData::Unary {
+                op: ratchet_core::syntax::UnaryOpKind::Not,
+                operand: IrId::new(2),
+            },
+        ),
+        node(
+            IrKind::Lambda,
+            IrData::Lambda { pattern: IrId::new(1), body: IrId::new(3), frame: None },
+        ),
+    ];
+    let arena = arena(nodes);
+    assert!(scan_tier2_curried_chain(&arena, IrId::new(0), IrId::new(4)).is_err());
+}
+
+/// A pinned-callee (call-free) body must stay environment-free: its closure
+/// env is not the boundary env, so a deep upvalue read is rejected.
+#[test]
+fn pinned_callee_environment_read_is_rejected() {
+    let nodes = vec![
+        node(IrKind::Formal, IrData::Formal { name: Symbol::new(0), default: None }),
+        node(IrKind::UpvalVar, IrData::Upval { depth: 1, slot: 0 }),
+    ];
+    let arena = arena(nodes);
+    assert!(scan_tier2_pinned_callee(&arena, IrId::new(0), IrId::new(1), 1).is_err());
+}
+
+/// The fused genList lowering compiles the generator into the fold step.
+#[test]
+fn fold_genlist_lowering_fuses_an_identity_generator() {
+    let (arena, op_pattern, op_body, mod_pattern, mod_body) = fold_op_arena();
+    let scan = scan_tier2_curried_chain(&arena, op_pattern, op_body).expect("op chain scans");
+    let callee_body =
+        scan_tier2_pinned_callee(&arena, mod_pattern, mod_body, 2).expect("mod chain validates");
+    let pinned = [JitTier2PinnedCallee {
+        upval: (2, 0),
+        arity: 2,
+        body: callee_body,
+    }];
+    // Node 3 is a bare `LocalVar { slot: 0 }` — exactly the body of the
+    // identity generator `i: i` once scanned at arity 1.
+    let generator_body = IrId::new(3);
+
+    let lowering = lower_tier2_fold_genlist(&arena, &scan, &pinned, generator_body, 16)
+        .expect("fused genlist fold lowers");
+    assert_eq!(lowering.arity(), 2);
+    assert_eq!(lowering.self_call_count(), 0);
+    assert_eq!(lowering.self_upval(), None);
+    // Same frozen boundary ABI as a plain arity-2 chain entry.
+    assert_eq!(lowering.entry().signature.params.len(), 3);
+    assert_eq!(lowering.inner().signature.params.len(), 2 + 4 + 1);
+}
+
+/// The fused lowering rejects a non-arity-2 operator scan.
+#[test]
+fn fold_genlist_lowering_rejects_non_fold_arity() {
+    let (arena, root_pattern, root_body) = tak_arena();
+    let scan = scan_tier2_curried_chain(&arena, root_pattern, root_body).expect("tak scans");
+    assert_eq!(scan.arity(), 3);
+    assert!(lower_tier2_fold_genlist(&arena, &scan, &[], IrId::new(3), 16).is_err());
 }

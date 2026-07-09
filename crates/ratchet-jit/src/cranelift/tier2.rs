@@ -119,9 +119,10 @@ impl JitModuleContext {
     ) -> Result<JitModuleContextFinalizedBody, JitCraneliftModuleSetupError> {
         let inner_ctx = &mut *self.inner.borrow_mut();
 
-        // The tier-2 grammar imports exactly these helpers; require their
-        // registered addresses up front so finalization cannot dangle.
-        let required = ["aos_force", "aos_deopt"];
+        // The tier-2 grammar imports at most these helpers (`aos_upval_get`
+        // only when the body reads its environment); require their registered
+        // addresses up front so finalization cannot dangle.
+        let required = ["aos_force", "aos_deopt", "aos_upval_get"];
         let missing: Vec<String> = required
             .iter()
             .filter(|name| {

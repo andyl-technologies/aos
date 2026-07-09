@@ -206,6 +206,50 @@ pub trait Tier1Engine: fmt::Debug {
             blacklisted: false,
         }
     }
+
+    /// Consulted by a strict left fold whose list is a direct `genList` call.
+    ///
+    /// This is the fused-list-generation seam: the fold's list operand is a
+    /// direct `builtins.genList generator length` application, so no element
+    /// list exists yet. `op` is the fold operator and `op_lambda` its cloned
+    /// heap record; `generator` is the forced generator closure and
+    /// `generator_lambda` its cloned record; `accumulator` is the current
+    /// (possibly still suspended) accumulator; and the remaining run covers
+    /// indices `next_index .. length`. A compiled fused entry returns
+    /// [`Tier2FoldHook::Ran`] whose `consumed` counts *generated* elements
+    /// (the index loop resumes at `next_index + consumed`). The default
+    /// implementation leaves the loop untouched.
+    #[allow(clippy::too_many_arguments)]
+    fn on_foldl_strict_genlist(
+        &self,
+        eval: &mut TreeWalk,
+        op: Value,
+        op_lambda: &crate::eval::heap::EvalLambda,
+        generator: Value,
+        generator_lambda: &crate::eval::heap::EvalLambda,
+        accumulator: Value,
+        next_index: usize,
+        length: usize,
+        id: IrId,
+        span: Span,
+    ) -> Tier2FoldHook {
+        let _ = (
+            eval,
+            op,
+            op_lambda,
+            generator,
+            generator_lambda,
+            accumulator,
+            next_index,
+            length,
+            id,
+            span,
+        );
+        Tier2FoldHook::Continued {
+            promoted: false,
+            blacklisted: false,
+        }
+    }
 }
 
 /// The `Empty` state: an entry is installed but not published for dispatch.

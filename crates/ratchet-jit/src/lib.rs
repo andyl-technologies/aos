@@ -106,9 +106,9 @@ pub use lower::{
     lower_tier2_self_recursive_lambda,
 };
 pub use lower::{
-    JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2PinnedCallee,
-    TIER2_MAX_CHAIN_ARITY, lower_tier2_curried_chain, scan_tier2_curried_chain,
-    scan_tier2_pinned_callee,
+    JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary,
+    JitTier2PinnedCallee, TIER2_MAX_CHAIN_ARITY, lower_tier2_curried_chain,
+    lower_tier2_fold_genlist, scan_tier2_curried_chain, scan_tier2_pinned_callee,
 };
 pub use lower::{
     AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX,

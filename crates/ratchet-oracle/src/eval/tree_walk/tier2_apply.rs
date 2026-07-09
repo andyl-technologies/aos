@@ -36,6 +36,25 @@ use super::*;
 /// on top.
 pub(super) const TIER2_FOLDL_CONSULT_FLOOR: usize = 8;
 
+/// One fused-generation seam consult outcome, seen by the fused index loop.
+pub(super) enum Tier2FoldGenConsult {
+    /// Native code generated and folded `consumed` further elements.
+    Ran {
+        /// The number of elements generated and folded.
+        consumed: usize,
+        /// The accumulator value after them (WHNF).
+        accumulator: Value,
+    },
+    /// No native run happened at this consult.
+    Declined {
+        /// True when the `(operator, generator)` pair can never fuse; the
+        /// index loop should hand the remaining run to the materialized
+        /// fold seam, which may still fold the operator natively over
+        /// element thunks.
+        permanent: bool,
+    },
+}
+
 impl TreeWalk {
     /// Installs and publishes a tier-2 lambda entry shared across a def-site.
     ///
@@ -215,6 +234,92 @@ impl TreeWalk {
                     self.increment_tier2_blacklisted();
                 }
                 None
+            }
+        }
+    }
+
+    /// Consults the tier-2 engine for one run of a fused `genList` fold.
+    ///
+    /// Called by the fused index loop (see
+    /// [`eval_foldl_strict_over_genlist`](Self::eval_foldl_strict_over_genlist))
+    /// with the current accumulator and the remaining index run
+    /// `next_index .. length`, at most twice per fold call. A
+    /// [`Tier2FoldGenConsult::Ran`] outcome reports that native code
+    /// generated and folded further elements; a permanent decline tells the
+    /// loop the pair can never fuse, so it should hand the remaining run
+    /// back to the materialized fold seam. The caller enforces the
+    /// [`TIER2_FOLDL_CONSULT_FLOOR`] so short generated folds never pay a
+    /// lambda-record clone.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn try_tier2_foldl_genlist(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op: Value,
+        generator: Value,
+        accumulator: Value,
+        next_index: usize,
+        length: usize,
+    ) -> Tier2FoldGenConsult {
+        // A non-lambda operator or generator can never fuse; the materialized
+        // seam owns whatever native opportunity remains.
+        if op.tag() != ValueTag::Lambda || generator.tag() != ValueTag::Lambda {
+            return Tier2FoldGenConsult::Declined { permanent: true };
+        }
+        let Some(engine) = self.tier1_engine.clone() else {
+            return Tier2FoldGenConsult::Declined { permanent: true };
+        };
+        let (Ok(op_lambda), Ok(generator_lambda)) =
+            (self.heap.clone_lambda(op), self.heap.clone_lambda(generator))
+        else {
+            return Tier2FoldGenConsult::Declined { permanent: true };
+        };
+        match engine.on_foldl_strict_genlist(
+            self,
+            op,
+            &op_lambda,
+            generator,
+            &generator_lambda,
+            accumulator,
+            next_index,
+            length,
+            id,
+            span,
+        ) {
+            Tier2FoldHook::Ran {
+                consumed,
+                accumulator,
+                deopted,
+                promoted,
+            } => {
+                if promoted {
+                    self.increment_tier2_promoted();
+                }
+                if deopted {
+                    self.increment_tier2_deopted();
+                }
+                if consumed == 0 {
+                    return Tier2FoldGenConsult::Declined { permanent: false };
+                }
+                self.increment_tier2_dispatched();
+                Tier2FoldGenConsult::Ran {
+                    consumed: consumed.min(length.saturating_sub(next_index)),
+                    accumulator,
+                }
+            }
+            Tier2FoldHook::Continued {
+                promoted,
+                blacklisted,
+            } => {
+                if promoted {
+                    self.increment_tier2_promoted();
+                }
+                if blacklisted {
+                    self.increment_tier2_blacklisted();
+                }
+                Tier2FoldGenConsult::Declined {
+                    permanent: blacklisted,
+                }
             }
         }
     }

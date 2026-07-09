@@ -7,7 +7,10 @@
 //! - **Fold operators** (`acc: elem: ...` under `builtins.foldl'`): the fold
 //!   loop applies the chain twice per element through fresh intermediate
 //!   closures; a fused arity-2 entry replaces both applies and the closure
-//!   churn with one native call per element.
+//!   churn with one native call per element. The [`lower_tier2_fold_genlist`]
+//!   variant additionally fuses an in-grammar `builtins.genList` generator
+//!   into the fold step, so the native loop synthesizes each element from its
+//!   index instead of forcing a materialized element thunk.
 //! - **Multi-argument recursions** (`tak = x: y: z: ...`): the interpreter
 //!   builds two partial-application closures per recursive call; a fused
 //!   arity-3 entry turns each `self a b c` chain into one direct native call.
@@ -33,7 +36,10 @@
 //! K-1-j, slot 0)` otherwise — the coordinates the resolver assigns to a chain
 //! of bare formals with no intervening binders. Each parameter is forced at
 //! its first strict use on each dominating path, exactly like `lambda_rec`'s
-//! single parameter.
+//! single parameter. Upvalue reads at `depth >= K` are **environment reads**
+//! against the boundary `env` pointer; their compile-time depth translation
+//! is fixed by [`JitTier2EnvBoundary`] (see the [`emit`] module docs for the
+//! recursion-invariance argument).
 //!
 //! # Callee classification
 //!
@@ -53,36 +59,28 @@
 //! exhausted depth budget) records a deopt trap and unwinds to the boundary
 //! through the sentinel tag; the dispatcher re-runs the boundary application
 //! interpreted, which is sound because in-grammar bodies are pure except for
-//! memoizing parameter forces.
+//! memoizing parameter and environment forces.
 
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
-    ir::{Function, InstBuilder, MemFlags, Signature, UserFuncName, condcodes::IntCC, types},
+    ir::{Function, InstBuilder, MemFlags, Signature, condcodes::IntCC, types},
 };
-use ratchet_core::{
-    IrArena, IrData, IrId, IrKind, runtime_lambda_argv_call_signature, syntax::BinOpKind,
-};
+use ratchet_core::{IrArena, IrId, runtime_lambda_argv_call_signature};
 
 use super::{
-    AOS_DEOPT_SYMBOL, AOS_FORCE_SYMBOL, JitLowerError, append_entry_block_params,
-    clif_external_name_for_aos_deopt, clif_external_name_for_aos_force, clif_name_for_ir_root,
-    import_runtime_helper_function, verify_clif_function,
+    JitLowerError, append_entry_block_params, clif_name_for_ir_root, verify_clif_function,
 };
 use super::lambda_rec::import_tier2_local_function;
 use crate::abi::clif_signature_for_runtime_call;
 
-/// A Cranelift SSA value, aliased to avoid confusion with the runtime `Value`.
-type ClifValue = cranelift_codegen::ir::Value;
-type Block = cranelift_codegen::ir::Block;
-
 /// The runtime tag word for an inline integer value (`ValueTag::Int`).
-const TAG_INT: i64 = 0x00;
+pub(super) const TAG_INT: i64 = 0x00;
 /// The runtime tag word for an inline boolean value (`ValueTag::Bool`).
-const TAG_BOOL: i64 = 0x02;
+pub(super) const TAG_BOOL: i64 = 0x02;
 /// The runtime tag word for a null value (`ValueTag::Null`).
 const TAG_NULL: i64 = 0x03;
 /// The internal deopt-unwind sentinel tag (see `lambda_rec`).
-const TIER2_DEOPT_SENTINEL_TAG: i64 = 0xFF;
+pub(super) const TIER2_DEOPT_SENTINEL_TAG: i64 = 0xFF;
 /// The byte stride of one by-value runtime value in the entry's `argv` run.
 const VALUE_STRIDE_BYTES: i32 = 16;
 /// The byte offset of the payload word within one by-value runtime value.
@@ -123,6 +121,8 @@ pub struct JitTier2ChainScan {
     inner_body: IrId,
     /// The distinct callee upvalue sites found in the body.
     callee_sites: Vec<JitTier2ChainCalleeSite>,
+    /// Whether the body reads any upvalue beyond the chain parameters.
+    reads_env: bool,
 }
 
 impl JitTier2ChainScan {
@@ -145,6 +145,45 @@ impl JitTier2ChainScan {
     pub fn callee_sites(&self) -> &[JitTier2ChainCalleeSite] {
         &self.callee_sites
     }
+
+    /// Returns whether the body reads the captured environment.
+    ///
+    /// True when any value operand is an upvalue beyond the chain parameters;
+    /// the lowering then imports `aos_upval_get` and the compiled body reads
+    /// the boundary `env` pointer at runtime.
+    pub const fn reads_env(&self) -> bool {
+        self.reads_env
+    }
+}
+
+/// How the boundary `env` pointer relates to the chain's conceptual frames.
+///
+/// Environment reads inside the compiled body use body-relative coordinates
+/// that count the chain parameter frames; the boundary environment handed to
+/// the native call omits some of those frames, and *which* frames depends on
+/// the dispatching seam. The lowering bakes the translation in at compile
+/// time, so an entry compiled for one seam must only be dispatched by that
+/// seam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JitTier2EnvBoundary {
+    /// The apply seam: `env` is the innermost closure's captured environment
+    /// (the chain root's environment plus the K-1 outer argument frames), so
+    /// only the call frame is missing and reads translate by `depth - 1`.
+    InnerLambdaEnv,
+    /// The fold seam: `env` is the unapplied operator closure's captured
+    /// environment with **no** parameter frames, so all K conceptual frames
+    /// are missing and reads translate by `depth - K`.
+    OperatorEnv,
+}
+
+impl JitTier2EnvBoundary {
+    /// Returns the number of conceptual frames missing from the boundary env.
+    pub(super) const fn skew(self, arity: u32) -> u32 {
+        match self {
+            Self::InnerLambdaEnv => 1,
+            Self::OperatorEnv => arity,
+        }
+    }
 }
 
 /// A pinned non-self callee resolved by the engine for inlining.
@@ -165,10 +204,12 @@ pub struct JitTier2PinnedCallee {
     pub body: IrId,
 }
 
+mod emit;
+mod fold_gen;
 mod scan;
 
+pub use fold_gen::lower_tier2_fold_genlist;
 pub use scan::{scan_tier2_curried_chain, scan_tier2_pinned_callee};
-use scan::{flatten_apply_chain, require_static_bool_condition};
 
 /// A verified fused lowering of one curried lambda chain.
 ///
@@ -227,57 +268,15 @@ impl JitTier2ChainLowering {
     }
 }
 
-/// Shared CLIF references threaded through the fused body emitter.
-struct ChainCtx {
-    /// Imported `aos_force` helper (forces parameters at first strict use).
-    force: cranelift_codegen::ir::FuncRef,
-    /// Imported `aos_deopt` helper called by the shared deopt block.
-    deopt_fn: cranelift_codegen::ir::FuncRef,
-    /// The module-local self reference for direct recursive calls.
-    self_ref: cranelift_codegen::ir::FuncRef,
-    /// The runtime-context entry parameter.
-    rt: ClifValue,
-    /// The environment entry parameter (unused by the grammar, threaded for
-    /// self-calls so upvalue reads can join the grammar later).
-    env: ClifValue,
-    /// The raw (possibly suspended) `(tag, payload)` pair per chain parameter.
-    raw_params: Vec<(ClifValue, ClifValue)>,
-    /// The remaining native self-call depth budget.
-    budget: ClifValue,
-    /// The shared guard-failure block: records a deopt trap, returns the sentinel.
-    deopt: Block,
-    /// The shared sentinel-propagation block: returns the sentinel unchanged.
-    sentinel: Block,
-    /// The chain arity K.
-    arity: u32,
-    /// The self-callee upvalue coordinates, when the chain self-recurses.
-    self_upval: Option<(u32, u32)>,
-    /// The pinned callees available for inlining.
-    pinned: Vec<JitTier2PinnedCallee>,
-    /// The number of self-call chains emitted so far.
-    self_call_count: u32,
-}
-
-/// The per-dominating-path evaluation state of the emitter.
-///
-/// `forced_params` caches the forced value of each chain parameter along the
-/// current path (an `If` arm must not leak its forces past the join, so arms
-/// clone and restore the caches). `inline_params` is `Some` while emitting a
-/// pinned callee's inlined body, mapping the callee's own parameter reads to
-/// the already-evaluated argument pairs.
-#[derive(Clone)]
-struct EmitState {
-    forced_params: Vec<Option<(ClifValue, ClifValue)>>,
-    inline_params: Option<Vec<(ClifValue, ClifValue)>>,
-}
-
 /// Lowers a scanned curried chain into verified fused tier-2 CLIF.
 ///
 /// `scan` is the structural scan of the chain, `self_upval` the callee site
 /// the engine resolved to the chain's own def-site (its chains must be full
 /// arity; `None` for a non-recursive fold operator), and `pinned` the resolved
-/// pinned callees for every remaining callee site. `depth_budget` seeds the
-/// entry's native self-call budget.
+/// pinned callees for every remaining callee site. `env_boundary` fixes the
+/// compile-time depth translation for environment reads to the dispatching
+/// seam's boundary environment, and `depth_budget` seeds the entry's native
+/// self-call budget.
 ///
 /// # Errors
 ///
@@ -292,17 +291,20 @@ pub fn lower_tier2_curried_chain(
     scan: &JitTier2ChainScan,
     self_upval: Option<(u32, u32)>,
     pinned: &[JitTier2PinnedCallee],
+    env_boundary: JitTier2EnvBoundary,
     depth_budget: i64,
 ) -> Result<JitTier2ChainLowering, JitLowerError> {
     let entry_signature = clif_signature_for_runtime_call(runtime_lambda_argv_call_signature())?;
     let inner_signature = inner_signature_for_arity(&entry_signature, scan.arity);
 
-    let (inner, self_call_count) = build_inner_function(
+    let (inner, self_call_count) = emit::build_inner_function(
         arena,
         scan,
         inner_signature.clone(),
         self_upval,
         pinned,
+        env_boundary,
+        emit::ChainInnerBody::Plain,
     )?;
     let entry = build_entry_function(
         scan.inner_body,
@@ -345,95 +347,6 @@ fn inner_signature_for_arity(entry: &Signature, arity: u32) -> Signature {
         .params
         .push(cranelift_codegen::ir::AbiParam::new(types::I64));
     signature
-}
-
-/// Builds the compiled chain body and returns it with its self-call count.
-fn build_inner_function(
-    arena: &IrArena,
-    scan: &JitTier2ChainScan,
-    signature: Signature,
-    self_upval: Option<(u32, u32)>,
-    pinned: &[JitTier2PinnedCallee],
-) -> Result<(Function, u32), JitLowerError> {
-    let mut function = Function::with_name_signature(
-        UserFuncName::user(
-            super::lambda_rec::AOS_TIER2_LOCAL_FUNCTION_NAMESPACE,
-            scan.inner_body.as_u32(),
-        ),
-        signature.clone(),
-    );
-    let force = import_runtime_helper_function(
-        &mut function,
-        AOS_FORCE_SYMBOL,
-        clif_external_name_for_aos_force(),
-    )?;
-    let deopt_fn = import_runtime_helper_function(
-        &mut function,
-        AOS_DEOPT_SYMBOL,
-        clif_external_name_for_aos_deopt(),
-    )?;
-    let self_ref = import_tier2_local_function(&mut function, &signature);
-
-    let entry_block = append_entry_block_params(&mut function);
-    let deopt = function.dfg.make_block();
-    let sentinel = function.dfg.make_block();
-
-    let mut cursor = FuncCursor::new(&mut function).at_first_insertion_point(entry_block);
-    let params = cursor.func.dfg.block_params(entry_block).to_vec();
-    let expected = 2 + 2 * scan.arity as usize + 1;
-    if params.len() != expected {
-        return Err(JitLowerError::MissingEntryBlockParameter {
-            index: params.len(),
-        });
-    }
-    let rt = params[0];
-    let env = params[1];
-    let mut raw_params = Vec::with_capacity(scan.arity as usize);
-    for j in 0..scan.arity as usize {
-        raw_params.push((params[2 + 2 * j], params[2 + 2 * j + 1]));
-    }
-    let budget = params[expected - 1];
-
-    let mut ctx = ChainCtx {
-        force,
-        deopt_fn,
-        self_ref,
-        rt,
-        env,
-        raw_params,
-        budget,
-        deopt,
-        sentinel,
-        arity: scan.arity,
-        self_upval,
-        pinned: pinned.to_vec(),
-        self_call_count: 0,
-    };
-    let mut state = EmitState {
-        forced_params: vec![None; scan.arity as usize],
-        inline_params: None,
-    };
-
-    let (tag, payload) = emit_expr(&mut cursor, arena, &mut ctx, scan.inner_body, &mut state)?;
-    cursor.ins().return_(&[tag, payload]);
-
-    // Shared guard-failure block: record the deopt trap, unwind with the sentinel.
-    cursor.insert_block(deopt);
-    let deopt_record = cursor.ins().iconst(types::I64, 0);
-    let _sentinel_value = cursor.ins().call(ctx.deopt_fn, &[ctx.rt, deopt_record]);
-    let deopt_tag = cursor.ins().iconst(types::I64, TIER2_DEOPT_SENTINEL_TAG);
-    let deopt_payload = cursor.ins().iconst(types::I64, 0);
-    cursor.ins().return_(&[deopt_tag, deopt_payload]);
-
-    // Shared propagation block: a callee already recorded the trap; just unwind.
-    cursor.insert_block(sentinel);
-    let propagate_tag = cursor.ins().iconst(types::I64, TIER2_DEOPT_SENTINEL_TAG);
-    let propagate_payload = cursor.ins().iconst(types::I64, 0);
-    cursor.ins().return_(&[propagate_tag, propagate_payload]);
-
-    let self_call_count = ctx.self_call_count;
-    drop(cursor);
-    Ok((function, self_call_count))
 }
 
 /// Builds the boundary entry adapter with the frozen argv lambda-entry ABI.
@@ -499,366 +412,6 @@ fn build_entry_function(
     cursor.ins().return_(&[null_tag, null_payload]);
     drop(cursor);
     Ok(function)
-}
-
-/// Emits one grammar expression, returning its `(tag, payload)` word pair.
-fn emit_expr(
-    cursor: &mut FuncCursor,
-    arena: &IrArena,
-    ctx: &mut ChainCtx,
-    id: IrId,
-    state: &mut EmitState,
-) -> Result<(ClifValue, ClifValue), JitLowerError> {
-    let node = arena
-        .node(id)
-        .copied()
-        .ok_or(JitLowerError::MissingIrBody { body: id })?;
-    match (node.kind, node.data) {
-        (IrKind::Int, IrData::Int(value)) => {
-            let tag = cursor.ins().iconst(types::I64, TAG_INT);
-            let payload = cursor.ins().iconst(types::I64, value);
-            Ok((tag, payload))
-        }
-        (IrKind::Bool, IrData::Bool(value)) => {
-            let tag = cursor.ins().iconst(types::I64, TAG_BOOL);
-            let payload = cursor.ins().iconst(types::I64, i64::from(value));
-            Ok((tag, payload))
-        }
-        (IrKind::LocalVar, IrData::Local { slot: 0 }) => {
-            if let Some(inline) = &state.inline_params {
-                let arity = inline.len();
-                return Ok(inline[arity - 1]);
-            }
-            Ok(emit_forced_param(
-                cursor,
-                ctx,
-                (ctx.arity - 1) as usize,
-                state,
-            ))
-        }
-        (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 })
-            if state.inline_params.is_none() && depth < ctx.arity =>
-        {
-            // Chain parameter j at depth K-1-j: index = K-1-depth.
-            Ok(emit_forced_param(
-                cursor,
-                ctx,
-                (ctx.arity - 1 - depth) as usize,
-                state,
-            ))
-        }
-        (IrKind::UpvalVar, IrData::Upval { depth, slot: 0 })
-            if state.inline_params.is_some() =>
-        {
-            let inline = state
-                .inline_params
-                .as_ref()
-                .ok_or(JitLowerError::MissingIrBody { body: id })?;
-            let arity = inline.len() as u32;
-            if depth < arity {
-                Ok(inline[(arity - 1 - depth) as usize])
-            } else {
-                Err(JitLowerError::UnsupportedArithOperand {
-                    operand: id,
-                    kind: IrKind::UpvalVar,
-                })
-            }
-        }
-        (IrKind::BinOp, IrData::Binary { op, lhs, rhs }) => {
-            emit_binop(cursor, arena, ctx, op, lhs, rhs, state)
-        }
-        (
-            IrKind::If,
-            IrData::Triple {
-                first,
-                second,
-                third,
-            },
-        ) => emit_if(cursor, arena, ctx, first, second, third, state),
-        (IrKind::Apply, _) => emit_call_chain(cursor, arena, ctx, id, state),
-        (kind, _) => Err(JitLowerError::UnsupportedArithOperand { operand: id, kind }),
-    }
-}
-
-/// Emits a chain-parameter read, forcing it at first strict use on this path.
-fn emit_forced_param(
-    cursor: &mut FuncCursor,
-    ctx: &ChainCtx,
-    index: usize,
-    state: &mut EmitState,
-) -> (ClifValue, ClifValue) {
-    if let Some(cached) = state.forced_params[index] {
-        return cached;
-    }
-    let (raw_tag, raw_payload) = ctx.raw_params[index];
-    let is_int = cursor.ins().icmp_imm(IntCC::Equal, raw_tag, TAG_INT);
-    let slow = cursor.func.dfg.make_block();
-    let join = cursor.func.dfg.make_block();
-    cursor.func.dfg.append_block_param(join, types::I64);
-    cursor.func.dfg.append_block_param(join, types::I64);
-    cursor
-        .ins()
-        .brif(is_int, join, &[raw_tag.into(), raw_payload.into()], slow, &[]);
-    cursor.insert_block(slow);
-    let force_call = cursor.ins().call(ctx.force, &[ctx.rt, raw_tag, raw_payload]);
-    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
-    cursor
-        .ins()
-        .jump(join, &[force_results[0].into(), force_results[1].into()]);
-    cursor.insert_block(join);
-    let joined = cursor.func.dfg.block_params(join).to_vec();
-    let pair = (joined[0], joined[1]);
-    state.forced_params[index] = Some(pair);
-    pair
-}
-
-/// Emits one binary operation, mirroring the tree walk's operand order.
-fn emit_binop(
-    cursor: &mut FuncCursor,
-    arena: &IrArena,
-    ctx: &mut ChainCtx,
-    op: BinOpKind,
-    lhs: IrId,
-    rhs: IrId,
-    state: &mut EmitState,
-) -> Result<(ClifValue, ClifValue), JitLowerError> {
-    let rhs_first = matches!(op, BinOpKind::Gt | BinOpKind::Le);
-    let (lhs_pair, rhs_pair) = if rhs_first {
-        let rhs_pair = emit_expr(cursor, arena, ctx, rhs, state)?;
-        let lhs_pair = emit_expr(cursor, arena, ctx, lhs, state)?;
-        (lhs_pair, rhs_pair)
-    } else {
-        let lhs_pair = emit_expr(cursor, arena, ctx, lhs, state)?;
-        let rhs_pair = emit_expr(cursor, arena, ctx, rhs, state)?;
-        (lhs_pair, rhs_pair)
-    };
-    let (lhs_tag, lhs_payload) = lhs_pair;
-    let (rhs_tag, rhs_payload) = rhs_pair;
-
-    let lhs_is_int = cursor.ins().icmp_imm(IntCC::Equal, lhs_tag, TAG_INT);
-    let rhs_is_int = cursor.ins().icmp_imm(IntCC::Equal, rhs_tag, TAG_INT);
-    let both_int = cursor.ins().band(lhs_is_int, rhs_is_int);
-    let compute = cursor.func.dfg.make_block();
-    cursor.ins().brif(both_int, compute, &[], ctx.deopt, &[]);
-    cursor.insert_block(compute);
-
-    match op {
-        BinOpKind::Add => {
-            let result = cursor.ins().iadd(lhs_payload, rhs_payload);
-            Ok(int_pair(cursor, result))
-        }
-        BinOpKind::Sub => {
-            let result = cursor.ins().isub(lhs_payload, rhs_payload);
-            Ok(int_pair(cursor, result))
-        }
-        BinOpKind::Mul => {
-            let result = cursor.ins().imul(lhs_payload, rhs_payload);
-            Ok(int_pair(cursor, result))
-        }
-        BinOpKind::Div => {
-            let nonzero = cursor.ins().icmp_imm(IntCC::NotEqual, rhs_payload, 0);
-            let lhs_is_min = cursor.ins().icmp_imm(IntCC::Equal, lhs_payload, i64::MIN);
-            let rhs_is_neg1 = cursor.ins().icmp_imm(IntCC::Equal, rhs_payload, -1);
-            let is_overflow = cursor.ins().band(lhs_is_min, rhs_is_neg1);
-            let not_overflow = cursor.ins().icmp_imm(IntCC::Equal, is_overflow, 0);
-            let safe = cursor.ins().band(nonzero, not_overflow);
-            let divide = cursor.func.dfg.make_block();
-            cursor.ins().brif(safe, divide, &[], ctx.deopt, &[]);
-            cursor.insert_block(divide);
-            let result = cursor.ins().sdiv(lhs_payload, rhs_payload);
-            Ok(int_pair(cursor, result))
-        }
-        BinOpKind::Lt => Ok(bool_pair(cursor, IntCC::SignedLessThan, lhs_payload, rhs_payload)),
-        BinOpKind::Gt => Ok(bool_pair(
-            cursor,
-            IntCC::SignedGreaterThan,
-            lhs_payload,
-            rhs_payload,
-        )),
-        BinOpKind::Le => Ok(bool_pair(
-            cursor,
-            IntCC::SignedLessThanOrEqual,
-            lhs_payload,
-            rhs_payload,
-        )),
-        BinOpKind::Ge => Ok(bool_pair(
-            cursor,
-            IntCC::SignedGreaterThanOrEqual,
-            lhs_payload,
-            rhs_payload,
-        )),
-        BinOpKind::Eq => Ok(bool_pair(cursor, IntCC::Equal, lhs_payload, rhs_payload)),
-        BinOpKind::Ne => Ok(bool_pair(cursor, IntCC::NotEqual, lhs_payload, rhs_payload)),
-        op => Err(JitLowerError::UnsupportedArithOp { op }),
-    }
-}
-
-/// Emits an `if`/`then`/`else`, joining both arms on a two-word block param.
-fn emit_if(
-    cursor: &mut FuncCursor,
-    arena: &IrArena,
-    ctx: &mut ChainCtx,
-    cond: IrId,
-    then_id: IrId,
-    else_id: IrId,
-    state: &mut EmitState,
-) -> Result<(ClifValue, ClifValue), JitLowerError> {
-    require_static_bool_condition(arena, cond)?;
-    let (_cond_tag, cond_payload) = emit_expr(cursor, arena, ctx, cond, state)?;
-
-    let then_block = cursor.func.dfg.make_block();
-    let else_block = cursor.func.dfg.make_block();
-    let join = cursor.func.dfg.make_block();
-    cursor.func.dfg.append_block_param(join, types::I64);
-    cursor.func.dfg.append_block_param(join, types::I64);
-    cursor
-        .ins()
-        .brif(cond_payload, then_block, &[], else_block, &[]);
-
-    let before_branch = state.clone();
-    cursor.insert_block(then_block);
-    let mut then_state = before_branch.clone();
-    let (then_tag, then_payload) = emit_expr(cursor, arena, ctx, then_id, &mut then_state)?;
-    cursor
-        .ins()
-        .jump(join, &[then_tag.into(), then_payload.into()]);
-
-    cursor.insert_block(else_block);
-    let mut else_state = before_branch.clone();
-    let (else_tag, else_payload) = emit_expr(cursor, arena, ctx, else_id, &mut else_state)?;
-    cursor
-        .ins()
-        .jump(join, &[else_tag.into(), else_payload.into()]);
-
-    cursor.insert_block(join);
-    *state = before_branch;
-    let joined = cursor.func.dfg.block_params(join).to_vec();
-    Ok((joined[0], joined[1]))
-}
-
-/// Emits one full application chain: a direct self-call or a pinned inline.
-///
-/// The chain's head upvalue selects the classification recorded at lowering
-/// time; argument expressions are evaluated eagerly, in call order, before the
-/// self-call or the inlined callee body.
-fn emit_call_chain(
-    cursor: &mut FuncCursor,
-    arena: &IrArena,
-    ctx: &mut ChainCtx,
-    id: IrId,
-    state: &mut EmitState,
-) -> Result<(ClifValue, ClifValue), JitLowerError> {
-    if state.inline_params.is_some() {
-        // A pinned callee body is call-free by validation; a chain here means
-        // the classification drifted from the scan.
-        return Err(JitLowerError::UnsupportedArithOperand {
-            operand: id,
-            kind: IrKind::Apply,
-        });
-    }
-    let (upval, arguments) = flatten_apply_chain(arena, id, ctx.arity)?;
-
-    if ctx.self_upval == Some(upval) {
-        if arguments.len() as u32 != ctx.arity {
-            return Err(JitLowerError::UnsupportedArithOperand {
-                operand: id,
-                kind: IrKind::Apply,
-            });
-        }
-        let mut argument_pairs = Vec::with_capacity(arguments.len());
-        for argument in &arguments {
-            argument_pairs.push(emit_expr(cursor, arena, ctx, *argument, state)?);
-        }
-        return emit_self_call(cursor, ctx, &argument_pairs);
-    }
-
-    let Some(pinned) = ctx.pinned.iter().find(|callee| callee.upval == upval).copied() else {
-        return Err(JitLowerError::UnsupportedArithOperand {
-            operand: id,
-            kind: IrKind::Apply,
-        });
-    };
-    if arguments.len() as u32 != pinned.arity {
-        return Err(JitLowerError::UnsupportedArithOperand {
-            operand: id,
-            kind: IrKind::Apply,
-        });
-    }
-    let mut argument_pairs = Vec::with_capacity(arguments.len());
-    for argument in &arguments {
-        argument_pairs.push(emit_expr(cursor, arena, ctx, *argument, state)?);
-    }
-    // Inline the pinned callee body over the evaluated arguments. The inlined
-    // body reads only its own parameters (validated call-free), so the outer
-    // forced-parameter caches pass through unchanged.
-    let mut inline_state = EmitState {
-        forced_params: state.forced_params.clone(),
-        inline_params: Some(argument_pairs),
-    };
-    let result = emit_expr(cursor, arena, ctx, pinned.body, &mut inline_state)?;
-    state.forced_params = inline_state.forced_params;
-    Ok(result)
-}
-
-/// Emits one direct self-call with its depth guard and sentinel propagation.
-fn emit_self_call(
-    cursor: &mut FuncCursor,
-    ctx: &mut ChainCtx,
-    argument_pairs: &[(ClifValue, ClifValue)],
-) -> Result<(ClifValue, ClifValue), JitLowerError> {
-    let has_budget = cursor
-        .ins()
-        .icmp_imm(IntCC::SignedGreaterThan, ctx.budget, 1);
-    let call_block = cursor.func.dfg.make_block();
-    cursor
-        .ins()
-        .brif(has_budget, call_block, &[], ctx.deopt, &[]);
-    cursor.insert_block(call_block);
-    let next_budget = cursor.ins().iadd_imm(ctx.budget, -1);
-    let mut call_arguments = vec![ctx.rt, ctx.env];
-    for (tag, payload) in argument_pairs {
-        call_arguments.push(*tag);
-        call_arguments.push(*payload);
-    }
-    call_arguments.push(next_budget);
-    let call = cursor.ins().call(ctx.self_ref, &call_arguments);
-    let results = cursor.func.dfg.inst_results(call).to_vec();
-    let [tag, payload] = results[..] else {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: "tier2_chain_self",
-            expected: 2,
-            actual: results.len(),
-        });
-    };
-    let is_sentinel = cursor
-        .ins()
-        .icmp_imm(IntCC::Equal, tag, TIER2_DEOPT_SENTINEL_TAG);
-    let continue_block = cursor.func.dfg.make_block();
-    cursor
-        .ins()
-        .brif(is_sentinel, ctx.sentinel, &[], continue_block, &[]);
-    cursor.insert_block(continue_block);
-    ctx.self_call_count = ctx.self_call_count.saturating_add(1);
-    Ok((tag, payload))
-}
-
-/// Materializes an integer runtime value pair from a computed payload.
-fn int_pair(cursor: &mut FuncCursor, payload: ClifValue) -> (ClifValue, ClifValue) {
-    let tag = cursor.ins().iconst(types::I64, TAG_INT);
-    (tag, payload)
-}
-
-/// Materializes a boolean runtime value pair from an integer comparison.
-fn bool_pair(
-    cursor: &mut FuncCursor,
-    condition: IntCC,
-    lhs: ClifValue,
-    rhs: ClifValue,
-) -> (ClifValue, ClifValue) {
-    let compared = cursor.ins().icmp(condition, lhs, rhs);
-    let payload = cursor.ins().uextend(types::I64, compared);
-    let tag = cursor.ins().iconst(types::I64, TAG_BOOL);
-    (tag, payload)
 }
 
 #[cfg(test)]

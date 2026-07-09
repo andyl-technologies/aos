@@ -48,8 +48,9 @@ use std::rc::Rc;
 
 use ratchet_core::{IrId, syntax::Span};
 use ratchet_jit::{
-    JitModuleContextFinalizedBody, JitModuleContextKeepAlive, JitTier2PinnedCallee,
-    lower_tier2_curried_chain, scan_tier2_curried_chain, scan_tier2_pinned_callee,
+    JitModuleContextFinalizedBody, JitModuleContextKeepAlive, JitTier2ChainScan,
+    JitTier2EnvBoundary, JitTier2PinnedCallee, lower_tier2_curried_chain,
+    scan_tier2_curried_chain, scan_tier2_pinned_callee,
 };
 use ratchet_oracle::eval::Tier2FoldHook;
 use ratchet_oracle::eval::heap::EvalLambda;
@@ -105,6 +106,30 @@ enum FoldPreparation {
     Transient,
     /// The operator can never compile as a fold operator.
     Structural,
+}
+
+/// The outcome of resolving a fold operator's chain and pinned callees.
+///
+/// Shared between the plain fold seam and the fused `genList` fold seam
+/// (see [`tier2_fold_gen`](super::tier2_fold_gen)); the ready payload feeds
+/// either lowering.
+pub(super) enum FoldOperatorResolution {
+    /// The operator scans to arity 2 with every callee site pinned.
+    Ready(Box<ResolvedFoldOperator>),
+    /// A callee binding is not forced yet; retry on a later consult.
+    Transient,
+    /// The operator can never compile as a fold operator.
+    Structural,
+}
+
+/// A fold operator resolved and validated, pending lowering.
+pub(super) struct ResolvedFoldOperator {
+    /// The operator's arity-2 chain scan.
+    pub(super) scan: JitTier2ChainScan,
+    /// The pinned callees' def-site identities re-validated per fold call.
+    pub(super) pinned: Vec<Tier2PinIdentity>,
+    /// The pinned callees' lowering inputs.
+    pub(super) pinned_callees: Vec<JitTier2PinnedCallee>,
 }
 
 impl NixJitTier1Engine {
@@ -189,16 +214,60 @@ impl NixJitTier1Engine {
 
     /// Scans, resolves, lowers, and finalizes one fold operator.
     fn prepare_tier2_fold(&self, eval: &TreeWalk, lambda: &EvalLambda) -> FoldPreparation {
+        let resolved = match self.resolve_tier2_fold_operator(eval, lambda) {
+            FoldOperatorResolution::Ready(resolved) => resolved,
+            FoldOperatorResolution::Transient => return FoldPreparation::Transient,
+            FoldOperatorResolution::Structural => return FoldPreparation::Structural,
+        };
         let Some(ir) = eval.tier1_module_ir(lambda.module()) else {
             return FoldPreparation::Structural;
         };
+
+        // A fold operator must not self-recurse (`self_upval` is `None`, so
+        // any non-pinned callee chain already failed the classification
+        // above and the lowering below). The fold seam dispatches with the
+        // unapplied operator closure's environment, so env reads translate
+        // against `OperatorEnv`.
+        let budget = self.tier2.borrow().budget;
+        let Ok(lowering) = lower_tier2_curried_chain(
+            &ir.arena,
+            &resolved.scan,
+            None,
+            &resolved.pinned_callees,
+            JitTier2EnvBoundary::OperatorEnv,
+            budget,
+        ) else {
+            return FoldPreparation::Structural;
+        };
+        let Some((finalized_body, keep_alive)) = self.finalize_tier2_chain(lowering) else {
+            return FoldPreparation::Structural;
+        };
+        FoldPreparation::Ready(Rc::new(NixJitTier2FoldEntry {
+            body: Rc::new(finalized_body),
+            _keep_alive: keep_alive,
+            pinned: resolved.pinned,
+        }))
+    }
+
+    /// Resolves one fold operator's chain scan and pinned callees.
+    ///
+    /// Shared by the plain fold promotion above and the fused `genList`
+    /// promotion (see [`tier2_fold_gen`](super::tier2_fold_gen)).
+    pub(super) fn resolve_tier2_fold_operator(
+        &self,
+        eval: &TreeWalk,
+        lambda: &EvalLambda,
+    ) -> FoldOperatorResolution {
+        let Some(ir) = eval.tier1_module_ir(lambda.module()) else {
+            return FoldOperatorResolution::Structural;
+        };
         let arena = &ir.arena;
         let Ok(scan) = scan_tier2_curried_chain(arena, lambda.pattern(), lambda.body()) else {
-            return FoldPreparation::Structural;
+            return FoldOperatorResolution::Structural;
         };
         // The fold loop applies exactly two arguments per element.
         if scan.arity() != 2 {
-            return FoldPreparation::Structural;
+            return FoldOperatorResolution::Structural;
         }
 
         // Every callee site must resolve to a pinned call-free callee out of
@@ -213,23 +282,23 @@ impl NixJitTier1Engine {
         for site in scan.callee_sites() {
             let (depth, slot) = site.upval;
             if depth as usize > conceptual_len || (depth as usize) < 2 {
-                return FoldPreparation::Structural;
+                return FoldOperatorResolution::Structural;
             }
             let index = conceptual_len - depth as usize;
             let Some(frame) = op_frames.get(index) else {
-                return FoldPreparation::Structural;
+                return FoldOperatorResolution::Structural;
             };
             let Ok(raw) = frame.get(slot) else {
-                return FoldPreparation::Structural;
+                return FoldOperatorResolution::Structural;
             };
             let Some(resolved) = eval.tier2_peek_forced(raw) else {
-                return FoldPreparation::Transient;
+                return FoldOperatorResolution::Transient;
             };
             let Some(pin_lambda) = eval.tier2_clone_lambda(resolved) else {
-                return FoldPreparation::Structural;
+                return FoldOperatorResolution::Structural;
             };
             if pin_lambda.module() != lambda.module() {
-                return FoldPreparation::Structural;
+                return FoldOperatorResolution::Structural;
             }
             let Ok(callee_body) = scan_tier2_pinned_callee(
                 arena,
@@ -237,7 +306,7 @@ impl NixJitTier1Engine {
                 pin_lambda.body(),
                 site.arity,
             ) else {
-                return FoldPreparation::Structural;
+                return FoldOperatorResolution::Structural;
             };
             pinned.push(Tier2PinIdentity {
                 upval: site.upval,
@@ -251,21 +320,10 @@ impl NixJitTier1Engine {
             });
         }
 
-        // A fold operator must not self-recurse (`self_upval` is `None`, so
-        // any non-pinned callee chain already failed the classification
-        // above and the lowering below).
-        let budget = self.tier2.borrow().budget;
-        let Ok(lowering) = lower_tier2_curried_chain(arena, &scan, None, &pinned_callees, budget)
-        else {
-            return FoldPreparation::Structural;
-        };
-        let Some((finalized_body, keep_alive)) = self.finalize_tier2_chain(lowering) else {
-            return FoldPreparation::Structural;
-        };
-        FoldPreparation::Ready(Rc::new(NixJitTier2FoldEntry {
-            body: Rc::new(finalized_body),
-            _keep_alive: keep_alive,
+        FoldOperatorResolution::Ready(Box::new(ResolvedFoldOperator {
+            scan,
             pinned,
+            pinned_callees,
         }))
     }
 }
@@ -276,7 +334,7 @@ impl NixJitTier1Engine {
 /// the curried chain), so every closure instance of the same source operator
 /// shares one compiled entry and one decision. Distinct from the apply-seam
 /// keys, which use the innermost body node.
-fn fold_def_site_key(lambda: &EvalLambda) -> u64 {
+pub(super) fn fold_def_site_key(lambda: &EvalLambda) -> u64 {
     ((lambda.module().index() as u64) << 32) | u64::from(lambda.body().as_u32())
 }
 
@@ -286,7 +344,7 @@ fn fold_def_site_key(lambda: &EvalLambda) -> u64 {
 /// compares def-site identity with the pin recorded at promotion. Pins may
 /// fail transiently for a *different* operator instance whose bindings are
 /// not forced yet; the fold then stays interpreted for that call only.
-fn fold_pins_still_valid(
+pub(super) fn fold_pins_still_valid(
     eval: &TreeWalk,
     lambda: &EvalLambda,
     pinned: &[Tier2PinIdentity],

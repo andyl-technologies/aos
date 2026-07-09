@@ -116,11 +116,14 @@ pub struct NixJitTier1Engine {
     tier2: RefCell<tier2::Tier2EngineState>,
     /// Tier-2 fold-seam bookkeeping (see [`tier2_fold`]).
     tier2_fold: RefCell<tier2_fold::Tier2FoldState>,
+    /// Tier-2 fused-list-generation bookkeeping (see [`tier2_fold_gen`]).
+    tier2_fold_gen: RefCell<tier2_fold_gen::Tier2FoldGenState>,
 }
 
 mod tier2;
 mod tier2_chain;
 mod tier2_fold;
+mod tier2_fold_gen;
 
 /// Mutable per-run promotion bookkeeping guarded by the engine's [`RefCell`].
 #[derive(Default)]
@@ -253,6 +256,7 @@ impl NixJitTier1Engine {
             tier2_enabled: std::env::var("AOS_NIX_JIT_TIER2").as_deref() != Ok("0"),
             tier2: RefCell::new(tier2::Tier2EngineState::default()),
             tier2_fold: RefCell::new(tier2_fold::Tier2FoldState::default()),
+            tier2_fold_gen: RefCell::new(tier2_fold_gen::Tier2FoldGenState::default()),
         })
     }
 
@@ -778,6 +782,33 @@ impl Tier1Engine for NixJitTier1Engine {
         span: Span,
     ) -> ratchet_oracle::eval::Tier2FoldHook {
         self.on_foldl_strict_impl(eval, op, lambda, accumulator, elements, id, span)
+    }
+
+    fn on_foldl_strict_genlist(
+        &self,
+        eval: &mut TreeWalk,
+        op: Value,
+        op_lambda: &ratchet_oracle::eval::heap::EvalLambda,
+        generator: Value,
+        generator_lambda: &ratchet_oracle::eval::heap::EvalLambda,
+        accumulator: Value,
+        next_index: usize,
+        length: usize,
+        id: IrId,
+        span: Span,
+    ) -> ratchet_oracle::eval::Tier2FoldHook {
+        self.on_foldl_strict_genlist_impl(
+            eval,
+            op,
+            op_lambda,
+            generator,
+            generator_lambda,
+            accumulator,
+            next_index,
+            length,
+            id,
+            span,
+        )
     }
 }
 

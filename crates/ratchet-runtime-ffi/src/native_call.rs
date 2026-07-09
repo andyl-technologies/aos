@@ -393,14 +393,115 @@ pub fn run_context_finalized_native_fold_loop(
     elements: &[Value],
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeFoldLoopOutcome, JitCraneliftNativeCallError> {
+    run_native_fold_loop(eval, id, span, env, initial, FoldElementSource::Slice(elements), body)
+}
+
+/// Runs a fused fold-generator entry natively over a `genList` index range.
+///
+/// This is the fused-list-generation boundary: the compiled entry was lowered
+/// by `lower_tier2_fold_genlist`, so its second `argv` value is the **element
+/// index** and the generator body runs inside the native step — no element
+/// thunk exists anywhere. The loop covers indices `start_index ..
+/// start_index + run_len` and otherwise behaves exactly like
+/// [`run_context_finalized_native_fold_loop`]: context pin and trap scope are
+/// set up once, each index costs one bare native call plus one thread-local
+/// trap probe, and any trap while folding the element at offset `k` stops the
+/// loop with `consumed == k` so the caller re-runs that element interpreted
+/// (materializing its `g i` apply-thunk exactly as `builtins.genList` would).
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported
+/// native value ABI, the finalized body is not a tier-2 chain entry of arity
+/// 2, or a compiled call returns a value whose payload violates the runtime
+/// layout.
+pub fn run_context_finalized_native_fold_genlist_loop(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    initial: Value,
+    start_index: usize,
+    run_len: usize,
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeFoldLoopOutcome, JitCraneliftNativeCallError> {
+    run_native_fold_loop(
+        eval,
+        id,
+        span,
+        env,
+        initial,
+        FoldElementSource::GenIndices {
+            start: start_index,
+            len: run_len,
+        },
+        body,
+    )
+}
+
+/// The per-step element supply of one native fold run.
+#[derive(Clone, Copy)]
+enum FoldElementSource<'a> {
+    /// Materialized elements from the caller's list run.
+    Slice(&'a [Value]),
+    /// Synthesized inline-integer indices for a fused `genList` fold.
+    GenIndices { start: usize, len: usize },
+}
+
+impl FoldElementSource<'_> {
+    /// Returns the number of fold steps this source supplies.
+    fn len(&self) -> usize {
+        match self {
+            Self::Slice(elements) => elements.len(),
+            Self::GenIndices { len, .. } => *len,
+        }
+    }
+
+    /// Returns the second `argv` value for the step at `offset`.
+    ///
+    /// `None` only when a generated index exceeds `i64` — unreachable for
+    /// lengths produced by the evaluator's list-length validation, and
+    /// reported as a deopt (never an unwrap) by the loop.
+    fn step_value(&self, offset: usize) -> Option<Value> {
+        match self {
+            Self::Slice(elements) => elements.get(offset).copied(),
+            Self::GenIndices { start, .. } => {
+                let index = start.checked_add(offset)?;
+                i64::try_from(index).ok().map(Value::int)
+            }
+        }
+    }
+}
+
+/// Shared native fold-loop core for both element sources.
+///
+/// See [`run_context_finalized_native_fold_loop`] for the boundary contract.
+fn run_native_fold_loop(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    initial: Value,
+    source: FoldElementSource<'_>,
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeFoldLoopOutcome, JitCraneliftNativeCallError> {
     let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
     let rt = context.as_mut().as_mut_ptr();
     let env = (env as *const EvalEnv) as *mut c_void;
 
     let scope = RuntimeTrapScope::new();
     let mut accumulator = initial;
-    for (index, element) in elements.iter().enumerate() {
-        let argv = [accumulator, *element];
+    for index in 0..source.len() {
+        let Some(element) = source.step_value(index) else {
+            drop(scope);
+            drop(context);
+            return Ok(NativeFoldLoopOutcome {
+                consumed: index,
+                accumulator,
+                deopted: true,
+            });
+        };
+        let argv = [accumulator, element];
         // SAFETY: `rt` is the pinned context over `eval`, `env` the caller-owned
         // environment clone, both argv values live on `eval`'s heap; the caller
         // keeps `body`'s module alive and the armed scope converts every trap.
@@ -437,7 +538,7 @@ pub fn run_context_finalized_native_fold_loop(
     drop(scope);
     drop(context);
     Ok(NativeFoldLoopOutcome {
-        consumed: elements.len(),
+        consumed: source.len(),
         accumulator,
         deopted: false,
     })
