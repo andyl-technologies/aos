@@ -1578,7 +1578,7 @@ mod serialize_xml;
 mod store_validity;
 use store_validity::StoreValidityChecker;
 mod tier1_publish;
-pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook};
+pub use tier1_publish::{OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook, Tier2FoldHook};
 mod tier2_apply;
 
 pub use eval_impure_inputs::{

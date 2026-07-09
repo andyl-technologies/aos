@@ -87,7 +87,22 @@ impl TreeWalk {
                 accumulator,
             );
         }
-        for element in elements {
+        // Tier-2 fold seam: identical to the direct `eval_foldl_strict_primop`
+        // loop — at most two engine consults, native runs advance the index.
+        let mut index = 0usize;
+        let mut fold_consults = 0u32;
+        while index < elements.len() {
+            if fold_consults < 2 && self.tier1_engine.is_some() {
+                fold_consults += 1;
+                if let Some((consumed, folded)) =
+                    self.try_tier2_foldl(id, span, op, accumulator, &elements[index..])
+                {
+                    accumulator = folded;
+                    index += consumed;
+                    continue;
+                }
+            }
+            let element = elements[index];
             let step = self.apply_lambda_value(
                 id,
                 span,
@@ -107,6 +122,7 @@ impl TreeWalk {
                 element,
             )?;
             accumulator = self.force_value(op_arg.id(), op_arg.span(), result)?;
+            index += 1;
         }
 
         Ok(accumulator)

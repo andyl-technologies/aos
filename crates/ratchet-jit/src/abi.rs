@@ -63,6 +63,22 @@ pub type JitThunkFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr)
 /// register, or call any function pointer.
 pub type JitLambdaFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, Value) -> Value;
 
+/// Native entry type for a compiled multi-argument (curried-chain) lambda entry.
+///
+/// The signature is the concrete Rust type-level counterpart of
+/// [`runtime_lambda_argv_call_signature`]: `extern "C"` calling convention,
+/// runtime context pointer, environment pointer, and a caller-owned pointer to
+/// a contiguous run of by-value runtime [`Value`] arguments (one 16-byte
+/// tag/payload pair per chain parameter, outermost first). The compiled entry
+/// knows its own arity and loads exactly that many pairs, so one frozen shape
+/// serves every chain arity without exercising aggregate-passing corners of
+/// the C ABI. Calling a value of this type is unsafe because it crosses into
+/// compiled code with raw pointers and evaluator-owned state. This alias does
+/// not create, cast, register, or call any function pointer.
+///
+/// [`runtime_lambda_argv_call_signature`]: ratchet_core::runtime_lambda_argv_call_signature
+pub type JitLambdaArgvFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr, *const Value) -> Value;
+
 /// Address-free runtime-call signatures required by JIT lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JitRuntimeAbiInventory {

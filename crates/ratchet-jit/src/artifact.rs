@@ -21,6 +21,17 @@ pub enum JitClifArtifactKind {
     /// signature onto a module-local recursive body function; only the entry is
     /// ever called from Rust (see `lower::lambda_rec`).
     Tier2LambdaEntry,
+    /// A tier-2 fused curried-chain boundary entry using the frozen argv ABI.
+    ///
+    /// The entry adapts the frozen `(rt, env, argv) -> Value` multi-argument
+    /// lambda-entry signature onto a module-local body function with `arity`
+    /// unboxed chain parameters; only the entry is ever called from Rust (see
+    /// `lower::lambda_chain`). The arity is recorded so the native call
+    /// boundary can reject an `argv` run of the wrong length.
+    Tier2LambdaChainEntry {
+        /// The chain arity K the entry's `argv` run must carry.
+        arity: u8,
+    },
 }
 
 /// The source identity for a non-executable CLIF artifact.

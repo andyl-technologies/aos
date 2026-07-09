@@ -28,6 +28,14 @@
 
 use super::*;
 
+/// The minimum remaining element run for which the fold seam consults at all.
+///
+/// This is a property of the seam, not the engine: the consult itself costs a
+/// lambda-record clone plus an engine probe, which a short library fold can
+/// never recover. Engines apply their own (larger or equal) promotion floors
+/// on top.
+pub(super) const TIER2_FOLDL_CONSULT_FLOOR: usize = 8;
+
 impl TreeWalk {
     /// Installs and publishes a tier-2 lambda entry shared across a def-site.
     ///
@@ -133,6 +141,81 @@ impl TreeWalk {
             // suspended; the peek observed an unforced thunk and reports none.
             Ok(ForceClaim::Claimed(_guard)) => None,
             Err(_) => None,
+        }
+    }
+
+    /// Returns the heap lambda record behind a lambda value, if any.
+    ///
+    /// The tier-2 engine uses this to inspect closures it resolved out of a
+    /// captured environment (a fold operator's pinned callees, a curried
+    /// chain's root closure) without access to the crate-private heap API. A
+    /// non-lambda value yields `None`.
+    pub fn tier2_clone_lambda(&self, value: Value) -> Option<std::sync::Arc<EvalLambda>> {
+        if value.tag() != ValueTag::Lambda {
+            return None;
+        }
+        self.heap.clone_lambda(value).ok()
+    }
+
+    /// Consults the tier-2 engine for one run of a strict left fold.
+    ///
+    /// Called by the `builtins.foldl'` loops with the current accumulator and
+    /// the remaining element run (at most twice per fold call — see
+    /// [`Tier2FoldHook`]). Returns `Some((consumed, accumulator))` when native
+    /// code folded `consumed` leading elements, and `None` when the loop must
+    /// proceed interpreted at its current element (no engine, a non-lambda
+    /// operator, a short remaining run, no dispatch, or a deopt before the
+    /// first element).
+    ///
+    /// Runs shorter than [`TIER2_FOLDL_CONSULT_FLOOR`] never reach the engine:
+    /// package evaluation performs thousands of short library folds whose
+    /// per-consult cost (a lambda-record clone and an engine probe) would be
+    /// pure overhead, while any run a compiled fold operator could profitably
+    /// serve is far longer.
+    pub(super) fn try_tier2_foldl(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op: Value,
+        accumulator: Value,
+        elements: &[Value],
+    ) -> Option<(usize, Value)> {
+        if elements.len() < TIER2_FOLDL_CONSULT_FLOOR || op.tag() != ValueTag::Lambda {
+            return None;
+        }
+        let engine = self.tier1_engine.clone()?;
+        let lambda = self.heap.clone_lambda(op).ok()?;
+        match engine.on_foldl_strict(self, op, &lambda, accumulator, elements, id, span) {
+            Tier2FoldHook::Ran {
+                consumed,
+                accumulator,
+                deopted,
+                promoted,
+            } => {
+                if promoted {
+                    self.increment_tier2_promoted();
+                }
+                if deopted {
+                    self.increment_tier2_deopted();
+                }
+                if consumed == 0 {
+                    return None;
+                }
+                self.increment_tier2_dispatched();
+                Some((consumed.min(elements.len()), accumulator))
+            }
+            Tier2FoldHook::Continued {
+                promoted,
+                blacklisted,
+            } => {
+                if promoted {
+                    self.increment_tier2_promoted();
+                }
+                if blacklisted {
+                    self.increment_tier2_blacklisted();
+                }
+                None
+            }
         }
     }
 

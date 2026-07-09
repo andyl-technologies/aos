@@ -61,6 +61,7 @@ use crate::{
 };
 
 mod tier2;
+pub use tier2::jit_cranelift_call_context_finalized_lambda_argv_entry;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_entry;
 
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
@@ -3316,6 +3317,7 @@ fn module_symbol_name_for_artifact(artifact: &JitModuleArtifactMetadata) -> Stri
     let kind = match artifact.kind() {
         JitClifArtifactKind::ThunkBody => "thunk_body",
         JitClifArtifactKind::Tier2LambdaEntry => "tier2_lambda_entry",
+        JitClifArtifactKind::Tier2LambdaChainEntry { .. } => "tier2_chain_entry",
     };
     match artifact.source() {
         JitClifArtifactSource::ConstantSmoke => format!("aos.jit.constant_smoke.{kind}"),

@@ -438,12 +438,31 @@ impl TreeWalk {
         if elements.is_empty() {
             return self.eval_lazy_foldl_initial_value(initial_id, initial_span, accumulator);
         }
-        for element in elements {
+        // Tier-2 fold seam: consult the engine at most twice — before the
+        // first element, and once more after one interpreted iteration has
+        // forced the operator's callee bindings (see `Tier2FoldHook`). A
+        // native run advances the loop past its consumed prefix; everything
+        // else proceeds through the interpreted steps byte-for-byte unchanged.
+        let mut index = 0usize;
+        let mut fold_consults = 0u32;
+        while index < elements.len() {
+            if fold_consults < 2 && self.tier1_engine.is_some() {
+                fold_consults += 1;
+                if let Some((consumed, folded)) =
+                    self.try_tier2_foldl(id, span, op, accumulator, &elements[index..])
+                {
+                    accumulator = folded;
+                    index += consumed;
+                    continue;
+                }
+            }
+            let element = elements[index];
             let step =
                 self.apply_lambda_value(id, span, op_id, op, op_span, initial_id, accumulator)?;
             let result =
                 self.apply_lambda_value(id, span, op_id, step, op_span, list_id, element)?;
             accumulator = self.force_value(op_id, op_span, result)?;
+            index += 1;
         }
 
         Ok(accumulator)

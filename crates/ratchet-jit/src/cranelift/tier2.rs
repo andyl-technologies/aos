@@ -22,11 +22,14 @@ use std::ptr::NonNull;
 use cranelift_codegen::ir::{ExternalName, Function, UserExternalName};
 use cranelift_jit::JITModule;
 use cranelift_module::{Linkage, Module};
+use ratchet_core::IrId;
 use ratchet_value::value::Value;
 
-use crate::abi::{JitEnvFramePtr, JitLambdaFn, JitRuntimeContextPtr};
+use crate::abi::{JitEnvFramePtr, JitLambdaArgvFn, JitLambdaFn, JitRuntimeContextPtr};
 use crate::artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
-use crate::lower::{AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering};
+use crate::lower::{
+    AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2ChainLowering, JitTier2LambdaLowering,
+};
 use crate::module::JitModuleArtifactMetadata;
 use crate::symbols::jit_runtime_symbol_declaration_preflight;
 use crate::tier::JitTier;
@@ -64,9 +67,57 @@ impl JitModuleContext {
         &self,
         lowering: JitTier2LambdaLowering,
     ) -> Result<JitModuleContextFinalizedBody, JitCraneliftModuleSetupError> {
-        let inner_ctx = &mut *self.inner.borrow_mut();
         let source = lowering.source();
         let (entry, inner) = lowering.into_functions();
+        self.define_and_finalize_tier2_pair(
+            JitClifArtifactKind::Tier2LambdaEntry,
+            source,
+            entry,
+            inner,
+        )
+    }
+
+    /// Defines and finalizes one tier-2 fused chain lowering into the module.
+    ///
+    /// The chain analogue of
+    /// [`define_and_finalize_tier2_lambda`](Self::define_and_finalize_tier2_lambda):
+    /// identical paired-define protocol, with the entry carrying
+    /// [`JitClifArtifactKind::Tier2LambdaChainEntry`] metadata (including the
+    /// chain arity the native boundary re-checks against the caller's `argv`
+    /// run).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as
+    /// [`define_and_finalize_tier2_lambda`](Self::define_and_finalize_tier2_lambda).
+    pub fn define_and_finalize_tier2_chain(
+        &self,
+        lowering: JitTier2ChainLowering,
+    ) -> Result<JitModuleContextFinalizedBody, JitCraneliftModuleSetupError> {
+        let source = lowering.source();
+        let arity = lowering.arity().min(u32::from(u8::MAX)) as u8;
+        let (entry, inner) = lowering.into_functions();
+        self.define_and_finalize_tier2_pair(
+            JitClifArtifactKind::Tier2LambdaChainEntry { arity },
+            source,
+            entry,
+            inner,
+        )
+    }
+
+    /// Defines and finalizes one tier-2 entry/inner function pair.
+    ///
+    /// Shared worker for the lambda and chain define paths; see
+    /// [`define_and_finalize_tier2_lambda`](Self::define_and_finalize_tier2_lambda)
+    /// for the protocol.
+    fn define_and_finalize_tier2_pair(
+        &self,
+        kind: JitClifArtifactKind,
+        source: IrId,
+        entry: Function,
+        inner: Function,
+    ) -> Result<JitModuleContextFinalizedBody, JitCraneliftModuleSetupError> {
+        let inner_ctx = &mut *self.inner.borrow_mut();
 
         // The tier-2 grammar imports exactly these helpers; require their
         // registered addresses up front so finalization cannot dangle.
@@ -106,7 +157,7 @@ impl JitModuleContext {
         // the export symbol name.
         let entry_artifact = JitClifArtifact::new(
             JitTier::Tier1Baseline,
-            JitClifArtifactKind::Tier2LambdaEntry,
+            kind,
             JitClifArtifactSource::IrRoot(source),
             entry,
         );
@@ -298,5 +349,77 @@ fn lambda_entry_from_finalized_code(code_ptr: NonNull<u8>) -> JitLambdaFn {
     // validates the artifact kind and keeps the owning `JITModule` alive while
     // the returned entry is called.
     let entry = unsafe { mem::transmute::<*mut u8, JitLambdaFn>(code_ptr.as_ptr()) };
+    entry
+}
+
+/// Calls a shared-context finalized tier-2 chain entry with an argument run.
+///
+/// The chain analogue of
+/// [`jit_cranelift_call_context_finalized_lambda_entry`]: it validates that
+/// `body` is a tier-2 chain entry whose recorded arity matches `argv.len()`,
+/// casts the finalized code pointer to [`JitLambdaArgvFn`], and invokes it
+/// with `rt`, `env`, and a pointer to the caller's contiguous argument run
+/// (outermost chain parameter first). A deopting execution returns a null
+/// value with the deopt trap recorded in the armed runtime trap scope.
+///
+/// # Safety
+///
+/// Identical to [`jit_cranelift_call_context_finalized_lambda_entry`], with
+/// one addition: every element of `argv` must be a valid runtime value owned
+/// by the caller's evaluator (the compiled entry reads exactly `argv.len()`
+/// 16-byte pairs from the slice's storage for the duration of the call).
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError::UnsupportedNativeValueAbi`] when the
+/// host has no reviewed by-value [`Value`] ABI,
+/// [`JitCraneliftNativeCallError::UnsupportedArtifactKind`] when the body is
+/// not a tier-2 chain entry of arity `argv.len()`, and
+/// [`JitCraneliftNativeCallError::InvalidReturnValue`] when the body returns a
+/// valid-tag [`Value`] whose payload bits violate the runtime layout.
+pub unsafe fn jit_cranelift_call_context_finalized_lambda_argv_entry(
+    body: &JitModuleContextFinalizedBody,
+    rt: JitRuntimeContextPtr,
+    env: JitEnvFramePtr,
+    argv: &[Value],
+) -> Result<Value, JitCraneliftNativeCallError> {
+    require_supported_native_value_abi()?;
+
+    let kind = body.artifact().kind();
+    let arity_matches = matches!(
+        kind,
+        JitClifArtifactKind::Tier2LambdaChainEntry { arity } if usize::from(arity) == argv.len()
+    );
+    if !arity_matches {
+        return Err(JitCraneliftNativeCallError::UnsupportedArtifactKind { kind });
+    }
+
+    let argv_entry = lambda_argv_entry_from_finalized_code(body.finalized_function().code_ptr());
+    // SAFETY: The caller keeps the finalizing `JitModuleContext` (or a cloned
+    // keep-alive handle) alive across this call, so the shared module's code
+    // memory and every registered frozen-ABI candidate remain live. The body
+    // was produced by the tier-2 chain lowerer, verified with the frozen argv
+    // CLIF signature, and finalized by Cranelift; the recorded arity equals
+    // `argv.len()`, so the entry reads exactly the caller's live slice, and it
+    // translates the internal deopt sentinel to a valid null before returning.
+    let chain_dispatched = unsafe { argv_entry(rt, env, argv.as_ptr()) };
+    chain_dispatched.validate_payload().map_err(|source| {
+        JitCraneliftNativeCallError::InvalidReturnValue {
+            symbol_name: body.finalized_function().symbol_name().to_owned(),
+            value: chain_dispatched,
+            source,
+        }
+    })?;
+
+    Ok(chain_dispatched)
+}
+
+/// Casts a finalized tier-2 chain entry code pointer to the frozen argv ABI.
+fn lambda_argv_entry_from_finalized_code(code_ptr: NonNull<u8>) -> JitLambdaArgvFn {
+    // SAFETY: Cranelift returned this pointer for a function defined with the
+    // frozen argv lambda-entry signature lowered from `ratchet-core` metadata.
+    // The caller validates the artifact kind and arity and keeps the owning
+    // `JITModule` alive while the returned entry is called.
+    let entry = unsafe { mem::transmute::<*mut u8, JitLambdaArgvFn>(code_ptr.as_ptr()) };
     entry
 }

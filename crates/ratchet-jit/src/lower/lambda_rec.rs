@@ -384,7 +384,11 @@ fn inner_signature_from_entry(entry: &Signature) -> Signature {
 }
 
 /// Imports the module-local tier-2 self/inner reference into `function`.
-fn import_tier2_local_function(
+///
+/// Shared with the fused curried-chain lowerer
+/// ([`lambda_chain`](super::lambda_chain)), whose entry/inner pairing uses the
+/// same module-local namespace protocol.
+pub(super) fn import_tier2_local_function(
     function: &mut Function,
     signature: &Signature,
 ) -> cranelift_codegen::ir::FuncRef {

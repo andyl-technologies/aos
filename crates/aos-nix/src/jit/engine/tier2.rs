@@ -65,7 +65,7 @@ use ratchet_jit::{
 use ratchet_oracle::eval::heap::EvalLambda;
 use ratchet_oracle::eval::tree_walk::TreeWalk;
 use ratchet_oracle::eval::{OpaqueTier1Slot, Tier2ApplyHook};
-use ratchet_runtime_ffi::run_context_finalized_native_lambda_call;
+use ratchet_runtime_ffi::{run_context_finalized_native_chain_call, run_context_finalized_native_lambda_call};
 use ratchet_value::value::Value;
 
 use super::NixJitTier1Engine;
@@ -92,7 +92,7 @@ pub(super) struct Tier2EngineState {
     ///
     /// [`TIER2_NATIVE_DEPTH_BUDGET`] in production; tests shrink it so a
     /// budget-exhaustion deopt can be exercised at interpreter-safe depths.
-    budget: i64,
+    pub(super) budget: i64,
 }
 
 impl Default for Tier2EngineState {
@@ -166,33 +166,83 @@ impl NixJitTier1Engine {
         id: IrId,
         span: Span,
     ) -> Option<Tier2ApplyHook> {
-        let (body, self_upval) = {
+        /// A published entry with its guards checked, ready for the native call.
+        enum PreparedDispatch {
+            Unary(Rc<JitModuleContextFinalizedBody>),
+            Chain {
+                body: Rc<JitModuleContextFinalizedBody>,
+                argv: [Value; ratchet_jit::TIER2_MAX_CHAIN_ARITY as usize],
+                arity: usize,
+            },
+        }
+        let prepared = {
             let slot = eval.tier2_def_site_slot(key)?;
             if !slot.is_published() {
                 return None;
             }
-            let entry = slot.owner().downcast_ref::<NixJitTier2DispatchEntry>()?;
-            (Rc::clone(&entry.body), entry.self_upval)
+            if let Some(entry) = slot.owner().downcast_ref::<NixJitTier2DispatchEntry>() {
+                // Guard: the body's self-callee must resolve to the applied
+                // closure itself.
+                if !self_callee_is_this_closure(eval, function, lambda, entry.self_upval) {
+                    return Some(continued_hook(false, false, false));
+                }
+                PreparedDispatch::Unary(Rc::clone(&entry.body))
+            } else if let Some(entry) = slot
+                .owner()
+                .downcast_ref::<super::tier2_chain::NixJitTier2ChainEntry>()
+            {
+                let Some(mut argv) = super::tier2_chain::chain_guard_argv(eval, lambda, entry)
+                else {
+                    return Some(continued_hook(false, false, false));
+                };
+                let arity = entry.arity as usize;
+                argv[arity - 1] = argument;
+                PreparedDispatch::Chain {
+                    body: Rc::clone(&entry.body),
+                    argv,
+                    arity,
+                }
+            } else {
+                return None;
+            }
         };
 
-        // Guard: the body's self-callee must resolve to the applied closure
-        // itself, and the interpreter must have headroom for the full native
-        // depth budget.
-        if !self_callee_is_this_closure(eval, function, lambda, self_upval) {
-            return Some(continued(false, false, false));
-        }
+        // Guard: the interpreter must have headroom for the full native depth
+        // budget (native self-calls bypass `enter_call`).
         let budget = self.tier2.borrow().budget;
         if (eval.tier2_call_depth_headroom() as i64) < budget {
-            return Some(continued(false, false, false));
+            return Some(continued_hook(false, false, false));
         }
 
         // The dispatcher owns an environment clone for the duration of the
         // call; the native body itself reads no environment today, but the
         // frozen ABI carries it for the grammar's future upvalue reads.
         let env = lambda.env().clone();
-        match run_context_finalized_native_lambda_call(eval, id, span, &env, argument, &body) {
-            Ok(outcome) if !outcome.is_trap() => Some(Tier2ApplyHook::Dispatched(outcome.value())),
-            _ => Some(Tier2ApplyHook::Deopted),
+        match prepared {
+            PreparedDispatch::Unary(body) => {
+                match run_context_finalized_native_lambda_call(eval, id, span, &env, argument, &body)
+                {
+                    Ok(outcome) if !outcome.is_trap() => {
+                        Some(Tier2ApplyHook::Dispatched(outcome.value()))
+                    }
+                    _ => Some(Tier2ApplyHook::Deopted),
+                }
+            }
+            PreparedDispatch::Chain { body, argv, arity } => {
+                match run_context_finalized_native_chain_call(
+                    eval,
+                    id,
+                    span,
+                    &env,
+                    &argv[..arity],
+                    &body,
+                ) {
+                    Ok(outcome) if !outcome.is_trap() => {
+                        Some(Tier2ApplyHook::Dispatched(outcome.value()))
+                    }
+                    _ => Some(Tier2ApplyHook::Deopted),
+                }
+            }
         }
     }
 
@@ -212,13 +262,15 @@ impl NixJitTier1Engine {
             let count = state.counts.entry(key).or_insert(0);
             *count = count.saturating_add(1);
             if *count < TIER2_PROMOTION_THRESHOLD {
-                return continued(false, false, false);
+                return continued_hook(false, false, false);
             }
         }
 
         let budget = self.tier2.borrow().budget;
         let Some(lowering) = self.lower_tier2_body(eval, lambda, budget) else {
-            return self.blacklist_tier2(eval, key, lambda);
+            // Outside the unary grammar: the def-site may still be the
+            // innermost lambda of a fused curried chain (see `tier2_chain`).
+            return self.promote_tier2_chain(eval, key, lambda);
         };
         // Only a self-recursive body amortizes the boundary harness, and only
         // a body with real inline compute beats the transition cost.
@@ -236,7 +288,7 @@ impl NixJitTier1Engine {
         let self_upval = lowering.self_upval();
         if !self_callee_is_this_closure(eval, function, lambda, self_upval) {
             self.tier2.borrow_mut().counts.insert(key, 0);
-            return continued(false, false, false);
+            return continued_hook(false, false, false);
         }
 
         let (finalized_body, keep_alive) = {
@@ -246,19 +298,19 @@ impl NixJitTier1Engine {
                     Ok(context) => *context_slot = Some(context),
                     Err(_) => {
                         self.tier2.borrow_mut().counts.insert(key, 0);
-                        return continued(false, false, false);
+                        return continued_hook(false, false, false);
                     }
                 }
             }
             let Some(context) = context_slot.as_ref() else {
                 self.tier2.borrow_mut().counts.insert(key, 0);
-                return continued(false, false, false);
+                return continued_hook(false, false, false);
             };
             match context.define_and_finalize_tier2_lambda(lowering) {
                 Ok(finalized_body) => (finalized_body, context.keep_alive()),
                 Err(_) => {
                     self.tier2.borrow_mut().counts.insert(key, 0);
-                    return continued(false, false, false);
+                    return continued_hook(false, false, false);
                 }
             }
         };
@@ -273,9 +325,9 @@ impl NixJitTier1Engine {
             key,
             OpaqueTier1Slot::new(entry_addr, Box::new(entry)),
         ) {
-            continued(true, false, false)
+            continued_hook(true, false, false)
         } else {
-            continued(false, false, false)
+            continued_hook(false, false, false)
         }
     }
 
@@ -290,13 +342,26 @@ impl NixJitTier1Engine {
         lower_tier2_self_recursive_lambda(&ir.arena, lambda.pattern(), lambda.body(), budget).ok()
     }
 
+    /// Resets a def-site's apply count after a transient promotion failure.
+    ///
+    /// The def-site re-attempts promotion after another threshold's worth of
+    /// applications rather than being blacklisted.
+    pub(super) fn reset_tier2_count(&self, key: u64) {
+        self.tier2.borrow_mut().counts.insert(key, 0);
+    }
+
     /// Blacklists a def-site whose body failed the tier-2 gate or lowering.
-    fn blacklist_tier2(&self, eval: &TreeWalk, key: u64, lambda: &EvalLambda) -> Tier2ApplyHook {
+    pub(super) fn blacklist_tier2(
+        &self,
+        eval: &TreeWalk,
+        key: u64,
+        lambda: &EvalLambda,
+    ) -> Tier2ApplyHook {
         let kind = tier2_body_kind_signature(eval, lambda);
         let mut state = self.tier2.borrow_mut();
         state.blacklist.insert(key);
         *state.gated_kinds.entry(kind).or_insert(0) += 1;
-        continued(false, true, true)
+        continued_hook(false, true, true)
     }
 
     /// Returns the tier-2 declined-def-site histogram, most frequent first.
@@ -372,7 +437,7 @@ fn tier2_body_kind_signature(eval: &TreeWalk, lambda: &EvalLambda) -> String {
 }
 
 /// A `Continued` hook with the given promotion/blacklist/gate flags.
-const fn continued(promoted: bool, blacklisted: bool, gated: bool) -> Tier2ApplyHook {
+pub(super) const fn continued_hook(promoted: bool, blacklisted: bool, gated: bool) -> Tier2ApplyHook {
     Tier2ApplyHook::Continued {
         promoted,
         blacklisted,
@@ -382,7 +447,7 @@ const fn continued(promoted: bool, blacklisted: bool, gated: bool) -> Tier2Apply
 
 /// A permanently gated `Continued` hook.
 const fn gated() -> Tier2ApplyHook {
-    continued(false, false, true)
+    continued_hook(false, false, true)
 }
 
 #[cfg(test)]
@@ -604,16 +669,18 @@ mod tests {
         );
     }
 
-    /// Non-recursive or non-arithmetic lambdas are declined once and never
-    /// dispatched, leaving results untouched.
+    /// Non-arithmetic lambdas are declined once and never dispatched, leaving
+    /// results untouched. (Simple arithmetic fold operators now dispatch
+    /// through the fold seam instead — see `tier2_fold`.)
     #[test]
     fn non_recursive_lambdas_are_declined_and_unchanged() {
         let sources = [
-            // No self-call: the map body is arithmetic but not recursive.
-            "builtins.foldl' (a: b: a + b) 0 (builtins.genList (i: i * 2) 64)",
             // Outside the grammar: list construction in a recursive body.
             "let f = n: if n < 1 then [ ] else [ n ] ++ f (n - 1); \
              in builtins.length (f 12)",
+            // Outside the grammar: a string-building fold operator.
+            "builtins.stringLength \
+             (builtins.foldl' (a: b: a + b) \"\" (builtins.genList (i: \"x\") 64))",
         ];
         for source in sources {
             let oracle = eval_oracle(source);

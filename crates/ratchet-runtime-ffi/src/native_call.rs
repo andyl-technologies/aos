@@ -23,7 +23,8 @@ use std::ffi::c_void;
 use ratchet_jit::{
     JitClifArtifact, JitCraneliftNativeCallError,
     JitCraneliftRegisteredArtifactFinalizationPreflight, JitModuleContextFinalizedBody,
-    JitRuntimeSymbolAddressCandidate, jit_cranelift_call_context_finalized_lambda_entry,
+    JitRuntimeSymbolAddressCandidate, jit_cranelift_call_context_finalized_lambda_argv_entry,
+    jit_cranelift_call_context_finalized_lambda_entry,
     jit_cranelift_call_context_finalized_thunk_entry, jit_cranelift_call_finalized_thunk_entry,
     jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates,
 };
@@ -276,6 +277,170 @@ pub fn run_context_finalized_native_lambda_call(
             Err(error)
         }
     }
+}
+
+/// Runs a tier-2 fused chain entry finalized into a shared [`JitModuleContext`].
+///
+/// This mirrors [`run_context_finalized_native_lambda_call`] for the frozen
+/// multi-argument `argv` entry ABI: the compiled entry receives the runtime
+/// context, the dispatcher-owned environment, and a pointer to the caller's
+/// contiguous run of chain arguments (`argv`, outermost chain parameter first;
+/// each may still be a suspended thunk — the compiled body forces it at its
+/// first strict use). The call runs under a fresh [`RuntimeTrapScope`], so
+/// both a forcing evaluator error and a compiled-body deopt come back as an
+/// outcome whose `trap` is `Some`; the dispatcher treats any trap as a deopt
+/// and re-runs the boundary application through the tree walk.
+///
+/// [`JitModuleContext`]: ratchet_jit::JitModuleContext
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported
+/// native value ABI, the finalized body is not a tier-2 chain entry of arity
+/// `argv.len()`, or the compiled body returns a value whose payload violates
+/// the runtime layout.
+pub fn run_context_finalized_native_chain_call(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    argv: &[Value],
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
+    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let rt = context.as_mut().as_mut_ptr();
+    let env = (env as *const EvalEnv) as *mut c_void;
+
+    let scope = RuntimeTrapScope::new();
+    // SAFETY: `rt` is the pinned context over `eval`, `env` the caller-owned
+    // environment clone, every `argv` element a live value on `eval`'s heap;
+    // the caller keeps `body`'s module alive and the scope converts traps.
+    let chain_call = unsafe { jit_cranelift_call_context_finalized_lambda_argv_entry(body, rt, env, argv) };
+    match chain_call {
+        Ok(value) => {
+            let trap = scope.take_trap();
+            drop(scope);
+            drop(context);
+            Ok(NativeThunkCallOutcome { value, trap })
+        }
+        Err(error) => {
+            drop(scope);
+            Err(error)
+        }
+    }
+}
+
+/// The result of one native strict-fold loop over an element run.
+///
+/// `consumed` leading elements of the caller's run were folded natively and
+/// `accumulator` is the accumulator value after them. When `deopted` is true
+/// the loop stopped early — a guard failed or a forcing evaluator error was
+/// transferred while folding element `consumed` — and the caller must re-run
+/// that element (and everything after it) through the interpreted fold loop,
+/// which reproduces the exact tree-walk result or error.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeFoldLoopOutcome {
+    consumed: usize,
+    accumulator: Value,
+    deopted: bool,
+}
+
+impl NativeFoldLoopOutcome {
+    /// Returns how many leading elements were folded natively.
+    pub const fn consumed(&self) -> usize {
+        self.consumed
+    }
+
+    /// Returns the accumulator value after the consumed elements.
+    pub const fn accumulator(&self) -> Value {
+        self.accumulator
+    }
+
+    /// Returns true when the loop stopped early on a deopt or error trap.
+    pub const fn deopted(&self) -> bool {
+        self.deopted
+    }
+}
+
+/// Runs a compiled arity-2 fold operator natively over an element run.
+///
+/// This is the lean per-element boundary for the tier-2 fold seam: the
+/// [`RuntimeJitContext`] pin and the [`RuntimeTrapScope`] are set up **once**
+/// for the whole run, and each element costs one native call through the
+/// frozen `argv` entry ABI plus one thread-local trap probe — none of the
+/// per-dispatch environment cloning the generic apply boundary pays. The
+/// accumulator starts as `initial` (which may be a suspended thunk; the
+/// compiled body forces it at first strict use, exactly like the interpreted
+/// first iteration) and each element's native result becomes the next
+/// accumulator.
+///
+/// Any transferred trap — a compiled-body deopt or a forcing evaluator error
+/// while folding element `k` — stops the loop with `consumed == k`; the
+/// caller re-runs that element interpreted (see [`NativeFoldLoopOutcome`]).
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported
+/// native value ABI, the finalized body is not a tier-2 chain entry of arity
+/// 2, or a compiled call returns a value whose payload violates the runtime
+/// layout.
+pub fn run_context_finalized_native_fold_loop(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    initial: Value,
+    elements: &[Value],
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeFoldLoopOutcome, JitCraneliftNativeCallError> {
+    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let rt = context.as_mut().as_mut_ptr();
+    let env = (env as *const EvalEnv) as *mut c_void;
+
+    let scope = RuntimeTrapScope::new();
+    let mut accumulator = initial;
+    for (index, element) in elements.iter().enumerate() {
+        let argv = [accumulator, *element];
+        // SAFETY: `rt` is the pinned context over `eval`, `env` the caller-owned
+        // environment clone, both argv values live on `eval`'s heap; the caller
+        // keeps `body`'s module alive and the armed scope converts every trap.
+        let fold_step = unsafe { jit_cranelift_call_context_finalized_lambda_argv_entry(body, rt, env, &argv) };
+        let value = match fold_step {
+            Ok(value) => value,
+            Err(error) => {
+                if index == 0 {
+                    drop(scope);
+                    return Err(error);
+                }
+                // A mid-run boundary error abandons this element natively;
+                // the interpreted re-run of element `index` is authoritative.
+                drop(scope);
+                drop(context);
+                return Ok(NativeFoldLoopOutcome {
+                    consumed: index,
+                    accumulator,
+                    deopted: true,
+                });
+            }
+        };
+        if scope.take_trap().is_some() {
+            drop(scope);
+            drop(context);
+            return Ok(NativeFoldLoopOutcome {
+                consumed: index,
+                accumulator,
+                deopted: true,
+            });
+        }
+        accumulator = value;
+    }
+    drop(scope);
+    drop(context);
+    Ok(NativeFoldLoopOutcome {
+        consumed: elements.len(),
+        accumulator,
+        deopted: false,
+    })
 }
 
 #[cfg(test)]

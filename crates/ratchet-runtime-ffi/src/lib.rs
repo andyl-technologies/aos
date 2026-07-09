@@ -69,7 +69,8 @@ pub mod wrappers;
 pub use deopt::{RuntimeDeoptNativeFn, aos_deopt, aos_deopt_native_wrapper_address};
 pub use env::{RuntimeUpvalGetNativeFn, aos_upval_get, aos_upval_get_native_wrapper_address};
 pub use native_call::{
-    NativeThunkCallOutcome, run_context_finalized_native_lambda_call,
+    NativeFoldLoopOutcome, NativeThunkCallOutcome, run_context_finalized_native_chain_call,
+    run_context_finalized_native_fold_loop, run_context_finalized_native_lambda_call,
     run_context_finalized_native_thunk_call, run_finalized_native_thunk_call,
     run_registered_native_thunk_call,
 };

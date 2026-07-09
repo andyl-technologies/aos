@@ -114,9 +114,13 @@ pub struct NixJitTier1Engine {
     tier2_enabled: bool,
     /// Tier-2 per-def-site promotion bookkeeping (see [`tier2`]).
     tier2: RefCell<tier2::Tier2EngineState>,
+    /// Tier-2 fold-seam bookkeeping (see [`tier2_fold`]).
+    tier2_fold: RefCell<tier2_fold::Tier2FoldState>,
 }
 
 mod tier2;
+mod tier2_chain;
+mod tier2_fold;
 
 /// Mutable per-run promotion bookkeeping guarded by the engine's [`RefCell`].
 #[derive(Default)]
@@ -248,6 +252,7 @@ impl NixJitTier1Engine {
             state: RefCell::new(EngineState::default()),
             tier2_enabled: std::env::var("AOS_NIX_JIT_TIER2").as_deref() != Ok("0"),
             tier2: RefCell::new(tier2::Tier2EngineState::default()),
+            tier2_fold: RefCell::new(tier2_fold::Tier2FoldState::default()),
         })
     }
 
@@ -760,6 +765,19 @@ impl Tier1Engine for NixJitTier1Engine {
         span: Span,
     ) -> ratchet_oracle::eval::Tier2ApplyHook {
         self.on_lambda_apply_impl(eval, function, lambda, argument, id, span)
+    }
+
+    fn on_foldl_strict(
+        &self,
+        eval: &mut TreeWalk,
+        op: Value,
+        lambda: &ratchet_oracle::eval::heap::EvalLambda,
+        accumulator: Value,
+        elements: &[Value],
+        id: IrId,
+        span: Span,
+    ) -> ratchet_oracle::eval::Tier2FoldHook {
+        self.on_foldl_strict_impl(eval, op, lambda, accumulator, elements, id, span)
     }
 }
 

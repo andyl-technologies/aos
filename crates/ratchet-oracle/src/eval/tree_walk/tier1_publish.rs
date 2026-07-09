@@ -95,6 +95,39 @@ pub enum Tier2ApplyHook {
     },
 }
 
+/// The outcome of consulting a [`Tier1Engine`] at a strict left fold.
+///
+/// The engine is consulted at most twice per `builtins.foldl'` call (once
+/// before the first element and once after one interpreted iteration, which
+/// forces the operator's callee bindings and lets transient promotion guards
+/// pass). A `Ran` outcome reports that published tier-2 native code folded a
+/// prefix of the remaining elements; the interpreted loop resumes after that
+/// prefix. `Continued` leaves the loop untouched.
+#[derive(Debug)]
+pub enum Tier2FoldHook {
+    /// Native code folded `consumed` leading elements of the remaining slice.
+    Ran {
+        /// The number of leading elements the native loop consumed.
+        consumed: usize,
+        /// The accumulator value after the consumed elements (WHNF).
+        accumulator: Value,
+        /// True when the native loop stopped early on a deopt; the element at
+        /// `consumed` (and everything after it) must run interpreted.
+        deopted: bool,
+        /// True when this consult compiled and published a fold entry.
+        promoted: bool,
+    },
+    /// No native fold ran; the interpreted loop proceeds unchanged.
+    Continued {
+        /// True when this consult compiled and published a fold entry (whose
+        /// dispatch guard did not pass yet).
+        promoted: bool,
+        /// True when this consult permanently blacklisted the operator's
+        /// def-site for fold compilation.
+        blacklisted: bool,
+    },
+}
+
 /// A pluggable tier-1 JIT engine consulted by the serial force path.
 ///
 /// The tree-walk evaluator owns no JIT machinery — the Cranelift lowerer,
@@ -144,6 +177,33 @@ pub trait Tier1Engine: fmt::Debug {
             promoted: false,
             blacklisted: false,
             gated: true,
+        }
+    }
+
+    /// Consulted by the strict left-fold loop for one run of elements.
+    ///
+    /// This is the tier-2 fold seam: `op` is the fold operator (a
+    /// [`Value::is_lambda`] closure), `lambda` its cloned heap record,
+    /// `accumulator` the current (possibly still suspended) accumulator, and
+    /// `elements` the remaining raw element run. The loop consults at most
+    /// twice per fold call, so an engine pays no per-element hook tax; a
+    /// compiled fold operator returns [`Tier2FoldHook::Ran`] after natively
+    /// folding a prefix of `elements`. The default implementation leaves the
+    /// loop untouched.
+    fn on_foldl_strict(
+        &self,
+        eval: &mut TreeWalk,
+        op: Value,
+        lambda: &crate::eval::heap::EvalLambda,
+        accumulator: Value,
+        elements: &[Value],
+        id: IrId,
+        span: Span,
+    ) -> Tier2FoldHook {
+        let _ = (eval, op, lambda, accumulator, elements, id, span);
+        Tier2FoldHook::Continued {
+            promoted: false,
+            blacklisted: false,
         }
     }
 }

@@ -40,9 +40,15 @@ use crate::{
 mod arith_tree;
 mod error;
 pub mod interp;
+mod lambda_chain;
 mod lambda_rec;
 
 pub use error::JitLowerError;
+pub use lambda_chain::{
+    JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2PinnedCallee,
+    TIER2_MAX_CHAIN_ARITY, lower_tier2_curried_chain, scan_tier2_curried_chain,
+    scan_tier2_pinned_callee,
+};
 pub use lambda_rec::{
     AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,
     lower_tier2_self_recursive_lambda,

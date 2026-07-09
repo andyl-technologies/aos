@@ -157,6 +157,11 @@ const LAMBDA_CALL_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
     RuntimeAbiParameter::new("arg", RuntimeAbiParameterKind::Value),
 ];
+const LAMBDA_ARGV_CALL_PARAMETERS: &[RuntimeAbiParameter] = &[
+    RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
+    RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
+    RuntimeAbiParameter::new("argv", RuntimeAbiParameterKind::RawPointer),
+];
 const PRIMOP_0_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("env", RuntimeAbiParameterKind::EnvPointer),
@@ -193,6 +198,22 @@ pub const RUNTIME_LAMBDA_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSigna
     RuntimeCallableKind::LambdaBody,
     RuntimeAbiCallingConvention::ExternC,
     LAMBDA_CALL_PARAMETERS,
+    RuntimeAbiReturnKind::Value,
+);
+
+/// The frozen runtime-call signature for compiled multi-argument lambda entries.
+///
+/// A tier-2 fused curried-chain entry receives every argument of the chain at
+/// once through `argv`: a caller-owned pointer to a contiguous run of by-value
+/// runtime values (one 16-byte tag/payload pair per chain parameter, in
+/// outermost-to-innermost order). One frozen shape serves every chain arity —
+/// the compiled entry knows its own arity and loads exactly that many pairs —
+/// and every word travels in a pointer register on both supported hosts, so no
+/// aggregate-passing corner of the C ABI is exercised.
+pub const RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE: RuntimeCallSignature = RuntimeCallSignature::new(
+    RuntimeCallableKind::LambdaBody,
+    RuntimeAbiCallingConvention::ExternC,
+    LAMBDA_ARGV_CALL_PARAMETERS,
     RuntimeAbiReturnKind::Value,
 );
 
@@ -529,6 +550,13 @@ pub const fn runtime_thunk_call_signature() -> RuntimeCallSignature {
 /// Returns the frozen runtime-call signature for compiled lambda bodies.
 pub const fn runtime_lambda_call_signature() -> RuntimeCallSignature {
     RUNTIME_LAMBDA_CALL_SIGNATURE
+}
+
+/// Returns the frozen runtime-call signature for multi-argument lambda entries.
+///
+/// See [`RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE`] for the `argv` convention.
+pub const fn runtime_lambda_argv_call_signature() -> RuntimeCallSignature {
+    RUNTIME_LAMBDA_ARGV_CALL_SIGNATURE
 }
 
 /// Returns the frozen primop call-signature inventory.
