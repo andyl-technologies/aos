@@ -804,13 +804,13 @@ impl SchedulerEventLogEntry {
         }
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     pub(crate) fn with_content_hash_for_test(mut self, content_hash: ContentHash) -> Self {
         self.content_hash = content_hash;
         self
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     pub(crate) fn with_payload_for_test(
         sequence: u64,
         at: VirtualTime,
@@ -819,7 +819,7 @@ impl SchedulerEventLogEntry {
         scheduler_event_log_entry(sequence, at, payload)
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     pub(crate) fn with_open_payload_for_test(
         sequence: u64,
         at: VirtualTime,
@@ -830,7 +830,7 @@ impl SchedulerEventLogEntry {
         scheduler_event_log_entry_with_class(sequence, at, class, event_payload, payload)
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     pub(crate) fn with_time_for_test(self, at: EventLogTime) -> Self {
         scheduler_event_log_entry_with_material(
             self.sequence,
@@ -4020,7 +4020,7 @@ pub fn next_exact_local_event(
             .cmp(&right.virtual_time())
             .then_with(|| exact_local_event_rank(left).cmp(&exact_local_event_rank(right)))
             .then_with(|| {
-                exact_local_event_source_key(left).cmp(&exact_local_event_source_key(right))
+                exact_local_event_source_key(left).cmp(exact_local_event_source_key(right))
             })
     });
 
@@ -4260,7 +4260,7 @@ fn validate_scheduler_rr_policy(
 fn validate_vcpu_idle_snapshot(
     node: &SchedulerNodeId,
     vcpu_count: u32,
-    vcpus: &mut Vec<SchedulerVcpuIdleState>,
+    vcpus: &mut [SchedulerVcpuIdleState],
 ) -> Result<(), SchedulerError> {
     if node.kind != SchedulingNodeKind::Vm {
         return Err(SchedulerError::BoundaryViolation {
@@ -5229,6 +5229,11 @@ fn scheduler_event_log_sequence(base: u64, offset: usize) -> Result<u64, Schedul
 }
 
 /// Builds a retained assertion log from a search configuration schedule.
+///
+/// # Errors
+///
+/// Returns [`OfflineAssertionCheckError`] when the schedule length cannot be
+/// represented as event-log sequence numbers.
 pub(crate) fn recorded_assertion_log_from_schedule_for_search(
     schedule: &Schedule,
 ) -> Result<RecordedAssertionLog, OfflineAssertionCheckError> {
@@ -5932,10 +5937,7 @@ fn insert_guest_assertion_details(
     attributes: &mut BTreeMap<String, EventAttributeValue>,
     details: &[crate::trigger::GuestAssertionDetail],
 ) {
-    let details_len = match u64::try_from(details.len()) {
-        Ok(details_len) => details_len,
-        Err(_) => u64::MAX,
-    };
+    let details_len = u64::try_from(details.len()).unwrap_or(u64::MAX);
     attributes.insert(
         String::from("details_len"),
         EventAttributeValue::U64(details_len),
@@ -7028,10 +7030,7 @@ impl SchedulerEventLogSegmentMaterial {
                 entry.payload_attribute_count
             ));
             lines.push(format!("entry.hash={}", entry.content_hash.to_hex()));
-            lines.push(format!(
-                "entry.bytes={}",
-                entry.entry_material.as_bytes().len()
-            ));
+            lines.push(format!("entry.bytes={}", entry.entry_material.len()));
             lines.push(String::from("entry.material_begin"));
             lines.push(entry.entry_material.clone());
             lines.push(String::from("entry.material_end"));
@@ -7261,7 +7260,7 @@ fn write_u64_le(bytes: &mut Vec<u8>, value: u64) {
 }
 
 fn write_string(bytes: &mut Vec<u8>, value: &str) {
-    write_u64_le(bytes, value.as_bytes().len() as u64);
+    write_u64_le(bytes, value.len() as u64);
     bytes.extend_from_slice(value.as_bytes());
 }
 
@@ -7965,8 +7964,7 @@ impl SingleScheduler {
     /// Called at the start of each quantum so the horizon the scheduler reads is
     /// the device's *current* next completion — the real exact local event with no
     /// conservative slack. The earliest undelivered completion per target is
-    /// recorded in [`device_horizons`](Self::device_horizons), which
-    /// [`effective_exact_local_event`](Self::effective_exact_local_event) mins into
+    /// recorded in `device_horizons`, which `effective_exact_local_event` mins into
     /// the node's effective horizon. No deliverable event is injected, so delivery
     /// stays solely on the RESOLVE path through
     /// [`resolve_device_completions`](Self::resolve_device_completions) and is
@@ -8375,6 +8373,8 @@ impl SingleScheduler {
     ///
     /// Returns [`SchedulerError`] when the scheduler rejects a topology or latency
     /// recompute queued by the applied network fault set.
+    // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_trigger_network_faults_to_link(
         &mut self,
         sequence: u64,
@@ -9456,19 +9456,19 @@ impl SingleScheduler {
     ) {
         let endpoints = endpoints.iter().cloned().collect::<BTreeSet<_>>();
         for node in &mut self.nodes {
-            if let Some(state) = &mut node.crash {
-                if state.activation_sequence != sequence {
-                    state
-                        .removed_edges
-                        .retain(|edge| !endpoints.contains(&edge.endpoint()));
-                }
+            if let Some(state) = &mut node.crash
+                && state.activation_sequence != sequence
+            {
+                state
+                    .removed_edges
+                    .retain(|edge| !endpoints.contains(&edge.endpoint()));
             }
-            if let Some(state) = &mut node.stopped_crash {
-                if state.activation_sequence != sequence {
-                    state
-                        .removed_edges
-                        .retain(|edge| !endpoints.contains(&edge.endpoint()));
-                }
+            if let Some(state) = &mut node.stopped_crash
+                && state.activation_sequence != sequence
+            {
+                state
+                    .removed_edges
+                    .retain(|edge| !endpoints.contains(&edge.endpoint()));
             }
         }
     }
@@ -9557,7 +9557,7 @@ impl SingleScheduler {
     /// repeating per-node "missed exact virtual time" boundary error at apply time,
     /// such a change is still enqueued but the next boundary surfaces a clear,
     /// localized [`SchedulerError::TopologyActivationInPast`] (see
-    /// [`SingleScheduler::apply_topology_changes_at_boundary`]). Callers that can
+    /// `SingleScheduler::apply_topology_changes_at_boundary`). Callers that can
     /// observe a `Result` should prefer [`SingleScheduler::schedule_topology_change`],
     /// which rejects the same condition at enqueue time.
     pub fn queue_topology_change(&mut self, change: SchedulerTopologyChange) {
@@ -10355,10 +10355,10 @@ impl SingleScheduler {
         }
         if let (Some(horizon_time), Some(activation_time)) =
             (quiescent_horizon, topology_activation_cap)
+            && current_time < activation_time
+            && horizon_time < activation_time
         {
-            if current_time < activation_time && horizon_time < activation_time {
-                quiescent_horizon = None;
-            }
+            quiescent_horizon = None;
         }
 
         Ok(AdvanceWindow {
@@ -11547,18 +11547,17 @@ fn assign_vcpu_idle_snapshots(
         if let Some(policy) = run_subdivision_policies
             .iter()
             .find(|policy| policy.node == snapshot.node)
+            && policy.vcpu_count != snapshot.vcpu_count
         {
-            if policy.vcpu_count != snapshot.vcpu_count {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "scheduler vCPU idle snapshot count for {}:{:?} does not match RR policy: snapshot={} policy={}",
-                        snapshot.node.node.name,
-                        snapshot.node.kind,
-                        snapshot.vcpu_count,
-                        policy.vcpu_count
-                    ),
-                });
-            }
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "scheduler vCPU idle snapshot count for {}:{:?} does not match RR policy: snapshot={} policy={}",
+                    snapshot.node.node.name,
+                    snapshot.node.kind,
+                    snapshot.vcpu_count,
+                    policy.vcpu_count
+                ),
+            });
         }
         let Some(node) = nodes.iter_mut().find(|node| node.id == snapshot.node) else {
             return Err(SchedulerError::BoundaryViolation {
@@ -11882,6 +11881,8 @@ impl From<TimeConversionError> for SchedulerError {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::{RngDecision, ScenarioDef, step};
@@ -13017,7 +13018,7 @@ mod tests {
                 name: device_name.to_string(),
             },
             block,
-            crate::Seed::from_u64(0xd15c_0de),
+            crate::Seed::from_u64(0x0d15_c0de),
         );
         for (index, (request_icount, count)) in reads.iter().enumerate() {
             let request_id = u32::try_from(index + 1).unwrap_or(u32::MAX);

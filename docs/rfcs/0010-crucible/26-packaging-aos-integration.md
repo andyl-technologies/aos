@@ -84,7 +84,7 @@ crates at `crates/`.
   pkgs/emulation/qemu-crucible.nix        patched QEMU (same source + series)
   pkgs/emulation/crucible-qemu-plugin.nix in-VM plugin cdylib (12)
   pkgs/emulation/qemu-crucible-patches/   the crucible-*.patch series (11)
-  pkgs/kernel/linux-crucible.nix          determinism-configured guest kernel
+  pkgs/kernel/linux-crucible.nix          stock fixture guest kernel (no determinism shaping)
   pkgs/tools/crucible/crucible.nix        the crucible-* Rust workspace + CLI
   pkgs/tools/crucible/fixtures/           root-image fixtures (test guests)
   pkgs/tools/crucible/_tests.nix          the AOS checks (gates) wiring (§26.9)
@@ -92,7 +92,7 @@ crates at `crates/`.
 
 - **[PKG-6]** The Crucible package set MUST expose, as AOS packages: the patched
   QEMU (`qemu-crucible`), the plugin (`crucible-qemu-plugin`), the Rust workspace
-  (`crucible`), the determinism guest kernel (`linux-crucible`), and the
+  (`crucible`), the stock fixture guest kernel (`linux-crucible`), and the
   root-image fixtures (`crucible-fixtures`). The unpatched production QEMU
   (`pkgs/emulation/qemu.nix`) MUST remain a separate, independently-buildable
   package so a system that wants production QEMU never pulls the patched build.
@@ -288,13 +288,16 @@ launch-time configuration only, no guest patches, no in-guest agent. The kernel
 and images here exist so Crucible's own gates have a determinism-friendly,
 hermetically-built guest to run.
 
-- **[PKG-24]** Crucible MUST ship a determinism-configured **guest kernel**
+- **[PKG-24]** Crucible MUST ship a **stock fixture guest kernel**
   (`linux-crucible`), built from source as an AOS package via `pkgs.linuxWith`
-  (the `extraConfig` fragment mechanism, not `linux.override`), configured for
-  reproducible single-vCPU TCG execution: `nosmp`/single-CPU, a fixed timer
-  source, no hardware RNG reliance, the virtio drivers the fixtures need
-  (virtio-blk, virtio-9p, virtio-net), and serial console. This kernel is a
-  **fixture**; it MUST NOT be a precondition for booting a user guest ([G-2]).
+  (the `extraConfig` fragment mechanism, not `linux.override`). It is a plain
+  defconfig plus only what a minimal fixture needs to boot — the virtio drivers
+  the fixtures need (virtio-blk, virtio-9p, virtio-net), ext4, and
+  serial console — with **no determinism shaping**; determinism comes entirely
+  from the QEMU icount + seeded-entropy boundary
+  (`host-side-qemu-icount-seeded-entropy`), not from the kernel config. This
+  kernel is a **fixture**; it MUST NOT be a precondition for booting a user guest
+  ([G-2]).
   *Gate:* `gate:any-guest` (proves an *unmodified* third guest also boots),
   `gate:e2e-determinism`. *Spec:* §26.7; satisfies [G-7], [G-2].
 
@@ -315,24 +318,27 @@ boundary by `-seed`+icount, [PKG-13], 11), and `gate:any-guest` ([PKG-26]) prove
 it. These fixtures exist only to give Crucible's gates a small, hermetic,
 boot-stable guest.
 
-- **[PKG-39]** The fixture kernel (`linux-crucible`, [PKG-24]) config MUST take
-  determinism from the QEMU `-seed`+icount boundary, not from kernel-side entropy
-  suppression. It MUST set `CONFIG_RANDOM_TRUST_BOOTLOADER=y` (so the kernel
-  accepts the seeded bootloader/`setup_data` entropy as its CRNG seed rather than
-  blocking on entropy collection), and for boot stability MUST disable
+- **[PKG-39]** The fixture kernel (`linux-crucible`, [PKG-24]) is **deliberately
+  stock**: a plain defconfig plus only the drivers a minimal fixture guest needs
+  to boot (serial console, virtio-blk/virtio-9p/virtio-net, ext4) and no loadable
+  modules. It applies **no determinism shaping** — its determinism mechanism is
+  `host-side-qemu-icount-seeded-entropy`, i.e. determinism is delivered entirely
+  at the QEMU `-seed`+icount boundary, never from kernel-side entropy
+  suppression. It MUST **NOT** require `nokaslr`, `CONFIG_RANDOM=n`, or
+  RDRAND/RDSEED disabling: because all boot entropy is seeded deterministically
+  host-side (E8/E9; the emulated entropy QEMU feeds is itself seeded, 11
+  [PATCH-16]), KASLR/ASLR and the guest CRNG are already reproducible with the
+  stock kernel, so suppressing them would only reduce fidelity to a real guest
+  for no determinism gain. For boot stability the fixture disables
   auto-module-loading (`# CONFIG_MODULES is not set`, equivalently a built-in-only
-  config so `request_module` does nothing) and ACPI (`# CONFIG_ACPI is not set`).
-  It MUST **NOT** require `nokaslr`, `CONFIG_RANDOM=n`, or RDRAND/RDSEED disabling:
-  once the seed is fixed, KASLR is a deterministic function of that seed (the
-  emulated entropy QEMU feeds is itself seeded, 11 [PATCH-16]) and the guest CRNG
-  is seeded deterministically, so KASLR and in-guest entropy are already
-  reproducible — disabling them would only reduce fidelity to a real guest for no
-  determinism gain. *Gate:* `gate:e2e-determinism`. *Spec:* §26.7; satisfies
-  [G-2], [G-7].
+  config so `request_module` does nothing) and ACPI (`# CONFIG_ACPI is not set`);
+  these are boot-stability choices for a minimal fixture, not determinism
+  shaping. *Gate:* `gate:e2e-determinism`. *Spec:* §26.7; satisfies [G-2], [G-7].
 
-- **[PKG-40]** Paired with `CONFIG_RANDOM_TRUST_BOOTLOADER=y`, the fixture boot
-  MUST supply a **deterministic entropy-seed artifact** — a fixed, content-addressed
-  byte blob handed to the guest as bootloader/`setup_data` RNG seed — *unless* the
+- **[PKG-40]** The fixture boot MUST supply the guest a **deterministic
+  entropy-seed** host-side — a fixed, content-addressed byte blob handed to the
+  guest as bootloader/`setup_data` RNG seed (which a stock kernel that trusts
+  bootloader entropy consumes as its CRNG seed) — *unless* the
   deterministic QEMU entropy patches ([PATCH-16], `crucible-det-getrandom`, plus a
   `-cpu` model advertising no `RDRAND`/`RDSEED`) already make the guest's CRNG seed
   a pure function of the run seed, in which case a separate fixed blob is
@@ -682,11 +688,12 @@ carries findings across an incompatible build.
     suite, the protocol and doorbell golden-vector suites, the RPC semantic
     version/golden-vector/major-mismatch suite, and the engine test-double
     aggregate to stay wired.
-- [x] **T-PKG-12** Build the determinism guest kernel `linux-crucible` via
-  `pkgs.linuxWith` extraConfig (single-vCPU, fixed timer, virtio drivers,
-  `CONFIG_RANDOM_TRUST_BOOTLOADER=y`, no auto-module-load, no ACPI; no
-  nokaslr/`CONFIG_RANDOM=n`/RDRAND-disable), as a fixture, not a guest
-  precondition. — satisfies [PKG-24], [PKG-39]; spec §26.7.
+- [x] **T-PKG-12** Build the stock fixture guest kernel `linux-crucible` via
+  `pkgs.linuxWith` extraConfig (single-vCPU, virtio drivers, ext4, serial; no
+  auto-module-load and no ACPI for boot stability; no determinism shaping — no
+  nokaslr/`CONFIG_RANDOM=n`/RDRAND-disable, KASLR/ASLR left enabled and sealed
+  host-side), as a fixture, not a guest precondition. — satisfies [PKG-24],
+  [PKG-39]; spec §26.7.
   - Completed by `checks.crucible.phase7.crucibleLinuxKernel`: `pkgs.linux-crucible`
     is a distinct package built through `pkgs.linuxWith` extraConfig, marks itself
     fixture-only, exports the fixture kernel config/cmdline contract, keeps the
@@ -723,10 +730,31 @@ carries findings across an incompatible build.
     `gate:e2e-determinism`. It fails if the checked canonical gate targets or
     required green-before-advance dependency edges drift from the current wiring.
     `T-PKG-15` remains the concrete TCG-only VM/fleet runner for the e2e scenario.
-- [ ] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
+- [x] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
   whole Crucible closure and runs the adversarial multi-VM + reproduce scenario,
   **without** `requiredSystemFeatures = [ "kvm" ]` (TCG only). — satisfies
   [PKG-29], [PKG-30]; spec §26.8.
+  - Completed by `checks.fleet.crucible-e2e-determinism`: the fleet check is now a
+    real AOS VM/fleet runner (`tests/crucible/_fleet-runner.nix`) rather than a
+    surface-only gate wrapper. It assembles the **entire Crucible closure**
+    hermetically as build inputs — `pkgs.crucible` (which carries `qemu-crucible`
+    and `crucible-qemu-plugin` through its `runtimeDeps`), `pkgs.linux-crucible`,
+    and `pkgs.crucible-fixtures` ([PKG-1], [PKG-29]) — and **executes the built
+    `crucible` CLI end to end** over the built-in adversarial multi-node,
+    fault-injected example corpus (`happy-path.scn`, `partition-recovery.scn`,
+    `crash-restart.scn`, `fault-campaign.fam`) under the hostile host-condition
+    matrix (`verify --adversarial --bisect --runs 2`), asserting bit-identical
+    reductions and reproduction — the representative multi-VM + reproduce scenario
+    of §26.8. The runner **never** sets `requiredSystemFeatures = [ "kvm" ]` and
+    records `tcg_only=true`, `required_system_features=none`, `kvm_required=false`
+    ([PKG-30], [G-1]). The phase7 e2e gate
+    (`checks.crucible.phase7.gates.e2eDeterminism`, the in-process determinism
+    proof of the same scenario) is consumed as a green precondition. The same
+    `mkCrucibleFleetCheck` substrate is reused by the real-VM performance checks.
+    (Honest scope: `verify` currently runs against the in-process sim double under
+    TCG — the CLI does not yet exec real `qemu-crucible`; the patched QEMU + plugin
+    are nonetheless built into the closure, and only the `--backend` selection
+    changes when the CLI's real-QEMU launch path lands.)
 - [x] **T-PKG-16** Implement the packaging conformance check (catalog↔package
   correspondence, dev-only exclusion, requirement mapping). — satisfies [PKG-31];
   spec §26.8.

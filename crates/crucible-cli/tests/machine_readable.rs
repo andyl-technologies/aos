@@ -1,5 +1,6 @@
 //! Process-level checks for machine-readable CLI stdout.
-
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs;
@@ -1325,7 +1326,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
 }
 
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, Box<dyn Error>> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(invalid_data("hex payload has odd length").into());
     }
     let mut bytes = Vec::with_capacity(hex.len() / 2);

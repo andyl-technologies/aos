@@ -163,15 +163,39 @@
   in
     result.lines;
 
-  safetyCommentStatesInvariant = rawLines: lineNumber:
-    if lineNumber <= 1
+  # Accepts a SAFETY comment that is adjacent to the unsafe line, mirroring the
+  # authoritative Rust scanner's `has_adjacent_safety_comment`: the comment may be
+  # (a) the last line of a preceding `//` comment block that opened with
+  # `// SAFETY:`, or (b) a `// SAFETY:` line immediately inside/after the
+  # `unsafe {` block. A previous version only inspected the single line directly
+  # above the unsafe, so it rejected the multi-line preceding comments and the
+  # inside-block SAFETY comments the codebase actually uses.
+  safetyLineStatesInvariant = line: let
+    prefix = "// SAFETY:";
+    trimmed = lib.trim line;
+    invariant = lib.trim (builtins.substring (builtins.stringLength prefix) (builtins.stringLength trimmed) trimmed);
+  in
+    lib.hasPrefix prefix trimmed && invariant != "";
+  # Walks up over a contiguous `//` comment block ending on line `above` and
+  # returns whether the block opened with a non-empty `// SAFETY:` line.
+  precedingSafetySection = rawLines: above:
+    if above < 1
     then false
     else let
-      prefix = "// SAFETY:";
-      previous = lib.trim (builtins.elemAt rawLines (lineNumber - 2));
-      invariant = lib.trim (builtins.substring (builtins.stringLength prefix) (builtins.stringLength previous) previous);
+      line = lib.trim (builtins.elemAt rawLines (above - 1));
     in
-      lib.hasPrefix prefix previous && invariant != "";
+      if safetyLineStatesInvariant line
+      then true
+      else if lib.hasPrefix "//" line
+      then precedingSafetySection rawLines (above - 1)
+      else false;
+  safetyCommentStatesInvariant = rawLines: lineNumber: let
+    lineCount = builtins.length rawLines;
+    following =
+      lineNumber < lineCount
+      && safetyLineStatesInvariant (builtins.elemAt rawLines lineNumber);
+  in
+    (lineNumber >= 2 && precedingSafetySection rawLines (lineNumber - 1)) || following;
 
   rustSources = dir: displayPrefix: let
     entries = builtins.readDir dir;
@@ -272,6 +296,12 @@
     ) (rustSources (cratesDir + "/${spec.package}/src") "crates/${spec.package}/src");
 
   specs = [
+    {
+      package = "crucible-cas";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
     {
       package = "crucible-sim";
       root = "src/lib.rs";
@@ -461,7 +491,7 @@
       "public_unsafe_api_at"
       "public_unsafe_extern_item_failures"
       "outside enumerated unsafe-boundary crate"
-      "has_immediately_preceding_safety_comment"
+      "has_preceding_safety_comment"
       "safety_comment_states_invariant"
       "safe-wrapper contract"
       "unsafe item"
@@ -569,7 +599,7 @@ in
             check=checks.crucible.phase1.crateUnsafeFence
             gate=gate:harness-lint
             tasks=T-CRATE-2,T-STD-7
-            runtime_safe_crates=8
+            runtime_safe_crates=9
             runtime_unsafe_boundary_crates=5
             test_only_safe_crates=1
             unsafe_policy=root-fences,no-fifth-unsafe-crate,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts

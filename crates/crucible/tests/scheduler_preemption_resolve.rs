@@ -1,6 +1,8 @@
 //! Checks T-SCHED-29 scheduler-side preemption RESOLVE.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     BackendInput, ConcurrentQuantumLoop, Decision, EventKey, ExactLocalEvent, Icount, IrqVector,

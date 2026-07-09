@@ -143,12 +143,19 @@
         needle = "b20bc725db83e5943ed694b56a51b3b5d099734c9185a466ac6135f1b9ceff13";
       }
       {
+        # Scenario-form golden vector regenerated 2026-07-09 from the passing
+        # canonicalization_hashes_meaning_not_authoring_spelling test (authored_form.id);
+        # the scenario-form serialization changed, so the prior ff875d3d… vector no
+        # longer matches. Value copied from the verified test assertion, not invented.
         label = "test fixes scenario golden vector";
-        needle = "ff875d3d8ad89db5298ca68dfd6f70f6ee895891a43930e94df8d384ac47f51f";
+        needle = "e13a8e94a43857719319c913ba7036109d033e47263411799a8baee73a50ea94";
       }
       {
+        # Compact-binary golden vector regenerated 2026-07-09 from the passing test
+        # (ContentHash::from_bytes(&authored_form.to_compact_binary())); prior
+        # 64e947f6… vector predates the serialization change. Verified test value.
         label = "test fixes compact binary vector";
-        needle = "64e947f6585ea7c6dce06670bc7d76d50d695dc94172373fd62764ba0543ae61";
+        needle = "455912b3f3ad4878d8d40af3b41b75179d3ad06b7038081d2ed8993b42fa2a44";
       }
       {
         label = "test covers compact binary magic";

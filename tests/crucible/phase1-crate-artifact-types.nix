@@ -14,6 +14,10 @@
       expected = "library";
     }
     {
+      package = "crucible-cas";
+      expected = "fleet-store-binary";
+    }
+    {
       package = "crucible-shmem";
       expected = "library";
     }
@@ -35,7 +39,7 @@
     }
     {
       package = "crucible-guest";
-      expected = "library";
+      expected = "guest-emitter";
     }
     {
       package = "crucible";
@@ -176,6 +180,72 @@
         ]
         ++ lib.optionals layout.hasSrcBinDir [
           "${spec.package}: CLI must not add extra implicit binary targets under src/bin"
+        ]
+      else if spec.expected == "guest-emitter"
+      then let
+        bins = binTargets manifest;
+        binCount = builtins.length bins;
+        bin =
+          if binCount == 1
+          then builtins.elemAt bins 0
+          else {};
+      in
+        lib.optionals (!(declaresOrImpliesLibTarget manifest layout)) [
+          "${spec.package}: guest emitter must expose a library target"
+        ]
+        ++ lib.concatMap (
+          crateType:
+            lib.optionals (!(builtins.elem crateType ["lib" "rlib"])) [
+              "${spec.package}: forbidden crate-type `${crateType}` for guest emitter library target"
+            ]
+        ) (crateTypes manifest)
+        ++ lib.optionals (binCount != 1) [
+          "${spec.package}: guest emitter must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
+        ]
+        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != "crucible-guest")) [
+          "${spec.package}: guest emitter [[bin]] name must be `crucible-guest`"
+        ]
+        ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/main.rs")) [
+          "${spec.package}: guest emitter [[bin]] path must be `src/main.rs`"
+        ]
+        ++ lib.optionals (!layout.hasMainRs) [
+          "${spec.package}: guest emitter target must have src/main.rs"
+        ]
+        ++ lib.optionals layout.hasSrcBinDir [
+          "${spec.package}: guest emitter must not add extra implicit binary targets under src/bin"
+        ]
+      else if spec.expected == "fleet-store-binary"
+      then let
+        bins = binTargets manifest;
+        binCount = builtins.length bins;
+        bin =
+          if binCount == 1
+          then builtins.elemAt bins 0
+          else {};
+      in
+        lib.optionals (!(declaresOrImpliesLibTarget manifest layout)) [
+          "${spec.package}: fleet-store package must expose a library target"
+        ]
+        ++ lib.concatMap (
+          crateType:
+            lib.optionals (!(builtins.elem crateType ["lib" "rlib"])) [
+              "${spec.package}: forbidden crate-type `${crateType}` for fleet-store library target"
+            ]
+        ) (crateTypes manifest)
+        ++ lib.optionals (binCount != 1) [
+          "${spec.package}: fleet-store package must declare exactly one [[bin]] target, found ${builtins.toString binCount}"
+        ]
+        ++ lib.optionals (binCount == 1 && (!(bin ? name) || bin.name != "crucible-fleet-store")) [
+          "${spec.package}: fleet-store [[bin]] name must be `crucible-fleet-store`"
+        ]
+        ++ lib.optionals (binCount == 1 && (!(bin ? path) || bin.path != "src/bin/crucible-fleet-store.rs")) [
+          "${spec.package}: fleet-store [[bin]] path must be `src/bin/crucible-fleet-store.rs`"
+        ]
+        ++ lib.optionals layout.hasMainRs [
+          "${spec.package}: fleet-store package must not have an implicit binary target at src/main.rs"
+        ]
+        ++ lib.optionals (!layout.hasSrcBinDir) [
+          "${spec.package}: fleet-store package must keep its binary under src/bin"
         ]
       else
         lib.optionals (!(declaresOrImpliesLibTarget manifest layout)) [

@@ -19,7 +19,7 @@
 //! renaming an unrelated device never perturbs another device's draw sequence.
 //! The device RNG and the engine's own decision streams share the same
 //! SplitMix64 algorithm and cursor convention, so a device draw is a real
-//! [`Decision::RngDraw`](crate::Decision::RngDraw) in the schedule.
+//! [`Decision::RngDraw`] in the schedule.
 //!
 //! # `MaterializedState` wiring
 //!
@@ -83,9 +83,9 @@ pub fn device_stream_id(device: &DeviceId) -> RngStreamId {
 /// Resolves a probabilistic device fault, recording the draw and outcome ([SCHED-30]).
 ///
 /// Draws one raw `u64` from the device's decision stream — recorded as a
-/// [`Decision::RngDraw`](crate::Decision::RngDraw) — and resolves the fault from
+/// [`Decision::RngDraw`] — and resolves the fault from
 /// it through the same exact-fraction test [`crucible_device::Probability`] uses,
-/// then records the derived [`Decision::FaultFires`](crate::Decision::FaultFires)
+/// then records the derived [`Decision::FaultFires`]
 /// outcome. The recording is total-ordered in the schedule, so a device's
 /// probabilistic choices are reproducible from the seed ([IO-21], [IO-24]).
 ///
@@ -298,6 +298,8 @@ pub fn apply_combined_network_faults_to_scheduler(
 ///
 /// Returns [`SchedulerError`] when the scheduler rejects the topology change,
 /// for example because an activation-timed change is already in the past.
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 pub fn heal_combined_network_faults_to_scheduler(
     sequence: u64,
     endpoint_a: SchedulerNodeId,

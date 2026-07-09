@@ -10,11 +10,10 @@
 //!   uniform request inbox, response outbox, virtual clock, in-flight queue,
 //!   `advance_to`, and snapshot/restore wiring from [`IoCore`].
 //! - [`IoCore`]: the reusable lifecycle engine. It owns the
-//!   [`VirtualClock`](crate::clock::VirtualClock), the in-process harness inbox
-//!   and outbox (deterministic
-//!   [`BoundedQueue`](crate::backpressure::BoundedQueue)s), the shmem bridge for
+//!   [`VirtualClock`], the in-process harness inbox and outbox (deterministic
+//!   [`BoundedQueue`]s), the shmem bridge for
 //!   real [`crucible_shmem::RingHeader`] / [`crucible_shmem::FrameEntry`] rings,
-//!   and the delivery-ordered [`InflightQueue`](crate::inflight::InflightQueue).
+//!   and the delivery-ordered [`InflightQueue`].
 //!
 //! The COMPUTE-then-DELIVER split is the crux ([IO-2], [IO-31]): on
 //! [`IoCore::process_inbox`], each arrived request is COMPUTEd *now* and its

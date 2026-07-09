@@ -73,7 +73,6 @@ static unsigned int gdb_read_register_calls;
 static unsigned int last_gdb_read_cpu_index = UINT32_MAX;
 static int last_gdb_read_register = -1;
 static bool force_register_size_mismatch;
-static uint64_t raw_icount = 12345;
 static uint64_t rr_cursor_position = 7;
 static uint64_t rr_switch_quantum = 16;
 
@@ -216,12 +215,6 @@ qemu_plugin_u64_get(qemu_plugin_u64 entry, int index)
 }
 
 uint64_t
-qemu_plugin_icount_raw(void)
-{
-  return raw_icount;
-}
-
-uint64_t
 qemu_plugin_crucible_rr_cursor_position(void)
 {
   return rr_cursor_position;
@@ -263,7 +256,7 @@ main(void)
     return 1;
   }
   if (require_true(register_len > 0, "empty canonical register file") ||
-      require_true(retired == raw_icount, "raw icount stamp mismatch") ||
+      require_true(retired == 0, "deterministic register stamp mismatch") ||
       require_true(gdb_read_register_calls == 3, "wrong register read count") ||
       require_true(last_gdb_read_cpu_index == 1, "read did not target vCPU1") ||
       require_true(last_gdb_read_register == 3, "wrong final register index") ||

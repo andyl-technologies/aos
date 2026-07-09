@@ -148,7 +148,7 @@
       }
       {
         label = "name-hash fork path";
-        needle = ".or_insert_with(|| self.rng.fork(&stream.name))";
+        needle = ".or_insert_with(|| self.rng.fork_in_domain(&stream.domain, &stream.name))";
       }
       {
         label = "existing schedule hydration";

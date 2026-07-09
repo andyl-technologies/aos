@@ -67,7 +67,7 @@
       }
       {
         label = "cache rebuild uses source configuration";
-        needle = "instantiate(&self.graph, &self.configuration)?";
+        needle = "let runtime = self.graph.resume(&self.configuration)?.runtime;";
       }
       {
         label = "loaded-state rebuild guard";

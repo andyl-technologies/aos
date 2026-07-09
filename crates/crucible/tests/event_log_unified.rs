@@ -1,6 +1,8 @@
 //! Checks the T-OBS-1 unified event-log append owner.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     EventEvaluationKind, EventLog, SchedulerError, SchedulerEvaluationBoundaryKind, VirtualTime,

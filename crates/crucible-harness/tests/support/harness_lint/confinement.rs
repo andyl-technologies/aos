@@ -3,6 +3,10 @@
 use super::*;
 use toml::Value;
 
+#[path = "confinement_regression.rs"]
+mod confinement_regression;
+pub(super) use confinement_regression::confinement_regression_failures;
+
 const PUBLIC_EXPORT_IDENTIFIERS: &[&str] = &[
     "fn", "struct", "enum", "trait", "type", "const", "static", "mod", "use",
 ];
@@ -138,201 +142,6 @@ pub(super) fn workspace_dependency_table(manifest: &Value) -> toml::map::Map<Str
         .and_then(Value::as_table)
         .cloned()
         .unwrap_or_default()
-}
-
-pub(super) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn Error>> {
-    let mut failures = Vec::new();
-
-    let same_file_findings = package_source_confinement_findings(
-        "crucible-cli",
-        Path::new("crucible-cli"),
-        &source_pairs(&[(
-            "crucible-cli/src/main.rs",
-            r#"
-                use crucible::State;
-
-                fn bad() {
-                    let stamp = std::time::SystemTime::now();
-                    let _state: Option<State> = None;
-                    consume(stamp);
-                }
-            "#,
-        )]),
-    );
-    if !finding_contains(&same_file_findings, "host nondeterminism reaching State") {
-        failures.push(
-            "harness-lint confinement regression failed to reject same-file State ingress"
-                .to_string(),
-        );
-    }
-
-    let split_findings = package_source_confinement_findings(
-        "crucible-cli",
-        Path::new("crucible-cli"),
-        &source_pairs(&[
-            (
-                "crucible-cli/src/main.rs",
-                r#"
-                    fn host_stamp() {
-                        let stamp = std::time::SystemTime::now();
-                        consume(stamp);
-                    }
-                "#,
-            ),
-            (
-                "crucible-cli/src/session.rs",
-                r#"
-                    use crucible_session::SessionDriver;
-                    use crucible_api::ControlClient;
-
-                    fn route(client: ControlClient, driver: SessionDriver<()>) {
-                        submit(client, driver);
-                    }
-                "#,
-            ),
-        ]),
-    );
-    if !finding_contains(
-        &split_findings,
-        "host nondeterminism reaches API/session route",
-    ) {
-        failures.push(
-            "harness-lint confinement regression failed to reject split-module State ingress"
-                .to_string(),
-        );
-    }
-
-    let api_findings = package_source_confinement_findings(
-        "crucible-api",
-        Path::new("crucible-api"),
-        &source_pairs(&[(
-            "crucible-api/src/lib.rs",
-            r#"
-                fn bad() {
-                    let stamp = std::time::SystemTime::now();
-                    consume(stamp);
-                }
-            "#,
-        )]),
-    );
-    if !finding_contains(&api_findings, "not a host-nondeterminism boundary") {
-        failures.push(
-            "harness-lint confinement regression failed to reject nondeterminism outside boundary crates"
-                .to_string(),
-        );
-    }
-
-    let qemu_backend_findings = package_source_confinement_findings(
-        "crucible-qemu",
-        Path::new("crucible-qemu"),
-        &source_pairs(&[(
-            "crucible-qemu/src/backend.rs",
-            r#"
-                fn bad() {
-                    let stamp = std::time::SystemTime::now();
-                    consume(stamp);
-                }
-            "#,
-        )]),
-    );
-    if !finding_contains(
-        &qemu_backend_findings,
-        "outside supervision/diagnostics path",
-    ) {
-        failures.push(
-            "harness-lint confinement regression failed to reject qemu reduction-path nondeterminism"
-                .to_string(),
-        );
-    }
-
-    let qemu_supervision_findings = package_source_confinement_findings(
-        "crucible-qemu",
-        Path::new("crucible-qemu"),
-        &source_pairs(&[(
-            "crucible-qemu/src/supervision/process.rs",
-            r#"
-                fn diagnostic_timestamp() {
-                    let stamp = std::time::SystemTime::now();
-                    eprintln!("{stamp:?}");
-                }
-            "#,
-        )]),
-    );
-    if !qemu_supervision_findings.is_empty() {
-        failures.push(
-            "harness-lint confinement regression incorrectly rejected qemu supervision diagnostics"
-                .to_string(),
-        );
-    }
-
-    let public_export_findings = package_source_confinement_findings(
-        "crucible-daemon",
-        Path::new("crucible-daemon"),
-        &source_pairs(&[(
-            "crucible-daemon/src/supervision.rs",
-            r#"
-                pub(crate) fn host_timestamp() {
-                    let stamp = std::time::SystemTime::now();
-                    consume(stamp);
-                }
-            "#,
-        )]),
-    );
-    if !finding_contains(
-        &public_export_findings,
-        "public export from nondeterministic boundary source",
-    ) {
-        failures.push(
-            "harness-lint confinement regression failed to reject exported host values".to_string(),
-        );
-    }
-
-    let direct_manifest: Value = r#"
-        [package]
-        name = "crucible-daemon"
-
-        [dependencies]
-        engine = { package = "crucible", path = "../crucible" }
-    "#
-    .parse()?;
-    let direct_findings =
-        boundary_manifest_findings("crucible-daemon", &direct_manifest, &toml::map::Map::new());
-    if !finding_contains(&direct_findings, "may not route host nondeterminism") {
-        failures.push(
-            "harness-lint confinement regression failed to reject direct engine dependency"
-                .to_string(),
-        );
-    }
-
-    let workspace_manifest: Value = r#"
-        [package]
-        name = "crucible-daemon"
-
-        [dependencies]
-        engine = { workspace = true }
-    "#
-    .parse()?;
-    let mut workspace_dependencies = toml::map::Map::new();
-    workspace_dependencies.insert(
-        String::from("engine"),
-        Value::Table(toml::map::Map::from_iter([(
-            String::from("package"),
-            Value::String(String::from("crucible")),
-        )])),
-    );
-    let workspace_findings = boundary_manifest_findings(
-        "crucible-daemon",
-        &workspace_manifest,
-        &workspace_dependencies,
-    );
-    if !finding_contains(&workspace_findings, "may not route host nondeterminism") {
-        failures.push(
-            "harness-lint confinement regression failed to reject workspace engine alias"
-                .to_string(),
-        );
-    }
-
-    Ok(failures)
 }
 
 fn non_boundary_source_findings(package: &str, sources: &[(PathBuf, String)]) -> Vec<String> {
@@ -507,35 +316,45 @@ fn token_identifier_findings(
     let tokens = tokenize(&scrubbed);
     let mut findings = Vec::new();
 
-    for token in tokens {
+    for (index, token) in tokens.iter().enumerate() {
         let Some(identifier) = token.kind.as_ident() else {
             continue;
         };
 
-        if identifiers.contains(&identifier) {
-            push_finding(
-                &mut findings,
-                path,
-                content,
-                token.line,
-                reason,
-                identifier,
-                "host-nondeterminism-state",
-            );
+        if !identifiers.contains(&identifier) {
+            continue;
         }
+
+        // `SessionCommand::step(mode)` is the sanctioned validated-command
+        // constructor (the confinement itself), not raw `driver.step()` routing.
+        if identifier == "step"
+            && previous_path_identifier(&tokens, index) == Some("SessionCommand")
+        {
+            continue;
+        }
+
+        push_finding(
+            &mut findings,
+            path,
+            content,
+            token.line,
+            reason,
+            identifier,
+            "host-nondeterminism-state",
+        );
     }
 
     findings
 }
 
-fn source_pairs(sources: &[(&str, &str)]) -> Vec<(PathBuf, String)> {
+pub(super) fn source_pairs(sources: &[(&str, &str)]) -> Vec<(PathBuf, String)> {
     sources
         .iter()
         .map(|(path, content)| (PathBuf::from(path), (*content).to_string()))
         .collect()
 }
 
-fn finding_contains(findings: &[String], reason: &str) -> bool {
+pub(super) fn finding_contains(findings: &[String], reason: &str) -> bool {
     findings.iter().any(|finding| finding.contains(reason))
 }
 

@@ -250,6 +250,13 @@
       requiredFeatures = [];
       placeholder = false;
     }
+    {
+      gate = "gate:perf-bench";
+      package = "crucible-harness";
+      testTarget = "gate_perf_bench";
+      requiredFeatures = [];
+      placeholder = false;
+    }
   ];
 
   canonicalGates = [
@@ -268,6 +275,7 @@
     "gate:patch-microtests"
     "gate:adversarial-determinism"
     "gate:e2e-determinism"
+    "gate:perf-bench"
     "gate:fleet-equivalence"
     "gate:campaign-continuity"
   ];

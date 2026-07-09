@@ -1,6 +1,8 @@
 //! Checks T-TRIG-13 trigger node scheduling against static world topology.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Action, ConditionEvaluationPass, ConditionLeaf, ConditionLeafOracle, Event, EventGraph,

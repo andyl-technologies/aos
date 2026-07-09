@@ -13,6 +13,7 @@
 
   trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   causalLogTest = builtins.readFile ../../crates/crucible/tests/trigger_firing_causal_log.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
@@ -128,9 +129,11 @@
         label = "trigger fired canonical payload name";
         needle = "payload=trigger_fired";
       }
+    ]
+    ++ failuresFor "crates/crucible/src/event_catalog.rs" eventCatalog [
       {
         label = "trigger fired payload is causal";
-        needle = "SchedulerEventLogPayload::TriggerFired(_) => SchedulerEventLogClass::Causal";
+        needle = "kind: \"trigger_fired\",\n        class: SchedulerEventLogClass::Causal,";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [

@@ -72,7 +72,7 @@
       }
       {
         label = "seed env";
-        needle = "env = \"CRUCIBLE_SEED\"";
+        needle = "CRUCIBLE_SEED_ENV: &str = \"CRUCIBLE_SEED\"";
       }
       {
         label = "backend enum";

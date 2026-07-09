@@ -338,9 +338,9 @@ pub enum ReplayOracleRoundTripError {
     /// The reproduction artifact was produced by a different build identity.
     BuildIdentityMismatch {
         /// Expected build identity.
-        expected: ReplayOracleBuildIdentity,
+        expected: Box<ReplayOracleBuildIdentity>,
         /// Build identity in the artifact.
-        actual: ReplayOracleBuildIdentity,
+        actual: Box<ReplayOracleBuildIdentity>,
     },
     /// Replaying from the artifact failed before producing comparison outputs.
     ReplayFailed {
@@ -652,8 +652,8 @@ where
 {
     if artifact.build_identity != *expected_build_identity {
         return Err(ReplayOracleRoundTripError::BuildIdentityMismatch {
-            expected: expected_build_identity.clone(),
-            actual: artifact.build_identity.clone(),
+            expected: Box::new(expected_build_identity.clone()),
+            actual: Box::new(artifact.build_identity.clone()),
         });
     }
 

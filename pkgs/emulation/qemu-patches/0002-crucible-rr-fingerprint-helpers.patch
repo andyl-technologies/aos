@@ -87,7 +87,7 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
-@@ -93,7 +93,14 @@ void icount_handle_deadline(void)
+@@ -93,7 +93,21 @@ void icount_handle_deadline(void)
  int64_t icount_percpu_budget(int cpu_count)
  {
      int64_t limit = icount_get_limit();
@@ -96,6 +96,13 @@ diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
 +    int64_t timeslice;
 +
 +    if (rr_switch_quantum != 0) {
++        if (limit <= 0) {
++            icount_handle_deadline();
++            limit = icount_get_limit();
++        }
++        if (limit <= 0) {
++            return (int64_t)rr_switch_quantum;
++        }
 +        return MIN(limit, (int64_t)rr_switch_quantum);
 +    }
 +
@@ -103,6 +110,28 @@ diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
  
      if (timeslice == 0) {
          timeslice = limit;
+@@ -105,6 +119,8 @@ int64_t icount_percpu_budget(int cpu_count)
+ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
+ {
+     int insns_left;
++    int64_t limit = icount_get_limit();
++    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
+ 
+     /*
+      * These should always be cleared by icount_process_data after
+@@ -116,7 +132,11 @@ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
+ 
+     replay_mutex_lock();
+ 
+-    cpu->icount_budget = MIN(icount_get_limit(), cpu_budget);
++    if (rr_switch_quantum != 0 && limit <= 0) {
++        cpu->icount_budget = cpu_budget;
++    } else {
++        cpu->icount_budget = MIN(limit, cpu_budget);
++    }
+     insns_left = MIN(0xffff, cpu->icount_budget);
+     cpu->neg.icount_decr.u16.low = insns_left;
+     cpu->icount_extra = cpu->icount_budget - insns_left;
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c

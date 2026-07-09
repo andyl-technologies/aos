@@ -6,7 +6,7 @@
 //! - HeadObject, DeleteObject
 //! - Custom endpoints (MinIO, B2, Wasabi)
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
@@ -30,7 +30,7 @@ const MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
 /// Used as `Option<S3ClientConfig>`: `None` is the SDK default credential
 /// chain, `Some(_)` an explicit SigV4 configuration. Two requests with an
 /// equal key share one [`aws_sdk_s3::Client`].
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct S3ClientConfig {
     /// AWS region used for signing.
     region: String,
@@ -55,7 +55,7 @@ pub struct S3Protocol {
     /// Part size for multi-part uploads, in bytes.
     part_size: u64,
     /// Clients cached by their resolved configuration.
-    clients: Mutex<HashMap<Option<S3ClientConfig>, aws_sdk_s3::Client>>,
+    clients: Mutex<BTreeMap<Option<S3ClientConfig>, aws_sdk_s3::Client>>,
 }
 
 impl S3Protocol {
@@ -63,7 +63,7 @@ impl S3Protocol {
     pub fn new() -> Self {
         Self {
             part_size: MULTIPART_PART_SIZE,
-            clients: Mutex::new(HashMap::new()),
+            clients: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -72,7 +72,7 @@ impl S3Protocol {
     pub fn with_part_size(part_size: u64) -> Self {
         Self {
             part_size,
-            clients: Mutex::new(HashMap::new()),
+            clients: Mutex::new(BTreeMap::new()),
         }
     }
 

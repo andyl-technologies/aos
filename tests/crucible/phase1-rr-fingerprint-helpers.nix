@@ -68,6 +68,10 @@
       needle = "return MIN(limit, (int64_t)rr_switch_quantum);";
     }
     {
+      label = "deadline-safe RR prepare-for-run";
+      needle = "cpu->icount_budget = cpu_budget;";
+    }
+    {
       label = "RR switch quantum sim accelerator guard";
       needle = ''strcmp(current_accel_name(), "sim") != 0'';
     }
@@ -137,6 +141,10 @@
     {
       label = "non-sim stock budget assertion";
       needle = "non_sim_rr_switch_quantum_uses_stock_budget=true";
+    }
+    {
+      label = "deadline-safe prepare-for-run assertion";
+      needle = "rr_prepare_for_run_deadline_safe=true";
     }
     {
       label = "pinned RR switch trace assertion";
@@ -304,6 +312,26 @@ in
                 }
 
                 return timeslice;
+            }
+
+            void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
+            {
+                int insns_left;
+
+                /*
+                 * These should always be cleared by icount_process_data after
+                 * each run.
+                 */
+                g_assert(cpu->icount_budget == 0);
+                g_assert(cpu->icount_extra == 0);
+
+                replay_mutex_lock();
+
+                cpu->icount_budget = MIN(icount_get_limit(), cpu_budget);
+                insns_left = MIN(0xffff, cpu->icount_budget);
+                cpu->neg.icount_decr.u16.low = insns_left;
+                cpu->icount_extra = cpu->icount_budget - insns_left;
+                replay_mutex_unlock();
             }
             QEMU_FIXTURE
 
@@ -496,6 +524,7 @@ in
             grep -q '^rr_switch_quantum_requires_shift=true$' "$out/result"
             grep -q '^rr_switch_quantum_rejects_oversized=true$' "$out/result"
             grep -q '^rr_budget_pinned=true$' "$out/result"
+            grep -q '^rr_prepare_for_run_deadline_safe=true$' "$out/result"
             grep -q '^rr_switch_quantum_sim_gated=true$' "$out/result"
             grep -q '^non_sim_rr_switch_quantum_uses_stock_budget=true$' "$out/result"
             grep -q '^rr_switch_trace_pinned_under_host_jitter=true$' "$out/result"
@@ -531,6 +560,7 @@ in
             ${qemuPackageResultLines}
             rr_switch_quantum_configured=true
             rr_budget_pinned=true
+            rr_prepare_for_run_deadline_safe=true
             rr_switch_quantum_sim_gated=true
             non_sim_rr_switch_quantum_uses_stock_budget=true
             rr_switch_trace_pinned_under_host_jitter=true

@@ -273,6 +273,15 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         required_features: &[],
         placeholder: false,
     },
+    // The perf-bench regression gate runs the harness-owned cost-model
+    // assertion pass (SS25.7.1 metrics) with no QEMU present.
+    GateTargetSpec {
+        gate: "gate:perf-bench",
+        package: "crucible-harness",
+        test_target: "gate_perf_bench",
+        required_features: &[],
+        placeholder: false,
+    },
 ];
 
 /// Returns every mapped gate target in RFC table order.

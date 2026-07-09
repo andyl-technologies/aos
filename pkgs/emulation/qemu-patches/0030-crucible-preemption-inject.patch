@@ -195,7 +195,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
  /* Kick all RR vCPUs */
  void rr_kick_vcpu_thread(CPUState *unused)
-@@ -164,9 +165,11 @@ static void rr_crucible_sim_refresh_batch_budget(int64_t *cpu_budget)
+@@ -168,9 +169,11 @@ static void rr_crucible_sim_refresh_batch_budget(int64_t *cpu_budget)
      replay_mutex_unlock();
  }
  
@@ -208,7 +208,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
      while (true) {
          int r;
-@@ -177,8 +180,13 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
+@@ -181,8 +184,13 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
  
              *cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
                                                                *cpu_budget);
@@ -222,7 +222,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
                  qemu_plugin_main_loop_wait();
                  return true;
              }
-@@ -199,6 +207,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
+@@ -203,6 +211,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
          qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
          bql_lock();
  
@@ -235,7 +235,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
          runs++;
  
          if (r == EXCP_DEBUG) {
-@@ -466,15 +480,20 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -471,15 +485,20 @@ static void *rr_cpu_thread_fn(void *arg)
  
                  cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
                                                                   cpu_budget);

@@ -1,6 +1,8 @@
 //! Checks T-ASRT-8 shared assertion log-fold edge outcomes.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     AssertionDef, AssertionId, AssertionPhase, AssertionQuantifierKind, AssertionRunVerdict,

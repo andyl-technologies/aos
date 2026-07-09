@@ -11,9 +11,10 @@ use crucible_harness::reproduction::{
     ContentAddressedComponent, PRODUCER_BACKEND_BUILD_ID_COMPONENT_NAME,
     PRODUCER_CANONICAL_LOG_COMPONENT_NAME, PRODUCER_FINAL_FINGERPRINT_COMPONENT_NAME,
     PinnedBuildIdentity, REPRODUCTION_ARTIFACT_SCHEMA, RecordedDecision, ReproductionArtifact,
-    ReproductionArtifactError, ReproductionSchedule, campaign_provenance_key,
-    content_address_bytes, evaluate_campaign_corpus_reuse, mock_e2e_reproduction_artifact,
-    mock_reproduction_build_identity, verify_mock_machine_independent_reproduction,
+    ReproductionArtifactError, ReproductionArtifactParts, ReproductionSchedule,
+    campaign_provenance_key, content_address_bytes, evaluate_campaign_corpus_reuse,
+    mock_e2e_reproduction_artifact, mock_reproduction_build_identity,
+    verify_mock_machine_independent_reproduction,
     verify_mock_machine_independent_reproduction_bytes,
 };
 
@@ -180,9 +181,9 @@ fn reproduction_artifact_format_keeps_large_components_by_reference() -> Result<
         kind: String::from("deliver"),
         payload_digest,
     };
-    let artifact = ReproductionArtifact::from_parts(
-        7,
-        PinnedBuildIdentity {
+    let artifact = ReproductionArtifact::from_parts(ReproductionArtifactParts {
+        seed: 7,
+        build_identity: PinnedBuildIdentity {
             engine_version: String::from("0.1.0"),
             engine_abi: String::from("engine-abi:v1"),
             artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
@@ -196,17 +197,17 @@ fn reproduction_artifact_format_keeps_large_components_by_reference() -> Result<
             rpc_abi_build: String::from("crucible-rpc-abi-v4"),
             plugin_abi: String::from("plugin-abi:v1"),
         },
-        scenario.clone(),
-        vec![decision],
-        vec![scenario],
-        Vec::new(),
-        Vec::new(),
-        crucible_harness::reproduction::FingerprintSamplingConfig {
+        scenario: scenario.clone(),
+        decisions: vec![decision],
+        components: vec![scenario],
+        component_payloads: Vec::new(),
+        fingerprint_tail: Vec::new(),
+        sampling_config: crucible_harness::reproduction::FingerprintSamplingConfig {
             fine: String::from("every-decision"),
             coarse: String::from("final"),
             regions: vec![String::from("tail")],
         },
-    )?;
+    })?;
     let encoded = String::from_utf8(artifact.encode()?)?;
 
     assert!(!encoded.contains("large scenario body kept outside the artifact"));
@@ -269,9 +270,9 @@ fn reproduction_artifact_format_rejects_payload_digest_mismatch() -> Result<(), 
     let mut payload = ComponentPayload::from_bytes(scenario_bytes);
     payload.bytes.push(b'!');
 
-    let error = match ReproductionArtifact::from_parts(
-        7,
-        PinnedBuildIdentity {
+    let error = match ReproductionArtifact::from_parts(ReproductionArtifactParts {
+        seed: 7,
+        build_identity: PinnedBuildIdentity {
             engine_version: String::from("0.1.0"),
             engine_abi: String::from("engine-abi:v1"),
             artifact_abi: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
@@ -285,17 +286,17 @@ fn reproduction_artifact_format_rejects_payload_digest_mismatch() -> Result<(), 
             rpc_abi_build: String::from("crucible-rpc-abi-v4"),
             plugin_abi: String::from("plugin-abi:v1"),
         },
-        scenario.clone(),
-        vec![decision],
-        vec![scenario],
-        vec![payload],
-        Vec::new(),
-        crucible_harness::reproduction::FingerprintSamplingConfig {
+        scenario: scenario.clone(),
+        decisions: vec![decision],
+        components: vec![scenario],
+        component_payloads: vec![payload],
+        fingerprint_tail: Vec::new(),
+        sampling_config: crucible_harness::reproduction::FingerprintSamplingConfig {
             fine: String::from("every-decision"),
             coarse: String::from("final"),
             regions: vec![String::from("tail")],
         },
-    ) {
+    }) {
         Ok(_) => panic!("payload digest mismatch must be rejected"),
         Err(error) => error,
     };

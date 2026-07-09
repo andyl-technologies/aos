@@ -37,16 +37,16 @@ fn architecture_red_placeholder_gates_are_wired() {
             }
         })
         .collect();
-    let expected = BTreeSet::from(["gate:perf-bench"]);
+    // Every canonical gate now has an implemented local target; the perf-bench
+    // gate's cost-model body landed with the §25 performance suite.
+    let expected: BTreeSet<&str> = BTreeSet::new();
 
     assert_eq!(placeholders, expected);
 
-    for gate in expected {
-        assert!(matches!(
-            find_gate(gate).map(|spec| spec.status),
-            Some(GateStatus::RedPlaceholder)
-        ));
-    }
+    assert!(matches!(
+        find_gate("gate:perf-bench").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
     assert!(matches!(
         find_gate("gate:harness-lint").map(|spec| spec.status),
         Some(GateStatus::Implemented)

@@ -15,7 +15,11 @@
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  # The launch module was split into a `launch/` directory; concatenate the
+  # control-channel submodule so gdbstub/QMP channel needles remain scannable.
+  qemuLaunch =
+    builtins.readFile ../../crates/crucible-qemu/src/launch.rs
+    + builtins.readFile ../../crates/crucible-qemu/src/launch/control_channels.rs;
   qemuProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;

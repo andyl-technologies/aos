@@ -1,6 +1,8 @@
 //! Gates guided/adaptive exploration prerequisites for coverage-guided fuzzing.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
 use std::error::Error;

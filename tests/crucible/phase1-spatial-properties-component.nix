@@ -110,7 +110,7 @@
       }
       {
         label = "predicate validation helper";
-        needle = "fn validate_predicate_for_world";
+        needle = "fn validate_property_predicate_for_world";
       }
       {
         label = "predicate unknown node error";

@@ -162,7 +162,7 @@
       }
       {
         label = "content-addressed segment bytes";
-        needle = "ContentHash::from_bytes(&segment_bytes)";
+        needle = "self.segment_store.put_segment(&segment_bytes)";
       }
       {
         label = "event-log segment offset";

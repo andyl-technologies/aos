@@ -120,8 +120,11 @@
         needle = "#[unsafe(no_mangle)]";
       }
       {
+        # The install entry point was safe-shimmed (unsafe-fence conformance):
+        # the signature is safe; raw-pointer work is confined to SAFETY-commented
+        # blocks inside the boundary helper it forwards to.
         label = "C ABI install function";
-        needle = "pub unsafe extern \"C\" fn qemu_plugin_install";
+        needle = "pub extern \"C\" fn qemu_plugin_install";
       }
       {
         label = "raw install boundary validation";

@@ -46,12 +46,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-12 remains open";
-        needle = "- [ ] **T-CLI-12** Implement `replay`";
+        label = "T-CLI-12 checklist complete";
+        needle = "- [x] **T-CLI-12** Implement `replay`";
       }
       {
-        label = "T-CLI-12 replay check progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliReplayCheck`";
+        label = "T-CLI-12 replay check completion note";
+        needle = "Completed by `checks.crucible.phase5.cliReplayCheck`";
       }
       {
         label = "replay bisect progress";
@@ -84,8 +84,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI replay check progress note";
-        needle = "`T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently";
+        label = "phase5 CLI replay check completion note";
+        needle = "`T-CLI-12` is green through `checks.crucible.phase5.cliReplayCheck`";
       }
       {
         label = "phase5 process replay check progress";

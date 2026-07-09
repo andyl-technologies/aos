@@ -50,6 +50,7 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         "crucible",
         &[
             ("default", &[][..]),
+            ("test-support", &[][..]),
             (
                 "test-double",
                 &["dep:crucible-protocol", "dep:crucible-shmem"][..],
@@ -303,6 +304,12 @@ fn feature_cases() -> &'static [FeatureCase] {
             features: &[],
         },
         FeatureCase {
+            name: "crucible test-support",
+            package: "crucible",
+            no_default_features: true,
+            features: &["test-support"],
+        },
+        FeatureCase {
             name: "crucible test-double",
             package: "crucible",
             no_default_features: true,
@@ -318,7 +325,7 @@ fn feature_cases() -> &'static [FeatureCase] {
             name: "crucible all features",
             package: "crucible",
             no_default_features: true,
-            features: &["test-double", "qemu-backend"],
+            features: &["test-support", "test-double", "qemu-backend"],
         },
         FeatureCase {
             name: "crucible-device default",

@@ -47,10 +47,10 @@ pub const REQUIRED_QEMU_ENTROPY_ELIMINATIONS: [QemuEntropyElimination; 10] = [
     QemuEntropyElimination::FixedRtcVirtualClock,
     QemuEntropyElimination::GuestEntropyFwCfgSeed,
     QemuEntropyElimination::QemuRunSeed,
-    QemuEntropyElimination::KernelRandomizationDisabled,
     QemuEntropyElimination::NoInteractiveInput,
     QemuEntropyElimination::CopyOnWriteBacking,
     QemuEntropyElimination::IdleWarpSuppression,
+    QemuEntropyElimination::DeviceCompletionDelivery,
     QemuEntropyElimination::SimModeInertness,
 ];
 
@@ -237,18 +237,30 @@ pub enum QemuEntropyElimination {
     CpuModelEntropyPin,
     /// The RTC base is fixed and its clock source is virtual time.
     FixedRtcVirtualClock,
-    /// Guest-visible boot entropy is supplied by a content-addressed fw_cfg seed.
+    /// Guest-visible boot entropy is supplied entirely host-side by a
+    /// content-addressed fw_cfg random-seed and a seeded builtin RNG device, so
+    /// determinism holds for any unmodified guest without cmdline shaping.
     GuestEntropyFwCfgSeed,
     /// QEMU-internal pseudo-randomness is seeded from scenario material.
     QemuRunSeed,
-    /// Kernel and userspace address randomization are disabled conservatively.
-    KernelRandomizationDisabled,
     /// Host interactive input devices are absent.
     NoInteractiveInput,
     /// Guest writes go through copy-on-write overlays only.
     CopyOnWriteBacking,
     /// Idle warp is suppressed while the plugin owns QEMU virtual time.
     IdleWarpSuppression,
+    /// Device-completion delivery is deterministic: every completion interrupt
+    /// lands at a fixed icount rather than at a host-timing-dependent one. How
+    /// each device family achieves this differs  --  virtio-blk/9p completions are
+    /// pinned by the crucible blk/9p shmem substrate (patches 0015-0019), which
+    /// keeps the stock async virtqueue kick, whereas virtio-rng has no such
+    /// anchor, so the crucible-det-rng-delivery and (virtio-rng-scoped)
+    /// crucible-det-virtio-ioeventfd patches deliver its entropy completion
+    /// synchronously on the requesting vCPU thread at the request icount rather
+    /// than from a host-scheduled bottom half. Upstream icount otherwise leaves
+    /// async device-completion delivery host-timing-dependent, so the byte-pure
+    /// seeded entropy would arrive at a nondeterministic instruction.
+    DeviceCompletionDelivery,
     /// Simulation mechanisms are absent or inert when simulation mode is off.
     SimModeInertness,
 }
@@ -263,10 +275,10 @@ impl QemuEntropyElimination {
             Self::FixedRtcVirtualClock => "fixed-rtc-virtual-clock",
             Self::GuestEntropyFwCfgSeed => "guest-entropy-fw-cfg-seed",
             Self::QemuRunSeed => "qemu-run-seed",
-            Self::KernelRandomizationDisabled => "kernel-randomization-disabled",
             Self::NoInteractiveInput => "no-interactive-input",
             Self::CopyOnWriteBacking => "copy-on-write-backing",
             Self::IdleWarpSuppression => "idle-warp-suppression",
+            Self::DeviceCompletionDelivery => "device-completion-delivery",
             Self::SimModeInertness => "sim-mode-inertness",
         }
     }
@@ -285,14 +297,15 @@ pub enum QemuEntropyEliminationNegativeCase {
     RemoveGuestEntropySeed,
     /// Diverge QEMU's run seed from the scenario seed.
     DivergeRunSeed,
-    /// Remove kernel/userspace randomization pins.
-    RemoveKernelRandomizationPins,
     /// Enable host interactive input.
     EnableHostInteractiveInput,
     /// Allow writable guest backing state.
     AllowWritableBacking,
     /// Re-enable idle warp while plugin time control is active.
     EnableIdleWarp,
+    /// Deliver device completions from a host-scheduled bottom half instead of
+    /// synchronously at the request icount.
+    UseAsyncDeviceCompletion,
     /// Activate plugin/control-plane state while simulation mode is off.
     ActivateSimControlWhileOff,
 }
@@ -307,10 +320,10 @@ impl QemuEntropyEliminationNegativeCase {
             Self::UseHostRtc => "use-host-rtc",
             Self::RemoveGuestEntropySeed => "remove-guest-entropy-seed",
             Self::DivergeRunSeed => "diverge-run-seed",
-            Self::RemoveKernelRandomizationPins => "remove-kernel-randomization-pins",
             Self::EnableHostInteractiveInput => "enable-host-interactive-input",
             Self::AllowWritableBacking => "allow-writable-backing",
             Self::EnableIdleWarp => "enable-idle-warp",
+            Self::UseAsyncDeviceCompletion => "use-async-device-completion",
             Self::ActivateSimControlWhileOff => "activate-sim-control-while-off",
         }
     }
@@ -373,11 +386,6 @@ pub fn qemu_entropy_elimination_microtests() -> Vec<QemuEntropyEliminationMicrot
             QemuEntropyEliminationNegativeCase::DivergeRunSeed,
         ),
         QemuEntropyEliminationMicrotest::new(
-            QemuEntropyElimination::KernelRandomizationDisabled,
-            "gate:layer0-determinism",
-            QemuEntropyEliminationNegativeCase::RemoveKernelRandomizationPins,
-        ),
-        QemuEntropyEliminationMicrotest::new(
             QemuEntropyElimination::NoInteractiveInput,
             "gate:layer0-determinism",
             QemuEntropyEliminationNegativeCase::EnableHostInteractiveInput,
@@ -391,6 +399,11 @@ pub fn qemu_entropy_elimination_microtests() -> Vec<QemuEntropyEliminationMicrot
             QemuEntropyElimination::IdleWarpSuppression,
             "gate:layer0-determinism",
             QemuEntropyEliminationNegativeCase::EnableIdleWarp,
+        ),
+        QemuEntropyEliminationMicrotest::new(
+            QemuEntropyElimination::DeviceCompletionDelivery,
+            "gate:layer0-determinism",
+            QemuEntropyEliminationNegativeCase::UseAsyncDeviceCompletion,
         ),
         QemuEntropyEliminationMicrotest::new(
             QemuEntropyElimination::SimModeInertness,
@@ -569,6 +582,7 @@ fn validate_launch_boundary_material_text(
         "rtc_clock=vm",
         "guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time",
         "idle_warp_under_time_control=suppressed",
+        "device_completion_delivery=synchronous-at-request-icount",
         "guest_entropy_seed_source=scenario-seed",
         "qemu_run_seed_controls=guest-random,glib-global-prng,rng-builtin",
         "kernel_cmdline=",
@@ -602,21 +616,10 @@ fn validate_canonical_launch_args(args: &[String]) -> Result<(), QemuDeterminism
         |value| value == "virtio-rng-pci,rng=crucible-rng0",
         "seeded virtio-rng device",
     )?;
-    let append = find_option_value(args, "-append").ok_or(
-        QemuDeterminismBoundaryError::LaunchBoundaryMissing {
-            missing: "kernel command line",
-        },
-    )?;
-    for required in [
-        "nokaslr",
-        "norandmaps",
-        "random.trust_cpu=off",
-        "random.trust_bootloader=off",
-    ] {
-        if !append.split_ascii_whitespace().any(|arg| arg == required) {
-            return Err(QemuDeterminismBoundaryError::LaunchBoundaryMissing { missing: required });
-        }
-    }
+    // The guest kernel command line is not part of the launch determinism
+    // boundary: determinism is delivered host-side by the seeded fw_cfg
+    // random-seed and builtin RNG device, so any unmodified guest cmdline is
+    // legal and no `-append` flags are required.
     Ok(())
 }
 
@@ -757,20 +760,6 @@ fn run_negative_microtest(
             },
             microtest,
         ),
-        QemuEntropyEliminationNegativeCase::RemoveKernelRandomizationPins => {
-            expect_candidate_rejected(
-                LaunchProfileCandidate::default().with_kernel_cmdline(
-                    "console=ttyS0 reboot=k panic=1 quiet norandmaps random.trust_cpu=off random.trust_bootloader=off",
-                ),
-                microtest,
-            )?;
-            expect_candidate_rejected(
-                LaunchProfileCandidate::default().with_kernel_cmdline(
-                    "console=ttyS0 reboot=k panic=1 quiet nokaslr random.trust_cpu=off random.trust_bootloader=off",
-                ),
-                microtest,
-            )
-        }
         QemuEntropyEliminationNegativeCase::EnableHostInteractiveInput => {
             expect_candidate_rejected(
                 LaunchProfileCandidate::default().with_input_policy(InputPolicy::HostInteractive),
@@ -798,6 +787,13 @@ fn run_negative_microtest(
             let material = launch_profile.scenario_hash_material().replace(
                 "idle_warp_under_time_control=suppressed",
                 "idle_warp_under_time_control=host-warp-enabled",
+            );
+            expect_launch_material_rejected(&material, microtest)
+        }
+        QemuEntropyEliminationNegativeCase::UseAsyncDeviceCompletion => {
+            let material = launch_profile.scenario_hash_material().replace(
+                "device_completion_delivery=synchronous-at-request-icount",
+                "device_completion_delivery=host-async-bottom-half",
             );
             expect_launch_material_rejected(&material, microtest)
         }
@@ -877,9 +873,6 @@ fn expected_negative_case(
             QemuEntropyEliminationNegativeCase::RemoveGuestEntropySeed
         }
         QemuEntropyElimination::QemuRunSeed => QemuEntropyEliminationNegativeCase::DivergeRunSeed,
-        QemuEntropyElimination::KernelRandomizationDisabled => {
-            QemuEntropyEliminationNegativeCase::RemoveKernelRandomizationPins
-        }
         QemuEntropyElimination::NoInteractiveInput => {
             QemuEntropyEliminationNegativeCase::EnableHostInteractiveInput
         }
@@ -888,6 +881,9 @@ fn expected_negative_case(
         }
         QemuEntropyElimination::IdleWarpSuppression => {
             QemuEntropyEliminationNegativeCase::EnableIdleWarp
+        }
+        QemuEntropyElimination::DeviceCompletionDelivery => {
+            QemuEntropyEliminationNegativeCase::UseAsyncDeviceCompletion
         }
         QemuEntropyElimination::SimModeInertness => {
             QemuEntropyEliminationNegativeCase::ActivateSimControlWhileOff
@@ -1347,22 +1343,6 @@ mod tests {
                 scenario_seed: 0x0010_c001,
                 run_seed: 7,
             })
-        );
-        assert_eq!(
-            LaunchProfileCandidate::default()
-                .with_kernel_cmdline(
-                    "console=ttyS0 reboot=k panic=1 quiet norandmaps random.trust_cpu=off random.trust_bootloader=off"
-                )
-                .try_into_deterministic(),
-            Err(LaunchProfileError::KernelKaslrNotDisabled)
-        );
-        assert_eq!(
-            LaunchProfileCandidate::default()
-                .with_kernel_cmdline(
-                    "console=ttyS0 reboot=k panic=1 quiet nokaslr random.trust_cpu=off random.trust_bootloader=off"
-                )
-                .try_into_deterministic(),
-            Err(LaunchProfileError::UserspaceAslrNotDisabled)
         );
         assert_eq!(
             LaunchProfileCandidate::default()

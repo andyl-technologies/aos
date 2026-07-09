@@ -176,6 +176,8 @@ DETERMINISM (source elimination)                       class  enforces
   crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, DET-13, E18
   crucible-rr-quantum-icount .... RR switch @ node-icount    D    PATCH-44, DET-1, QEMU-43
   crucible-det-ipi .............. deterministic IPI/SIPI/INIT D    PATCH-45, DET-1, INV-7
+  crucible-det-virtio-ioeventfd . sync virtio-rng vq dispatch D    DET-1, E7
+  crucible-det-rng-delivery ..... sync virtio-rng completion  D    DET-1, E7, E9
   (crucible-replay-start) ....... NOT CARRIED (see §11.4)    —    NG-6 (PATCH-43)
 
 PLUGIN TIME CONTROL (API surface)                      class  enforces
@@ -1465,8 +1467,9 @@ time-control primitives the whole design rests on.
     `-accel sim`, precise icount, and a pinned `rr_switch_quantum` are active;
     the round-robin handoff path drains the queue before the next vCPU runs;
     non-sim, unpinned, and self-IPI paths fall through to upstream behavior; and
-    the trace plugin records `det_ipi` delivery rows while the multi-vCPU S11
-    fixture diffs fixed/INIT/SIPI delivery-icount traces across jittered runs.
+    the trace plugin records `det_ipi` delivery rows while the bounded
+    multi-vCPU S11 fixture diffs INIT/SIPI delivery-icount traces plus an
+    opt-in commanded FIXED delivery probe across jittered runs.
 - [x] **T-PATCH-23** Implement `crucible-vcpu-introspect`: per-vCPU register-file
   read (arbitrary index) + round-robin cursor read for the N-vCPU fingerprint,
   side-effect-free, additive/inert until called. — satisfies [PATCH-46]; spec

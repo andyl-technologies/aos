@@ -121,11 +121,23 @@
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [
       {
         label = "EventLog export";
-        needle = "EventLog, EventLogCausalProjection";
+        needle = "EventLog,";
+      }
+      {
+        label = "EventLogCausalProjection export";
+        needle = "EventLogCausalProjection,";
+      }
+      {
+        label = "IoCompletion export";
+        needle = "IoCompletion,";
       }
       {
         label = "LogEntry export";
-        needle = "IoCompletion, LogEntry, NetworkLookahead";
+        needle = "LogEntry,";
+      }
+      {
+        label = "NetworkLookahead export";
+        needle = "NetworkLookahead,";
       }
     ]
     ++ failuresFor "crates/crucible/tests/event_log_unified.rs" eventLogTest [

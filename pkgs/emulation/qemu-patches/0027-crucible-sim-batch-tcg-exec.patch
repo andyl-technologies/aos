@@ -20,13 +20,16 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  static bool rr_crucible_sim_mode(void)
  {
      return strcmp(current_accel_name(), "sim") == 0 &&
-@@ -109,6 +114,112 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
+@@ -109,6 +114,115 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
             !cpu->unplug;
  }
  
 +static unsigned int rr_crucible_sim_tcg_batch_limit(void)
 +{
-+    return rr_crucible_sim_mode() ? RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT : 1;
++    if (!rr_crucible_sim_mode() || rr_cpu_count() > 1) {
++        return 1;
++    }
++    return RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT;
 +}
 +
 +static bool rr_crucible_sim_tcg_batch_continue(CPUState *cpu,
@@ -119,7 +122,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +            bql_lock();
 +            return true;
 +        } else if (r == EXCP_HALTED) {
-+            return true;
++            return false;
 +        }
 +
 +        if (!rr_crucible_sim_tcg_batch_continue(cpu, runs, r)) {
@@ -133,7 +136,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  static void rr_crucible_sim_maybe_fire_idle_callback(CPUState *cpu,
                                                       bool *idle_reported)
  {
-@@ -362,30 +473,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -363,30 +477,7 @@ static void *rr_cpu_thread_fn(void *arg)
              }
  
              if (cpu_can_run(cpu)) {

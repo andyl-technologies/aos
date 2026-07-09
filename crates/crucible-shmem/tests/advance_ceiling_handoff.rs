@@ -1,6 +1,8 @@
 //! Checks the per-node advance-ceiling handoff.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used)]
 
 use crucible_shmem::{
     FrameEntry, FutexWait, FutexWakeResult, KIND_VM, NODE_SLOT_ALIGN,

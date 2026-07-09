@@ -146,7 +146,11 @@
       }
       {
         label = "log action observational class";
-        needle = "application.is_observational()";
+        needle = "if let Action::Log { level, message } = &application.action {";
+      }
+      {
+        label = "log action carried as observational diagnostic payload";
+        needle = "return EventPayload::diagnostic(\"trigger.log\", details);";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [

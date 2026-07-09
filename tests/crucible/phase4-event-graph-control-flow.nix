@@ -133,7 +133,7 @@
       }
       {
         label = "opaque event firing fields";
-        needle = "pub struct EventFiring {\n    event: EventId,\n    at: VirtualTime,\n    action: Action,";
+        needle = "pub struct EventFiring {\n    event: EventId,\n    at: VirtualTime,\n    condition_summary: String,\n    action: Action,";
       }
       {
         label = "evaluation point time accessor";

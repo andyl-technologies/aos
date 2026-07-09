@@ -1,6 +1,8 @@
 //! Checks T-FAULT-16 in-process fault test-double coverage.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
 
@@ -258,7 +260,7 @@ fn fault_test_double_exercises_each_block_fault_kind() {
             case.name,
             &first.decision_batches,
             &block_device_id(),
-            Seed::from_u64(0xb10c_16),
+            Seed::from_u64(0xb10c16),
             matches!(case.expected, ExpectedIoEffect::Reordered),
         );
         assert_exact_fault_decisions(
@@ -293,7 +295,7 @@ fn fault_test_double_exercises_each_9p_fault_kind() {
             case.name,
             &first.decision_batches,
             &ninep_device_id(),
-            Seed::from_u64(0x9f5_16),
+            Seed::from_u64(0x9f516),
             matches!(case.expected, ExpectedIoEffect::Reordered),
         );
         assert_exact_fault_decisions(
@@ -1286,7 +1288,7 @@ fn fresh_block_subnode() -> DeviceSchedulingSubNode {
         node("vm-a"),
         block_device_id(),
         block_device(),
-        Seed::from_u64(0xb10c_16),
+        Seed::from_u64(0xb10c16),
     )
 }
 
@@ -1296,7 +1298,7 @@ fn fresh_ninep_subnode() -> DeviceSchedulingSubNode {
         node("vm-a"),
         ninep_device_id(),
         ninep_device(),
-        Seed::from_u64(0x9f5_16),
+        Seed::from_u64(0x9f516),
     )
 }
 

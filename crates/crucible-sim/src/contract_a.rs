@@ -992,10 +992,7 @@ fn multi_vcpu_fingerprint_sample_digest(
 }
 
 fn len_for_hash(len: usize) -> u64 {
-    match u64::try_from(len) {
-        Ok(count) => count,
-        Err(_error) => u64::MAX,
-    }
+    u64::try_from(len).unwrap_or(u64::MAX)
 }
 
 fn run_fingerprint(

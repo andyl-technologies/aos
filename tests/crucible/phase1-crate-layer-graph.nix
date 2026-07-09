@@ -52,6 +52,11 @@
       inVm = false;
     }
     {
+      package = "crucible-cas";
+      layer = 3;
+      inVm = false;
+    }
+    {
       package = "crucible-session";
       layer = 4;
       inVm = false;
@@ -260,7 +265,7 @@ in
             check=checks.crucible.phase1.crateLayerGraph
             gate=gate:harness-lint
             tasks=T-ARCH-2,T-CRATE-3
-            runtime_crates=13
+            runtime_crates=14
             test_only_crates=1
             upward_edges=0
             host_adapter_upward_edge_exceptions=1

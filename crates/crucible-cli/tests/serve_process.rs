@@ -1,5 +1,9 @@
 //! Process-level checks for `crucible serve`.
 
+// crucible-lint: allow clippy-disallowed-method -- process-level boundary test intentionally exercises host methods.
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::disallowed_methods, clippy::expect_used, clippy::unwrap_used)]
+
 use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, ExitStatus, Stdio};

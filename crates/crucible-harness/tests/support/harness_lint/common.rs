@@ -164,11 +164,12 @@ pub(super) fn collect_rust_sources(
 }
 
 pub(super) fn is_binary_boundary_source(package: &str, package_dir: &Path, source: &Path) -> bool {
-    package == BINARY_BOUNDARY_PACKAGE
-        && matches!(
-            source.strip_prefix(package_dir),
-            Ok(relative) if relative == Path::new(BINARY_BOUNDARY_ROOT)
-        )
+    matches!(
+        source.strip_prefix(package_dir),
+        Ok(relative)
+            if package == BINARY_BOUNDARY_PACKAGE && relative == Path::new(BINARY_BOUNDARY_ROOT)
+                || relative.starts_with(Path::new("src/bin"))
+    )
 }
 
 pub(super) fn cfg_test_line_ranges(content: &str) -> Vec<std::ops::RangeInclusive<usize>> {

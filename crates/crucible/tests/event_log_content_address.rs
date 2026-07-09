@@ -1,19 +1,21 @@
 //! Checks the T-OBS-5 event-log content-addressed segment contract.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crucible::{
     BackendInput, Checkpoint, CheckpointKind, Configuration, ContentHash, CowDeltaKind,
-    CowDeltaRef, DagStore, Decision, DecisionRngState, EngineError, EventLog, EventLogOffset,
-    ExactLocalEvent, LogEntry, MaterializedState, MemoryDagStore, NetworkLookahead, NodeCounter,
-    NodeId, QuantumLoop, QuantumRequest, RngDecision, RngStreamId, ScheduledEvent,
-    ScheduledEventKey, ScheduledEventPayload, SchedulerEvaluationBoundaryKind,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulerState, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
-    TemporalGraph, VirtualTime, World, bake, instantiate, step,
+    CowDeltaRef, DagStore, Decision, DecisionRngState, EngineError, EventLog, ExactLocalEvent,
+    LogEntry, MaterializedState, MemoryDagStore, NetworkLookahead, NodeCounter, NodeId,
+    QuantumLoop, QuantumRequest, RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerState,
+    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, TemporalGraph,
+    VirtualTime, World, bake, instantiate, step,
 };
 
 fn boundary_entry(sequence: u64, ticks: u64) -> LogEntry {
@@ -289,7 +291,7 @@ fn temporal_graph_closure_references_stored_event_log_segment_bytes() {
             .state
             .as_ref()
             .map(|state| state.event_log)
-            .unwrap_or_else(EventLogOffset::default),
+            .unwrap_or_default(),
         append.offset
     );
     assert_eq!(state.event_log.prefix, append.offset.prefix);

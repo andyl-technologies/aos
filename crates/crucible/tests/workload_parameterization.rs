@@ -1,6 +1,8 @@
 //! Checks RFC-0010 T-WL-6 workload parameterization invariants.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     ContentAddressedBlobRef, ContentHash, EngineError, GuestWorkloadBinary,
@@ -55,8 +57,8 @@ fn scalar_workload_parameters_are_cmdline_scenario_config() -> Result<(), Engine
 
 #[test]
 fn scalar_parameter_change_changes_scenario_id_and_reproduces() -> Result<(), EngineError> {
-    assert!(WORKLOAD_PARAMETERS_ARE_SCENARIO_CONFIG);
-    assert!(!WORKLOAD_PARAMETER_HOST_RUNTIME_POKES_ALLOWED);
+    const { assert!(WORKLOAD_PARAMETERS_ARE_SCENARIO_CONFIG) };
+    const { assert!(!WORKLOAD_PARAMETER_HOST_RUNTIME_POKES_ALLOWED) };
 
     let rate_50 = form_with_cmdline("console=ttyS0 crucible.workload=httpget rate=50 count=100")?;
     let rate_100 = form_with_cmdline("console=ttyS0 crucible.workload=httpget rate=100 count=100")?;
@@ -76,9 +78,9 @@ fn scalar_parameter_change_changes_scenario_id_and_reproduces() -> Result<(), En
 #[test]
 fn structured_config_tree_refs_are_read_only_content_addressed() -> Result<(), EngineError> {
     assert_eq!(WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER, "wcfg");
-    assert!(WORKLOAD_CONFIG_TREES_ARE_READ_ONLY);
-    assert!(WORKLOAD_CONFIG_TREE_DETERMINISTIC_QIDS);
-    assert!(WORKLOAD_CONFIG_TREE_SORTED_ENUMERATION);
+    const { assert!(WORKLOAD_CONFIG_TREES_ARE_READ_ONLY) };
+    const { assert!(WORKLOAD_CONFIG_TREE_DETERMINISTIC_QIDS) };
+    const { assert!(WORKLOAD_CONFIG_TREE_SORTED_ENUMERATION) };
 
     let rootfs = GuestWorkloadConfigTreeRef::read_only_rootfs(
         blob("rootfs-workload-config-v1"),

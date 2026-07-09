@@ -12,6 +12,7 @@
   };
 
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   payloadTest = builtins.readFile ../../crates/crucible/tests/event_log_payload.rs;
@@ -135,16 +136,18 @@
         needle = "entry.payload.kind";
       }
       {
-        label = "diagnostic observational catalog class";
-        needle = "\"diagnostic\" => Some(SchedulerEventLogClass::Observational)";
-      }
-      {
         label = "diagnostic observational class value";
         needle = "SchedulerEventLogClass::Observational";
       }
       {
         label = "level derived independently";
         needle = "SchedulerEventLogPayload::Diagnostic(diagnostic) => diagnostic.level";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/event_catalog.rs" eventCatalog [
+      {
+        label = "diagnostic observational catalog class";
+        needle = "kind: \"diagnostic\",\n        class: SchedulerEventLogClass::Observational,";
       }
     ]
     ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
@@ -166,7 +169,7 @@
       }
       {
         label = "causal projection entry comparator";
-        needle = "fn causal_event_log_entries_match";
+        needle = "fn event_log_causal_projection_prefixes_match";
       }
       {
         label = "replay divergence uses projection";

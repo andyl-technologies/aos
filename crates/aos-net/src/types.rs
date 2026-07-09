@@ -47,6 +47,9 @@ impl std::fmt::Debug for TransferBody {
     }
 }
 
+/// Callback invoked for each streamed transfer chunk.
+pub type TransferCallback = dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync;
+
 /// Where to write the transfer output.
 pub enum TransferOutput {
     /// Write to a local file (supports resume).
@@ -54,7 +57,7 @@ pub enum TransferOutput {
     /// Buffer the entire response in memory and return in `TransferResult::body`.
     Memory,
     /// Stream chunks to a callback.
-    Callback(Box<dyn Fn(&[u8]) -> anyhow::Result<()> + Send + Sync>),
+    Callback(Box<TransferCallback>),
 }
 
 impl std::fmt::Debug for TransferOutput {

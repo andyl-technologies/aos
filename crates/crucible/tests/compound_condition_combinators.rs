@@ -1,6 +1,8 @@
 //! Checks T-TRIG-9 compound condition combinators and `Once` latching.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 mod support;
 

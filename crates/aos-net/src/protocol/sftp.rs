@@ -10,6 +10,7 @@
 //! - SSH key + agent + password authentication
 //! - Idle session eviction
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
@@ -43,7 +44,7 @@ struct CachedSession {
 /// pool.
 pub struct SftpProtocol {
     /// Cached sessions keyed by "host:port".
-    sessions: Mutex<std::collections::HashMap<String, CachedSession>>,
+    sessions: Mutex<BTreeMap<String, CachedSession>>,
     /// Idle timeout for cached sessions.
     idle_timeout: Duration,
 }
@@ -52,7 +53,7 @@ impl SftpProtocol {
     /// Create a new SFTP protocol handler with default idle timeout (90s).
     pub fn new() -> Self {
         Self {
-            sessions: Mutex::new(std::collections::HashMap::new()),
+            sessions: Mutex::new(BTreeMap::new()),
             idle_timeout: Duration::from_secs(90),
         }
     }
@@ -60,7 +61,7 @@ impl SftpProtocol {
     /// Create a new SFTP protocol handler with a custom idle timeout.
     pub fn with_idle_timeout(idle_timeout: Duration) -> Self {
         Self {
-            sessions: Mutex::new(std::collections::HashMap::new()),
+            sessions: Mutex::new(BTreeMap::new()),
             idle_timeout,
         }
     }
@@ -95,6 +96,7 @@ impl SftpProtocol {
     }
 
     /// Get or create an SSH session for the given host, evicting idle sessions.
+    #[allow(clippy::disallowed_methods)]
     fn get_session(
         &self,
         host: &str,

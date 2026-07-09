@@ -1,6 +1,8 @@
 //! Checks T-OBS-14 assertion-proximity event-log projection.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, Checkpoint, CheckpointKind, Configuration,
@@ -134,15 +136,15 @@ fn assertion_proximity_minimums_are_bucketed_by_quantifier_and_node() {
         ])
     );
     assert_ne!(
-        assertion_proximity_fingerprint_from_event_log(&[sometimes.clone()]),
+        assertion_proximity_fingerprint_from_event_log(std::slice::from_ref(&sometimes)),
         assertion_proximity_fingerprint_from_event_log(&[sometimes.clone(), eventually_better])
     );
     assert_ne!(
-        assertion_proximity_fingerprint_from_event_log(&[node_a.clone()]),
+        assertion_proximity_fingerprint_from_event_log(std::slice::from_ref(&node_a)),
         assertion_proximity_fingerprint_from_event_log(&[node_a.clone(), node_b])
     );
     assert_ne!(
-        assertion_proximity_fingerprint_from_event_log(&[sometimes.clone()]),
+        assertion_proximity_fingerprint_from_event_log(std::slice::from_ref(&sometimes)),
         assertion_proximity_fingerprint_from_event_log(&[sometimes, node_a])
     );
 }

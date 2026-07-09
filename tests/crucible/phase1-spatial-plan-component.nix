@@ -86,7 +86,7 @@
       }
       {
         label = "plan material helper";
-        needle = "fn plan_material(entries: &[PlanEntry]) -> String";
+        needle = "fn plan_material(plan: &Plan) -> String";
       }
       {
         label = "plan entry material helper";

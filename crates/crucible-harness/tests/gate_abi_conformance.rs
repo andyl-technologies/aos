@@ -7,6 +7,8 @@ use crucible_harness::gate_targets::gate_targets;
 use crucible_harness::{GateStatus, find_gate};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::enum_variant_names)]
 enum BoundaryAbi {
     ShmemLayoutAbi,
     GuestHostProtocolAbi,

@@ -30,6 +30,7 @@
     cadence = 4096;
     requireGuestPass = false;
     stopAt = 16384;
+    memoryMib = 128;
     vcpuCount = 2;
   };
 

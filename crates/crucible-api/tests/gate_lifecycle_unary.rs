@@ -1,6 +1,8 @@
 //! API-side checks for discovery and lifecycle unary methods.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, Decision, DeliveryOrderDecision, QuantumLoop,
@@ -343,8 +345,8 @@ async fn create_session_rejects_inline_form_identity_mismatch_without_side_effec
     assert_eq!(
         error,
         LifecycleApiError::InlineScenarioIdentityMismatch {
-            expected: advertised,
-            actual,
+            expected: Box::new(advertised),
+            actual: Box::new(actual),
         },
     );
     assert_eq!(control_plane.session_count(), 0);

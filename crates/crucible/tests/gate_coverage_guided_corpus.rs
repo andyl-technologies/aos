@@ -1,6 +1,8 @@
 //! Gates durable corpus management for coverage-guided fuzzing.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -95,7 +97,7 @@ fn gate_coverage_guided_corpus_persists_replay_artifacts() -> Result<(), Box<dyn
         assert_eq!(entry.scenario, replay.scenario);
         assert_eq!(entry.schedule, replay.schedule);
         assert_eq!(entry.replayed_state, replay.state);
-        assert_eq!(entry.energy > 0, true);
+        assert!(entry.energy > 0);
     }
 
     Ok(())

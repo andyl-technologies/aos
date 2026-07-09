@@ -592,7 +592,9 @@ event log (18, 19) — the single most common debugging entry point, the place t
 property broke. A **divergence-bisection coordinate** `(node, icount, kind)` (24, the
 output of `gate:divergence-bisect`) is directly usable as a `goto` target: the
 bisector already pins a divergence to a precise icount-stamped event-log coordinate
-(19 §19.6.2), which is exactly what the resolver consumes.
+(19 §19.6.2), which is exactly what the resolver consumes. Reverse-continue and the
+bisecting resolver share this path, localizing any divergence by bisection before
+handing the debugger a replay-oracle-checked coordinate.
 
 And the loop closes with triage ergonomics: a **non-passing run's failure footer**
 (the CLI's failure rendering, 23 §4) MUST print a **copy-pasteable

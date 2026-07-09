@@ -667,17 +667,14 @@
         "assert_spsc_ring_proptest_properties("
       ];
     }
-  ];
-
-  plannedSurfaces = [
     {
       id = "protocol-codec";
       sourcePath = "crates/crucible-protocol/src/lib.rs";
       testPath = "crates/crucible-protocol/tests/gate_abi_conformance.rs";
-      status = "planned";
+      status = "active";
       instrumentation = "separate-deterministic-build";
-      activationMarkers = protocolCodecActivationMarkers;
-      activationSourceRoots = ["crates/crucible-protocol/src"];
+      activationMarkers = [];
+      activationSourceRoots = [];
       requiredMarkers = [
         "assert_protocol_codec_fuzz_corpus("
         "assert_decode_encode_roundtrip("
@@ -687,16 +684,24 @@
       id = "reproduction-artifact-serializer";
       sourcePath = "crates/crucible/src/lib.rs";
       testPath = "crates/crucible/tests/gate_replay_oracle.rs";
-      status = "planned";
+      status = "active";
       instrumentation = "separate-deterministic-build";
-      activationMarkers = reproductionArtifactActivationMarkers;
-      activationSourceRoots = ["crates/crucible/src"];
+      activationMarkers = [];
+      activationSourceRoots = [];
       requiredMarkers = [
         "assert_reproduction_artifact_roundtrip_coverage("
         "assert_reproduction_artifact_error_variant_coverage("
       ];
     }
   ];
+
+  # protocol-codec and reproduction-artifact-serializer graduated from planned to
+  # active on 2026-07-09: both determinism-core surfaces are now implemented (their
+  # activation markers are present in source) and their coverage assertions are
+  # measured by the separate-deterministic-build coverageMeasurement profile, so they
+  # are promoted into activeSurfaces below. No determinism-core surface remains merely
+  # planned.
+  plannedSurfaces = [];
 
   requiredSurfaceIds = [
     "scheduler-quantum-loop"

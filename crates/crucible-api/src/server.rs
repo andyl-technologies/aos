@@ -846,6 +846,8 @@ fn parse_optional_epoch_line(
         .map_err(|error| format!("invalid integer `{value}` for `{prefix}`: {error}"))
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn parse_session_command(
     line: Option<&str>,
     prefix: &'static str,
@@ -1156,7 +1158,7 @@ fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
 }
 
 fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(format!("hex string has odd length {}", value.len()));
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);
@@ -2000,6 +2002,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
 mod tests {
     use std::error::Error;
 

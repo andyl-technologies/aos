@@ -73,8 +73,8 @@
         needle = "RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT";
       }
       {
-        label = "single exec outside sim";
-        needle = "return rr_crucible_sim_mode() ? RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT : 1";
+        label = "single exec outside sim or multi-vCPU sim";
+        needle = "if (!rr_crucible_sim_mode() || rr_cpu_count() > 1)";
       }
       {
         label = "batch runner";
@@ -197,9 +197,11 @@ in
               -o phase1-qemu-sim-batch-tcg-exec
             ./phase1-qemu-sim-batch-tcg-exec > "$out/qemu-sim-batch-tcg-exec-microtest"
             grep -q '^PASS$' "$out/qemu-sim-batch-tcg-exec-microtest"
-            grep -q '^sim_batch_tcg_exec_fixed_limit=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
+            grep -q '^sim_batch_tcg_exec_single_vcpu_fixed_limit=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
+            grep -q '^sim_batch_tcg_exec_multivcpu_limit_guard=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
             grep -q '^sim_batch_tcg_exec_on_off_icount_trace_identical=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
-            grep -q '^sim_batch_tcg_exec_breaks_on_halted_debug_atomic=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
+            grep -q '^sim_batch_tcg_exec_halted_returns_to_rr_handoff=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
+            grep -q '^sim_batch_tcg_exec_breaks_on_debug_atomic=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
             grep -q '^sim_batch_tcg_exec_timer_between_slots=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
             grep -q '^sim_batch_tcg_exec_shmem_ceiling_guard=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
 
@@ -219,9 +221,11 @@ in
             stock_negative_control=true
             ${qemuPackageResultLines}
             sim_batch_tcg_exec_patch_applies=true
-            sim_batch_tcg_exec_fixed_limit=true
+            sim_batch_tcg_exec_single_vcpu_fixed_limit=true
+            sim_batch_tcg_exec_multivcpu_limit_guard=true
             sim_batch_tcg_exec_on_off_icount_trace_identical=true
-            sim_batch_tcg_exec_breaks_on_halted_debug_atomic=true
+            sim_batch_tcg_exec_halted_returns_to_rr_handoff=true
+            sim_batch_tcg_exec_breaks_on_debug_atomic=true
             sim_batch_tcg_exec_timer_between_slots=true
             sim_batch_tcg_exec_shmem_ceiling_guard=true
             sim_accel_fixed_icount_tb_trace_identical=true

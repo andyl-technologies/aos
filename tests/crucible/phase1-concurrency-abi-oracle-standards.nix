@@ -22,24 +22,32 @@
       builtins.substring index needleLen haystack == needle)
     indexes;
 
+  # Character-exact scrub of Rust comments and string literals. The fold is
+  # chunked per source line (each chunk keeps its trailing newline, and the
+  # parser state — mode/depth/skip — threads across chunks) with the output
+  # string forced after every chunk. A whole-file per-character fold builds a
+  # haystack-deep chain of unforced `+` thunks and overflows the evaluator
+  # stack on large sources.
   scrubCommentsAndStrings = content: let
-    length = builtins.stringLength content;
-    charAt = index: builtins.substring index 1 content;
-    indexes = builtins.genList (index: index) length;
-    step = state: index:
-      if state.skip
-      then
-        state
-        // {
-          skip = false;
-        }
-      else let
-        ch = charAt index;
-        next =
-          if (index + 1) < length
-          then charAt (index + 1)
-          else "";
-      in
+    scrubChunk = chunkState: chunk: let
+      length = builtins.stringLength chunk;
+      charAt = index: builtins.substring index 1 chunk;
+      indexes = builtins.genList (index: index) length;
+      folded = builtins.foldl' step chunkState indexes;
+      step = state: index:
+        if state.skip
+        then
+          state
+          // {
+            skip = false;
+          }
+        else let
+          ch = charAt index;
+          next =
+            if (index + 1) < length
+            then charAt (index + 1)
+            else "";
+        in
         if state.mode == "code"
         then
           if ch == "/" && next == "/"
@@ -146,14 +154,29 @@
               else " "
             );
           };
+    in
+      # Force the accumulated output flat before the next chunk so thunk
+      # depth stays bounded by the longest line, not the whole file.
+      builtins.seq (builtins.stringLength folded.out) folded;
+    lines = lib.splitString "\n" content;
+    lineCount = builtins.length lines;
+    chunkAt = index:
+      builtins.elemAt lines index
+      + (
+        if index + 1 < lineCount
+        then "\n"
+        else ""
+      );
     result =
-      builtins.foldl' step {
+      builtins.foldl'
+      (state: index: scrubChunk state (chunkAt index))
+      {
         out = "";
         mode = "code";
         depth = 0;
         skip = false;
       }
-      indexes;
+      (builtins.genList (index: index) lineCount);
   in
     result.out;
 

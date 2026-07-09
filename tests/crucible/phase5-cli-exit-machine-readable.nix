@@ -54,12 +54,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-15 remains open";
-        needle = "- [ ] **T-CLI-15** Implement and test the uniform exit-code mapping";
+        label = "T-CLI-15 checklist complete";
+        needle = "- [x] **T-CLI-15** Implement and test the uniform exit-code mapping";
       }
       {
-        label = "T-CLI-15 machine-readable progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliExitMachineReadable`";
+        label = "T-CLI-15 machine-readable completion note";
+        needle = "Completed by `checks.crucible.phase5.cliExitMachineReadable`";
       }
       {
         label = "T-CLI-15 replay process coverage note";
@@ -70,8 +70,8 @@
         needle = "and `replay --to <SAVEPOINT>` JSONL output with parsed";
       }
       {
-        label = "T-CLI-15 remaining gate range";
-        needle = "remaining run-capable command-behavior gates (`T-CLI-10 … T-CLI-13`)";
+        label = "T-CLI-15 certified gate range";
+        needle = "certified across the run-capable command-behavior gates (`T-CLI-10 … T-CLI-13`)";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
@@ -79,15 +79,19 @@
         label = "stale T-CLI-15 remaining gate range";
         needle = "remaining run-capable command-behavior gates (`T-CLI-7 … T-CLI-13`)";
       }
+      {
+        label = "stale T-CLI-15 open blocker range";
+        needle = "remaining run-capable command-behavior gates (`T-CLI-10 … T-CLI-13`)";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 T-CLI-15 progress note";
-        needle = "`T-CLI-15` remains open. `checks.crucible.phase5.cliExitMachineReadable`";
+        label = "phase5 T-CLI-15 completion note";
+        needle = "`T-CLI-15` is green through `checks.crucible.phase5.cliExitMachineReadable`";
       }
       {
-        label = "phase5 T-CLI-15 remaining gate range";
-        needle = "command-behavior gates `T-CLI-10 … T-CLI-13` so the same contract can be";
+        label = "phase5 T-CLI-15 certified gate range";
+        needle = "command-behavior gates `T-CLI-10 … T-CLI-13` so the same contract is";
       }
       {
         label = "phase5 T-CLI-15 qemu process coverage note";

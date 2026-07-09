@@ -174,8 +174,12 @@
         needle = "fn expected_replay_identity";
       }
       {
+        # Drift: the selected QEMU file identity no longer comes from hashing
+        # the binary on disk (`content_address_file`); it is read from the
+        # artifact's embedded build marker and content-addressed from there,
+        # which is what makes the identity machine-independent.
         label = "selected QEMU file identity";
-        needle = "fn content_address_file";
+        needle = "fn read_qemu_build_marker";
       }
       {
         label = "identity exit error";

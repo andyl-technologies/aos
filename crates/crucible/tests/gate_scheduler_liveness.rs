@@ -1,6 +1,8 @@
 //! Implements `gate:scheduler-liveness` under `--features test-double`.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     BackendInput, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop,
@@ -78,7 +80,7 @@ fn gate_scheduler_liveness_declares_in_process_sim_double_backend() {
         SCHEDULER_LIVENESS_BACKEND,
         "crucible::SimDouble liveness harness"
     );
-    assert!(!SCHEDULER_LIVENESS_REQUIRES_REAL_QEMU);
+    const { assert!(!SCHEDULER_LIVENESS_REQUIRES_REAL_QEMU) };
     assert_eq!(
         FIDELITY_PROPERTIES_REQUIRING_QEMU,
         ["contract-a", "guest-non-mutation", "patch-inertness"]

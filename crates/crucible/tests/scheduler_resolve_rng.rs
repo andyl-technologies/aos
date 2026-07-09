@@ -1,6 +1,8 @@
 //! Checks T-SCHED-17 seeded probabilistic RESOLVE decisions.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Decision, DecisionRecorder, EventKey, ExactLocalEvent, FaultDecision, FaultId,

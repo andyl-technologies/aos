@@ -88,11 +88,11 @@
       }
       {
         label = "running projection uses advance window";
-        needle = "let window = self.advance_window(node, current_time, rendezvous_cap)?";
+        needle = "let window = self.advance_window(\n                    node,\n                    current_time,\n                    rendezvous_cap,\n                    topology_activation_cap,\n                )?";
       }
       {
         label = "idle projection uses idle wake helper";
-        needle = "self.idle_advance_candidate(node, rendezvous_cap)";
+        needle = "self.idle_advance_candidate(node, rendezvous_cap, topology_activation_cap)";
       }
       {
         label = "terminal states project to infinity";
@@ -112,7 +112,7 @@
       }
       {
         label = "RUN target ceiling";
-        needle = "max_advance_icount_for_horizon(candidate.target_time)";
+        needle = "node_counter_for_time_ceil(selected_runtime_node, candidate.target_time)";
       }
       {
         label = "RUN conservative overshoot guard";

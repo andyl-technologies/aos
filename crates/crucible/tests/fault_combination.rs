@@ -1,6 +1,8 @@
 //! Checks T-FAULT-5 deterministic overlapping-fault combination.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     BlockFault, CombinedFaults, CombinedNinePFailureFault, DeviceId, Fault,

@@ -1,3 +1,5 @@
+//! Verifies campaign continuity, provenance refusal, and lineage preservation.
+
 #![forbid(unsafe_code)]
 
 use std::error::Error;
@@ -156,7 +158,7 @@ fn gate_campaign_continuity_refuses_cross_provenance_and_forks_fresh_lineage()
         campaign.seed_next_run_for_provenance(&prior_manifest, &run_provenance, fresh_roots)?;
 
     let event = match decision {
-        CampaignContinuitySeedDecision::RefuseCrossProvenanceReuse(event) => event,
+        CampaignContinuitySeedDecision::RefuseCrossProvenanceReuse(event) => *event,
         CampaignContinuitySeedDecision::SeedPriorCorpus { .. } => {
             return Err("cross-provenance campaign seeded prior corpus".into());
         }

@@ -1,6 +1,8 @@
 //! Checks QEMU control-plane inertness for RFC-0010 PROTO-24.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible_protocol::{ALL_CONTROL_TAGS, RuntimeDataPlane, RuntimeDataPlaneContract};
 use crucible_qemu::{

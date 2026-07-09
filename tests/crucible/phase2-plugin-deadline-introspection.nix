@@ -126,12 +126,15 @@
         needle = "pub fn install_required_deadline_scaffold_from_qemu_info";
       }
       {
+        # The deadline scaffold now rides through the generalized runtime-api
+        # boundary scaffold, which resolves the clock-deadline symbol as a
+        # required capability.
         label = "install boundary requires deadline";
-        needle = "install_required_deadline_scaffold_from_boundary";
+        needle = "resolve_qemu_clock_deadline_symbol(),";
       }
       {
         label = "qemu install uses required deadline path";
-        needle = "install_required_deadline_scaffold_from_boundary(info, argc, argv)";
+        needle = "install_required_runtime_api_scaffold_from_boundary(info, argc, argv)";
       }
       {
         label = "ABI error carries deadline failure";

@@ -6,7 +6,8 @@
 //! chosen request-icounts, advances the clock to chosen limits, and asserts the
 //! resulting responses, their delivery icounts, and the device-visible state
 //! ([IO-27]). This module owns that harness and makes it reusable across the
-//! three structurally-different sub-nodes (block/9p ride [`IoCore`] and answer
+//! three structurally-different sub-nodes (block/9p ride
+//! [`IoCore`](crate::subnode::IoCore) and answer
 //! `submit`/`advance_to`/`next_response`; the network link has its own
 //! `emit`/`advance_to`/`next_delivery`).
 //!
@@ -17,8 +18,8 @@
 //! observation: a [`DeliveryRecord`] stream. A [`DeliveryRecord`] is the
 //! device-agnostic, byte-comparable shape of one delivered response —
 //! `(delivery_icount, src_node, seq, correlation_id, status, payload)` — drawn
-//! straight from the [`FrameDeliveryKey`](crucible_shmem::FrameDeliveryKey) total
-//! order ([IO-10], [SHM-34]). A [`Script`] is a list of [`Step`]s (enqueue a
+//! straight from the [`FrameDeliveryKey`] total order ([IO-10], [SHM-34]). A
+//! [`Script`] is a list of [`Step`]s (enqueue a
 //! request at an icount, or advance the clock to a limit); [`run_script`] drives
 //! a freshly-constructed device through a script and returns the ordered
 //! [`DeliveryLog`].
@@ -60,7 +61,8 @@
 //!
 //! The generic harness applies every [`Step::Request`] before any advance, so a
 //! link emits all of its frames while the consumer frontier is still at icount
-//! zero. This means the generic path does **not** exercise [`NetLink`]'s
+//! zero. This means the generic path does **not** exercise
+//! [`NetLink`](crate::netlink::link::NetLink)'s
 //! `guard_future` clamp-to-`frontier+1` (the one link behavior whose result
 //! depends on the consumer frontier *at emit time*, [IO-34]): that path requires
 //! emitting after the clock has already advanced past where a frame would land.
@@ -588,7 +590,7 @@ impl IdleBusyPoll {
 /// completion's `delivery_icount` is fixed at COMPUTE and the in-flight queue
 /// drains strictly by `delivery_icount <= limit` — neither the size nor the count
 /// of the advance steps can move a delivery off its exact icount ([IO-2],
-/// [IO-29]). The drain-to-quiescent loop ([`drain_to_quiescent`]) is essential
+/// [IO-29]). The drain-to-quiescent loop (`drain_to_quiescent`) is essential
 /// for block/9p, whose **bounded outbox** ([IO-32]) caps any single
 /// `advance_to`+`drain` at `outbox_capacity` records: without it the one-shot
 /// idle drain would under-report a coincident batch larger than the outbox while

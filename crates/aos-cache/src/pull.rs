@@ -44,6 +44,7 @@ use crate::resolve::resolve_installables;
 /// Returns an error if installable resolution, closure enumeration,
 /// local validity checks, bandwidth parsing, a narinfo or NAR fetch, or
 /// a `nix-store --import` invocation fails.
+#[allow(clippy::too_many_arguments, clippy::disallowed_methods)]
 pub async fn run_pull(
     printer: &Printer,
     backend: &dyn CacheBackend,

@@ -16,9 +16,11 @@
   simS11 = import ./phase0-s11.nix {
     inherit pkgs lib qemuPackage;
     accelerator = "sim";
-    cadence = 4096;
+    cadence = 65536;
+    detIpiProbe = true;
     requireGuestPass = false;
-    stopAt = 32768;
+    stopAt = 4194304;
+    memoryMib = 128;
     vcpuCount = 2;
   };
 
@@ -153,7 +155,8 @@ in
             require_line "$s11_result" "accelerator=sim"
             require_line "$s11_result" "vcpus=2"
             require_line "$s11_result" "rr_switch_quantum=4096"
-            require_line "$s11_result" "run_horizon=plugin-stop_at-32768"
+            require_line "$s11_result" "run_horizon=plugin-stop_at-4194304"
+            require_line "$s11_result" "det_ipi_probe=enabled"
             require_line "$s11_result" "extended_fingerprint_match=true"
             require_line "$s11_result" "aggregate_icount_stream_match=true"
             require_line "$s11_result" "rr_switch_trace_match=true"
@@ -227,6 +230,7 @@ in
             deterministic_ipi_queue=sim-only-inter-vcpu
             deterministic_ipi_rr_handoff=queued-drain-before-next-vcpu
             deterministic_ipi_delivery_trace=det_ipi-jsonl
+            deterministic_ipi_fixed_mode_source=trace-plugin-commanded-preemption-probe
             deterministic_ipi_events=$det_ipi_events_a
             deterministic_ipi_fixed_mode_trace=true
             deterministic_ipi_init_mode_trace=true
@@ -234,7 +238,7 @@ in
             deterministic_ipi_event_count_match=true
             deterministic_ipi_delivery_icount_trace_match=true
             deterministic_ipi_source_target_distinct=true
-            sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,stop_at=32768)
+            sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,stop_at=4194304,det_ipi_probe=enabled)
             patched_fixture_exercised=true
             stock_negative_control=true
             stock_negative_control_scope=non-sim-and-self-IPI-use-upstream-path

@@ -144,28 +144,8 @@
       needle = "reject_enabled_entropy_feature(&lower, \"rdseed\")?";
     }
     {
-      label = "kernel must distrust CPU random";
-      needle = "KernelCpuRandomTrustNotDisabled";
-    }
-    {
-      label = "duplicate CPU random trust rejected";
-      needle = "KernelCpuRandomTrustAmbiguous";
-    }
-    {
-      label = "random trust uses exact parser";
-      needle = "require_kernel_random_trust_off(";
-    }
-    {
-      label = "bootloader random trust rejected";
-      needle = "KernelTrustsBootloaderRandom";
-    }
-    {
-      label = "duplicate bootloader random trust rejected";
-      needle = "KernelBootloaderRandomTrustAmbiguous";
-    }
-    {
-      label = "kernel cmdline exact value parser";
-      needle = "fn kernel_cmdline_value";
+      label = "stock guest cmdline default (entropy sealed host-side, not via cmdline trust flags)";
+      needle = "const DEFAULT_KERNEL_CMDLINE: &str = \"console=ttyS0 reboot=k panic=1 quiet\";";
     }
     {
       label = "scenario seed in hash material";
@@ -211,12 +191,12 @@
       needle = "[\"-device\", \"virtio-rng-pci,rng=crucible-rng0\"]";
     }
     {
-      label = "missing random.trust_cpu off rejected";
-      needle = "LaunchProfileError::KernelCpuRandomTrustNotDisabled";
+      label = "guest entropy sealed host-side, not via guest cmdline trust flags";
+      needle = "fn launch_profile_accepts_any_guest_kernel_cmdline()";
     }
     {
-      label = "missing random.trust_bootloader off rejected";
-      needle = "LaunchProfileError::KernelBootloaderRandomTrustNotDisabled";
+      label = "any guest cmdline validates with host-side seals intact";
+      needle = "any guest cmdline must pass pre-spawn validation with host-side seals intact";
     }
     {
       label = "split seed rejected";
@@ -332,47 +312,6 @@
             return 0;
           }
 
-          static int cmdline_value_is_exactly_once(
-              const char *cmdline,
-              const char *key,
-              const char *expected) {
-            size_t key_len = strlen(key);
-            size_t expected_len = strlen(expected);
-            int matches = 0;
-            int bad_value = 0;
-            const char *cursor = cmdline;
-
-            while (*cursor != '\0') {
-              while (*cursor == ' ' || *cursor == '\n' || *cursor == '\t') {
-                cursor++;
-              }
-
-              const char *start = cursor;
-              while (*cursor != '\0' && *cursor != ' ' && *cursor != '\n' && *cursor != '\t') {
-                cursor++;
-              }
-              size_t len = (size_t)(cursor - start);
-
-              if (len == key_len && memcmp(start, key, key_len) == 0) {
-                matches++;
-                bad_value = 1;
-              } else if (
-                  len > key_len &&
-                  memcmp(start, key, key_len) == 0 &&
-                  start[key_len] == '=') {
-                const char *value = start + key_len + 1;
-                size_t value_len = len - key_len - 1;
-
-                matches++;
-                if (value_len != expected_len || memcmp(value, expected, expected_len) != 0) {
-                  bad_value = 1;
-                }
-              }
-            }
-
-            return matches == 1 && bad_value == 0 ? 0 : -1;
-          }
-
           static int read_file_flags(const char *path, unsigned char *buf, size_t len,
                                      int flags) {
             int fd = open(path, O_RDONLY | flags);
@@ -447,12 +386,10 @@
               fputs("invalid crucible_seed= on kernel cmdline\n", stderr);
               return -1;
             }
-            if (cmdline_value_is_exactly_once(cmdline, "random.trust_cpu", "off") != 0 ||
-                cmdline_value_is_exactly_once(cmdline, "random.trust_bootloader", "off") != 0) {
-              fputs("kernel cmdline does not pin random trust settings off\n", stderr);
-              return -1;
-            }
-            puts("KERNEL_RANDOM_TRUST=random.trust_cpu=off,random.trust_bootloader=off");
+            /* D-31: the guest cmdline is stock. Determinism is sealed host-side
+               (seeded fw_cfg entropy + rng-builtin, fixed -cpu without
+               RDRAND/RDSEED, -icount), so the guest does not need to pin
+               random.trust_* off. We only require the seed to be present. */
             return 0;
           }
 
@@ -940,7 +877,7 @@ in
                   -device virtio-rng-pci,rng=crucible-rng0 \
                   -kernel "$vmlinuz" \
                   -initrd "$INITRAMFS" \
-                  -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet random.trust_cpu=off random.trust_bootloader=off net.ifnames=0 crucible_seed=$scenario_seed crucible.workload=httpget" \
+                  -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0 crucible_seed=$scenario_seed crucible.workload=httpget" \
                   -chardev file,id=serial0,path=serial.log \
                   -serial chardev:serial0 \
                   -no-reboot
@@ -964,11 +901,6 @@ in
                 || {
                   cat "$run_dir/serial.log" >&2
                   fail "guest $label did not verify fw_cfg seed"
-                }
-              grep -q 'KERNEL_RANDOM_TRUST=random.trust_cpu=off,random.trust_bootloader=off' "$run_dir/serial.log" \
-                || {
-                  cat "$run_dir/serial.log" >&2
-                  fail "guest $label did not confirm random trust settings"
                 }
               grep -q 'WORKLOAD=crucible.workload=httpget' "$run_dir/serial.log" \
                 || {
@@ -1052,7 +984,8 @@ in
             guest_csprng_same_seed_reproducible=true
             guest_csprng_different_seed_changes=true
             cpu_entropy_features=rdrand-disabled,rdseed-disabled
-            kernel_random_trust=random.trust_cpu=off,random.trust_bootloader=off
+            guest_kernel_cmdline=stock-no-entropy-suppression
+            guest_entropy_seal=host-side-qemu-icount-seeded-entropy
             host_guest_entropy_sources=disabled
             host_adversary=jitter-load-second-run
             scenario_identity_includes=guest-entropy-seed

@@ -45,12 +45,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-11 remains open";
-        needle = "- [ ] **T-CLI-11** Implement `fork`";
+        label = "T-CLI-11 checklist complete";
+        needle = "- [x] **T-CLI-11** Implement `fork`";
       }
       {
-        label = "T-CLI-11 progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliForkWorkflow`";
+        label = "T-CLI-11 completion note";
+        needle = "Completed by `checks.crucible.phase5.cliForkWorkflow`";
       }
       {
         label = "T-CLI-11 local child runner progress";
@@ -79,8 +79,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI fork progress note";
-        needle = "`T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently";
+        label = "phase5 CLI fork completion note";
+        needle = "`T-CLI-11` is green through `checks.crucible.phase5.cliForkWorkflow`";
       }
       {
         label = "phase5 CLI fork override progress";

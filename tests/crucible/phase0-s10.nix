@@ -53,16 +53,19 @@ in
             fail "S10 fallback expected qemu.nix to omit aarch64-softmmu"
           fi
 
-          if grep -F -q -- 'crucible-guest' Cargo.toml; then
-            fail "S10 fallback expected no crucible-guest workspace member"
-          fi
+          # The white-box guest emitter has landed since the original spike
+          # run: it is a workspace member and encodes the aarch64 doorbell
+          # instruction ABI. The aarch64 fallback now rests solely on the
+          # missing aarch64 QEMU target and doorbell trap.
+          grep -F -q -- 'crucible-guest' Cargo.toml \
+            || fail "S10 expected the crucible-guest workspace member"
           if grep -E -q 'whitebox|doorbell|aarch64|BRK|HLT|hvc' crucible-qemu-trace-plugin.c; then
             fail "S10 fallback expected production trace plugin to omit aarch64 doorbell handling"
           fi
 
           qemu_aarch64_softmmu_target=false
           qemu_system_aarch64_available=false
-          crucible_guest_workspace_member=false
+          crucible_guest_workspace_member=true
           production_aarch64_doorbell_trap_implemented=false
           whitebox_on_trap_tested=false
           whitebox_off_inertness_tested=false

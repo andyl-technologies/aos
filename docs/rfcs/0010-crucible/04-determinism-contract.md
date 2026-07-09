@@ -315,12 +315,13 @@ differ.
 | E4 | Timestamp counter (`RDTSC`/`RDTSCP`) | Guest reads a host-correlated cycle counter | Under TCG `-icount`, TSC is derived from the instruction counter; the fixed `-cpu` plus icount makes it a pure function of icount | launch |
 | E5 | `gettimeofday`/`clock_gettime`/RTC reads | Guest reads wall-clock-derived time | RTC/wall-clock base is a fixed, configured epoch; the clock advances only via icount (4.3); no host time enters | launch + patch |
 | E6 | Emulated timer devices (LAPIC, PIT, RTC, HPET) | Timer fire ordering/timing relative to instructions | All are virtual-clock-driven; the virtual clock is icount-derived, so deadlines map to deterministic icounts | launch |
-| E7 | Interrupt delivery timing | An interrupt taken one instruction earlier/later forks the path | TCG delivers interrupts at deterministic translation-block boundaries under icount; the virtual clock that schedules them is icount-derived | launch |
+| E7 | CPU/timer interrupt delivery timing | An interrupt taken one instruction earlier/later forks the path | TCG delivers CPU/timer interrupts at deterministic translation-block boundaries under icount; the virtual clock that schedules them is icount-derived | launch |
+| E7a | Asynchronous device-completion delivery timing | A virtio-rng entropy completion is serviced from a host-scheduled main-loop bottom half, so its completion interrupt lands at a host-timing-dependent instruction and forks the path — even when the completion payload (seeded entropy) is byte-pure. Inherent to upstream icount, which pins virtual *time* but not the *icount* of an async completion. (virtio-blk/9p completions do not share this hazard: their delivery icount is already pinned by the crucible blk/9p shmem substrate, patches 0015-0019.) | Deliver the virtio-rng completion synchronously on the requesting vCPU thread at the request icount: `crucible-det-virtio-ioeventfd` disables ioeventfd under icount for the virtio-rng device so its virtqueue kick dispatches synchronously (block/9p keep the stock async kick their shmem substrate assumes), and `crucible-det-rng-delivery` completes builtin-RNG entropy inline instead of via a bottom half. No QEMU record/replay (NG-6); modeled completion latency, if ever wanted, belongs in the IO sub-node (15), not here. Verified by S6/T-RISK-6 and guest-entropy-launch. | patch |
 | E8 | Guest entropy pool seeding (`getrandom`, `/dev/urandom`, `random.trust_cpu`) | Guest CSPRNG seeded from true entropy diverges | Seed the guest deterministically via firmware (`fw_cfg`) random-seed and/or controlled RDRAND; the seed is a pure function of the scenario seed (4.7) | launch |
 | E9 | QEMU-internal use of host RNG (`qemu_guest_getrandom`, glib `GRand`) | QEMU device models / MACs / IDs draw from host entropy, perturbing device state in `T` | Seed QEMU's guest-random and glib PRNG deterministically from the run seed (`qemu-deterministic-getrandom`, `qemu-deterministic-glib-prng`) | patch |
 | E10 | CPU model variation | Different host CPUs expose different feature bits / instruction semantics | Fixed `-cpu <model>` (never `-cpu host`); the model is part of the scenario hash | launch |
-| E11 | Kernel address-space randomization (KASLR) | Randomized kernel base changes addresses throughout `T` | `nokaslr` is the shipped conservative default. S6/T-RISK-6 verified KASLR can be reproducible with fully seeded boot entropy, so re-enabling it is allowed only as a recorded per-image capability, not a global default flip. | launch |
-| E12 | Userspace ASLR (`norandmaps`) | Randomized mmap/stack/brk bases change `T` | `norandmaps` is the shipped conservative default. S6/T-RISK-6 verified userspace ASLR can be reproducible with fully seeded boot entropy, so re-enabling it is allowed only as a recorded per-image capability, not a global default flip. | launch |
+| E11 | Kernel address-space randomization (KASLR) | Randomized kernel base changes addresses throughout `T` | KASLR stays **enabled** (stock guest cmdline). Its randomization is a pure function of the boot entropy, which is itself seeded deterministically host-side (E8/E9: `fw_cfg` random-seed, controlled RDRAND, no host-entropy passthrough), so the kernel base is reproducible across replays. S6/T-RISK-6 verified this bit-stability under fully seeded boot entropy. Crucible neither adds nor requires `nokaslr`. | launch |
+| E12 | Userspace ASLR (`norandmaps`) | Randomized mmap/stack/brk bases change `T` | ASLR stays **enabled** (stock guest cmdline). Userspace randomization derives from the same deterministically seeded boot entropy (E8/E9), so mmap/stack/brk bases are reproducible across replays. S6/T-RISK-6 verified this bit-stability under fully seeded boot entropy. Crucible neither adds nor requires `norandmaps`. | launch |
 | E13 | Multi-vCPU instruction interleaving (MTTCG excluded; multi-vCPU = single-threaded RR-TCG) | Concurrent vCPUs would interleave nondeterministically under MTTCG (`thread=multi`) | MTTCG is excluded; all `N` vCPUs time-share ONE host thread under single-threaded round-robin TCG with `-icount`, switching at a fixed content-addressed `rr_switch_quantum` in node-icount (never QEMU's adaptive `rr_quantum`, never realtime). The interleaving is then a pure function of `(image, cmdline, seed, I, rr_switch_quantum, N)` | launch + patch |
 | E14 | Host thread scheduling of QEMU threads | Order of QEMU's own threads (vCPU, iothread, main loop) affects timing | Single vCPU plus icount makes guest progress independent of host thread order; the plugin's synchronous time-control handshake forces a defined order at idle/advance points | plugin + patch |
 | E15 | Floating-point nondeterminism | FP results vary by rounding mode / FMA contraction / library | Under a fixed `-cpu` and TCG soft-float, FP is a deterministic function of inputs; cross-host reproducibility holds because TCG emulates, not delegates to host FPU. No action beyond E10 | (covered by E10) |
@@ -525,11 +526,12 @@ disposition, and (where unresolved) flagged as a spike forward-referencing
   fat checkpoint. Until verified, snapshot-based resume is gated behind a spike.
   *Gate:* `gate:replay-oracle`. *Spec:* §4.9 (E20), forward-ref 30.
 
-- **[DET-33]** **KASLR/ASLR necessity (spike).** S6/T-RISK-6 determined that
-  kernel/userspace randomization can be bit-stable when all boot entropy (E8) is
-  seeded deterministically. The default still ships with randomization disabled
-  (E11, E12); re-enabling it is a recorded per-image capability, not a global
-  default flip. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §4.9 (E11, E12),
+- **[DET-33]** **KASLR/ASLR reproducibility (spike, resolved).** S6/T-RISK-6
+  determined that kernel/userspace randomization is bit-stable when all boot
+  entropy (E8/E9) is seeded deterministically host-side. Crucible therefore
+  ships **stock guest cmdlines with KASLR/ASLR enabled** (E11, E12) and delivers
+  determinism entirely host-side; it neither adds nor requires `nokaslr`/
+  `norandmaps`. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §4.9 (E11, E12),
   forward-ref 30.
 
 - **[DET-34]** **Producer→consumer visibility is icount-not-wallclock.** The
@@ -664,11 +666,13 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   (`fw_cfg` random-seed) / controlled RDRAND as a pure function of the scenario
   seed; verify no path seeds the guest CSPRNG from host entropy. — satisfies
   [DET-22], [DET-18] (E8); spec §4.6 (E8).
-- [x] **T-DET-6** Ship `nokaslr`/`norandmaps` as the conservative default and
-  file the spike on whether they are required given fully-seeded boot entropy.
-  Phase 0 retired [RISK-13] with `T-RISK-6`, recording that randomization may be
-  enabled as a per-image capability but is not a global default flip. —
-  satisfies [DET-18] (E11, E12), [DET-33]; spec §4.6 (E11, E12), §4.9.
+- [x] **T-DET-6** Ship **stock guest cmdlines** with KASLR/ASLR enabled and
+  deliver their reproducibility host-side via fully-seeded boot entropy (E8/E9);
+  Crucible neither adds nor requires `nokaslr`/`norandmaps`, and guest
+  entropy-suppression flags are not part of the launch contract (a guest may
+  still set them itself). Phase 0 retired [RISK-13] with `T-RISK-6`, which proved
+  KASLR/ASLR bit-stability under seeded boot entropy. — satisfies [DET-18] (E11,
+  E12), [DET-33]; spec §4.6 (E11, E12), §4.9.
 - [x] **T-DET-7** Implement Contract A in isolation: a single-VM driver that
   feeds an icount-stamped recorded input list `I` and runs `run` with no
   scheduler/transport. — satisfies [DET-5], [DET-1]; spec §4.2.1.

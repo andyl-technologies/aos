@@ -21,6 +21,7 @@ in
         || lib.hasPrefix "${repoRootString}/crates" pathString
         || lib.hasPrefix "${repoRootString}/docs" pathString
         || pathString == "${repoRootString}/pkgs"
+        || pathString == "${repoRootString}/pkgs/default.nix"
         || pathString == "${repoRootString}/pkgs/emulation"
         || pathString == "${repoRootString}/pkgs/emulation/qemu.nix"
         || pathString == "${repoRootString}/pkgs/emulation/qemu-patches"

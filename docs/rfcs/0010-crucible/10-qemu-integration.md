@@ -178,12 +178,15 @@ the requirements):
   driven from shmem. *Gate:* `gate:any-guest`, `gate:replay-oracle`. *Spec:*
   §10.2; satisfies [DET-16], [INV-5], references 15.
 
-- **[QEMU-13]** **Conservative randomization defaults.** The kernel cmdline MUST
-  carry the conservative `nokaslr`/`norandmaps` defaults (E11/E12) pending the
-  KASLR/ASLR-necessity spike ([DET-33]); whether they can be relaxed once boot
-  entropy is fully seeded is the spike's question. The cmdline (including these
-  flags) is part of the content hash. *Gate:* `gate:single-vm-fingerprint`.
-  *Spec:* §10.2; satisfies [DET-18] (E11, E12), [DET-33].
+- **[QEMU-13]** **Stock guest cmdline; host-side entropy sealing.** The kernel
+  cmdline MUST be the guest's own **stock** cmdline: Crucible MUST NOT add
+  `nokaslr`/`norandmaps` or any other guest entropy-suppression flag, and MUST
+  NOT require the guest to carry them. KASLR/ASLR (E11/E12) stay enabled and are
+  reproducible because all boot entropy is seeded deterministically host-side
+  (E8/E9: `fw_cfg` random-seed, controlled RDRAND, no host-entropy passthrough),
+  as verified by S6/T-RISK-6 ([DET-33]). The cmdline (whatever the guest sets) is
+  part of the content hash. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §10.2;
+  satisfies [DET-18] (E11, E12), [DET-33].
 
 - **[QEMU-14]** **Plugin + sim activation.** The host MUST load the in-VM plugin
   (`-plugin <crucible-qemu-plugin>,...`, 12) and activate sim mode so the
@@ -211,7 +214,7 @@ qemu-system-x86_64 \
   -seed <scenario-seed>                # QEMU-10 seeded QEMU-internal PRNG (E9)
   -drive driver=<cow-overlay>,...      # QEMU-12 CoW disk (block sub-node, 15)
   -netdev <shmem-frame-transport>,...  # QEMU-11 frames via shmem, not host net
-  -kernel <kernel> -append "<cmdline> nokaslr norandmaps"  # QEMU-13
+  -kernel <kernel> -append "<stock-guest-cmdline>"  # QEMU-13 stock cmdline; entropy sealed host-side (E8/E9)
   -plugin <crucible-qemu-plugin>,slot=<i>,...  # QEMU-14 plugin + sim activation
   -qmp unix:<path>,server=on,wait=off  # QMP control socket (§10.4)
   # plugin IPC + shmem + wake fds passed by fd-mapping (§10.5, 14)
@@ -751,7 +754,8 @@ determinism contract (04).
   `-icount shift=N`, `-accel tcg,thread=single` with `-smp N`, fixed `-cpu` (no
   RDRAND/RDSEED, never `host`), fixed `-machine`/`-m`/reset, icount-derived RTC,
   seeded `fw_cfg`/virtio-rng, seeded internal PRNG, CoW disks,
-  `nokaslr`/`norandmaps`, plugin load + sim activation; fold the whole command
+  the guest's stock cmdline (no `nokaslr`/`norandmaps` added or required),
+  plugin load + sim activation; fold the whole command
   line into the scenario content hash. — satisfies [QEMU-3], [QEMU-4], [QEMU-5],
   [QEMU-6], [QEMU-7], [QEMU-8], [QEMU-9], [QEMU-10], [QEMU-12], [QEMU-13],
   [QEMU-14]; spec §10.2.

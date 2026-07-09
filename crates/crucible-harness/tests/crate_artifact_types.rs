@@ -3,8 +3,8 @@
 //! RFC-0010 file 27 fixes the Rust artifact surface before later phases add
 //! implementation detail: only the QEMU plugin builds a `cdylib`, the CLI
 //! builds the public `crucible` binary, `crucible-guest` builds its optional
-//! in-guest emitter binary, and every other Crucible package remains a library
-//! crate.
+//! in-guest emitter binary, `crucible-cas` builds the fleet-store binary, and
+//! every other Crucible package remains a library crate.
 
 #![forbid(unsafe_code)]
 
@@ -19,6 +19,7 @@ use toml::Value;
 enum ExpectedArtifact {
     CdylibPlugin,
     CliBinary,
+    FleetStoreBinary,
     GuestEmitter,
     Library,
 }
@@ -37,6 +38,10 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
     ArtifactSpec {
         package: "crucible-assert",
         expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-cas",
+        expected: ExpectedArtifact::FleetStoreBinary,
     },
     ArtifactSpec {
         package: "crucible-shmem",
@@ -225,6 +230,34 @@ fn artifact_type_rules_reject_extra_or_missing_outputs() -> Result<(), Box<dyn E
         "extra guest emitter binary target should be rejected: {guest_findings:?}"
     );
 
+    let cas_with_extra_bin: Value = r#"
+        [package]
+        name = "crucible-cas"
+        version = "0.1.0"
+        edition = "2024"
+
+        [[bin]]
+        name = "crucible-fleet-store"
+        path = "src/bin/crucible-fleet-store.rs"
+
+        [[bin]]
+        name = "crucible-fleet-store-debug"
+        path = "src/bin/debug.rs"
+    "#
+    .parse()?;
+    let cas_findings = artifact_type_failures(
+        &ArtifactSpec {
+            package: "crucible-cas",
+            expected: ExpectedArtifact::FleetStoreBinary,
+        },
+        &cas_with_extra_bin,
+        &PackageLayout::fleet_store(),
+    );
+    assert!(
+        contains_finding(&cas_findings, "exactly one [[bin]]"),
+        "extra fleet-store binary target should be rejected: {cas_findings:?}"
+    );
+
     let implicit_bin_findings = artifact_type_failures(
         &ArtifactSpec {
             package: "crucible-api",
@@ -283,6 +316,14 @@ impl PackageLayout {
             has_lib_rs: true,
             has_main_rs: true,
             has_src_bin_dir: false,
+        }
+    }
+
+    fn fleet_store() -> Self {
+        Self {
+            has_lib_rs: true,
+            has_main_rs: false,
+            has_src_bin_dir: true,
         }
     }
 }
@@ -357,6 +398,57 @@ fn artifact_type_failures(
             if layout.has_src_bin_dir {
                 failures.push(format!(
                     "{}: CLI must not add extra implicit binary targets under src/bin",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::FleetStoreBinary => {
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: fleet-store package must expose a library target",
+                    spec.package
+                ));
+            }
+            for crate_type in lib_crate_types(manifest) {
+                if !matches!(crate_type.as_str(), "lib" | "rlib") {
+                    failures.push(format!(
+                        "{}: forbidden crate-type `{}` for fleet-store library target",
+                        spec.package, crate_type
+                    ));
+                }
+            }
+
+            let bins = bin_targets(manifest);
+            if bins.len() != 1 {
+                failures.push(format!(
+                    "{}: fleet-store package must declare exactly one [[bin]] target, found {}",
+                    spec.package,
+                    bins.len()
+                ));
+            } else {
+                let bin = &bins[0];
+                if bin.name.as_deref() != Some("crucible-fleet-store") {
+                    failures.push(format!(
+                        "{}: fleet-store [[bin]] name must be `crucible-fleet-store`, found {:?}",
+                        spec.package, bin.name
+                    ));
+                }
+                if bin.path.as_deref() != Some("src/bin/crucible-fleet-store.rs") {
+                    failures.push(format!(
+                        "{}: fleet-store [[bin]] path must be `src/bin/crucible-fleet-store.rs`, found {:?}",
+                        spec.package, bin.path
+                    ));
+                }
+            }
+            if layout.has_main_rs {
+                failures.push(format!(
+                    "{}: fleet-store package must not have an implicit binary target at src/main.rs",
+                    spec.package
+                ));
+            }
+            if !layout.has_src_bin_dir {
+                failures.push(format!(
+                    "{}: fleet-store package must keep its binary under src/bin",
                     spec.package
                 ));
             }

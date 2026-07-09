@@ -189,7 +189,7 @@
     ++ failuresFor "crates/crucible-device/src/netlink/link.rs" netlinkLink [
       {
         label = "serialization delay applied as integer";
-        needle = "let serialization = serialization_delay_ns";
+        needle = "let serialization = self.faults.serialization_delay_ns(len);";
       }
       {
         label = "integer checked serialization addition";

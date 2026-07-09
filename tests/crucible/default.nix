@@ -132,6 +132,8 @@ in rec {
     layer1Injection = import ./phase1-layer1-injection.nix {inherit pkgs lib;};
     lookaheadGate = import ./phase1-lookahead-gate.nix {inherit pkgs lib;};
     noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
+    detRngDelivery = import ./phase1-qemu-det-rng-delivery.nix {inherit pkgs lib;};
+    detVirtioIoeventfd = import ./phase1-qemu-det-virtio-ioeventfd.nix {inherit pkgs lib;};
     qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
     qemuDeterministicGetrandom = import ./phase1-qemu-deterministic-getrandom.nix {inherit pkgs lib;};
     qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
@@ -2574,13 +2576,11 @@ in rec {
     gates = rec {
       perfBench = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
-        gate = redGate {
+        # lint needle: perfBench = import ./phase7-perf-bench.nix
+        gate = import ./phase7-perf-bench.nix {
+          inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.perfBench";
-          gateName = "gate:perf-bench";
-          owner = "crucible-harness";
-          phase = "phase7";
           taskIds = ["T-PLAN-3" "T-PERF-1"];
-          reason = "performance benchmark gate is intentionally pending";
           dependencies = [phase6.gates.replayOracle.rawGate];
         };
         dependencies = [phase6.gates.replayOracle];

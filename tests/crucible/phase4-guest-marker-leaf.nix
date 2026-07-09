@@ -81,7 +81,7 @@
       }
       {
         label = "guest marker TOML";
-        needle = "PredicateToml::GuestMarker";
+        needle = "PredicateTomlKind::GuestMarker";
       }
       {
         label = "guest marker binary tag";

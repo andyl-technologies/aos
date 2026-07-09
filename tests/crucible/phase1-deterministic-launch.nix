@@ -53,6 +53,45 @@
     )
     requirements;
 
+  # The any-guest contract ([G-2], D-31): the launch layer MUST NOT bake guest
+  # entropy-suppression flags into the shipped default cmdline or gate a launch
+  # on their presence. These strings must be absent from the launch source.
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  forbiddenSourceRequirements = [
+    {
+      label = "shipped default appends nokaslr";
+      needle = "nokaslr";
+    }
+    {
+      label = "shipped default appends norandmaps";
+      needle = "norandmaps";
+    }
+    {
+      label = "shipped default forces random.trust_cpu";
+      needle = "random.trust_cpu";
+    }
+    {
+      label = "shipped default forces random.trust_bootloader";
+      needle = "random.trust_bootloader";
+    }
+    {
+      label = "launch gates on missing KASLR suppression";
+      needle = "KernelKaslrNotDisabled";
+    }
+    {
+      label = "launch gates on missing ASLR suppression";
+      needle = "UserspaceAslrNotDisabled";
+    }
+  ];
+
   sourceRequirements = [
     {
       label = "fixed non-host CPU without hardware entropy";
@@ -107,20 +146,8 @@
       needle = "pub fn write_to_dir(&self, dir: impl AsRef<Path>) -> std::io::Result<PathBuf>";
     }
     {
-      label = "guest refuses CPU randomness";
-      needle = "random.trust_cpu=off";
-    }
-    {
-      label = "guest refuses bootloader randomness";
-      needle = "random.trust_bootloader=off";
-    }
-    {
-      label = "kernel randomization disabled by default";
-      needle = "nokaslr";
-    }
-    {
-      label = "userspace randomization disabled by default";
-      needle = "norandmaps";
+      label = "stock guest kernel cmdline default (no entropy suppression)";
+      needle = "const DEFAULT_KERNEL_CMDLINE: &str = \"console=ttyS0 reboot=k panic=1 quiet\";";
     }
     {
       label = "single vCPU default";
@@ -197,62 +224,6 @@
     {
       label = "host RTC rejection";
       needle = "if self.rtc_clock != \"vm\"";
-    }
-    {
-      label = "host CPU random trust rejection";
-      needle = "KernelTrustsHostCpuRandom";
-    }
-    {
-      label = "host CPU random trust must be disabled";
-      needle = "KernelCpuRandomTrustNotDisabled";
-    }
-    {
-      label = "duplicate CPU random trust rejection";
-      needle = "KernelCpuRandomTrustAmbiguous";
-    }
-    {
-      label = "exact random.trust_cpu off validation";
-      needle = "require_kernel_random_trust_off(";
-    }
-    {
-      label = "bootloader random trust rejection";
-      needle = "KernelTrustsBootloaderRandom";
-    }
-    {
-      label = "bootloader random trust must be disabled";
-      needle = "KernelBootloaderRandomTrustNotDisabled";
-    }
-    {
-      label = "duplicate bootloader random trust rejection";
-      needle = "KernelBootloaderRandomTrustAmbiguous";
-    }
-    {
-      label = "kernel cmdline exact value parser";
-      needle = "fn kernel_cmdline_value";
-    }
-    {
-      label = "KASLR enablement rejection";
-      needle = "KernelKaslrExplicitlyEnabled";
-    }
-    {
-      label = "missing nokaslr rejection";
-      needle = "KernelKaslrNotDisabled";
-    }
-    {
-      label = "ambiguous nokaslr rejection";
-      needle = "KernelKaslrFlagAmbiguous";
-    }
-    {
-      label = "missing norandmaps rejection";
-      needle = "UserspaceAslrNotDisabled";
-    }
-    {
-      label = "ambiguous norandmaps rejection";
-      needle = "UserspaceAslrFlagAmbiguous";
-    }
-    {
-      label = "bare flag parser";
-      needle = "fn require_kernel_bare_flag_once";
     }
     {
       label = "run seed scenario seed unification";
@@ -466,6 +437,14 @@
       needle = "default_launch_profile_pins_contract_a_arguments";
     }
     {
+      label = "host CPU entropy feature rejection (host-side seal, not guest cmdline)";
+      needle = "fn pre_spawn_launch_validation_rejects_host_cpu_timing_and_entropy()";
+    }
+    {
+      label = "host RDRAND enablement rejected at pre-spawn validation";
+      needle = "QemuPreSpawnLaunchValidationError::CpuEntropyFeatureEnabled { feature: \"rdrand\" }";
+    }
+    {
       label = "host entropy and timing rejection test";
       needle = "launch_profile_rejects_host_entropy_and_host_timing";
     }
@@ -526,40 +505,24 @@
       needle = "[\"-device\", \"virtio-rng-pci,rng=crucible-rng0\"]";
     }
     {
-      label = "nokaslr append assertion";
-      needle = "arg == \"nokaslr\"";
+      label = "any-guest stock cmdline pass-through test";
+      needle = "fn launch_profile_accepts_any_guest_kernel_cmdline()";
     }
     {
-      label = "norandmaps append assertion";
-      needle = "arg == \"norandmaps\"";
+      label = "guest cmdline passed through unchanged";
+      needle = "the launch profile passes the guest cmdline through unchanged";
     }
     {
-      label = "missing random.trust_cpu rejection assertion";
-      needle = "LaunchProfileError::KernelCpuRandomTrustNotDisabled";
+      label = "any cmdline validates with host-side seals intact";
+      needle = "any guest cmdline must pass pre-spawn validation with host-side seals intact";
     }
     {
-      label = "missing random.trust_bootloader rejection assertion";
-      needle = "LaunchProfileError::KernelBootloaderRandomTrustNotDisabled";
+      label = "guest-set suppression flags are equally legal (not required)";
+      needle = "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off";
     }
     {
-      label = "duplicate random.trust_cpu rejection assertion";
-      needle = "LaunchProfileError::KernelCpuRandomTrustAmbiguous";
-    }
-    {
-      label = "duplicate random.trust_bootloader rejection assertion";
-      needle = "LaunchProfileError::KernelBootloaderRandomTrustAmbiguous";
-    }
-    {
-      label = "missing nokaslr rejection assertion";
-      needle = "LaunchProfileError::KernelKaslrNotDisabled";
-    }
-    {
-      label = "missing norandmaps rejection assertion";
-      needle = "LaunchProfileError::UserspaceAslrNotDisabled";
-    }
-    {
-      label = "explicit kaslr rejection assertion";
-      needle = "LaunchProfileError::KernelKaslrExplicitlyEnabled";
+      label = "guest-set opt-in randomization is legal";
+      needle = "console=ttyS0 reboot=k panic=1 quiet kaslr random.trust_cpu=on";
     }
     {
       label = "split seed rejection assertion";
@@ -691,7 +654,7 @@
     }
     {
       label = "generic scenario identity drift assertion";
-      needle = "assert_ne!(first.id, changed_material.id);";
+      needle = "assert_ne!(first.id(), changed_material.id());";
     }
   ];
 
@@ -701,6 +664,7 @@
     ++ failuresFor "crates/crucible/src/lib.rs" engineLib engineLibRequirements
     ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo qemuCargoRequirements
     ++ failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust sourceRequirements
+    ++ forbiddenFor "crates/crucible-qemu/src/launch*.rs" launchRust forbiddenSourceRequirements
     ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest testRequirements;
 in
   if failures != []

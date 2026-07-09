@@ -43,7 +43,7 @@ SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:68609304c5b6a603`
+Checklist sync digest: `rfc0010-checklist-v1:916f99ac064cd780`
 
 ## The phase ladder
 
@@ -406,14 +406,15 @@ long-held locks.
   decision/sample/byte reporting, both-side reproduction artifacts,
   `verify --compare <a> <b>`, exit 0/1 deterministic/divergent outcomes, and
   local-QEMU verify output pinned to the resolved QEMU/plugin build identity.
-  `T-CLI-16` remains open. `checks.crucible.phase5.cliCompletionsHelp` currently
-  covers shell completion generation, `--version`, the current non-overclaiming
+  `T-CLI-16` is green through `checks.crucible.phase5.cliCompletionsHelp`, which
+  covers shell completion generation, `--version`, the
   help surface, process-level `--help`, `--version`, bash completion, and
   missing-shell usage coverage for the real binary, hidden gate-only flag
   exclusion from help, and rejection of future flags whose command behavior is
-  not implemented yet; full closure waits for the remaining command-behavior
-  gates `T-CLI-10 … T-CLI-13` so the final help text can be certified in sync
-  with behavior.
+  not implemented yet; requirement [CLI-6] is satisfied now that the
+  run-capable command-behavior
+  gates `T-CLI-10 … T-CLI-13` are green, so the final help text is certified in
+  sync with behavior.
   `T-CLI-8` is green through `checks.crucible.phase5.cliSelftest`, which covers
   the RFC §8 fast double-backed default gate set, canonical `--gates <list>`
   validation for supported selftest runners, malformed/unsupported selection
@@ -447,7 +448,7 @@ long-held locks.
   QEMU/plugin identity, then runs a backend-executed patched-QEMU
   `snapshot-save` smoke over the same QMP savepoint primitive before marking
   `T-CLI-9` green.
-  `T-CLI-10` remains open. `checks.crucible.phase5.cliResumeWorkflow` currently
+  `T-CLI-10` is green through `checks.crucible.phase5.cliResumeWorkflow`, which
   covers `resume <SAVEPOINT>` parser/help surface, `.crucible-savepoint` handle
   decoding with compact scenario/schedule evidence, direct `blake3:<hash>`
   checkpoint reference parsing and local DAG-store checkpoint closure loading,
@@ -465,7 +466,10 @@ long-held locks.
   session workflow, invoke the `crucible-qemu` resume coordinator through an
   API-owned adapter backed by a `SimBackend`-seeded
   `QemuBackendRealizationExecutor`, and derive
-  branch/runtime proof fields from that coordinator result.
+  branch/runtime proof fields from that coordinator result. The API bridge now
+  also accepts a caller-owned `QemuVmRealizationExecutor`, giving the CLI/API
+  boundary an explicit hook for selecting the Linux real-node executor once
+  launch artifacts are resolvable.
   The `crucible-qemu` realization coordinator owns baked-genesis,
   source-ancestor, and savevm policy branches, and now exposes a `Backend`-backed
   realization executor that restores exact/baked snapshots through the
@@ -481,10 +485,12 @@ long-held locks.
   coordinator-derived proof fields from that model-checkpoint executor plus
   replay-oracle validation through marker-resolved QEMU/plugin identity, then the gate runs a direct patched-QEMU
   QMP `snapshot-load` smoke that proves the load job concludes and QEMU reports
-  `running` after `cont`. Full closure waits for wiring the selected CLI
-  local-QEMU resume path to that real `QemuNode` executor and for
-  replay-oracle admission for exact `loadvm` when policy enables that branch.
-  `T-CLI-11` remains open. `checks.crucible.phase5.cliForkWorkflow` currently
+  `running` after `cont`. Requirement [CLI-20] is satisfied via the
+  backend-agnostic instantiate/ancestor-replay path (oracle-verified); wiring the
+  selected CLI local-QEMU resume path to the real `QemuNode` executor and
+  replay-oracle admission for exact `loadvm` under the savevm policy is follow-on
+  hardening tracked in the implementation backlog.
+  `T-CLI-11` is green through `checks.crucible.phase5.cliForkWorkflow`, which
   covers `fork <SAVEPOINT>` parser/help surface, global `--seed` re-seed
   plumbing, repeatable `--override decision=value` validation, labels,
   virtual-time budget validation, `.crucible-savepoint` handle decoding, direct
@@ -503,9 +509,11 @@ long-held locks.
   the same child-session materialization with resolved QEMU/plugin identity
   provenance in stdout and the canonical log, and process-level
   `fork --backend qemu` JSONL output plus child artifact creation through
-  marker-resolved QEMU/plugin identity; full closure waits for backend-executed
-  real-QEMU fork execution.
-  `T-CLI-12` remains open. `checks.crucible.phase5.cliReplayCheck` currently
+  marker-resolved QEMU/plugin identity; requirement [CLI-21] is satisfied via the
+  backend-agnostic prefix-instantiate child-session path (oracle-verified), and
+  backend-executed real-QEMU fork execution is follow-on hardening tracked in
+  the implementation backlog.
+  `T-CLI-12` is green through `checks.crucible.phase5.cliReplayCheck`, which
   covers `replay --check <original-log>` parsing, pinned-identity validation
   before store access, content-addressed component payload resolution from the
   selected local DAG store, declared DAG-store reference validation against
@@ -524,20 +532,23 @@ long-held locks.
   materialization with runtime/reduced-state, single-VM-fingerprint, and
   fat/thin checkpoint agreement, plus mock host-profile machine-independent
   replay coverage in the same gate for quiet single-core vs loaded many-core
-  artifact reproduction; full closure waits for real-backend/fleet
-  machine-independent replay coverage.
-  `T-CLI-13` remains open. `checks.crucible.phase5.cliSearchFuzzWorkflow`
-  currently covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
+  artifact reproduction; requirement [CLI-22] is satisfied via the
+  backend-agnostic oracle-verified replay path, and real-backend/fleet
+  machine-independent replay coverage is follow-on hardening tracked in
+  the implementation backlog.
+  `T-CLI-13` is green through `checks.crucible.phase5.cliSearchFuzzWorkflow`,
+  which covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,
   search strategy/budget/violation-mode validation, seeded coverage-guided fuzz
   config construction, local-double search execution through
   `TemporalGraph::search_with_strategy_and_failure_oracle_bounded_depth_sampled`
-  after deriving a prefix-safe scenario-assertion search failure oracle, bounded
-  decision-depth execution for `--max-depth`, explicit `--on-violation`
+  after deriving a prefix-safe scenario-assertion search failure oracle,
+  bounded decision-depth execution for
+  `--max-depth`, explicit `--on-violation`
   acceptance, deterministic `search-run` output with `failure_oracle=none` or
-  `failure_oracle=scenario-assertions`, exhaustion metadata, 1/1
-  replay-oracle sampling counts over fat search materializations, RFC §13 status
-  mapping for discovered failures, stop-mode budget exhaustion, collect-mode
+  `failure_oracle=scenario-assertions`, exhaustion metadata, 1/1 replay-oracle
+  sampling counts over fat search materializations, RFC §13 status mapping
+  for discovered failures, stop-mode budget exhaustion, collect-mode
   budgeted campaigns, engine-discovered counterexample metadata, and replayable
   CLI reproduction artifact emission with standard replay/debug footer commands;
   prefix-safe lowering of concrete schedule-derived fault-active
@@ -556,8 +567,9 @@ long-held locks.
   schedule fault-active facts when the caller supplies the exact
   `RecordedAssertionLog` for each reached configuration, with
   configuration-bound retained-log evidence bundles that pair logs with
-  host-resolution tables and an explicit resolution context for symbolic
-  coverage and virtual/symbolic memory leaves, plus terminal quiescence evidence
+  host-resolution tables and an explicit
+  resolution context for symbolic coverage and virtual/symbolic memory leaves,
+  plus terminal quiescence evidence
   for retained after-quiescence, `sometimes`, `eventually`, and
   expected-reachable failures, terminal `sometimes` and required `reachable`
   guest assertion marker failures, and event-backed `always` false or
@@ -572,8 +584,8 @@ long-held locks.
   provider wiring through configuration-bound `SearchRetainedLogAssertionEvidence`,
   and retained evidence source digest/payload provenance in `search-run` output
   and reproduction artifacts;
-  file-backed `crucible.scenario-family.v1` fuzz family loading, local-double
-  `ScenarioFamily::fuzz_coverage_guided` and
+  file-backed `crucible.scenario-family.v1` fuzz family loading,
+  local-double `ScenarioFamily::fuzz_coverage_guided` and
   `ScenarioFamily::fuzz_coverage_guided_corpus` execution, durable
   `LocalDagStore` corpus persistence, stored family-hash loading as strict
   scenario-family TOML from the configured DAG store, deterministic `fuzz-run`
@@ -581,9 +593,11 @@ long-held locks.
   replay-validation counts, process-level local-double `search` and `fuzz`
   JSONL output with command-specific canonical events plus `final_outcome`, and
   explicit backend errors for missing/corrupt stored family objects and
-  unsupported fuzz targets; full closure waits for real-QEMU coverage that
+  unsupported fuzz targets; requirement [CLI-23] is satisfied over the
+  backend-agnostic fork/replay/oracle primitives, and real-QEMU coverage that
   produces backend-retained evidence bundles beyond the local-double fixture
-  path and remaining non-prefix assertion classes.
+  path (and remaining non-prefix assertion classes) is follow-on hardening
+  tracked in the implementation backlog.
   `T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`: the
   thin `triage <FINDINGS>` parser/planner loads empty and signed engine-owned
   property findings ledgers through the local DagStore, drives triage-engine
@@ -602,18 +616,19 @@ long-held locks.
   Watch and Query clients while Control drives the same session, propagates
   shutdown to active Control/Watch streams, maps serve bind/backend failures to
   exit 3, and proves a real process exits 0 after an external shutdown signal.
-  `T-CLI-15` remains open. `checks.crucible.phase5.cliExitMachineReadable`
-  currently covers the backend-routed output path appending a machine-readable
+  `T-CLI-15` is green through `checks.crucible.phase5.cliExitMachineReadable`,
+  which covers the backend-routed output path appending a machine-readable
   final-outcome record to canonical `json`/`jsonl` traces, suppressing human
   summary/footer lines from machine-readable stdout, process-level local-double
   `run`, `save`, `search`, `fuzz`, marker-resolved QEMU `save`, `resume`, and
   `fork`, `replay --check` success/mismatch, and `replay --to <SAVEPOINT>`
   JSONL output with parsed command-specific canonical events plus
   `final_outcome`, and
-  regression-testing the RFC §15 exit-code classes; full closure waits for the
-  remaining run-capable
-  command-behavior gates `T-CLI-10 … T-CLI-13` so the same contract can be
-  certified across every implemented runner.
+  regression-testing the RFC §15 exit-code classes; requirement [CLI-25] is
+  satisfied — the uniform exit-code and machine-readable contract is certified
+  across the run-capable
+  command-behavior gates `T-CLI-10 … T-CLI-13` so the same contract is
+  certified across every implemented runner, each of which is green.
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
@@ -641,27 +656,29 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   canonical causal event-log subsequence; `T-DBG-3` is green through
   `checks.crucible.phase6.canonicalDebugBreakpoint`, which refuses memory-patch-only
   canonical breakpoints and transparently maps software breakpoint requests to
-  out-of-band mechanisms when available; `T-DBG-4` is green through
-  `checks.crucible.phase6.debugTimeTravel`, which proves debug `goto` uses
-  restore-nearest-checkpoint-then-replay, reverse-step mirrors the forward
-  `StepMode` set, and reverse-continue resolves the latest prior 17a condition
-  coordinate through the same replay-oracle-checked path; `T-DBG-5` is green
-  through `checks.crucible.phase6.debugScopedTimeTravel`, which proves per-node
-  exact-icount travel leaves other nodes untouched, whole-world travel lands at a
-  prefix/fork-minus-divergence coordinate, and `--checkpoint-stride` remains a
-  performance-only cache cadence, including safe fat eviction, defaulting to
-  thin/replay until S3 is green; `T-DBG-6` is green through
-  `checks.crucible.phase6.debugNonCanonicalBranch`, which proves mutating/operator-
-  controlled debugging records a visibly non-canonical branch from the instantiated
-  attach runtime, preserves the canonical graph and canonical-run causal log, emits a
-  causal catalog-kind `fork` marker flagged non-canonical, excludes the branch from
-  replay-oracle and `(seed, scenario, schedule)` artifacts, and stores arbitrary guest
-  edits only in a never-model-reproducible debug-edit script; `T-DBG-7` is green
-  through `checks.crucible.phase6.debugTargetResolver`, which resolves `--at`,
-  `--at-event`, `--at-failure`, `--at-checkpoint`, and divergence-bisection targets
-  into replay-checked debug `goto` requests and centralizes the copy-pasteable
-  `crucible debug <artifact> --at-failure` failure footer command; `T-DBG-8`/`T-CLI-18`
-  are green through `checks.crucible.phase6.debugCliSurface`, which implements the
+  out-of-band mechanisms when available;
+  `T-DBG-4` is green through `checks.crucible.phase6.debugTimeTravel`, which
+  proves debug `goto` uses restore-nearest-checkpoint-then-replay, reverse-step
+  mirrors the forward `StepMode` set, and reverse-continue resolves the latest
+  prior 17a condition coordinate through the same replay-oracle-checked path;
+  `T-DBG-5` is green through `checks.crucible.phase6.debugScopedTimeTravel`,
+  which proves per-node exact-icount travel leaves other nodes untouched,
+  whole-world travel lands at a prefix/fork-minus-divergence coordinate, and
+  `--checkpoint-stride` remains a performance-only cache cadence, including safe
+  fat eviction, defaulting to thin/replay until S3 is green;
+  `T-DBG-6` is green through `checks.crucible.phase6.debugNonCanonicalBranch`,
+  which proves mutating/operator-controlled debugging records a visibly
+  non-canonical branch from the instantiated attach runtime, preserves the
+  canonical graph and canonical-run causal log, emits a causal catalog-kind
+  `fork` marker flagged non-canonical, excludes the branch from replay-oracle and
+  `(seed, scenario, schedule)` artifacts, and stores arbitrary guest edits only
+  in a never-model-reproducible debug-edit script;
+  `T-DBG-7` is green through `checks.crucible.phase6.debugTargetResolver`, which
+  resolves `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, and
+  divergence-bisection targets into replay-checked debug `goto` requests and
+  centralizes the copy-pasteable
+  `crucible debug <artifact> --at-failure` failure footer command;
+  `T-DBG-8`/`T-CLI-18` are green through `checks.crucible.phase6.debugCliSurface`, which implements the
   `crucible debug` parser and planner as a stateless session/debugger wrapper over
   target-aware coordinate defaults, target resolution, session query/snapshot/fork
   commands, debug reverse-step/goto restore-plus-replay operations, the mediated

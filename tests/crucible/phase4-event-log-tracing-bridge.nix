@@ -14,6 +14,7 @@
   manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   bridge = builtins.readFile ../../crates/crucible/src/tracing_bridge.rs;
   bridgeTest = builtins.readFile ../../crates/crucible/tests/event_log_tracing_bridge.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
@@ -80,13 +81,27 @@
       }
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+      # The `diagnostic` entry constructor was originally pub(crate) but was widened to
+      # `pub` (f7ea2fca0 "Implement CLI run workflow gate") for legitimate crucible-cli
+      # and crucible-api callers. Enforcement downgraded from crate-boundary to
+      # invariant-pinning on 2026-07-09: instead of requiring the constructor be crate-
+      # private, require that it can only mint Observational entries. It routes through the
+      # typed `Diagnostic` payload whose "diagnostic" kind the event-kind catalog fixes to
+      # `SchedulerEventLogClass::Observational` (pinned in the event_catalog block below),
+      # so a public caller can never mint a causal event-log entry through this path.
       {
-        label = "crate-local diagnostic entry constructor";
-        needle = "pub(crate) fn diagnostic(";
+        label = "public diagnostic entry constructor";
+        needle = "pub fn diagnostic(";
       }
       {
         label = "diagnostic constructor uses diagnostic payload";
         needle = "SchedulerEventLogPayload::Diagnostic(diagnostic)";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/event_catalog.rs" eventCatalog [
+      {
+        label = "diagnostic kind is fixed observational in the event-kind catalog";
+        needle = "kind: \"diagnostic\",\n        class: SchedulerEventLogClass::Observational,";
       }
     ]
     ++ lib.optionals (hasInfix "tracing::" scheduler) [

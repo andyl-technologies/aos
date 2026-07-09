@@ -1,6 +1,8 @@
 //! API-side `gate:control-responsive` acknowledgement checks.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -35,7 +37,7 @@ fn gate_control_responsive_api_declares_in_process_sim_double_backend() {
         CONTROL_RESPONSIVE_BACKEND,
         "crucible::SimDouble quantum-loop adapter"
     );
-    assert!(!CONTROL_RESPONSIVE_REQUIRES_REAL_QEMU);
+    const { assert!(!CONTROL_RESPONSIVE_REQUIRES_REAL_QEMU) };
     assert_eq!(
         FIDELITY_PROPERTIES_REQUIRING_QEMU,
         ["contract-a", "guest-non-mutation", "patch-inertness"]

@@ -1,5 +1,4 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index aea614431..6b2e0841e 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1324,6 +1324,48 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
@@ -12,7 +11,7 @@ index aea614431..6b2e0841e 100644
 + * @out_register_bytes: plugin-owned output buffer
 + * @out_register_capacity: size of @out_register_bytes
 + * @out_register_len: output byte count, or required byte count on overflow
-+ * @out_retired_instruction_count: output raw icount stamp for the sample
++ * @out_retired_instruction_count: output deterministic register-read stamp
 + *
 + * Returns 0 on success and nonzero on failure. The byte stream is a stable
 + * canonicalization of each named architectural register descriptor and value
@@ -52,10 +51,9 @@ index aea614431..6b2e0841e 100644
   * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
   *
 diff --git a/plugins/api.c b/plugins/api.c
-index 2c24610b4..f0ee161ca 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -493,6 +493,158 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -493,6 +493,163 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
      return gdb_read_register(cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
  
@@ -187,8 +185,13 @@ index 2c24610b4..f0ee161ca 100644
 +                                               buffer->len);
 +    }
 +
++    /*
++     * The aggregate sample icount belongs to the caller's trace sample.
++     * qemu_plugin_icount_raw() is not valid in every plugin callback context,
++     * so the canonical register export keeps this ABI field deterministic and
++     * side-effect-free instead of sampling raw icount here.
++     */
 +    *out_register_len = offset;
-+    *out_retired_instruction_count = qemu_plugin_icount_raw();
 +    return ok ? 0 : -1;
 +}
 +
@@ -214,7 +217,7 @@ index 2c24610b4..f0ee161ca 100644
  uint64_t qemu_plugin_crucible_rr_current_vcpu(void)
  {
      if (!current_cpu) {
-@@ -627,4 +779,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
+@@ -627,4 +784,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
      }
      return total;
  }

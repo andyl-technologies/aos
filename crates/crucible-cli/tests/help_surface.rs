@@ -1,5 +1,8 @@
 //! Process-level checks for the CLI help, version, and completions surfaces.
 
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::error::Error;
 use std::process::Command;
 

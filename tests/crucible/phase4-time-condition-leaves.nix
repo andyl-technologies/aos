@@ -98,15 +98,15 @@
       }
       {
         label = "At TOML form";
-        needle = "PredicateToml::At";
+        needle = "PredicateTomlKind::At";
       }
       {
         label = "After TOML form";
-        needle = "PredicateToml::After";
+        needle = "PredicateTomlKind::After";
       }
       {
         label = "Timer TOML form";
-        needle = "PredicateToml::Timer";
+        needle = "PredicateTomlKind::Timer";
       }
       {
         label = "At binary tag";

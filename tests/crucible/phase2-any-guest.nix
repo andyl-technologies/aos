@@ -585,7 +585,10 @@ in
               trace="$TMPDIR/trace-$label.jsonl"
               rm -f "$qmp_socket" "$serial" "$trace"
 
-              append="console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off net.ifnames=0"
+              # Stock guest cmdline (D-31): no entropy-suppression flags. Determinism
+              # is sealed host-side (fixed -cpu without RDRAND/RDSEED, seeded fw_cfg
+              # entropy, -icount), so KASLR/ASLR stay enabled and remain reproducible.
+              append="console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0"
 
               set -- "$QEMU" \
                 -nodefaults \

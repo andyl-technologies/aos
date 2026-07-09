@@ -14,6 +14,7 @@
 #define MIN(left, right) ((left) < (right) ? (left) : (right))
 #define GPOINTER_TO_INT(pointer) ((int)(uintptr_t)(pointer))
 #define g_autoptr(type) type *
+#define g_assert(condition) ((void)sizeof(condition))
 
 typedef enum ICountMode {
   ICOUNT_DISABLED = 0,
@@ -340,6 +341,16 @@ qemu_put_sbe64s(QEMUFile *file, int64_t *value)
   qemu_file_last_put_value = *value;
 }
 
+static void
+replay_mutex_lock(void)
+{
+}
+
+static void
+replay_mutex_unlock(void)
+{
+}
+
 #include "accel/tcg/icount-common.c"
 #include "accel/tcg/tcg-accel-ops-icount.c"
 #include "accel/tcg/tcg-accel-ops-rr.c"
@@ -481,6 +492,18 @@ test_rr_quantum_configuration_and_budget(void)
           stderr);
     return 1;
   }
+  test_icount_limit = 0;
+  cpu0.icount_budget = 0;
+  cpu0.icount_extra = 0;
+  cpu0.neg.icount_decr.u16.low = 0;
+  icount_prepare_for_run(&cpu0, 12);
+  if (cpu0.icount_budget != 12 || cpu0.neg.icount_decr.u16.low != 12 ||
+      cpu0.icount_extra != 0) {
+    fputs("rr_switch_quantum did not preserve the run budget at a deadline\n",
+          stderr);
+    return 1;
+  }
+  test_icount_limit = 100;
 
   test_accel_name = "tcg";
   if (icount_crucible_rr_switch_quantum() != 0 ||
@@ -734,6 +757,7 @@ main(void)
   puts("rr_switch_quantum_requires_shift=true");
   puts("rr_switch_quantum_rejects_oversized=true");
   puts("rr_budget_pinned=true");
+  puts("rr_prepare_for_run_deadline_safe=true");
   puts("rr_switch_quantum_sim_gated=true");
   puts("non_sim_rr_switch_quantum_uses_stock_budget=true");
   puts("rr_switch_trace_pinned_under_host_jitter=true");

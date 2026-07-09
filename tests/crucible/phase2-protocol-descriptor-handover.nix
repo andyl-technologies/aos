@@ -185,8 +185,9 @@
         needle = "five UNSAFE crates";
       }
       {
-        label = "eight safe crate count";
-        needle = "eight SAFE crates";
+        # crucible-cas registered as the ninth safe crate.
+        label = "nine safe crate count";
+        needle = "nine SAFE crates";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/crate_unsafe_fence.rs" unsafeFenceRust [
@@ -213,8 +214,9 @@
         needle = "unsafeBoundary = true;";
       }
       {
+        # crucible-cas registered as the ninth safe crate.
         label = "Nix unsafe-fence safe count";
-        needle = "runtime_safe_crates=8";
+        needle = "runtime_safe_crates=9";
       }
       {
         label = "Nix unsafe-fence unsafe count";

@@ -464,7 +464,7 @@ in
               -fw_cfg name=opt/crucible/seed,file="$seed" \
               -kernel "$vmlinuz" \
               -initrd "$INITRAMFS" \
-              -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off net.ifnames=0" \
+              -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0" \
               -drive id=inertblock,file="$block_image",format=raw,if=none,readonly=on,cache=unsafe \
               -device virtio-blk-pci,drive=inertblock \
               -fsdev local,id=fs0,path="$ninep_root",security_model=none \

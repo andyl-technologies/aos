@@ -26,10 +26,18 @@ in
           cp "$sourcePath" phase0-s13-rr-quantum.c
           cc -std=c11 -O2 -Wall -Wextra -Werror phase0-s13-rr-quantum.c -o phase0-s13-rr-quantum
 
-          grep -q '^PASS_WITH_FALLBACK$' "$S12_RESULT"
+          # S12 evolved from PASS_WITH_FALLBACK to PASS_WITH_PATCH_SURFACE when
+          # the preemption-injection patch surface landed, and its discrimination
+          # fields advanced from not_tested to `modeled` once the deterministic
+          # model discrimination proof landed. The quantum selection below is a
+          # perf/throughput sweep that is independent of the discrimination proof:
+          # it still rests on the LIVE campaign explorer remaining disabled
+          # (modeled discrimination is not live race-yield enablement), which is
+          # why race_yield_tested stays false and d25_status stays open.
+          grep -q '^PASS_WITH_PATCH_SURFACE$' "$S12_RESULT"
           grep -q '^check=checks.crucible.phase0.s12PreemptionDecision$' "$S12_RESULT"
-          grep -q '^decision_preemption_exploration_enabled=false$' "$S12_RESULT"
-          grep -q '^s12_complete=true$' "$S12_RESULT"
+          grep -q '^preemption_injection_api_available=qemu_plugin_inject_preemption$' "$S12_RESULT"
+          grep -q '^commanded_preemption_discriminating=modeled$' "$S12_RESULT"
 
           mkdir -p "$out"
           ./phase0-s13-rr-quantum > "$out/result"

@@ -1,6 +1,8 @@
 //! Checks the implemented `gate:qemu-inert` wiring.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::error::Error;
 use std::fs;

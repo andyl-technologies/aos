@@ -1,6 +1,8 @@
 //! Checks the T-SCHED-2 scheduler lookahead graph.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     Icount, LinkDef, LinkLossProbability, NetworkLookahead, NodeId, NodeTemplate, ReadyPoint,

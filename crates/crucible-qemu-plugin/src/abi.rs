@@ -697,7 +697,18 @@ pub fn validate_install_boundary(
 /// Returns [`QemuPluginAbiError`] when `argc`/`argv` violate the raw ABI
 /// boundary, an argv entry is null or non-UTF-8, or the parsed plugin arguments
 /// omit required Crucible keys such as `simfd` and `slot`.
-pub fn parse_install_plugin_args(
+///
+/// # ABI contract
+///
+/// This is a boundary shim: the raw `argv` pointer is dereferenced only inside
+/// narrow `unsafe` blocks whose safety rests on QEMU's plugin ABI, which
+/// guarantees that for positive `argc` the vector holds at least `argc` live,
+/// NUL-terminated C-string entries for the duration of `qemu_plugin_install`.
+/// Null-pointer shapes are rejected before any dereference, so the signature is
+/// safe to call from Rust that already holds QEMU's argument vector. It is
+/// crate-internal (`pub(crate)`): the only real caller is `qemu_plugin_install`
+/// in this crate, which keeps the raw-pointer boundary confined here.
+pub(crate) fn parse_install_plugin_args(
     argc: c_int,
     argv: *mut *mut c_char,
 ) -> Result<PluginArgs, QemuPluginAbiError> {
@@ -1456,6 +1467,9 @@ fn install_required_runtime_api_scaffold_from_boundary(
     argv: *mut *mut c_char,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     validate_install_boundary(info, argc, argv)?;
+    // `parse_install_plugin_args` is a boundary shim: it rejects null shapes and
+    // confines its `argv` dereferences to `// SAFETY`-justified `unsafe` blocks,
+    // so it is called without an outer `unsafe` here.
     let _args = parse_install_plugin_args(argc, argv)?;
     // SAFETY: `validate_install_boundary` rejected null, and QEMU's plugin ABI
     // guarantees `info` points at a live `qemu_info_t` for this install call.
@@ -1490,14 +1504,18 @@ pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 /// runtime API capabilities. Device callbacks remain inert until later tasks
 /// replace the callback bodies.
 ///
-/// # Safety
+/// # ABI contract
 ///
-/// QEMU must pass either a null `info` pointer for an error result, or a pointer
-/// to a live `qemu_info_t` with the AOS QEMU 10.0.0 layout for the duration of
-/// this call. When `argc` is positive, `argv` must be QEMU's plugin argument
-/// vector for this loaded plugin.
+/// QEMU's `dlopen` loader calls this symbol, passing either a null `info`
+/// pointer for an error result or a pointer to a live `qemu_info_t` with the AOS
+/// QEMU 10.0.0 layout, and (for positive `argc`) this plugin's argument vector,
+/// all valid for the duration of the call. The body forwards those raw inputs to
+/// `install_required_runtime_api_scaffold_from_boundary`, which validates the
+/// null shapes and confines every dereference to `// SAFETY`-justified `unsafe`
+/// blocks, so this entry point needs no `unsafe` of its own. It keeps
+/// `#[unsafe(no_mangle)] extern "C"` to satisfy QEMU's symbol-lookup contract.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn qemu_plugin_install(
+pub extern "C" fn qemu_plugin_install(
     _id: QemuPluginId,
     info: *const QemuPluginInfo,
     argc: c_int,
@@ -1509,68 +1527,16 @@ pub unsafe extern "C" fn qemu_plugin_install(
     }
 }
 
-/// Inert scaffold network-TX callback.
-pub extern "C" fn crucible_qemu_plugin_inert_network_tx_cb(
-    _id: QemuPluginId,
-    _userdata: *mut c_void,
-) {
-}
-
-/// Inert scaffold network-RX callback.
-pub extern "C" fn crucible_qemu_plugin_inert_network_rx_cb(
-    _id: QemuPluginId,
-    _userdata: *mut c_void,
-) {
-}
-
-/// Inert scaffold block-submit callback.
-pub extern "C" fn crucible_qemu_plugin_inert_block_submit_cb(
-    _id: QemuPluginId,
-    _userdata: *mut c_void,
-) {
-}
-
-/// Inert scaffold block-poll callback.
-pub extern "C" fn crucible_qemu_plugin_inert_block_poll_cb(
-    _id: QemuPluginId,
-    _userdata: *mut c_void,
-) {
-}
-
-/// Inert scaffold 9p-submit callback.
-pub extern "C" fn crucible_qemu_plugin_inert_9p_submit_cb(
-    _id: QemuPluginId,
-    _userdata: *mut c_void,
-) {
-}
-
-/// Inert scaffold 9p-poll callback.
-pub extern "C" fn crucible_qemu_plugin_inert_9p_poll_cb(_id: QemuPluginId, _userdata: *mut c_void) {
-}
-
-/// Inert scaffold white-box doorbell callback.
-pub extern "C" fn crucible_qemu_plugin_inert_whitebox_doorbell_cb(
-    _id: QemuPluginId,
-    _userdata: *mut c_void,
-) {
-}
-
-/// Inert scaffold vCPU init callback.
-pub extern "C" fn crucible_qemu_plugin_inert_vcpu_init_cb(_id: QemuPluginId, _vcpu_index: c_uint) {
-    if let Some(force_vcpu_exit) = resolve_qemu_force_vcpu_exit_symbol() {
-        force_vcpu_exit();
-    }
-}
-
-/// Inert scaffold vCPU idle callback.
-pub extern "C" fn crucible_qemu_plugin_inert_vcpu_idle_cb(_id: QemuPluginId, _vcpu_index: c_uint) {}
-
-/// Inert scaffold vCPU resume callback.
-pub extern "C" fn crucible_qemu_plugin_inert_vcpu_resume_cb(
-    _id: QemuPluginId,
-    _vcpu_index: c_uint,
-) {
-}
+/// Inert scaffold device and vCPU callbacks, grouped in a child module to keep
+/// this file within the RFC-0010 file-shape limits.
+mod inert_callbacks;
+pub use inert_callbacks::{
+    crucible_qemu_plugin_inert_9p_poll_cb, crucible_qemu_plugin_inert_9p_submit_cb,
+    crucible_qemu_plugin_inert_block_poll_cb, crucible_qemu_plugin_inert_block_submit_cb,
+    crucible_qemu_plugin_inert_network_rx_cb, crucible_qemu_plugin_inert_network_tx_cb,
+    crucible_qemu_plugin_inert_vcpu_idle_cb, crucible_qemu_plugin_inert_vcpu_init_cb,
+    crucible_qemu_plugin_inert_vcpu_resume_cb, crucible_qemu_plugin_inert_whitebox_doorbell_cb,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1599,9 +1565,10 @@ mod tests {
         argc: c_int,
         argv: *mut *mut c_char,
     ) -> c_int {
-        // SAFETY: tests pass either live fixture pointers or boundary cases that
-        // `validate_install_boundary` rejects before `info` is dereferenced.
-        unsafe { qemu_plugin_install(7, info, argc, argv) }
+        // Tests pass either live fixture pointers or boundary cases that
+        // `validate_install_boundary` rejects before `info` is dereferenced; the
+        // entry point is now a safe call.
+        qemu_plugin_install(7, info, argc, argv)
     }
 
     fn plugin_argv(args: &[&str]) -> (Vec<CString>, Vec<*mut c_char>) {
@@ -1636,6 +1603,16 @@ mod tests {
         call_qemu_plugin_install(info, argv.len() as c_int, argv.as_mut_ptr())
     }
 
+    fn parse_install_plugin_args_for_test(
+        argc: c_int,
+        argv: *mut *mut c_char,
+    ) -> Result<PluginArgs, QemuPluginAbiError> {
+        // Tests pass either argv vectors backed by live `CString` fixtures, or
+        // boundary cases that the parser rejects before reading; the shim is now
+        // a safe call.
+        parse_install_plugin_args(argc, argv)
+    }
+
     #[test]
     fn abi_install_parses_qemu_plugin_argv_before_runtime_activation() {
         let (_strings, mut split_argv) = plugin_argv(&[
@@ -1647,8 +1624,9 @@ mod tests {
             "coverage=on",
         ]);
 
-        let args = parse_install_plugin_args(split_argv.len() as c_int, split_argv.as_mut_ptr())
-            .unwrap_or_else(|error| panic!("split QEMU argv should parse: {error}"));
+        let args =
+            parse_install_plugin_args_for_test(split_argv.len() as c_int, split_argv.as_mut_ptr())
+                .unwrap_or_else(|error| panic!("split QEMU argv should parse: {error}"));
 
         assert_eq!(args.sim_fd(), 3);
         assert_eq!(args.slot(), 2);
@@ -1664,7 +1642,7 @@ mod tests {
 
         let (_strings, mut single_argv) =
             plugin_argv(&["simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,coverage=off"]);
-        let args = parse_install_plugin_args(1, single_argv.as_mut_ptr())
+        let args = parse_install_plugin_args_for_test(1, single_argv.as_mut_ptr())
             .unwrap_or_else(|error| panic!("single QEMU argv should parse: {error}"));
 
         assert_eq!(args.sim_fd(), 3);
@@ -1676,7 +1654,7 @@ mod tests {
     #[test]
     fn abi_install_plugin_argv_fails_closed_for_missing_and_malformed_args() {
         assert_eq!(
-            parse_install_plugin_args(0, std::ptr::null_mut()).map(|_args| ()),
+            parse_install_plugin_args_for_test(0, std::ptr::null_mut()).map(|_args| ()),
             Err(QemuPluginAbiError::PluginArgs {
                 source: PluginArgsParseError::MissingRequiredKey {
                     key: PLUGIN_ARG_SIMFD,
@@ -1686,7 +1664,7 @@ mod tests {
 
         let (_strings, mut missing_slot) = plugin_argv(&["simfd=3"]);
         assert_eq!(
-            parse_install_plugin_args(1, missing_slot.as_mut_ptr()).map(|_args| ()),
+            parse_install_plugin_args_for_test(1, missing_slot.as_mut_ptr()).map(|_args| ()),
             Err(QemuPluginAbiError::PluginArgs {
                 source: PluginArgsParseError::MissingRequiredKey { key: "slot" },
             })
@@ -1694,7 +1672,7 @@ mod tests {
 
         let mut null_entry = [std::ptr::null_mut()];
         assert_eq!(
-            parse_install_plugin_args(1, null_entry.as_mut_ptr()).map(|_args| ()),
+            parse_install_plugin_args_for_test(1, null_entry.as_mut_ptr()).map(|_args| ()),
             Err(QemuPluginAbiError::NullArgvEntry { index: 0 })
         );
 
@@ -1703,7 +1681,7 @@ mod tests {
         });
         let mut invalid_utf8_argv = [invalid_utf8.as_ptr().cast_mut()];
         assert_eq!(
-            parse_install_plugin_args(1, invalid_utf8_argv.as_mut_ptr()).map(|_args| ()),
+            parse_install_plugin_args_for_test(1, invalid_utf8_argv.as_mut_ptr()).map(|_args| ()),
             Err(QemuPluginAbiError::InvalidArgvUtf8 { index: 0 })
         );
     }

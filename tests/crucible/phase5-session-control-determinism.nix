@@ -99,7 +99,7 @@
       }
       {
         label = "running and paused inject records scheduler control";
-        needle = "self.record_boundary_control(&command, Some(control));";
+        needle = "self.record_boundary_control_at(\n                        &command,\n                        Some(control),";
       }
       {
         label = "paused mutator regression test";

@@ -134,7 +134,11 @@
     ++ lib.optionals (hasInfix "pub id: ContentHash,\n    /// The root entropy carried by this scenario definition." model) [
       "crates/crucible/src/model.rs: ScenarioDef id field must stay private"
     ]
-    ++ lib.optionals (hasInfix "pub seed: Seed,\n}" model) [
+    # Scoped to the ScenarioDef seed field via its unique doc comment. The bare
+    # `pub seed: Seed,\n}` form matched four OTHER structs that legitimately carry a
+    # public seed as their last field; the doc-comment anchor pins the check to
+    # ScenarioDef's own field. Rescoped 2026-07-09.
+    ++ lib.optionals (hasInfix "/// The root entropy carried by this scenario definition.\n    pub seed: Seed," model) [
       "crates/crucible/src/model.rs: ScenarioDef seed field must stay private"
     ]
     ++ failuresFor "crates/crucible/src/model/canonical.rs" canonicalRust [

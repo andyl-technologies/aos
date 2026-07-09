@@ -90,7 +90,7 @@
       }
       {
         label = "coverage TOML";
-        needle = "PredicateToml::CoveragePoint";
+        needle = "PredicateTomlKind::CoveragePoint";
       }
       {
         label = "code point TOML";

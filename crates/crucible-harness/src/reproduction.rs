@@ -100,6 +100,27 @@ pub struct ReproductionArtifact {
     pub sampling_config: FingerprintSamplingConfig,
 }
 
+/// Inputs used to construct a validated reproduction artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReproductionArtifactParts {
+    /// Deterministic root seed used by the run.
+    pub seed: u64,
+    /// Pinned engine, QEMU, ABI, and plugin identities for the producer.
+    pub build_identity: PinnedBuildIdentity,
+    /// Content-addressed scenario definition reference.
+    pub scenario: ContentAddressedComponent,
+    /// Replay decisions to store as a totally ordered schedule.
+    pub decisions: Vec<RecordedDecision>,
+    /// Additional content-addressed components needed to resolve the scenario.
+    pub components: Vec<ContentAddressedComponent>,
+    /// Inline payloads for small components that travel with the artifact.
+    pub component_payloads: Vec<ComponentPayload>,
+    /// Tail of the fingerprint stream recorded for quick triage.
+    pub fingerprint_tail: Vec<FingerprintTailSample>,
+    /// Fingerprint sampling configuration used by the producer.
+    pub sampling_config: FingerprintSamplingConfig,
+}
+
 /// A successful machine-independent reproduction verification report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineReproductionReport {
@@ -141,16 +162,17 @@ impl ReproductionArtifact {
     /// Returns [`ReproductionArtifactError`] when the artifact fields are
     /// malformed, the scenario is not a scenario definition reference, a digest
     /// is invalid, or the schedule is empty or not totally ordered.
-    pub fn from_parts(
-        seed: u64,
-        build_identity: PinnedBuildIdentity,
-        scenario: ContentAddressedComponent,
-        decisions: Vec<RecordedDecision>,
-        components: Vec<ContentAddressedComponent>,
-        component_payloads: Vec<ComponentPayload>,
-        fingerprint_tail: Vec<FingerprintTailSample>,
-        sampling_config: FingerprintSamplingConfig,
-    ) -> Result<Self, ReproductionArtifactError> {
+    pub fn from_parts(parts: ReproductionArtifactParts) -> Result<Self, ReproductionArtifactError> {
+        let ReproductionArtifactParts {
+            seed,
+            build_identity,
+            scenario,
+            decisions,
+            components,
+            component_payloads,
+            fingerprint_tail,
+            sampling_config,
+        } = parts;
         let schedule = ReproductionSchedule::from_decisions(decisions)?;
         let artifact = Self {
             schema_version: REPRODUCTION_ARTIFACT_SCHEMA.to_string(),
@@ -763,9 +785,9 @@ pub enum ReproductionArtifactError {
     /// The artifact build identity did not match the local replay identity.
     BuildIdentityMismatch {
         /// Identity expected by the verifier.
-        expected: PinnedBuildIdentity,
+        expected: Box<PinnedBuildIdentity>,
         /// Identity pinned in the artifact.
-        actual: PinnedBuildIdentity,
+        actual: Box<PinnedBuildIdentity>,
     },
     /// No supplied profile represented a different machine from the baseline.
     MissingDifferentMachineProfile,
@@ -1236,16 +1258,16 @@ pub fn reproduction_artifact_from_mock_e2e(
         digest: content_address_bytes(&source_run.final_fingerprint),
     }];
 
-    ReproductionArtifact::from_parts(
-        source.seed,
+    ReproductionArtifact::from_parts(ReproductionArtifactParts {
+        seed: source.seed,
         build_identity,
-        scenario.clone(),
+        scenario: scenario.clone(),
         decisions,
         components,
         component_payloads,
         fingerprint_tail,
-        FingerprintSamplingConfig::mock_defaults(),
-    )
+        sampling_config: FingerprintSamplingConfig::mock_defaults(),
+    })
 }
 
 fn decode_artifact(text: &str) -> Result<ReproductionArtifact, ReproductionArtifactError> {
@@ -1476,8 +1498,8 @@ fn verify_pinned_build_identity(
     expected.validate()?;
     if actual != expected {
         return Err(ReproductionArtifactError::BuildIdentityMismatch {
-            expected: expected.clone(),
-            actual: actual.clone(),
+            expected: Box::new(expected.clone()),
+            actual: Box::new(actual.clone()),
         });
     }
     Ok(())
@@ -1560,8 +1582,8 @@ fn reconstructed_e2e_artifact_digest(
         let mut actual = artifact.build_identity.clone();
         actual.qemu_build_id = qemu_build_id;
         return Err(ReproductionArtifactError::BuildIdentityMismatch {
-            expected: artifact.build_identity.clone(),
-            actual,
+            expected: Box::new(artifact.build_identity.clone()),
+            actual: Box::new(actual),
         });
     }
     let backend = artifact
@@ -2316,7 +2338,7 @@ fn parse_hex_bytes(
     tag: &str,
     value: &str,
 ) -> Result<Vec<u8>, ReproductionArtifactError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(decode_line_error(
             line_index,
             tag,

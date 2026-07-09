@@ -24,11 +24,11 @@ use std::time::Duration;
 use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use crucible_api::{
-    AttachRequest, CommandResultStatus, ControlClient, CreateSessionRequest, DestroySessionRequest,
-    InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode,
-    ModelCheckpointVmResumeRealizationProof, QuiescentLifecycleLoop, RPC_PROTOCOL_BUILD,
-    RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH, ResumeSessionRequest,
-    RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
+    AttachRequest, CONTROL_PROTOCOL_VERSION, CommandResultStatus, ControlClient,
+    CreateSessionRequest, DestroySessionRequest, InProcessLifecycleClient, LifecycleControlPlane,
+    LifecycleServerMode, ModelCheckpointVmResumeRealizationProof, QuiescentLifecycleLoop,
+    RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
+    ResumeSessionRequest, RpcControlClient, RpcEndpoint, SendRequest, SessionRef,
     realize_model_checkpoint_vm_resume_from_savepoint,
     serve_lifecycle_http2_with_mode_until_shutdown,
 };
@@ -83,9 +83,6 @@ const CRUCIBLE_AOS_PLUGIN_ENV: &str = "CRUCIBLE_AOS_PLUGIN";
 const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
 const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
 const DEFAULT_SELFTEST_RUNS: usize = 5;
-// Mirrored from `crucible-protocol` and checked by CLI tests so the control
-// plane does not depend on the guest-host protocol crate at runtime.
-const GUEST_HOST_CONTROL_PROTOCOL_VERSION: u32 = 1;
 #[cfg(test)]
 const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
 #[cfg(test)]
@@ -4896,7 +4893,7 @@ fn shmem_abi_label_for_version(version: &str) -> String {
 }
 
 fn current_guest_host_protocol_version() -> String {
-    GUEST_HOST_CONTROL_PROTOCOL_VERSION.to_string()
+    CONTROL_PROTOCOL_VERSION.to_string()
 }
 
 fn current_rpc_abi_version() -> String {
@@ -6292,9 +6289,7 @@ where
                     client,
                     resumed.session,
                     &mut command_id,
-                    SessionCommand::Step {
-                        mode: StepMode::Quantum,
-                    },
+                    SessionCommand::step(StepMode::Quantum),
                     &mut acknowledged_commands,
                     &mut state_updates,
                 )
@@ -6319,11 +6314,9 @@ where
                         client,
                         resumed.session,
                         &mut command_id,
-                        SessionCommand::Step {
-                            mode: StepMode::Duration(SimDuration {
-                                nanos: budget.saturating_sub(summary.frontier.ticks),
-                            }),
-                        },
+                        SessionCommand::step(StepMode::Duration(SimDuration {
+                            nanos: budget.saturating_sub(summary.frontier.ticks),
+                        })),
                         &mut acknowledged_commands,
                         &mut state_updates,
                     )
@@ -6381,9 +6374,7 @@ where
                     client,
                     resumed.session,
                     &mut command_id,
-                    SessionCommand::Step {
-                        mode: StepMode::Quantum,
-                    },
+                    SessionCommand::step(StepMode::Quantum),
                     &mut acknowledged_commands,
                     &mut state_updates,
                 )
@@ -7247,9 +7238,7 @@ async fn run_resumed_savepoint_actor_with_driver_async(
             RunTerminalCondition::Quiescence => {
                 send_resumed_actor_command(
                     &sender,
-                    SessionCommand::Step {
-                        mode: StepMode::Quantum,
-                    },
+                    SessionCommand::step(StepMode::Quantum),
                     &mut acknowledged_commands,
                 )
                 .await?;
@@ -7272,9 +7261,7 @@ async fn run_resumed_savepoint_actor_with_driver_async(
                     let delta = budget.saturating_sub(initial.virtual_time.ticks);
                     send_resumed_actor_command(
                         &sender,
-                        SessionCommand::Step {
-                            mode: StepMode::Duration(SimDuration { nanos: delta }),
-                        },
+                        SessionCommand::step(StepMode::Duration(SimDuration { nanos: delta })),
                         &mut acknowledged_commands,
                     )
                     .await?;
@@ -7308,9 +7295,7 @@ async fn run_resumed_savepoint_actor_with_driver_async(
                 let before = live.read();
                 send_resumed_actor_command(
                     &sender,
-                    SessionCommand::Step {
-                        mode: StepMode::Quantum,
-                    },
+                    SessionCommand::step(StepMode::Quantum),
                     &mut acknowledged_commands,
                 )
                 .await?;
@@ -7470,9 +7455,7 @@ async fn run_forked_savepoint_actor_with_driver_async(
             RunTerminalCondition::Quiescence => {
                 send_resumed_actor_command(
                     &sender,
-                    SessionCommand::Step {
-                        mode: StepMode::Quantum,
-                    },
+                    SessionCommand::step(StepMode::Quantum),
                     &mut acknowledged_commands,
                 )
                 .await?;
@@ -7495,9 +7478,7 @@ async fn run_forked_savepoint_actor_with_driver_async(
                     let delta = budget.saturating_sub(initial.virtual_time.ticks);
                     send_resumed_actor_command(
                         &sender,
-                        SessionCommand::Step {
-                            mode: StepMode::Duration(SimDuration { nanos: delta }),
-                        },
+                        SessionCommand::step(StepMode::Duration(SimDuration { nanos: delta })),
                         &mut acknowledged_commands,
                     )
                     .await?;
@@ -7531,9 +7512,7 @@ async fn run_forked_savepoint_actor_with_driver_async(
                 let before = live.read();
                 send_resumed_actor_command(
                     &sender,
-                    SessionCommand::Step {
-                        mode: StepMode::Quantum,
-                    },
+                    SessionCommand::step(StepMode::Quantum),
                     &mut acknowledged_commands,
                 )
                 .await?;
@@ -9873,9 +9852,7 @@ where
                 client,
                 created.session,
                 &mut command_id,
-                SessionCommand::Step {
-                    mode: StepMode::Quantum,
-                },
+                SessionCommand::step(StepMode::Quantum),
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
@@ -9900,11 +9877,9 @@ where
                     client,
                     created.session,
                     &mut command_id,
-                    SessionCommand::Step {
-                        mode: StepMode::Duration(SimDuration {
-                            nanos: budget.saturating_sub(summary.frontier.ticks),
-                        }),
-                    },
+                    SessionCommand::step(StepMode::Duration(SimDuration {
+                        nanos: budget.saturating_sub(summary.frontier.ticks),
+                    })),
                     &mut acknowledged_commands,
                     &mut state_updates,
                 )
@@ -10101,9 +10076,7 @@ where
                 client,
                 created.session,
                 &mut command_id,
-                SessionCommand::Step {
-                    mode: StepMode::Quantum,
-                },
+                SessionCommand::step(StepMode::Quantum),
                 &mut acknowledged_commands,
                 &mut state_updates,
             )
@@ -10128,11 +10101,9 @@ where
                     client,
                     created.session,
                     &mut command_id,
-                    SessionCommand::Step {
-                        mode: StepMode::Duration(SimDuration {
-                            nanos: budget.saturating_sub(summary.frontier.ticks),
-                        }),
-                    },
+                    SessionCommand::step(StepMode::Duration(SimDuration {
+                        nanos: budget.saturating_sub(summary.frontier.ticks),
+                    })),
                     &mut acknowledged_commands,
                     &mut state_updates,
                 )
@@ -10359,9 +10330,7 @@ where
         client,
         session,
         command_id,
-        SessionCommand::Step {
-            mode: StepMode::Quantum,
-        },
+        SessionCommand::step(StepMode::Quantum),
         acknowledged_commands,
         state_updates,
     )

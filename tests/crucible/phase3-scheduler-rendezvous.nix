@@ -90,7 +90,7 @@
       }
       {
         label = "empty quantum no decision";
-        needle = "if resolved_events.is_empty()";
+        needle = "if selected_candidates.is_empty()";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" libSource [

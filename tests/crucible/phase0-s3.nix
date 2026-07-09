@@ -353,27 +353,76 @@ in
             printf '%s\n' "$1" | jq -R .
           }
 
-          qmp_cmd() {
+          qmp_exchange() {
             socket="$1"
             request="$2"
             response="$3"
             response_err="$response.err"
 
             {
+              sleep 0.1
               printf '{"execute":"qmp_capabilities"}\r\n'
+              sleep 0.1
               printf '%s\r\n' "$request"
-            } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+              sleep 0.25
+            } | socat -T 10 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+          }
 
-            if [ ! -s "$response" ]; then
+          qmp_cmd() {
+            socket="$1"
+            request="$2"
+            response="$3"
+            response_err="$response.err"
+            attempts=0
+
+            while [ "$attempts" -lt 20 ]; do
+              qmp_exchange "$socket" "$request" "$response"
+
+              if [ ! -s "$response" ]; then
+                attempts=$((attempts + 1))
+                sleep 0.25
+                continue
+              fi
+
+              if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+                cat "$response" >&2
+                return 1
+              fi
+              if jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null; then
+                return 0
+              fi
+
+              attempts=$((attempts + 1))
+              sleep 0.25
+            done
+
+            if [ -s "$response" ]; then
+              cat "$response" >&2
+            else
               cat "$response_err" >&2
+            fi
+            return 1
+          }
+
+          qmp_job_started() {
+            socket="$1"
+            job="$2"
+            response="$3.probe"
+
+            if ! qmp_cmd "$socket" '{"execute":"query-jobs"}' "$response"; then
               return 1
             fi
-
-            if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+            if jq -e -s --arg job "$job" '
+              ([.[] | select(has("return"))][-1].return // [])[]
+              | select(.id == $job)
+              | has("error")
+            ' "$response" >/dev/null; then
               cat "$response" >&2
               return 1
             fi
-            jq -e -s '[.[] | select(has("return"))] | length >= 2' "$response" >/dev/null
+            jq -e -s --arg job "$job" '
+              any((([.[] | select(has("return"))][-1].return // [])[]); .id == $job)
+            ' "$response" >/dev/null
           }
 
           qmp_job_cmd() {
@@ -382,25 +431,38 @@ in
             response="$3"
             job="$4"
             response_err="$response.err"
+            attempts=0
 
-            {
-              printf '{"execute":"qmp_capabilities"}\r\n'
-              printf '%s\r\n' "$request"
-            } | socat -T 2 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+            while [ "$attempts" -lt 20 ]; do
+              qmp_exchange "$socket" "$request" "$response"
 
-            if [ ! -s "$response" ]; then
-              cat "$response_err" >&2
-              return 1
-            fi
+              if [ -s "$response" ]; then
+                if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+                  cat "$response" >&2
+                  return 1
+                fi
+                if jq -e -s --arg job "$job" '
+                  ([.[] | select(has("return"))] | length >= 2)
+                  or any(.[]; .event == "JOB_STATUS_CHANGE" and .data.id == $job)
+                ' "$response" >/dev/null; then
+                  return 0
+                fi
+              fi
 
-            if jq -e -s 'any(.[]; has("error"))' "$response" >/dev/null; then
+              if qmp_job_started "$socket" "$job" "$response"; then
+                return 0
+              fi
+
+              attempts=$((attempts + 1))
+              sleep 0.25
+            done
+
+            if [ -s "$response" ]; then
               cat "$response" >&2
-              return 1
+            else
+              cat "$response_err" >&2
             fi
-            jq -e -s --arg job "$job" '
-              ([.[] | select(has("return"))] | length >= 2)
-              or any(.[]; .event == "JOB_STATUS_CHANGE" and .data.id == $job)
-            ' "$response" >/dev/null
+            return 1
           }
 
           wait_for_socket() {
@@ -567,8 +629,15 @@ in
 
           probe_commands() {
             socket="$1"
-            qmp_cmd "$socket" '{"execute":"query-commands"}' "$TMPDIR/qmp-commands.json" \
-              || fail "query-commands failed"
+            waited=0
+            while [ "$waited" -lt 40 ]; do
+              if qmp_cmd "$socket" '{"execute":"query-commands"}' "$TMPDIR/qmp-commands.json"; then
+                break
+              fi
+              sleep 0.25
+              waited=$((waited + 1))
+            done
+            [ "$waited" -lt 40 ] || fail "query-commands failed"
             jq -r -s '[.[] | select(has("return"))][-1].return[].name' \
               "$TMPDIR/qmp-commands.json" | sort > "$TMPDIR/qmp-command-names.txt"
             grep -F -x -q snapshot-save "$TMPDIR/qmp-command-names.txt"

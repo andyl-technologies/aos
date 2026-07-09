@@ -258,16 +258,18 @@ fn apply_auth_to_engine(engine: &TransferEngine, url: &str, auth: &AuthOptions) 
                 );
             }
             // Custom headers: use the first one as a Header credential if present.
-            if auth.token.is_none() && auth.http_user.is_none() && !auth.headers.is_empty() {
-                if let Some((k, v)) = auth.headers[0].split_once(':') {
-                    engine.auth().set(
-                        &host,
-                        aos_net::Credential::Header {
-                            name: k.trim().to_string(),
-                            value: v.trim().to_string(),
-                        },
-                    );
-                }
+            if auth.token.is_none()
+                && auth.http_user.is_none()
+                && !auth.headers.is_empty()
+                && let Some((k, v)) = auth.headers[0].split_once(':')
+            {
+                engine.auth().set(
+                    &host,
+                    aos_net::Credential::Header {
+                        name: k.trim().to_string(),
+                        value: v.trim().to_string(),
+                    },
+                );
             }
         }
         "s3" => {

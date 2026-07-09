@@ -33,7 +33,7 @@ fn gate_control_responsive_declares_in_process_sim_double_backend() {
         CONTROL_RESPONSIVE_BACKEND,
         "crucible::SimDouble quantum-loop adapter"
     );
-    assert!(!CONTROL_RESPONSIVE_REQUIRES_REAL_QEMU);
+    const { assert!(!CONTROL_RESPONSIVE_REQUIRES_REAL_QEMU) };
     assert_eq!(
         FIDELITY_PROPERTIES_REQUIRING_QEMU,
         ["contract-a", "guest-non-mutation", "patch-inertness"]
@@ -788,13 +788,12 @@ fn resolved_control_event(sequence: u64) -> ScheduledEvent {
 }
 
 fn control_node() -> SchedulerNodeId {
-    let node = SchedulerNodeId {
+    SchedulerNodeId {
         node: NodeId {
             name: String::from("control-plane"),
         },
         kind: SchedulingNodeKind::ControlPlane,
-    };
-    node
+    }
 }
 
 fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {

@@ -72,8 +72,8 @@
         needle = "phase3  gate:adversarial-determinism       (modeled hostile-condition matrix)";
       }
       {
-        label = "cross-machine scope remains future work";
-        needle = "cross-machine reproduction artifacts remain owned by T-HARN-23";
+        label = "real VM/fleet scope remains packaging work";
+        needle = "real AOS\n  VM/fleet checks remain owned by the packaging tasks";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/adversarial.rs" adversarial [

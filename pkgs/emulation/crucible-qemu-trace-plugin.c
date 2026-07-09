@@ -46,6 +46,9 @@ static uint64_t io_events;
 static uint64_t register_read_failures;
 static bool extended_fingerprint;
 static bool capture_memory_events;
+static bool trace_rr_switch_events = true;
+static bool det_ipi_probe;
+static bool det_ipi_probe_commanded;
 static bool stop_requested;
 static unsigned int tracked_vcpus = 1;
 static struct register_set register_sets[MAX_TRACKED_VCPUS];
@@ -56,6 +59,20 @@ static uint64_t last_rr_cursor_position = UINT64_MAX;
 static uint64_t rr_switch_events;
 static uint64_t det_ipi_events;
 static bool rr_switch_trace_initialized;
+
+static void
+on_sim_publish_icount(uint64_t current_icount, void *userdata)
+{
+  (void)current_icount;
+  (void)userdata;
+}
+
+static uint64_t
+on_sim_max_advance_icount(void *userdata)
+{
+  (void)userdata;
+  return UINT64_MAX;
+}
 
 static uint64_t
 fnv1a_u64(uint64_t hash, uint64_t value)
@@ -299,6 +316,7 @@ record_sample(unsigned int vcpu_index, bool final)
           vcpu_index,
           stream_hash);
     }
+    fflush(trace_file);
     return;
   }
 
@@ -403,12 +421,13 @@ record_sample(unsigned int vcpu_index, bool final)
       capture_memory_events ? "true" : "false",
       register_hashes.sample_failures,
       register_read_failures);
+  fflush(trace_file);
 }
 
 static void
 record_rr_switch_event(void)
 {
-  if (trace_file == NULL || !extended_fingerprint) {
+  if (trace_file == NULL || !extended_fingerprint || !trace_rr_switch_events) {
     return;
   }
 
@@ -476,8 +495,35 @@ record_rr_switch_event(void)
   }
 
   fprintf(trace_file, "]}\n");
+  fflush(trace_file);
   last_rr_current_vcpu = rr_current_vcpu;
   last_rr_cursor_position = rr_cursor_position;
+}
+
+static void
+maybe_command_det_ipi_probe(
+    uint64_t delivery_icount,
+    unsigned int dst_vcpu,
+    unsigned int delivery_mode)
+{
+  const unsigned int target_vcpu = dst_vcpu == 0 ? 1 : 0;
+
+  if (!det_ipi_probe || det_ipi_probe_commanded || tracked_vcpus < 2 ||
+      delivery_mode != 6 || dst_vcpu >= tracked_vcpus ||
+      target_vcpu >= tracked_vcpus) {
+    return;
+  }
+
+  if (qemu_plugin_inject_preemption(
+          delivery_icount,
+          delivery_icount,
+          UINT64_MAX,
+          QEMU_PLUGIN_PREEMPTION_KIND_INTERRUPT_AT,
+          target_vcpu,
+          0x51,
+          0) == 0) {
+    det_ipi_probe_commanded = true;
+  }
 }
 
 static void
@@ -517,6 +563,9 @@ on_det_ipi_delivery(
       dst_vcpu,
       delivery_mode,
       vector);
+  fflush(trace_file);
+
+  maybe_command_det_ipi_probe(delivery_icount, dst_vcpu, delivery_mode);
 }
 
 static void
@@ -683,6 +732,10 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
       extended_fingerprint = parse_bool_flag(argv[i] + 9);
     } else if (strncmp(argv[i], "mem_events=", 11) == 0) {
       capture_memory_events = parse_bool_flag(argv[i] + 11);
+    } else if (strncmp(argv[i], "rr_switch_events=", 17) == 0) {
+      trace_rr_switch_events = parse_bool_flag(argv[i] + 17);
+    } else if (strncmp(argv[i], "det_ipi_probe=", 14) == 0) {
+      det_ipi_probe = parse_bool_flag(argv[i] + 14);
     } else if (strncmp(argv[i], "stop_at=", 8) == 0) {
       if (!parse_u64(argv[i] + 8, &stop_at)) {
         qemu_plugin_outs("crucible-qemu-trace-plugin: invalid stop_at\n");
@@ -718,6 +771,10 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   qemu_plugin_register_vcpu_init_cb(id, on_vcpu_init);
   qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
   qemu_plugin_crucible_register_ipi_delivery_cb(on_det_ipi_delivery, NULL);
+  if (det_ipi_probe) {
+    qemu_plugin_register_sim_shmem_dispatch_cb(
+        on_sim_publish_icount, on_sim_max_advance_icount, NULL);
+  }
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);
   return 0;
 }

@@ -1,6 +1,8 @@
 //! API-side checks for the shared `ControlClient` trait.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -47,7 +49,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 #[tokio::test(flavor = "current_thread")]
 async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     let (in_process, _actor) = in_process_client_fixture();
-    let rpc_server = spawn_http2_lifecycle_server().await;
+    let rpc_server = spawn_http2_hello_server().await;
     let rpc = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
         .unwrap_or_else(|error| panic!("HTTP/2 RPC client should build: {error}"));
 
@@ -124,14 +126,14 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     assert_eq!(created.session.epoch, 1);
     assert_eq!(created.session.seed, Seed::from_u64(77));
     assert_raw_send_error(
-        &rpc_server.endpoint(),
+        rpc_server.endpoint(),
         raw_send_body(created.session, 901, "crucible.cmd.no-such-command"),
         "unsupported",
         "unsupported",
     )
     .await;
     assert_raw_send_error(
-        &rpc_server.endpoint(),
+        rpc_server.endpoint(),
         String::from(
             "crucible.rpc/send-request\nsession-id=not-an-integer\nepoch=1\nseed=00\nexpected-epoch=none\ncommand-id=902\ncommand=crucible.cmd.continue\n",
         ),
@@ -244,7 +246,7 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
             SessionCommand::Continue,
         ))
         .await
-        .unwrap_or_else(|error| panic!("RPC Control Continue should decode: {error}"));
+        .unwrap_or_else(|error| panic!("RPC Control send should decode: {error}"));
     assert_eq!(control_continued.result.command_id, 101);
     assert_eq!(
         control_continued.result.status,
@@ -367,7 +369,7 @@ async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     );
     assert!(rejected_remove.state_update.is_none());
     assert_raw_send_rejection(
-        &rpc_server.endpoint(),
+        rpc_server.endpoint(),
         raw_send_body(created.session, 106, "crucible.cmd.remove-breakpoint"),
         "crucible.cmd.remove-breakpoint",
         "not-found",
@@ -3477,6 +3479,10 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     }
 }
 
+async fn spawn_http2_hello_server() -> Http2LifecycleServer {
+    spawn_http2_lifecycle_server().await
+}
+
 async fn record_rpc_arrival(
     arrival_log: std::sync::Arc<Mutex<Vec<&'static str>>>,
     label: &'static str,
@@ -4384,6 +4390,8 @@ fn parse_optional_epoch_line(
         .map_err(|error| format!("invalid integer `{value}` for `{prefix}`: {error}"))
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn parse_session_command(
     line: Option<&str>,
     prefix: &'static str,
@@ -4694,7 +4702,7 @@ fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
 }
 
 fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(format!("hex string has odd length {}", value.len()));
     }
     let mut bytes = Vec::with_capacity(value.len() / 2);

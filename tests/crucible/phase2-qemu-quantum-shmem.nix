@@ -13,6 +13,17 @@
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   quantumLib = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  # Production-only slice (everything before the `#[cfg(test)]` module): the
+  # no-unwrap/no-expect forbids apply to production code; test code is allowed
+  # panic shortcuts, matching the workspace clippy allow policy. `splitString`
+  # treats its separator as a literal set of chars-to-split-on rather than a
+  # regex only for single chars, so use replaceStrings to insert a unique
+  # sentinel then split on it.
+  quantumProd = builtins.head (
+    lib.splitString "@@CFGTEST@@" (
+      builtins.replaceStrings ["\n#[cfg(test)]"] ["@@CFGTEST@@"] quantumLib
+    )
+  );
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -162,16 +173,20 @@
         needle = "publish_scheduler_ceiling";
       }
       {
+        # Renamed: the wake publishes the inbound entry then wakes the slot.
         label = "frame wake";
-        needle = "wake_for_frame_delivery";
+        needle = "publish_inbound_entry_and_wake";
       }
       {
-        label = "SPSC enqueue";
-        needle = ".enqueue(self.view.inbound_entries";
+        # The host enqueues on the OUTBOUND ring and dequeues from the INBOUND
+        # ring; the old needle had the ring direction inverted against the
+        # current SPSC model.
+        label = "SPSC outbound enqueue";
+        needle = ".enqueue(self.view.outbound_entries";
       }
       {
-        label = "SPSC dequeue";
-        needle = ".dequeue(self.view.outbound_entries)";
+        label = "SPSC inbound dequeue";
+        needle = ".dequeue(self.view.inbound_entries)";
       }
       {
         label = "stale report rejection";
@@ -218,7 +233,7 @@
         needle = "qemu_quantum_implements_existing_shmem_hot_path_trait";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
+    ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumProd [
       {
         label = "production unwrap";
         needle = ".unwrap()";

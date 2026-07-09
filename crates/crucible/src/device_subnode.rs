@@ -20,15 +20,15 @@
 //!    [`next_exact_local_event`](DeviceSchedulingSubNode::next_exact_local_event)
 //!    is its in-flight head's **final** (post-fault) `delivery_icount` ([IO-31]).
 //!    The scheduler folds it into the owning VM node's
-//!    [`NextExactLocalEvent::io_completion`](crate::NextExactLocalEvent) term, so
-//!    an otherwise-idle requester is fast-forwarded **exactly** to its next I/O
-//!    completion with no conservative slack ([IO-3], [SCHED-10]).
+//!    [`ExactLocalEvent::IoCompletion`](crate::scheduler::ExactLocalEvent::IoCompletion)
+//!    term, so an otherwise-idle requester is fast-forwarded **exactly** to its
+//!    next I/O completion with no conservative slack ([IO-3], [SCHED-10]).
 //! 2. **RESOLVE delivery.** When the requester's frontier reaches a completion's
 //!    `delivery_icount`, [`DeviceSchedulingSubNode::deliver_due`] makes the
 //!    response visible at exactly that icount in the canonical
 //!    `(delivery_icount, src_node, seq)` total order ([IO-10], [SCHED-29]),
 //!    transport-timing-independent, and appends the per-device fault
-//!    [`Decision`](crate::Decision)s the completion drew ([SCHED-30]).
+//!    [`Decision`]s the completion drew ([SCHED-30]).
 //!
 //! # When fault choices are drawn vs recorded
 //!
@@ -40,7 +40,7 @@
 //! term the scheduler reads is the **exact** completion the requester will
 //! observe — never a pre-fault estimate the run would then have to deliver late.
 //! The raw draws and fault outcomes are buffered with the pending completion and
-//! **recorded as [`Decision`](crate::Decision)s on the RESOLVE path**, in delivery
+//! **recorded as [`Decision`]s on the RESOLVE path**, in delivery
 //! order, so the recorded schedule is appended in the §8.6 total order exactly as
 //! [`resolve_frame`](crate::scheduler) records a link-loss outcome ([SCHED-30]).
 //!
@@ -323,7 +323,7 @@ impl DeviceSchedulingSubNode {
     /// device and records it in delivery-key order. Fault resolution — which
     /// fixes the **final** (post-fault) `delivery_icount` the horizon reads and
     /// draws every probabilistic choice from the per-device RNG — is deferred to
-    /// [`DeviceSchedulingSubNode::resolve_all`], run over the *sorted* modeled set,
+    /// `DeviceSchedulingSubNode::resolve_all`, run over the *sorted* modeled set,
     /// so the result is a pure function of the request set and the seed and is
     /// **independent of the COMPUTE/submit order** ([IO-4]). The device's own clock
     /// is never advanced here; delivery is driven solely by the scheduler through
@@ -533,8 +533,9 @@ impl DeviceSchedulingSubNode {
     /// sub-node's next exact local event ([IO-31], [SCHED-10]).
     ///
     /// This is what the scheduler folds into the owning VM node's
-    /// [`NextExactLocalEvent::io_completion`](crate::NextExactLocalEvent) term, so
-    /// an idle requester is fast-forwarded exactly to its next I/O completion.
+    /// [`ExactLocalEvent::IoCompletion`](crate::scheduler::ExactLocalEvent::IoCompletion)
+    /// term, so an idle requester is fast-forwarded exactly to its next I/O
+    /// completion.
     /// Returns `None` when nothing is in flight.
     #[must_use]
     pub fn next_exact_local_event(&self) -> Option<u64> {

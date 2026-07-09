@@ -159,7 +159,7 @@ impl PluginVcpuRegisterSnapshot {
         self.register_file_bytes
     }
 
-    /// Returns the vCPU-local retired-instruction count sampled with the registers.
+    /// Returns the adapter-provided retired-instruction stamp for the registers.
     #[must_use]
     pub const fn retired_instruction_count(&self) -> u64 {
         self.retired_instruction_count

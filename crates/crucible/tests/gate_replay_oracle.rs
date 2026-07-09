@@ -1,6 +1,8 @@
 //! Implements `gate:replay-oracle` over the in-process reduction model.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::error::Error;
 use std::io::{Error as IoError, ErrorKind};
@@ -41,6 +43,8 @@ struct MaterializedCheckpoint {
     observational_entries: Vec<String>,
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::enum_variant_names)]
 enum ReproductionArtifactErrorCoverage {
     BuildIdentityMismatch,
     FingerprintMismatch,

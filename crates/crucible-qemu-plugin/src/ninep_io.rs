@@ -723,7 +723,6 @@ pub struct NinePWireHandlerOutcome {
 
 impl NinePWireHandlerOutcome {
     /// Returns the request decode result.
-    #[must_use]
     pub const fn request(&self) -> &Result<NinePWireMessage, NinePWireError> {
         &self.request
     }

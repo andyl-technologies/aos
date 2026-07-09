@@ -51,6 +51,39 @@
       map (relative: builtins.readFile (root + "/${relative}"))
       (rustFilesUnder "crates/crucible/src")
     );
+  scrubLintVocabulary = content:
+    builtins.replaceStrings
+    [
+      ''"thread_rng"''
+      ''"rand::"''
+      ''"rand::rng"''
+      ''"rand::random"''
+      ''"DefaultHasher"''
+      ''"RandomState"''
+      ''"HashMap"''
+    ]
+    [
+      ''"lint-vocabulary-thread-rng"''
+      ''"lint-vocabulary-rand-path"''
+      ''"lint-vocabulary-rand-rng"''
+      ''"lint-vocabulary-rand-random"''
+      ''"lint-vocabulary-default-hasher"''
+      ''"lint-vocabulary-random-state"''
+      ''"lint-vocabulary-hash-map"''
+    ]
+    content;
+  engineCodeOutsideLintVocabulary =
+    builtins.concatStringsSep "\n" (
+      map (
+        relative: let
+          content = builtins.readFile (root + "/${relative}");
+        in
+          if relative == "crates/crucible/src/trigger.rs"
+          then scrubLintVocabulary content
+          else content
+      )
+      (rustFilesUnder "crates/crucible/src")
+    );
   engineCodeOutsideDecision =
     builtins.concatStringsSep "\n" (
       map (relative: builtins.readFile (root + "/${relative}"))
@@ -281,7 +314,7 @@
         needle = "decisionRecording = import ./phase1-decision-recording.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src" engineCode [
+    ++ forbiddenFor "crates/crucible/src outside lint vocabulary" engineCodeOutsideLintVocabulary [
       {
         label = "ambient rand crate use";
         needle = "rand::";

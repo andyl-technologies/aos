@@ -2,7 +2,7 @@
 //!
 //! This module owns the shipped RFC-0010 example artifacts that double as
 //! determinism fixtures. Each fixture is a regular content-addressed
-//! [`ScenarioDefForm`](crate::model::ScenarioDefForm) plus a deterministic
+//! [`ScenarioDefForm`] plus a deterministic
 //! double-backed run script that proves the scenario can pass and reproduce
 //! without any guest-side Crucible component.
 
@@ -195,7 +195,7 @@ pub struct FaultCampaignExampleReport {
 #[derive(Debug)]
 pub enum ExampleCorpusError {
     /// The underlying scenario model rejected the fixture.
-    Engine(EngineError),
+    Engine(Box<EngineError>),
     /// The scheduler event-log path rejected the fixture run proof.
     Scheduler(SchedulerError),
     /// A scenario expected to pass did not fire a pass action.
@@ -243,9 +243,9 @@ pub enum ExampleCorpusError {
     /// The fault-campaign retained assertion log could not be folded.
     FaultCampaignViolationLog(OfflineAssertionCheckError),
     /// The fault-campaign assertion violation did not replay bit-identically.
-    FaultCampaignViolationReplay(AssertionViolationReplayError),
+    FaultCampaignViolationReplay(Box<AssertionViolationReplayError>),
     /// The temporal graph could not persist the savepoint closure.
-    TemporalGraphStore(TemporalGraphStoreError),
+    TemporalGraphStore(Box<TemporalGraphStoreError>),
 }
 
 impl fmt::Display for ExampleCorpusError {
@@ -332,7 +332,7 @@ impl Error for ExampleCorpusError {
 
 impl From<EngineError> for ExampleCorpusError {
     fn from(error: EngineError) -> Self {
-        Self::Engine(error)
+        Self::Engine(Box::new(error))
     }
 }
 
@@ -344,7 +344,7 @@ impl From<SchedulerError> for ExampleCorpusError {
 
 impl From<TemporalGraphStoreError> for ExampleCorpusError {
     fn from(error: TemporalGraphStoreError) -> Self {
-        Self::TemporalGraphStore(error)
+        Self::TemporalGraphStore(Box::new(error))
     }
 }
 
@@ -458,8 +458,8 @@ pub fn partition_recovery_scenario() -> Result<ExampleScenarioFixture, ExampleCo
     let root = example_blob("partition-recovery-unmodified-store-root-image");
     let world = World::from_nodes_and_links(
         vec![
-            partition_node("db-0", kernel.clone(), root.clone()),
-            partition_node("db-1", kernel.clone(), root.clone()),
+            partition_node("db-0", kernel, root),
+            partition_node("db-1", kernel, root),
             partition_node("db-2", kernel, root),
         ],
         vec![
@@ -501,8 +501,8 @@ pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusE
     let root = example_blob("crash-restart-unmodified-store-root-image");
     let world = World::from_nodes_and_links(
         vec![
-            crash_restart_node("db-0", kernel.clone(), root.clone()),
-            crash_restart_node("db-1", kernel.clone(), root.clone()),
+            crash_restart_node("db-0", kernel, root),
+            crash_restart_node("db-1", kernel, root),
             crash_restart_node("db-2", kernel, root),
         ],
         vec![
@@ -571,7 +571,7 @@ pub fn fault_campaign_family() -> Result<ScenarioFamily, ExampleCorpusError> {
 pub fn run_fault_campaign_example_default() -> Result<FaultCampaignExampleReport, ExampleCorpusError>
 {
     run_fault_campaign_example(CoverageGuidedFuzzConfig::new(
-        Seed::from_u64(0x33_a4_f00d),
+        Seed::from_u64(0x33a4_f00d),
         FAULT_CAMPAIGN_DEFAULT_RUNS,
     ))
 }
@@ -626,7 +626,7 @@ pub fn run_fault_campaign_example(
         &violation.recorded_log,
         &replayed_violation,
     )
-    .map_err(ExampleCorpusError::FaultCampaignViolationReplay)?;
+    .map_err(|error| ExampleCorpusError::FaultCampaignViolationReplay(Box::new(error)))?;
 
     let pre_failure = discovered_iteration
         .scenario
@@ -1583,6 +1583,8 @@ fn run_example_scenario_material(
     })
 }
 
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
+#[allow(clippy::too_many_arguments)]
 fn settle_example_step(
     scheduler: &mut SingleScheduler,
     graph: &EventGraph,
@@ -2205,7 +2207,7 @@ fn bytes_hex(bytes: &[u8]) -> String {
 }
 
 fn bytes_from_hex(scenario_name: &str, hex: &str) -> Result<Vec<u8>, ExampleCorpusError> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(invalid_replay_schedule(
             scenario_name,
             "hex payload has an odd length",

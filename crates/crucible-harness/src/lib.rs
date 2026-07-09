@@ -15,10 +15,11 @@
 //! Module map: [`abi`] compares golden vectors, [`adversarial`] compares
 //! hostile-profile runs, [`divergence`] localizes mismatches, [`e2e`] runs the
 //! mock end-to-end determinism gate, [`fingerprint`] compares fingerprint
-//! streams, [`gate_targets`] indexes Cargo gate targets, [`phase_plan`] records
-//! the ordered gate occurrences, [`replay_oracle`] compares replay hashes,
-//! [`reproduction`] owns the versioned reproduction artifact format, and
-//! [`spec_index`] owns the crate-to-RFC map.
+//! streams, [`gate_targets`] indexes Cargo gate targets, [`perf`] owns the
+//! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
+//! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
+//! the versioned reproduction artifact format, and [`spec_index`] owns the
+//! crate-to-RFC map.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -30,6 +31,7 @@ pub mod divergence;
 pub mod e2e;
 pub mod fingerprint;
 pub mod gate_targets;
+pub mod perf;
 pub mod phase_plan;
 pub mod replay_oracle;
 pub mod reproduction;
@@ -222,7 +224,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:perf-bench",
         phase: GatePhase::Phase7,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:fleet-equivalence",

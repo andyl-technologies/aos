@@ -246,8 +246,13 @@ fn gate_e2e_determinism_accepts_machine_profile_that_changes_only_scheduling() {
     ];
 
     let report =
-        run_mock_e2e_determinism_gate(&artifact, &profiles, &canonical_mock_build_identity())
-            .expect("task-order/load/skew drift is a different machine profile");
+        match run_mock_e2e_determinism_gate(&artifact, &profiles, &canonical_mock_build_identity())
+        {
+            Ok(report) => report,
+            Err(error) => {
+                panic!("task-order/load/skew drift is a different machine profile: {error}")
+            }
+        };
 
     assert_eq!(report.cross_machine_reproductions.len(), 1);
     assert_eq!(

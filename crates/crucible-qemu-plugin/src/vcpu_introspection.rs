@@ -45,7 +45,7 @@ pub const MAX_VCPU_REGISTER_FILE_BYTES: usize = 4096;
 ///
 /// The patched adapter writes canonical architectural register bytes for
 /// `vcpu_id` into `out_register_bytes`, stores the byte count in
-/// `out_register_len`, stores the vCPU-local retired-instruction count in
+/// `out_register_len`, stores an adapter-provided retired-instruction stamp in
 /// `out_retired_instruction_count`, and returns zero on success.
 pub type QemuReadVcpuRegsFn = extern "C" fn(u32, *mut u8, usize, *mut usize, *mut u64) -> c_int;
 
@@ -125,7 +125,7 @@ impl PluginVcpuRegisterDigest {
         self.register_file_bytes
     }
 
-    /// Returns the vCPU-local retired-instruction count sampled with the registers.
+    /// Returns the adapter-provided retired-instruction stamp for the registers.
     #[must_use]
     pub const fn retired_instruction_count(&self) -> u64 {
         self.retired_instruction_count
@@ -558,24 +558,20 @@ const fn fnv1a_u64(mut hash: u64, value: u64) -> u64 {
 mod tests {
     use super::*;
 
-    use std::sync::Mutex;
+    use std::cell::RefCell;
 
     use crate::RoundRobinConfig;
 
-    static READ_LOG: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+    thread_local! {
+        static READ_LOG: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    }
 
     fn reset_log() {
-        match READ_LOG.lock() {
-            Ok(mut log) => log.clear(),
-            Err(poisoned) => poisoned.into_inner().clear(),
-        }
+        READ_LOG.with(|log| log.borrow_mut().clear());
     }
 
     fn read_log() -> Vec<u32> {
-        match READ_LOG.lock() {
-            Ok(log) => log.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
-        }
+        READ_LOG.with(|log| log.borrow().clone())
     }
 
     extern "C" fn read_test_registers(
@@ -588,10 +584,7 @@ mod tests {
         if vcpu_id >= 2 || out_register_capacity < 3 {
             return -2;
         }
-        match READ_LOG.lock() {
-            Ok(mut log) => log.push(vcpu_id),
-            Err(poisoned) => poisoned.into_inner().push(vcpu_id),
-        }
+        READ_LOG.with(|log| log.borrow_mut().push(vcpu_id));
         // SAFETY: tests pass pointers to live stack variables and a buffer with
         // at least three bytes when this helper returns success.
         unsafe {

@@ -115,8 +115,16 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
+        label = "Icount exported";
+        needle = "Icount,";
+      }
+      {
+        label = "IrqVector exported";
+        needle = "IrqVector,";
+      }
+      {
         label = "LinkDef exported";
-        needle = "Icount, IrqVector, LinkDef";
+        needle = "LinkDef,";
       }
       {
         label = "canonical topology test";

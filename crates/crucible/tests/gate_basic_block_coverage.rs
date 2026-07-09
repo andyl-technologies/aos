@@ -1,6 +1,8 @@
 //! Implements `gate:basic-block-coverage` for TCG-exec coverage feedback.
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
     BasicBlockCoverageConfig, BasicBlockCoverageError, BasicBlockCoverageMode,

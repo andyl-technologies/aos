@@ -178,6 +178,7 @@
   featureFailures =
     assertFeatureSet "crucible" {
       default = [];
+      test-support = [];
       test-double = ["dep:crucible-protocol" "dep:crucible-shmem"];
       qemu-backend = [];
     }

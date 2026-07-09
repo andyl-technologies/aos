@@ -311,10 +311,14 @@ in
 
           cat "$TMPDIR"/trace-*.jsonl > "$TMPDIR/all-traces.jsonl"
 
+          # The patch series has since landed the qemu_plugin_clock_deadline_ns
+          # export, so the capability probe now reports it available; the
+          # spike's throwaway probe still does not consume it, and the pause
+          # surface still overshoots, so the TB-split fallback stands.
           jq -e -s '
             [ .[] | select(.event == "final") ] as $finals
             | ($finals | length) == 3
-              and all($finals[]; .deadline_api_available == false)
+              and all($finals[]; .deadline_api_available == true)
               and all($finals[]; .deadline_exact == false)
               and all($finals[]; .request_exact == true)
               and any($finals[]; .mode == "dynamic-interior" and .target_inside_tb == true)
@@ -344,7 +348,7 @@ in
           result_status=PASS_WITH_FALLBACK
           exact_next_deadline_capability=false
           max_advance_exact_capability=false
-          fallback_adopted=clock_deadline_export_and_tb_split_required
+          fallback_adopted=tb_split_exact_pause_deadline_export_landed
           layer1_scheduler_fast_forward_enabled=false
 
           cp "$TMPDIR"/trace-fixed-a.jsonl "$out/trace-fixed-a.jsonl"
@@ -370,7 +374,7 @@ in
             echo deadline_symbol=qemu_plugin_clock_deadline_ns
             echo deadline_api_available="$deadline_api_available"
             echo idle_wake_icount_reported=unavailable
-            echo actual_timer_fire_icount=not_measured_missing_deadline_api
+            echo actual_timer_fire_icount=not_measured_spike_probe_predates_export_use
             echo exact_deadline_match=false
             echo request_exact_all="$request_exact_all"
             echo zero_overshoot_all="$zero_overshoot_all"

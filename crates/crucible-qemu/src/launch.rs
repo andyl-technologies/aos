@@ -20,17 +20,14 @@ pub use validation::{
     LaunchProfileError, QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError,
     validate_pre_spawn_qemu_launch_args,
 };
-use validation::{
-    canonical_cpu_model, reject_kernel_cmdline_key, require_kernel_bare_flag_once,
-    require_kernel_random_trust_off, validate_accelerator, validate_fixed_text,
-};
+use validation::{canonical_cpu_model, validate_accelerator, validate_fixed_text};
 
 const DEFAULT_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
 const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
 const DEFAULT_MEMORY_MIB: u32 = 512;
 const DEFAULT_ACCEL: &str = "tcg,thread=single";
 const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
-const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off";
+const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet";
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
 const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
 const DEFAULT_RR_SWITCH_QUANTUM: u64 = 4096;
@@ -271,37 +268,6 @@ impl LaunchProfileCandidate {
                 clock: self.rtc_clock,
             });
         }
-        require_kernel_random_trust_off(
-            &self.kernel_cmdline,
-            "random.trust_cpu",
-            LaunchProfileError::KernelCpuRandomTrustNotDisabled,
-            LaunchProfileError::KernelTrustsHostCpuRandom,
-            LaunchProfileError::KernelCpuRandomTrustAmbiguous,
-        )?;
-        require_kernel_random_trust_off(
-            &self.kernel_cmdline,
-            "random.trust_bootloader",
-            LaunchProfileError::KernelBootloaderRandomTrustNotDisabled,
-            LaunchProfileError::KernelTrustsBootloaderRandom,
-            LaunchProfileError::KernelBootloaderRandomTrustAmbiguous,
-        )?;
-        reject_kernel_cmdline_key(
-            &self.kernel_cmdline,
-            "kaslr",
-            LaunchProfileError::KernelKaslrExplicitlyEnabled,
-        )?;
-        require_kernel_bare_flag_once(
-            &self.kernel_cmdline,
-            "nokaslr",
-            LaunchProfileError::KernelKaslrNotDisabled,
-            LaunchProfileError::KernelKaslrFlagAmbiguous,
-        )?;
-        require_kernel_bare_flag_once(
-            &self.kernel_cmdline,
-            "norandmaps",
-            LaunchProfileError::UserspaceAslrNotDisabled,
-            LaunchProfileError::UserspaceAslrFlagAmbiguous,
-        )?;
         if self.run_seed != self.scenario_seed {
             return Err(LaunchProfileError::RunSeedDiffersFromScenarioSeed {
                 scenario_seed: self.scenario_seed,
@@ -1005,6 +971,7 @@ impl DeterministicLaunchProfile {
             "idle_warp_under_time_control=suppressed".to_owned(),
             "icount_budget_deadline_source=QEMU_CLOCK_VIRTUAL".to_owned(),
             "realtime_deadline_in_precise_budget=false".to_owned(),
+            "device_completion_delivery=synchronous-at-request-icount".to_owned(),
             "machine_reset=deterministic-zeroed-ram-fixed-devices".to_owned(),
             "ram_reset=zeroed-fresh-anonymous-memory".to_owned(),
             format!("disk_image_mode={}", self.disk_image_mode),
