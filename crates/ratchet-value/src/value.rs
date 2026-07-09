@@ -4,8 +4,12 @@
 //! tagged word pair. The tag word carries the Nix value form and the payload word
 //! carries either an inline scalar (`i64`, `f64`, `bool`) or a [`NonNull`]
 //! pointer to an evaluator heap object. No active NaN-boxed or pointer-tagged
-//! value representation is implemented here; [`tag`], [`nanbox`], and [`small`]
-//! capture the safe bit-layout contracts for later measured variants.
+//! value representation is implemented here; [`tag`] and [`nanbox`] capture
+//! the safe bit-layout contracts for later measured variants. (The former
+//! `small` module's 0/1/2-element inline-constructor contract was retired by
+//! doc 30 stage FV-2: no allocation, resolution, or dispatch path ever
+//! consulted it, and its inline-payload role is subsumed by the flat heap
+//! objects in `crate::heap::flat` — see that module's §11.7 boundary note.)
 
 use std::fmt;
 use std::mem;
@@ -14,7 +18,6 @@ use std::ptr::NonNull;
 use thiserror::Error;
 
 pub mod nanbox;
-pub mod small;
 pub mod tag;
 
 use tag::{HEAP_POINTER_ALIGNMENT as HEAP_POINTER_ALIGN, POINTER_TAG_MASK as HEAP_POINTER_MASK};

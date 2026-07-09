@@ -21,12 +21,12 @@
 //! # Resolution order
 //!
 //! ```text
-//! get_*(ptr), record-backed kinds (attrs/lambda/primop/thunk):
+//! get_*(ptr), record-backed kinds (lambda/primop/thunk):
 //!   1. own-shard private index (plain HashMap, no lock)  - hit: chunk deref
 //!   2. arena cross-shard probe (per-shard RwLock read)   - other workers' values
 //!   3. miss -> EvalHeapError::UnknownPointer
 //!
-//! get_*(ptr), flat kinds (string/path/list, doc 30 FV-1):
+//! get_*(ptr), flat kinds (string/path/list/attrs, doc 30 FV-1/FV-2):
 //!   1. own-shard flat store membership (range compares, no index, no lock)
 //!   2. cross-shard flat store membership (same arithmetic, per shard)
 //!   3. miss -> type-mismatch fidelity probe, then UnknownPointer
@@ -84,8 +84,8 @@ use crate::heap::flat::shared::SharedFlatObject;
 use super::record_table::AddressHasher;
 use super::{
     EvalHeap, EvalHeapAttrsMetadata, EvalHeapError, EvalLambda, EvalPrimOp, EvalThunk,
-    HeapAllocationDomain, HeapObjectValue, HeapValueHashCacheUpdate, SharedHeapArena,
-    SharedHeapShard, initial_generation_for_allocation_domain,
+    FlatAttrsPayload, HeapAllocationDomain, HeapObjectValue, HeapValueHashCacheUpdate,
+    SharedHeapArena, SharedHeapShard, initial_generation_for_allocation_domain,
 };
 use crate::heap::HeapGeneration;
 
@@ -202,6 +202,16 @@ impl SharedHeapBackend {
             .or_else(|| self.arena.resolve_flat_list(ptr))
     }
 
+    /// Resolves `ptr` as a flat attrset, own shard first.
+    fn resolve_flat_attrs(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&SharedFlatObject<FlatAttrsPayload>> {
+        self.shard
+            .resolve_flat_attrs(ptr)
+            .or_else(|| self.arena.resolve_flat_attrs(ptr))
+    }
+
     /// Returns the value tag of the flat object at `ptr`, if any shard owns
     /// one there.
     fn flat_tag_at(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
@@ -280,13 +290,9 @@ impl SharedHeapBackend {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<&FlatAttrs, EvalHeapError> {
-        match self.resolve_or_unknown(ValueTag::Attrs, ptr)? {
-            HeapObjectValue::Attrs { attrs, .. } => Ok(attrs),
-            object => Err(EvalHeapError::record_type_mismatch(
-                ValueTag::Attrs,
-                object.tag(),
-                ptr,
-            )),
+        match self.resolve_flat_attrs(ptr) {
+            Some(object) => Ok(&object.payload().attrs),
+            None => Err(self.flat_miss_error(ValueTag::Attrs, ptr)),
         }
     }
 
@@ -300,13 +306,9 @@ impl SharedHeapBackend {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<EvalHeapAttrsMetadata, EvalHeapError> {
-        match self.resolve_or_unknown(ValueTag::Attrs, ptr)? {
-            HeapObjectValue::Attrs { metadata, .. } => Ok(*metadata),
-            object => Err(EvalHeapError::record_type_mismatch(
-                ValueTag::Attrs,
-                object.tag(),
-                ptr,
-            )),
+        match self.resolve_flat_attrs(ptr) {
+            Some(object) => Ok(object.payload().metadata),
+            None => Err(self.flat_miss_error(ValueTag::Attrs, ptr)),
         }
     }
 
@@ -792,11 +794,10 @@ impl EvalHeap {
                 .try_find(&hash, |value| {
                     let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
                     Ok::<bool, EvalHeapError>(matches!(
-                        shared.resolve_ptr(ptr),
-                        Some(HeapObjectValue::Attrs {
-                            metadata: candidate_metadata,
-                            attrs: candidate_attrs,
-                        }) if *candidate_metadata == metadata && candidate_attrs.raw_eq(&attrs)
+                        shared.resolve_flat_attrs(ptr),
+                        Some(candidate) if candidate.structural_hash() == hash.raw()
+                            && candidate.payload().metadata == metadata
+                            && candidate.payload().attrs.raw_eq(&attrs)
                     ))
                 })?
                 .copied()
@@ -810,8 +811,11 @@ impl EvalHeap {
             .attrs_cons
             .reserve_slot(hash)
             .map_err(EvalHeapError::from)?;
-        let result = match self.shared.as_mut() {
-            Some(shared) => shared.alloc_object(HeapObjectValue::Attrs { metadata, attrs }),
+        let result = match self.shared.as_ref() {
+            Some(shared) => shared
+                .shard
+                .publish_flat_attrs(hash.raw(), FlatAttrsPayload { metadata, attrs })
+                .map_err(EvalHeapError::SharedArena),
             None => Err(EvalHeapError::SharedBackendMissing),
         };
         let value = match result {

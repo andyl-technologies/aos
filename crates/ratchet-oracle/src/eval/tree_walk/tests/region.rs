@@ -244,17 +244,18 @@ fn discard_worker_region_scope_retires_mark_after_pop_error() {
 
     let error = evaluator
         .discard_worker_region_if_plan_permits(plan, |eval| {
-            // A permanent record-backed value (strings and lists are flat
-            // since FV-1, so an attrset stands in as the permanent record).
-            let mut symbols = SymbolTable::new();
-            let key = symbols.intern(b"name").expect("symbol interns");
-            let attrs = FlatAttrs::new(vec![AttrEntry::new(key, Value::int(59))], &symbols)
-                .expect("attrset builds");
+            // Since FV-2 no allocation path creates a permanent record
+            // (strings, lists, and attrsets are all flat), so the fixture
+            // manufactures one: a worker record flipped to the
+            // permanent-shared domain.
             let value = eval
                 .heap
-                .alloc_attrs(42, attrs)
-                .expect("permanent attrset allocates");
-            assert_eq!(value.tag(), ValueTag::Attrs);
+                .alloc_thunk(EvalThunk::new(IrId::new(59)))
+                .expect("fixture thunk allocates");
+            eval.heap
+                .set_allocation_domain_for_test(value, HeapAllocationDomain::PermanentShared)
+                .expect("record domain flips to permanent-shared");
+            assert_eq!(value.tag(), ValueTag::Thunk);
         })
         .expect_err("permanent suffix rejects lexical worker-region pop");
 

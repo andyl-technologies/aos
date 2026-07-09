@@ -7,14 +7,17 @@
 //! representation/shape metadata, [`EvalLambda`], [`EvalPrimOp`], and
 //! [`EvalThunk`] values.
 //!
-//! Strings, paths, and lists are the exception since RFC-0007 doc 30 stage
-//! FV-1: their payloads live *flat* behind the value address (header plus
-//! payload in a flat object store) and never enter the record table — in
-//! serial mode with string bytes inlined after the payload (FV-1b), and in
-//! shared mode as per-shard published flat slots. Lists carry heap edges, so
-//! the serial flat list store participates in the B1 sweep's permanent-edge
-//! seeding, worker-region-pop retained-edge validation, collector-poll edge
-//! snapshots/writebacks, and edge scans; see `flat_values` for the seam.
+//! Strings, paths, lists, and attrsets are the exception since RFC-0007
+//! doc 30 stages FV-1/FV-2: their payloads live *flat* behind the value
+//! address (header plus payload in a flat object store) and never enter the
+//! record table — in serial mode with string bytes inlined after the payload
+//! (FV-1b), and in shared mode as per-shard published flat slots. Lists and
+//! attrsets carry heap edges, so their serial flat stores participate in the
+//! B1 sweep's permanent-edge seeding, worker-region-pop retained-edge
+//! validation, collector-poll edge snapshots/writebacks, and edge scans; see
+//! `flat_values` for the seam. After FV-2 the record table's remaining
+//! population is the worker-domain closure kinds (thunks, lambdas, partially
+//! applied builtins), which move in stage FV-3.
 
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -63,6 +66,7 @@ mod thunk;
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};
 use flat_values::FlatColdHashStore;
+pub(crate) use flat_values::attrs::FlatAttrsPayload;
 
 use crate::heap::flat::{FlatObjectKind, FlatObjectStore};
 pub use gc::{EvalGcMode, EvalHeapSweepReport};
@@ -288,13 +292,22 @@ pub struct EvalHeap {
     /// collector-poll edge snapshots/writebacks, and edge scans. See
     /// `flat_values::lists` for the integration seam.
     flat_lists: FlatObjectStore<NixList>,
+    /// Flat attribute-set objects (doc 30 FV-2, serial mode).
+    ///
+    /// Attrsets are permanent-domain hash-consed values like lists, carry
+    /// heap **edges** in their entry values, and additionally carry shape
+    /// metadata in the payload (see [`FlatAttrsPayload`] for the placement
+    /// decision). The store participates in the same four GC couplings as
+    /// the flat list store; see `flat_values::attrs` for the seam.
+    flat_attrs: FlatObjectStore<FlatAttrsPayload>,
     /// Sparse cutoff-cache hash side map for flat objects.
     flat_cold_hashes: FlatColdHashStore,
-    /// Flat list addresses whose header hash word went stale after a
-    /// collector-poll heap-field writeback rewrote an element in place (the
-    /// flat analog of a record's `structural_hash = None` at commit);
-    /// hash-cons admission must skip these addresses for dedup.
-    flat_list_stale_hashes: std::collections::HashSet<
+    /// Flat object addresses (lists or attrsets) whose header hash word went
+    /// stale after a collector-poll heap-field writeback rewrote a field in
+    /// place (the flat analog of a record's `structural_hash = None` at
+    /// commit); hash-cons admission must skip these addresses for dedup.
+    /// Addresses are unique across the flat stores, so one set serves both.
+    flat_stale_hashes: std::collections::HashSet<
         usize,
         std::hash::BuildHasherDefault<record_table::AddressHasher>,
     >,
@@ -579,6 +592,10 @@ enum HeapObjectValue {
     #[allow(dead_code)]
     Path(NixString),
     List(NixList),
+    /// Never constructed since doc 30 FV-2 moved attrsets into the flat
+    /// stores (serial and shared); retained for the same record-generic
+    /// exhaustiveness reasons as [`HeapObjectValue::Path`].
+    #[allow(dead_code)]
     Attrs {
         metadata: EvalHeapAttrsMetadata,
         attrs: FlatAttrs,

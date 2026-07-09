@@ -265,15 +265,24 @@ impl EvalHeap {
                 _ => {}
             }
         }
-        // Flat lists (doc 30 FV-1) are permanent hash-consed objects outside
-        // the record table; their element spines seed marking exactly as
-        // record-backed permanent lists did. Flat strings/paths are edge-free
-        // and need no seeding.
+        // Flat lists and attrsets (doc 30 FV-1/FV-2) are permanent
+        // hash-consed objects outside the record table; their element spines
+        // and entry values seed marking exactly as record-backed permanent
+        // lists and attrsets did. Flat strings/paths are edge-free and need
+        // no seeding.
         for entry in self.flat_lists.iter() {
             for value in entry.object().payload().iter().copied() {
                 if is_worker_domain_tag(value.tag()) {
                     report.permanent_edge_seeds += 1;
                     worklist.push(value);
+                }
+            }
+        }
+        for entry in self.flat_attrs.iter() {
+            for attr_entry in entry.object().payload().attrs.entries_by_symbol() {
+                if is_worker_domain_tag(attr_entry.value.tag()) {
+                    report.permanent_edge_seeds += 1;
+                    worklist.push(attr_entry.value);
                 }
             }
         }

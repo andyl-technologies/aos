@@ -97,8 +97,8 @@ use crate::list::NixList;
 use crate::string::NixString;
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
-use super::HeapObjectValue;
 use super::record_table::AddressHasher;
+use super::{FlatAttrsPayload, HeapObjectValue};
 
 /// Records in the first (level-0) chunk. Level `c` holds `CHUNK_LEN << c`
 /// records, so chunk sizes grow geometrically like a `Vec`'s doubling while
@@ -184,6 +184,7 @@ const _: fn() = || {
     assert_send_sync::<SharedHeapArena>();
     assert_send_sync::<SharedFlatObjectStore<NixString>>();
     assert_send_sync::<SharedFlatObjectStore<NixList>>();
+    assert_send_sync::<SharedFlatObjectStore<FlatAttrsPayload>>();
 };
 
 /// A boxed, never-moved run of record slots.
@@ -208,6 +209,10 @@ pub struct SharedHeapShard {
     /// parallel evaluation, so none of the serial list GC couplings apply;
     /// published spines are immutable.
     flat_lists: SharedFlatObjectStore<NixList>,
+    /// Flat attribute-set objects (doc 30 FV-2, shared mode). Same quiesced
+    /// GC contract as flat lists; published entries and metadata are
+    /// immutable.
+    flat_attrs: SharedFlatObjectStore<FlatAttrsPayload>,
     /// Fixed table of chunk levels. Level `c` is boxed on demand with
     /// `CHUNK_LEN << c` slots and then never moves, so slot addresses are
     /// stable while total capacity grows geometrically.
@@ -259,6 +264,7 @@ impl SharedHeapShard {
             shard_id,
             flat_strings: SharedFlatObjectStore::with_capacity(capacity),
             flat_lists: SharedFlatObjectStore::with_capacity(capacity),
+            flat_attrs: SharedFlatObjectStore::with_capacity(capacity),
             chunks,
             next: AtomicUsize::new(0),
             published: AtomicUsize::new(0),
@@ -284,6 +290,7 @@ impl SharedHeapShard {
             .load(Ordering::Acquire)
             .saturating_add(self.flat_strings.len())
             .saturating_add(self.flat_lists.len())
+            .saturating_add(self.flat_attrs.len())
     }
 
     /// Returns the approximate payload bytes published into this shard.
@@ -295,6 +302,7 @@ impl SharedHeapShard {
             .load(Ordering::Acquire)
             .saturating_add(self.flat_strings.payload_bytes())
             .saturating_add(self.flat_lists.payload_bytes())
+            .saturating_add(self.flat_attrs.payload_bytes())
     }
 
     /// Publishes `object` into the next free slot and returns its runtime
@@ -458,6 +466,33 @@ impl SharedHeapShard {
         Ok(Value::heap(ValueTag::List, ptr)?)
     }
 
+    /// Publishes a flat attrset object and returns its runtime value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SharedHeapError::ShardFull`] when the flat store's slot
+    /// capacity is exhausted, or [`SharedHeapError::Value`] if the slot
+    /// address cannot form a valid heap value.
+    pub(super) fn publish_flat_attrs(
+        &self,
+        hash: u64,
+        payload: FlatAttrsPayload,
+    ) -> Result<Value, SharedHeapError> {
+        let payload_bytes = payload
+            .attrs
+            .len()
+            .saturating_mul(2)
+            .saturating_mul(std::mem::size_of::<Value>());
+        let ptr = self
+            .flat_attrs
+            .publish(FlatObjectKind::Attrs, hash, payload_bytes, payload)
+            .map_err(|_| SharedHeapError::ShardFull {
+                shard: self.shard_id,
+                capacity: self.capacity,
+            })?;
+        Ok(Value::heap(ValueTag::Attrs, ptr)?)
+    }
+
     /// Resolves `ptr` as a published flat string/path of `kind` in this shard.
     pub(super) fn resolve_flat_string(
         &self,
@@ -475,6 +510,14 @@ impl SharedHeapShard {
         self.flat_lists.resolve(ptr, FlatObjectKind::List)
     }
 
+    /// Resolves `ptr` as a published flat attrset in this shard.
+    pub(super) fn resolve_flat_attrs(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&SharedFlatObject<FlatAttrsPayload>> {
+        self.flat_attrs.resolve(ptr, FlatObjectKind::Attrs)
+    }
+
     /// Returns the value tag of the flat object at `ptr` in this shard.
     pub(super) fn flat_tag_at(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
         if let Some(object) = self.flat_strings.resolve_any(ptr) {
@@ -483,10 +526,18 @@ impl SharedHeapShard {
                 _ => ValueTag::String,
             });
         }
-        self.flat_lists
+        if self
+            .flat_lists
             .resolve_any(ptr)
             .and_then(|object| object.kind())
-            .map(|_| ValueTag::List)
+            .is_some()
+        {
+            return Some(ValueTag::List);
+        }
+        self.flat_attrs
+            .resolve_any(ptr)
+            .and_then(|object| object.kind())
+            .map(|_| ValueTag::Attrs)
     }
 }
 
@@ -588,6 +639,16 @@ impl SharedHeapArena {
         self.shards
             .iter()
             .find_map(|shard| shard.resolve_flat_list(ptr))
+    }
+
+    /// Resolves `ptr` as a flat attrset, across all shards.
+    pub(super) fn resolve_flat_attrs(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<&SharedFlatObject<FlatAttrsPayload>> {
+        self.shards
+            .iter()
+            .find_map(|shard| shard.resolve_flat_attrs(ptr))
     }
 
     /// Returns the value tag of the flat object at `ptr`, across all shards.
@@ -695,6 +756,16 @@ impl SharedHeapArena {
     /// [`SharedHeapError::UnknownPointer`] if no shard owns the handle, or
     /// [`SharedHeapError::RecordTypeMismatch`] if it is not an attrset.
     pub fn get_attrs(&self, value: Value) -> Result<&FlatAttrs, SharedHeapError> {
+        let ptr = heap_ptr(value)?;
+        if let Some(object) = self.resolve_flat_attrs(ptr) {
+            return Ok(&object.payload().attrs);
+        }
+        if let Some(actual) = self.flat_tag_at(ptr) {
+            return Err(SharedHeapError::RecordTypeMismatch {
+                expected: ValueTag::Attrs,
+                actual,
+            });
+        }
         match self.resolve_value(value)? {
             HeapObjectValue::Attrs { attrs, .. } => Ok(attrs),
             other => Err(SharedHeapError::RecordTypeMismatch {

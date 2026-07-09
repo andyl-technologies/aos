@@ -130,6 +130,7 @@ impl TreeWalk {
             flat_string_resolutions: deref.flat_string_resolutions,
             flat_path_resolutions: deref.flat_path_resolutions,
             flat_list_resolutions: deref.flat_list_resolutions,
+            flat_attrs_resolutions: deref.flat_attrs_resolutions,
             payload_arc_clones: deref.payload_arc_clones,
             env_captures: env.env_captures,
             env_capture_frame_handles: env.env_capture_frame_handles,
@@ -143,6 +144,8 @@ impl TreeWalk {
             string_store_path_payload_bytes: alloc.string_store_path_payload_bytes,
             path_payload_bytes: alloc.path_payload_bytes,
             list_payload_elements: alloc.list_payload_elements,
+            record_table_records: self.heap.record_count() as u64,
+            flat_objects: self.heap.flat_object_count() as u64,
         }
     }
 

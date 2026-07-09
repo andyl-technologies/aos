@@ -134,3 +134,28 @@ fn cross_thread_readers_observe_published_objects() {
         reader.join().expect("reader thread succeeds");
     }
 }
+
+#[test]
+fn attrs_kind_publishes_and_resolves_across_threads() {
+    let store: Arc<SharedFlatObjectStore<(u32, Vec<u64>)>> =
+        Arc::new(SharedFlatObjectStore::with_capacity(64));
+    let ptr = store
+        .publish(FlatObjectKind::Attrs, 0xdef, 16, (42, vec![7, 9]))
+        .expect("publish succeeds");
+    let address = ptr.as_ptr() as usize;
+
+    let reader = Arc::clone(&store);
+    thread::spawn(move || {
+        let ptr = NonNull::new(address as *mut HeapObject).expect("non-null");
+        let object = reader
+            .resolve(ptr, FlatObjectKind::Attrs)
+            .expect("published attrs resolve cross-thread");
+        assert_eq!(object.kind(), Some(FlatObjectKind::Attrs));
+        assert_eq!(object.structural_hash(), 0xdef);
+        assert_eq!(object.payload().0, 42);
+        assert_eq!(object.payload().1, [7, 9]);
+        assert!(reader.resolve(ptr, FlatObjectKind::List).is_none());
+    })
+    .join()
+    .expect("reader thread joins");
+}

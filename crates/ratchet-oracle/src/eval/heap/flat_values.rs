@@ -1,11 +1,16 @@
-//! Flat string/path allocation and resolution for the serial evaluator heap.
+//! Flat string/path allocation and resolution for the serial evaluator heap,
+//! plus the shared seam machinery for every flat kind (submodules host the
+//! list and attrs slices).
 //!
-//! RFC-0007 doc 30 stage FV-1: strings and paths — the hash-consed, immortal,
-//! edge-free permanent-domain kinds — move out of the record side table into
-//! the flat object store (`ratchet_value::heap::flat`). One allocation holds
-//! header plus payload at the value's address; `get_string`/`get_path`
-//! resolution becomes a membership check plus one header load, with no
-//! address-hash probe, no record `Vec` load, and no record allocated at all.
+//! RFC-0007 doc 30 stages FV-1/FV-2: strings, paths, lists, and attrsets —
+//! the hash-consed, immortal, permanent-domain kinds — move out of the
+//! record side table into flat object stores
+//! (`ratchet_value::heap::flat`). One allocation holds header plus payload
+//! at the value's address; resolution becomes a membership check plus one
+//! header load, with no address-hash probe, no record `Vec` load, and no
+//! record allocated at all. This file carries the string/path slice and the
+//! kind-generic helpers; `lists` and `attrs` carry the edge-carrying kinds
+//! and their GC couplings.
 //!
 //! # Mode coverage
 //!
@@ -13,8 +18,8 @@
 //! installed (`EvalHeap::with_shared_shard`) and every entry point dispatches
 //! to the shared backend before this store is consulted; shared mode has its
 //! own flat stores (`heap::flat::shared`, published per shard with the
-//! OnceLock release/acquire protocol) so string/path/list resolution is
-//! index-free in both modes. Bytes-inline (FV-1b) is serial-only: shared
+//! OnceLock release/acquire protocol) so string/path/list/attrs resolution
+//! is index-free in both modes. Bytes-inline (FV-1b) is serial-only: shared
 //! flat strings keep owned byte buffers inside their published slots.
 //!
 //! # What stays where
@@ -41,6 +46,7 @@ use crate::heap::flat::{FlatObjectError, FlatObjectKind, FlatObjectRef};
 use super::record_table::AddressHasher;
 use super::*;
 
+pub(super) mod attrs;
 mod lists;
 
 /// Byte-length ceiling for inlining string/path bytes into the flat
@@ -63,6 +69,7 @@ pub(super) const fn value_tag_for_flat_kind(kind: FlatObjectKind) -> ValueTag {
         FlatObjectKind::String => ValueTag::String,
         FlatObjectKind::Path => ValueTag::Path,
         FlatObjectKind::List => ValueTag::List,
+        FlatObjectKind::Attrs => ValueTag::Attrs,
     }
 }
 
@@ -263,6 +270,10 @@ impl EvalHeap {
                 .flat_lists
                 .resolve(ptr, FlatObjectKind::List)
                 .map(|_| ()),
+            ValueTag::Attrs => self
+                .flat_attrs
+                .resolve(ptr, FlatObjectKind::Attrs)
+                .map(|_| ()),
             _ => return Err(EvalHeapError::unknown(tag, ptr)),
         };
         result.map_err(|error| self.flat_resolution_error(tag, ptr, error))
@@ -287,7 +298,7 @@ impl EvalHeap {
     /// Maps a flat resolution failure to the heap's error vocabulary.
     ///
     /// Kind mismatches translate directly. Unknown addresses fall back to the
-    /// *other* flat store and then one record-table probe, so a pointer that
+    /// *other* flat stores and then one record-table probe, so a pointer that
     /// names a flat object or record of another type still fails as a
     /// record-type mismatch (today's contract), and only a pointer no domain
     /// knows fails as an unknown pointer.
@@ -325,13 +336,14 @@ impl EvalHeap {
 
     /// Returns the value tag of the flat object at `ptr`, if there is one.
     ///
-    /// Consults both flat stores (strings/paths and lists). Used by
-    /// [`EvalHeap::record_or_unknown`]'s error path so a flat pointer handed
-    /// to a record-kind getter still reports a record-type mismatch.
+    /// Consults every flat store (strings/paths, lists, and attrsets). Used
+    /// by [`EvalHeap::record_or_unknown`]'s error path so a flat pointer
+    /// handed to a record-kind getter still reports a record-type mismatch.
     pub(super) fn flat_kind_tag(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
         self.flat
             .kind_of(ptr)
             .or_else(|| self.flat_lists.kind_of(ptr))
+            .or_else(|| self.flat_attrs.kind_of(ptr))
             .map(value_tag_for_flat_kind)
     }
 
@@ -396,8 +408,8 @@ impl EvalHeap {
     }
 
     /// Resolves the canonical address of a reusable serial flat value
-    /// (string, path, or list), stamping its access epoch (the flat analog of
-    /// `record_for_value`).
+    /// (string, path, list, or attrset), stamping its access epoch (the flat
+    /// analog of `record_for_value`).
     pub(super) fn flat_canonical_address(
         &self,
         tag: ValueTag,
@@ -407,6 +419,7 @@ impl EvalHeap {
             ValueTag::String => self.flat_touch(FlatObjectKind::String, ptr).map(|_| ())?,
             ValueTag::Path => self.flat_touch(FlatObjectKind::Path, ptr).map(|_| ())?,
             ValueTag::List => self.flat_touch_list(ptr).map(|_| ())?,
+            ValueTag::Attrs => self.flat_touch_attrs(ptr).map(|_| ())?,
             _ => return Err(EvalHeapError::unknown(tag, ptr)),
         }
         Ok(ptr.as_ptr() as usize)

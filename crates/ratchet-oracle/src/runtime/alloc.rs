@@ -2212,6 +2212,27 @@ impl PermanentSharedAllocator {
         self.record_allocation_safepoint(RuntimeAllocationRequest::List { len }, allocation);
     }
 
+    /// Records a permanent allocation safepoint for a flat attrset object.
+    ///
+    /// The attrs analog of
+    /// [`PermanentSharedAllocator::record_flat_allocation_safepoint`]
+    /// (doc 30 FV-2): flat attrsets are allocated by the evaluator heap's
+    /// flat attrs store, and the permanent domain's safepoint sequence and
+    /// GC-stress polling cadence must observe them exactly as they observed
+    /// record-backed attrset allocations, under the same `aos_alloc_attrs`
+    /// request shape.
+    pub(crate) fn record_flat_attrs_allocation_safepoint(
+        &mut self,
+        shape: u32,
+        slots: u32,
+        allocation: ArenaAllocation,
+    ) {
+        self.record_allocation_safepoint(
+            RuntimeAllocationRequest::Attrs { shape, slots },
+            allocation,
+        );
+    }
+
     fn record_allocation_safepoint(
         &mut self,
         request: RuntimeAllocationRequest,

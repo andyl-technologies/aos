@@ -32,13 +32,13 @@
 //!  "record_probes_list":0,"record_probes_attrs":0,"record_probes_lambda":0,
 //!  "record_probes_primop":0,"record_probes_thunk":0,"record_probes_other":0,
 //!  "flat_string_resolutions":0,"flat_path_resolutions":0,
-//!  "flat_list_resolutions":0,
+//!  "flat_list_resolutions":0,"flat_attrs_resolutions":0,
 //!  "payload_arc_clones":0,"env_captures":0,"env_capture_frame_handles":0,
 //!  "with_env_captures":0,"with_env_capture_scopes":0,
 //!  "scoped_global_env_captures":0,"scoped_global_env_capture_scopes":0,
 //!  "env_frame_allocs":0,"env_frame_slot_bytes":0,"string_payload_bytes":0,
 //!  "string_store_path_payload_bytes":0,"path_payload_bytes":0,
-//!  "list_payload_elements":0}}}
+//!  "list_payload_elements":0,"record_table_records":0,"flat_objects":0}}}
 //! ```
 //!
 //! The nested `campaign` object carries the RFC-0007 doc 30 FV-0 flat-value
@@ -117,6 +117,7 @@ impl NixNative {
 \"flat_string_resolutions\":{},\
 \"flat_path_resolutions\":{},\
 \"flat_list_resolutions\":{},\
+\"flat_attrs_resolutions\":{},\
 \"payload_arc_clones\":{},\
 \"env_captures\":{},\
 \"env_capture_frame_handles\":{},\
@@ -129,7 +130,9 @@ impl NixNative {
 \"string_payload_bytes\":{},\
 \"string_store_path_payload_bytes\":{},\
 \"path_payload_bytes\":{},\
-\"list_payload_elements\":{}\
+\"list_payload_elements\":{},\
+\"record_table_records\":{},\
+\"flat_objects\":{}\
 }}\
 }}}}",
             stats.thunks_allocated(),
@@ -186,6 +189,7 @@ impl NixNative {
             stats.campaign().flat_string_resolutions,
             stats.campaign().flat_path_resolutions,
             stats.campaign().flat_list_resolutions,
+            stats.campaign().flat_attrs_resolutions,
             stats.campaign().payload_arc_clones,
             stats.campaign().env_captures,
             stats.campaign().env_capture_frame_handles,
@@ -199,6 +203,8 @@ impl NixNative {
             stats.campaign().string_store_path_payload_bytes,
             stats.campaign().path_payload_bytes,
             stats.campaign().list_payload_elements,
+            stats.campaign().record_table_records,
+            stats.campaign().flat_objects,
         );
     }
 }

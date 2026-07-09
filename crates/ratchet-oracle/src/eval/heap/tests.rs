@@ -138,7 +138,7 @@ fn set_allocation_domain(heap: &mut EvalHeap, value: Value, domain: HeapAllocati
     if heap.shared.is_none()
         && matches!(
             value.tag(),
-            ValueTag::String | ValueTag::Path | ValueTag::List
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
         )
     {
         assert_eq!(
@@ -162,7 +162,7 @@ fn set_heap_generation(heap: &mut EvalHeap, value: Value, generation: HeapGenera
     if heap.shared.is_none()
         && matches!(
             value.tag(),
-            ValueTag::String | ValueTag::Path | ValueTag::List
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
         )
     {
         assert_eq!(
@@ -196,7 +196,14 @@ fn record_layout_size(heap: &EvalHeap, value: Value) -> usize {
     {
         return entry.size_bytes();
     }
-    heap.flat_lists
+    if let Some(entry) = heap
+        .flat_lists
+        .iter()
+        .find(|entry| entry.ptr().as_ptr() as usize == address.address_bits())
+    {
+        return entry.size_bytes();
+    }
+    heap.flat_attrs
         .iter()
         .find(|entry| entry.ptr().as_ptr() as usize == address.address_bits())
         .expect("heap record exists")
@@ -595,11 +602,14 @@ fn worker_region_cancel_mark_retires_innermost_without_reclaiming() {
 fn worker_region_pop_rejects_permanent_records_above_marker() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
     let mark = heap.worker_region_mark().expect("region mark records");
-    // A permanent record-backed value (strings and lists are flat since
-    // FV-1; attrsets are the remaining record-backed permanent kind).
+    // Since FV-2 no allocation path creates a permanent record (strings,
+    // paths, lists, and attrsets are all flat), so the fixture manufactures
+    // one: a worker record flipped to the permanent-shared domain.
     let permanent = heap
-        .alloc_attrs(42, attrs_with_one_entry())
-        .expect("permanent attrset allocates");
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("thunk allocates");
+    heap.set_allocation_domain_for_test(permanent, HeapAllocationDomain::PermanentShared)
+        .expect("record domain flips to permanent-shared");
     let stats_before = heap.arena_stats();
     let permanent_stats_before = heap.permanent_arena_stats();
 
@@ -613,16 +623,7 @@ fn worker_region_pop_rejects_permanent_records_above_marker() {
     );
     assert_eq!(heap.arena_stats(), stats_before);
     assert_eq!(heap.permanent_arena_stats(), permanent_stats_before);
-    assert_eq!(
-        heap.get_attrs(permanent)
-            .expect("permanent record remains")
-            .entries_by_symbol()
-            .first()
-            .expect("entry remains")
-            .value
-            .as_int(),
-        Ok(7)
-    );
+    assert!(heap.get_thunk(permanent).is_ok());
 }
 
 /// Flat strings (FV-1) live outside the record table and the worker arena, so
@@ -643,6 +644,73 @@ fn worker_region_pop_ignores_flat_strings_above_marker() {
         heap.get_string(string).expect("string remains").bytes(),
         b"flat-permanent"
     );
+}
+
+/// Flat attrsets (FV-2) live outside the record table and the worker arena;
+/// an attrset with no worker edges above a worker-region marker no longer
+/// blocks the pop, and the attrset stays resolvable.
+#[test]
+fn worker_region_pop_ignores_flat_attrs_above_marker() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let attrs = heap
+        .alloc_attrs(42, attrs_with_one_entry())
+        .expect("attrset allocates");
+
+    heap.pop_worker_region_if_disconnected(mark)
+        .expect("edge-free flat attrsets above the marker do not block the pop");
+
+    assert_eq!(
+        heap.get_attrs(attrs)
+            .expect("attrset remains")
+            .entries_by_symbol()
+            .first()
+            .expect("entry remains")
+            .value
+            .as_int(),
+        Ok(7)
+    );
+}
+
+/// A flat attrset is a retained source (FV-2 GC coupling 2): an entry value
+/// pointing into the reclaimed suffix rejects the pop exactly as a retained
+/// record edge did before flattening.
+#[test]
+fn worker_region_pop_rejects_flat_attrs_edge_into_suffix() {
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let mark = heap.worker_region_mark().expect("region mark records");
+    let suffix_thunk = heap
+        .alloc_thunk(EvalThunk::new(IrId::new(1)))
+        .expect("suffix thunk allocates above marker");
+    let mut symbols = SymbolTable::new();
+    let key = symbols.intern(b"name").expect("symbol interns");
+    let attrs = heap
+        .alloc_attrs(
+            0,
+            FlatAttrs::new(vec![AttrEntry::new(key, suffix_thunk)], &symbols)
+                .expect("attrset builds"),
+        )
+        .expect("attrset allocates");
+    let stats_before = heap.arena_stats();
+
+    let error = heap
+        .pop_worker_region_if_disconnected(mark)
+        .expect_err("flat attrset edge into the suffix rejects the pop");
+
+    assert_eq!(
+        error,
+        EvalHeapError::WorkerRegionPopRetainedEdge {
+            source_address: gc_address(attrs),
+            edge_source: HeapEdgeSource::AttrBinding {
+                shape: 0,
+                slot: 0,
+                key,
+            },
+            target_address: gc_address(suffix_thunk),
+        }
+    );
+    assert_eq!(heap.arena_stats(), stats_before);
+    assert!(heap.get_thunk(suffix_thunk).is_ok());
 }
 
 #[test]
@@ -1483,11 +1551,14 @@ fn tier_b_admission_plan_maps_worker_records_to_old_generation() {
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
-    // A permanent record-backed value (strings and lists are flat since
-    // FV-1, so an attrset stands in as the permanent heap record).
+    // Since FV-2 no allocation path creates a permanent record (strings,
+    // paths, lists, and attrsets are all flat), so the fixture manufactures
+    // one: a worker record flipped to the permanent-shared domain.
     let permanent = heap
-        .alloc_attrs(42, attrs_with_one_entry())
-        .expect("permanent attrset allocates");
+        .alloc_thunk(EvalThunk::new(IrId::new(90)))
+        .expect("permanent-fixture thunk allocates");
+    heap.set_allocation_domain_for_test(permanent, HeapAllocationDomain::PermanentShared)
+        .expect("record domain flips to permanent-shared");
     let worker_stats = heap.arena_stats();
     let permanent_stats = heap.permanent_arena_stats();
 
@@ -1575,11 +1646,14 @@ fn tier_b_admission_application_rewrites_worker_records_to_old_generation() {
     let worker = heap
         .alloc_thunk(EvalThunk::new(IrId::new(1)))
         .expect("worker thunk allocates");
-    // A permanent record-backed value (strings and lists are flat since
-    // FV-1, so an attrset stands in as the permanent heap record).
+    // Since FV-2 no allocation path creates a permanent record (strings,
+    // paths, lists, and attrsets are all flat), so the fixture manufactures
+    // one: a worker record flipped to the permanent-shared domain.
     let permanent = heap
-        .alloc_attrs(42, attrs_with_one_entry())
-        .expect("permanent attrset allocates");
+        .alloc_thunk(EvalThunk::new(IrId::new(90)))
+        .expect("permanent-fixture thunk allocates");
+    heap.set_allocation_domain_for_test(permanent, HeapAllocationDomain::PermanentShared)
+        .expect("record domain flips to permanent-shared");
     let worker_stats = heap.arena_stats();
     let permanent_stats = heap.permanent_arena_stats();
     let plan = heap
@@ -4222,11 +4296,14 @@ fn collector_poll_minor_gc_forwarding_install_rejects_permanent_source_without_p
     let first = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first thunk allocates");
-    // A permanent record-backed value (strings and lists are flat since
-    // FV-1, so an attrset stands in as the permanent heap record).
+    // Since FV-2 no allocation path creates a permanent record (strings,
+    // paths, lists, and attrsets are all flat), so the fixture manufactures
+    // one: a worker record flipped to the permanent-shared domain.
     let permanent = heap
-        .alloc_attrs(42, attrs_with_one_entry())
-        .expect("permanent attrset allocates");
+        .alloc_thunk(EvalThunk::new(IrId::new(90)))
+        .expect("permanent-fixture thunk allocates");
+    heap.set_allocation_domain_for_test(permanent, HeapAllocationDomain::PermanentShared)
+        .expect("record domain flips to permanent-shared");
     let first_forwarded = ResolvedValueGeneration::Heap {
         address: static_gc_address(0x1000_0000),
         generation: HeapGeneration::Young,
@@ -5640,11 +5717,14 @@ fn collector_poll_minor_gc_destination_plan_uses_old_base_for_promotions() {
 fn collector_poll_minor_gc_object_generation_writes_update_existing_destination_records() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
     heap.set_gc_stress_policy(GcStressPolicy::every_safepoint());
-    // A permanent record-backed value (strings and lists are flat since
-    // FV-1, so an attrset stands in as the permanent heap record).
+    // Since FV-2 no allocation path creates a permanent record, so the
+    // destination fixture manufactures one: a worker record flipped to the
+    // permanent-shared domain.
     let destination = heap
-        .alloc_attrs(42, attrs_with_one_entry())
-        .expect("destination attrset allocates");
+        .alloc_thunk(EvalThunk::new(IrId::new(90)))
+        .expect("destination fixture thunk allocates");
+    heap.set_allocation_domain_for_test(destination, HeapAllocationDomain::PermanentShared)
+        .expect("record domain flips to permanent-shared");
     let source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("source thunk allocates");
@@ -6316,7 +6396,10 @@ fn collector_poll_minor_gc_direct_heap_field_writes_merge_same_flat_list_fields(
 }
 
 #[test]
-fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_attr_fields() {
+fn collector_poll_minor_gc_copied_heap_field_writes_reject_flat_attrs_writeback_objects() {
+    // Attrsets are flat and permanent since FV-2, so they are never minor-GC
+    // survivors: a copied heap-field write naming a flat attrset as its
+    // relocated writeback object must fail loudly without mutation.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let mut symbols = SymbolTable::new();
     let key = symbols.intern(b"name").expect("symbol interns");
@@ -6347,7 +6430,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_attr_fields() 
     let parent_destination = heap
         .alloc_attrs(0, parent_destination_attrs)
         .expect("parent destination attrs allocate");
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
 
     let parent_request = object_copy_request_for_values(
         &heap,
@@ -6361,17 +6443,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_attr_fields() 
         child_destination,
         MinorGcSurvivorAction::PromoteToOld,
     );
-    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
-        parent_request,
-        child_request,
-    ]);
-    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
-        .expect("object bodies bind");
-    let generation_plan = copy_plan
-        .object_generation_write_plan()
-        .expect("generation write plan builds");
-    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
-        .expect("destination generations write");
     let write = AllocationCollectorPollCopiedHeapFieldWrite::new(
         HeapAllocationDomain::Worker,
         gc_address(parent),
@@ -6390,22 +6461,21 @@ fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_attr_fields() 
         parent_request,
     );
 
-    let report = heap
+    let err = heap
         .apply_collector_poll_minor_gc_copied_heap_field_writes(&[write])
-        .expect("copied attr field write applies");
+        .expect_err("flat-attrs copied writeback object is rejected");
 
-    assert_eq!(report.fields(), 1);
-    let attrs = heap
-        .get_attrs(parent_destination)
-        .expect("destination attrs remain typed");
-    assert!(
-        attrs
-            .get(key)
-            .expect("rewritten binding exists")
-            .raw_eq(child_destination)
+    assert_eq!(
+        err,
+        EvalHeapError::UnknownCollectorPollSurvivorAddress {
+            address: gc_address(parent),
+        }
     );
+    let attrs = heap.get_attrs(parent).expect("parent attrs remain typed");
+    assert!(attrs.get(key).expect("original binding exists").raw_eq(child));
 }
 
+#[test]
 #[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_primop_args() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
@@ -6733,7 +6803,140 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_li
 }
 
 #[test]
-fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_attr_fields() {
+fn collector_poll_minor_gc_direct_heap_field_writes_merge_same_flat_attrs_fields() {
+    // Two direct writes against the SAME flat attrset must merge through one
+    // staged entry storage (doc 30 FV-2 coupling (c)): the second write sees
+    // the first write's staged entry, and one commit publishes both.
+    let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
+    let mut symbols = SymbolTable::new();
+    let first_key = symbols.intern(b"alpha").expect("alpha interns");
+    let second_key = symbols.intern(b"beta").expect("beta interns");
+    let first_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(1),
+            IrId::new(1),
+            FrameId::new(1),
+            EvalEnv::default(),
+        ))
+        .expect("first child lambda allocates");
+    let second_child = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(2),
+            IrId::new(2),
+            FrameId::new(2),
+            EvalEnv::default(),
+        ))
+        .expect("second child lambda allocates");
+    let first_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(3),
+            IrId::new(3),
+            FrameId::new(3),
+            EvalEnv::default(),
+        ))
+        .expect("first destination lambda allocates");
+    let second_destination = heap
+        .alloc_lambda(EvalLambda::new(
+            IrId::new(4),
+            IrId::new(4),
+            FrameId::new(4),
+            EvalEnv::default(),
+        ))
+        .expect("second destination lambda allocates");
+    let parent_attrs = FlatAttrs::new(
+        vec![
+            AttrEntry::new(first_key, first_child),
+            AttrEntry::new(second_key, second_child),
+        ],
+        &symbols,
+    )
+    .expect("attrs build");
+    let parent = heap
+        .alloc_attrs(0, parent_attrs)
+        .expect("parent attrs allocate");
+
+    let first_request = object_copy_request_for_values(
+        &heap,
+        first_child,
+        first_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let second_request = object_copy_request_for_values(
+        &heap,
+        second_child,
+        second_destination,
+        MinorGcSurvivorAction::PromoteToOld,
+    );
+    let copy_plan = AllocationCollectorPollObjectByteCopyPlan::from_requests_for_test(vec![
+        first_request,
+        second_request,
+    ]);
+    heap.apply_collector_poll_minor_gc_object_body_writes(&copy_plan)
+        .expect("object bodies bind");
+    let generation_plan = copy_plan
+        .object_generation_write_plan()
+        .expect("generation write plan builds");
+    heap.apply_collector_poll_minor_gc_object_generation_writes(&generation_plan)
+        .expect("destination generations write");
+    let writes = [
+        AllocationCollectorPollDirectHeapFieldWrite::new(
+            HeapAllocationDomain::PermanentShared,
+            gc_address(parent),
+            0,
+            HeapEdgeSource::AttrBinding {
+                shape: 0,
+                slot: 0,
+                key: first_key,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(first_destination),
+                generation: HeapGeneration::Old,
+            },
+            first_request,
+        ),
+        AllocationCollectorPollDirectHeapFieldWrite::new(
+            HeapAllocationDomain::PermanentShared,
+            gc_address(parent),
+            1,
+            HeapEdgeSource::AttrBinding {
+                shape: 0,
+                slot: 1,
+                key: second_key,
+            },
+            ResolvedValueGeneration::Heap {
+                address: gc_address(second_destination),
+                generation: HeapGeneration::Old,
+            },
+            second_request,
+        ),
+    ];
+
+    let report = heap
+        .apply_collector_poll_minor_gc_direct_heap_field_writes(&writes)
+        .expect("merged flat attrs field writes apply");
+
+    assert_eq!(report.fields(), 2);
+    let attrs = heap.get_attrs(parent).expect("parent attrs remain typed");
+    assert!(
+        attrs
+            .get(first_key)
+            .expect("first rewritten binding exists")
+            .raw_eq(first_destination)
+    );
+    assert!(
+        attrs
+            .get(second_key)
+            .expect("second rewritten binding exists")
+            .raw_eq(second_destination)
+    );
+    assert_eq!(heap_generation(&heap, parent), HeapGeneration::Permanent);
+}
+
+#[test]
+fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_attrs() {
+    // Attrsets are flat and permanent since FV-2: a direct write that claims
+    // an attrset is worker-domain (the pre-FV-2 "old worker attrs" shape)
+    // must fail the generation gate loudly without mutating the flat payload.
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     let mut symbols = SymbolTable::new();
     let key = symbols.intern(b"name").expect("symbol interns");
@@ -6758,8 +6961,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_attr_fields() {
     let parent = heap
         .alloc_attrs(0, parent_attrs)
         .expect("parent attrs allocate");
-    set_allocation_domain(&mut heap, parent, HeapAllocationDomain::Worker);
-    set_heap_generation(&mut heap, parent, HeapGeneration::Old);
 
     let child_request = object_copy_request_for_values(
         &heap,
@@ -6792,20 +6993,24 @@ fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_attr_fields() {
         child_request,
     );
 
-    let report = heap
+    let err = heap
         .apply_collector_poll_minor_gc_direct_heap_field_writes(&[write])
-        .expect("direct old attr field write applies");
+        .expect_err("worker-domain flat-attrs write is rejected");
 
-    assert_eq!(report.fields(), 1);
-    let attrs = heap.get_attrs(parent).expect("parent attrs remain typed");
-    assert!(
-        attrs
-            .get(key)
-            .expect("rewritten binding exists")
-            .raw_eq(child_destination)
+    assert_eq!(
+        err,
+        EvalHeapError::CollectorPollDirectHeapFieldWriteObjectGenerationMismatch {
+            allocation_domain: HeapAllocationDomain::Worker,
+            writeback_object: gc_address(parent),
+            expected: HeapGeneration::Old,
+            actual: HeapGeneration::Permanent,
+        }
     );
+    let attrs = heap.get_attrs(parent).expect("parent attrs remain typed");
+    assert!(attrs.get(key).expect("original binding exists").raw_eq(child));
 }
 
+#[test]
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_primop_args() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
@@ -8572,11 +8777,14 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_malformed_copy_reques
 #[test]
 fn collector_poll_minor_gc_object_generation_writes_reject_unknown_destination_without_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(512).expect("heap creates");
-    // A permanent record-backed value (strings and lists are flat since
-    // FV-1, so an attrset stands in as the permanent heap record).
+    // Since FV-2 no allocation path creates a permanent record, so the
+    // destination fixture manufactures one: a worker record flipped to the
+    // permanent-shared domain.
     let destination = heap
-        .alloc_attrs(42, attrs_with_one_entry())
-        .expect("destination attrset allocates");
+        .alloc_thunk(EvalThunk::new(IrId::new(90)))
+        .expect("destination fixture thunk allocates");
+    heap.set_allocation_domain_for_test(destination, HeapAllocationDomain::PermanentShared)
+        .expect("record domain flips to permanent-shared");
     let first_source = heap
         .alloc_thunk(EvalThunk::new(IrId::new(7)))
         .expect("first source thunk allocates");

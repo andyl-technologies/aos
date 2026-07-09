@@ -46,6 +46,8 @@ pub struct CampaignCounters {
     pub flat_path_resolutions: u64,
     /// List resolutions served by the flat store without a record probe.
     pub flat_list_resolutions: u64,
+    /// Attrset resolutions served by the flat store without a record probe.
+    pub flat_attrs_resolutions: u64,
     /// `Arc` payload-handle clones handed out by thunk/lambda/primop resolution.
     pub payload_arc_clones: u64,
     /// Lexical frame-array capture copies (`EvalEnv::capture`).
@@ -72,6 +74,16 @@ pub struct CampaignCounters {
     pub path_payload_bytes: u64,
     /// Spine elements of freshly allocated list values (16 bytes each).
     pub list_payload_elements: u64,
+    /// Typed records resident in the record side table at snapshot time.
+    ///
+    /// A gauge, not a rate: after doc 30 FV-2 this population is the
+    /// worker-domain closure kinds only (thunks, lambdas, partially applied
+    /// builtins) — the record-table mass the FV-3 stage still has to move.
+    pub record_table_records: u64,
+    /// Flat heap objects resident in the flat stores at snapshot time.
+    ///
+    /// A gauge: strings, paths, lists, and attrsets (doc 30 FV-1/FV-2).
+    pub flat_objects: u64,
 }
 
 impl CampaignCounters {
@@ -113,6 +125,9 @@ impl CampaignCounters {
             flat_list_resolutions: self
                 .flat_list_resolutions
                 .saturating_add(other.flat_list_resolutions),
+            flat_attrs_resolutions: self
+                .flat_attrs_resolutions
+                .saturating_add(other.flat_attrs_resolutions),
             payload_arc_clones: self
                 .payload_arc_clones
                 .saturating_add(other.payload_arc_clones),
@@ -148,6 +163,10 @@ impl CampaignCounters {
             list_payload_elements: self
                 .list_payload_elements
                 .saturating_add(other.list_payload_elements),
+            record_table_records: self
+                .record_table_records
+                .saturating_add(other.record_table_records),
+            flat_objects: self.flat_objects.saturating_add(other.flat_objects),
         }
     }
 

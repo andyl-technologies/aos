@@ -34,20 +34,39 @@
 //! bits or free lists exist here (thunks arrive in stage FV-3 with their own
 //! state machinery).
 //!
-//! # Lists (edge-carrying payloads) and the writeback door
+//! # Lists and attrsets (edge-carrying payloads) and the writeback door
 //!
 //! Strings and paths are edge-free leaves; lists carry heap **edges** in
-//! their element spine, and the evaluator's minor-GC machinery must be able
-//! to rewrite one element in place when a young target relocates. The store
-//! therefore offers [`FlatObjectStore::resolve_mut`], an exclusive (`&mut
-//! self`) payload resolution used only by the collector's staged-commit
-//! writeback path; all read paths keep the shared, immutable contract.
+//! their element spine and attrsets in their entry values, and the
+//! evaluator's minor-GC machinery must be able to rewrite one field in place
+//! when a young target relocates. The store therefore offers
+//! [`FlatObjectStore::resolve_mut`], an exclusive (`&mut self`) payload
+//! resolution used only by the collector's staged-commit writeback path; all
+//! read paths keep the shared, immutable contract.
 //!
-//! *Boundary note (doc 30 §11.7):* the `value/small.rs` 0/1/2-element
-//! inline-constructor contract remains dormant — no allocation path consults
-//! it — so every list, small or not, is one flat object here. When the small
-//! constructors activate, their pointer tags must be reconciled with this
-//! header's kind word so the same information is not encoded twice.
+//! # Attrs metadata placement (doc 30 FV-2 decision)
+//!
+//! An attrset carries shape metadata (the lowered shape id, the projected
+//! hidden-class [`ShapeId`], and the representation kind) alongside its entry
+//! slots. That metadata rides **in the payload**, not in the header: header
+//! word 1 carries the full 64-bit hash-cons key for every kind, and
+//! splitting it into a 32-bit hash plus a shape id would weaken collision
+//! confirmation for all kinds while still not fitting the three-field
+//! metadata. The payload struct leads with the metadata words, so a
+//! PIC/select-cache guard load is header-adjacent — one flat resolution, no
+//! record probe — which is the layout doc 30 §2.3 stage 2 asks for. A
+//! header-resident shape id remains an FV-4 candidate for when the kind word
+//! gains size-class bits.
+//!
+//! *Boundary note (doc 30 §11.7, resolved in FV-2):* the former
+//! `value/small.rs` 0/1/2-element inline-constructor contract was dormant —
+//! no allocation, resolution, or dispatch path ever consulted it, and no
+//! pointer tag bits were ever assigned — so FV-2 retired the module instead
+//! of folding a size class into this header. Every list and attrset, small
+//! or not, is one flat object here; if a measured small-constructor variant
+//! returns, it must be reconciled with the kind word at that point.
+//!
+//! [`ShapeId`]: crate::attrs::shape::ShapeId
 //!
 //! # Fail-loud contract (weaker than the record table's)
 //!
@@ -111,6 +130,8 @@ pub enum FlatObjectKind {
     Path = 0x02,
     /// A Nix list payload (the element spine carries heap edges).
     List = 0x03,
+    /// A Nix attribute-set payload (entry values carry heap edges).
+    Attrs = 0x04,
 }
 
 impl FlatObjectKind {
@@ -123,6 +144,7 @@ impl FlatObjectKind {
             0x01 => Some(Self::String),
             0x02 => Some(Self::Path),
             0x03 => Some(Self::List),
+            0x04 => Some(Self::Attrs),
             _ => None,
         }
     }

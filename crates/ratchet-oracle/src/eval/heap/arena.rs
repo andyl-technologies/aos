@@ -616,8 +616,9 @@ impl EvalHeap {
             deref_counters: EvalHeapDerefCounters::default(),
             flat: FlatObjectStore::new(),
             flat_lists: FlatObjectStore::new(),
+            flat_attrs: FlatObjectStore::new(),
             flat_cold_hashes: FlatColdHashStore::default(),
-            flat_list_stale_hashes: std::collections::HashSet::default(),
+            flat_stale_hashes: std::collections::HashSet::default(),
             shared: None,
         }
     }
@@ -659,8 +660,10 @@ impl EvalHeap {
                 .map_err(EvalHeapError::Arena)?,
             flat_lists: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
+            flat_attrs: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
+                .map_err(EvalHeapError::Arena)?,
             flat_cold_hashes: FlatColdHashStore::default(),
-            flat_list_stale_hashes: std::collections::HashSet::default(),
+            flat_stale_hashes: std::collections::HashSet::default(),
             shared: None,
         })
     }
@@ -809,13 +812,17 @@ impl EvalHeap {
 
     /// Returns current permanent shared allocation accounting.
     ///
-    /// Includes both flat object stores' arenas (FV-1): flat strings, paths,
-    /// and lists are permanent-domain values, so their bytes stay in the
-    /// permanent columns of every budget decision and statistics surface.
+    /// Includes every flat object store's arena (FV-1/FV-2): flat strings,
+    /// paths, lists, and attrsets are permanent-domain values, so their
+    /// bytes stay in the permanent columns of every budget decision and
+    /// statistics surface.
     pub fn permanent_arena_stats(&self) -> ArenaStats {
         merged_arena_stats(
-            merged_arena_stats(self.permanent_allocator.stats(), self.flat.arena_stats()),
-            self.flat_lists.arena_stats(),
+            merged_arena_stats(
+                merged_arena_stats(self.permanent_allocator.stats(), self.flat.arena_stats()),
+                self.flat_lists.arena_stats(),
+            ),
+            self.flat_attrs.arena_stats(),
         )
     }
 
@@ -1075,7 +1082,14 @@ impl EvalHeap {
             }
             bytes.saturating_add(entry.size_bytes())
         });
-        self.flat_lists.iter().fold(flat_bytes, |bytes, entry| {
+        let flat_bytes = self.flat_lists.iter().fold(flat_bytes, |bytes, entry| {
+            let idle = current_epoch.saturating_sub(entry.object().last_touch_epoch());
+            if idle < min_idle_epochs {
+                return bytes;
+            }
+            bytes.saturating_add(entry.size_bytes())
+        });
+        self.flat_attrs.iter().fold(flat_bytes, |bytes, entry| {
             let idle = current_epoch.saturating_sub(entry.object().last_touch_epoch());
             if idle < min_idle_epochs {
                 return bytes;
@@ -1107,6 +1121,10 @@ impl EvalHeap {
         let is_cold_flat_list = |entry: &crate::heap::flat::FlatStoredObject<'_, NixList>| {
             current_epoch.saturating_sub(entry.object().last_touch_epoch()) >= min_idle_epochs
         };
+        let is_cold_flat_attrs =
+            |entry: &crate::heap::flat::FlatStoredObject<'_, FlatAttrsPayload>| {
+                current_epoch.saturating_sub(entry.object().last_touch_epoch()) >= min_idle_epochs
+            };
         let values = self
             .records
             .iter()
@@ -1115,7 +1133,8 @@ impl EvalHeap {
             })
             .count()
             .saturating_add(self.flat.iter().filter(is_cold_flat).count())
-            .saturating_add(self.flat_lists.iter().filter(is_cold_flat_list).count());
+            .saturating_add(self.flat_lists.iter().filter(is_cold_flat_list).count())
+            .saturating_add(self.flat_attrs.iter().filter(is_cold_flat_attrs).count());
         let mut snapshot = Vec::new();
         snapshot
             .try_reserve_exact(values)
@@ -1152,6 +1171,18 @@ impl EvalHeap {
                 current_epoch.saturating_sub(entry.object().last_touch_epoch());
             snapshot.push(EvalHeapColdHashConsedValue::new(
                 Value::heap(ValueTag::List, entry.ptr())?,
+                entry.size_bytes(),
+                idle_epochs,
+            ));
+        }
+        for entry in self.flat_attrs.iter() {
+            if !is_cold_flat_attrs(&entry) {
+                continue;
+            }
+            let idle_epochs =
+                current_epoch.saturating_sub(entry.object().last_touch_epoch());
+            snapshot.push(EvalHeapColdHashConsedValue::new(
+                Value::heap(ValueTag::Attrs, entry.ptr())?,
                 entry.size_bytes(),
                 idle_epochs,
             ));
@@ -1245,6 +1276,13 @@ impl EvalHeap {
             }
             report.record(entry.size_bytes(), advise(entry.ptr(), entry.size_bytes()));
         }
+        for entry in self.flat_attrs.iter() {
+            let idle = current_epoch.saturating_sub(entry.object().last_touch_epoch());
+            if idle < min_idle_epochs {
+                continue;
+            }
+            report.record(entry.size_bytes(), advise(entry.ptr(), entry.size_bytes()));
+        }
         report
     }
 
@@ -1259,7 +1297,8 @@ impl EvalHeap {
             self.permanent_allocator
                 .advise_unused_tail(kind)
                 .merged(self.flat.advise_unused_tail(kind))
-                .merged(self.flat_lists.advise_unused_tail(kind)),
+                .merged(self.flat_lists.advise_unused_tail(kind))
+                .merged(self.flat_attrs.advise_unused_tail(kind)),
         )
     }
 
@@ -1291,6 +1330,7 @@ impl EvalHeap {
             )
             .saturating_add(self.flat.supported_unused_tail_advice_bytes())
             .saturating_add(self.flat_lists.supported_unused_tail_advice_bytes())
+            .saturating_add(self.flat_attrs.supported_unused_tail_advice_bytes())
     }
 
     /// Classifies memory pressure and applies the currently implemented cheap
@@ -1477,7 +1517,10 @@ impl EvalHeap {
             return shared.allocation_domain(value);
         }
         let (tag, ptr) = any_value_heap_ptr(value)?;
-        if matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List) {
+        if matches!(
+            tag,
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
+        ) {
             self.flat_canonical_address(tag, ptr)?;
             return Ok(HeapAllocationDomain::PermanentShared);
         }
@@ -1503,7 +1546,10 @@ impl EvalHeap {
             return shared.generation(value);
         }
         let (tag, ptr) = any_value_heap_ptr(value)?;
-        if matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List) {
+        if matches!(
+            tag,
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
+        ) {
             self.flat_canonical_address(tag, ptr)?;
             return Ok(HeapGeneration::Permanent);
         }
@@ -1531,11 +1577,15 @@ impl EvalHeap {
         domain: HeapAllocationDomain,
     ) -> Result<(), EvalHeapError> {
         let (tag, ptr) = any_value_heap_ptr(value)?;
-        // Flat strings/paths/lists (doc 30 FV-1) are permanent-shared by
-        // construction and have no record; confirming their intrinsic domain
-        // is a fixture no-op, anything else fails as an unknown pointer.
+        // Flat strings/paths/lists/attrsets (doc 30 FV-1/FV-2) are
+        // permanent-shared by construction and have no record; confirming
+        // their intrinsic domain is a fixture no-op, anything else fails as
+        // an unknown pointer.
         if self.shared.is_none()
-            && matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List)
+            && matches!(
+                tag,
+                ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
+            )
             && self.flat_kind_tag(ptr) == Some(tag)
         {
             if domain == HeapAllocationDomain::PermanentShared {
@@ -1567,6 +1617,7 @@ impl EvalHeap {
             .len()
             .saturating_add(self.flat.len())
             .saturating_add(self.flat_lists.len())
+            .saturating_add(self.flat_attrs.len())
     }
 
     /// Returns whether this heap contains no typed objects.
@@ -1576,16 +1627,20 @@ impl EvalHeap {
 
     /// Returns the number of typed objects in the record side table.
     ///
-    /// Excludes flat string/path/list objects (doc 30 FV-1), which never
-    /// enter the record table; Tier-B admission plans cover exactly this
-    /// population.
+    /// Excludes flat string/path/list/attrset objects (doc 30 FV-1/FV-2),
+    /// which never enter the record table; Tier-B admission plans cover
+    /// exactly this population.
     pub fn record_count(&self) -> usize {
         self.records.len()
     }
 
-    /// Returns the number of flat string/path/list objects (doc 30 FV-1).
+    /// Returns the number of flat string/path/list/attrset objects (doc 30
+    /// FV-1/FV-2).
     pub fn flat_object_count(&self) -> usize {
-        self.flat.len().saturating_add(self.flat_lists.len())
+        self.flat
+            .len()
+            .saturating_add(self.flat_lists.len())
+            .saturating_add(self.flat_attrs.len())
     }
 
     #[cfg(test)]
@@ -1718,55 +1773,7 @@ impl EvalHeap {
             }
             None => EvalHeapAttrsMetadata::new(shape, repr),
         };
-        let hash = attrs_structural_hash(metadata, &attrs);
-        let slots = u32::try_from(attrs.len())
-            .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
-        let cons_slot = match self.admit_attrs_cons(hash, metadata, &attrs)? {
-            HashConsReservation::Existing(value) => {
-                self.alloc_counters.note_hashcons(true);
-                self.touch_reusable_value(value)?;
-                return Ok(value);
-            }
-            HashConsReservation::Vacant(slot) => {
-                self.alloc_counters.note_hashcons(false);
-                slot
-            }
-        };
-        let allocation = match self
-            .permanent_allocator
-            .aos_alloc_attrs(shape, slots)
-            .map_err(EvalHeapError::Arena)
-        {
-            Ok(allocation) => allocation,
-            Err(error) => {
-                self.cancel_attrs_cons_slot(cons_slot);
-                return Err(error);
-            }
-        };
-        let value = match Value::attrs(allocation.ptr).map_err(EvalHeapError::Value) {
-            Ok(value) => value,
-            Err(error) => {
-                self.cancel_attrs_cons_slot(cons_slot);
-                return Err(error);
-            }
-        };
-        let last_touch_epoch = Cell::new(self.next_access_epoch());
-        self.records.push(HeapRecord {
-            ptr: allocation.ptr,
-            layout: HeapRecordLayout::from_allocation(allocation),
-            structural_hash: Some(hash),
-            allocation_domain: HeapAllocationDomain::PermanentShared,
-            generation: initial_generation_for_allocation_domain(
-                HeapAllocationDomain::PermanentShared,
-            ),
-            minor_gc_forwarding: Cell::new(None),
-            last_touch_epoch,
-            object: HeapObjectValue::Attrs { metadata, attrs },
-        });
-        self.push_attrs_cons_value(cons_slot, value);
-        self.alloc_counters.note_value_allocated();
-        self.poll_memory_budget_after_allocation();
-        Ok(value)
+        self.flat_alloc_attrs(metadata, attrs)
     }
 
     /// Allocates a lambda closure object and returns its opaque runtime value.
@@ -1982,7 +1989,10 @@ impl EvalHeap {
             return shared.cached_value_hash(value);
         }
         let (tag, ptr) = value_heap_ptr(value)?;
-        if matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List) {
+        if matches!(
+            tag,
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
+        ) {
             let address = self.flat_canonical_address(tag, ptr)?;
             return Ok(self.flat_cold_value_hash(address));
         }
@@ -2014,7 +2024,10 @@ impl EvalHeap {
             return shared.cache_value_hash(value, hash);
         }
         let (tag, ptr) = value_heap_ptr(value)?;
-        if matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List) {
+        if matches!(
+            tag,
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
+        ) {
             let address = self.flat_canonical_address(tag, ptr)?;
             return match self.flat_cold_value_hash(address) {
                 Some(existing) if existing == hash => Ok(HeapValueHashCacheUpdate::AlreadyPresent),
@@ -2059,7 +2072,10 @@ impl EvalHeap {
             return shared.cached_captured_value_hash(value);
         }
         let (tag, ptr) = value_heap_ptr(value)?;
-        if matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List) {
+        if matches!(
+            tag,
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
+        ) {
             let address = self.flat_canonical_address(tag, ptr)?;
             return Ok(self.flat_cold_captured_value_hash(address));
         }
@@ -2085,7 +2101,10 @@ impl EvalHeap {
             return shared.cache_captured_value_hash(value, hash);
         }
         let (tag, ptr) = value_heap_ptr(value)?;
-        if matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List) {
+        if matches!(
+            tag,
+            ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
+        ) {
             let address = self.flat_canonical_address(tag, ptr)?;
             self.set_flat_cold_captured_value_hash(address, Some(hash));
             return Ok(());
@@ -2201,18 +2220,7 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_attrs_ptr(ptr);
         }
-        let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
-        match &record.object {
-            HeapObjectValue::Attrs { attrs, .. } => {
-                self.touch_record(record);
-                Ok(attrs)
-            }
-            object => Err(EvalHeapError::record_type_mismatch(
-                ValueTag::Attrs,
-                object.tag(),
-                ptr,
-            )),
-        }
+        self.flat_get_attrs(ptr)
     }
 
     /// Returns metadata for the attribute-set object referenced by `value`.
@@ -2242,18 +2250,7 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.get_attrs_metadata_ptr(ptr);
         }
-        let record = self.record_or_unknown(ValueTag::Attrs, ptr)?;
-        match &record.object {
-            HeapObjectValue::Attrs { metadata, .. } => {
-                self.touch_record(record);
-                Ok(*metadata)
-            }
-            object => Err(EvalHeapError::record_type_mismatch(
-                ValueTag::Attrs,
-                object.tag(),
-                ptr,
-            )),
-        }
+        self.flat_get_attrs_metadata(ptr)
     }
 
     /// Returns the lambda closure object referenced by `value`.
@@ -2447,44 +2444,6 @@ impl EvalHeap {
             .map_err(|_| EvalHeapError::RecordAllocationFailed { records })
     }
 
-    fn admit_attrs_cons(
-        &mut self,
-        hash: HotXxh3Hash,
-        metadata: EvalHeapAttrsMetadata,
-        attrs: &FlatAttrs,
-    ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
-        let existing = {
-            let records = &self.records;
-            self.attrs_cons
-                .try_find(&hash, |value| {
-                    let value = *value;
-                    let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
-                    let record = records
-                        .find(ptr)
-                        .ok_or_else(|| EvalHeapError::unknown(ValueTag::Attrs, ptr))?;
-                    let same_hash = record.structural_hash == Some(hash);
-                    let same_attrs = matches!(
-                        &record.object,
-                        HeapObjectValue::Attrs {
-                            metadata: candidate_metadata,
-                            attrs: candidate_attrs,
-                        } if *candidate_metadata == metadata && candidate_attrs.raw_eq(attrs)
-                    );
-                    Ok::<bool, EvalHeapError>(same_hash && same_attrs)
-                })?
-                .copied()
-        };
-        if let Some(value) = existing {
-            return Ok(HashConsReservation::Existing(value));
-        }
-        self.reserve_record_slot()?;
-        Ok(HashConsReservation::Vacant(
-            self.attrs_cons
-                .reserve_slot(hash)
-                .map_err(EvalHeapError::from)?,
-        ))
-    }
-
     pub(super) fn push_string_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
         let pushed = self.string_cons.push_reserved(slot, value);
         debug_assert!(
@@ -2578,7 +2537,10 @@ impl EvalHeap {
     pub(super) fn touch_reusable_value(&self, value: Value) -> Result<(), EvalHeapError> {
         let (tag, ptr) = value_heap_ptr(value)?;
         if self.shared.is_none()
-            && matches!(tag, ValueTag::String | ValueTag::Path | ValueTag::List)
+            && matches!(
+                tag,
+                ValueTag::String | ValueTag::Path | ValueTag::List | ValueTag::Attrs
+            )
         {
             self.flat_canonical_address(tag, ptr)?;
             return Ok(());
@@ -2633,16 +2595,32 @@ impl EvalHeap {
             }
         }
 
-        // Flat lists (doc 30 FV-1) are permanent-domain and pinned — they are
-        // never above a marker and never popped — but their element spines
-        // carry edges, so every flat list is a retained source: an edge into
-        // the reclaimed suffix rejects the pop exactly as a retained record
-        // edge did before flattening. Allocation order is irrelevant here
-        // (all flat lists are retained), so the whole registry is walked.
+        // Flat lists and attrsets (doc 30 FV-1/FV-2) are permanent-domain
+        // and pinned — they are never above a marker and never popped — but
+        // their element spines and entry values carry edges, so every flat
+        // list/attrset is a retained source: an edge into the reclaimed
+        // suffix rejects the pop exactly as a retained record edge did
+        // before flattening. Allocation order is irrelevant here (all flat
+        // objects are retained), so the whole registries are walked.
         for entry in self.flat_lists.iter() {
             let source_address = GcHeapAddress::new(entry.ptr().as_ptr() as usize)
                 .map_err(EvalHeapError::GenerationalGc)?;
             for edge in self.scan_flat_list_edges(entry.object().payload())? {
+                let (_tag, target_ptr) = any_value_heap_ptr(edge.value())?;
+                if Self::record_in(reclaimed_records, target_ptr).is_some() {
+                    return Err(EvalHeapError::WorkerRegionPopRetainedEdge {
+                        source_address,
+                        edge_source: edge.source().clone(),
+                        target_address: GcHeapAddress::new(target_ptr.as_ptr() as usize)
+                            .map_err(EvalHeapError::GenerationalGc)?,
+                    });
+                }
+            }
+        }
+        for entry in self.flat_attrs.iter() {
+            let source_address = GcHeapAddress::new(entry.ptr().as_ptr() as usize)
+                .map_err(EvalHeapError::GenerationalGc)?;
+            for edge in self.scan_flat_attrs_edges(entry.object().payload())? {
                 let (_tag, target_ptr) = any_value_heap_ptr(edge.value())?;
                 if Self::record_in(reclaimed_records, target_ptr).is_some() {
                     return Err(EvalHeapError::WorkerRegionPopRetainedEdge {

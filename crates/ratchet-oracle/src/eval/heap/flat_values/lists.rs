@@ -145,7 +145,7 @@ impl EvalHeap {
             Err(error) => return Err(self.flat_resolution_error(ValueTag::List, ptr, error)),
         }
         let address = ptr.as_ptr() as usize;
-        self.flat_list_stale_hashes.insert(address);
+        self.flat_stale_hashes.insert(address);
         self.flat_cold_hashes.clear(address);
         Ok(())
     }
@@ -162,7 +162,7 @@ impl EvalHeap {
     ) -> Result<HashConsReservation<HotXxh3Hash, Value>, EvalHeapError> {
         let existing = {
             let flat_lists = &self.flat_lists;
-            let stale = &self.flat_list_stale_hashes;
+            let stale = &self.flat_stale_hashes;
             self.list_cons
                 .try_find(&hash, |value| {
                     let value = *value;

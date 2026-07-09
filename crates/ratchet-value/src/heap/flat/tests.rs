@@ -332,3 +332,77 @@ fn addresses_stay_stable_across_chunk_growth() {
         assert_eq!(&object.payload().text, text);
     }
 }
+
+/// A metadata-leading composite payload approximating the evaluator's
+/// FV-2 flat attrs payload: fixed metadata words followed by entry storage.
+#[derive(Debug)]
+struct MetadataPayload {
+    shape: u32,
+    entries: Vec<u64>,
+    drops: Rc<Cell<usize>>,
+}
+
+impl Drop for MetadataPayload {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+
+#[test]
+fn attrs_kind_allocates_and_resolves_mutably_with_stable_metadata() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let allocation = store
+        .alloc(
+            FlatObjectKind::Attrs,
+            0xdef,
+            1,
+            MetadataPayload {
+                shape: 42,
+                entries: vec![7, 9],
+                drops: Rc::clone(&drops),
+            },
+        )
+        .expect("allocation succeeds");
+
+    let object = store
+        .resolve(allocation.ptr, FlatObjectKind::Attrs)
+        .expect("resolution succeeds");
+    assert_eq!(object.kind(), FlatObjectKind::Attrs);
+    assert_eq!(object.payload().shape, 42);
+    assert_eq!(object.payload().entries, [7, 9]);
+
+    // The writeback door rewrites entry storage in place under `&mut self`;
+    // the metadata words and the header stay intact.
+    {
+        let payload = store
+            .resolve_mut(allocation.ptr, FlatObjectKind::Attrs)
+            .expect("mutable resolution succeeds");
+        payload.entries[1] = 11;
+    }
+    let object = store
+        .resolve(allocation.ptr, FlatObjectKind::Attrs)
+        .expect("resolution succeeds");
+    assert_eq!(object.payload().shape, 42);
+    assert_eq!(object.payload().entries, [7, 11]);
+    assert_eq!(
+        object.structural_hash(),
+        0xdef,
+        "entry rewrite leaves the header intact"
+    );
+
+    let error = store
+        .resolve(allocation.ptr, FlatObjectKind::List)
+        .expect_err("kind mismatch is rejected");
+    assert_eq!(
+        error,
+        FlatObjectError::KindMismatch {
+            expected: FlatObjectKind::List,
+            actual: FlatObjectKind::Attrs,
+            address: allocation.ptr.as_ptr() as usize,
+        }
+    );
+
+    drop(store);
+    assert_eq!(drops.get(), 1);
+}

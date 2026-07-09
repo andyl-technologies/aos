@@ -1095,12 +1095,41 @@ list only their *additional* gates.
 
 ### Stage FV-2 — flat attrsets
 
-- [ ] `FlatAttrs` slots inline; shape id in header word 1; PIC/select
+- [x] `FlatAttrs` slots inline; shape id in header word 1; PIC/select
       caches read the header (`ratchet-value/src/attrs/`,
       `eval/tree_walk` select paths). **Sequenced after Phase 5** so
       the shape layout is final (§9.1). Gate: iteration-order
       conformance ([09](09-attribute-sets-hidden-classes-and-inline-caches.md)
       §7) re-pinned; `068f40598` merge telemetry unregressed.
+      *Landed (FV-2) with one documented divergence from the sketch:
+      the shape metadata rides at the **front of the payload**
+      (`FlatAttrsPayload` in `eval/heap/flat_values/attrs.rs`), not in
+      header word 1 — the header keeps the full 64-bit hash-cons key
+      for every kind (splitting it would weaken collision confirmation
+      crate-wide, and the three-field `EvalHeapAttrsMetadata` does not
+      fit a half-word anyway), while the leading payload position keeps
+      the select-cache guard load header-adjacent with no record probe.
+      A header-resident shape id remains an FV-4 candidate alongside
+      size-class bits. Serial and shared modes both flatten attrsets
+      (`FlatObjectKind::Attrs`; shared slots publish the same payload
+      struct through `heap/flat/shared.rs` unchanged); no records or
+      record slots are allocated for attrsets in either mode, and the
+      `//` merge/update paths allocate their results flat with no
+      record+index insert per merge product. All four list GC couplings
+      are extended to attrs (`AttrBinding`-labelled edges): sweep
+      seeding, region-pop retained sources, collector-poll
+      snapshot/staleness/writebacks through `resolve_mut` with the
+      shared stale-hash side set (`flat_stale_hashes`), and
+      `scan_flat_attrs_edges` beside the list scan. The §11.7
+      `value/small.rs` boundary is resolved by retirement: the
+      0/1/2-element inline-constructor contract had no consumers and no
+      assigned tag bits, so the module is deleted and the boundary note
+      lives in `heap/flat.rs`. Zero new unsafe operations (the sealed
+      generic store hosts the new payload type as-is). After FV-2 the
+      record table's population is worker-domain thunks/lambdas/primops
+      only; the permanent-shared typed-allocation vtable
+      (`runtime/alloc.rs`) is now dead in lib builds and is FV-3 /
+      retirement fodder.*
 
 ### Stage FV-3 — flat thunks, lambdas, primops
 
