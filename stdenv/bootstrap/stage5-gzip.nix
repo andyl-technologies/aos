@@ -25,6 +25,7 @@
   buildPlatform,
   ...
 }: let
+  lib = import ./lib.nix;
   system = buildPlatform.system;
 
   sources = import ./sources.nix;
@@ -67,6 +68,8 @@ in
         cp -r ${src} $TMPDIR/src
         chmod -R u+w $TMPDIR/src
         cd $TMPDIR/src
+
+        ${lib.freezeAutotoolsMtimes}
 
         CC="${gcc}/bin/gcc" \
         CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \

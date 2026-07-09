@@ -19,6 +19,7 @@
   buildPlatform,
   ...
 }: let
+  lib = import ./lib.nix;
   system = buildPlatform.system;
   sources = import ./sources.nix;
 
@@ -335,6 +336,8 @@ in
         cp -r ${src} $TMPDIR/src
         chmod -R u+w $TMPDIR/src
         cd $TMPDIR/src
+
+        ${lib.freezeAutotoolsMtimes}
 
         # ── Apply TCC compatibility patch (from Guix, verified upstream) ──
         patch -p1 < ${./patches/binutils-boot-2.20.1a.patch}
