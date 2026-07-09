@@ -67,6 +67,8 @@ in
         chmod -R u+w $TMPDIR/src
         cd $TMPDIR/src
 
+        ${lib.freezeAutotoolsMtimes}
+
         CC="${gcc}/bin/gcc" \
         CFLAGS="-I${glibc}/include -I${linuxHeaders}/include" \
         LDFLAGS="-static -L${glibc}/lib" \
