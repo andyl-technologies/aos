@@ -1,0 +1,1164 @@
+# RFC-0007 - The flat-value architecture campaign
+
+> A `Value` should be a pointer to its bytes. Today it is a ticket into
+> a lookup service.
+
+This document records the **flat-value architecture campaign** (approved
+2026-07-09), a later addition to the RFC-0007 set in the same manner as
+[25](25-intermediate-representation.md)–[29](29-tiered-content-keyed-memoization.md).
+It is the plan for removing the evaluator's largest remaining
+*architectural* slowdowns — the ones that no pass, cache, or JIT tier can
+compensate for because they are paid on every heap-value dereference and
+every closure capture. Like [29](29-tiered-content-keyed-memoization.md),
+it is written against the shipped vocabulary (`Value`, `HeapObject`,
+`HeapRecord`, `EvalEnv`, `AtomicValueCell`, `AOS_NIX_GC=sweep`) and cites
+the landed commits that produced its evidence. Divergences between this
+plan and the code as it stands are flagged, not resolved (§11).
+
+Nothing here weakens the byte-parity contract of
+[02](02-compatibility-constraints.md): every stage of the campaign is an
+internal representation change gated on byte-identical `.drv` output, and
+the stage order is chosen so that at most one representation variable
+changes per landing.
+
+---
+
+## 1. The problem: every dereference is a probe, a record, and a chase
+
+### 1.1 Anatomy of a native value dereference
+
+C++ Nix's `Value` carries a direct pointer: dereferencing a string, list,
+or attrset is one load from the pointed-to bytes. The native evaluator's
+`Value` (`crates/ratchet-value/src/value.rs`) is a 16-byte tag+payload
+pair whose heap payload is a `NonNull<HeapObject>` — and `HeapObject` is
+deliberately opaque (`_private: [u8; 0]`): **nothing lives at the pointed-to
+address**. The Tier-A bump arena (`crates/ratchet-value/src/heap/arena.rs`)
+reserves aligned slots in `mmap` chunks and returns stable addresses, but
+its own module header says it "deliberately avoids raw memory writes until
+concrete heap object layouts exist." The address is an identity, not a
+location.
+
+The typed payload lives elsewhere. Resolution funnels through the record
+side table (`crates/ratchet-oracle/src/eval/heap/record_table.rs`):
+
+```text
+Value { tag, payload: NonNull<HeapObject> }
+  └─> AddressHasher probe                    HashMap<usize, u32> (12.3 MiB at wide-eval peak)
+        └─> records[position]                Vec<HeapRecord>    (38.7 MiB; 160-byte records)
+              └─> HeapRecord.object          HeapObjectValue
+                    └─> Arc<EvalThunk> / Arc<EvalLambda> / Arc<EvalPrimOp>
+                        NixString / NixList / FlatAttrs        (separate malloc allocations)
+```
+
+Every `get_string`/`get_list`/`get_attrs`/`get_thunk`, every hash-cons
+collision confirmation, and every GC address lookup pays: **one hash, two
+dependent loads (map bucket, record), and then an `Arc`/owned-buffer chase
+to a third, unrelated allocation.** A single logical value costs three
+allocations in three allocators — an arena address whose bytes are never
+written, a `HeapRecord` slot in the table `Vec`, and a malloc'd payload —
+with no locality between them. The spine work of package evaluation
+(lambda application, attrset construction, string coercion into
+derivation attributes) performs this millions of times per eval: the
+whole-set `bench.wide` root pins 273 packages under one eval, and B1's
+sweep telemetry alone observed ~254k forced thunks on that workload
+(214k shed + retirement counts, commit `9422a34c8`), each of which was
+allocated, probed, resolved, and chased at least once — with strings,
+lists, and attrsets a large multiple of that (`EvalHeapAllocationCounters`
+tracks the `nrValues`/`nrAttrsets` analogs; `eval/heap/alloc_counters.rs`).
+
+### 1.2 What the landed evidence says
+
+The record-table architecture was the right Phase-1 choice — it made the
+oracle a fail-loud, `unsafe`-free interpreter, and the address-index fix
+already took resolution from `O(n)` scans to `O(1)` probes (see the
+`record_table.rs` module header). But four independent landings have now
+measured its ceiling:
+
+1. **The memory decomposition** (`eeb940630`, nix-bench memory columns):
+   a single cold wide-eval peaks at **238 MiB vs C++ Nix's 77 MiB
+   (3.1x)**. Of ~160 MiB live malloc at mid-eval: a **38.7 MiB record
+   `Vec`**, a **12.3 MiB address map**, **179k × 160-byte records**, and
+   the balance in `Arc`'d payload graphs. The record table and its index
+   are pure representation overhead — bytes that exist only because
+   payloads do not live at their addresses.
+2. **The flat profile** (the profiling round behind `38da57c37`):
+   allocator traffic was ~15% of on-CPU time, and the dereference path —
+   address-hash probe + record load + `Arc` chase — was the recurring
+   motif under every spine operation. (The ~15% figure is from the
+   session profile that drove that commit, not from an in-tree artifact;
+   see §11.)
+3. **The B1 sweep decision** (`9422a34c8`, [06](06-memory-management-and-gc.md)
+   §4 implementation note): the copying-vs-nonmoving fork was decided
+   *by this representation*. Copying compacts almost nothing "because a
+   `Value` is an opaque address key into the record side-table and object
+   bytes live in refcounted payloads" — while carrying corruption risk
+   through ~30 `payload_bits` address-identity sites. Tier-B's stage B2
+   (the copying nursery) is explicitly gated on "value-rep flattening":
+   this document is that gate's design.
+4. **The tier-2 JIT landings** (`8c0680193`..`b307bbb53`): compiled Nix
+   beats C++ Nix by 20–25x exactly where the grammar escapes the value
+   plumbing — self-recursive arithmetic with zero helper calls, fused
+   fold/genList loops, filter seams. `bench.compute.fib` collapsing from
+   650 MB to 30 MB RSS under JIT is the same fact from the other side:
+   the cost was never the arithmetic, it was the per-value machinery.
+   Extending the compiled grammar to allocating bodies (the alloc-family
+   FFI the tier-2 handoffs name as the next unlock) requires objects
+   with *fixed field offsets native code can write* — which the record
+   table structurally cannot provide.
+
+### 1.3 Why this is the campaign, not a pass
+
+Each prior optimization round attacked work *volume*: fewer evals (root
+cutoff, memo tiers, [29](29-tiered-content-keyed-memoization.md)), fewer
+thunks (strictness, `6ab65fbf8`/`00c8ef665`), fewer interpreter steps
+(tier-2). This campaign attacks work *unit cost* — the constant factor
+under everything that remains. It decomposes into six coordinated
+changes: the flat object layout (§2), value-word compression (§3), the
+closure/environment architecture (§4), arena-owned payloads (§5),
+dispatch follow-ups (§6), and a set of memory-management extensions
+(§7). §2 is the keystone: §3, §5, §7, and Tier-B B2 are all gated on it.
+
+---
+
+## 2. The flat value representation (the keystone)
+
+### 2.1 Target layout: header + payload at the pointed-to address
+
+The design: a `HeapObject` becomes real. The bump arena's stable address
+points at an **object header followed by the payload inline**:
+
+```text
+flat heap object (Tier-A arena, 8-byte aligned):
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │ header word 0:  kind | size class | GC bits (mark, gen) | flags │
+  │ header word 1:  structural hash / hash-cons key | shape id     │
+  ├──────────────────────────────────────────────────────────────┤
+  │ payload, inline:                                              │
+  │   String  -> len + bytes (+ context ref)                      │
+  │   List    -> len + [Value; len]                               │
+  │   Attrs   -> shape id + [Value; slots]                        │
+  │   Thunk   -> state word (claim protocol) + captured refs      │
+  │   Lambda  -> pattern/body ids + captured env ref/values       │
+  └──────────────────────────────────────────────────────────────┘
+```
+
+Dereference becomes **one load** from the address the `Value` already
+carries. The address-hash probe, the record `Vec`, and the payload `Arc`
+all disappear from the hot path. And because the arena is a bump
+allocator, **allocation order is traversal order**: the attrset built
+while walking a package body is contiguous with its strings and lists —
+sequential spine locality that the three-allocator layout can never have.
+
+The arena anticipated this. `heap/arena.rs` already defines
+`OBJECT_HEADER_BYTES` (16), `THUNK_BYTES`, `LAMBDA_BYTES`,
+`LIST_ELEMENTS_OFFSET_BYTES`, and `CONS_BYTES`, and its `HeapObjectKind`
+enum sizes allocations per kind — the layout constants have been reserved
+since the arena landed; this campaign finally writes bytes behind them.
+
+### 2.2 Where every record-table field goes
+
+`HeapRecord` (`eval/heap/mod.rs`) is the migration's checklist; each
+field must land somewhere or be shown dead:
+
+| `HeapRecord` field | Destination in the flat object |
+| --- | --- |
+| `ptr` | Becomes the object itself — the identity *is* the address; no index entry needed. |
+| `layout` (size, align) | Header size-class bits (needed by the sweep's free-list and §7.4 slabs). |
+| `structural_hash: Option<HotXxh3Hash>` | Header word 1. Hash-cons tables (`ratchet-value/src/hashcons.rs`) keep their bucket structure but collision confirmation compares flat payload bytes instead of chasing a record. |
+| `allocation_domain` (Worker / PermanentShared) | Header flag bit (or, better, per-domain arenas — §7.4 — making it positional). |
+| `generation: HeapGeneration` | Header GC bits. |
+| `minor_gc_forwarding: Cell<Option<..>>` | A forwarding word, present only under Tier-B B2 (copying); absent in Tier-A layouts. |
+| `last_touch_epoch: Cell<u64>` | The cold-value advice machinery's input; moves to a sparse side map with the cold hashes (below) — it must *not* stay inline, or every read re-dirties the object's cache line. |
+| `object: HeapObjectValue` | The inline payload (§2.1). |
+| cold hashes side map (`ColdHashMap`) | Unchanged — already sparse and off the hot path by design. |
+
+The record table itself survives only as GC bookkeeping if at all: B1's
+free-slot recycling becomes a per-size-class free list threaded through
+retired objects' headers, and "retired" becomes a header state instead of
+a `HeapObjectValue::Retired` payload swap.
+
+### 2.3 Staged migration by value kind
+
+The whole point of the staging is that byte parity is re-proven with one
+representation variable moved at a time:
+
+1. **Strings and paths, then lists** (first): self-contained payloads —
+   bytes and `Value` cells — with no captured environments and no state
+   machine. They are also the hash-consed immortal kinds
+   (`string_cons`/`path_cons`/`list_cons` tables in `EvalHeap`), so the
+   hash-cons key migration (§2.2) is proven here at the lowest risk.
+2. **Attrsets** (second): `FlatAttrs` slots move inline; the header's
+   shape-id word aligns with [09](09-attribute-sets-hidden-classes-and-inline-caches.md)
+   — a PIC hit finally lands its guard + constant-offset load on real
+   object memory, which is the layout Phase 5 assumes.
+3. **Thunks, lambdas, primops** (last): thunks carry the claim protocol
+   — the serial `ThunkCell` state machine, the optional boxed
+   `TreeWalkParallelThunkCell` (~648 bytes, deliberately out-of-line
+   today), the B1 capture-shedding transition
+   (`EvalThunkKind::Released`), and the parallel claim/park discipline.
+   The flat thunk's state word must reproduce all of it in place:
+   suspend → claim → publish → shed as header/state transitions on one
+   object, with the same release/acquire publication edges the
+   `AtomicValueCell` documentation pins. This stage is last because it
+   is the one that can create *torn-state* bugs rather than mere
+   wrong-bytes bugs.
+
+Each stage ships behind the full gate battery (§9.2) before the next
+begins.
+
+### 2.4 The parity-critical identity audit (`payload_bits`)
+
+The record side table is not only overhead — it is where **address
+identity** is currently anchored, and `Value::payload_bits()` is used as
+an identity key across the evaluator. The B1 commit counted ~30 such
+sites; the current tree has ~66 uses across 24 non-test files. The
+families (the B2-gate audit list, enumerated):
+
+- **Force-cache and memo identity:**
+  `eval/tree_walk/eval_core/force_identity.rs`, `eval_core/memo.rs`,
+  `eval_core/force_payload.rs`, `eval_core.rs` — cache keys and
+  force-capture identities derived from payload addresses.
+- **Tier-1/tier-2 slot publication:** `eval/tree_walk/tier1_publish.rs`
+  — compiled-entry slots keyed and validated by representation identity
+  (the tier-2 landings re-check the self-callee upvalue "by
+  representation identity at every boundary", `8c0680193`).
+- **Pointer-equality fast paths:** `eval_compare.rs` (O(1) equality for
+  identical heap values — sound *because* addresses are stable and
+  hash-consing canonicalizes).
+- **Environment cells:** `eval/env.rs` — `AtomicValueCell` stores raw
+  tag/payload word pairs; `decode_value` reconstructs pointers from
+  payload bits.
+- **Serializers and codecs:** `eval_codec.rs`, `serialize_xml.rs`,
+  `outcome.rs`, `eval_source.rs`, `eval_raw.rs`, `eval_trace.rs` —
+  visited-set cycle detection and result encoding keyed by address.
+- **Hash-cons interning:** `alloc_intern.rs` plus the heap's cons
+  tables — bucket candidates compared and reused by address.
+- **Heap/GC internals:** `eval/heap/{roots,gc,arena,shared_arena,shared_backend}.rs`
+  — root sets, scan plans, shard resolution.
+- **JIT lowering:** `ratchet-jit/src/lower.rs` — payload words embedded
+  as constants in compiled code.
+- **Shape instances:** `ratchet-value/src/attrs/shape/instance.rs`.
+
+The campaign's §2 stages **preserve** this invariant: flat objects keep
+the arena's stable, never-reissued addresses, so every `payload_bits`
+site keeps working unchanged through the whole Tier-A campaign. The
+audit's obligation is *forward-looking*: each site must be classified
+(pure identity vs. identity-that-survives-relocation) so that B2's
+moving nursery — which this campaign unblocks — knows exactly which keys
+need rehash hooks. That classification list is the deliverable, per the
+gate stated in [06](06-memory-management-and-gc.md) §4.
+
+### 2.5 GC integration: header-resident marks
+
+The B1 sweep (`9422a34c8`) is record-table machinery today: mark states
+live beside records, retirement swaps the payload enum, and the free
+list is a `Vec<u32>` of slot positions (`record_table.rs`). Under flat
+objects the sweep must learn **header-resident marks**: mark bits in
+header word 0, retirement as a header state + size-class free-list link
+written into the dead object's payload area, and the address-index
+removal step deleted (there is no index). The fail-loud property changes
+form but survives: Tier-A never reuses *addresses across region pops*
+today; under flat objects with free-list reuse, the loud-failure
+guarantee is carried by a header kind/epoch check instead of an
+`UnknownPointer` map miss — an object resurrected at a reused address is
+detectable by generation/epoch mismatch. This is a real weakening of
+B1's "never reissue" simplicity and is called out as a risk (§9.4).
+
+This section **is** the "value-representation flattening" that
+[06](06-memory-management-and-gc.md) §4 names as Tier-B stage B2's third
+gate. After §2 completes, copying's `O(survivors)` reset finally has
+bytes to copy, and B2 becomes reachable.
+
+---
+
+## 3. Value-word compression: pointer tagging and 8-byte values
+
+### 3.1 What is already reserved
+
+The 16-byte `Value` is the Phase-1 baseline
+([05](05-value-representation.md) §2), and the bit-layout contracts for
+its successors are already pinned in safe code:
+`ratchet-value/src/value/tag.rs` reserves the low three bits of every
+8-byte-aligned heap pointer (`POINTER_TAG_BITS = 3`), names bit 0 as the
+thunk `FORCED` shortcut, and provides checked encode/decode helpers that
+deliberately do not dereference; `value/nanbox.rs` pins the NaN-box
+layout contract; `value/small.rs` pins the 0/1/2-element inline
+constructor contract. Doc [22](22-implementation-checklist-all-phases.md)
+tracks these as P8 precursors. Platform assumptions are settled by C-24
+(64-bit, 8-byte-aligned, canonical pointers; x86-64/aarch64 only).
+
+Halving the value word matters because values are what containers hold:
+**every attrset entry, list element, environment slot, and interpreter
+stack cell is a `Value`**. An 8-byte value halves the payload mass of
+exactly the objects §2 just made contiguous, and doubles the number of
+values per cache line on the spine. §2 and §3 rewrite the same seams
+(every allocation and access site), which is why they are one campaign:
+the seams are opened once.
+
+### 3.2 The i64 wall, restated
+
+[05](05-value-representation.md) §2.1/§4.1 already worked this problem:
+Nix's `int` is a first-class `i64` with the full range observable, and a
+NaN-box payload (~48 usable bits) cannot hold it. Any 8-byte value
+representation must choose where big integers go. Three candidates:
+
+### 3.3 Candidate A: NaN-boxing — not the primary
+
+NaN-boxing optimizes for a language whose native number is the double.
+Nix is the opposite: `float` is the rare type. Taking on NaN
+normalization, canonical-pointer masking, and the boxed-i64 fallback
+*simultaneously* buys nothing over Candidate B (which gets the same
+8 bytes with plain bit tests) except verbatim float storage — and floats
+are cold in package eval. Candidate A remains a built-and-measured P8
+variant per the budget mandate (`M-4`/`Q-E`), but it is not the
+recommended primary. The `nanbox.rs` contract stays as its layout spec.
+
+### 3.4 Candidate B: tagged word with immediate small ints
+
+One 64-bit word; low-3-bit tag (the `tag.rs` reservation), with one tag
+pattern meaning "immediate int, value in the upper 61 bits". Integers in
+`[-2^60, 2^60)` — which is every length, index, timestamp, size, and
+all but adversarial constants — stay inline; the rare out-of-range `i64`
+boxes into an 8-byte arena cell (hash-consed, so each big constant
+allocates once per eval). Bools/null are immediate tag patterns. Heap
+values are the tagged address itself, with bit 0 doubling as the thunk
+`FORCED` shortcut exactly as `tag.rs` reserves.
+
+Cost: a shift on int construction/extraction, a magnitude branch on
+construction, and a boxed fallback on the hottest *compute* type. Doc
+[05](05-value-representation.md) §2.1 called boxing large ints
+"unacceptable for the baseline"; the campaign does not contradict that —
+the 16-byte baseline stays the oracle's representation until §2 is
+byte-green — but the JIT profit census (`4515a9972`) materially weakens
+the objection for the *variant*: package-eval bodies contain essentially
+no native arithmetic (gated mass peaks at 2–5 native instructions), and
+the workloads where integers are hot are exactly the tier-2 compute
+benchmarks, which run unboxed in native registers past a one-time tag
+guard (`8c0680193`).
+
+### 3.5 Candidate C: compressed 32-bit arena indices
+
+The JVM's compressed-oops move, enabled *by* §2: once every payload is
+flat in one arena, a heap reference need not be a 64-bit pointer at all —
+it can be a **32-bit offset in 8-byte granules from a single reserved
+arena base**, addressing 32 GiB of heap (the measured wide-eval peak is
+238 MiB; two orders of magnitude of headroom). A `Value` becomes
+`(tag: u32, offset: u32)` or a packed single word; container slots that
+hold only heap references (list spines, attr slots after shape
+classification) can shrink to 4 bytes.
+
+Candidate C's distinctive advantages:
+
+- **It sidesteps the NaN-box-vs-i64 problem entirely** at the 8-byte
+  value size: the value word has a full 32-bit half free for tag bits
+  and small immediates, and `i64` takes the boxed fallback exactly as in
+  Candidate B (with a smaller inline-int range: 32-bit immediates
+  instead of 61-bit).
+- **Indices are not pointers.** Encode/decode is safe integer
+  arithmetic; Rust pointer-provenance rules (which `tag.rs` documents
+  itself dodging today by storing address bits without provenance) stop
+  applying to the value representation. The unsafe surface concentrates
+  into one place: the arena-base-plus-offset dereference. This is a
+  material shrink of §8's audited zone relative to Candidate B.
+- **GC- and parallel-friendly.** Offsets are position-independent:
+  cross-worker handles in the shared arena (§9.4) and any future
+  arena-remap/out-of-core spill ([06](06-memory-management-and-gc.md)
+  §3.4) survive without pointer fixup; a B2 copying collector forwards
+  by offset rewrite with no provenance laundering.
+
+Candidate C's cost: it **requires a reservation-based arena** — one
+contiguous virtual reservation committed on demand — where Tier-A today
+allocates independent 2 MiB+ `mmap` chunks (`c11acc759`,
+`heap/arena.rs`). That is a real prerequisite no earlier doc commits to,
+flagged in §11. It also taxes every dereference with one add (base +
+offset), which on modern cores is free in the addressing mode.
+
+### 3.6 Recommendation
+
+Staged, per the P8 build-the-variants-and-keep-the-winner mandate:
+
+1. **The 16-byte `Value` is retained through every §2 stage.** Layout
+   flattening and word compression must not land in the same stage;
+   byte-parity bisection depends on one variable at a time.
+2. **Candidate C (compressed indices) is the recommended primary** for
+   the 8-byte value, *conditional on* the single-reservation arena
+   landing cleanly. Rationale: package-eval spine mass is
+   references-and-strings, not integers — C halves the same slots B
+   does, while shrinking the audited unsafe zone and buying the
+   parallel/GC properties for free. The 32-bit immediate-int range is
+   the honest weakness; the compute benchmarks are the workload where it
+   bites, and they are JIT-dominated.
+3. **Candidate B is the fallback**, built to the same seams (the
+   `tag.rs` contract) and selected if the reservation arena stalls or if
+   compute-suite A/B shows the 32-bit immediate range regressing real
+   workloads.
+4. NaN-boxing (A) is built as the P8 measured variant it already is; it
+   ships only if it beats the winner of B/C on the full benchmark
+   matrix, per `M-4`/`Q-E`.
+
+---
+
+## 4. Environment architecture: hybrid closures
+
+### 4.1 The measured invariant
+
+`EvalEnv` (`crates/ratchet-oracle/src/eval/env.rs`) is
+`Arc<[Arc<EvalFrame>]>`; a frame is a boxed slice of `AtomicValueCell`
+slots. The module's own protocol documentation establishes the fact this
+section builds on: **slots are written by the constructing thread while
+the binding form is assembled, and are immutable after publication** —
+every cross-thread hand-off passes a release/acquire edge, and readers
+then see fixed tag/payload pairs. Frames are, today, *already
+persistent-capable data structures with zero copy-on-write machinery
+needed*: nothing mutates a published frame.
+
+One honest caveat, from the same docs: slots are not literally
+write-once. `let`/`rec` assembly writes slots incrementally, reads
+interleave on the constructing thread, and **`__overrides` rewrites
+already-written slots**. The invariant is *immutable after publication*,
+not *write-once* — so the design below must pin the publication boundary
+(the first capture that escapes the constructing form) as the point
+after which a frame is frozen, and the `__overrides` rewrite must be
+proven to happen before it. This is flagged in §11.
+
+### 4.2 Today's cost
+
+Capturing an environment — which happens at **every** thunk, lambda, and
+primop-arg allocation — copies the entire frame *array*:
+`EvalEnv::capture` allocates a fresh `Arc<[Arc<EvalFrame>]>` and clones
+every frame `Arc` into it. The generation-keyed capture cache
+(`38da57c37`: `env_capture_cache` keyed by `env_generation`, all
+mutation sites routed through counter-bumping helpers in
+`eval_core/module_env.rs`) amortizes consecutive captures of an
+unchanged environment, but every env mutation invalidates it and the
+copy is re-paid. The session profile behind that commit measured the
+capture-array copy at roughly 251k per wide eval and total small
+environment allocations near 599k (session-profiled figures — see §11),
+and identified allocation traffic overall at ~45% of on-CPU time before
+the cache landed. The capture copy is also a *retention* problem: a
+thunk capturing a 12-frame stack retains all twelve frames until shed,
+which is part of why B1 found 54% of the worker heap dead-at-end
+(`9422a34c8`).
+
+### 4.3 The hybrid design
+
+One closure representation is wrong at both ends: flat capture of large
+free sets copies too much; linked chains for two-variable lambdas pay a
+pointer walk for nothing. The design — the GHC/OCaml/V8 convergence
+point — is a **static, per-allocation-site choice** between two forms,
+made by the front-end from free-variable facts:
+
+- **Flat closure** (`|free set| <= K`, K ≈ 4–8, tuned by measurement):
+  the closure/thunk object (flat, per §2) inlines the captured `Value`s
+  directly after its header. Capture cost: K value copies into the
+  object being allocated anyway. Access cost: **one load at a constant
+  offset** — no frame chain, no slot indirection. The lexical
+  coordinates in the lowered IR ([25](25-intermediate-representation.md)
+  §3) are rewritten by closure conversion into capture indices.
+- **Linked persistent frame chain** (`|free set| > K`, or sites the
+  analysis cannot prove): frames gain a parent pointer and environments
+  become a chain instead of an array. Capture cost: **one pointer** (the
+  innermost frame). Access cost: a depth walk bounded by the lexical
+  coordinate's frame index — already static in the resolver's de Bruijn
+  form. Structural tail sharing replaces array cloning: two thunks
+  capturing sibling scopes share every common ancestor frame.
+
+`with`-scope stacks (`EvalWithEnv`, today a `Box<[EvalWithScope]>` copy
+per capture) and scoped-import globals (`EvalScopedGlobalEnv`) become
+persistent cons lists under the same rule — capture is one pointer,
+which matters because they are captured alongside *every* `Node` thunk
+(`EvalThunkKind::Node` carries all three environments).
+
+### 4.4 The analysis dependency
+
+The site classification runs on Phase-4 facts. Chunk A landed the real
+demand lattice and the intra-module fixpoint (`6ab65fbf8`); Chunk B
+landed totality-licensed eager derivation-attr assembly (`00c8ef665`).
+What closure conversion needs beyond them — per-def-site free-variable
+sets with escape/single-use refinement — is only partially present
+today: free-variable slot enumeration exists where the demand cache key
+needs it (C-1/C-2, `cache/key.rs`), and
+`ratchet-core/src/analysis/escape.rs` is by its own header a
+bottom-cases-only precursor. The campaign therefore names a **Chunk D**
+deliverable: per-site `|FV|`, capture-mutability proof (the §4.1
+publication boundary), and single-use facts (which also drive §7.4's
+last-use shedding). §4 cannot land before Chunk D; the checklist
+sequences it accordingly.
+
+### 4.5 What dies
+
+The capture-array copy dies at flat sites and shrinks to a pointer at
+linked sites. The generation-keyed capture cache — machinery whose only
+purpose is amortizing the array copy — **becomes obsolete at flat sites
+and vestigial elsewhere**, and is expected to be deleted at the end of
+the stage (`38da57c37`'s four counter-bumping helper seams are exactly
+the mutation sites the persistent-chain design must instrument instead).
+Transitive retention drops from "all frames in scope" to "the free set",
+which directly feeds the B1 sweep's mid-eval effectiveness and the
+238 MiB → ≤2x-of-C++ memory target (`eeb940630`).
+
+---
+
+## 5. Arena-owned payloads
+
+Today every thunk, lambda, and primop payload is an `Arc` in
+`HeapObjectValue` (`eval/heap/mod.rs`), and strings/lists own separate
+heap buffers. Reference counting is pure overhead in this heap: the
+object graph is owned by the arena+record table, lifetimes are decided
+by the B1 sweep or the end-of-eval drop, and the `Arc` counts decide
+nothing — but they are bumped on every payload clone, resolution that
+hands out an owned handle, and capture.
+
+Under §2 the payloads *are* the arena objects, so this section is mostly
+a consequence rather than a work item; it is stated separately because
+it has its own gate: **reclamation moves from `drop`-the-`Arc` to the
+sweep**. B1 currently reclaims by swapping the payload enum
+(`HeapObjectValue::Retired`), letting Rust drop the `Arc` graph. Flat
+payload bytes have no drop glue; anything a payload *references outside
+the arena* (interned symbols, string-context elements — kept `Arc`-backed
+by `38da57c37` deliberately, boxed parallel thunk cells) must either
+move into the arena too, or be owned by a side structure the sweep
+notifies. The header space §2 reserves for mark bits is what makes the
+sweep able to reclaim payload bytes at all. Refcount traffic on the
+clone-heavy paths (hash-cons confirmation, coercion fan-out from
+`33ce21f9e`) disappears with the `Arc`s.
+
+---
+
+## 6. Interpreter dispatch (secondary, evidence-gated)
+
+Two dispatch-level items ride behind the campaign, deliberately
+separated by their evidence quality:
+
+**Superinstructions — build against measured shapes now.** The JIT
+profit census (`4515a9972`) is dispositive about *where* interpreted
+time goes: package-eval bodies are attrset/string/list/apply plumbing
+whose native-instruction mass peaks at 2–5, i.e. dispatch and operand
+shuffling, not compute. The same census names the fusable families —
+**string-interpolation (`Interp`), `List`, and `AttrSet` constructor
+bodies, and nested `Select`/`Update` chains** — and the tree already
+carries the precedent that fusing a measured shape pays
+(`068f40598`'s one-pass `//` merge; `636b9c3ef`'s fold/genList fusion;
+`b307bbb53`'s filter seam). Tree-walk superinstructions are the same
+move inside `eval_core`: one handler for a fused node pair, added
+shape-by-shape with a wall-time A/B per shape, never grammar-wide.
+
+**Flat bytecode + explicit operand stack — only if the residual says
+so.** Replacing the recursive tree walk with a flat bytecode loop over
+an explicit operand stack would (a) fix the deep-recursion native-stack
+crash class architecturally (goal-tracker item #49; the same structural
+limit shows up as tier-2's 1024-frame interpreter-headroom check in
+`8c0680193`), and (b) create the stable interior execution states that
+OSR needs ([08](08-execution-tiers-and-cranelift.md)). But it is a
+whole-interpreter rewrite with byte-parity risk everywhere, and the
+census does *not* yet show dispatch as the top cost — the deref path
+(§1) is. **Decision: measure-gated, not committed.** It is re-evaluated
+only from post-§2–§4 profiles, if interpreter dispatch is then the top
+residual. Until then the recursion-depth issue keeps its existing
+mitigations (depth checks reproducing C++ Nix's max-call-depth error
+byte-identically).
+
+---
+
+## 7. Memory-management extensions
+
+Companion levers approved with the campaign (2026-07-09), each gated on
+or unlocked by §2–§5. The first extension of the approved set —
+compressed 32-bit indices — is treated as a first-class §3 candidate
+(§3.5) rather than repeated here.
+
+### 7.1 Closure/environment hash-consing (campaign follow-on)
+
+The wide eval allocates on the order of 599k small environment objects
+(session-profiled; §11), and the tier-up economics measurements say they
+are heavily duplicated: the same `lib` scaffolding lambdas are
+bit-identical across packages (the top hot bodies are shared-library
+scaffolding — `lib/strings.nix`, `pkgs/default.nix` call sites — and the
+source-keyed def-site census found 296 of 375 spine def-sites shared
+across all five probe packages), applied to the same canonical values
+across 273 package instantiations. Structurally identical environments
+are allocated fresh every time.
+
+Hash-consing them is blocked *today* by a settled decision: unforced
+thunks are unhashable (C-15/S-15 — forcing-to-hash destroys laziness),
+and today's captures are frame graphs full of thunks. §4 changes the
+economics: a **flat closure's identity is `(def-site, captured value
+words)`** — and when every captured word is an immediate or a
+hash-consed canonical address (the common case for the lib-scaffolding
+duplicates, whose captures are the same canonical `lib` attrsets), the
+closure is hash-consable *without hashing any thunk*: address identity
+of canonical captures substitutes for structural hashing, exactly as the
+existing cons tables use address-equality confirmation. Closures with
+non-canonical (thunk) captures simply decline interning — same
+declined-admission pattern as MEMO-1
+([29](29-tiered-content-keyed-memoization.md) §5.7).
+
+Recorded as a **follow-on after the §4 stage**, not part of it: it needs
+flat closures to exist, and its win must be sized against the §4 win
+already banked (much of the 599k mass dies at capture time under §4
+before interning could see it).
+
+### 7.2 The semantic-swap eviction ladder (drop-and-recompute)
+
+Nix evaluation has a property ordinary language runtimes lack: **almost
+every heap object is a memoized result of a pure computation the
+evaluator can redo.** Memory pressure therefore has a semantic response
+ladder — trade recompute time for residency — rather than only a paging
+response:
+
+1. **B1 sweep** — reclaim the provably unreachable (`9422a34c8`).
+2. **Capture shedding** — drop forced thunks' closure graphs (B1's
+   other half; extended by §7.4's last-use shedding).
+3. **Memo-tier eviction** — demote/evict L0/L1 records under the
+   size-pressure policy already specified in
+   [29](29-tiered-content-keyed-memoization.md) §5; a re-demand is an L2
+   hit or a recompute, never an error.
+4. **Cold module IR eviction** — drop lowered IR for modules with no
+   live frames; the parse cache re-materializes a module in
+   milliseconds (per-file artifacts, `nodes/parse-artifacts.index`), so
+   module IR is a cache, not state.
+5. **Thunk drop-and-recompute** (the deep rung) — drop a *suspended*
+   thunk's work and re-create it on demand from `(module, node,
+   captured identity)`, Adapton-style, using the same recursive
+   content-keyed record identity MEMO-1 builds
+   ([29](29-tiered-content-keyed-memoization.md) §3). This rung is
+   research-grade until the §4 closure identity work lands (a
+   recomputable thunk needs a durable identity for its captures).
+
+Two explicit rejections, recorded with reasons:
+
+- **Literal thunk serialization-to-disk is rejected.** A suspended
+  thunk's captures reference the live heap graph (frames, `with`
+  scopes, receiver values); serializing one means serializing its
+  reachable closure — and thunk value-hashing is unsupported by design
+  (S-15). Swap-by-recompute (rung 5) is the sound form of the same idea.
+- **In-memory compression of evaluator data is rejected.** The OS
+  already runs page-granularity compression under pressure (macOS
+  compressed memory; zram on Linux hosts that enable it); adding zstd
+  inside the process pays CPU to compress bytes the OS would compress
+  anyway, against access patterns we would then have to decompress
+  synchronously on the force path. **zstd is appropriate exactly where
+  doc 29 puts it: the L2 disk sidecar packs**
+  ([29](29-tiered-content-keyed-memoization.md) §5.4), where
+  decompression amortizes against I/O.
+
+### 7.3 Store-path segment interning
+
+Derivation-heavy evaluation is textually dominated by store paths:
+`/nix/store/<32-char-nix32-hash>-<name>` — a 44-byte prefix
+(`/nix/store/` + hash + `-`) that repeats across `inputDrvs`, `env`
+attribute strings, string-context elements, and every coerced dependency
+reference, with whole paths repeated many times each. Byte compression
+is the wrong tool (it taxes every access); **structural sharing is
+free at access time**: intern path *segments* (store-dir, hash-name
+stem, output suffix) in a permanent-domain segment table and represent
+store-path-bearing strings as segment references — the same move symbol
+interning makes for attribute names
+([09](09-attribute-sets-hidden-classes-and-inline-caches.md) §3), and an
+extension of what `38da57c37` already did for context elements
+(`Arc`-backed, clones no longer deep-copy path bytes).
+
+Sizing, honestly: the `eeb940630` decomposition did not split payload
+mass by value kind, so the win is not sizable from existing artifacts.
+The structural argument — string payloads are a large share of the
+~90 MiB live working data and permanent hash-cons domain, and store
+paths dominate derivation strings — justifies a **one-off counting
+probe** (bytes in string payloads matching the store-path shape, unique
+vs. total) as the stage's first deliverable; the interning implementation
+is gated on that probe showing a multi-MiB dedup ratio.
+
+### 7.4 Smaller committed items
+
+- **Per-kind arenas.** Segregate allocation by object kind (at minimum:
+  hash-consed immortal strings/paths/lists vs. sweepable worker
+  thunks/attrs). The B1 sweep then scans only sweepable pages —
+  today it iterates the whole record table and skips
+  (`gc.rs`/`record_table.rs` retire-in-place) — and immortal pages need
+  no mark bits at all. Also the natural place to make
+  `allocation_domain` positional (§2.2).
+- **Size-class slabs** for the measured populations (16-byte
+  cons/value-pair cells and the thunk-sized class that replaces today's
+  160-byte records, `eeb940630`), so the free-list reuse §2.5 introduces
+  is exact-fit and fragmentation-free.
+- **Last-use capture shedding.** B1 sheds at force-publish; cardinality
+  facts ([07](07-laziness-and-whole-program-analyses.md)) prove many
+  values are consumed exactly once, licensing shedding at the *last
+  use* — before the force even completes, and for values that are never
+  forced at all. The `SingleEntry` force-storage mode
+  (`EvalThunkForceStorageMode`, `eval/heap/mod.rs`) is the existing
+  proof that per-site analysis can select thunk storage regimes; this
+  extends it from "skip publishing" to "release captures eagerly."
+  Depends on Chunk-D facts (§4.4).
+- **Weak hash-cons tables for daemon residency.** The permanent shared
+  domain is immortal by design in one-shot mode; in a long-lived daemon
+  ([14](14-integration-with-aos.md)) it is a slow leak. Weak-reference
+  buckets (entries cleared when the sweep proves the canonical value
+  unreachable from any root) bound daemon residency; one-shot mode keeps
+  the immortal fast path. Gated on §2 (the sweep must be able to see
+  hash-cons keys in headers to clear them).
+
+---
+
+## 8. Unsafe placement (decision, recorded)
+
+**Decision (user directive, 2026-07-09; recorded here as the campaign's
+placement rule, extending S-21's crate fence):**
+
+> The tagged-pointer/compressed-index encode–decode and the
+> inline-payload access `unsafe` introduced by §2–§3 lives in
+> **`ratchet-value`**, as a new sealed, audited module family under the
+> existing `heap/safety.rs` token-count discipline — **not in a new
+> crate.** Complementarily, `#[forbid(unsafe_code)]` (or
+> `deny(unsafe_code)` plus a CI lint where a scoped exception exists) is
+> rolled out to every workspace crate except `ratchet-value`,
+> `ratchet-runtime-ffi`, and `ratchet-jit`, making the sanctioned zones
+> compiler-checked rather than convention-checked.
+
+Why not a crate boundary: the value representation is inseparable from
+the hash-cons, attrs, and list internals that already live in
+`ratchet-value` (`hashcons.rs`, `attrs/`, `list.rs` all manipulate the
+same words the flat layout redefines). A `ratchet-flat` crate would have
+to export `pub unsafe fn` seams for exactly the operations that must
+stay sealed — turning module-private invariants into cross-crate API
+contracts, the opposite of containment. The precedent is
+`ratchet-runtime-ffi`'s wrappers: the unsafe stays where the invariants
+are provable, with the audit machinery co-located.
+
+The discipline being extended is concrete and already enforced by test:
+`ratchet-value/src/heap/safety.rs` pins the crate lint
+(`#![deny(unsafe_op_in_unsafe_fn)]`), the `// SAFETY:` requirement,
+second-reviewer sign-off, the sanitizer/miri/loom tool matrix, and — via
+`reviewed_heap_unsafe_lines_keep_safety_comments_and_counts` — a
+**per-file expected unsafe-token count** that fails the build when a new
+unsafe operation appears without a review-table update (the file's own
+history shows the process: "resident.rs count 4 -> 6", "advice.rs count
+12 -> 13"). `ratchet-runtime-ffi/src/safety.rs` does the same with a
+per-wrapper-family token allowlist. The campaign's new modules
+(flat-object layout, tagged-word/index codec) get new entries in these
+tables — new `HeapInnateUnsafeOperation` variants (inline-payload
+access; tagged-word encode/decode or compressed-index dereference) and
+new expected counts — per the documented update process, before any
+unsafe lands.
+
+Today's inventory (grep of `unsafe fn`/`unsafe {`/`unsafe impl`,
+2026-07-09, this worktree), to make the enforcement delta explicit:
+
+| Crate | Unsafe ops | Lint today | Under the decision |
+| --- | --- | --- | --- |
+| `ratchet-value` | 35 | `deny(unsafe_op_in_unsafe_fn)` | Sanctioned zone (grows by the §2/§3 sealed modules; token tables extended). |
+| `ratchet-runtime-ffi` | 81 | `deny(unsafe_op_in_unsafe_fn)` + token allowlist | Sanctioned zone (alloc-family FFI growth lands here). |
+| `ratchet-jit` | 55 | `deny(unsafe_op_in_unsafe_fn)` | Sanctioned zone. |
+| `ratchet-oracle` | 1 (`#[allow(unsafe_code)]` at `runtime/alloc.rs` region-pop hand-off) | `deny(unsafe_code)` | Must reach `forbid`: the one op moves behind a safe `ratchet-value` API (it already delegates to the arena's `pop_region_to_mark`). |
+| `ratchet-cache` | 19 (mmap packfile, file locks — per C-13) | `deny(unsafe_op_in_unsafe_fn)` | **Reconciliation required** (§11): either an explicitly sanctioned fourth zone with its own safety manifest, or the mapping moves behind a sealed module elsewhere. The directive's three-crate list does not account for it. |
+| `ratchet-core`, `ratchet-dialect`, `aos-nix`, `aos-nix-{syntax,compat,harness,dialect}` | 0 | `forbid(unsafe_code)` already | No change; CI asserts it stays. |
+
+`forbid` is preferred over `deny` wherever no exception exists, because
+`forbid` cannot be `#[allow]`-overridden downstream; the oracle converts
+to `forbid` only after its single op is relocated.
+
+---
+
+## 9. Sequencing and acceptance
+
+### 9.1 When
+
+The campaign starts **after Phase 5 (hidden classes + PICs; goal-tracker
+item #41) lands.** The dependency is real, not calendrical: stage FV-2
+(flat attrs) bakes a shape-id word into the attrs header (§2.2), so the
+shape/PIC layout must be settled first or the header gets designed
+twice. Phase-5 PICs also *amplify* the campaign — a PIC hit today still
+terminates in a record probe; after FV-2 it terminates in a constant-
+offset load, which is the whole point of the PIC design
+([09](09-attribute-sets-hidden-classes-and-inline-caches.md) §5).
+
+### 9.2 Stage order and the per-stage gate
+
+```text
+FV-1  strings/paths, then lists  ->  flat payloads, hashcons key migration proven
+FV-2  attrsets                   ->  shape id in header, PIC lands on object memory
+FV-3  thunks/lambdas/primops     ->  claim protocol + shedding as header states
+FV-4  value-word compression     ->  Candidate C (fallback B), per §3.6
+FV-5  hybrid closures            ->  after P4 Chunk D; flat FV + linked chains
+FV-6  arena-owned payloads       ->  Arc removal; sweep owns reclamation
+        (then: §7 extensions, each individually gated; B2 unblocked)
+```
+
+**Every stage** ships only through the full battery, which is the
+week's proven landing pattern (B1, tier-2 landings 1–4, MEMO-1/2 all
+shipped this way):
+
+- **Byte-parity x4** (zlib/openssl/bash/coreutils): serial, `K=4`
+  parallel, and `AOS_NIX_JIT=1`; plus `AOS_NIX_GC=sweep` and
+  stress-threshold configurations for stages touching reclamation.
+- **Compute suite x8** (`bench.compute.*`, `21bfe153a`) under default
+  and force-promote JIT configs.
+- **`bench.wide` / `bench.wide-eval`** (the 273-package root) in-bench
+  parity.
+- **The budgeted eval-json corpus** (`8f91742fd`) and its adversarial
+  differential arms.
+- **Perf A/B via nix-bench including the memory columns**
+  (`eeb940630`): candidate <= baseline on time, and the
+  `--memory-regression-threshold` gate on peak-RSS/arena gauges.
+- **No size-gate offender growth** (`crates/aos-nix/tests/source_file_size.rs`).
+- For FV-3 and any stage touching the parallel substrate: the loom/miri
+  discipline of C-12/R-4 on the changed protocols.
+
+### 9.3 Expected wins (honest ranges, tied to evidence)
+
+- **Dereference-path shortening.** The probe+record+chase sequence
+  (§1.1) is replaced by one load on every heap-value access. The
+  bounded evidence: allocator traffic ~15% of on-CPU (session profile,
+  §11) plus the address-map/record loads under every spine op. Honest
+  range: this is a *mass removal* whose wall-clock yield depends on how
+  memory-bound the spine really is; the campaign claims the mass, not a
+  specific multiple. It is the same category of win as the
+  symbol-table and store-validity removals that produced the existing
+  cold-eval parity — architectural cost that vanishes rather than
+  shrinks.
+- **Memory.** The 38.7 MiB record `Vec` and 12.3 MiB address map fold
+  into the objects; three allocations per value become one; §4 cuts
+  capture retention; §7 items stack on top. Against the 238 MiB peak
+  and the standing ≤2x-of-C++ (~154 MiB) target (`eeb940630`), the
+  table/index/record consolidation alone is plausibly the largest
+  single contributor, but ~90 MiB of live working data remains the hard
+  core the extensions must attack.
+- **Spine locality.** Allocation order = traversal order is claimed
+  directionally (it cannot be measured ex ante); the mechanism is real
+  and is the property copying GC would otherwise have to buy back.
+- **JIT alloc-family unlock.** Flat objects with fixed field offsets
+  are the precondition for compiled allocation (the alloc-family FFI
+  named by the tier-2 handoffs — goal-tracker items #41/#43's
+  consumers): tier-2 bodies that today blacklist at any allocating
+  shape can construct strings/lists/attrs natively.
+- **Tier-B B2 (copying) unblocked.** §2 closes the third B2 gate of
+  [06](06-memory-management-and-gc.md) §4; the audit of §2.4 closes the
+  second; B1 stress-proving continues to close the first.
+
+### 9.4 Risks
+
+- **The `payload_bits` identity audit** (§2.4): ~30 semantic sites /
+  24 files. Stable Tier-A addresses keep them sound through the
+  campaign, but every stage must re-verify no site depended on *record
+  table* semantics (e.g. `UnknownPointer` fail-loud shape changes under
+  header-based retirement, §2.5). Mitigation: the audit is a per-stage
+  checklist item, and the stress-mode loud-failure discipline B1 built
+  is the proving tool.
+- **Parallel shared-arena interplay.** The L2-P3a design
+  (`eval/heap/shared_arena.rs`) exists precisely because payloads are
+  *not* at their addresses: per-worker shards with stable record
+  addresses are the cross-worker handles, and the module's header
+  documents the side-table blocker verbatim. Flat objects make
+  cross-worker reads a plain load — a simplification — but the
+  **publication protocol must be preserved exactly**: single-writer
+  shards, release/acquire hand-off, and the claim/park thunk discipline
+  (`8770cf9d0`) now expressed on flat state words instead of
+  `ThunkCell`s. FV-3 is where this bites; K=4 parity and the loom audit
+  are the gate.
+- **Hash-cons key migration.** Collision confirmation changes from
+  record-payload comparison to flat-byte comparison; the
+  `structural_hash` relocation (§2.2) must not change which values
+  intern (interning changes are invisible to parity only if equality is
+  unchanged — a subtle class of bug the FV-1 stage exists to flush at
+  minimum blast radius).
+- **Sheer surface area.** Every allocation site, every accessor, the
+  sweep, the shared arena, the FFI wrappers, and the JIT lowering all
+  touch these seams. Mitigation is the campaign's whole structure:
+  six stages, one representation variable each, full battery per stage,
+  and the token-count unsafe gates (§8) forcing every new raw operation
+  through review.
+
+---
+
+## 10. Non-goals, and relation to the existing docs
+
+### 10.1 Non-goals
+
+- **No semantic or parity change.** No stage may alter `.drv` bytes,
+  error classes, force order, or trace output; the campaign is
+  representation-only.
+- **Not the parallel-eval L2 completion.** The campaign simplifies the
+  shared-graph story but does not deliver work-stealing whole-graph
+  forcing; P3.5's remaining hard part stays its own line of work.
+- **Not the JIT profit-promotion heuristic or the persistent
+  compiled-body cache** — approved separately; the campaign only feeds
+  them (alloc-family FFI, §9.3).
+- **Not shipping NaN-boxing by default** — it remains a P8
+  build-and-measure variant (§3.3).
+- **No change to the memoization/persistence layer** — doc 29's record
+  store is a consumer of value identity, not a party to this redesign
+  (except §7.2's eviction rungs, which use its existing policies).
+
+### 10.2 Relation to the doc set
+
+- **[05](05-value-representation.md)** specified this trajectory —
+  16-byte baseline (§2), pointer tagging (§3), measured 8-byte variants
+  (§4), hash-consing (§5) — before the record side table existed as an
+  implementation convenience. This document is doc 05's §§2–4 *executed
+  against the code as built*, plus the compressed-index candidate doc
+  05 did not consider. Where doc 05's checklist says "pointer tagging /
+  NaN-box variant," the concrete plan now lives here.
+- **[06](06-memory-management-and-gc.md)** §4's implementation note
+  names value-rep flattening as B2's gate; §2 is that flattening, and
+  §2.5/§7.4 restructure the B1 sweep it describes. The out-of-core and
+  `madvise` machinery (§3.4–§3.6 there) composes unchanged.
+- **[09](09-attribute-sets-hidden-classes-and-inline-caches.md)**: FV-2
+  gives shapes and PICs the object memory their design assumes; the
+  campaign's Phase-5 sequencing dependency (§9.1) runs through it.
+- **[25](25-intermediate-representation.md)**: closure conversion (§4)
+  consumes the scope-resolved lexical coordinates and adds a per-site
+  capture plan to the facts the IR already persists (`facts.bin`
+  versioning per `6ab65fbf8`).
+- **[22](22-implementation-checklist-all-phases.md)**: the campaign
+  annotates existing rows rather than replacing them — the P8
+  pointer-tagging/NaN-box deliverables (now §3's B/C decision), the
+  Tier-B B2 row (gate closed by §2), and the P3 arena rows (reservation
+  arena, §3.5). Doc 22 carries the cross-phase summary rows for this
+  campaign; the fine-grained tracker is §12 below.
+- **[27](27-engineering-standards.md)** / **[28](28-generalization-and-language-dialects.md)**:
+  §8 tightens S-21's crate fence to compiler-checked `forbid` and keeps
+  the engine/dialect split untouched (everything here is `ratchet-*`
+  substrate; no dialect surface changes).
+
+---
+
+## 11. Divergences, tensions, and unverifiable figures (flag, don't resolve)
+
+Recorded per the doc-29 §13 convention; the code is ground truth where
+they conflict.
+
+1. **Session-profiled figures.** The ~15% allocator share (§1.2), the
+   ~251k capture-array copies and ~599k small environment allocations
+   per wide eval (§4.2, §7.1), and the ~45% pre-cache allocation share
+   come from the profiling sessions that drove `38da57c37` and
+   `eeb940630`, not from in-tree artifacts. The commits corroborate the
+   *shape* (the capture cache exists because the copies were hot; the
+   decomposition names the table/index/record masses precisely) but not
+   these exact counts. The campaign's first checklist item adds the
+   missing counters so its own A/B does not rest on unreproducible
+   numbers.
+2. **"Write-once slots" vs. `env.rs` as documented.** §4's premise is
+   often stated as construction-only writes; the module docs explicitly
+   describe incremental `let`/`rec` writes, interleaved reads, and
+   `__overrides` rewriting already-written slots. The load-bearing
+   invariant is *immutable after publication*, and the publication
+   boundary is currently implicit (any escaping capture). §4 must make
+   it explicit and prove `__overrides` precedes it; if a counterexample
+   exists (an `__overrides` rewrite after a capture escapes), the flat
+   plan for that site falls back to the linked chain.
+3. **Doc 05 §2.1 vs. §3's boxed-i64 fallback.** Doc 05 calls boxing
+   large integers "unacceptable for the baseline." §3 does not overturn
+   that for the baseline — the 16-byte value survives the whole §2
+   campaign — but both 8-byte candidates accept an i64 box in the
+   variant, on the strength of the profit census's finding that
+   package-eval arithmetic is cold. If the compute-suite A/B falsifies
+   that, the 16-byte value is retained (doc 05's option 3) and §3 ships
+   only the FORCED-bit tagging.
+4. **The §8 crate list vs. the workspace as it stands.** The directive
+   names three sanctioned crates; the tree has **five** crates with
+   unsafe: `ratchet-cache` (19 ops — the C-13 mmap packfile) and
+   `ratchet-oracle` (1 scoped `#[allow]`) are unaccounted for. Doc 27's
+   planned topology (`ratchet-gc`, `ratchet-parallel` as unsafe crates)
+   also never materialized — GC lives inside `ratchet-value`/`-oracle`,
+   parallelism inside `ratchet-oracle`. §8 records the reconciliation
+   options; choosing one is implementation work, not resolved here.
+5. **Candidate C's arena prerequisite.** Compressed indices require a
+   single contiguous reservation; the Tier-A arena is chunked mmap
+   (`c11acc759`) and no prior doc commits to a reservation-based arena.
+   New prerequisite, owned by FV-4.
+6. **B1's fail-loud shape changes under flat objects.** Today a stale
+   handle to a retired record fails as an `UnknownPointer` map miss;
+   with the index gone, §2.5 substitutes header epoch/kind checks. This
+   is a *different* (and slightly weaker) loud-failure mechanism than
+   the one B1's soundness argument cites; the stress-mode suite must be
+   re-derived for it.
+7. **`value/small.rs` overlap.** The 0/1/2-element inline-constructor
+   contract predates the flat layout and overlaps FV-1/FV-2's inline
+   payloads (a flat list *is* inline). The small-constructor pointer
+   tags (b1..b0 per doc 05 §3) must be reconciled with the header
+   size-class bits so the same information is not encoded twice.
+8. **Doc 29 §5's residency tiers and §7.2's ladder** describe eviction
+   from two vantage points (record store vs. heap). They compose, but
+   the trigger machinery (the memory-budget escalation of
+   [06](06-memory-management-and-gc.md) §3.6, `EvalHeapMemoryBudget*`)
+   must drive both from one policy or the ladder's rungs will fire in
+   the wrong order.
+
+---
+
+## 12. Implementation checklist
+
+Per the [22](22-implementation-checklist-all-phases.md) conventions:
+deliverables with module paths, per-stage gates, and falsifiable exit
+criteria. The **standing gate battery** for every `[ ]` below is §9.2
+(byte-parity x4 serial/K=4/JIT, compute x8, `bench.wide`, eval-json
+corpus, nix-bench perf+memory A/B, no size-gate offender growth); items
+list only their *additional* gates.
+
+### Stage FV-0 — instrumentation and prerequisites
+
+- [ ] Campaign counters: capture-array copies, environment allocations
+      by size class, per-kind payload byte mass (strings split by
+      store-path shape for §7.3), deref-resolution counts — in
+      `EvalStats` + the `AOS_NIX_EVAL_STATS` JSON dump
+      (`eval/tree_walk/eval_stats.rs`, `eval/heap/alloc_counters.rs`).
+      Exit: the §11-flagged session figures are reproducible from a
+      stock build.
+- [ ] The `payload_bits` identity classification table: every §2.4 site
+      tagged {address-identity-only | relocation-sensitive}, checked in
+      as a reviewed table (extends the B1 audit). Exit: table complete;
+      B2's rehash-hook worklist derivable from it.
+- [ ] P4 **Chunk D** — per-def-site free-variable sets, capture
+      publication-boundary proof, single-use/escape refinement
+      (`ratchet-core/src/analysis/` beside `strictness/` and
+      `escape.rs`); facts persisted behind an `IR_ANALYSIS_VERSION`
+      bump. Gate: adversarial differential arms for `__overrides` and
+      rec-forward-reference capture shapes. Exit: every lambda/thunk
+      def-site carries `|FV|` + a capture plan or an explicit decline.
+
+### Stage FV-1 — flat strings, paths, lists
+
+- [ ] Flat object header (kind, size class, GC bits, hash word) +
+      inline string/path byte payloads and list `Value` spines, in a new
+      sealed `ratchet-value` module family (e.g.
+      `ratchet-value/src/heap/flat/` or `value/flat/`); arena writes
+      real bytes behind the reserved `heap/arena.rs` layout constants.
+- [ ] Hash-cons migration: `hashcons.rs` collision confirmation over
+      flat payload bytes; `structural_hash` resident in the header.
+      Gate: interning-rate counters unchanged vs. baseline (same values
+      intern), plus the standing battery.
+- [ ] `heap/safety.rs` audit-table extension: new
+      `HeapInnateUnsafeOperation` variants (inline payload access) +
+      per-file token counts, second-reviewer sign-off, miri/ASan on the
+      new modules (§8). Exit: safety tests green with the new counts.
+- [ ] Record-table bypass for migrated kinds in
+      `eval/heap/{mod,record_table}.rs` and the shared arena
+      (`shared_arena.rs`, `shared_backend.rs`): resolution for
+      string/path/list is one load; records no longer allocated for
+      them. Exit: wide-eval record count and record-`Vec`/addr-map
+      bytes drop by the string+list share (memory columns).
+
+### Stage FV-2 — flat attrsets
+
+- [ ] `FlatAttrs` slots inline; shape id in header word 1; PIC/select
+      caches read the header (`ratchet-value/src/attrs/`,
+      `eval/tree_walk` select paths). **Sequenced after Phase 5** so
+      the shape layout is final (§9.1). Gate: iteration-order
+      conformance ([09](09-attribute-sets-hidden-classes-and-inline-caches.md)
+      §7) re-pinned; `068f40598` merge telemetry unregressed.
+
+### Stage FV-3 — flat thunks, lambdas, primops
+
+- [ ] Thunk claim protocol as flat header/state words: suspend → claim
+      → publish → shed transitions with the existing release/acquire
+      contract; serial `ThunkCell`, `SingleEntry` mode, and the boxed
+      parallel payload cell re-expressed (`eval/heap/thunk.rs`,
+      `eval/thunk*.rs`, `eval/parallel_force*`). Gate: standing battery
+      **plus** `AOS_NIX_GC=sweep` + stress-threshold-0 + K=4 claim/park
+      parity, and loom/miri on the changed protocol (C-12/R-4
+      discipline).
+- [ ] B1 sweep over flat objects: header marks, per-size-class free
+      lists, epoch/kind fail-loud checks replacing `UnknownPointer`
+      map-miss semantics (`eval/heap/gc.rs`, `eval/gc_*`). Gate: the
+      re-derived stress suite (§11 item 6); shed/retire counts match
+      baseline behavior on zlib and `bench.wide`.
+
+### Stage FV-4 — value-word compression
+
+- [ ] Reservation-based Tier-A arena (single contiguous virtual
+      reservation, commit-on-demand) as Candidate C's prerequisite
+      (`ratchet-value/src/heap/arena.rs`); chunked mode retained behind
+      the allocator seam. Gate: arena gauges + budget machinery
+      (`eeb940630`) still read true; no RSS regression.
+- [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
+      codec module; container slots narrowed where profitable. Boxed
+      hash-consed `i64` cell for out-of-range ints.
+- [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
+      contract, same seams, built for the head-to-head.
+- [ ] The B-vs-C selection: full benchmark matrix (packages + compute +
+      wide + memory columns) per the P8 build-and-select mandate;
+      closes doc 22's P8 pointer-tagging row and feeds `M-4`/`Q-E`.
+      Exit: one variant default, delta recorded, no regression shipped;
+      FORCED-bit fast path live in the winner.
+- [ ] FFI/JIT ABI rev: `ratchet-runtime-ffi` wrappers and
+      `ratchet-jit/src/lower.rs` value-word constants updated in
+      lock-step; token-count tables extended (§8). Gate: tier-2
+      landings' pinned differentials (wrap-boundary, deopt paths) all
+      green under the new word.
+
+### Stage FV-5 — hybrid closures (needs FV-3 + Chunk D)
+
+- [ ] Flat free-var capture for `|FV| <= K` sites: closure conversion
+      pass in `ratchet-core` (capture plans in facts), inline `Value`
+      capture in flat lambda/thunk objects, access rewritten to capture
+      indices. K tuned by A/B.
+- [ ] Linked persistent frame chains + persistent `with`/scoped-global
+      lists for the remainder (`eval/env.rs`): capture = one pointer;
+      depth-walk access by lexical coordinates. Gate: `__overrides` and
+      rec-assembly adversarial corpus from FV-0's Chunk-D arms.
+- [ ] Delete the generation-keyed capture cache and its four
+      mutation-site helpers (`eval_core/module_env.rs`) once both forms
+      land; capture counters (FV-0) show the copy mass gone. Exit:
+      capture-array copies ~0 at flat sites; wide-eval env allocation
+      mass reduced with the delta recorded.
+
+### Stage FV-6 — arena-owned payloads
+
+- [ ] Remove the payload `Arc`s (`HeapObjectValue`) for migrated kinds;
+      out-of-arena references (symbols, context elements, parallel
+      cells) either migrated or side-owned with sweep notification
+      (§5). Gate: standing battery + sweep-mode stress; refcount-traffic
+      profile delta recorded. Exit: **Tier-B B2's flattening gate
+      closed** — doc 06 §4's B2 row unblocks on B1-stress + the FV-0
+      identity table.
+
+### Extensions (each independently gated; order by measured yield)
+
+- [ ] Closure/env hash-consing (§7.1): intern flat closures whose
+      captured words are all canonical; declined-admission otherwise.
+      Gated on FV-5; sized by FV-0 counters *after* FV-5 banks its win.
+- [ ] Semantic-swap eviction ladder (§7.2): wire rungs 3–4 (memo-tier
+      eviction per doc 29 §5; cold module-IR eviction with parse-cache
+      re-materialization) into the `EvalHeapMemoryBudget` escalation;
+      rung 5 (thunk drop-and-recompute) research-grade, gated on FV-5
+      closure identity. Rejections recorded: no thunk serialization; no
+      in-process compression (zstd only in L2 packs).
+- [ ] Store-path segment interning (§7.3): first the counting probe
+      (FV-0 counters), then the segment table + segmented string
+      representation, gated on a multi-MiB measured dedup ratio.
+- [ ] Per-kind arenas + size-class slabs (§7.4): sweepable vs. immortal
+      page segregation; sweep scans sweepable pages only. Gate: sweep
+      cycle-time and memory columns.
+- [ ] Last-use capture shedding (§7.4): cardinality-fact-driven eager
+      release, extending the `SingleEntry` seam; gated on Chunk D.
+      Gate: shed counters + the mid-eval peak (the B1 "after the RSS
+      peak" gap this closes).
+- [ ] Weak hash-cons tables (§7.4): daemon-mode residency bound;
+      one-shot immortal fast path preserved. Gate: daemon soak
+      (long-lived process, repeated evals) memory profile.
+- [ ] Unsafe-placement enforcement (§8): `#[forbid(unsafe_code)]`
+      rollout (oracle's region-pop op relocated behind a safe
+      `ratchet-value` API first; `ratchet-cache` reconciliation decided
+      and recorded); CI lint asserting the sanctioned-zone set; safety
+      manifests extended per audit process. Exit: every workspace crate
+      outside the sanctioned zones compiles under `forbid`.
+
+### Measure-gated dispatch items (not committed)
+
+- [ ] Superinstructions for census-named shapes (`Interp`/`List`/
+      `AttrSet` constructor bodies; nested `Select`/`Update` chains) —
+      one shape at a time, wall-time A/B per shape, `4515a9972`
+      methodology.
+- [ ] Flat bytecode + explicit operand stack: **only if** post-FV-5
+      profiles show dispatch as the top residual; carries the
+      goal-tracker #49 recursion fix and OSR boundaries as side
+      benefits. Re-evaluate, do not build, until then.
+
+**Campaign exit criteria (falsifiable).** All six FV stages landed with
+the standing battery green at every stage; the record `Vec` and address
+map no longer exist on the deref path; wide-eval peak memory at or below
+the ≤2x-of-C++ target *or* the residual decomposed and attributed to
+named extensions; the B2 gate formally closed; unsafe confined to the
+sanctioned zones under compiler-checked lints with all token tables
+current; and the selected value-word variant's benchmark delta recorded
+with no shipped regression.

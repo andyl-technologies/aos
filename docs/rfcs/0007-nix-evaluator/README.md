@@ -109,6 +109,7 @@ Full spec: **[27 — engineering standards and code quality](27-engineering-stan
 | [27](27-engineering-standards.md) | Engineering standards: crate/dir structure + safe/unsafe fence, error handling (thiserror/anyhow), `tracing` logging, docs, trait abstractions, performance, test coverage, debugging hooks, file-size limits, commit hygiene |
 | [28](28-generalization-and-language-dialects.md) | Generalization & language dialects: the `ratchet` engine, Core IR vs Nix dialect (MLIR-style), CLIF as the low-level universal, the cache-soundness boundary, S-22/S-23, and the Phase 1b re-layering |
 | [29](29-tiered-content-keyed-memoization.md) | Unified tiered content-keyed memoization: one record abstraction subsuming the force cache, root cutoff, parse cache, and the JIT compiled-body cache; L0–L3 tier placement by recompute economics, per-subtree impure slices, per-tier CHECK mode, MEMO-1/MEMO-2 phasing |
+| [30](30-flat-value-architecture.md) | The flat-value architecture campaign: header+payload inline in the bump arena (kills the record-table probe and payload Arcs), 8-byte value words (tagged-immediate vs compressed 32-bit index), hybrid flat/linked closures, arena-owned payloads, memory-management extensions, the unsafe-placement decision, and the staged parity-gated rollout that unblocks Tier-B copying GC |
 
 ## Decision log
 

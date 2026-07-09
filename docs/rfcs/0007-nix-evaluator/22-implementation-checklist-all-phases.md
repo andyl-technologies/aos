@@ -5092,6 +5092,10 @@ and helps the oracle directly.
       memory win without perturbing `payload_bits` identity, and B1's loud
       missed-root failure mode (no address reuse) is the staging gate that
       proves precise-root completeness before B2 ever moves an object.
+      **The value-rep-flattening gate B2 waits on is now designed and
+      scheduled as the flat-value campaign
+      ([30](30-flat-value-architecture.md); stages FV-1..FV-6, with the
+      `payload_bits` classification table as deliverable FV-0).**
 - [x] Current minor-GC frontier precursor:
       `ratchet-value::heap::gc::MinorGcPlan` builds the initial young-object
       frontier for a future Tier-B minor collection from precise roots plus a
@@ -10032,6 +10036,25 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       hits or cached misses for the megamorphic site, preserve terminal
       megamorphic plus monomorphic site states, and keep slow-select shaped
       hit/miss telemetry. This does not cover native lowering or `.drv` parity.
+- [x] Current heap-resident shaped record select path (`AOS_NIX_SHAPES=record`,
+      knob-gated pending the measured default decision): because `AttrShape`
+      slots and `FlatAttrs` storage are both symbol-sorted, the flat entry
+      array stored in the heap record *is* the shaped slot layout, and the
+      projected `ShapeId` already stored in `EvalHeapAttrsMetadata` at
+      construction is the select guard. Under the record mode the active
+      static `Select`/`HasAttr`/`WithVar`/runtime-callable IC bridges route
+      projected flat values through
+      `ratchet-value::attrs::pic::record::RecordSelectCache`: a cached hit is
+      a shape-id compare, a constant-offset entry load, and a key recheck —
+      no transient `ShapedAttrs` view is materialized per select. Static
+      literal sites additionally memoize their resolved `ShapeHandle` per
+      `(module, node)` site on first allocation (the §4.2 static-resolution
+      contract on the tree-walk tier), and same-key-set `//` results keep the
+      left operand's shape id. Mode-differential render tests pin
+      byte-identical output across `off`/`transient`/`record` serially and
+      under a parallel pool, and the byte-parity battery is green in all
+      modes. Native `aos_select_ic` lowering, record-cache terminal-state
+      telemetry histograms, and the measured default flip remain open.
 - [x] Current `select_slow` precursor: `ratchet-value` exposes
       `attrs::select`, a representation-dispatching slow lookup over `FlatAttrs`,
       `HamtAttrs`, and `ShapedAttrs`. Flat uses binary search, HAMT uses trie
@@ -10050,6 +10073,21 @@ polymorphic inline caches. Still no codegen; the oracle gains the fast path.
       slots, right values overwrite shared keys, and right-only bindings append
       in right source order. Active `//` evaluator integration, HAMT policy use,
       and `.drv` effects remain open.
+- [x] Current shape-preserving `//` fast path + rank-free permutation merge:
+      `FlatAttrs::update_right_biased` now merges the operands' cached
+      lexicographic permutations by comparing resolved raw key bytes instead
+      of symbol-table ranks, taking the production merge off the rank view
+      whose lazy rebuild is `O(symbols)` after any fresh intern (the dominant
+      per-merge cost on update chains interning a new key per layer);
+      `FlatAttrs::update_right_biased_same_keys` handles the
+      right-keys-subset case (the `state // { field = v; }` record-update
+      pattern) as an `O(slots)` entry copy + slot overwrite reusing the left
+      operand's lexicographic permutation verbatim. Both are proven
+      representation-identical (`raw_eq`) to the general merge including a
+      dense subset-mask sweep, and the production `//` evaluator path uses
+      both; under `AOS_NIX_SHAPES=record` the same-key result also keeps the
+      left operand's projected shape id. Transition-tree result-shape
+      resolution for key-introducing merges remains open.
 - [ ] `attrs/hamt.rs` — HAMT for `//` update merges; `u32` symbol interning
       preserved (`S-10`).
 - [x] Current `attrs/hamt.rs` precursor: `ratchet-value` exposes a safe
@@ -11213,7 +11251,10 @@ it ships).**
 - [ ] `value/tag.rs` — pointer tagging for WHNF-test fast paths
       ([05](05-value-representation.md)); NaN-boxing remains a *variant to
       evaluate* because Nix `i64` ints do not fit a NaN-box payload — build both
-      and select (`M-4`/`Q-E`).
+      and select (`M-4`/`Q-E`). **Now scheduled and concretized as campaign
+      stage FV-4 ([30](30-flat-value-architecture.md) §3): compressed 32-bit
+      arena index (recommended primary) vs tagged 61-bit-immediate word,
+      head-to-head, after the flat-object stages land.**
 - [x] Current `value/tag.rs` precursor: `ratchet-value` exposes safe checked
       low-bit heap address tag helpers, reserves the low three bits of
       8-byte-aligned heap pointers, and names the thunk `FORCED` shortcut bit.
@@ -11349,6 +11390,77 @@ kill switch ([14](14-integration-with-aos.md) §7.2, §10).
 
 ---
 
+## The flat-value architecture campaign (doc 30; scheduled after P5)
+
+**GOAL.** Remove the evaluator's remaining architectural constant factors:
+the opaque-key value dereference (address-hash probe → 160-byte
+`HeapRecord` → `Arc` payload chase), the per-capture environment array
+copy, and the three-allocations-per-value layout the memory decomposition
+priced at a 38.7 MiB record `Vec` + a 12.3 MiB address map at wide-eval
+peak (`eeb940630`). The campaign is specified, evidenced, and tracked
+fine-grained in
+[30 — the flat-value architecture campaign](30-flat-value-architecture.md)
+(§12 there is the authoritative checklist); the rows below are the
+roll-up. Every stage ships behind the full parity battery (byte-parity x4
+serial/K=4/JIT, compute x8, `bench.wide`, eval-json corpus, nix-bench
+perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
+
+**Summary rows (fine-grained items in doc 30 §12).**
+
+- [ ] FV-0 — instrumentation (capture/env/payload-mass counters), the
+      `payload_bits` identity classification table, and P4 **Chunk D**
+      (per-def-site free-var/escape facts)
+      ([30](30-flat-value-architecture.md) §2.4, §4.4).
+- [ ] FV-1 — flat strings/paths/lists: header + inline payload in the
+      Tier-A arena; hash-cons key migration; `heap/safety.rs` audit-table
+      extension ([30](30-flat-value-architecture.md) §2).
+- [ ] FV-2 — flat attrsets (shape id in the header; PICs land on object
+      memory; **after Phase 5**)
+      ([30](30-flat-value-architecture.md) §2.3, §9.1).
+- [ ] FV-3 — flat thunks/lambdas/primops carrying the claim protocol and
+      B1 shedding as header states; the sweep converted to
+      header-resident marks ([30](30-flat-value-architecture.md) §2.3, §2.5).
+- [ ] FV-4 — the 8-byte value word: compressed 32-bit arena index
+      (recommended primary; needs the reservation-based arena) vs the
+      tagged 61-bit-immediate word (fallback), built head-to-head per the
+      P8 mandate — this executes the P8 pointer-tagging row and
+      `M-4`/`Q-E` ([30](30-flat-value-architecture.md) §3).
+- [ ] FV-5 — hybrid closures: flat inline free-var capture
+      (`|FV| <= K`) + linked persistent frame chains; persistent
+      `with`/scoped-global lists; delete the generation-keyed capture
+      cache (needs Chunk D) ([30](30-flat-value-architecture.md) §4).
+- [ ] FV-6 — arena-owned payloads (payload `Arc` removal; the sweep owns
+      reclamation) — **closes the value-rep-flattening gate on Tier-B
+      stage B2** ([06](06-memory-management-and-gc.md) §4,
+      [30](30-flat-value-architecture.md) §5).
+- [ ] Extensions, individually gated: closure/env hash-consing; the
+      semantic-swap eviction ladder (memo-tier + module-IR eviction,
+      drop-and-recompute; thunk serialization and in-process compression
+      explicitly rejected); store-path segment interning (counting probe
+      first); per-kind arenas + size-class slabs; last-use capture
+      shedding; weak hash-cons tables for daemon residency
+      ([30](30-flat-value-architecture.md) §7).
+- [ ] Unsafe placement (recorded decision): the new `unsafe` stays in
+      sealed audited `ratchet-value` modules under the token-count
+      discipline; `#[forbid(unsafe_code)]` rollout to every crate outside
+      `ratchet-value`/`ratchet-runtime-ffi`/`ratchet-jit`, with the
+      `ratchet-oracle` region-pop relocation and the `ratchet-cache`
+      reconciliation resolved first
+      ([30](30-flat-value-architecture.md) §8, §11).
+- [ ] Measure-gated dispatch items (not committed): superinstructions
+      for the profit-census shapes; flat bytecode + operand stack only if
+      post-campaign profiles show dispatch as the top residual
+      ([30](30-flat-value-architecture.md) §6).
+
+**EXIT CRITERIA (falsifiable).** Doc 30 §12's campaign exit criteria: all
+six FV stages battery-green; the record table and address map off the
+dereference path; wide-eval peak memory at/below the ≤2x-of-C++ target or
+the residual attributed; the B2 gate formally closed; sanctioned-zone
+`unsafe` compiler-checked; the selected value-word variant's delta
+recorded with no shipped regression.
+
+---
+
 ## Per-doc checklist index
 
 Under the [budget mandate](17-roadmap-and-risks.md) §0 the project is tracked
@@ -11378,6 +11490,7 @@ checklists are the *fine-grained* trackers the phases aggregate.
 | [25](25-intermediate-representation.md) | The intermediate representation (IR) | [checklist](25-intermediate-representation.md#implementation-checklist) |
 | [26](26-optimization-pass-catalog.md) | The optimization pass catalog (the simplifier) | [per-pass status](26-optimization-pass-catalog.md) |
 | [28](28-generalization-and-language-dialects.md) | Generalization + language dialects (the `ratchet` engine; Core/dialect split; Phase 1b re-layering) | [checklist](28-generalization-and-language-dialects.md#implementation-checklist) |
+| [30](30-flat-value-architecture.md) | The flat-value architecture campaign (flat objects, value-word compression, hybrid closures, arena payloads, memory extensions, unsafe placement) | [checklist](30-flat-value-architecture.md#12-implementation-checklist) |
 
 **Notes.**
 
