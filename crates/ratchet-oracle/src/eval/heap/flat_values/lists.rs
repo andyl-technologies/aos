@@ -51,10 +51,25 @@ impl EvalHeap {
         self.alloc_counters.note_list_payload(list.len());
         let len = list.len();
         let epoch = self.next_access_epoch();
-        let allocation = match self
-            .flat_lists
-            .alloc(FlatObjectKind::List, hash.raw(), epoch, list)
-        {
+        // FV-4 measured decision: list spines stay a moved owned `Vec`
+        // behind the flat object — they are *not* copied inline. A fresh
+        // interned list pays an inline copy plus the freed-`Vec` teardown
+        // where the move costs nothing, list-churn workloads are almost
+        // entirely hash-cons misses (`bench.compute.qsort` held ~+1.5% wall
+        // under 4096- and 512-byte inline caps), and no package/wide
+        // workload showed a win from inline spines. Even the two-variant
+        // spine storage alone (the enum tag on every element access) held
+        // ~+1% on qsort, so `NixList` keeps its plain contiguous-`Vec`
+        // representation; the trailing-array machinery serves attrsets,
+        // where the same trade measurably pays. The header `aux` field
+        // still carries the spine length.
+        let allocation = match self.flat_lists.alloc_with_aux(
+            FlatObjectKind::List,
+            flat_aux_for_len(len),
+            hash.raw(),
+            epoch,
+            list,
+        ) {
             Ok(allocation) => allocation,
             Err(error) => {
                 self.cancel_list_cons_slot(cons_slot);

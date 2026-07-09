@@ -236,6 +236,15 @@ pub struct ArenaMemoryAdviceReport {
 }
 
 impl ArenaMemoryAdviceReport {
+    /// Creates a report of `kind` describing no advised chunks.
+    ///
+    /// Merge-identity for accounting paths that must contribute nothing (for
+    /// example flat stores on a shared arena, whose tail advice is issued
+    /// once through the shared handle).
+    pub const fn empty(kind: MemoryAdviceKind) -> Self {
+        Self::for_kind(kind)
+    }
+
     const fn for_kind(kind: MemoryAdviceKind) -> Self {
         Self {
             kind,
@@ -401,6 +410,15 @@ impl BumpArena {
             stats.used_bytes += chunk.cursor;
         }
         stats
+    }
+
+    /// Returns the number of chunks currently owned by the arena.
+    ///
+    /// Constant-time, unlike [`BumpArena::stats`], which walks every chunk;
+    /// per-allocation staleness checks (the flat stores' membership-region
+    /// refresh) must use this.
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
     }
 
     /// Returns whether no allocation has been served yet.

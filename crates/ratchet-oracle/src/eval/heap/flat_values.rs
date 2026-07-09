@@ -41,7 +41,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
-use crate::heap::flat::{FlatObjectError, FlatObjectKind, FlatObjectRef};
+use crate::heap::flat::{
+    FlatObjectError, FlatObjectKind, FlatObjectRef, FlatTailLayout, flat_aux_for_len,
+};
 
 use super::record_table::AddressHasher;
 use super::*;
@@ -63,6 +65,20 @@ mod lists;
 /// already-owned buffer, moved (not copied) behind the flat object exactly
 /// as FV-1a stored them.
 const FLAT_INLINE_BYTES_MAX: usize = 4096;
+
+/// Trailing-array byte ceiling for inlining attrset arrays into the flat
+/// allocation (doc 30 FV-4).
+///
+/// The typed-array analog of [`FLAT_INLINE_BYTES_MAX`], with the same
+/// rationale: the small attrsets that dominate package evaluation trade one
+/// short copy for the three retired per-attrset `Vec` allocations and
+/// header/entry locality, while a large fresh attrset would pay a whole
+/// extra pass over its payload (a measured 15-20% wall regression on
+/// `bench.compute.attr-fixpoint`'s large-unique-attrset rebuild churn
+/// before this cutoff existed). Oversized attrsets keep their moved owned
+/// arrays behind the flat object exactly as FV-2 stored them. Lists do not
+/// inline at all — see `lists::flat_alloc_list` for that measured decision.
+const FLAT_INLINE_ELEMENT_BYTES_MAX: usize = 4096;
 
 /// Maps a flat object kind to the runtime value tag it resolves under.
 pub(super) const fn value_tag_for_flat_kind(kind: FlatObjectKind) -> ValueTag {
@@ -331,8 +347,11 @@ impl EvalHeap {
             },
             error @ (FlatObjectError::Arena(_)
             | FlatObjectError::RegistryAllocationFailed { .. }
-            | FlatObjectError::InvalidRegionMark { .. }) => {
-                // Unreachable from resolution; keep a loud mapping anyway.
+            | FlatObjectError::InvalidRegionMark { .. }
+            | FlatObjectError::KindNotAllowed { .. }
+            | FlatObjectError::SharedArenaRegionUnsupported) => {
+                // Unreachable from resolution (the heap resolves each kind
+                // through the store allowed to type it); keep a loud mapping.
                 debug_assert!(false, "flat resolution returned an allocation error: {error}");
                 EvalHeapError::unknown(tag, ptr)
             }
@@ -466,8 +485,11 @@ fn flat_alloc_error(error: FlatObjectError) -> EvalHeapError {
         }
         FlatObjectError::UnknownAddress { .. }
         | FlatObjectError::KindMismatch { .. }
-        | FlatObjectError::InvalidRegionMark { .. } => {
-            // Unreachable from allocation; surface a record failure loudly.
+        | FlatObjectError::InvalidRegionMark { .. }
+        | FlatObjectError::KindNotAllowed { .. }
+        | FlatObjectError::SharedArenaRegionUnsupported => {
+            // Unreachable from allocation (each kind is allocated through the
+            // store allowed to host it); surface a record failure loudly.
             debug_assert!(false, "flat allocation returned a resolution error: {error}");
             EvalHeapError::RecordAllocationFailed { records: 1 }
         }

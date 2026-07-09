@@ -41,6 +41,8 @@
 //! hash-cons admission never dedups against a rewritten attrset. Metadata is
 //! immutable for the object's lifetime; only entry values are ever rewritten.
 
+use crate::attrs::AttrEntry;
+
 use super::*;
 
 /// The flat payload of one attribute-set object: shape metadata followed by
@@ -84,16 +86,63 @@ impl EvalHeap {
         };
         let epoch = self.next_access_epoch();
         let shape = metadata.shape();
-        let allocation = match self.flat_attrs.alloc(
-            FlatObjectKind::Attrs,
-            hash.raw(),
-            epoch,
-            FlatAttrsPayload { metadata, attrs },
-        ) {
-            Ok(allocation) => allocation,
-            Err(error) => {
-                self.cancel_attrs_cons_slot(cons_slot);
-                return Err(flat_alloc_error(error));
+        // FV-4: short entry arrays and their two order permutations are
+        // copied inline into the flat allocation and the stored payload
+        // keeps only the witnesses — no out-of-line `Vec` survives behind an
+        // interned small attrset; the transient input arrays drop here.
+        // Oversized attrsets keep their moved owned arrays (zero copy), the
+        // same cutoff rationale as `FLAT_INLINE_BYTES_MAX` for strings: on
+        // attrset-churn workloads (`bench.compute.attr-fixpoint`, ~1000
+        // unique entries rebuilt per iteration) the unconditional inline
+        // copy measured a 15-20% wall regression — a whole extra pass over
+        // every unique payload.
+        let allocation = {
+            let entry_count = attrs.len();
+            let per_entry =
+                std::mem::size_of::<AttrEntry>() + 2 * std::mem::size_of::<u32>();
+            let result = if entry_count <= FLAT_INLINE_ELEMENT_BYTES_MAX / per_entry {
+                let mut tail = FlatTailLayout::new();
+                tail.add_slice::<AttrEntry>(entry_count)
+                    .and_then(|()| tail.add_slice::<u32>(entry_count))
+                    .and_then(|()| tail.add_slice::<u32>(entry_count))
+                    .and_then(|()| {
+                        self.flat_attrs.alloc_with_trailing(
+                            FlatObjectKind::Attrs,
+                            flat_aux_for_len(entry_count),
+                            hash.raw(),
+                            epoch,
+                            tail,
+                            |writer| {
+                                let entries = writer.write_slice(attrs.entries_by_symbol())?;
+                                let source_order = writer.write_slice(attrs.source_order())?;
+                                let iteration_order =
+                                    writer.write_slice(attrs.iteration_order())?;
+                                Ok(FlatAttrsPayload {
+                                    metadata,
+                                    attrs: FlatAttrs::from_flat_parts(
+                                        entries,
+                                        source_order,
+                                        iteration_order,
+                                    ),
+                                })
+                            },
+                        )
+                    })
+            } else {
+                self.flat_attrs.alloc_with_aux(
+                    FlatObjectKind::Attrs,
+                    flat_aux_for_len(entry_count),
+                    hash.raw(),
+                    epoch,
+                    FlatAttrsPayload { metadata, attrs },
+                )
+            };
+            match result {
+                Ok(allocation) => allocation,
+                Err(error) => {
+                    self.cancel_attrs_cons_slot(cons_slot);
+                    return Err(flat_alloc_error(error));
+                }
             }
         };
         self.permanent_allocator

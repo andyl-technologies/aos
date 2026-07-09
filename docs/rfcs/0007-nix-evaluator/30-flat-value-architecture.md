@@ -965,7 +965,11 @@ they conflict.
 5. **Candidate C's arena prerequisite.** Compressed indices require a
    single contiguous reservation; the Tier-A arena is chunked mmap
    (`c11acc759`) and no prior doc commits to a reservation-based arena.
-   New prerequisite, owned by FV-4.
+   New prerequisite, owned by FV-4. *FV-4 resolution: probed feasible
+   on both platforms (§12 FV-4), but C is deferred anyway — the
+   unflagged blocker was shared mode, whose `OnceLock` slot addresses
+   are not arena offsets and cannot be named by a `u32` offset without
+   a per-shard publication redesign this section never covered.*
 6. **B1's fail-loud shape changes under flat objects.** Today a stale
    handle to a retired record fails as an `UnknownPointer` map miss;
    with the index gone, §2.5 substitutes header epoch/kind checks. This
@@ -1234,26 +1238,108 @@ list only their *additional* gates.
 
 ### Stage FV-4 — value-word compression
 
-- [ ] Reservation-based Tier-A arena (single contiguous virtual
-      reservation, commit-on-demand) as Candidate C's prerequisite
-      (`ratchet-value/src/heap/arena.rs`); chunked mode retained behind
-      the allocator seam. Gate: arena gauges + budget machinery
-      (`eeb940630`) still read true; no RSS regression.
+**Landed (FV-4) as the compatible-layout subset; the 8-byte value word
+(Candidates B and C) is DEFERRED, decided against code reality and the
+FV-0 columns rather than sketch estimates:**
+
+1. *The §11.5 reservation prerequisite is NOT the blocker.* Probed this
+   stage: one contiguous anonymous reservation of 64/256 GiB maps in
+   0.09/0.33 ms on darwin with RSS growing only on touch and
+   `MADV_FREE` decommit available; Linux `MAP_NORESERVE` + default
+   overcommit is the standard equivalent. A commit-on-demand
+   reservation arena is buildable when a compressed layout wants it.
+2. *Shared mode is the structural blocker.* Compressed indices address
+   "one reserved arena base"; shared-mode values are published at
+   `OnceLock` slot addresses inside per-shard boxed slot levels
+   (`heap/flat/shared.rs`) — not arena offsets, and not coverable by a
+   `u32` offset without re-architecting per-shard publication into
+   reservation-backed arenas plus a shard-id index space, which §3.5
+   never designed. The honest fallback — compressed words in serial
+   mode, 16-byte words in shared mode — forks the value ABI (and the
+   tier-2 FFI/JIT ABI with it) across modes for one mode's benefit.
+3. *The measured win does not carry the invasiveness on the workloads
+   that matter.* FV-0 byte-mass columns at the FV-3 landing
+   (`7cd61564f`): halving the value word saves ~0.3 MB of a 62 MB
+   package-eval peak (zlib, ~0.5%) and ~5 MB of a ~233 MB wide-eval
+   peak (~2%). The large halvable masses sit on the compute
+   benchmarks (qsort ~106 MB, lambda-interp ~114 MB of attr-entry,
+   list-element, and env-slot mass) — exactly the workloads §3.5
+   already concedes to the 32-bit immediate-int weakness and that
+   tier-2 native code owns.
+4. *Sequencing.* §3.6 rule 1 forbids landing layout flattening and
+   word compression as one variable; the subset below rewrites the
+   payload layouts and is itself §3.5's "container slots narrowed"
+   prerequisite. B/C re-enter after FV-5/FV-6 (payload `Arc`s dead,
+   spine-mass share risen), with a shared-mode reservation design,
+   and only if the memory columns then show ≥10%-class savings on
+   package/wide workloads.
+
+- [x] **Single shared permanent-domain flat arena** (the FV-2/FV-3
+      handoff's per-type chunk-slack kill): `SharedFlatStoreArena`
+      (`heap/flat/backing.rs`), one bump arena hosting the
+      string/path, list, and attrset stores through a single-threaded
+      handle; each store keeps its registry plus an allowed-kind set
+      (`FlatKindSet`) so the header kind word stays a sound payload
+      type witness over interleaved chunks; typed resolution rejects
+      foreign kinds before any cast, region marks/pops are rejected on
+      shared backings (the popping worker-closure store keeps its
+      owned arena), and arena stats/advice are read once through the
+      handle (`EvalHeap::flat_arena`). Gate met: arena gauges + budget
+      machinery read true (permanent columns fold the shared arena
+      once); memory columns moved down, not up.
+- [x] **Inline attrset arrays — and a measured NO on inline list
+      spines** (doc 30 §2.3's inline payloads, generalized from FV-1b
+      bytes): `FlatSlice<T>` typed inline-run witness +
+      `FlatTailLayout`/`FlatTailWriter` (`heap/flat/slice.rs`) and
+      `FlatObjectStore::alloc_with_trailing`; `FlatAttrs` gained
+      two-variant storage (owned `Vec`s for temporaries/shared-mode/
+      cache payloads; flat witnesses for serial heap-resident values,
+      capped at 4 KiB of tail per object — the FV-1b oversized-payload
+      cutoff, which an uncapped build violated at 15-20% wall on
+      `bench.compute.attr-fixpoint`'s large-unique-attrset churn) with
+      clone-deep-copies-to-owned escape semantics (the `NixString`
+      FV-1b pattern). An interned small attrset carries none of its
+      three arrays (entries, source order, iteration order)
+      out-of-line. **List spines stay a moved owned `Vec`**: a fresh
+      interned list pays copy-plus-`Vec`-teardown where the move is
+      free, churn workloads are ~all hash-cons misses
+      (`bench.compute.qsort` held ~+1.5% wall under 4096- and 512-byte
+      caps, and ~+1% from the two-variant spine enum's access-path tag
+      alone), and no package/wide workload showed a spine win — so
+      `NixList` keeps its plain contiguous-`Vec` representation and
+      the checklist's list half closes as
+      rejected-by-measurement. Collector writebacks replace payloads
+      with owned storage (stress modes only; the abandoned inline run
+      is dead arena padding).
+- [x] **Header size-class bits** (the FV-2 handoff's deferral): the
+      kind word is now `magic:32 | aux:24 | kind:8`; `aux` carries the
+      saturating payload cardinality (byte length for strings/paths,
+      element count for lists, entry count for attrsets;
+      `FLAT_AUX_SATURATED` = consult the payload). No hot path
+      consumes it yet — it pins the header classification field the
+      compressed layout plans against, and resolution validity still
+      checks only magic + kind.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
-      hash-consed `i64` cell for out-of-range ints.
+      hash-consed `i64` cell for out-of-range ints. **Deferred (see
+      above); requires the reservation arena and a shared-mode
+      publication redesign first.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
-      contract, same seams, built for the head-to-head.
+      contract, same seams, built for the head-to-head. **Deferred
+      with C (same re-entry conditions).**
 - [ ] The B-vs-C selection: full benchmark matrix (packages + compute +
       wide + memory columns) per the P8 build-and-select mandate;
       closes doc 22's P8 pointer-tagging row and feeds `M-4`/`Q-E`.
       Exit: one variant default, delta recorded, no regression shipped;
-      FORCED-bit fast path live in the winner.
+      FORCED-bit fast path live in the winner. **Deferred with B/C.**
 - [ ] FFI/JIT ABI rev: `ratchet-runtime-ffi` wrappers and
       `ratchet-jit/src/lower.rs` value-word constants updated in
       lock-step; token-count tables extended (§8). Gate: tier-2
       landings' pinned differentials (wrap-boundary, deopt paths) all
-      green under the new word.
+      green under the new word. **Deferred with B/C — the shipped
+      subset preserves the 16-byte value word exactly, so no ABI rev
+      was needed (tier-1/tier-2 dispatch and sweep-stress counters
+      byte-identical A/B).**
 
 ### Stage FV-5 — hybrid closures (needs FV-3 + Chunk D)
 

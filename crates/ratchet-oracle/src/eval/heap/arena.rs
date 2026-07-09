@@ -594,6 +594,7 @@ impl EvalHeap {
     }
 
     fn with_worker_allocator(allocator: RuntimeAllocator) -> Self {
+        let flat_arena = SharedFlatStoreArena::new();
         Self {
             allocator,
             permanent_allocator: PermanentSharedAllocator::new(),
@@ -614,9 +615,19 @@ impl EvalHeap {
             attrs_cons: HashConsTable::new(),
             alloc_counters: EvalHeapAllocationCounters::default(),
             deref_counters: EvalHeapDerefCounters::default(),
-            flat: FlatObjectStore::new(),
-            flat_lists: FlatObjectStore::new(),
-            flat_attrs: FlatObjectStore::new(),
+            flat: FlatObjectStore::with_shared_arena(
+                flat_arena.clone(),
+                FlatKindSet::of(&[FlatObjectKind::String, FlatObjectKind::Path]),
+            ),
+            flat_lists: FlatObjectStore::with_shared_arena(
+                flat_arena.clone(),
+                FlatKindSet::of(&[FlatObjectKind::List]),
+            ),
+            flat_attrs: FlatObjectStore::with_shared_arena(
+                flat_arena.clone(),
+                FlatKindSet::of(&[FlatObjectKind::Attrs]),
+            ),
+            flat_arena,
             flat_closures: FlatObjectStore::new(),
             flat_closures_retired: 0,
             worker_closure_placement: WorkerClosurePlacement::default(),
@@ -637,6 +648,8 @@ impl EvalHeap {
     ///
     /// Panics if the process exhausts all evaluator heap region-owner ids.
     pub fn with_initial_chunk_bytes(chunk_bytes: usize) -> Result<Self, EvalHeapError> {
+        let flat_arena = SharedFlatStoreArena::with_initial_chunk_bytes(chunk_bytes)
+            .map_err(EvalHeapError::Arena)?;
         Ok(Self {
             allocator: RuntimeAllocator::tier_a_with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
@@ -659,12 +672,19 @@ impl EvalHeap {
             attrs_cons: HashConsTable::new(),
             alloc_counters: EvalHeapAllocationCounters::default(),
             deref_counters: EvalHeapDerefCounters::default(),
-            flat: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
-                .map_err(EvalHeapError::Arena)?,
-            flat_lists: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
-                .map_err(EvalHeapError::Arena)?,
-            flat_attrs: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
-                .map_err(EvalHeapError::Arena)?,
+            flat: FlatObjectStore::with_shared_arena(
+                flat_arena.clone(),
+                FlatKindSet::of(&[FlatObjectKind::String, FlatObjectKind::Path]),
+            ),
+            flat_lists: FlatObjectStore::with_shared_arena(
+                flat_arena.clone(),
+                FlatKindSet::of(&[FlatObjectKind::List]),
+            ),
+            flat_attrs: FlatObjectStore::with_shared_arena(
+                flat_arena.clone(),
+                FlatKindSet::of(&[FlatObjectKind::Attrs]),
+            ),
+            flat_arena,
             flat_closures: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
             flat_closures_retired: 0,
@@ -823,18 +843,14 @@ impl EvalHeap {
 
     /// Returns current permanent shared allocation accounting.
     ///
-    /// Includes every flat object store's arena (FV-1/FV-2): flat strings,
-    /// paths, lists, and attrsets are permanent-domain values, so their
-    /// bytes stay in the permanent columns of every budget decision and
-    /// statistics surface.
+    /// Includes the shared permanent-domain flat arena (FV-1/FV-2/FV-4):
+    /// flat strings, paths, lists, and attrsets are permanent-domain values
+    /// hosted in one shared arena, so its bytes stay in the permanent
+    /// columns of every budget decision and statistics surface. The arena is
+    /// read once through its handle — the sharing stores all report the same
+    /// arena and must not be summed.
     pub fn permanent_arena_stats(&self) -> ArenaStats {
-        merged_arena_stats(
-            merged_arena_stats(
-                merged_arena_stats(self.permanent_allocator.stats(), self.flat.arena_stats()),
-                self.flat_lists.arena_stats(),
-            ),
-            self.flat_attrs.arena_stats(),
-        )
+        merged_arena_stats(self.permanent_allocator.stats(), self.flat_arena.stats())
     }
 
     /// Returns the typed-value allocation work counters for this heap.
@@ -865,6 +881,16 @@ impl EvalHeap {
         self.worker_region_mark_stack
             .try_reserve_exact(1)
             .map_err(|_| EvalHeapError::WorkerRegionMarkAllocationFailed { marks })?;
+        // The worker closure store always owns its arena (region pops require
+        // it), so its region mark cannot fail; surface the impossible case as
+        // a mark-allocation failure before any marker state changes.
+        let flat_closures_mark = self
+            .flat_closures
+            .region_mark()
+            .map_err(|error| match error {
+                crate::heap::flat::FlatObjectError::Arena(source) => EvalHeapError::Arena(source),
+                _ => EvalHeapError::WorkerRegionMarkAllocationFailed { marks },
+            })?;
         let mark_id = self.next_worker_region_mark;
         self.next_worker_region_mark = self
             .next_worker_region_mark
@@ -878,7 +904,7 @@ impl EvalHeap {
             self.worker_allocator_epoch,
             mark_id,
             self.records.len(),
-            self.flat_closures.region_mark(),
+            flat_closures_mark,
         ))
     }
 
@@ -1337,9 +1363,7 @@ impl EvalHeap {
                 .merged(self.flat_closures.advise_unused_tail(kind)),
             self.permanent_allocator
                 .advise_unused_tail(kind)
-                .merged(self.flat.advise_unused_tail(kind))
-                .merged(self.flat_lists.advise_unused_tail(kind))
-                .merged(self.flat_attrs.advise_unused_tail(kind)),
+                .merged(self.flat_arena.advise_unused_tail(kind)),
         )
     }
 
@@ -1369,9 +1393,7 @@ impl EvalHeap {
                 self.permanent_allocator
                     .supported_unused_tail_advice_bytes(),
             )
-            .saturating_add(self.flat.supported_unused_tail_advice_bytes())
-            .saturating_add(self.flat_lists.supported_unused_tail_advice_bytes())
-            .saturating_add(self.flat_attrs.supported_unused_tail_advice_bytes())
+            .saturating_add(self.flat_arena.supported_unused_tail_advice_bytes())
     }
 
     /// Classifies memory pressure and applies the currently implemented cheap

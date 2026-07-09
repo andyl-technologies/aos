@@ -293,11 +293,31 @@ mod tests {
         // loudly, and the owned-arena rewind call whose reachability proof is
         // the evaluator's retained-edge validation, all under
         // `FlatObjectPayloadAccess`.
+        // flat.rs count 11 -> 12 (doc 30 FV-4 inline arrays): the
+        // trailing-array allocation's placement write
+        // (`alloc_with_trailing`), the typed analog of
+        // `alloc_with_trailing_bytes`'s object-head write, under
+        // `FlatObjectPayloadAccess`.
+        // flat.rs count 12 -> 8 + flat/alloc.rs count 0 -> 4 (doc 30 FV-4,
+        // module-size split): the four allocation-door operations (the plain
+        // and trailing-array object-head placement writes, and the
+        // trailing-bytes inline copy plus its object-head write) moved
+        // verbatim into `flat/alloc.rs`; resolution, iteration, pops, and
+        // drop stay in `flat.rs`. No operation was added or changed.
+        // flat/slice.rs count 0 -> 5 (doc 30 FV-4): the `FlatSlice` inline
+        // element witness — one `from_raw_parts` read over the sealed
+        // construction contract (`as_slice`), the `Send`/`Sync` impls
+        // justified by post-construction immutability (the `FlatBytes`
+        // pattern), and the tail writer's bounds-checked
+        // `copy_nonoverlapping` plus in-allocation cursor advance
+        // (`write_slice`), all under `FlatObjectPayloadAccess`.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 12usize),
-            ("flat.rs", 11usize),
+            ("flat.rs", 8usize),
+            ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
+            ("flat/slice.rs", 5usize),
             ("resident.rs", 6usize),
         ] {
             let source_path = heap_root.join(file_name);
@@ -361,7 +381,15 @@ mod tests {
 
         matches!(
             relative_path.to_str(),
-            Some("advice.rs" | "arena.rs" | "flat.rs" | "flat/bytes.rs" | "resident.rs")
+            Some(
+                "advice.rs"
+                    | "arena.rs"
+                    | "flat.rs"
+                    | "flat/alloc.rs"
+                    | "flat/bytes.rs"
+                    | "flat/slice.rs"
+                    | "resident.rs"
+            )
         )
     }
 

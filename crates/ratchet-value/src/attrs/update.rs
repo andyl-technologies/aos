@@ -185,11 +185,7 @@ impl FlatAttrs {
             }
         }
 
-        Ok(Self {
-            entries,
-            source_order,
-            iteration_order,
-        })
+        Ok(Self::from_owned_parts(entries, source_order, iteration_order))
     }
 
     /// Merges `right` over `self` when `right`'s keys are a subset of `self`'s.
@@ -232,7 +228,8 @@ impl FlatAttrs {
         let mut right_slots = reserve(right.len())?;
         let mut cursor = 0usize;
         for right_entry in right.entries_by_symbol() {
-            match self.entries[cursor..].binary_search_by_key(&right_entry.key, |entry| entry.key)
+            match self.entries_by_symbol()[cursor..]
+                .binary_search_by_key(&right_entry.key, |entry| entry.key)
             {
                 Ok(offset) => {
                     let slot = cursor + offset;
@@ -249,7 +246,7 @@ impl FlatAttrs {
         entries
             .try_reserve_exact(len)
             .map_err(|_| AttrError::AllocationFailed { entries: len })?;
-        entries.extend_from_slice(&self.entries);
+        entries.extend_from_slice(self.entries_by_symbol());
         for (right_entry, &slot) in right.entries_by_symbol().iter().zip(&right_slots) {
             entries[slot as usize] = *right_entry;
         }
@@ -271,13 +268,13 @@ impl FlatAttrs {
         // Same key set at the same slots: the cached lexicographic
         // permutation is unchanged.
         let mut iteration_order = reserve(len)?;
-        iteration_order.extend_from_slice(&self.iteration_order);
+        iteration_order.extend_from_slice(self.iteration_order());
 
-        Ok(Some(Self {
+        Ok(Some(Self::from_owned_parts(
             entries,
             source_order,
             iteration_order,
-        }))
+        )))
     }
 }
 

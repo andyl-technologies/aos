@@ -10,13 +10,22 @@
 //! flat heap object (Tier-A bump arena, 8-byte aligned):
 //!
 //!   ┌──────────────────────────────────────────────────────────┐
-//!   │ word 0: kind word   = FLAT_OBJECT_MAGIC << 32 | kind      │
+//!   │ word 0: kind word = FLAT_OBJECT_MAGIC << 32               │
+//!   │                     | aux << 8 | kind                     │
 //!   │ word 1: structural hash (the hash-cons key)               │
 //!   │ word 2: last-touch epoch (cold-value advice input)        │
 //!   ├──────────────────────────────────────────────────────────┤
 //!   │ payload: the typed payload struct `T`, written in place   │
+//!   │ inline arrays ... (FV-1b bytes / FV-4 element runs)       │
 //!   └──────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! The kind word's middle 24 bits (`aux`) are the FV-4 size-class field: a
+//! saturating payload cardinality (list length, attrset entry count; byte
+//! length for strings/paths) pinned here so the compressed-value layout doc
+//! 30 §3.5 plans against can classify an object from its first header load.
+//! [`FLAT_AUX_SATURATED`] means "consult the payload"; no hot path consumes
+//! the field yet — resolution validates only the magic and kind bits.
 //!
 //! Resolution is pointer arithmetic: a membership check against the store's
 //! own arena chunks, one header load validating the magic/kind word, and a
@@ -59,9 +68,11 @@
 //! confirmation for all kinds while still not fitting the three-field
 //! metadata. The payload struct leads with the metadata words, so a
 //! PIC/select-cache guard load is header-adjacent — one flat resolution, no
-//! record probe — which is the layout doc 30 §2.3 stage 2 asks for. A
-//! header-resident shape id remains an FV-4 candidate for when the kind word
-//! gains size-class bits.
+//! record probe — which is the layout doc 30 §2.3 stage 2 asks for. FV-4
+//! gave the kind word its 24-bit `aux` size-class field (the entry count for
+//! attrsets); the projected `ShapeId` stays in the payload because the aux
+//! field is too narrow for the three-field metadata and the guard load is
+//! already header-adjacent.
 //!
 //! *Boundary note (doc 30 §11.7, resolved in FV-2):* the former
 //! `value/small.rs` 0/1/2-element inline-constructor contract was dormant —
@@ -99,13 +110,24 @@ use super::arena::{
 use super::advice::MemoryAdviceKind;
 use crate::value::HeapObject;
 
+mod alloc;
+mod backing;
 mod bytes;
 pub mod shared;
+mod slice;
 
+pub use backing::{FlatKindSet, SharedFlatStoreArena};
 pub use bytes::FlatBytes;
+pub use slice::{FlatSlice, FlatTailLayout, FlatTailWriter};
 
 /// The magic tag stored in the upper 32 bits of every flat object's word 0.
 pub const FLAT_OBJECT_MAGIC: u64 = 0x464c_5431; // ASCII "FLT1"
+
+/// The saturation value of the kind word's 24-bit `aux` size-class field.
+///
+/// An object whose payload cardinality is at least this value stores exactly
+/// this value; readers must consult the payload for the true cardinality.
+pub const FLAT_AUX_SATURATED: u32 = 0x00ff_ffff;
 
 /// Maximum alignment a flat payload type may require (the arena word size).
 const MAX_ALIGN: usize = mem::align_of::<u64>();
@@ -150,11 +172,14 @@ pub enum FlatObjectKind {
 
 impl FlatObjectKind {
     /// Decodes a kind from a raw header word, validating the magic tag.
+    ///
+    /// The middle 24 bits are the `aux` size-class field and do not
+    /// participate in validity; see the [module documentation](self).
     const fn from_kind_word(word: u64) -> Option<Self> {
         if word >> 32 != FLAT_OBJECT_MAGIC {
             return None;
         }
-        match word & 0xffff_ffff {
+        match word & 0xff {
             0x01 => Some(Self::String),
             0x02 => Some(Self::Path),
             0x03 => Some(Self::List),
@@ -166,9 +191,28 @@ impl FlatObjectKind {
         }
     }
 
-    /// Encodes this kind into the header word 0 representation.
-    const fn kind_word(self) -> u64 {
-        (FLAT_OBJECT_MAGIC << 32) | self as u64
+    /// Encodes this kind and a saturated `aux` size class into word 0.
+    const fn kind_word(self, aux: u32) -> u64 {
+        let aux = if aux > FLAT_AUX_SATURATED {
+            FLAT_AUX_SATURATED
+        } else {
+            aux
+        };
+        (FLAT_OBJECT_MAGIC << 32) | ((aux as u64) << 8) | self as u64
+    }
+}
+
+/// Extracts the 24-bit `aux` size-class field from a raw header word.
+const fn aux_of_kind_word(word: u64) -> u32 {
+    ((word >> 8) & FLAT_AUX_SATURATED as u64) as u32
+}
+
+/// Saturates a payload cardinality into the header `aux` field encoding.
+pub const fn flat_aux_for_len(len: usize) -> u32 {
+    if len >= FLAT_AUX_SATURATED as usize {
+        FLAT_AUX_SATURATED
+    } else {
+        len as u32
     }
 }
 
@@ -194,15 +238,6 @@ struct FlatHeader {
 struct FlatObject<T> {
     header: FlatHeader,
     payload: T,
-}
-
-/// Post-monomorphization payload layout checks for [`FlatObject<T>`].
-struct FlatLayoutCheck<T>(PhantomData<T>);
-
-impl<T> FlatLayoutCheck<T> {
-    /// Fails compilation (post-mono) for payloads the arena cannot host.
-    const PAYLOAD_FITS_ARENA_ALIGNMENT: () =
-        assert!(mem::align_of::<FlatObject<T>>() <= MAX_ALIGN);
 }
 
 /// One registered flat allocation.
@@ -250,6 +285,14 @@ impl<'a, T> FlatObjectRef<'a, T> {
             Some(kind) => kind,
             None => unreachable!("resolved flat object lost its kind word"),
         }
+    }
+
+    /// Returns the object's saturated 24-bit `aux` size class.
+    ///
+    /// [`FLAT_AUX_SATURATED`] means the true cardinality did not fit and the
+    /// payload must be consulted; see the [module documentation](self).
+    pub fn aux(self) -> u32 {
+        aux_of_kind_word(self.object.header.kind_word)
     }
 
     /// Returns the object's last-touch access epoch.
@@ -344,19 +387,54 @@ pub struct FlatAllocation {
     pub allocation: ArenaAllocation,
 }
 
+/// The arena a flat store reserves object storage from.
+///
+/// `Owned` is the pre-FV-4 shape: a dedicated per-store arena, required by
+/// stores that pop lexical regions (rewinding a bump cursor is only sound
+/// over one store's allocations). `Shared` places this store's objects in a
+/// [`SharedFlatStoreArena`] beside other stores' objects, collapsing the
+/// per-type chunk slack; see the `backing` module for the soundness argument.
+#[derive(Debug)]
+enum FlatStoreBacking {
+    Owned(BumpArena),
+    Shared(SharedFlatStoreArena),
+}
+
+impl FlatStoreBacking {
+    /// Reserves `size` bytes for a flat object of `kind`.
+    fn alloc_raw(
+        &mut self,
+        size: usize,
+        kind: FlatObjectKind,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        match self {
+            Self::Owned(arena) => arena.aos_alloc_raw(size, MAX_ALIGN, kind as u32),
+            Self::Shared(shared) => shared.alloc_raw(size, MAX_ALIGN, kind),
+        }
+    }
+}
+
 /// An arena-backed store of flat (header + inline payload) heap objects.
 ///
-/// The store owns a dedicated Tier-A [`BumpArena`]; every allocation writes a
-/// [`FlatObject<T>`] in place and registers it for enumeration and drop. See
-/// the [module documentation](self) for the layout and the fail-loud
-/// contract.
+/// The store reserves storage from its backing — a dedicated Tier-A
+/// [`BumpArena`] or an FV-4 shared multi-store arena; every allocation
+/// writes a [`FlatObject<T>`] in place and registers it for enumeration and
+/// drop. See the [module documentation](self) for the layout and the
+/// fail-loud contract.
 #[derive(Debug)]
 pub struct FlatObjectStore<T> {
-    arena: BumpArena,
+    backing: FlatStoreBacking,
+    /// Kinds this store may allocate and type as `FlatObject<T>`.
+    ///
+    /// On a shared arena the header kind word is the payload-type witness, so
+    /// typed resolution must reject kinds this store did not allocate even
+    /// when the header is valid; sharing stores carry disjoint sets.
+    allowed: FlatKindSet,
     entries: Vec<FlatStoreEntry>,
-    /// Sorted `(start, end)` byte regions of the arena's chunks, refreshed on
-    /// allocation. Membership in one of these regions makes a resolution read
-    /// memory-safe; the header magic check then decides validity.
+    /// Sorted `(start, end)` byte regions of the backing arena's chunks,
+    /// refreshed on allocation. Membership in one of these regions makes a
+    /// resolution read memory-safe; the header magic check then decides
+    /// validity.
     regions: Vec<(usize, usize)>,
     _payload: PhantomData<T>,
 }
@@ -368,7 +446,7 @@ impl<T> Default for FlatObjectStore<T> {
 }
 
 impl<T> FlatObjectStore<T> {
-    /// Creates an empty store with a default-sized arena.
+    /// Creates an empty store with a default-sized owned arena.
     pub fn new() -> Self {
         match Self::with_initial_chunk_bytes(INITIAL_CHUNK_BYTES) {
             Ok(store) => store,
@@ -377,7 +455,8 @@ impl<T> FlatObjectStore<T> {
                 let mut arena = BumpArena::new();
                 arena.limit_chunk_growth(MAX_CHUNK_BYTES);
                 Self {
-                    arena,
+                    backing: FlatStoreBacking::Owned(arena),
+                    allowed: FlatKindSet::ALL,
                     entries: Vec::new(),
                     regions: Vec::new(),
                     _payload: PhantomData,
@@ -386,7 +465,8 @@ impl<T> FlatObjectStore<T> {
         }
     }
 
-    /// Creates an empty store whose arena uses an explicit first chunk size.
+    /// Creates an empty store whose owned arena uses an explicit first chunk
+    /// size.
     ///
     /// # Errors
     ///
@@ -396,11 +476,29 @@ impl<T> FlatObjectStore<T> {
         let mut arena = BumpArena::with_initial_chunk_bytes(chunk_bytes)?;
         arena.limit_chunk_growth(MAX_CHUNK_BYTES.max(chunk_bytes));
         Ok(Self {
-            arena,
+            backing: FlatStoreBacking::Owned(arena),
+            allowed: FlatKindSet::ALL,
             entries: Vec::new(),
             regions: Vec::new(),
             _payload: PhantomData,
         })
+    }
+
+    /// Creates an empty store over a shared multi-store arena, allowed to
+    /// allocate exactly the given kinds (doc 30 FV-4).
+    ///
+    /// Stores sharing one arena must be given mutually disjoint kind sets:
+    /// the header kind word is the payload-type witness across the shared
+    /// chunks (see the `backing` module). Shared-backed stores cannot pop
+    /// lexical regions.
+    pub fn with_shared_arena(arena: SharedFlatStoreArena, allowed: FlatKindSet) -> Self {
+        Self {
+            backing: FlatStoreBacking::Shared(arena),
+            allowed,
+            entries: Vec::new(),
+            regions: Vec::new(),
+            _payload: PhantomData,
+        }
     }
 
     /// Returns the number of flat objects in the store.
@@ -413,161 +511,48 @@ impl<T> FlatObjectStore<T> {
         self.entries.is_empty()
     }
 
-    /// Returns the owned arena's accounting.
+    /// Returns the backing arena's accounting.
+    ///
+    /// For a shared-arena store this reports the whole shared arena; callers
+    /// merging per-store statistics must read the shared arena exactly once
+    /// (through its [`SharedFlatStoreArena`] handle) rather than per store.
     pub fn arena_stats(&self) -> ArenaStats {
-        self.arena.stats()
+        match &self.backing {
+            FlatStoreBacking::Owned(arena) => arena.stats(),
+            FlatStoreBacking::Shared(shared) => shared.stats(),
+        }
     }
 
-    /// Advises unused bytes at the end of the owned arena's chunks.
+    /// Advises unused bytes at the end of an owned arena's chunks.
+    ///
+    /// Shared-arena stores report nothing here: unused-tail advice for a
+    /// shared arena is issued once through its handle, not once per store.
     pub fn advise_unused_tail(&self, kind: MemoryAdviceKind) -> ArenaMemoryAdviceReport {
-        self.arena.advise_unused_tail(kind)
+        match &self.backing {
+            FlatStoreBacking::Owned(arena) => arena.advise_unused_tail(kind),
+            FlatStoreBacking::Shared(_) => ArenaMemoryAdviceReport::empty(kind),
+        }
     }
 
     /// Returns unused-tail bytes this platform can lower to page advice.
+    ///
+    /// Shared-arena stores report zero here for the same single-reader
+    /// discipline as [`FlatObjectStore::advise_unused_tail`].
     pub fn supported_unused_tail_advice_bytes(&self) -> usize {
-        self.arena.supported_unused_tail_advice_bytes()
+        match &self.backing {
+            FlatStoreBacking::Owned(arena) => arena.supported_unused_tail_advice_bytes(),
+            FlatStoreBacking::Shared(_) => 0,
+        }
     }
 
-    /// Allocates a flat object and returns its stable address.
-    ///
-    /// The object header stores `kind`, `hash`, and `epoch`; `payload` is
-    /// moved into the object in place. The returned address is valid for the
-    /// store's lifetime and is never reissued.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FlatObjectError::Arena`] if arena storage cannot be
-    /// reserved, or [`FlatObjectError::RegistryAllocationFailed`] if the
-    /// registry cannot grow (the arena reservation is then left as dead
-    /// padding and the payload is dropped normally).
-    pub fn alloc(
-        &mut self,
-        kind: FlatObjectKind,
-        hash: u64,
-        epoch: u64,
-        payload: T,
-    ) -> Result<FlatAllocation, FlatObjectError> {
-        let () = FlatLayoutCheck::<T>::PAYLOAD_FITS_ARENA_ALIGNMENT;
-        let size = mem::size_of::<FlatObject<T>>();
-        let entries = self
-            .entries
-            .len()
-            .checked_add(1)
-            .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
-        self.entries
-            .try_reserve(1)
-            .map_err(|_| FlatObjectError::RegistryAllocationFailed { entries })?;
-        let allocation = self
-            .arena
-            .aos_alloc_raw(size, MAX_ALIGN, kind as u32)
-            .map_err(FlatObjectError::Arena)?;
-        debug_assert!(allocation.reserved_size >= size);
-        debug_assert_eq!(allocation.ptr.as_ptr() as usize % MAX_ALIGN, 0);
-        let object = FlatObject {
-            header: FlatHeader {
-                kind_word: kind.kind_word(),
-                hash,
-                epoch: AtomicU64::new(epoch),
-            },
-            payload,
-        };
-        let ptr = allocation.ptr;
-        // SAFETY: `ptr` is a fresh, exclusively owned arena reservation of at
-        // least `size_of::<FlatObject<T>>()` bytes at arena word alignment,
-        // which satisfies `FlatObject<T>`'s alignment per the post-mono layout
-        // check above. The bump arena never reissues this address, so no other
-        // object aliases it.
-        unsafe { ptr.as_ptr().cast::<FlatObject<T>>().write(object) };
-        self.entries.push(FlatStoreEntry {
-            ptr,
-            size_bytes: allocation.reserved_size,
-        });
-        self.refresh_regions();
-        Ok(FlatAllocation { ptr, allocation })
-    }
-
-    /// Allocates a flat object whose payload references `bytes` written
-    /// inline directly after the payload struct (doc 30 stage FV-1b).
-    ///
-    /// The bytes are copied into the same arena reservation as the header and
-    /// payload; `make_payload` receives the [`FlatBytes`] witness over the
-    /// inline copy and must store it inside the returned payload, which is
-    /// then written in place exactly like [`FlatObjectStore::alloc`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FlatObjectError::Arena`] if arena storage cannot be
-    /// reserved (including when the combined payload-plus-bytes size
-    /// overflows), or [`FlatObjectError::RegistryAllocationFailed`] if the
-    /// registry cannot grow.
-    pub fn alloc_with_trailing_bytes(
-        &mut self,
-        kind: FlatObjectKind,
-        hash: u64,
-        epoch: u64,
-        bytes: &[u8],
-        make_payload: impl FnOnce(FlatBytes) -> T,
-    ) -> Result<FlatAllocation, FlatObjectError> {
-        let () = FlatLayoutCheck::<T>::PAYLOAD_FITS_ARENA_ALIGNMENT;
-        let object_size = mem::size_of::<FlatObject<T>>();
-        let size = object_size
-            .checked_add(bytes.len())
-            .ok_or(FlatObjectError::Arena(ArenaError::SizeOverflow))?;
-        let entries = self
-            .entries
-            .len()
-            .checked_add(1)
-            .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
-        self.entries
-            .try_reserve(1)
-            .map_err(|_| FlatObjectError::RegistryAllocationFailed { entries })?;
-        let allocation = self
-            .arena
-            .aos_alloc_raw(size, MAX_ALIGN, kind as u32)
-            .map_err(FlatObjectError::Arena)?;
-        debug_assert!(allocation.reserved_size >= size);
-        debug_assert_eq!(allocation.ptr.as_ptr() as usize % MAX_ALIGN, 0);
-        let ptr = allocation.ptr;
-        let tail = ptr.as_ptr().cast::<u8>();
-        // SAFETY: the reservation covers `object_size + bytes.len()` bytes at
-        // `ptr`, so the tail range starting at `object_size` holds exactly
-        // `bytes.len()` writable, exclusively owned bytes; the source slice
-        // cannot overlap a reservation the arena just created.
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), tail.add(object_size), bytes.len())
-        };
-        let Some(tail_ptr) = NonNull::new(tail.wrapping_add(object_size)) else {
-            return Err(FlatObjectError::UnknownAddress {
-                address: ptr.as_ptr() as usize,
-            });
-        };
-        // FlatBytes contract (see `FlatBytes::new`): the tail bytes were
-        // fully written above, are never written again (payloads are
-        // immutable after construction; `resolve_mut` rewrites list spines,
-        // never byte-carrying payloads' tails), and stay mapped until the
-        // store drops; the witness lives in the payload, which drops in the
-        // store's `Drop` strictly before the owned arena unmaps.
-        let payload = make_payload(FlatBytes::new(tail_ptr, bytes.len()));
-        let object = FlatObject {
-            header: FlatHeader {
-                kind_word: kind.kind_word(),
-                hash,
-                epoch: AtomicU64::new(epoch),
-            },
-            payload,
-        };
-        // SAFETY: `ptr` is a fresh, exclusively owned arena reservation of at
-        // least `size_of::<FlatObject<T>>()` bytes at arena word alignment
-        // (the post-mono layout check above), never reissued by the bump
-        // arena; the struct write covers only the object head and leaves the
-        // already-written tail bytes untouched.
-        unsafe { ptr.as_ptr().cast::<FlatObject<T>>().write(object) };
-        self.entries.push(FlatStoreEntry {
-            ptr,
-            size_bytes: allocation.reserved_size,
-        });
-        self.refresh_regions();
-        Ok(FlatAllocation { ptr, allocation })
+    /// Rejects kinds outside the store's allowed set.
+    #[inline]
+    fn check_kind_allowed(&self, kind: FlatObjectKind) -> Result<(), FlatObjectError> {
+        if self.allowed.contains(kind) {
+            Ok(())
+        } else {
+            Err(FlatObjectError::KindNotAllowed { kind })
+        }
     }
 
     /// Resolves `ptr` as a flat object of `kind`.
@@ -583,6 +568,7 @@ impl<T> FlatObjectStore<T> {
         ptr: NonNull<HeapObject>,
         kind: FlatObjectKind,
     ) -> Result<FlatObjectRef<'_, T>, FlatObjectError> {
+        self.check_kind_allowed(kind)?;
         let actual = self.kind_at(ptr)?;
         if actual != kind {
             return Err(FlatObjectError::KindMismatch {
@@ -591,11 +577,13 @@ impl<T> FlatObjectStore<T> {
                 address: ptr.as_ptr() as usize,
             });
         }
-        // SAFETY: `kind_at` proved the address lies in this store's live arena
-        // regions at word alignment and starts with a valid flat header for
-        // `T`'s kind, so it is one of this store's placement-written
-        // `FlatObject<T>` allocations; shared access is sound because objects
-        // are immutable after construction except the atomic epoch word.
+        // SAFETY: `kind_at` proved the address lies in the backing arena's
+        // live chunk regions at word alignment and starts with a valid flat
+        // header whose kind is in this store's allowed set; sharing stores
+        // carry disjoint kind sets, so the object was placement-written by
+        // *this* store as a `FlatObject<T>`. Shared access is sound because
+        // objects are immutable after construction except the atomic epoch
+        // word.
         let object = unsafe { &*(ptr.as_ptr() as *const FlatObject<T>) };
         Ok(FlatObjectRef { object })
     }
@@ -619,6 +607,7 @@ impl<T> FlatObjectStore<T> {
         ptr: NonNull<HeapObject>,
         kind: FlatObjectKind,
     ) -> Result<&mut T, FlatObjectError> {
+        self.check_kind_allowed(kind)?;
         let actual = self.kind_at(ptr)?;
         if actual != kind {
             return Err(FlatObjectError::KindMismatch {
@@ -627,11 +616,12 @@ impl<T> FlatObjectStore<T> {
                 address: ptr.as_ptr() as usize,
             });
         }
-        // SAFETY: `kind_at` proved the address is one of this store's
-        // placement-written `FlatObject<T>` allocations (see `resolve`);
-        // mutable access is exclusive because every other resolution path
-        // borrows the store shared while this method holds `&mut self`, so
-        // the borrow checker rules out any live aliasing reference.
+        // SAFETY: `kind_at` plus the allowed-kind guard proved the address is
+        // one of this store's placement-written `FlatObject<T>` allocations
+        // (see `resolve`); mutable access is exclusive because every other
+        // resolution path borrows the store shared while this method holds
+        // `&mut self`, so the borrow checker rules out any live aliasing
+        // reference.
         let object = unsafe { &mut *(ptr.as_ptr() as *mut FlatObject<T>) };
         Ok(&mut object.payload)
     }
@@ -660,11 +650,21 @@ impl<T> FlatObjectStore<T> {
 
     /// Captures the current registry and arena position for a future
     /// lexical-region pop.
-    pub fn region_mark(&self) -> FlatStoreRegionMark {
-        FlatStoreRegionMark {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlatObjectError::SharedArenaRegionUnsupported`] for a store
+    /// on a shared arena: rewinding a shared bump cursor would reclaim other
+    /// stores' objects, so region marks exist only over owned arenas (the
+    /// worker-domain closure store).
+    pub fn region_mark(&self) -> Result<FlatStoreRegionMark, FlatObjectError> {
+        let FlatStoreBacking::Owned(arena) = &self.backing else {
+            return Err(FlatObjectError::SharedArenaRegionUnsupported);
+        };
+        Ok(FlatStoreRegionMark {
             entries: self.entries.len(),
-            arena: self.arena.region_mark(),
-        }
+            arena: arena.region_mark(),
+        })
     }
 
     /// Pops every object allocated after `mark`, dropping payloads and
@@ -685,21 +685,26 @@ impl<T> FlatObjectStore<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`FlatObjectError::InvalidRegionMark`] if `mark`'s registry
-    /// length exceeds the store's, or [`FlatObjectError::Arena`] if the arena
-    /// marker cannot describe the arena's current prefix. Both are rejected
-    /// before any payload is dropped.
+    /// Returns [`FlatObjectError::SharedArenaRegionUnsupported`] for a store
+    /// on a shared arena (marks are unobtainable there, so this is
+    /// defense-in-depth), [`FlatObjectError::InvalidRegionMark`] if `mark`'s
+    /// registry length exceeds the store's, or [`FlatObjectError::Arena`] if
+    /// the arena marker cannot describe the arena's current prefix. All are
+    /// rejected before any payload is dropped.
     pub fn pop_region(
         &mut self,
         mark: FlatStoreRegionMark,
     ) -> Result<FlatStorePopReport, FlatObjectError> {
+        let FlatStoreBacking::Owned(arena) = &mut self.backing else {
+            return Err(FlatObjectError::SharedArenaRegionUnsupported);
+        };
         if mark.entries > self.entries.len() {
             return Err(FlatObjectError::InvalidRegionMark {
                 marked_entries: mark.entries,
                 current_entries: self.entries.len(),
             });
         }
-        self.arena
+        arena
             .validate_region_mark(mark.arena)
             .map_err(FlatObjectError::Arena)?;
         for entry in &self.entries[mark.entries..] {
@@ -722,14 +727,14 @@ impl<T> FlatObjectStore<T> {
         // entry or payload borrow refers to the rewound range; the caller's
         // region discipline proves no live runtime value still names those
         // addresses (stale handles fail loudly per the wipe above).
-        let arena = unsafe { self.arena.pop_region_to_mark(mark.arena) }
+        let arena_report = unsafe { arena.pop_region_to_mark(mark.arena) }
             .map_err(FlatObjectError::Arena)?;
         self.regions.clear();
-        self.regions.extend(self.arena.chunk_regions());
+        self.regions.extend(arena.chunk_regions());
         self.regions.sort_unstable();
         Ok(FlatStorePopReport {
             popped_entries,
-            arena,
+            arena: arena_report,
         })
     }
 
@@ -741,9 +746,10 @@ impl<T> FlatObjectStore<T> {
         if address % MAX_ALIGN != 0 || !self.contains_address(address) {
             return Err(FlatObjectError::UnknownAddress { address });
         }
-        // SAFETY: `address` is word-aligned inside one of this store's live
-        // arena chunk regions, so an 8-byte read is in-bounds of a mapping
-        // this store owns; anonymous-mmap bytes are readable and act as
+        // SAFETY: `address` is word-aligned inside one of the backing arena's
+        // live chunk regions (kept mapped by this store's owned arena or its
+        // strong shared-arena handle), so an 8-byte read is in-bounds of a
+        // live mapping; anonymous-mmap bytes are readable and act as
         // initialized (zero-filled) from the abstract machine's view.
         let kind_word = unsafe { (ptr.as_ptr() as *const u64).read() };
         FlatObjectKind::from_kind_word(kind_word)
@@ -763,13 +769,31 @@ impl<T> FlatObjectStore<T> {
     }
 
     /// Rebuilds the sorted chunk-region membership index when chunks change.
+    ///
+    /// On a shared arena the index covers every sharing store's chunks; the
+    /// header kind word (plus the allowed-kind guard) restores per-store type
+    /// fidelity above the shared membership check.
     fn refresh_regions(&mut self) {
-        if self.regions.len() == self.arena.stats().chunks {
-            return;
+        // Constant-time staleness check: this runs after *every* allocation,
+        // and a chunk-walking `stats()` here is O(chunks) per alloc — a
+        // measured 15%+ wall regression on attrset-churn workloads once the
+        // shared arena carries tens of chunks.
+        match &self.backing {
+            FlatStoreBacking::Owned(arena) => {
+                if self.regions.len() == arena.chunk_count() {
+                    return;
+                }
+                self.regions.clear();
+                self.regions.extend(arena.chunk_regions());
+                self.regions.sort_unstable();
+            }
+            FlatStoreBacking::Shared(shared) => {
+                if self.regions.len() == shared.chunk_count() {
+                    return;
+                }
+                shared.snapshot_chunk_regions(&mut self.regions);
+            }
         }
-        self.regions.clear();
-        self.regions.extend(self.arena.chunk_regions());
-        self.regions.sort_unstable();
     }
 }
 
@@ -825,6 +849,17 @@ pub enum FlatObjectError {
         /// The object address.
         address: usize,
     },
+    /// The kind is outside this store's allowed set (doc 30 FV-4: sharing
+    /// stores carry disjoint kind sets and may only type their own kinds).
+    #[error("flat object kind {kind:?} is not allowed for this store")]
+    KindNotAllowed {
+        /// The rejected kind.
+        kind: FlatObjectKind,
+    },
+    /// Region marks and pops are unsupported over a shared arena (rewinding
+    /// a shared bump cursor would reclaim other stores' objects).
+    #[error("flat store region operations are unsupported on a shared arena")]
+    SharedArenaRegionUnsupported,
 }
 
 #[cfg(test)]

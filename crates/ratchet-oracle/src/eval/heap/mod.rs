@@ -70,7 +70,10 @@ pub(crate) use flat_values::attrs::FlatAttrsPayload;
 pub(crate) use flat_values::closures::FlatClosurePayload;
 pub use flat_values::closures::WorkerClosurePlacement;
 
-use crate::heap::flat::{FlatObjectKind, FlatObjectStore, FlatStorePopReport, FlatStoreRegionMark};
+use crate::heap::flat::{
+    FlatKindSet, FlatObjectKind, FlatObjectStore, FlatStorePopReport, FlatStoreRegionMark,
+    SharedFlatStoreArena,
+};
 pub use gc::{EvalGcMode, EvalHeapSweepReport};
 use record_table::HeapRecordTable;
 use shared_backend::SharedHeapBackend;
@@ -302,6 +305,16 @@ pub struct EvalHeap {
     /// decision). The store participates in the same four GC couplings as
     /// the flat list store; see `flat_values::attrs` for the seam.
     flat_attrs: FlatObjectStore<FlatAttrsPayload>,
+    /// The shared permanent-domain flat arena (doc 30 FV-4, serial mode).
+    ///
+    /// One bump arena hosts the string/path, list, and attrset stores'
+    /// objects (each store keeps its own registry and disjoint kind set),
+    /// collapsing the per-type chunk-tail slack to one tail. This handle is
+    /// the accounting and memory-advice door: statistics and unused-tail
+    /// advice for the shared arena are read/issued exactly once through it,
+    /// never per store. The worker-domain closure store keeps a dedicated
+    /// owned arena because lexical-region pops rewind a bump cursor.
+    flat_arena: SharedFlatStoreArena,
     /// Flat worker-domain closure objects (doc 30 FV-3, serial mode).
     ///
     /// Thunks, lambdas, and partially applied builtins — the mutable,

@@ -414,7 +414,7 @@ fn pop_region_drops_popped_payloads_and_keeps_the_retained_prefix() {
     let retained = store
         .alloc(FlatObjectKind::Thunk, 0, 0, payload("retained", &drops))
         .expect("retained allocation succeeds");
-    let mark = store.region_mark();
+    let mark = store.region_mark().expect("owned-arena mark");
     let popped_a = store
         .alloc(FlatObjectKind::Thunk, 0, 0, payload("popped-a", &drops))
         .expect("popped allocation succeeds");
@@ -463,7 +463,7 @@ fn pop_region_allows_address_reuse_by_later_allocations() {
     store
         .alloc(FlatObjectKind::Primop, 0, 0, payload("anchor", &drops))
         .expect("anchor allocation succeeds");
-    let mark = store.region_mark();
+    let mark = store.region_mark().expect("owned-arena mark");
     let first = store
         .alloc(FlatObjectKind::Primop, 0, 0, payload("first", &drops))
         .expect("allocation succeeds");
@@ -486,11 +486,11 @@ fn pop_region_allows_address_reuse_by_later_allocations() {
 fn pop_region_rejects_stale_marks_before_dropping_anything() {
     let drops = Rc::new(Cell::new(0));
     let mut store = FlatObjectStore::new();
-    let mark = store.region_mark();
+    let mark = store.region_mark().expect("owned-arena mark");
     store
         .alloc(FlatObjectKind::Thunk, 0, 0, payload("live", &drops))
         .expect("allocation succeeds");
-    let inner = store.region_mark();
+    let inner = store.region_mark().expect("owned-arena mark");
     store.pop_region(mark).expect("outer pop succeeds");
 
     // The inner mark now describes a longer registry than the store has;
@@ -522,4 +522,236 @@ fn worker_kinds_round_trip_through_kind_words() {
         let object = store.resolve(allocation.ptr, kind).expect("resolves");
         assert_eq!(object.kind(), kind);
     }
+}
+
+/// A payload holding typed inline-array witnesses, with observable drop glue.
+#[derive(Debug)]
+struct ArraysPayload {
+    words: FlatSlice<u64>,
+    slots: FlatSlice<u32>,
+    drops: Rc<Cell<usize>>,
+}
+
+impl Drop for ArraysPayload {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+
+#[test]
+fn trailing_arrays_are_written_inline_and_resolve_by_witness() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let words: Vec<u64> = (0..37).map(|i| i * 3).collect();
+    let slots: Vec<u32> = (0..37).rev().collect();
+    let mut tail = FlatTailLayout::new();
+    tail.add_slice::<u64>(words.len()).expect("layout fits");
+    tail.add_slice::<u32>(slots.len()).expect("layout fits");
+    let allocation = store
+        .alloc_with_trailing(
+            FlatObjectKind::Attrs,
+            flat_aux_for_len(words.len()),
+            0xdead,
+            2,
+            tail,
+            |writer| {
+                Ok(ArraysPayload {
+                    words: writer.write_slice(&words)?,
+                    slots: writer.write_slice(&slots)?,
+                    drops: Rc::clone(&drops),
+                })
+            },
+        )
+        .expect("allocation succeeds");
+
+    let object = store
+        .resolve(allocation.ptr, FlatObjectKind::Attrs)
+        .expect("resolution succeeds");
+    assert_eq!(object.payload().words.as_slice(), words.as_slice());
+    assert_eq!(object.payload().slots.as_slice(), slots.as_slice());
+    assert_eq!(object.aux(), 37);
+    assert_eq!(object.structural_hash(), 0xdead);
+
+    // Both runs live inside this allocation's reservation, after the payload
+    // struct, in write order at word alignment.
+    let object_start = allocation.ptr.as_ptr() as usize;
+    let words_address = object.payload().words.as_slice().as_ptr() as usize;
+    let slots_address = object.payload().slots.as_slice().as_ptr() as usize;
+    assert_eq!(
+        words_address,
+        object_start + std::mem::size_of::<FlatObject<ArraysPayload>>()
+    );
+    assert_eq!(words_address % 8, 0);
+    assert_eq!(slots_address, words_address + 37 * 8);
+
+    drop(store);
+    assert_eq!(drops.get(), 1, "payload drop glue ran exactly once");
+}
+
+#[test]
+fn trailing_array_overflow_of_the_planned_layout_is_rejected() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store: FlatObjectStore<ArraysPayload> = FlatObjectStore::new();
+    let mut tail = FlatTailLayout::new();
+    tail.add_slice::<u64>(1).expect("layout fits");
+    let error = store
+        .alloc_with_trailing(FlatObjectKind::Attrs, 0, 0, 0, tail, |writer| {
+            let words = writer.write_slice(&[1u64, 2, 3])?;
+            Ok(ArraysPayload {
+                words,
+                slots: writer.write_slice(&[] as &[u32])?,
+                drops: Rc::clone(&drops),
+            })
+        })
+        .expect_err("under-planned tail is rejected");
+    assert_eq!(error, FlatObjectError::Arena(ArenaError::SizeOverflow));
+    assert!(store.is_empty(), "no object was registered");
+}
+
+#[test]
+fn header_aux_saturates_at_the_field_ceiling() {
+    assert_eq!(flat_aux_for_len(0), 0);
+    assert_eq!(flat_aux_for_len(7), 7);
+    assert_eq!(
+        flat_aux_for_len(FLAT_AUX_SATURATED as usize),
+        FLAT_AUX_SATURATED
+    );
+    assert_eq!(flat_aux_for_len(usize::MAX), FLAT_AUX_SATURATED);
+
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let plain = store
+        .alloc(FlatObjectKind::String, 1, 0, payload("aux-0", &drops))
+        .expect("allocation succeeds");
+    let object = store
+        .resolve(plain.ptr, FlatObjectKind::String)
+        .expect("resolution succeeds");
+    assert_eq!(object.aux(), 0, "plain allocations carry a zero aux field");
+
+    let tagged = store
+        .alloc_with_aux(FlatObjectKind::List, u32::MAX, 2, 0, payload("aux-max", &drops))
+        .expect("allocation succeeds");
+    let object = store
+        .resolve(tagged.ptr, FlatObjectKind::List)
+        .expect("resolution succeeds");
+    assert_eq!(object.aux(), FLAT_AUX_SATURATED, "oversized aux saturates");
+    assert_eq!(object.kind(), FlatObjectKind::List, "aux bits leave the kind intact");
+}
+
+#[test]
+fn shared_arena_stores_interleave_with_disjoint_kind_sets() {
+    let drops = Rc::new(Cell::new(0));
+    let arena = SharedFlatStoreArena::new();
+    let mut strings: FlatObjectStore<Payload> = FlatObjectStore::with_shared_arena(
+        arena.clone(),
+        FlatKindSet::of(&[FlatObjectKind::String, FlatObjectKind::Path]),
+    );
+    let mut lists: FlatObjectStore<Payload> =
+        FlatObjectStore::with_shared_arena(arena.clone(), FlatKindSet::of(&[FlatObjectKind::List]));
+
+    let string = strings
+        .alloc(FlatObjectKind::String, 1, 0, payload("s", &drops))
+        .expect("string allocates");
+    let list = lists
+        .alloc(FlatObjectKind::List, 2, 0, payload("l", &drops))
+        .expect("list allocates");
+
+    // Primary resolution works through each owning store.
+    assert_eq!(
+        strings
+            .resolve(string.ptr, FlatObjectKind::String)
+            .expect("string resolves")
+            .payload()
+            .text,
+        "s"
+    );
+    assert_eq!(
+        lists
+            .resolve(list.ptr, FlatObjectKind::List)
+            .expect("list resolves")
+            .payload()
+            .text,
+        "l"
+    );
+
+    // Cross-store kind probes see the foreign object's kind (both stores'
+    // membership index covers the shared chunks) ...
+    assert_eq!(strings.kind_of(list.ptr), Some(FlatObjectKind::List));
+    assert_eq!(lists.kind_of(string.ptr), Some(FlatObjectKind::String));
+
+    // ... but typed resolution of a foreign kind is rejected before any cast,
+    // even with the "right" expected kind for the object.
+    let error = strings
+        .resolve(list.ptr, FlatObjectKind::List)
+        .expect_err("foreign kind is rejected");
+    assert_eq!(
+        error,
+        FlatObjectError::KindNotAllowed {
+            kind: FlatObjectKind::List,
+        }
+    );
+    let error = strings
+        .resolve(list.ptr, FlatObjectKind::String)
+        .expect_err("foreign object is a kind mismatch");
+    assert_eq!(
+        error,
+        FlatObjectError::KindMismatch {
+            expected: FlatObjectKind::String,
+            actual: FlatObjectKind::List,
+            address: list.ptr.as_ptr() as usize,
+        }
+    );
+
+    // Disallowed kinds are rejected at the allocation door too.
+    let error = strings
+        .alloc(FlatObjectKind::List, 3, 0, payload("nope", &drops))
+        .expect_err("disallowed kind is rejected");
+    assert_eq!(
+        error,
+        FlatObjectError::KindNotAllowed {
+            kind: FlatObjectKind::List,
+        }
+    );
+
+    // Region marks and pops are unsupported over the shared arena.
+    let error = strings
+        .region_mark()
+        .expect_err("shared-arena marks are rejected");
+    assert_eq!(error, FlatObjectError::SharedArenaRegionUnsupported);
+
+    // The shared arena reports one set of chunks for both stores.
+    assert_eq!(strings.arena_stats().chunks, lists.arena_stats().chunks);
+    assert_eq!(arena.stats().chunks, strings.arena_stats().chunks);
+
+    // Dropping one store keeps the other store's objects mapped and intact;
+    // its payload drop glue runs immediately.
+    drop(strings);
+    // Two drops so far: the rejected "nope" payload (dropped normally at the
+    // allocation door) and the dropped store's "s" payload.
+    assert_eq!(drops.get(), 2, "dropped store ran its payload drop glue");
+    assert_eq!(
+        lists
+            .resolve(list.ptr, FlatObjectKind::List)
+            .expect("list still resolves")
+            .payload()
+            .text,
+        "l"
+    );
+    drop(lists);
+    assert_eq!(drops.get(), 3);
+}
+
+#[test]
+fn shared_arena_advice_is_reported_once_through_the_handle() {
+    let arena = SharedFlatStoreArena::new();
+    let store: FlatObjectStore<Payload> = FlatObjectStore::with_shared_arena(
+        arena.clone(),
+        FlatKindSet::of(&[FlatObjectKind::String]),
+    );
+    assert_eq!(store.supported_unused_tail_advice_bytes(), 0);
+    let report = store.advise_unused_tail(crate::heap::advice::MemoryAdviceKind::Dead);
+    assert_eq!(report.requested_bytes(), 0);
+    // The handle carries the real advice door.
+    let _ = arena.advise_unused_tail(crate::heap::advice::MemoryAdviceKind::Dead);
+    assert!(arena.supported_unused_tail_advice_bytes() <= arena.stats().mapped_bytes);
 }

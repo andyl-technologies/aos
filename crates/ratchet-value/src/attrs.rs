@@ -17,6 +17,7 @@ use std::convert::TryFrom;
 
 use thiserror::Error;
 
+use crate::heap::flat::FlatSlice;
 use crate::syntax::{Span, Symbol, SymbolTable};
 use crate::value::Value;
 
@@ -76,25 +77,140 @@ impl AttrEntry {
     }
 }
 
+/// The array storage behind one [`FlatAttrs`].
+///
+/// RFC-0007 doc 30 stage FV-4: attrsets interned into the evaluator heap's
+/// flat object store keep their entry array and both order permutations
+/// *inline* in the flat allocation, behind [`FlatSlice`] witnesses, instead
+/// of three per-attrset `Vec` allocations. Every other attrset — evaluator
+/// temporaries, cache payloads, shared-mode slot payloads — keeps the owned
+/// `Vec`s. The variant is invisible through the public API: every reader
+/// goes through the slice accessors, so the two representations are
+/// observationally identical. A clone always deep-copies into owned storage,
+/// so no flat-backed attrset can escape the store by cloning.
+#[derive(Debug)]
+enum AttrsStorage {
+    /// Arrays owned by process-allocator `Vec`s.
+    Owned {
+        entries: Vec<AttrEntry>,
+        source_order: Vec<u32>,
+        iteration_order: Vec<u32>,
+    },
+    /// Arrays inlined in a flat-object allocation (heap-resident attrsets
+    /// only).
+    Flat {
+        entries: FlatSlice<AttrEntry>,
+        source_order: FlatSlice<u32>,
+        iteration_order: FlatSlice<u32>,
+    },
+}
+
 /// A flat immutable attribute set.
 ///
 /// The attrset stores only [`Symbol`] ids. Selection APIs compare those ids
 /// directly, so lookup keys must come from the same symbol universe that was
 /// supplied to [`FlatAttrs::new`].
-#[derive(Clone, Debug, Default)]
 pub struct FlatAttrs {
-    entries: Vec<AttrEntry>,
-    source_order: Vec<u32>,
-    iteration_order: Vec<u32>,
+    storage: AttrsStorage,
+}
+
+impl Clone for FlatAttrs {
+    fn clone(&self) -> Self {
+        // Deep-copy into owned storage: a flat-backed attrset must never
+        // propagate its inline-array witnesses outside the flat store
+        // payload (see `AttrsStorage`).
+        Self {
+            storage: AttrsStorage::Owned {
+                entries: self.entries().to_vec(),
+                source_order: self.source_order().to_vec(),
+                iteration_order: self.iteration_order().to_vec(),
+            },
+        }
+    }
+}
+
+impl Default for FlatAttrs {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl std::fmt::Debug for FlatAttrs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Keep the pre-FV-4 derived shape (three arrays rendered as lists)
+        // regardless of the storage representation.
+        f.debug_struct("FlatAttrs")
+            .field("entries", &self.entries())
+            .field("source_order", &self.source_order())
+            .field("iteration_order", &self.iteration_order())
+            .finish()
+    }
 }
 
 impl FlatAttrs {
     /// Creates an empty attribute set.
     pub const fn empty() -> Self {
         Self {
-            entries: Vec::new(),
-            source_order: Vec::new(),
-            iteration_order: Vec::new(),
+            storage: AttrsStorage::Owned {
+                entries: Vec::new(),
+                source_order: Vec::new(),
+                iteration_order: Vec::new(),
+            },
+        }
+    }
+
+    /// Creates an attrset from already-validated owned arrays.
+    ///
+    /// Internal construction door for the update/merge paths, which derive
+    /// their arrays from existing validated attrsets; the [`FlatAttrs::new`]
+    /// invariants (symbol-sorted entries, inverse source permutation,
+    /// lexicographic iteration permutation, equal lengths) are the caller's
+    /// obligation.
+    pub(crate) fn from_owned_parts(
+        entries: Vec<AttrEntry>,
+        source_order: Vec<u32>,
+        iteration_order: Vec<u32>,
+    ) -> Self {
+        debug_assert_eq!(entries.len(), source_order.len());
+        debug_assert_eq!(entries.len(), iteration_order.len());
+        Self {
+            storage: AttrsStorage::Owned {
+                entries,
+                source_order,
+                iteration_order,
+            },
+        }
+    }
+
+    /// Creates an attrset over flat-object inline arrays (doc 30 FV-4).
+    ///
+    /// Only the evaluator heap's flat store constructs these, by copying the
+    /// arrays of an already-validated owned attrset into one flat allocation:
+    /// the witnesses are valid exactly as long as the flat allocation that
+    /// carries the attrset, and every escape path (clone) deep-copies back
+    /// into owned storage. The [`FlatAttrs::new`] invariants transfer from
+    /// the copied source; equal array lengths are debug-asserted here.
+    pub fn from_flat_parts(
+        entries: FlatSlice<AttrEntry>,
+        source_order: FlatSlice<u32>,
+        iteration_order: FlatSlice<u32>,
+    ) -> Self {
+        debug_assert_eq!(entries.len(), source_order.len());
+        debug_assert_eq!(entries.len(), iteration_order.len());
+        Self {
+            storage: AttrsStorage::Flat {
+                entries,
+                source_order,
+                iteration_order,
+            },
+        }
+    }
+
+    /// Returns the symbol-sorted entry array.
+    fn entries(&self) -> &[AttrEntry] {
+        match &self.storage {
+            AttrsStorage::Owned { entries, .. } => entries,
+            AttrsStorage::Flat { entries, .. } => entries.as_slice(),
         }
     }
 
@@ -190,11 +306,7 @@ impl FlatAttrs {
                 .then_with(|| entries[left].key.cmp(&entries[right].key))
         });
 
-        Ok(Self {
-            entries,
-            source_order,
-            iteration_order,
-        })
+        Ok(Self::from_owned_parts(entries, source_order, iteration_order))
     }
 
     /// Builds a one- or two-entry attrset without symbol-table rank reads.
@@ -241,21 +353,17 @@ impl FlatAttrs {
                 iteration_order.extend(if byte_swap { [1, 0] } else { [0, 1] });
             }
         }
-        Ok(Self {
-            entries,
-            source_order,
-            iteration_order,
-        })
+        Ok(Self::from_owned_parts(entries, source_order, iteration_order))
     }
 
     /// Returns the number of bindings.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries().len()
     }
 
     /// Returns whether the attrset contains no bindings.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries().is_empty()
     }
 
     /// Returns the value for `key` using binary search over symbol-sorted
@@ -273,10 +381,11 @@ impl FlatAttrs {
     /// `key` must come from the same symbol universe used to construct this
     /// attrset.
     pub fn get_entry(&self, key: Symbol) -> Option<&AttrEntry> {
-        self.entries
+        let entries = self.entries();
+        entries
             .binary_search_by_key(&key, |entry| entry.key)
             .ok()
-            .and_then(|slot| self.entries.get(slot))
+            .and_then(|slot| entries.get(slot))
     }
 
     /// Returns whether the attrset contains `key`.
@@ -294,7 +403,7 @@ impl FlatAttrs {
     /// entry without repeating the binary search. `key` must come from the
     /// same symbol universe used to construct this attrset.
     pub fn symbol_slot(&self, key: Symbol) -> Option<u32> {
-        self.entries
+        self.entries()
             .binary_search_by_key(&key, |entry| entry.key)
             .ok()
             .and_then(|slot| u32::try_from(slot).ok())
@@ -302,7 +411,7 @@ impl FlatAttrs {
 
     /// Returns entries in internal symbol-id order.
     pub fn entries_by_symbol(&self) -> &[AttrEntry] {
-        &self.entries
+        self.entries()
     }
 
     /// Returns a copy with one symbol-order slot's value replaced.
@@ -323,8 +432,12 @@ impl FlatAttrs {
         value: Value,
     ) -> Result<Self, AttrError> {
         let mut replaced = self.clone();
-        let len = replaced.entries.len();
-        let Some(entry) = replaced.entries.get_mut(slot) else {
+        let AttrsStorage::Owned { entries, .. } = &mut replaced.storage else {
+            // Clones always deep-copy into owned storage (see `Clone`).
+            unreachable!("cloned FlatAttrs storage is always owned");
+        };
+        let len = entries.len();
+        let Some(entry) = entries.get_mut(slot) else {
             return Err(AttrError::SlotOutOfBounds { slot, len });
         };
         if entry.key != key {
@@ -340,12 +453,22 @@ impl FlatAttrs {
 
     /// Returns the slot permutation for construction-order iteration.
     pub fn source_order(&self) -> &[u32] {
-        &self.source_order
+        match &self.storage {
+            AttrsStorage::Owned { source_order, .. } => source_order,
+            AttrsStorage::Flat { source_order, .. } => source_order.as_slice(),
+        }
     }
 
     /// Returns the slot permutation for raw-byte lexicographic iteration.
     pub fn iteration_order(&self) -> &[u32] {
-        &self.iteration_order
+        match &self.storage {
+            AttrsStorage::Owned {
+                iteration_order, ..
+            } => iteration_order,
+            AttrsStorage::Flat {
+                iteration_order, ..
+            } => iteration_order.as_slice(),
+        }
     }
 
     /// Returns representation-level flat-attrset equality.
@@ -372,7 +495,7 @@ impl FlatAttrs {
 
     /// Iterates entries in internal symbol-id order.
     pub fn iter_by_symbol(&self) -> std::slice::Iter<'_, AttrEntry> {
-        self.entries.iter()
+        self.entries().iter()
     }
 
     /// Iterates entries in the order supplied to [`FlatAttrs::new`].
@@ -403,9 +526,9 @@ impl<'a> Iterator for SourceOrderEntries<'a> {
     type Item = &'a AttrEntry;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let slot = *self.attrs.source_order.get(self.next)? as usize;
+        let slot = *self.attrs.source_order().get(self.next)? as usize;
         self.next += 1;
-        self.attrs.entries.get(slot)
+        self.attrs.entries().get(slot)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -427,9 +550,9 @@ impl<'a> Iterator for LexicographicEntries<'a> {
     type Item = &'a AttrEntry;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let slot = *self.attrs.iteration_order.get(self.next)? as usize;
+        let slot = *self.attrs.iteration_order().get(self.next)? as usize;
         self.next += 1;
-        self.attrs.entries.get(slot)
+        self.attrs.entries().get(slot)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
