@@ -1201,19 +1201,23 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   coverage-guided fuzzing, self-contained reproduction artifacts, and
   minimization, proves they all validate on the same temporal graph id, and
   rejects mismatched or forged operation evidence before graph admission.
-- [x] **T-ADV-17** Implement the `GuidanceSignal` abstraction with three built-in
+- [ ] **T-ADV-17** Implement the `GuidanceSignal` abstraction with three built-in
   signals (coverage = the existing `CoverageGuided` behavior; novelty/rarity over a
   deterministically-maintained rarity table; assertion-proximity from the 18
   distance metric) and fixed-point deterministic composition (content-address
   tie-break); prove the default (coverage only, no adaptivity) reproduces the
   existing §22.5.2 behavior and that signals are readers-only (no fingerprint
   effect). — satisfies [ADV-34], [ADV-35]; spec §22.5.4; cross-ref §22.6, 07 §2, 18.
-  Completed by `checks.crucible.phase6.guidanceSignals`: the model now exposes a
+  Partial evidence from `checks.crucible.phase6.guidanceSignals`: the model exposes a
   `GuidanceSignal` trait with coverage, novelty/rarity, and assertion-proximity
   built-ins, fixed-point integer `GuidanceScore`s, deterministic sorted
   `GuidanceSignalComposition`, a coverage-only ordering key wired into the
   existing `SearchStrategy::CoverageGuided` checkpoint coverage key, and tests
-  proving scoring is readers-only by leaving checkpoint identity unchanged.
+  showing that attaching coverage feedback leaves checkpoint identity unchanged.
+  Completion remains open on an owned, deterministically maintained rarity table;
+  deriving proximity from the assertion-distance metric; applying composite
+  scores and content-address tie-breaking to real search expansion; and proving
+  that the integrated readers-only path cannot affect fingerprints.
 - [ ] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
   (deterministic multi-armed bandit, default UCB) over a fixed ordered set of
   expansion arms with a deterministic reward model (new coverage, novelty gain,
@@ -1222,39 +1226,48 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   reproducible as a unit and that its config is hashed into the campaign identity
   while the reproduction artifact stays a bare (def, seed, schedule) bundle. —
   satisfies [ADV-36], [ADV-37], [ADV-38]; spec §22.5.4; cross-ref §22.5.3, §22.8.
-  Completed by `checks.crucible.phase6.adaptiveStrategies`: adaptive selection is
+  Partial evidence from `checks.crucible.phase6.adaptiveStrategies`: adaptive selection is
   represented by an off-by-default `AdaptiveStrategyConfig`, deterministic
-  integer reward scoring over a fixed ordered arm set, content-address-ordered
-  reward credits from the realized graph, graph-fingerprinted seeded exploration
-  bonuses, a breadth-first fairness floor, and a campaign identity hash covering
-  the signal/bandit configuration while leaving individual reproduction candidates
-  as ordinary `(def, schedule)` configurations.
+  integer reward scoring over a fixed ordered arm set, content-address sorting of
+  caller-supplied reward credits, graph-fingerprinted seeded exploration bonuses,
+  a breadth-first fairness floor, and a campaign identity hash covering the
+  signal/bandit configuration while leaving individual reproduction candidates as
+  ordinary `(def, schedule)` configurations. Completion remains open on the
+  required deterministic UCB default and integration with real campaign expansion,
+  realized-graph reward credit, reduction, reproduction, and fairness behavior.
 - [ ] **T-ADV-19** Add a determinism lint that bans `f64` on signal/bandit ordering
   paths (scores, weights, reward accumulation), enforcing fixed-point/integer
   arithmetic and fixed combination order. — satisfies [ADV-35]; spec §22.5.4;
   cross-ref [INV-9], `gate:harness-lint`.
-  Completed by `checks.crucible.phase6.guidanceDeterminismLint`: the guided
+  Partial evidence from `checks.crucible.phase6.guidanceDeterminismLint`: the guided
   exploration model exposes `lint_guidance_determinism_source`, and the gate proves
   `f64` score/reward source is rejected while fixed-point `u64` score source is
-  accepted.
+  accepted in synthetic inputs. Completion remains open on wiring a
+  comment/string-aware scan of the actual signal and bandit ordering sources into
+  `gate:harness-lint`, with mutation negatives that prove the real path is covered.
 - [ ] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
   interrupt-timing) within the bounded [deadline, horizon] window — working for
   single-vCPU guests — with partial-order reduction over commuting preemptions and
   each preemption-branch child a content-addressed, oracle-validated temporal-graph
   node. — satisfies [ADV-39]; spec §22.5.5; cross-ref 05 §3, 08, 07 §6/§9.
-  Completed by `checks.crucible.phase6.preemptionBranching`: `TemporalGraph`
+  Partial evidence from `checks.crucible.phase6.preemptionBranching`: `TemporalGraph`
   now branches a frontier over bounded `Decision::Preemption` vCPU-switch and
   interrupt-timing decisions, applies the existing frontier reduction policy,
   records content-addressed child configurations, and materializes explored
-  children through the replay-oracle-checked fat checkpoint path.
+  children through the replay-oracle-checked fat checkpoint path. Completion
+  remains open on exercising and proving partial-order reduction for commuting
+  preemptions; the current gate explicitly disables reduction.
 - [ ] **T-ADV-21** Implement optional, additive exploration of app-controlled
   randomness (`Decision::AppRandom`, 16/05) as a mutation/branch dimension over
   served values, bounded by the per-scenario draw cap and a per-draw seeded
   value-sampling budget, recording each alternative as a `Decision`; prove a
   scenario with no app-random draws explores identically to before. — satisfies
   [ADV-40]; spec §22.5.6; cross-ref 16, 05 §3.
-  Completed by `checks.crucible.phase6.appRandomBranching`: `TemporalGraph` now
-  branches over seeded `Decision::AppRandom` served values for observed draw
+  Partial evidence from `checks.crucible.phase6.appRandomBranching`: `TemporalGraph` now
+  branches over seeded `Decision::AppRandom` served values for caller-supplied draw
   sites, returns no children when a scenario has no app-random draw sites, preserves
   the existing graph in that no-draw case, and relies on `try_step`/`reduce` to
   enforce the per-scenario app-random draw cap for every sampled alternative.
+  Completion remains open on deriving sites from recorded observations rather
+  than caller-supplied data, validating a bounded per-draw sampling budget, and
+  proving no-draw equivalence through the integrated exploration driver.

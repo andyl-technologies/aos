@@ -1879,12 +1879,13 @@ in rec {
         phase6.gates.replayOracle
       ];
     };
-    preemptionBranching = greenBeforeAdvance {
+    preemptionBranching = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.preemptionBranching";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.preemptionBranching";
-        taskIds = ["T-ADV-20"];
+        taskIds = [];
+        openTaskIds = ["T-ADV-20"];
         gateName = "gate:preemption-branching";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -1897,13 +1898,19 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.searchReductions
       ];
+      phase = "phase6";
+      reason = "preemption branching does not exercise partial-order reduction over commuting preemptions";
+      taskIds = ["T-ADV-20"];
+      gateName = "gate:preemption-branching";
+      owner = "crucible";
     };
-    appRandomBranching = greenBeforeAdvance {
+    appRandomBranching = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.appRandomBranching";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.appRandomBranching";
-        taskIds = ["T-ADV-21"];
+        taskIds = [];
+        openTaskIds = ["T-ADV-21"];
         gateName = "gate:app-random-branching";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -1916,6 +1923,11 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.preemptionBranching
       ];
+      phase = "phase6";
+      reason = "app-random branching uses caller-supplied sites and an unbounded per-draw sample count";
+      taskIds = ["T-ADV-21"];
+      gateName = "gate:app-random-branching";
+      owner = "crucible";
     };
     basicBlockCoverage = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.basicBlockCoverage";
@@ -1973,12 +1985,13 @@ in rec {
         phase6.basicBlockCoverage
       ];
     };
-    guidanceSignals = greenBeforeAdvance {
+    guidanceSignals = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.guidanceSignals";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.guidanceSignals";
-        taskIds = ["T-ADV-17"];
+        taskIds = [];
+        openTaskIds = ["T-ADV-17"];
         gateName = "gate:guidance-signals";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -1993,13 +2006,19 @@ in rec {
         phase6.searchStrategies
         phase6.coverageFeedback
       ];
+      phase = "phase6";
+      reason = "guidance lacks owned rarity/proximity state and integrated deterministic search ordering";
+      taskIds = ["T-ADV-17"];
+      gateName = "gate:guidance-signals";
+      owner = "crucible";
     };
-    adaptiveStrategies = greenBeforeAdvance {
+    adaptiveStrategies = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.adaptiveStrategies";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.adaptiveStrategies";
-        taskIds = ["T-ADV-18"];
+        taskIds = [];
+        openTaskIds = ["T-ADV-18"];
         gateName = "gate:adaptive-strategies";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -2012,13 +2031,19 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.guidanceSignals
       ];
+      phase = "phase6";
+      reason = "adaptive selection is not deterministic UCB and is not integrated with campaign expansion and reward credit";
+      taskIds = ["T-ADV-18"];
+      gateName = "gate:adaptive-strategies";
+      owner = "crucible";
     };
-    guidanceDeterminismLint = greenBeforeAdvance {
+    guidanceDeterminismLint = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.guidanceDeterminismLint";
       gate = import ./phase6-guided-adaptive-exploration.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.guidanceDeterminismLint";
-        taskIds = ["T-ADV-19"];
+        taskIds = [];
+        openTaskIds = ["T-ADV-19"];
         gateName = "gate:guidance-determinism-lint";
         dependencies = [
           phase4.gates.replayOracle.rawGate
@@ -2031,6 +2056,11 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.adaptiveStrategies
       ];
+      phase = "phase6";
+      reason = "guidance determinism lint scans synthetic inputs rather than actual ordering sources";
+      taskIds = ["T-ADV-19"];
+      gateName = "gate:guidance-determinism-lint";
+      owner = "crucible";
     };
     coverageGuidedFuzzing = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.coverageGuidedFuzzing";
