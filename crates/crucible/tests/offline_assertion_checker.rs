@@ -405,7 +405,7 @@ fn offline_assertion_checker_rejects_invalid_recorded_log() {
 
 #[test]
 fn offline_assertion_checker_implementation_reads_log_without_guest_reexecution() {
-    let trigger = include_str!("../src/trigger.rs");
+    let trigger = include_str!("../src/trigger/assertions.rs");
     let checker_block = trigger
         .split("pub struct OfflineAssertionChecker")
         .nth(1)

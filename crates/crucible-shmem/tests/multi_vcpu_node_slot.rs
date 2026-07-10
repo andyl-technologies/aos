@@ -9,7 +9,13 @@ use crucible_shmem::{
     RegionLayout, STATUS_IDLE, authorize_advance_ceiling,
 };
 
-const SHMEM_SOURCE: &str = include_str!("../src/lib.rs");
+const SHMEM_SOURCE: &str = concat!(
+    include_str!("../src/lib.rs"),
+    include_str!("../src/shmem/region.rs"),
+    include_str!("../src/shmem/ring_coverage.rs"),
+    include_str!("../src/shmem/frame_node.rs"),
+    include_str!("../src/shmem/delivery_errors.rs"),
+);
 const GENERATED_HEADER: &str = include_str!("../include/crucible_shmem_abi.h");
 
 #[test]

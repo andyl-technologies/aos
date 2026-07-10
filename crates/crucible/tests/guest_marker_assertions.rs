@@ -675,7 +675,11 @@ fn guest_marker_assertions_ignore_disabled_white_box_nodes() {
 
 #[test]
 fn guest_marker_assertion_implementation_is_observational_and_deterministic() {
-    let trigger = include_str!("../src/trigger.rs");
+    let trigger = concat!(
+        include_str!("../src/trigger/conditions.rs"),
+        include_str!("../src/trigger/assertions.rs"),
+        include_str!("../src/trigger/evaluation.rs"),
+    );
     let marker_block = trigger
         .split("pub enum GuestAssertionKind")
         .nth(1)

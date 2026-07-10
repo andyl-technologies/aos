@@ -445,7 +445,14 @@ fn online_and_offline_fold_report_never_evaluated_identically() {
 
 #[test]
 fn assertion_log_fold_implementation_exposes_distinct_never_taxonomy() {
-    let trigger = include_str!("../src/trigger.rs");
+    let trigger = concat!(
+        include_str!("../src/trigger/assertions.rs"),
+        include_str!("../src/trigger/conditions.rs"),
+        include_str!("../src/trigger/evaluation.rs"),
+        include_str!("../src/trigger/event_graph.rs"),
+        include_str!("../src/trigger/evidence.rs"),
+        include_str!("../src/trigger/observability.rs"),
+    );
 
     for required in [
         "HostAssertionOutcomeKind::NeverEvaluated",
