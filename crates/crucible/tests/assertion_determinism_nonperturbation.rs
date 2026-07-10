@@ -301,7 +301,10 @@ fn host_assertion_harness_lint_accepts_observed_state_only_predicates() {
 
 #[test]
 fn assertion_evaluator_rejects_banned_nondeterminism_and_live_state_access() {
-    let trigger = include_str!("../src/trigger.rs");
+    let trigger = concat!(
+        include_str!("../src/trigger/assertions.rs"),
+        include_str!("../src/trigger/evaluation.rs"),
+    );
     let assertion_engine_block = trigger
         .split("pub struct OfflineAssertionChecker")
         .nth(1)
