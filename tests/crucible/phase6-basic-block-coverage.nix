@@ -19,7 +19,10 @@
   libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
   basicBlockGateTest = builtins.readFile ../../crates/crucible/tests/gate_basic_block_coverage.rs;
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  pluginCoverage = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs;
+  pluginCoverage = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs)
+  ];
   qemuCoverage = builtins.readFile ../../crates/crucible-qemu/src/coverage.rs;
   qemuLiveCoverageGate = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate.rs;
   qemuLiveCoverageTrace = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate/trace.rs;
