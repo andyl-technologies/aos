@@ -1,3 +1,7 @@
+//! Transport-neutral control-client contract tests.
+
+use super::*;
+
 #[tokio::test(flavor = "current_thread")]
 async fn control_client_trait_is_transport_agnostic_over_in_process_and_rpc() {
     let (in_process, _actor) = in_process_client_fixture();

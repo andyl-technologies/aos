@@ -382,7 +382,7 @@ fn scenario_form_white_box_policies(
 ) -> BTreeMap<NodeId, WhiteBoxPolicy> {
     scenario_form
         .world()
-        .nodes()
+        .vm_nodes()
         .iter()
         .map(|node| (node.id.clone(), node.white_box))
         .collect()
