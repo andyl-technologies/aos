@@ -7,7 +7,7 @@ use crucible::{
 use crucible_protocol::PluginBasicBlockCoverageObservation;
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
-    STATUS_DONE,
+    RegionControlError, STATUS_DONE,
 };
 use thiserror::Error;
 
@@ -32,6 +32,24 @@ pub struct QemuMappedQuantumShmemHotPath {
 }
 
 impl QemuMappedQuantumShmemHotPath {
+    /// Publishes the shared shutdown flag and wakes this VM slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the configured slot
+    /// is absent or its non-private futex wake fails.
+    pub fn request_plugin_shutdown(&self) -> Result<(), QemuMappedQuantumShmemHotPathError> {
+        let slot = self
+            .region
+            .node_slot(self.config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
+        self.region
+            .header()
+            .request_shutdown([slot])
+            .map(|_wake| ())
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionControl { source })
+    }
+
     /// Returns whether the plugin published terminal `Done` for this VM slot.
     ///
     /// # Errors
@@ -355,6 +373,12 @@ pub enum QemuMappedQuantumShmemHotPathError {
     RegionAccess {
         /// Underlying mapped-region access error.
         source: MappedSetupRegionAccessError,
+    },
+    /// Publishing a mapped shared-memory control action failed.
+    #[error("mapped QEMU quantum shared-memory control failed")]
+    RegionControl {
+        /// Underlying shared-memory control wake error.
+        source: RegionControlError,
     },
     /// The borrowed quantum adapter rejected the selected view.
     #[error("mapped QEMU quantum hot-path binding failed")]

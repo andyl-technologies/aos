@@ -23,6 +23,12 @@
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs)
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs)
   ];
+  pluginRuntimeTeardown = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/tests.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs)
+  ];
   qemuCoverage = builtins.readFile ../../crates/crucible-qemu/src/coverage.rs;
   qemuLiveCoverageGate = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate.rs;
   qemuLiveCoverageTrace = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate/trace.rs;
@@ -303,6 +309,20 @@
         needle = "consume_tcg_exec_block(crucible::TcgExecBasicBlock::new";
       }
     ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime teardown" pluginRuntimeTeardown [
+      {
+        label = "busy exact-ceiling shared shutdown callback";
+        needle = "busy_at_ceiling_publish_callback_signals_shared_shutdown_without_publication";
+      }
+      {
+        label = "shared shutdown worker callback drain";
+        needle = "shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_drain";
+      }
+      {
+        label = "Quit/shared teardown race single-shot proof";
+        needle = "concurrent_quit_and_shared_shutdown_select_one_teardown_after_inflight_drain";
+      }
+    ]
     ++ failuresFor "crates/crucible-qemu/src/coverage.rs" qemuCoverage [
       {
         label = "QEMU bridge type";
@@ -414,6 +434,18 @@
         label = "exact instruction-count boundary";
         needle = "completed_icount != config.horizon_icount";
       }
+      {
+        label = "busy-boundary mapped shared shutdown trigger";
+        needle = ".request_plugin_shutdown()";
+      }
+      {
+        label = "busy-boundary QEMU wake";
+        needle = ".signal_plugin_wake()";
+      }
+      {
+        label = "coverage-off shared and coverage-on Quit trigger split";
+        needle = "QemuLaunchPluginSwitch::Off => LoadedTeardownTrigger::SharedShutdown";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/src/live_coverage_gate/trace.rs" qemuLiveCoverageTrace [
       {
@@ -471,6 +503,10 @@
       {
         label = "plugin Quit consumption evidence";
         needle = ''"plugin_quit_consumed={}", report.plugin_quit_consumed'';
+      }
+      {
+        label = "shared shutdown consumption evidence";
+        needle = ''"shared_shutdown_consumed={}",'';
       }
       {
         label = "natural orderly child exit evidence";
@@ -819,6 +855,14 @@ in
             cargo test \
               --frozen \
               --offline \
+              --target-dir "$TMPDIR/crucible-basic-block-coverage-plugin-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              runtime:: \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
               --target-dir "$TMPDIR/crucible-basic-block-coverage-qemu-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
@@ -904,6 +948,8 @@ in
               "$TMPDIR/loaded-qemu-coverage.result"
             grep -q '^plugin_quit_consumed=true$' \
               "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^shared_shutdown_consumed=true$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
             grep -q '^orderly_child_exit=true$' \
               "$TMPDIR/loaded-qemu-coverage.result"
             grep -q '^trace_components=instruction-stream,all-vcpu-registers,rr-cursor,ram,device-io$' \
@@ -944,6 +990,7 @@ in
             registration=opt-in
             fingerprint_effect=none
             canonical_event_log_effect=none
+            teardown_proof=coverage-off-shared-shutdown-busy-boundary,coverage-on-control-quit
             rust_test=crucible::gate_basic_block_coverage
             qemu_bridge_test=crucible-qemu::gate_basic_block_coverage
             RESULT

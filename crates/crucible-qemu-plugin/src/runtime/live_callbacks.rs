@@ -10,7 +10,7 @@ use std::os::raw::{c_uint, c_void};
 use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex, TryLockError, mpsc};
 
 use crucible_shmem::{
     DirectedRing, FrameEntry, FutexWaitOutcome, MappedDirectedRingMut,
@@ -23,22 +23,22 @@ use crate::{
     ExactDeadlineError, ExactDeadlineReader, IdleHotLoopError, IdleParkRequest, InboundFrameError,
     InboundFrameRing, NetworkRxError, NetworkTxError, NetworkTxRing, PendingIdleAdvance,
     PluginArgs, PluginInboundFrames, PluginNetworkRx, PluginNetworkTx, PluginShmemOrdering,
-    QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
-    QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL, QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL, QemuAdvanceTimeNsFn, QemuClockDeadlineFn,
-    QemuIcountRawFn, QemuLosslessNetworkRxQueue, QemuPluginExecutionModel, QemuPluginId,
-    QemuPluginNetFlushFn, QemuPluginNetSendFn, QemuRegisterBlkCbFn, QemuRegisterNetTxCbFn,
-    QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn,
-    QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn, QueuedIdleAdvance,
-    QueuedIdleAdvanceError, SchedulerCeiling, TimeAdvanceCompletion, compute_idle_wake_plan,
-    handle_network_rx_idle_callback,
+    PluginShutdownRequested, QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL,
+    QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL, QEMU_PLUGIN_REGISTER_NET_TX_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL, QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
+    QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QemuIcountRawFn, QemuLosslessNetworkRxQueue,
+    QemuPluginExecutionModel, QemuPluginId, QemuPluginNetFlushFn, QemuPluginNetSendFn,
+    QemuRegisterBlkCbFn, QemuRegisterNetTxCbFn, QemuRegisterNinePCbFn,
+    QemuRegisterSimShmemDispatchCbFn, QemuRegisterTimeAdvanceCbFn, QemuRegisterVcpuIdleResumeCbFn,
+    QemuRegisterVcpuInitCbFn, QueuedIdleAdvance, QueuedIdleAdvanceError, SchedulerCeiling,
+    TimeAdvanceCompletion, compute_idle_wake_plan, handle_network_rx_idle_callback,
 };
 
 use super::{
-    OwnedCallbackRegistrar, OwnedCallbackRegistrationError, OwnedCallbackRegistrationMask,
-    OwnedCallbackRuntimeState,
+    LiveRuntimeTeardownTrigger, OwnedCallbackRegistrar, OwnedCallbackRegistrationError,
+    OwnedCallbackRegistrationMask, OwnedCallbackRuntimeState,
     callback_quiescence::{LiveCallbackInFlight, LiveCallbackQuiescence},
 };
 
@@ -417,6 +417,8 @@ impl LiveNetworkCallbackState {
 /// rejects callback re-entry before a mutable ring or freeze-state borrow forms.
 pub(crate) struct LiveVcpuTimeCallbackState {
     quiescence: Arc<LiveCallbackQuiescence>,
+    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    shared_shutdown_signaled: AtomicBool,
     plugin_id: QemuPluginId,
     icount_raw: QemuIcountRawFn,
     vcpu_count: u32,
@@ -459,6 +461,7 @@ impl LiveVcpuTimeCallbackState {
         header: &RegionHeader,
         slot: &NodeSlot,
         quiescence: Arc<LiveCallbackQuiescence>,
+        teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     ) -> Result<Self, LiveVcpuTimeCallbackError> {
         if 1_u64.checked_shl(u32::from(icount_shift)).is_none() {
             return Err(LiveVcpuTimeCallbackError::IcountShiftOutOfRange {
@@ -485,6 +488,8 @@ impl LiveVcpuTimeCallbackState {
             .into_boxed_slice();
         Ok(Self {
             quiescence,
+            teardown_sender,
+            shared_shutdown_signaled: AtomicBool::new(false),
             plugin_id,
             icount_raw,
             vcpu_count,
@@ -504,7 +509,34 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn callback_guard(&self) -> Option<LiveCallbackInFlight> {
-        self.quiescence.enter()
+        let in_flight = self.quiescence.enter()?;
+        if PluginShmemOrdering::observe_shutdown_requested(self.header.get()) {
+            if let Err(error) = self.signal_shared_shutdown() {
+                abort_live_callback(error);
+            }
+            return None;
+        }
+        Some(in_flight)
+    }
+
+    /// Delivers the first shared shutdown proof without waiting on capacity.
+    ///
+    /// The standard channel is unbounded, so `send` never waits for a receiver
+    /// to drain capacity. A disconnected worker is returned as a fatal callback
+    /// error rather than allowing QEMU to continue after shutdown was observed.
+    fn signal_shared_shutdown(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        let proof = PluginShutdownRequested::from_region_header(self.header.get())
+            .map_err(|_error| LiveVcpuTimeCallbackError::SharedShutdownProofUnavailable)?;
+        if self
+            .shared_shutdown_signaled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        self.teardown_sender
+            .send(LiveRuntimeTeardownTrigger::SharedShutdown(proof))
+            .map_err(|_error| LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
     }
 
     pub(super) fn attach_network(
@@ -631,7 +663,7 @@ impl LiveVcpuTimeCallbackState {
             if PluginShmemOrdering::observe_control_action(self.header.get())
                 == RegionControlAction::Shutdown
             {
-                PluginShmemOrdering::mark_done_after_shutdown(self.slot.get());
+                self.signal_shared_shutdown()?;
                 return Ok(None);
             }
             let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
@@ -688,7 +720,7 @@ impl LiveVcpuTimeCallbackState {
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         self.require_initialized_vcpu(vcpu_index)?;
         if PluginShmemOrdering::observe_shutdown_requested(self.header.get()) {
-            PluginShmemOrdering::mark_done_after_shutdown(self.slot.get());
+            self.signal_shared_shutdown()?;
             return Ok(());
         }
         let pending_idle_advance = self.try_pending_idle_advance()?;
@@ -702,6 +734,9 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn publish_current_icount(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
+        if PluginShmemOrdering::observe_shutdown_requested(self.header.get()) {
+            return self.signal_shared_shutdown();
+        }
         let pending_idle_advance = self.try_pending_idle_advance()?;
         if let Some(pending) = pending_idle_advance.as_ref() {
             if raw_icount == pending.raw_icount_at_request {
@@ -1279,6 +1314,12 @@ pub enum LiveVcpuTimeCallbackError {
     /// QEMU invoked the global vCPU-init adapter before state publication.
     #[error("live production callback state is unavailable")]
     CallbackStateUnavailable,
+    /// The callback observed a shutdown action without a matching acquire proof.
+    #[error("shared shutdown action could not be proven from the region header")]
+    SharedShutdownProofUnavailable,
+    /// The sole teardown worker disconnected after shared shutdown was observed.
+    #[error("shared shutdown could not reach the production teardown worker")]
+    TeardownWorkerUnavailable,
     /// QEMU rejected installation of the normal-main-loop completion callback.
     #[error("QEMU rejected time-advance completion registration with status {status}")]
     TimeAdvanceCompletionRegistrationRejected {

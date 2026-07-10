@@ -15,6 +15,14 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginTeardown = builtins.readFile ../../crates/crucible-qemu-plugin/src/teardown.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+  pluginRuntime = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/tests.rs)
+  ];
+  pluginLiveCallbacks = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs)
+  ];
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   shmemRegion = builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
   shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
@@ -234,6 +242,58 @@
         needle = "IdleWaitOutcome::ShutdownRequested";
       }
     ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
+      {
+        label = "unified production teardown trigger channel";
+        needle = "pub(super) enum LiveRuntimeTeardownTrigger";
+      }
+      {
+        label = "sole teardown worker";
+        needle = "fn run_teardown_worker(";
+      }
+      {
+        label = "lifecycle reader split from teardown";
+        needle = "fn run_control_reader(";
+      }
+      {
+        label = "callback admission closure before drain";
+        needle = "self.quiescence.close();";
+      }
+      {
+        label = "callback drain before Done";
+        needle = "self.quiescence.wait_until_drained();";
+      }
+      {
+        label = "shared shutdown worker drain proof";
+        needle = "shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_drain";
+      }
+      {
+        label = "Quit/shared race single-shot proof";
+        needle = "concurrent_quit_and_shared_shutdown_select_one_teardown_after_inflight_drain";
+      }
+      {
+        label = "worker panic fail-loud boundary";
+        needle = "run_runtime_thread_fail_loud";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
+      {
+        label = "one-shot shared shutdown callback signal";
+        needle = "shared_shutdown_signaled";
+      }
+      {
+        label = "shared shutdown callback bridge";
+        needle = "signal_shared_shutdown";
+      }
+      {
+        label = "busy exact-ceiling shutdown observation proof";
+        needle = "busy_at_ceiling_publish_callback_signals_shared_shutdown_without_publication";
+      }
+      {
+        label = "disconnected teardown worker fails loud";
+        needle = "shared_shutdown_signal_is_fail_loud_when_teardown_worker_disconnected";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase2 exposes plugin teardown check";
@@ -294,6 +354,14 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
               teardown \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-plugin-teardown-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu-plugin \
+              runtime:: \
               -- --test-threads=1
           '';
         }

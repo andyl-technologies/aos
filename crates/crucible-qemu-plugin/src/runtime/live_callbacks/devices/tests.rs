@@ -128,6 +128,8 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
     let mut storage = DeviceRingStorage::new();
     let block = storage.block_pair();
     let ninep = storage.ninep_pair();
+    let (teardown_sender, teardown_receiver) = std::sync::mpsc::channel();
+    std::mem::forget(teardown_receiver);
     let state = LiveVcpuTimeCallbackState::new(
         61,
         test_icount_raw,
@@ -139,6 +141,7 @@ fn live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation() {
         &header,
         &slot,
         Arc::new(LiveCallbackQuiescence::new()),
+        teardown_sender,
     )
     .and_then(|state| state.attach_devices(0, block, ninep))
     .unwrap_or_else(|error| panic!("test live state should attach devices: {error}"));

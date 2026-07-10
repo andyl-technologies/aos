@@ -37,6 +37,19 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(unix)]
 #[test]
+fn mapped_quantum_can_publish_shared_shutdown_without_marking_plugin_done()
+-> Result<(), Box<dyn Error>> {
+    let region = mapped_region(6, None, &[])?;
+    let hot_path = QemuMappedQuantumShmemHotPath::new(qemu_config(), region, AllowAllSends)?;
+
+    hot_path.request_plugin_shutdown()?;
+
+    assert!(!hot_path.plugin_teardown_done()?);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn mapped_quantum_split_completion_keeps_full_operation_log() -> Result<(), Box<dyn Error>> {
     let region = mapped_region(6, None, &[])?;
     let config = qemu_config();

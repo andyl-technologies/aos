@@ -26,8 +26,8 @@ use std::net::Shutdown;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, mpsc};
 
 use thiserror::Error;
 
@@ -47,8 +47,19 @@ use crate::{
     QemuClockDeadlineFn, QemuPluginId, QemuRegisterWakeFdFn, QemuRequestShutdownFn,
     QemuRequestTimeControlFn, send_callback_registration_failure_ack,
 };
+use crate::{PluginHostQuit, PluginShutdownRequested};
 #[cfg(unix)]
-use crate::{PluginHostQuit, PluginQemuShutdownError, PluginTeardown};
+use crate::{PluginQemuShutdownError, PluginTeardown};
+
+/// One production teardown proof delivered to the sole teardown worker.
+pub(super) enum LiveRuntimeTeardownTrigger {
+    /// The lifecycle reader consumed host `Quit` during RUN.
+    HostQuit(PluginHostQuit),
+    /// A live callback acquire-observed the shared shutdown flag.
+    SharedShutdown(PluginShutdownRequested),
+    /// RUN control was malformed, unsolicited, closed, or otherwise unreadable.
+    RunControlFault { diagnostic: String },
+}
 
 /// Callback families that must be live before the plugin can acknowledge setup.
 pub const REQUIRED_OWNED_CALLBACK_FAMILIES: &str = "vCPU init/resume/idle, network TX/RX, block submit/poll, 9p burst/submit/poll, and optional white-box doorbell";
@@ -163,6 +174,7 @@ impl OwnedCallbackRegistrationMask {
 /// proof is live, so moving the proof never moves callback-addressable state.
 pub(crate) struct OwnedCallbackRuntimeState {
     quiescence: Arc<LiveCallbackQuiescence>,
+    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     live_vcpu_time: Option<Pin<Box<live_callbacks::LiveVcpuTimeCallbackState>>>,
     setup: PluginSetupCompletion,
     coverage: Option<LiveBasicBlockCoverage>,
@@ -170,9 +182,13 @@ pub(crate) struct OwnedCallbackRuntimeState {
 }
 
 impl OwnedCallbackRuntimeState {
-    fn pin(setup: PluginSetupCompletion) -> Pin<Box<Self>> {
+    fn pin(
+        setup: PluginSetupCompletion,
+        teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+    ) -> Pin<Box<Self>> {
         Box::pin(Self {
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
+            teardown_sender,
             live_vcpu_time: None,
             setup,
             coverage: None,
@@ -251,6 +267,7 @@ impl OwnedCallbackRuntimeState {
             header,
             mapped.node_slot,
             Arc::clone(&state.quiescence),
+            state.teardown_sender.clone(),
         )?
         .attach_network(slot_index, mapped.first, mapped.second, network_rx)?;
         let block_slot = crucible_shmem::SLOT_BLK_IO as u32;
@@ -323,6 +340,8 @@ impl OwnedCallbackRuntimeState {
 pub struct RequiredOwnedCallbacksRegistered {
     state: Pin<Box<OwnedCallbackRuntimeState>>,
     registration_mask: OwnedCallbackRegistrationMask,
+    #[cfg(test)]
+    _teardown_receiver: Option<mpsc::Receiver<LiveRuntimeTeardownTrigger>>,
 }
 
 impl std::fmt::Debug for RequiredOwnedCallbacksRegistered {
@@ -342,6 +361,8 @@ impl RequiredOwnedCallbacksRegistered {
         Self {
             state,
             registration_mask,
+            #[cfg(test)]
+            _teardown_receiver: None,
         }
     }
 
@@ -415,7 +436,11 @@ impl RequiredOwnedCallbacksRegistered {
     #[cfg(test)]
     pub(crate) fn for_test(args: &PluginArgs, setup: PluginSetupCompletion) -> Self {
         let mask = OwnedCallbackRegistrationMask::required_for(args);
-        Self::from_registered(OwnedCallbackRuntimeState::pin(setup), mask)
+        let (teardown_sender, teardown_receiver) = mpsc::channel();
+        let mut registered =
+            Self::from_registered(OwnedCallbackRuntimeState::pin(setup, teardown_sender), mask);
+        registered._teardown_receiver = Some(teardown_receiver);
+        registered
     }
 
     #[cfg(test)]
@@ -510,32 +535,92 @@ impl LiveControlTeardownHandle {
 }
 
 #[cfg(unix)]
-fn run_control_worker(
+fn read_run_control_trigger(
     mut control: ControlLifecycleStream<UnixStream>,
+) -> LiveRuntimeTeardownTrigger {
+    match PluginHostQuit::read_from_run_control(&mut control) {
+        Ok(host_quit) => LiveRuntimeTeardownTrigger::HostQuit(host_quit),
+        Err(error) => LiveRuntimeTeardownTrigger::RunControlFault {
+            diagnostic: error.to_string(),
+        },
+    }
+}
+
+#[cfg(unix)]
+fn run_control_reader(
+    control: ControlLifecycleStream<UnixStream>,
+    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+) {
+    let trigger = read_run_control_trigger(control);
+    // A send failure means the sole teardown worker already selected another
+    // concurrently delivered proof and returned. No second shutdown may run.
+    let _selected_elsewhere = teardown_sender.send(trigger);
+}
+
+#[cfg(unix)]
+fn run_teardown_worker(
+    teardown_receiver: mpsc::Receiver<LiveRuntimeTeardownTrigger>,
     teardown_handle: LiveControlTeardownHandle,
     request_shutdown: QemuRequestShutdownFn,
 ) {
-    let host_quit = PluginHostQuit::read_from_run_control(&mut control);
+    let trigger = match teardown_receiver.recv() {
+        Ok(trigger) => trigger,
+        Err(error) => {
+            emit_control_worker_diagnostic(&format!(
+                "all teardown signalers disconnected before selecting a trigger: {error}"
+            ));
+            std::process::abort();
+        }
+    };
+    complete_live_teardown(trigger, teardown_handle, request_shutdown);
+}
+
+#[cfg(unix)]
+fn complete_live_teardown(
+    trigger: LiveRuntimeTeardownTrigger,
+    teardown_handle: LiveControlTeardownHandle,
+    request_shutdown: QemuRequestShutdownFn,
+) {
     let slot = teardown_handle.quiesce();
     let mut teardown = PluginTeardown::new();
-    let failure = host_quit.is_err();
-    if let Err(error) = host_quit.as_ref() {
+    let failure = matches!(trigger, LiveRuntimeTeardownTrigger::RunControlFault { .. });
+    if let LiveRuntimeTeardownTrigger::RunControlFault { diagnostic } = &trigger {
         emit_control_worker_diagnostic(&format!(
-            "rejected run control and selected fail-loud shutdown: {error}"
+            "rejected run control and selected fail-loud shutdown: {diagnostic}"
         ));
     }
     let mut shutdown = LiveQemuShutdown {
         request_shutdown,
         failure,
     };
-    let result = match host_quit {
-        Ok(host_quit) => teardown.teardown_after_host_quit(host_quit, slot, &mut shutdown),
-        Err(_error) => teardown.teardown_after_run_control_fault(slot, &mut shutdown),
+    let result = match trigger {
+        LiveRuntimeTeardownTrigger::HostQuit(host_quit) => {
+            teardown.teardown_after_host_quit(host_quit, slot, &mut shutdown)
+        }
+        LiveRuntimeTeardownTrigger::SharedShutdown(shutdown_requested) => {
+            teardown.teardown_after_shutdown_requested(shutdown_requested, slot, &mut shutdown)
+        }
+        LiveRuntimeTeardownTrigger::RunControlFault { .. } => {
+            teardown.teardown_after_run_control_fault(slot, &mut shutdown)
+        }
     };
     if let Err(error) = result {
         emit_control_worker_diagnostic(&format!("control teardown failed: {error}"));
         std::process::abort();
     }
+}
+
+#[cfg(all(unix, test))]
+fn run_control_worker(
+    control: ControlLifecycleStream<UnixStream>,
+    teardown_handle: LiveControlTeardownHandle,
+    request_shutdown: QemuRequestShutdownFn,
+) {
+    complete_live_teardown(
+        read_run_control_trigger(control),
+        teardown_handle,
+        request_shutdown,
+    );
 }
 
 #[cfg(unix)]
@@ -557,6 +642,17 @@ fn emit_control_worker_diagnostic(message: &str) {
     use std::io::Write as _;
 
     let _write_result = writeln!(std::io::stderr().lock(), "crucible-qemu-plugin: {message}");
+}
+
+#[cfg(all(unix, not(test)))]
+fn run_runtime_thread_fail_loud<F>(role: &'static str, task: F)
+where
+    F: FnOnce(),
+{
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)).is_err() {
+        emit_control_worker_diagnostic(&format!("{role} panicked; aborting QEMU process"));
+        std::process::abort();
+    }
 }
 
 /// QEMU functions needed by the live registration sequence.
@@ -792,18 +888,23 @@ impl OwnedCallbackRegistrar for FailClosedOwnedCallbackRegistrar {
 /// Process-lifetime state retained after a successful plugin installation.
 ///
 /// Production publication deliberately forgets this owner, so its mapping and
-/// callback allocations remain valid whether the control worker is blocked,
-/// running teardown, or has already returned after requesting QEMU shutdown.
-/// Non-published owners shut down and join the worker in [`Drop`] before Rust
-/// may release any mapped callback state.
+/// callback allocations remain valid whether the lifecycle reader is blocked,
+/// the teardown worker is draining callbacks, or both have returned after
+/// requesting QEMU shutdown. Non-published owners interrupt and join the reader,
+/// then signal and join the teardown worker in [`Drop`] before Rust may release
+/// any mapped callback state.
 pub struct PluginRuntimeOwner {
     plugin_id: QemuPluginId,
     args: PluginArgs,
     state: PluginStatePartition,
     control_interrupt: UnixStream,
+    teardown_interrupt: mpsc::Sender<LiveRuntimeTeardownTrigger>,
     #[cfg(test)]
     _retained_control: Option<ControlLifecycleStream<UnixStream>>,
-    control_worker: Option<std::thread::JoinHandle<()>>,
+    #[cfg(test)]
+    _retained_teardown_receiver: Option<mpsc::Receiver<LiveRuntimeTeardownTrigger>>,
+    control_reader: Option<std::thread::JoinHandle<()>>,
+    teardown_worker: Option<std::thread::JoinHandle<()>>,
     _time_control: PluginTimeControlOwnership,
     _callbacks: RequiredOwnedCallbacksRegistered,
     _boot_release: BootBarrierRelease,
@@ -813,7 +914,17 @@ pub struct PluginRuntimeOwner {
 impl Drop for PluginRuntimeOwner {
     fn drop(&mut self) {
         let _shutdown = self.control_interrupt.shutdown(Shutdown::Both);
-        if let Some(worker) = self.control_worker.take() {
+        if let Some(reader) = self.control_reader.take() {
+            let _joined = reader.join();
+        }
+        let _interrupted =
+            self.teardown_interrupt
+                .send(LiveRuntimeTeardownTrigger::RunControlFault {
+                    diagnostic: String::from(
+                        "runtime owner dropped before process-lifetime shutdown",
+                    ),
+                });
+        if let Some(worker) = self.teardown_worker.take() {
             let _joined = worker.join();
         }
     }
@@ -998,7 +1109,8 @@ where
             .map_err(registration_error)?
     };
 
-    let callback_state = OwnedCallbackRuntimeState::pin(setup);
+    let (teardown_sender, teardown_receiver) = mpsc::channel();
+    let callback_state = OwnedCallbackRuntimeState::pin(setup, teardown_sender.clone());
     let mut post_registration_stage = PostRegistrationStage::RegisterCallbacks;
     let mut acknowledgement_state = PostRegistrationAckState::Pending;
     let post_registration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1108,34 +1220,57 @@ where
                 fatal_policy.terminate(PluginRuntimeInstallError::ControlLifecycle { source });
             }
             #[cfg(not(test))]
-            let control_worker = {
+            let (control_reader, teardown_worker) = {
                 let teardown_handle =
                     match callbacks_registered.control_teardown_handle(args.slot()) {
                         Ok(handle) => handle,
                         Err(error) => fatal_policy.terminate(error),
                     };
                 let request_shutdown = capabilities.request_shutdown;
-                let control_worker = match std::thread::Builder::new()
-                    .name(String::from("crucible-run-control"))
+                let teardown_worker = match std::thread::Builder::new()
+                    .name(String::from("crucible-teardown"))
                     .spawn(move || {
-                        run_control_worker(control_stream, teardown_handle, request_shutdown);
+                        run_runtime_thread_fail_loud("teardown worker", || {
+                            run_teardown_worker(
+                                teardown_receiver,
+                                teardown_handle,
+                                request_shutdown,
+                            );
+                        });
                     }) {
                     Ok(worker) => worker,
                     Err(source) => fatal_policy
+                        .terminate(PluginRuntimeInstallError::TeardownWorkerSpawn { source }),
+                };
+                let reader_sender = teardown_sender.clone();
+                let control_reader = match std::thread::Builder::new()
+                    .name(String::from("crucible-run-control"))
+                    .spawn(move || {
+                        run_runtime_thread_fail_loud("RUN control reader", || {
+                            run_control_reader(control_stream, reader_sender);
+                        });
+                    }) {
+                    Ok(reader) => reader,
+                    Err(source) => fatal_policy
                         .terminate(PluginRuntimeInstallError::ControlWorkerSpawn { source }),
                 };
-                Some(control_worker)
+                (Some(control_reader), Some(teardown_worker))
             };
             #[cfg(test)]
-            let (retained_control, control_worker) = (Some(control_stream), None);
+            let (retained_control, control_reader, teardown_worker) =
+                (Some(control_stream), None, None);
             Ok(PluginRuntimeOwner {
                 plugin_id,
                 args,
                 state,
                 control_interrupt,
+                teardown_interrupt: teardown_sender,
                 #[cfg(test)]
                 _retained_control: retained_control,
-                control_worker,
+                #[cfg(test)]
+                _retained_teardown_receiver: Some(teardown_receiver),
+                control_reader,
+                teardown_worker,
                 _time_control: time_control,
                 _callbacks: callbacks_registered,
                 _boot_release: boot_release,
@@ -1338,6 +1473,12 @@ pub enum PluginRuntimeInstallError {
     /// The lifecycle control worker thread could not be started.
     #[error("spawning plugin run-control worker failed: {source}")]
     ControlWorkerSpawn {
+        /// Underlying host thread-creation error.
+        source: std::io::Error,
+    },
+    /// The sole teardown worker thread could not be started.
+    #[error("spawning plugin teardown worker failed: {source}")]
+    TeardownWorkerSpawn {
         /// Underlying host thread-creation error.
         source: std::io::Error,
     },
