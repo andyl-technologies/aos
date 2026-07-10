@@ -9,8 +9,9 @@
 //! shadow slots or use QMP/plugin IPC for per-quantum progress.
 
 use crucible::{
-    AdvanceOutcome, BackendInput, ContentHash, ExecutionFingerprint, ExecutionHorizon, Icount,
-    NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorizer, SchedulingNodeKind,
+    AdvanceOutcome, BackendInput, BasicBlockCoverageConfig, ContentHash, ExecutionFingerprint,
+    ExecutionHorizon, Icount, NodeId, SchedulerError, SchedulerNodeId, SchedulerSendAuthorizer,
+    SchedulingNodeKind,
 };
 use crucible_shmem::{
     AdvanceCeiling, FrameDeliveryKey, FrameEntry, FrameEntryError, LookaheadGateError, NodeSlot,
@@ -40,6 +41,8 @@ pub struct QemuQuantumShmemConfig {
     pub router_slot: u32,
     /// Fixed icount shift used for virtual-time publication.
     pub shift_bits: u8,
+    /// Observation-only basic-block coverage policy for the host drain.
+    pub coverage: BasicBlockCoverageConfig,
 }
 
 impl QemuQuantumShmemConfig {
@@ -54,6 +57,7 @@ impl QemuQuantumShmemConfig {
             vm_slot,
             router_slot: DEFAULT_ROUTER_SLOT,
             shift_bits: 0,
+            coverage: BasicBlockCoverageConfig::off(),
         }
     }
 
@@ -69,6 +73,13 @@ impl QemuQuantumShmemConfig {
     #[must_use]
     pub const fn with_shift_bits(mut self, shift_bits: u8) -> Self {
         self.shift_bits = shift_bits;
+        self
+    }
+
+    /// Returns this configuration with a registration-time coverage policy.
+    #[must_use]
+    pub const fn with_coverage(mut self, coverage: BasicBlockCoverageConfig) -> Self {
+        self.coverage = coverage;
         self
     }
 }

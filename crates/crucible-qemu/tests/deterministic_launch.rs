@@ -105,7 +105,7 @@ fn default_launch_profile_pins_contract_a_arguments() {
     );
     assert!(
         args.windows(2)
-            .any(|window| window == ["-accel", "tcg,thread=single"])
+            .any(|window| window == ["-accel", "sim,thread=single"])
     );
     assert!(
         args.windows(2)
@@ -150,7 +150,7 @@ fn pre_spawn_launch_validation_accepts_canonical_arguments() {
     let validation = validate_pre_spawn_qemu_launch_args(&args)
         .unwrap_or_else(|error| panic!("canonical launch args should validate: {error}"));
 
-    assert_eq!(validation.accelerator(), "tcg,thread=single");
+    assert_eq!(validation.accelerator(), "sim,thread=single");
     assert_eq!(validation.icount_shift(), 0);
     assert_eq!(validation.rr_switch_quantum(), 4096);
     assert_eq!(validation.smp_vcpus(), 1);
@@ -170,7 +170,7 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
     assert_eq!(profile.rr_switch_quantum(), 8192);
     assert!(
         args.windows(2)
-            .any(|window| window == ["-accel", "tcg,thread=single"])
+            .any(|window| window == ["-accel", "sim,thread=single"])
     );
     assert!(args.windows(2).any(|window| window == ["-smp", "4"]));
     assert!(args.windows(2).any(|window| window
@@ -181,7 +181,7 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
 
     let validation = validate_pre_spawn_qemu_launch_args(&args)
         .unwrap_or_else(|error| panic!("multi-vCPU RR launch args should validate: {error}"));
-    assert_eq!(validation.accelerator(), "tcg,thread=single");
+    assert_eq!(validation.accelerator(), "sim,thread=single");
     assert_eq!(validation.smp_vcpus(), 4);
     assert_eq!(validation.rr_switch_quantum(), 8192);
     assert_eq!(validation.cpu_model(), "qemu64,-rdrand,-rdseed");
@@ -208,7 +208,7 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
     assert!(material.contains("per_vcpu_tsc_source=node-icount"));
     assert!(material.contains("per_vcpu_rng_source=scenario-seed-and-run-seed"));
     assert!(material.contains("per_vcpu_rng_timing_axis=node-icount"));
-    assert!(material.contains("secondary_vcpu_bringup=rr-tcg-icount-deterministic"));
+    assert!(material.contains("secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic"));
 
     let different_vcpu_count = deterministic(
         LaunchProfileCandidate::default()
@@ -227,7 +227,7 @@ fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed() {
 }
 
 #[test]
-fn pre_spawn_launch_validation_rejects_kvm_and_non_tcg() {
+fn pre_spawn_launch_validation_rejects_kvm_and_non_sim_accelerators() {
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&qemu_args(["-enable-kvm"])),
         Err(
@@ -273,7 +273,7 @@ fn pre_spawn_launch_validation_rejects_kvm_and_non_tcg() {
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&qemu_args([
             "-accel",
-            "tcg,thread=single",
+            "sim,thread=single",
             "-machine",
             "q35,accel=kvm",
             "-smp",
@@ -284,7 +284,7 @@ fn pre_spawn_launch_validation_rejects_kvm_and_non_tcg() {
             "qemu64,-rdrand,-rdseed",
         ])),
         Err(
-            QemuPreSpawnLaunchValidationError::MachineUsesNonTcgAcceleration {
+            QemuPreSpawnLaunchValidationError::MachineUsesNonSimAcceleration {
                 machine: String::from("q35,accel=kvm"),
             }
         )
@@ -312,16 +312,16 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
     );
 
     let mut args = default_profile().canonical_qemu_args();
-    replace_option_value(&mut args, "-accel", "tcg,thread=multi");
+    replace_option_value(&mut args, "-accel", "sim,thread=multi");
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
         Err(QemuPreSpawnLaunchValidationError::MultiThreadTcg {
-            accelerator: String::from("tcg,thread=multi"),
+            accelerator: String::from("sim,thread=multi"),
         })
     );
 
     let mut args = default_profile().canonical_qemu_args();
-    replace_option_value(&mut args, "-accel", "tcg,thread=single,thread=multi");
+    replace_option_value(&mut args, "-accel", "sim,thread=single,thread=multi");
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
         Err(QemuPreSpawnLaunchValidationError::DuplicateSubOption {
@@ -331,14 +331,23 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
     );
 
     let mut args = default_profile().canonical_qemu_args();
-    replace_option_value(&mut args, "-accel", "tcg");
+    replace_option_value(&mut args, "-accel", "sim");
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
         Err(
-            QemuPreSpawnLaunchValidationError::SingleThreadTcgNotPinned {
-                accelerator: String::from("tcg"),
+            QemuPreSpawnLaunchValidationError::SingleThreadSimNotPinned {
+                accelerator: String::from("sim"),
             }
         )
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(&mut args, "-accel", "tcg,thread=single");
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::NonSimAccelerator {
+            accelerator: String::from("tcg,thread=single"),
+        })
     );
 
     let mut args = default_profile().canonical_qemu_args();
@@ -346,6 +355,19 @@ fn pre_spawn_launch_validation_rejects_bad_icount_and_mttcg() {
     assert_eq!(
         validate_pre_spawn_qemu_launch_args(&args),
         Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumUnpinned)
+    );
+
+    let mut args = default_profile().canonical_qemu_args();
+    replace_option_value(
+        &mut args,
+        "-icount",
+        "shift=0,sleep=off,align=off,rr_switch_quantum=2147483648",
+    );
+    assert_eq!(
+        validate_pre_spawn_qemu_launch_args(&args),
+        Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumTooLarge {
+            quantum: i32::MAX as u64 + 1,
+        })
     );
 
     let mut args = default_profile().canonical_qemu_args();
@@ -551,6 +573,92 @@ fn pre_spawn_launch_validation_rejects_host_cpu_timing_and_entropy() {
 }
 
 #[test]
+fn pre_spawn_launch_validation_rejects_host_input_bypass_forms() {
+    let cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["-netdev", "tap,id=net0,ifname=tap0"],
+            "-netdev tap,id=net0,ifname=tap0",
+            "host-timed or host-fed networking",
+        ),
+        (
+            &["-net=socket,listen=:1234"],
+            "-net=socket,listen=:1234",
+            "host-timed or host-fed networking",
+        ),
+        (
+            &["-nic", "socket,connect=127.0.0.1:1234"],
+            "-nic socket,connect=127.0.0.1:1234",
+            "host-timed or host-fed networking",
+        ),
+        (
+            &["-chardev", "socket,id=hostchar,path=/tmp/qemu.sock"],
+            "-chardev socket,id=hostchar,path=/tmp/qemu.sock",
+            "host-backed character-device input",
+        ),
+        (
+            &["-chardev=file,id=hostlog,path=/tmp/qemu.log"],
+            "-chardev=file,id=hostlog,path=/tmp/qemu.log",
+            "host-backed character-device input",
+        ),
+        (
+            &["-serial", "tcp:127.0.0.1:4444,server=on"],
+            "-serial tcp:127.0.0.1:4444,server=on",
+            "host-backed character frontend input",
+        ),
+        (
+            &["-parallel=file:/tmp/parallel"],
+            "-parallel=file:/tmp/parallel",
+            "host-backed character frontend input",
+        ),
+        (
+            &["-device", "usb-host,hostbus=1,hostaddr=2"],
+            "-device usb-host,hostbus=1,hostaddr=2",
+            "host device passthrough",
+        ),
+        (
+            &["-device=usb-host,hostbus=1,hostaddr=2"],
+            "-device=usb-host,hostbus=1,hostaddr=2",
+            "host device passthrough",
+        ),
+        (
+            &["-usbdevice", "host:1.2"],
+            "-usbdevice host:1.2",
+            "host USB or legacy passthrough input",
+        ),
+    ];
+
+    for (extra_args, expected_argument, expected_reason) in cases {
+        let mut args = default_profile().canonical_qemu_args();
+        args.extend(extra_args.iter().map(|argument| (*argument).to_owned()));
+        assert_eq!(
+            validate_pre_spawn_qemu_launch_args(&args),
+            Err(
+                QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
+                    argument: (*expected_argument).to_owned(),
+                    reason: expected_reason,
+                }
+            ),
+            "host input bypass should fail closed: {extra_args:?}"
+        );
+    }
+}
+
+#[test]
+fn pre_spawn_launch_validation_preserves_disabled_and_internal_channels() {
+    let mut args = default_profile().canonical_qemu_args();
+    args.extend(qemu_args(["-net", "none"]));
+    args.push(String::from("-netdev=none"));
+    args.extend(qemu_args(["-nic", "none"]));
+    args.extend(qemu_args(["-chardev", "null,id=null0"]));
+    args.push(String::from("-chardev=ringbuf,id=ring0,size=4096"));
+
+    assert!(
+        validate_pre_spawn_qemu_launch_args(&args).is_ok(),
+        "disabled network frontends and in-process chardevs must remain valid"
+    );
+}
+
+#[test]
 fn launch_profile_enforces_guest_non_modification() {
     let profile = default_profile();
     let args = profile.canonical_qemu_args();
@@ -629,9 +737,9 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
     );
     assert!(matches!(
         LaunchProfileCandidate::default()
-            .with_accelerator("tcg,thread=multi")
+            .with_accelerator("sim,thread=multi")
             .try_into_deterministic(),
-        Err(LaunchProfileError::AcceleratorNotSingleThreadTcg { .. })
+        Err(LaunchProfileError::AcceleratorNotSingleThreadSim { .. })
     ));
     assert_eq!(
         LaunchProfileCandidate::default()
@@ -654,6 +762,14 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
         Err(LaunchProfileError::RunSeedDiffersFromScenarioSeed {
             scenario_seed: 0x0010_c001,
             run_seed: 0x1234,
+        })
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_rr_switch_quantum(i32::MAX as u64 + 1)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::RrSwitchQuantumTooLarge {
+            quantum: i32::MAX as u64 + 1,
         })
     );
 }
@@ -933,7 +1049,10 @@ fn launch_hash_material_records_every_determinism_field() {
         "smp_vcpus=1",
         "vcpu_topology=fixed-at-genesis",
         "runtime_cpu_hotplug=forbidden",
-        "accelerator=tcg,thread=single",
+        "accelerator=sim,thread=single",
+        "accelerator_family=tcg-derived-sim",
+        "simulation_mode=on",
+        "stock_tcg_crucible_runtime=forbidden",
         "icount_shift=0",
         "rr_switch_quantum=4096",
         "rr_switch_quantum_units=node-icount",
@@ -969,7 +1088,7 @@ fn launch_hash_material_records_every_determinism_field() {
         "guest_entropy_host_sources=disabled",
         "per_vcpu_rng_source=scenario-seed-and-run-seed",
         "per_vcpu_rng_timing_axis=node-icount",
-        "secondary_vcpu_bringup=rr-tcg-icount-deterministic",
+        "secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic",
         "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet",
     ] {
         assert!(material.contains(expected), "missing {expected}");
@@ -1066,7 +1185,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
         "executable=/nix/store/11111111111111111111111111111111-aos-qemu/bin/qemu-system-x86_64",
         "argv[0]=-nodefaults",
         "argv[14]=-accel",
-        "argv[15]=tcg,thread=single",
+        "argv[15]=sim,thread=single",
         "argv[34]=-kernel",
         "argv[35]=/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
         "argv[40]=-plugin",

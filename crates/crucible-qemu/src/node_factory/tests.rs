@@ -652,7 +652,7 @@ fn baked_world() -> Result<World, Box<dyn Error>> {
 
 fn baked_genesis_snapshot(world: &World) -> QemuBakedGenesisSnapshot {
     let node = world
-        .nodes()
+        .vm_nodes()
         .first()
         .map(|node| node.id.clone())
         .unwrap_or_else(|| node_id("vm-a"));

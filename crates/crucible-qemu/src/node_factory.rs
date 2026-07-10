@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crucible::{Checkpoint, ContentHash, SchedulerSendAuthorizer};
+use crucible::{BasicBlockCoverageConfig, Checkpoint, ContentHash, SchedulerSendAuthorizer};
 use crucible_shmem::{
     RegionAllocation, RegionConfig, RegionLayoutError, SetupRegionMapError, mmap_setup_region,
 };
@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::{
     QemuAsyncDriverPolicy, QemuBakedGenesisRestoreAdmission, QemuCrashDetector, QemuHostIoRuntime,
-    QemuHostPluginSetup, QemuHostPluginSetupError, QemuLaunchCommand,
+    QemuHostPluginSetup, QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
     QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuLoadvmRealizationAdmission,
     QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
     QemuNodeChannelError, QemuNodeChannels, QemuNodeChild, QemuQmpMachineControlChannel,
@@ -313,13 +313,17 @@ pub fn spawn_setup_and_restore_qemu_node<A, R>(
     region_config: RegionConfig,
     slot_index: u32,
     restore: QemuNodeRestorePlan<'_>,
-    runtime: QemuNodeFactoryRuntime<A, R>,
+    mut runtime: QemuNodeFactoryRuntime<A, R>,
 ) -> Result<QemuNode, QemuWarmRestoreLaunchError>
 where
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
 {
     let run_directory = run_directory.as_ref();
+    runtime.shmem_config.coverage = match command.plugin_coverage() {
+        QemuLaunchPluginSwitch::Off => BasicBlockCoverageConfig::off(),
+        QemuLaunchPluginSwitch::On => BasicBlockCoverageConfig::on(),
+    };
     let qmp = command
         .qmp_channel()
         .ok_or(QemuWarmRestoreLaunchError::MissingQmpChannel)?;

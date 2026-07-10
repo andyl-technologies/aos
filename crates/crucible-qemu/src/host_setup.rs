@@ -272,13 +272,38 @@ mod tests {
     use std::thread;
 
     use crucible_protocol::{
-        CONTROL_PROTOCOL_VERSION, PluginHandshakeConfig, SETUP_ACK_STATUS_READY,
+        CONTROL_PROTOCOL_VERSION, HandshakeError, PluginHandshakeConfig, PluginMsg,
+        SETUP_ACK_STATUS_READY, host_negotiate_handshake,
     };
     use crucible_shmem::{ABI_VERSION, RegionLayout, mmap_setup_region};
 
     use crate::spawn::create_test_spawn_resource_pair;
 
     const EVENTFD_WAKE_PROBE: u64 = 7;
+
+    #[test]
+    fn qemu_host_rejects_a_v1_plugin_against_the_v2_region() {
+        assert_eq!(ABI_VERSION, 2);
+        let config = HostHandshakeConfig {
+            proto_version: CONTROL_PROTOCOL_VERSION,
+            abi_version: ABI_VERSION,
+            slot_index: 0,
+            node_count: 1,
+        };
+        assert_eq!(
+            host_negotiate_handshake(
+                PluginMsg::Hello {
+                    proto_version: CONTROL_PROTOCOL_VERSION,
+                    abi_version: 1,
+                },
+                config,
+            ),
+            Err(HandshakeError::AbiMismatch {
+                plugin_abi: 1,
+                host_abi: ABI_VERSION,
+            })
+        );
+    }
 
     #[test]
     fn qemu_host_plugin_setup_wires_real_socket_descriptors_and_memfd() -> Result<(), Box<dyn Error>>

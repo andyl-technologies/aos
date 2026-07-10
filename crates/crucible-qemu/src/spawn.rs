@@ -3,7 +3,8 @@
 //! This module owns the Linux-only process boundary required by RFC-0010
 //! T-QEMU-7. It creates the per-node control socket pair, shared-memory memfd,
 //! and wake eventfd before `exec`, maps the child descriptors to the fixed
-//! plugin fd numbers, and sets `PR_SET_PDEATHSIG=SIGKILL` in the child.
+//! plugin fd numbers, clears the inherited host environment, and sets
+//! `PR_SET_PDEATHSIG=SIGKILL` in the child.
 
 use std::ffi::CString;
 use std::io;
@@ -283,6 +284,7 @@ fn spawn_process_with_resources(
 
     let mut command = Command::new(executable);
     command
+        .env_clear()
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -336,7 +338,7 @@ fn memfd_region(region_len: u64) -> Result<OwnedFd, QemuSpawnError> {
     })?;
     let fd = unsafe {
         // SAFETY: `name` is a valid NUL-terminated C string.
-        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC)
+        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
     };
     if fd < 0 {
         return Err(last_io_error("create shmem memfd"));
@@ -348,6 +350,14 @@ fn memfd_region(region_len: u64) -> Result<OwnedFd, QemuSpawnError> {
     };
     if truncate != 0 {
         return Err(last_io_error("size shmem memfd"));
+    }
+    let seal = unsafe {
+        // SAFETY: `fd` is a live sealable memfd. The shrink seal preserves the
+        // mapping length while still permitting shared-memory writes.
+        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK)
+    };
+    if seal != 0 {
+        return Err(last_io_error("seal shmem memfd against shrink"));
     }
     Ok(fd)
 }
@@ -468,6 +478,10 @@ mod tests {
     const PDEATH_PARENT_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_PARENT_PROBE";
     const PDEATH_CHILD_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PROBE";
     const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
+    const ENV_CLEAR_PARENT_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_PARENT_PROBE";
+    const ENV_CLEAR_CHILD_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_CHILD_PROBE";
+    const INHERITED_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_INHERITED_SENTINEL";
+    const EXPLICIT_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_EXPLICIT_SENTINEL";
     static TEMP_DIR_SUFFIX: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -483,6 +497,11 @@ mod tests {
         assert_fd_open(child_resources.shmem_fd.as_raw_fd())?;
         assert_fd_open(child_resources.wake_fd.as_raw_fd())?;
         assert_eq!(fd_size(resources.shmem_fd())?, 4096);
+        assert_ne!(
+            fd_seals(resources.shmem_fd())? & libc::F_SEAL_SHRINK,
+            0,
+            "spawned shared-memory memfd must be sealed against shrink"
+        );
         assert_ne!(
             resources.control_socket_fd(),
             child_resources.control_socket.as_raw_fd()
@@ -577,6 +596,64 @@ mod tests {
 
         assert!(status.success());
         std::fs::remove_dir_all(run_directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
+    -> Result<(), Box<dyn Error>> {
+        if env::var_os(ENV_CLEAR_CHILD_PROBE).is_some() {
+            assert!(env::var_os(INHERITED_ENV_SENTINEL).is_none());
+            assert!(env::var_os(ENV_CLEAR_PARENT_PROBE).is_none());
+            assert_eq!(env::var(EXPLICIT_ENV_SENTINEL)?, "explicit-child-value");
+            child_probe_fixed_fds()?;
+            return Ok(());
+        }
+        if env::var_os(ENV_CLEAR_PARENT_PROBE).is_some() {
+            assert_eq!(env::var(INHERITED_ENV_SENTINEL)?, "parent-only-value");
+            let (_host, child_resources) = create_spawn_resources(4096)?;
+            let source_fds = format!(
+                "{},{},{}",
+                child_resources.control_socket.as_raw_fd(),
+                child_resources.shmem_fd.as_raw_fd(),
+                child_resources.wake_fd.as_raw_fd()
+            );
+            let current_exe = env::current_exe()?;
+            let current_exe = current_exe.to_string_lossy().into_owned();
+            let args = vec![
+                String::from("--exact"),
+                String::from(
+                    "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
+                ),
+            ];
+            let mut child = spawn_process_with_resources(
+                &current_exe,
+                &args,
+                None,
+                child_resources,
+                &[
+                    (ENV_CLEAR_CHILD_PROBE, "1"),
+                    (EXPLICIT_ENV_SENTINEL, "explicit-child-value"),
+                    (SOURCE_FDS_ENV, &source_fds),
+                ],
+                "spawn child clean-environment probe",
+            )?;
+
+            assert!(child.wait()?.success());
+            return Ok(());
+        }
+
+        let current_exe = env::current_exe()?;
+        let mut parent = Command::new(current_exe)
+            .args([
+                "--exact",
+                "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
+            ])
+            .env(ENV_CLEAR_PARENT_PROBE, "1")
+            .env(INHERITED_ENV_SENTINEL, "parent-only-value")
+            .spawn()?;
+
+        assert!(parent.wait()?.success());
         Ok(())
     }
 
@@ -754,6 +831,17 @@ mod tests {
             stat.assume_init()
         };
         Ok(stat.st_size)
+    }
+
+    fn fd_seals(fd: RawFd) -> Result<i32, Box<dyn Error>> {
+        let seals = unsafe {
+            // SAFETY: `fcntl(F_GET_SEALS)` reads metadata from the live test fd.
+            libc::fcntl(fd, libc::F_GET_SEALS)
+        };
+        if seals < 0 {
+            return Err(Box::new(io::Error::last_os_error()));
+        }
+        Ok(seals)
     }
 
     fn assert_process_is_gone(pid: u32) -> Result<(), Box<dyn Error>> {

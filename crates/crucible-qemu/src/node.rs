@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use crucible::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendSnapshot,
-    Checkpoint, ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo,
-    GdbListen, Icount, NodeId, SimulationBackend, StepObservation, VirtualTime,
+    Checkpoint, EventLog, ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo,
+    GdbListen, Icount, NodeId, ObservableEvent, SchedulerEventLogAppend, SimulationBackend,
+    StepObservation, VirtualTime,
 };
 use thiserror::Error;
 
@@ -134,6 +135,15 @@ pub enum QemuNodeError {
         /// Proxy operation being attempted.
         operation: &'static str,
         /// Deterministic failure detail.
+        message: String,
+    },
+    /// Coverage observations were produced through an API without an event-log owner.
+    #[error("coverage-enabled QEMU execution requires a unified event-log sink")]
+    CoverageEventLogRequired,
+    /// The unified event log rejected a coverage observation batch.
+    #[error("append QEMU coverage observations to unified event log failed: {message}")]
+    CoverageEventLog {
+        /// Deterministic event-log failure diagnostic.
         message: String,
     },
 }
@@ -297,6 +307,15 @@ pub trait QemuPluginIpcControlChannel {
 
 /// Shared-memory hot-path channel for per-quantum data.
 pub trait QemuShmemHotPathChannel {
+    /// Returns whether this channel owns a plugin-to-host coverage queue.
+    ///
+    /// The registration-time value is immutable. Direct node APIs use it to
+    /// reject an advance before guest execution when no unified-log owner was
+    /// supplied.
+    fn coverage_enabled(&self) -> bool {
+        false
+    }
+
     /// Reads the node's current retired-instruction count.
     ///
     /// # Errors
@@ -344,6 +363,20 @@ pub trait QemuShmemHotPathChannel {
         let pending = self.start_quantum(horizon)?;
         self.finish_quantum(pending)
             .map(|completion| completion.outcome)
+    }
+
+    /// Drains coverage observations at the current completed boundary.
+    ///
+    /// Implementations without an enabled coverage transport return an empty
+    /// batch. The caller must append a non-empty batch to the unified event log
+    /// before continuing or tearing down the node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the shared coverage ring is corrupt
+    /// or contains an observation after the published boundary.
+    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
+        Ok(Vec::new())
     }
 
     /// Delivers a deterministic frame through the shared-memory input ring.
@@ -564,6 +597,51 @@ impl QemuNode {
     /// Returns [`QemuNodeError`] when the bounded async driver, shared-memory hot
     /// path, or timeout shutdown escalation fails.
     pub fn advance_to_ceiling(&mut self, ceiling: Icount) -> Result<AdvanceOutcome, QemuNodeError> {
+        if self.channels.shmem_hot_path.coverage_enabled() {
+            return Err(QemuNodeError::CoverageEventLogRequired);
+        }
+        let report = self.advance_to_ceiling_report(ceiling)?;
+        self.finish_advance_report(ceiling, report)
+    }
+
+    /// Advances the child and appends every coverage observation to one event log.
+    ///
+    /// This is the required coverage-enabled execution path. The SPSC queue is
+    /// drained only after QEMU publishes a completed quantum, then the complete
+    /// FIFO batch is appended through [`EventLog::append_observable_events`]. No
+    /// QEMU wrapper collection survives the call, so coverage cannot form a
+    /// second persistent record parallel to the unified log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the bounded quantum fails or the unified
+    /// event log rejects the observational batch.
+    pub fn advance_to_ceiling_with_event_log(
+        &mut self,
+        ceiling: Icount,
+        event_log: &mut EventLog,
+    ) -> Result<(AdvanceOutcome, SchedulerEventLogAppend), QemuNodeError> {
+        let report = self.advance_to_ceiling_report(ceiling)?;
+        let events = self
+            .channels
+            .shmem_hot_path
+            .drain_observable_events()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })?;
+        let appended = event_log
+            .append_observable_events(events)
+            .map_err(|source| QemuNodeError::CoverageEventLog {
+                message: source.to_string(),
+            })?;
+        let outcome = self.finish_advance_report(ceiling, report)?;
+        Ok((outcome, appended))
+    }
+
+    fn advance_to_ceiling_report(
+        &mut self,
+        ceiling: Icount,
+    ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
         let mut target = QemuNodeAsyncStepTarget {
             child: &mut self.child,
             channels: &mut self.channels,
@@ -578,6 +656,14 @@ impl QemuNode {
             ExecutionHorizon { icount: ceiling },
         )
         .map_err(QemuNodeError::from_async_driver)?;
+        Ok(report)
+    }
+
+    fn finish_advance_report(
+        &mut self,
+        ceiling: Icount,
+        report: crate::QemuAsyncNodeStepReport,
+    ) -> Result<AdvanceOutcome, QemuNodeError> {
         let advance = match report.outcome {
             QemuAsyncNodeStepOutcome::Completed { advance } => Ok(advance),
             QemuAsyncNodeStepOutcome::Crashed { status, shutdown } => Err(QemuNodeError::Crashed {
@@ -685,6 +771,39 @@ impl QemuNode {
     /// policy's final reap deadline or when the child cannot be signaled,
     /// queried, or reaped.
     pub fn shutdown_child(&mut self) -> Result<QemuShutdownReport, QemuNodeError> {
+        if self.channels.shmem_hot_path.coverage_enabled() {
+            return Err(QemuNodeError::CoverageEventLogRequired);
+        }
+        self.shutdown_child_after_coverage_drain()
+    }
+
+    /// Drains final coverage into `event_log`, then runs shutdown escalation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the final shared-memory drain, unified-log
+    /// append, or child shutdown ladder fails.
+    pub fn shutdown_child_with_event_log(
+        &mut self,
+        event_log: &mut EventLog,
+    ) -> Result<(QemuShutdownReport, SchedulerEventLogAppend), QemuNodeError> {
+        let events = self
+            .channels
+            .shmem_hot_path
+            .drain_observable_events()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })?;
+        let appended = event_log
+            .append_observable_events(events)
+            .map_err(|source| QemuNodeError::CoverageEventLog {
+                message: source.to_string(),
+            })?;
+        let report = self.shutdown_child_after_coverage_drain()?;
+        Ok((report, appended))
+    }
+
+    fn shutdown_child_after_coverage_drain(&mut self) -> Result<QemuShutdownReport, QemuNodeError> {
         if let Some(active_gdbstub) = self.active_gdbstub.take() {
             active_gdbstub.request_shutdown();
         }
@@ -816,12 +935,25 @@ impl Backend for QemuNode {
 
 impl SimulationBackend for QemuNode {
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
+        let icount_ceiling = Icount {
+            retired: ceiling.ticks,
+        };
+        let report = self
+            .advance_to_ceiling_report(icount_ceiling)
+            .map_err(BackendError::from)?;
         let outcome = self
-            .advance_to_ceiling(Icount {
-                retired: ceiling.ticks,
-            })
+            .finish_advance_report(icount_ceiling, report)
             .map_err(BackendError::from)?;
         Ok(StepObservation::from_advance_outcome(ceiling, outcome))
+    }
+
+    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
+        self.channels
+            .shmem_hot_path
+            .drain_observable_events()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source).into()
+            })
     }
 
     fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
@@ -909,7 +1041,11 @@ impl SimulationBackend for QemuNode {
     }
 
     fn shutdown(&mut self) -> Result<(), BackendError> {
-        self.shutdown_child()
+        // `BackendQuantumLoop` owns the simulation-backend path and drains
+        // every observation into the unified log before invoking this hook.
+        // Bypass the public coverage guard here so coverage-enabled nodes can
+        // complete teardown after that canonical handoff.
+        self.shutdown_child_after_coverage_drain()
             .map(|_| ())
             .map_err(BackendError::from)
     }
@@ -983,7 +1119,10 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
 
-    use crucible::{CheckpointKind, ContentHash, ExecutionHorizon, GdbListen, NodeId};
+    use crucible::{
+        CheckpointKind, ContentHash, EventLogCoverageObservation, ExecutionHorizon, GdbListen,
+        NodeId, event_log_coverage_projection,
+    };
 
     use crate::{
         QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuQuantumOperation,
@@ -1027,6 +1166,9 @@ mod tests {
     struct ScriptedShmemHotPath {
         log: SharedLog,
         fail_advance: bool,
+        coverage_enabled: bool,
+        quantum_coverage: Rc<RefCell<VecDeque<Vec<ObservableEvent>>>>,
+        teardown_coverage: Rc<RefCell<Vec<ObservableEvent>>>,
     }
 
     #[derive(Clone)]
@@ -1053,6 +1195,10 @@ mod tests {
     }
 
     impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
+        fn coverage_enabled(&self) -> bool {
+            self.coverage_enabled
+        }
+
         fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError> {
             self.log.borrow_mut().push(ChannelCall::ShmemCurrentIcount);
             Ok(Icount { retired: 11 })
@@ -1082,6 +1228,9 @@ mod tests {
             self.log
                 .borrow_mut()
                 .push(ChannelCall::ShmemFinish(horizon));
+            if let Some(events) = self.quantum_coverage.borrow_mut().pop_front() {
+                self.teardown_coverage.borrow_mut().extend(events);
+            }
             Ok(QemuAsyncQuantumCompletion {
                 outcome: AdvanceOutcome::ReachedHorizon,
                 operations: vec![
@@ -1090,6 +1239,12 @@ mod tests {
                     QemuQuantumOperation::ObservePluginReport,
                 ],
             })
+        }
+
+        fn drain_observable_events(
+            &mut self,
+        ) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
+            Ok(std::mem::take(&mut *self.teardown_coverage.borrow_mut()))
         }
 
         fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
@@ -1306,6 +1461,119 @@ mod tests {
             ]
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_appends_quantum_coverage_to_the_unified_event_log() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let event =
+            ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
+        let mut node = scripted_node_with_coverage(
+            Rc::clone(&log),
+            ScriptedNodeOptions::default(),
+            [QemuAsyncWaitOutcome::Completed],
+            [vec![event]],
+            std::iter::empty(),
+        )?;
+        let mut event_log = EventLog::new();
+
+        let (outcome, append) =
+            node.advance_to_ceiling_with_event_log(Icount { retired: 19 }, &mut event_log)?;
+
+        assert_eq!(outcome, AdvanceOutcome::ReachedHorizon);
+        assert_eq!(append.entries.len(), 1);
+        let projection = event_log_coverage_projection(&append.entries);
+        assert_eq!(projection.len(), 1);
+        assert_eq!(projection.entries()[0].at.icount, Icount { retired: 17 });
+        assert_eq!(
+            projection.entries()[0].observation,
+            EventLogCoverageObservation::BasicBlock {
+                node: node_id("vm-a"),
+                guest_pc: 0x4010,
+                block_len: 4,
+            }
+        );
+        let (shutdown, _final_append) = node.shutdown_child_with_event_log(&mut event_log)?;
+        assert!(shutdown.reaped);
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_rejects_a_coverage_quantum_without_an_event_log() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let event =
+            ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
+        let mut node = scripted_node_with_coverage(
+            Rc::clone(&log),
+            ScriptedNodeOptions::default(),
+            [QemuAsyncWaitOutcome::Completed],
+            [vec![event]],
+            std::iter::empty(),
+        )?;
+
+        assert_eq!(
+            node.advance_to_ceiling(Icount { retired: 19 }),
+            Err(QemuNodeError::CoverageEventLogRequired)
+        );
+        let mut event_log = EventLog::new();
+        let (shutdown, append) = node.shutdown_child_with_event_log(&mut event_log)?;
+        assert!(shutdown.reaped);
+        assert!(append.entries.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_generic_backend_drains_coverage_without_a_local_side_record()
+    -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let event =
+            ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
+        let mut node = scripted_node_with_coverage(
+            Rc::clone(&log),
+            ScriptedNodeOptions::default(),
+            [QemuAsyncWaitOutcome::Completed],
+            [vec![event]],
+            std::iter::empty(),
+        )?;
+
+        let step = SimulationBackend::step_to(&mut node, VirtualTime { ticks: 19 })?;
+        assert_eq!(step.reached, VirtualTime { ticks: 19 });
+        let observations = SimulationBackend::drain_observable_events(&mut node)?;
+        assert_eq!(observations.len(), 1);
+        assert!(SimulationBackend::drain_observable_events(&mut node)?.is_empty());
+
+        let mut event_log = EventLog::new();
+        let append = event_log.append_observable_events(observations)?;
+        assert_eq!(event_log_coverage_projection(&append.entries).len(), 1);
+        SimulationBackend::shutdown(&mut node)?;
+        assert!(node.child_reaped());
+        SimulationBackend::shutdown(&mut node)?;
+        assert!(node.child_reaped());
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_drains_final_coverage_before_teardown() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let event =
+            ObservableEvent::coverage_block(Icount { retired: 17 }, node_id("vm-a"), 0x4010, 4);
+        let mut node = scripted_node_with_coverage(
+            Rc::clone(&log),
+            ScriptedNodeOptions::default(),
+            std::iter::empty(),
+            std::iter::empty(),
+            [event],
+        )?;
+        let mut event_log = EventLog::new();
+
+        let (report, append) = node.shutdown_child_with_event_log(&mut event_log)?;
+
+        assert!(report.reaped);
+        assert!(node.child_reaped());
+        let projection = event_log_coverage_projection(&append.entries);
+        assert_eq!(projection.len(), 1);
+        assert_eq!(projection.entries()[0].at.icount, Icount { retired: 17 });
         Ok(())
     }
 
@@ -1683,6 +1951,25 @@ mod tests {
         options: ScriptedNodeOptions,
         runtime_outcomes: impl IntoIterator<Item = QemuAsyncWaitOutcome>,
     ) -> Result<QemuNode, Box<dyn Error>> {
+        scripted_node_with_coverage(
+            log,
+            options,
+            runtime_outcomes,
+            std::iter::empty(),
+            std::iter::empty(),
+        )
+    }
+
+    fn scripted_node_with_coverage(
+        log: SharedLog,
+        options: ScriptedNodeOptions,
+        runtime_outcomes: impl IntoIterator<Item = QemuAsyncWaitOutcome>,
+        quantum_coverage: impl IntoIterator<Item = Vec<ObservableEvent>>,
+        teardown_coverage: impl IntoIterator<Item = ObservableEvent>,
+    ) -> Result<QemuNode, Box<dyn Error>> {
+        let quantum_coverage = quantum_coverage.into_iter().collect::<VecDeque<_>>();
+        let teardown_coverage = teardown_coverage.into_iter().collect::<Vec<_>>();
+        let coverage_enabled = !quantum_coverage.is_empty() || !teardown_coverage.is_empty();
         let channels = QemuNodeChannels::new(
             ScriptedPluginControl {
                 log: Rc::clone(&log),
@@ -1691,6 +1978,9 @@ mod tests {
             ScriptedShmemHotPath {
                 log: Rc::clone(&log),
                 fail_advance: options.fail_shmem_advance,
+                coverage_enabled,
+                quantum_coverage: Rc::new(RefCell::new(quantum_coverage)),
+                teardown_coverage: Rc::new(RefCell::new(teardown_coverage)),
             },
             ScriptedQmpMachineControl {
                 log: Rc::clone(&log),
