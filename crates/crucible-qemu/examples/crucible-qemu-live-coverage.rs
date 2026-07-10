@@ -75,6 +75,10 @@ fn run() -> Result<(), String> {
     println!("independent_trace_fingerprint_match=true");
     println!("run_control_silent={}", report.run_control_silent);
     println!("plugin_quit_consumed={}", report.plugin_quit_consumed);
+    println!(
+        "shared_shutdown_consumed={}",
+        report.shared_shutdown_consumed
+    );
     println!("orderly_child_exit={}", report.orderly_child_exit);
     println!("trace_components=instruction-stream,all-vcpu-registers,rr-cursor,ram,device-io");
     println!(

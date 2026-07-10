@@ -36,6 +36,30 @@ fn test_live_state(
     let layout = RegionLayout::for_config(RegionConfig::new(1, 2, u32::from(icount_shift)))
         .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
     let header = Box::leak(Box::new(RegionHeader::new(layout)));
+    let (teardown_sender, teardown_receiver) = mpsc::channel();
+    std::mem::forget(teardown_receiver);
+    test_live_state_with_teardown(
+        plugin_id,
+        vcpu_count,
+        icount_shift,
+        initial_raw_icount,
+        header,
+        slot,
+        teardown_sender,
+    )
+}
+
+// crucible-lint: allow rust-allow -- test factory carries the complete live callback state boundary.
+#[allow(clippy::too_many_arguments)]
+fn test_live_state_with_teardown(
+    plugin_id: QemuPluginId,
+    vcpu_count: u32,
+    icount_shift: u8,
+    initial_raw_icount: u64,
+    header: &RegionHeader,
+    slot: &NodeSlot,
+    teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
+) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
     let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ns))
         .unwrap_or_else(|error| panic!("test deadline capability should validate: {error}"));
     let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
@@ -51,7 +75,131 @@ fn test_live_state(
         header,
         slot,
         Arc::new(LiveCallbackQuiescence::new()),
+        teardown_sender,
     )
+}
+
+#[test]
+fn shared_shutdown_resume_signal_is_one_shot_and_defers_done_to_worker() {
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 1, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let (sender, receiver) = mpsc::channel();
+    let state = test_live_state_with_teardown(70, 1, 0, 0, &header, &slot, sender)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(70, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    header
+        .request_shutdown([&slot])
+        .unwrap_or_else(|error| panic!("shutdown request should publish: {error}"));
+
+    state
+        .on_vcpu_resume(0, 0)
+        .unwrap_or_else(|error| panic!("resume should signal shutdown: {error}"));
+    state
+        .on_vcpu_resume(0, 0)
+        .unwrap_or_else(|error| panic!("repeated resume should be coalesced: {error}"));
+
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(LiveRuntimeTeardownTrigger::SharedShutdown(_))
+    ));
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    assert_ne!(slot.snapshot().status, crucible_shmem::STATUS_DONE);
+}
+
+#[test]
+fn busy_at_ceiling_publish_callback_signals_shared_shutdown_without_publication() {
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 1, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let (sender, receiver) = mpsc::channel();
+    let state = Box::new(
+        test_live_state_with_teardown(73, 1, 0, 0, &header, &slot, sender)
+            .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
+    );
+    let userdata = std::ptr::from_ref(state.as_ref()).cast_mut().cast();
+    header
+        .request_shutdown([&slot])
+        .unwrap_or_else(|error| panic!("shutdown request should publish: {error}"));
+
+    crucible_qemu_plugin_live_publish_icount_cb(1, userdata);
+
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(LiveRuntimeTeardownTrigger::SharedShutdown(_))
+    ));
+    assert_ne!(slot.snapshot().status, crucible_shmem::STATUS_DONE);
+    assert_eq!(slot.snapshot().current_icount, 0);
+}
+
+#[test]
+fn shared_shutdown_idle_signal_is_one_shot_and_defers_done_to_worker() {
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 1, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let (sender, receiver) = mpsc::channel();
+    let state = test_live_state_with_teardown(71, 1, 0, 0, &header, &slot, sender)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(71, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    header
+        .request_shutdown([&slot])
+        .unwrap_or_else(|error| panic!("shutdown request should publish: {error}"));
+
+    state
+        .on_vcpu_idle(0, 0)
+        .unwrap_or_else(|error| panic!("idle should signal shutdown: {error}"));
+
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(LiveRuntimeTeardownTrigger::SharedShutdown(_))
+    ));
+    assert_ne!(slot.snapshot().status, crucible_shmem::STATUS_DONE);
+}
+
+#[test]
+fn shared_shutdown_signal_is_fail_loud_when_teardown_worker_disconnected() {
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, 0))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = RegionHeader::new(layout);
+    let slot = NodeSlot::new(KIND_VM);
+    let (sender, receiver) = mpsc::channel();
+    drop(receiver);
+    let state = test_live_state_with_teardown(72, 1, 0, 0, &header, &slot, sender)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(72, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    header
+        .request_shutdown([&slot])
+        .unwrap_or_else(|error| panic!("shutdown request should publish: {error}"));
+
+    assert_eq!(
+        state.on_vcpu_resume(0, 0),
+        Err(LiveVcpuTimeCallbackError::TeardownWorkerUnavailable)
+    );
+    assert_ne!(slot.snapshot().status, crucible_shmem::STATUS_DONE);
 }
 
 #[test]

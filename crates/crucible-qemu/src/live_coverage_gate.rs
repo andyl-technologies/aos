@@ -130,10 +130,12 @@ pub struct LoadedQemuCoverageGateReport {
     pub coverage_off_plugin_argument: String,
     /// Production plugin argument used for the coverage-enabled run.
     pub coverage_on_plugin_argument: String,
-    /// Both runs proved that the RUN control channel was silent before Quit.
+    /// Both runs proved that the RUN control channel was silent before teardown.
     pub run_control_silent: bool,
-    /// Both runs observed plugin `Done` after sending control `Quit`.
+    /// The coverage-on run observed plugin `Done` after control `Quit`.
     pub plugin_quit_consumed: bool,
+    /// The coverage-off run observed plugin `Done` after mapped shared shutdown.
+    pub shared_shutdown_consumed: bool,
     /// Both QEMU children exited naturally with status zero after plugin teardown.
     pub orderly_child_exit: bool,
 }
@@ -236,6 +238,14 @@ pub enum LoadedQemuCoverageGateError {
     /// The plugin did not publish `Done` after consuming control `Quit`.
     #[error("{mode} plugin did not publish teardown Done within {timeout:?}")]
     PluginQuitTimeout {
+        /// Coverage mode being exercised.
+        mode: &'static str,
+        /// Host-side diagnostic timeout.
+        timeout: Duration,
+    },
+    /// The plugin did not publish `Done` after the mapped shared shutdown request.
+    #[error("{mode} plugin did not consume shared shutdown within {timeout:?}")]
+    SharedShutdownTimeout {
         /// Coverage mode being exercised.
         mode: &'static str,
         /// Host-side diagnostic timeout.
@@ -402,7 +412,8 @@ pub fn run_loaded_qemu_coverage_gate(
         coverage_off_plugin_argument: off.plugin_argument,
         coverage_on_plugin_argument: on.plugin_argument,
         run_control_silent: off.run_control_silent && on.run_control_silent,
-        plugin_quit_consumed: off.plugin_quit_consumed && on.plugin_quit_consumed,
+        plugin_quit_consumed: on.plugin_quit_consumed,
+        shared_shutdown_consumed: off.shared_shutdown_consumed,
         orderly_child_exit: off.orderly_child_exit && on.orderly_child_exit,
     })
 }
@@ -427,7 +438,14 @@ struct LoadedQemuRun {
     trace_sample: Value,
     run_control_silent: bool,
     plugin_quit_consumed: bool,
+    shared_shutdown_consumed: bool,
     orderly_child_exit: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoadedTeardownTrigger {
+    SharedShutdown,
+    ControlQuit,
 }
 
 fn run_loaded_qemu_once(
@@ -525,9 +543,22 @@ fn run_loaded_qemu_once(
     setup
         .assert_run_control_silent()
         .map_err(|source| channel_error(mode, "prove run control silence", source))?;
-    QemuPluginIpcControlChannel::send_quit(&mut setup)
-        .map_err(|source| channel_error(mode, "send plugin Quit", source))?;
-    wait_for_plugin_quit_consumption(&hot_path, config, mode)?;
+    let teardown_trigger = teardown_trigger_for_coverage(coverage);
+    match teardown_trigger {
+        LoadedTeardownTrigger::SharedShutdown => {
+            hot_path
+                .request_plugin_shutdown()
+                .map_err(|source| LoadedQemuCoverageGateError::MappedHotPath { mode, source })?;
+            setup.signal_plugin_wake().map_err(|source| {
+                channel_error(mode, "wake busy shared-shutdown boundary", source)
+            })?;
+        }
+        LoadedTeardownTrigger::ControlQuit => {
+            QemuPluginIpcControlChannel::send_quit(&mut setup)
+                .map_err(|source| channel_error(mode, "send plugin Quit", source))?;
+        }
+    }
+    wait_for_plugin_teardown(&hot_path, config, mode, teardown_trigger)?;
     let exit_status = wait_for_natural_child_exit(&mut child, config, mode)?;
     if !exit_status.success() {
         return Err(LoadedQemuCoverageGateError::ChildExitUnclean {
@@ -545,17 +576,19 @@ fn run_loaded_qemu_once(
         plugin_argument,
         trace_sample,
         run_control_silent: true,
-        plugin_quit_consumed: true,
+        plugin_quit_consumed: teardown_trigger == LoadedTeardownTrigger::ControlQuit,
+        shared_shutdown_consumed: teardown_trigger == LoadedTeardownTrigger::SharedShutdown,
         orderly_child_exit: true,
     })
 }
 
 // crucible-lint: allow clippy-disallowed-method -- loaded-gate host timeout bounds plugin teardown only.
 #[allow(clippy::disallowed_methods)]
-fn wait_for_plugin_quit_consumption(
+fn wait_for_plugin_teardown(
     hot_path: &QemuMappedQuantumShmemHotPath,
     config: &LoadedQemuCoverageGateConfig,
     mode: &'static str,
+    trigger: LoadedTeardownTrigger,
 ) -> Result<(), LoadedQemuCoverageGateError> {
     let started = Instant::now();
     loop {
@@ -566,12 +599,29 @@ fn wait_for_plugin_quit_consumption(
             return Ok(());
         }
         if started.elapsed() >= config.completion_timeout {
-            return Err(LoadedQemuCoverageGateError::PluginQuitTimeout {
-                mode,
-                timeout: config.completion_timeout,
+            return Err(match trigger {
+                LoadedTeardownTrigger::SharedShutdown => {
+                    LoadedQemuCoverageGateError::SharedShutdownTimeout {
+                        mode,
+                        timeout: config.completion_timeout,
+                    }
+                }
+                LoadedTeardownTrigger::ControlQuit => {
+                    LoadedQemuCoverageGateError::PluginQuitTimeout {
+                        mode,
+                        timeout: config.completion_timeout,
+                    }
+                }
             });
         }
         thread::sleep(POLL_INTERVAL);
+    }
+}
+
+const fn teardown_trigger_for_coverage(coverage: QemuLaunchPluginSwitch) -> LoadedTeardownTrigger {
+    match coverage {
+        QemuLaunchPluginSwitch::Off => LoadedTeardownTrigger::SharedShutdown,
+        QemuLaunchPluginSwitch::On => LoadedTeardownTrigger::ControlQuit,
     }
 }
 

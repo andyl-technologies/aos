@@ -3,6 +3,18 @@
 use super::*;
 
 #[test]
+fn loaded_runs_split_shared_shutdown_and_control_quit_proofs() {
+    assert_eq!(
+        teardown_trigger_for_coverage(QemuLaunchPluginSwitch::Off),
+        LoadedTeardownTrigger::SharedShutdown
+    );
+    assert_eq!(
+        teardown_trigger_for_coverage(QemuLaunchPluginSwitch::On),
+        LoadedTeardownTrigger::ControlQuit
+    );
+}
+
+#[test]
 fn guest_coverage_attribution_requires_a_whole_block_in_guest_text() {
     let observations = vec![
         crucible::ObservableEvent::coverage_block(

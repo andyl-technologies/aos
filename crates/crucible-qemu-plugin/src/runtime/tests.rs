@@ -31,10 +31,13 @@ impl PostRegistrationFatalPolicy for PanickingPostRegistrationFatalPolicy {
 struct TestPostRegistrationPanicGuard;
 
 static CONTROL_WORKER_SHUTDOWN_FAILURE: AtomicI32 = AtomicI32::new(-1);
+static CONTROL_WORKER_SHUTDOWN_CALLS: AtomicUsize = AtomicUsize::new(0);
 static CONTROL_WORKER_DONE_BEFORE_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static CONTROL_WORKER_SLOT_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+static CONTROL_WORKER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 extern "C" fn record_control_worker_shutdown(failure: i32) {
+    CONTROL_WORKER_SHUTDOWN_CALLS.fetch_add(1, Ordering::SeqCst);
     CONTROL_WORKER_SHUTDOWN_FAILURE.store(failure, Ordering::SeqCst);
     let address = CONTROL_WORKER_SLOT_ADDRESS.load(Ordering::SeqCst);
     if address != 0 {
@@ -48,10 +51,14 @@ extern "C" fn record_control_worker_shutdown(failure: i32) {
 
 #[test]
 fn run_control_worker_consumes_quit_marks_done_then_requests_clean_shutdown() {
+    let _test_lock = CONTROL_WORKER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (mut host, plugin) = running_plugin_control_pair();
     let (handle, _header, slot, _wake_owner, _wake_peer) = control_worker_teardown_handle();
     CONTROL_WORKER_SLOT_ADDRESS.store(std::ptr::from_ref(slot.as_ref()) as usize, Ordering::SeqCst);
     CONTROL_WORKER_SHUTDOWN_FAILURE.store(-1, Ordering::SeqCst);
+    CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
     host.write_all(&control_encode_host_msg(&HostMsg::Quit))
         .unwrap_or_else(|error| panic!("host Quit should write: {error}"));
@@ -60,15 +67,20 @@ fn run_control_worker_consumes_quit_marks_done_then_requests_clean_shutdown() {
 
     assert_eq!(slot.snapshot().status, STATUS_DONE);
     assert_eq!(CONTROL_WORKER_SHUTDOWN_FAILURE.load(Ordering::SeqCst), 0);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_CALLS.load(Ordering::SeqCst), 1);
     assert!(CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.load(Ordering::SeqCst));
 }
 
 #[test]
 fn run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown() {
+    let _test_lock = CONTROL_WORKER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (mut host, plugin) = running_plugin_control_pair();
     let (handle, _header, slot, _wake_owner, _wake_peer) = control_worker_teardown_handle();
     CONTROL_WORKER_SLOT_ADDRESS.store(std::ptr::from_ref(slot.as_ref()) as usize, Ordering::SeqCst);
     CONTROL_WORKER_SHUTDOWN_FAILURE.store(-1, Ordering::SeqCst);
+    CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
     CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
     host.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
         proto_version: 1,
@@ -82,7 +94,149 @@ fn run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown() {
 
     assert_eq!(slot.snapshot().status, STATUS_DONE);
     assert_eq!(CONTROL_WORKER_SHUTDOWN_FAILURE.load(Ordering::SeqCst), 1);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_CALLS.load(Ordering::SeqCst), 1);
     assert!(CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.load(Ordering::SeqCst));
+}
+
+#[test]
+fn shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_drain() {
+    let _test_lock = CONTROL_WORKER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (handle, header, slot, _wake_owner, _wake_peer) = control_worker_teardown_handle();
+    let quiescence = Arc::clone(&handle.quiescence);
+    let in_flight = quiescence
+        .enter()
+        .unwrap_or_else(|| panic!("callback admission should begin open"));
+    header
+        .request_shutdown([slot.as_ref()])
+        .unwrap_or_else(|error| panic!("shared shutdown should publish: {error}"));
+    let proof = PluginShutdownRequested::from_region_header(&header)
+        .unwrap_or_else(|error| panic!("shared shutdown proof should build: {error}"));
+    let (sender, receiver) = mpsc::channel();
+
+    CONTROL_WORKER_SLOT_ADDRESS.store(std::ptr::from_ref(slot.as_ref()) as usize, Ordering::SeqCst);
+    CONTROL_WORKER_SHUTDOWN_FAILURE.store(-1, Ordering::SeqCst);
+    CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
+    CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
+    sender
+        .send(LiveRuntimeTeardownTrigger::SharedShutdown(proof))
+        .unwrap_or_else(|_error| panic!("shared shutdown should reach worker"));
+    let worker = std::thread::spawn(move || {
+        run_teardown_worker(receiver, handle, record_control_worker_shutdown);
+    });
+
+    wait_until_callback_admission_closed(&quiescence);
+    assert!(quiescence.enter().is_none());
+    assert_ne!(slot.snapshot().status, STATUS_DONE);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_CALLS.load(Ordering::SeqCst), 0);
+
+    drop(in_flight);
+    worker
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+
+    assert_eq!(slot.snapshot().status, STATUS_DONE);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_FAILURE.load(Ordering::SeqCst), 0);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_CALLS.load(Ordering::SeqCst), 1);
+    assert!(CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.load(Ordering::SeqCst));
+}
+
+#[test]
+fn concurrent_quit_and_shared_shutdown_select_one_teardown_after_inflight_drain() {
+    let _test_lock = CONTROL_WORKER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (mut host, plugin) = running_plugin_control_pair();
+    let (handle, header, slot, _wake_owner, _wake_peer) = control_worker_teardown_handle();
+    let quiescence = Arc::clone(&handle.quiescence);
+    let in_flight = quiescence
+        .enter()
+        .unwrap_or_else(|| panic!("callback admission should begin open"));
+    header
+        .request_shutdown([slot.as_ref()])
+        .unwrap_or_else(|error| panic!("shared shutdown should publish: {error}"));
+    let shared_proof = PluginShutdownRequested::from_region_header(&header)
+        .unwrap_or_else(|error| panic!("shared shutdown proof should build: {error}"));
+    let (sender, receiver) = mpsc::channel();
+
+    CONTROL_WORKER_SLOT_ADDRESS.store(std::ptr::from_ref(slot.as_ref()) as usize, Ordering::SeqCst);
+    CONTROL_WORKER_SHUTDOWN_FAILURE.store(-1, Ordering::SeqCst);
+    CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
+    CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
+
+    let worker = std::thread::spawn(move || {
+        run_teardown_worker(receiver, handle, record_control_worker_shutdown);
+    });
+    let reader_sender = sender.clone();
+    let reader = std::thread::spawn(move || run_control_reader(plugin, reader_sender));
+    let start = Arc::new(std::sync::Barrier::new(3));
+    let shared_start = Arc::clone(&start);
+    let shared_sender = sender.clone();
+    let shared = std::thread::spawn(move || {
+        shared_start.wait();
+        let _sent = shared_sender.send(LiveRuntimeTeardownTrigger::SharedShutdown(shared_proof));
+    });
+    let quit_start = Arc::clone(&start);
+    let quit = std::thread::spawn(move || {
+        quit_start.wait();
+        host.write_all(&control_encode_host_msg(&HostMsg::Quit))
+            .unwrap_or_else(|error| panic!("host Quit should write: {error}"));
+    });
+    start.wait();
+    shared
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    quit.join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    reader
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+
+    wait_until_callback_admission_closed(&quiescence);
+    assert!(quiescence.enter().is_none());
+    assert_ne!(slot.snapshot().status, STATUS_DONE);
+
+    drop(in_flight);
+    worker
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+
+    assert_eq!(slot.snapshot().status, STATUS_DONE);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_FAILURE.load(Ordering::SeqCst), 0);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_CALLS.load(Ordering::SeqCst), 1);
+    assert!(CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.load(Ordering::SeqCst));
+}
+
+#[test]
+fn closing_run_control_unblocks_reader_and_delivers_fail_loud_trigger() {
+    let (host, plugin) = running_plugin_control_pair();
+    let (sender, receiver) = mpsc::channel();
+    let reader = std::thread::spawn(move || run_control_reader(plugin, sender));
+
+    host.shutdown(std::net::Shutdown::Both)
+        .unwrap_or_else(|error| panic!("control shutdown should succeed: {error}"));
+    let trigger = receiver
+        .recv()
+        .unwrap_or_else(|error| panic!("reader should deliver a control fault: {error}"));
+    reader
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+
+    assert!(matches!(
+        trigger,
+        LiveRuntimeTeardownTrigger::RunControlFault { .. }
+    ));
+}
+
+fn wait_until_callback_admission_closed(quiescence: &LiveCallbackQuiescence) {
+    for _attempt in 0..100_000 {
+        if quiescence.is_closed() {
+            return;
+        }
+        std::thread::yield_now();
+    }
+    panic!("teardown worker did not close callback admission");
 }
 
 fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStream>) {

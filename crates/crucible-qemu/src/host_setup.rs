@@ -77,6 +77,44 @@ impl QemuHostPluginSetup {
         self.wake_fd.as_raw_fd()
     }
 
+    /// Signals QEMU's registered plugin wake eventfd.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the retained eventfd rejects the
+    /// exact eight-byte counter write.
+    pub fn signal_plugin_wake(&self) -> Result<(), QemuNodeChannelError> {
+        let bytes = 1_u64.to_ne_bytes();
+        loop {
+            // SAFETY: setup retains a live eventfd and `bytes` is the exact
+            // eight-byte counter representation required by eventfd writes.
+            let result = unsafe {
+                libc::write(
+                    self.wake_fd(),
+                    bytes.as_ptr().cast::<libc::c_void>(),
+                    bytes.len(),
+                )
+            };
+            if result == bytes.len() as isize {
+                return Ok(());
+            }
+            if result >= 0 {
+                return Err(QemuNodeChannelError::new(
+                    "signal plugin wake eventfd",
+                    format!("short eventfd write: expected 8 bytes, wrote {result}"),
+                ));
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(QemuNodeChannelError::new(
+                "signal plugin wake eventfd",
+                error.to_string(),
+            ));
+        }
+    }
+
     /// Proves that the plugin sent no unsolicited run-phase control bytes.
     ///
     /// # Errors
@@ -391,6 +429,8 @@ mod tests {
         assert_fd_open(setup.shmem_fd())?;
         assert_fd_open(setup.wake_fd())?;
         assert_eq!(read_eventfd_counter(setup.wake_fd())?, EVENTFD_WAKE_PROBE);
+        setup.signal_plugin_wake()?;
+        assert_eq!(read_eventfd_counter(setup.wake_fd())?, 1);
         QemuPluginIpcControlChannel::send_quit(&mut setup)?;
         assert_eq!(setup.control_state(), ControlLifecycleState::QuitSent);
 
