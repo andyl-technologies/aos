@@ -25,7 +25,8 @@ use validation::{canonical_cpu_model, validate_accelerator, validate_fixed_text}
 const DEFAULT_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
 const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
 const DEFAULT_MEMORY_MIB: u32 = 512;
-const DEFAULT_ACCEL: &str = "tcg,thread=single";
+const DEFAULT_ACCEL: &str = "sim,thread=single";
+const SIM_OFF_ACCEL: &str = "tcg,thread=single";
 const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
 const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet";
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
@@ -50,6 +51,7 @@ const DEFAULT_ROOT_OVERLAY_FILE_NAME: &str = "crucible-root-overlay.qcow2";
 const ROOT_DRIVE_ID: &str = "crucible-root0";
 const ROOT_DEVICE_ID: &str = "crucible-root-device0";
 const MAX_ICOUNT_SHIFT: u8 = 62;
+const MAX_RR_SWITCH_QUANTUM: u64 = i32::MAX as u64;
 
 /// A candidate QEMU launch profile before determinism validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -260,6 +262,11 @@ impl LaunchProfileCandidate {
         if self.rr_switch_quantum == 0 {
             return Err(LaunchProfileError::RrSwitchQuantumZero);
         }
+        if self.rr_switch_quantum > MAX_RR_SWITCH_QUANTUM {
+            return Err(LaunchProfileError::RrSwitchQuantumTooLarge {
+                quantum: self.rr_switch_quantum,
+            });
+        }
 
         validate_fixed_text("rtc_epoch_utc", &self.rtc_epoch_utc)?;
         validate_fixed_text("kernel_cmdline", &self.kernel_cmdline)?;
@@ -367,6 +374,7 @@ pub struct QemuLaunchCommand {
     vm_hash_material: String,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     qmp: Option<QemuQmpChannelConfig>,
+    plugin_coverage: QemuLaunchPluginSwitch,
 }
 
 impl QemuLaunchCommand {
@@ -398,6 +406,12 @@ impl QemuLaunchCommand {
     #[must_use]
     pub const fn qmp_channel(&self) -> Option<&QemuQmpChannelConfig> {
         self.qmp.as_ref()
+    }
+
+    /// Returns the registration-time coverage mode encoded in `-plugin`.
+    #[must_use]
+    pub const fn plugin_coverage(&self) -> QemuLaunchPluginSwitch {
+        self.plugin_coverage
     }
 
     /// Returns canonical material for hashing the complete QEMU command line.
@@ -496,6 +510,7 @@ impl QemuLaunchCommandBuilder {
             vm_hash_material,
             gdbstub: self.gdbstub,
             qmp: self.qmp,
+            plugin_coverage: self.plugin.coverage(),
         })
     }
 }
@@ -882,6 +897,20 @@ impl DeterministicLaunchProfile {
     /// Returns the QEMU arguments that pin the deterministic launch surface.
     #[must_use]
     pub fn canonical_qemu_args(&self) -> Vec<String> {
+        self.canonical_qemu_args_with_accelerator(DEFAULT_ACCEL)
+    }
+
+    /// Returns stock-TCG arguments for sim-off inertness comparisons.
+    ///
+    /// This argument vector is not a valid Crucible runtime launch. It exists
+    /// only to prove that the patched QEMU binary retains ordinary QEMU
+    /// behavior when the TCG-derived `sim` accelerator is not selected.
+    #[must_use]
+    pub(crate) fn canonical_sim_off_qemu_args(&self) -> Vec<String> {
+        self.canonical_qemu_args_with_accelerator(SIM_OFF_ACCEL)
+    }
+
+    fn canonical_qemu_args_with_accelerator(&self, accelerator: &str) -> Vec<String> {
         let seed_file = self.guest_entropy_seed_file();
 
         vec![
@@ -900,7 +929,7 @@ impl DeterministicLaunchProfile {
             "-m".to_owned(),
             format!("{}M", self.memory_mib),
             "-accel".to_owned(),
-            DEFAULT_ACCEL.to_owned(),
+            accelerator.to_owned(),
             "-cpu".to_owned(),
             self.cpu_model.clone(),
             "-smp".to_owned(),
@@ -955,6 +984,9 @@ impl DeterministicLaunchProfile {
             "vcpu_topology=fixed-at-genesis".to_owned(),
             "runtime_cpu_hotplug=forbidden".to_owned(),
             format!("accelerator={DEFAULT_ACCEL}"),
+            "accelerator_family=tcg-derived-sim".to_owned(),
+            "simulation_mode=on".to_owned(),
+            "stock_tcg_crucible_runtime=forbidden".to_owned(),
             format!("icount_shift={}", self.icount_shift),
             format!("rr_switch_quantum={}", self.rr_switch_quantum),
             "rr_switch_quantum_units=node-icount".to_owned(),
@@ -995,7 +1027,7 @@ impl DeterministicLaunchProfile {
             "guest_entropy_host_sources=disabled".to_owned(),
             "per_vcpu_rng_source=scenario-seed-and-run-seed".to_owned(),
             "per_vcpu_rng_timing_axis=node-icount".to_owned(),
-            "secondary_vcpu_bringup=rr-tcg-icount-deterministic".to_owned(),
+            "secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic".to_owned(),
             format!("kernel_cmdline={}", self.kernel_cmdline),
         ]
         .join("\n")

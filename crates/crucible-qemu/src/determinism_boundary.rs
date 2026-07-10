@@ -42,7 +42,7 @@ pub const REQUIRED_QEMU_FINGERPRINT_EVENT_BOUNDARIES: [SingleVmFingerprintEventB
 
 /// Host-controlled entropy eliminations that must each have a negative micro-test.
 pub const REQUIRED_QEMU_ENTROPY_ELIMINATIONS: [QemuEntropyElimination; 10] = [
-    QemuEntropyElimination::TcgIcountSingleThread,
+    QemuEntropyElimination::SimTcgIcountSingleThread,
     QemuEntropyElimination::CpuModelEntropyPin,
     QemuEntropyElimination::FixedRtcVirtualClock,
     QemuEntropyElimination::GuestEntropyFwCfgSeed,
@@ -231,8 +231,9 @@ impl QemuExecutionFingerprintDefinition {
 /// A host-controlled entropy elimination covered by a regression micro-test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QemuEntropyElimination {
-    /// TCG, fixed icount, sleep-off, align-off, and single-thread execution are pinned.
-    TcgIcountSingleThread,
+    /// TCG-derived sim, fixed icount, sleep-off, align-off, and single-thread
+    /// execution are pinned.
+    SimTcgIcountSingleThread,
     /// The CPU model is fixed and hardware entropy instructions are disabled.
     CpuModelEntropyPin,
     /// The RTC base is fixed and its clock source is virtual time.
@@ -270,7 +271,7 @@ impl QemuEntropyElimination {
     #[must_use]
     pub const fn material_token(self) -> &'static str {
         match self {
-            Self::TcgIcountSingleThread => "tcg-icount-single-thread",
+            Self::SimTcgIcountSingleThread => "sim-tcg-icount-single-thread",
             Self::CpuModelEntropyPin => "cpu-model-entropy-pin",
             Self::FixedRtcVirtualClock => "fixed-rtc-virtual-clock",
             Self::GuestEntropyFwCfgSeed => "guest-entropy-fw-cfg-seed",
@@ -287,8 +288,8 @@ impl QemuEntropyElimination {
 /// Closed negative mutation used to prove an entropy elimination is enforced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum QemuEntropyEliminationNegativeCase {
-    /// Enable adaptive or multi-threaded TCG execution.
-    EnableMttcgOrAdaptiveIcount,
+    /// Select stock TCG, MTTCG, or adaptive icount execution.
+    UseNonSimOrAdaptiveIcount,
     /// Use host CPU identity or CPU entropy instructions.
     UseHostCpuEntropy,
     /// Use a host-driven RTC clock or base.
@@ -315,7 +316,7 @@ impl QemuEntropyEliminationNegativeCase {
     #[must_use]
     pub const fn material_token(self) -> &'static str {
         match self {
-            Self::EnableMttcgOrAdaptiveIcount => "enable-mttcg-or-adaptive-icount",
+            Self::UseNonSimOrAdaptiveIcount => "use-non-sim-or-adaptive-icount",
             Self::UseHostCpuEntropy => "use-host-cpu-entropy",
             Self::UseHostRtc => "use-host-rtc",
             Self::RemoveGuestEntropySeed => "remove-guest-entropy-seed",
@@ -361,9 +362,9 @@ impl QemuEntropyEliminationMicrotest {
 pub fn qemu_entropy_elimination_microtests() -> Vec<QemuEntropyEliminationMicrotest> {
     vec![
         QemuEntropyEliminationMicrotest::new(
-            QemuEntropyElimination::TcgIcountSingleThread,
+            QemuEntropyElimination::SimTcgIcountSingleThread,
             "gate:layer0-determinism",
-            QemuEntropyEliminationNegativeCase::EnableMttcgOrAdaptiveIcount,
+            QemuEntropyEliminationNegativeCase::UseNonSimOrAdaptiveIcount,
         ),
         QemuEntropyEliminationMicrotest::new(
             QemuEntropyElimination::CpuModelEntropyPin,
@@ -574,7 +575,10 @@ fn validate_launch_boundary_material_text(
     material: &str,
 ) -> Result<(), QemuDeterminismBoundaryError> {
     for required in [
-        "accelerator=tcg,thread=single",
+        "accelerator=sim,thread=single",
+        "accelerator_family=tcg-derived-sim",
+        "simulation_mode=on",
+        "stock_tcg_crucible_runtime=forbidden",
         "icount_shift=",
         "rr_switch_quantum=",
         "rr_switch_quantum_units=node-icount",
@@ -726,9 +730,13 @@ fn run_negative_microtest(
     microtest: QemuEntropyEliminationMicrotest,
 ) -> Result<(), QemuDeterminismBoundaryError> {
     match microtest.negative_case {
-        QemuEntropyEliminationNegativeCase::EnableMttcgOrAdaptiveIcount => {
+        QemuEntropyEliminationNegativeCase::UseNonSimOrAdaptiveIcount => {
             expect_candidate_rejected(
-                LaunchProfileCandidate::default().with_accelerator("tcg,thread=multi"),
+                LaunchProfileCandidate::default().with_accelerator("tcg,thread=single"),
+                microtest,
+            )?;
+            expect_candidate_rejected(
+                LaunchProfileCandidate::default().with_accelerator("sim,thread=multi"),
                 microtest,
             )?;
             expect_candidate_rejected(
@@ -860,8 +868,8 @@ fn expected_negative_case(
     elimination: QemuEntropyElimination,
 ) -> QemuEntropyEliminationNegativeCase {
     match elimination {
-        QemuEntropyElimination::TcgIcountSingleThread => {
-            QemuEntropyEliminationNegativeCase::EnableMttcgOrAdaptiveIcount
+        QemuEntropyElimination::SimTcgIcountSingleThread => {
+            QemuEntropyEliminationNegativeCase::UseNonSimOrAdaptiveIcount
         }
         QemuEntropyElimination::CpuModelEntropyPin => {
             QemuEntropyEliminationNegativeCase::UseHostCpuEntropy
@@ -1307,10 +1315,18 @@ mod tests {
 
         assert_eq!(
             LaunchProfileCandidate::default()
-                .with_accelerator("tcg,thread=multi")
+                .with_accelerator("sim,thread=multi")
                 .try_into_deterministic(),
-            Err(LaunchProfileError::AcceleratorNotSingleThreadTcg {
-                accelerator: String::from("tcg,thread=multi"),
+            Err(LaunchProfileError::AcceleratorNotSingleThreadSim {
+                accelerator: String::from("sim,thread=multi"),
+            })
+        );
+        assert_eq!(
+            LaunchProfileCandidate::default()
+                .with_accelerator("tcg,thread=single")
+                .try_into_deterministic(),
+            Err(LaunchProfileError::AcceleratorNotSingleThreadSim {
+                accelerator: String::from("tcg,thread=single"),
             })
         );
         assert_eq!(

@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{
     DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
-    MAX_ICOUNT_SHIFT, MachineResetMode, entropy::GUEST_ENTROPY_RNG_ID,
+    MAX_ICOUNT_SHIFT, MAX_RR_SWITCH_QUANTUM, MachineResetMode, entropy::GUEST_ENTROPY_RNG_ID,
 };
 
 /// A deterministic launch-profile validation error.
@@ -22,9 +22,9 @@ pub enum LaunchProfileError {
         /// The feature that would expose host entropy.
         feature: &'static str,
     },
-    /// The accelerator was not single-threaded TCG.
-    #[error("accelerator must be `tcg,thread=single`, got `{accelerator}`")]
-    AcceleratorNotSingleThreadTcg {
+    /// The accelerator was not the single-threaded TCG-derived sim accelerator.
+    #[error("accelerator must be `sim,thread=single`, got `{accelerator}`")]
+    AcceleratorNotSingleThreadSim {
         /// The rejected accelerator string.
         accelerator: String,
     },
@@ -43,6 +43,12 @@ pub enum LaunchProfileError {
     /// The round-robin vCPU switch quantum was zero.
     #[error("RR switch quantum must be a non-zero node-icount value")]
     RrSwitchQuantumZero,
+    /// The round-robin vCPU switch quantum exceeded the patched QEMU limit.
+    #[error("RR switch quantum {quantum} exceeds maximum {MAX_RR_SWITCH_QUANTUM}")]
+    RrSwitchQuantumTooLarge {
+        /// Rejected round-robin switch quantum.
+        quantum: u64,
+    },
     /// A node requested a fixed icount shift different from the scenario shift.
     #[error(
         "node `{node_id}` icount shift {node_shift} differs from scenario shift {scenario_shift}"
@@ -214,9 +220,9 @@ pub enum QemuPreSpawnLaunchValidationError {
         /// Rejected argument.
         argument: String,
     },
-    /// The selected accelerator was not TCG.
-    #[error("QEMU launch accelerator must be TCG, got `{accelerator}`")]
-    NonTcgAccelerator {
+    /// The selected accelerator was not the TCG-derived sim accelerator.
+    #[error("QEMU Crucible launch accelerator must be `sim`, got `{accelerator}`")]
+    NonSimAccelerator {
         /// Rejected accelerator string.
         accelerator: String,
     },
@@ -226,9 +232,9 @@ pub enum QemuPreSpawnLaunchValidationError {
         /// Rejected accelerator string.
         accelerator: String,
     },
-    /// Single-threaded TCG was not explicitly selected.
-    #[error("QEMU launch must pin `thread=single`, got `{accelerator}`")]
-    SingleThreadTcgNotPinned {
+    /// Single-threaded sim TCG was not explicitly selected.
+    #[error("QEMU sim launch must pin `thread=single`, got `{accelerator}`")]
+    SingleThreadSimNotPinned {
         /// Rejected accelerator string.
         accelerator: String,
     },
@@ -282,6 +288,12 @@ pub enum QemuPreSpawnLaunchValidationError {
     /// The RR switch quantum was zero.
     #[error("QEMU `rr_switch_quantum` must be non-zero")]
     RrSwitchQuantumZero,
+    /// The RR switch quantum exceeded the patched QEMU limit.
+    #[error("QEMU `rr_switch_quantum` {quantum} exceeds maximum {MAX_RR_SWITCH_QUANTUM}")]
+    RrSwitchQuantumTooLarge {
+        /// Rejected round-robin switch quantum.
+        quantum: u64,
+    },
     /// The vCPU count could not be parsed.
     #[error("QEMU `-smp` value `{value}` is invalid")]
     SmpInvalid {
@@ -300,9 +312,9 @@ pub enum QemuPreSpawnLaunchValidationError {
         /// Enabled entropy feature.
         feature: &'static str,
     },
-    /// A machine option selected a non-TCG accelerator.
-    #[error("QEMU machine option selects non-TCG acceleration: `{machine}`")]
-    MachineUsesNonTcgAcceleration {
+    /// A machine option selected an accelerator other than sim.
+    #[error("QEMU Crucible machine option selects a non-sim accelerator: `{machine}`")]
+    MachineUsesNonSimAcceleration {
         /// Rejected machine argument.
         machine: String,
     },
@@ -320,10 +332,10 @@ pub enum QemuPreSpawnLaunchValidationError {
 ///
 /// # Errors
 ///
-/// Returns [`QemuPreSpawnLaunchValidationError`] when the argv selects KVM or
-/// non-TCG acceleration, omits fixed icount, uses `shift=auto`, selects MTTCG,
-/// leaves the RR switch quantum unpinned, inherits host CPU entropy, or enables
-/// a host-timing/host-entropy device.
+/// Returns [`QemuPreSpawnLaunchValidationError`] when the argv does not select
+/// the TCG-derived `sim` accelerator, selects KVM or MTTCG, omits fixed icount,
+/// uses `shift=auto`, leaves the RR switch quantum unpinned, inherits host CPU
+/// entropy, or enables a host-timing/host-entropy device.
 pub fn validate_pre_spawn_qemu_launch_args(
     args: &[String],
 ) -> Result<QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError> {
@@ -402,7 +414,7 @@ pub(super) fn validate_accelerator(accelerator: &str) -> Result<(), LaunchProfil
     if accelerator == DEFAULT_ACCEL {
         Ok(())
     } else {
-        Err(LaunchProfileError::AcceleratorNotSingleThreadTcg {
+        Err(LaunchProfileError::AcceleratorNotSingleThreadSim {
             accelerator: accelerator.to_owned(),
         })
     }
@@ -420,8 +432,8 @@ fn validate_pre_spawn_accelerator(
             },
         );
     }
-    if accel != "tcg" {
-        return Err(QemuPreSpawnLaunchValidationError::NonTcgAccelerator {
+    if accel != "sim" {
+        return Err(QemuPreSpawnLaunchValidationError::NonSimAccelerator {
             accelerator: accelerator.to_owned(),
         });
     }
@@ -432,7 +444,7 @@ fn validate_pre_spawn_accelerator(
             accelerator: accelerator.to_owned(),
         }),
         Some(_) | None => Err(
-            QemuPreSpawnLaunchValidationError::SingleThreadTcgNotPinned {
+            QemuPreSpawnLaunchValidationError::SingleThreadSimNotPinned {
                 accelerator: accelerator.to_owned(),
             },
         ),
@@ -442,10 +454,10 @@ fn validate_pre_spawn_accelerator(
 fn validate_machine_acceleration(machine: &str) -> Result<(), QemuPreSpawnLaunchValidationError> {
     let lower = machine.to_ascii_lowercase();
     if let Some(accel) = unique_comma_value(&lower, "-machine", "accel")?
-        && accel != "tcg"
+        && accel != "sim"
     {
         return Err(
-            QemuPreSpawnLaunchValidationError::MachineUsesNonTcgAcceleration {
+            QemuPreSpawnLaunchValidationError::MachineUsesNonSimAcceleration {
                 machine: machine.to_owned(),
             },
         );
@@ -509,6 +521,9 @@ fn validate_pre_spawn_rr_switch_quantum(
     };
     if quantum == 0 {
         return Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumZero);
+    }
+    if quantum > MAX_RR_SWITCH_QUANTUM {
+        return Err(QemuPreSpawnLaunchValidationError::RrSwitchQuantumTooLarge { quantum });
     }
     Ok(quantum)
 }
@@ -583,12 +598,17 @@ fn reject_option_host_source(
     let lower_option = option.to_ascii_lowercase();
     let lower_value = value.to_ascii_lowercase();
     match lower_option.as_str() {
-        "-net" | "-netdev" | "-nic" if lower_value.starts_with("user") => Err(
-            QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
-                argument: display_argument,
-                reason: "host-timing user networking",
-            },
-        ),
+        "-net" | "-netdev" | "-nic" => {
+            validate_disabled_network_option(&lower_value, display_argument)
+        }
+        "-chardev" => validate_internal_chardev_option(&lower_value, display_argument),
+        "-serial" | "-parallel" | "-monitor" => {
+            validate_disabled_character_frontend(&lower_value, display_argument)
+        }
+        "-usbdevice" => Err(host_source_argument(
+            display_argument,
+            "host USB or legacy passthrough input",
+        )),
         "-rtc" => validate_pre_spawn_rtc(value),
         "-object"
             if lower_value.starts_with("rng-random") || lower_value.starts_with("rng-egd") =>
@@ -600,17 +620,7 @@ fn reject_option_host_source(
                 },
             )
         }
-        "-device"
-            if lower_value.contains("virtio-rng")
-                && !lower_value.contains(GUEST_ENTROPY_RNG_ID) =>
-        {
-            Err(
-                QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
-                    argument: display_argument,
-                    reason: "unseeded guest entropy",
-                },
-            )
-        }
+        "-device" => validate_device_option(&lower_value, display_argument),
         "-realtime" | "-real-time" => Err(
             QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument {
                 argument: option.to_owned(),
@@ -619,6 +629,108 @@ fn reject_option_host_source(
         ),
         _ => Ok(()),
     }
+}
+
+fn validate_disabled_network_option(
+    value: &str,
+    display_argument: String,
+) -> Result<(), QemuPreSpawnLaunchValidationError> {
+    if value.trim() == "none" {
+        return Ok(());
+    }
+
+    let reason = if option_model(value) == "user" {
+        "host-timing user networking"
+    } else {
+        "host-timed or host-fed networking"
+    };
+    Err(host_source_argument(display_argument, reason))
+}
+
+fn validate_internal_chardev_option(
+    value: &str,
+    display_argument: String,
+) -> Result<(), QemuPreSpawnLaunchValidationError> {
+    match option_model(value) {
+        "null" | "ringbuf" => Ok(()),
+        _ => Err(host_source_argument(
+            display_argument,
+            "host-backed character-device input",
+        )),
+    }
+}
+
+fn validate_disabled_character_frontend(
+    value: &str,
+    display_argument: String,
+) -> Result<(), QemuPreSpawnLaunchValidationError> {
+    if value.trim() == "none" {
+        Ok(())
+    } else {
+        Err(host_source_argument(
+            display_argument,
+            "host-backed character frontend input",
+        ))
+    }
+}
+
+fn validate_device_option(
+    value: &str,
+    display_argument: String,
+) -> Result<(), QemuPreSpawnLaunchValidationError> {
+    let model = option_model(value);
+    if is_host_passthrough_device(model) {
+        return Err(host_source_argument(
+            display_argument,
+            "host device passthrough",
+        ));
+    }
+    if is_virtio_rng_device(model) && comma_value(value, "rng") != Some(GUEST_ENTROPY_RNG_ID) {
+        return Err(host_source_argument(
+            display_argument,
+            "unseeded guest entropy",
+        ));
+    }
+    Ok(())
+}
+
+fn option_model(value: &str) -> &str {
+    value.split(',').next().unwrap_or_default().trim()
+}
+
+fn is_virtio_rng_device(model: &str) -> bool {
+    matches!(model, "virtio-rng" | "virtio-rng-pci" | "virtio-rng-ccw")
+}
+
+fn is_host_passthrough_device(model: &str) -> bool {
+    matches!(
+        model,
+        "usb-host"
+            | "usb-redir"
+            | "vfio-pci"
+            | "vfio-pci-nohotplug"
+            | "vfio-platform"
+            | "vfio-ap"
+            | "vfio-ccw"
+            | "pci-assign"
+            | "kvm-pci-assign"
+            | "ivshmem-plain"
+            | "ivshmem-doorbell"
+            | "vhost-vdpa"
+            | "vhost-user-fs-pci"
+            | "vhost-user-scsi-pci"
+            | "vhost-user-blk-pci"
+            | "vhost-user-gpio-pci"
+            | "ccid-card-passthru"
+            | "ipmi-bmc-extern"
+    ) || model.starts_with("vhost-user-net-")
+}
+
+fn host_source_argument(
+    argument: String,
+    reason: &'static str,
+) -> QemuPreSpawnLaunchValidationError {
+    QemuPreSpawnLaunchValidationError::HostTimingOrEntropyArgument { argument, reason }
 }
 
 fn validate_pre_spawn_rtc(rtc: &str) -> Result<(), QemuPreSpawnLaunchValidationError> {

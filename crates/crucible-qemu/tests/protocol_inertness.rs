@@ -45,6 +45,18 @@ fn sim_mode_off_creates_no_control_socket_and_sends_no_frames() {
             .any(|arg| arg == "-plugin" || arg.contains("control-socket=")),
         "sim-off canonical QEMU args must not enable plugin/control I/O"
     );
+    assert!(
+        observation
+            .qemu_args
+            .windows(2)
+            .any(|window| { window == ["-accel", "tcg,thread=single"] })
+    );
+    assert!(
+        !observation
+            .qemu_args
+            .windows(2)
+            .any(|window| { window == ["-accel", "sim,thread=single"] })
+    );
 
     let report = assert_inert(observation);
     assert_eq!(report.simulation_mode, QemuSimulationMode::Off);
@@ -74,6 +86,30 @@ fn sim_mode_off_rejects_control_plane_activation() {
                 argument: String::from(forbidden_arg),
             },
             "sim-off launch must reject {forbidden_arg}"
+        );
+    }
+    assert_eq!(
+        assert_not_inert(QemuControlPlaneObservation {
+            qemu_args: vec![String::from("-accel"), String::from("sim,thread=single"),],
+            ..QemuControlPlaneObservation::sim_off(&profile)
+        }),
+        QemuControlPlaneInertnessError::ControlPlaneArgumentWhenSimulationOff {
+            argument: String::from("sim,thread=single"),
+        }
+    );
+    for machine_flag in ["-machine", "-M"] {
+        assert_eq!(
+            assert_not_inert(QemuControlPlaneObservation {
+                qemu_args: vec![
+                    String::from(machine_flag),
+                    String::from("q35,usb=off,accel=sim"),
+                ],
+                ..QemuControlPlaneObservation::sim_off(&profile)
+            }),
+            QemuControlPlaneInertnessError::ControlPlaneArgumentWhenSimulationOff {
+                argument: String::from("q35,usb=off,accel=sim"),
+            },
+            "sim-off launch must reject the {machine_flag} accelerator form"
         );
     }
     assert_eq!(

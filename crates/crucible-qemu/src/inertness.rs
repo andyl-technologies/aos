@@ -96,7 +96,7 @@ impl QemuControlPlaneObservation {
     pub fn sim_off(profile: &DeterministicLaunchProfile) -> Self {
         Self {
             simulation_mode: QemuSimulationMode::Off,
-            qemu_args: profile.canonical_qemu_args(),
+            qemu_args: profile.canonical_sim_off_qemu_args(),
             control_socket_created: false,
             sent_control_frame_count: 0,
             runtime_control_frame_count: 0,
@@ -314,10 +314,28 @@ fn validate_sim_on(
 }
 
 fn sim_off_control_argument(args: &[String]) -> Option<&str> {
-    args.iter().find_map(|arg| {
-        SIM_OFF_FORBIDDEN_ARG_FRAGMENTS
-            .iter()
-            .any(|fragment| arg == fragment || arg.contains(fragment))
-            .then_some(arg.as_str())
-    })
+    args.windows(2)
+        .find_map(|window| {
+            let selects_sim = match window[0].as_str() {
+                "-accel" => window[1]
+                    .split(',')
+                    .next()
+                    .is_some_and(|accelerator| accelerator.eq_ignore_ascii_case("sim")),
+                "-machine" | "-M" => window[1].split(',').any(|option| {
+                    option.split_once('=').is_some_and(|(key, value)| {
+                        key.eq_ignore_ascii_case("accel") && value.eq_ignore_ascii_case("sim")
+                    })
+                }),
+                _ => false,
+            };
+            selects_sim.then_some(window[1].as_str())
+        })
+        .or_else(|| {
+            args.iter().find_map(|arg| {
+                SIM_OFF_FORBIDDEN_ARG_FRAGMENTS
+                    .iter()
+                    .any(|fragment| arg == fragment || arg.contains(fragment))
+                    .then_some(arg.as_str())
+            })
+        })
 }

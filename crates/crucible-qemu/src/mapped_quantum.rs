@@ -1,18 +1,21 @@
 //! Owned mapped shared-memory adapter for QEMU quantum channels.
 
 use crucible::{
-    BackendInput, ExecutionFingerprint, ExecutionHorizon, Icount, SchedulerSendAuthorizer,
+    BackendInput, ExecutionFingerprint, ExecutionHorizon, Icount, ObservableEvent,
+    SchedulerSendAuthorizer,
 };
+use crucible_protocol::PluginBasicBlockCoverageObservation;
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
 };
 use thiserror::Error;
 
 use crate::{
-    QemuAsyncQuantumCompletion, QemuInboundFrame, QemuNodeChannelError, QemuNodeEmittedFrame,
-    QemuNodeIdleState, QemuNodePendingQuantum, QemuPendingQuantum, QemuQuantumError,
-    QemuQuantumOperation, QemuQuantumShmemConfig, QemuQuantumShmemHotPath, QemuQuantumShmemView,
-    QemuShmemHotPathChannel, assert_qemu_quantum_hot_path_is_shmem_only,
+    QemuAsyncQuantumCompletion, QemuBasicBlockCoverageBridge, QemuCoverageError, QemuInboundFrame,
+    QemuNodeChannelError, QemuNodeEmittedFrame, QemuNodeIdleState, QemuNodePendingQuantum,
+    QemuPendingQuantum, QemuQuantumError, QemuQuantumOperation, QemuQuantumShmemConfig,
+    QemuQuantumShmemHotPath, QemuQuantumShmemView, QemuShmemHotPathChannel,
+    assert_qemu_quantum_hot_path_is_shmem_only,
 };
 
 /// An owned, mapped shared-memory hot-path channel for one QEMU node.
@@ -20,6 +23,10 @@ pub struct QemuMappedQuantumShmemHotPath {
     config: QemuQuantumShmemConfig,
     region: MappedSetupRegion,
     next_router_inbound_sequence: u64,
+    coverage_bridge: Option<QemuBasicBlockCoverageBridge>,
+    next_coverage_sequence: u64,
+    last_coverage_icount: Option<u64>,
+    seen_coverage_map_indices: Vec<bool>,
     send_authorizer: Box<dyn SchedulerSendAuthorizer>,
 }
 
@@ -38,11 +45,54 @@ impl QemuMappedQuantumShmemHotPath {
         send_authorizer: impl SchedulerSendAuthorizer + 'static,
     ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
         validate_config(&config)?;
-        let _view = mapped_view(&mut region, &config)?;
+        {
+            let _view = mapped_view(&mut region, &config)?;
+        }
+        let coverage_bridge = match config.coverage.registration_plan() {
+            Ok(plan) if plan.requests_tcg_exec_coverage() => {
+                let bridge =
+                    QemuBasicBlockCoverageBridge::from_registration_plan(config.node.clone(), plan)
+                        .map_err(|source| QemuMappedQuantumShmemHotPathError::Coverage {
+                            source,
+                        })?;
+                let ring = region.coverage_ring_mut(config.vm_slot).map_err(|source| {
+                    QemuMappedQuantumShmemHotPathError::RegionAccess { source }
+                })?;
+                if ring.entries.len() != bridge.consumer().map_entries() {
+                    return Err(QemuMappedQuantumShmemHotPathError::CoverageQueueCapacity {
+                        map_entries: bridge.consumer().map_entries(),
+                        queue_capacity: ring.entries.len(),
+                    });
+                }
+                Some(bridge)
+            }
+            Ok(_disabled) => None,
+            Err(source) => {
+                return Err(QemuMappedQuantumShmemHotPathError::Coverage {
+                    source: QemuCoverageError::Engine { source },
+                });
+            }
+        };
+        let next_coverage_sequence = if coverage_bridge.is_some() {
+            region
+                .coverage_ring_mut(config.vm_slot)
+                .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+                .header
+                .read_index()
+        } else {
+            0
+        };
+        let seen_coverage_map_indices = coverage_bridge.as_ref().map_or_else(Vec::new, |bridge| {
+            vec![false; bridge.consumer().map_entries()]
+        });
         Ok(Self {
             config,
             region,
             next_router_inbound_sequence: 0,
+            coverage_bridge,
+            next_coverage_sequence,
+            last_coverage_icount: None,
+            seen_coverage_map_indices,
             send_authorizer: Box::new(send_authorizer),
         })
     }
@@ -83,6 +133,106 @@ impl QemuMappedQuantumShmemHotPath {
             })
             .map_err(QemuNodeChannelError::from)?;
         Ok(())
+    }
+
+    fn drain_coverage_at_quantum_boundary(
+        &mut self,
+        boundary_icount: u64,
+    ) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
+        let Some(bridge) = self.coverage_bridge.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let ring = self
+            .region
+            .coverage_ring_mut(self.config.vm_slot)
+            .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?;
+        if ring.header.read_index() != self.next_coverage_sequence {
+            return Err(QemuNodeChannelError::new(
+                "drain coverage",
+                format!(
+                    "coverage read sequence changed: expected {}, observed {}",
+                    self.next_coverage_sequence,
+                    ring.header.read_index()
+                ),
+            ));
+        }
+
+        let mut events = Vec::new();
+        while let Some(entry) = ring
+            .header
+            .dequeue_coverage(ring.entries)
+            .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?
+        {
+            let entry = entry
+                .validate()
+                .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?;
+            if entry.current_icount() > boundary_icount {
+                return Err(QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!(
+                        "coverage icount {} exceeds completed quantum boundary {}",
+                        entry.current_icount(),
+                        boundary_icount
+                    ),
+                ));
+            }
+            if let Some(previous) = self.last_coverage_icount
+                && entry.current_icount() < previous
+            {
+                return Err(QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!(
+                        "coverage icount regressed from {previous} to {}",
+                        entry.current_icount()
+                    ),
+                ));
+            }
+            let observation = PluginBasicBlockCoverageObservation::new(
+                entry.current_icount(),
+                entry.vcpu_index(),
+                entry.guest_pc(),
+                entry.block_len(),
+                entry.map_index(),
+                true,
+            )
+            .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?;
+            let map_index = usize::try_from(entry.map_index()).map_err(|_error| {
+                QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!(
+                        "coverage map index {} does not fit usize",
+                        entry.map_index()
+                    ),
+                )
+            })?;
+            let host_map_entries = self.seen_coverage_map_indices.len();
+            let Some(was_seen) = self.seen_coverage_map_indices.get_mut(map_index) else {
+                return Err(QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!(
+                        "coverage map index {map_index} is outside {} host entries",
+                        host_map_entries
+                    ),
+                ));
+            };
+            if *was_seen {
+                return Err(QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!("coverage map index {map_index} was published more than once"),
+                ));
+            }
+            let consumed = bridge
+                .consume_plugin_observation(observation)
+                .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?;
+            events.push(consumed.into_event());
+            *was_seen = true;
+            self.last_coverage_icount = Some(entry.current_icount());
+            self.next_coverage_sequence =
+                self.next_coverage_sequence.checked_add(1).ok_or_else(|| {
+                    QemuNodeChannelError::new("drain coverage", "coverage sequence overflowed")
+                })?;
+        }
+        Ok(events)
     }
 }
 
@@ -125,6 +275,17 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
                 .map_err(QemuNodeChannelError::from)?;
             Ok(QemuAsyncQuantumCompletion::from(report))
         })
+    }
+
+    fn coverage_enabled(&self) -> bool {
+        self.coverage_bridge.is_some()
+    }
+
+    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
+        let boundary_icount = self.with_hot_path("coverage teardown boundary", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        self.drain_coverage_at_quantum_boundary(boundary_icount)
     }
 
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
@@ -186,6 +347,20 @@ pub enum QemuMappedQuantumShmemHotPathError {
     Quantum {
         /// Underlying quantum hot-path error.
         source: QemuQuantumError,
+    },
+    /// Coverage policy or consumer construction failed.
+    #[error("mapped QEMU coverage bridge configuration failed")]
+    Coverage {
+        /// Underlying coverage bridge error.
+        source: QemuCoverageError,
+    },
+    /// The ABI queue cardinality differed from the configured coverage map.
+    #[error("coverage map has {map_entries} entries but mapped queue has {queue_capacity}")]
+    CoverageQueueCapacity {
+        /// Engine map cardinality.
+        map_entries: usize,
+        /// Mapped queue cardinality.
+        queue_capacity: usize,
     },
 }
 
