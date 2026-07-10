@@ -663,6 +663,12 @@ pub(super) extern "C" fn crucible_qemu_plugin_live_ninep_burst_done_cb(userdata:
     }
 }
 
+/// Borrows one QEMU-owned callback input payload.
+///
+/// # Safety
+///
+/// A non-null `data` must identify `len` readable bytes that remain live and
+/// immutable for the returned borrow.
 unsafe fn input_payload<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
     if data.is_null() {
         return None;
@@ -672,6 +678,12 @@ unsafe fn input_payload<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
     Some(unsafe { core::slice::from_raw_parts(data, len) })
 }
 
+/// Borrows one QEMU-owned callback output buffer.
+///
+/// # Safety
+///
+/// A non-null `output` must identify `capacity` writable bytes to which the
+/// caller has exclusive access for the returned borrow.
 unsafe fn output_buffer<'a>(
     output: *mut u8,
     capacity: usize,

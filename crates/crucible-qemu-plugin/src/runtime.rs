@@ -2016,7 +2016,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_failure_marks_the_singleton_failed_before_retry() {
+    fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() {
         let _runtime_state = isolate_runtime_state_for_test();
         let fixture = LiveInstallFixture::new();
         let host = fixture.spawn_mismatched_handshake_host();
@@ -2060,7 +2060,7 @@ mod tests {
     }
 
     #[test]
-    fn irreversible_reservation_failure_blocks_retry() {
+    fn irreversible_reservation_failure_blocks_second_install_attempt() {
         let _runtime_state = isolate_runtime_state_for_test();
         {
             let mut reservation =
