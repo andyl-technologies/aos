@@ -153,12 +153,28 @@
         needle = ''rr_switch_events="$rr_switch_events_a"'';
       }
       {
-        label = "S11 diffs explicit RR switch trace";
-        needle = "RR switch trace mismatch";
+        label = "S11 records an explicit RR switch projection mismatch";
+        needle = "rr_switch_trace_match=false";
       }
       {
-        label = "S11 diffs per-vCPU delta trace";
-        needle = "per-vCPU icount-delta trace mismatch";
+        label = "S11 records a per-vCPU delta projection mismatch";
+        needle = "per_vcpu_delta_trace_match=false";
+      }
+      {
+        label = "S11 routes raw mismatches through a shared localizer";
+        needle = "localize_first_difference";
+      }
+      {
+        label = "S11 reports the first differing node-icount";
+        needle = "first_differing_node_icount";
+      }
+      {
+        label = "S11 negative-tests per-vCPU register localization";
+        needle = "mismatch_localization_vcpu_negative_test=true";
+      }
+      {
+        label = "S11 negative-tests RR cursor localization";
+        needle = "mismatch_localization_rr_cursor_negative_test=true";
       }
       {
         label = "S11 result records explicit RR switch trace equality";
@@ -327,7 +343,10 @@ in
             require_line "$s11_result" "rr_switch_trace_match=true"
             require_line "$s11_result" "per_vcpu_delta_trace_match=true"
             grep -q '^rr_switch_events=' "$s11_result"
+            require_line "$s11_result" "first_differing_node_icount=none"
             require_line "$s11_result" "first_differing_component=none"
+            require_line "$s11_result" "mismatch_localization_vcpu_negative_test=true"
+            require_line "$s11_result" "mismatch_localization_rr_cursor_negative_test=true"
             cp "$s11_result" "$out/s11-sim-multi-vcpu-fingerprint.result"
 
             cat > "$out/result" <<'RESULT'

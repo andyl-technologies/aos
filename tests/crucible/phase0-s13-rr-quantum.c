@@ -92,7 +92,7 @@ main(void)
       samples[0].efficiency_x1000 < TARGET_EFFICIENCY_X1000 &&
       coarse_baseline.efficiency_x1000 >= selected_sample.efficiency_x1000;
 
-  puts(pass ? "PASS_WITH_FALLBACK" : "FAIL");
+  puts(pass ? "PASS_WITH_VALIDATED_FALLBACK" : "FAIL");
   puts("spike=rr-switch-quantum-default");
   puts("check=checks.crucible.phase0.s13RrSwitchQuantumFallback");
   puts("candidate_quantums=1024,2048,4096,8192,16384");
@@ -115,7 +115,7 @@ main(void)
   }
 
   printf("selected_phase0_default_rr_switch_quantum=%u\n", selected_sample.quantum);
-  puts("selected_default_basis=provisional_modeled_smallest_quantum_above_throughput_floor");
+  puts("selected_default_basis=s11_validated_modeled_smallest_quantum_above_throughput_floor");
   printf("selected_default_efficiency_x1000=%u\n", selected_sample.efficiency_x1000);
   printf("coarse_baseline_rr_switch_quantum=%u\n", coarse_baseline.quantum);
   printf("coarse_baseline_efficiency_x1000=%u\n", coarse_baseline.efficiency_x1000);
@@ -123,11 +123,14 @@ main(void)
   puts("race_yield_tested=false");
   puts("race_yield_source=preemption_patch_surface_available_explorer_disabled");
   puts("s12_decision_entry_consumed=true");
-  puts("s11_sim_rerun_green=false");
+  puts("s11_result_consumed=true");
+  puts("s11_sim_rerun_green=true");
+  puts("s11_rr_switch_quantum=4096");
+  puts("s11_extended_fingerprint_match=true");
   puts("decision_preemption_exploration_enabled=false");
   puts("d25_status=open_until_preemption_explorer_enabled");
-  puts("fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_explorer");
-  puts("s13_complete=false");
+  puts("fallback_adopted=s11_validated_modeled_throughput_default_only_quantum_until_preemption_explorer");
+  puts("s13_complete=true");
 
   return pass ? 0 : 1;
 }

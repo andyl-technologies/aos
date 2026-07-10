@@ -95,7 +95,7 @@ in rec {
     s10Aarch64Doorbell = import ./phase0-s10.nix {inherit pkgs;};
     s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
     s12PreemptionDecision = import ./phase0-s12.nix {inherit pkgs;};
-    s13RrSwitchQuantumFallback = import ./phase0-s13.nix {inherit pkgs;};
+    s13RrSwitchQuantumFallback = import ./phase0-s13.nix {inherit pkgs lib;};
     s14GdbstubFallback = import ./phase0-s14.nix {inherit pkgs;};
     abiDrift = import ./phase0-abi-drift.nix {inherit pkgs;};
     coverageOverhead = import ./phase0-coverage.nix {inherit pkgs lib;};
