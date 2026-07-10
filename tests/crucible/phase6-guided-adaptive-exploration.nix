@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath,
-  taskIds,
+  taskIds ? [],
+  openTaskIds ? [],
   gateName,
   dependencies ? [],
 }: let
@@ -19,21 +20,30 @@
   guidedTest = builtins.readFile ../../crates/crucible/tests/gate_guided_adaptive_exploration.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
-  taskId = builtins.head taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
+  allTaskIds = taskIds ++ openTaskIds;
+  taskId =
+    if builtins.length allTaskIds == 1
+    then builtins.head allTaskIds
+    else throw "guided/adaptive exploration check requires exactly one completed or open task id";
 
   taskSpec =
     {
       T-ADV-17 = {
         testFilter = "gate_guidance_signals_are_fixed_point_readers_only";
-        result = "guidance=fixed-point-readers-only";
+        result = "partial_guidance=fixed-point-scaffolding-only";
         docNeedles = [
           {
-            label = "T-ADV-17 checked off";
-            needle = "- [x] **T-ADV-17**";
+            label = "T-ADV-17 remains open";
+            needle = "- [ ] **T-ADV-17**";
           }
           {
-            label = "guidance completion note";
-            needle = "Completed by `checks.crucible.phase6.guidanceSignals`";
+            label = "guidance partial-evidence note";
+            needle = "Partial evidence from `checks.crucible.phase6.guidanceSignals`";
+          }
+          {
+            label = "guidance owned-rarity-table blocker";
+            needle = "owned, deterministically maintained rarity table";
           }
         ];
         modelNeedles = [
@@ -77,15 +87,19 @@
       };
       T-ADV-18 = {
         testFilter = "gate_adaptive_strategy_selection_is_deterministic_and_fair";
-        result = "adaptive=deterministic-off-by-default";
+        result = "partial_adaptive=non-ucb-selection-scaffolding";
         docNeedles = [
           {
-            label = "T-ADV-18 checked off";
-            needle = "- [x] **T-ADV-18**";
+            label = "T-ADV-18 remains open";
+            needle = "- [ ] **T-ADV-18**";
           }
           {
-            label = "adaptive completion note";
-            needle = "Completed by `checks.crucible.phase6.adaptiveStrategies`";
+            label = "adaptive partial-evidence note";
+            needle = "Partial evidence from `checks.crucible.phase6.adaptiveStrategies`";
+          }
+          {
+            label = "adaptive UCB blocker";
+            needle = "required deterministic UCB default";
           }
         ];
         modelNeedles = [
@@ -125,15 +139,19 @@
       };
       T-ADV-19 = {
         testFilter = "gate_guidance_determinism_lint_rejects_float_scores";
-        result = "lint=f64-rejected";
+        result = "partial_lint=synthetic-input-only";
         docNeedles = [
           {
-            label = "T-ADV-19 checked off";
-            needle = "- [x] **T-ADV-19**";
+            label = "T-ADV-19 remains open";
+            needle = "- [ ] **T-ADV-19**";
           }
           {
-            label = "guidance lint completion note";
-            needle = "Completed by `checks.crucible.phase6.guidanceDeterminismLint`";
+            label = "guidance lint partial-evidence note";
+            needle = "Partial evidence from `checks.crucible.phase6.guidanceDeterminismLint`";
+          }
+          {
+            label = "guidance actual-source lint blocker";
+            needle = "comment/string-aware scan of the actual signal and bandit ordering sources";
           }
         ];
         modelNeedles = [
@@ -161,15 +179,19 @@
       };
       T-ADV-20 = {
         testFilter = "gate_preemption_branching_records_oracle_validated_children";
-        result = "preemption=vcpu-switch-and-interrupt";
+        result = "partial_preemption=no-partial-order-reduction-proof";
         docNeedles = [
           {
-            label = "T-ADV-20 checked off";
-            needle = "- [x] **T-ADV-20**";
+            label = "T-ADV-20 remains open";
+            needle = "- [ ] **T-ADV-20**";
           }
           {
-            label = "preemption completion note";
-            needle = "Completed by `checks.crucible.phase6.preemptionBranching`";
+            label = "preemption partial-evidence note";
+            needle = "Partial evidence from `checks.crucible.phase6.preemptionBranching`";
+          }
+          {
+            label = "preemption reduction blocker";
+            needle = "the current gate explicitly disables reduction";
           }
         ];
         modelNeedles = [
@@ -209,15 +231,19 @@
       };
       T-ADV-21 = {
         testFilter = "gate_app_random_branching_is_optional_and_bounded";
-        result = "app_random=observed-draw-sites-only";
+        result = "partial_app_random=caller-supplied-sites-unbounded-samples";
         docNeedles = [
           {
-            label = "T-ADV-21 checked off";
-            needle = "- [x] **T-ADV-21**";
+            label = "T-ADV-21 remains open";
+            needle = "- [ ] **T-ADV-21**";
           }
           {
-            label = "app-random completion note";
-            needle = "Completed by `checks.crucible.phase6.appRandomBranching`";
+            label = "app-random partial-evidence note";
+            needle = "Partial evidence from `checks.crucible.phase6.appRandomBranching`";
+          }
+          {
+            label = "app-random observed-site blocker";
+            needle = "deriving sites from recorded observations";
           }
         ];
         modelNeedles = [
@@ -374,6 +400,7 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
             gate=${gateName}
             ${taskSpec.result}
             RESULT
