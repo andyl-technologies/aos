@@ -100,6 +100,22 @@
       needle = "qemu_plugin_crucible_ram_hash";
     }
     {
+      label = "non-RAM VMState hash plugin export";
+      needle = "qemu_plugin_crucible_device_state_hash";
+    }
+    {
+      label = "non-RAM VMState serializer";
+      needle = "qemu_save_device_state(file)";
+    }
+    {
+      label = "in-memory VMState observation channel";
+      needle = "qio_channel_buffer_new(4096)";
+    }
+    {
+      label = "serialized VMState byte count";
+      needle = "*bytes_out = buffer->usage";
+    }
+    {
       label = "pause VM plugin export";
       needle = "qemu_plugin_crucible_pause_vm";
     }
@@ -167,6 +183,14 @@
       needle = "ram_hash_includes_block_id_length_and_bytes=true";
     }
     {
+      label = "serialized non-RAM VMState hash assertion";
+      needle = "device_state_hash_covers_serialized_non_ram_vmstate=true";
+    }
+    {
+      label = "device-state error output assertion";
+      needle = "device_state_error_status_clears_outputs=true";
+    }
+    {
       label = "migration normalizer assertion";
       needle = "migration_host_timer_zeroed_under_icount=true";
     }
@@ -200,7 +224,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg exec hw/boards include/qemu include/system \
+            mkdir -p accel/tcg exec hw/boards include/qemu include/system io \
               migration plugins qapi qemu sysemu system tcg
             for header in \
               exec/cpu-common.h \
@@ -213,8 +237,11 @@ in
               exec/translation-block.h \
               exec/translator.h \
               hw/boards.h \
+              io/channel-buffer.h \
               migration/blocker.h \
+              migration/qemu-file.h \
               migration/qemu-file-types.h \
+              migration/savevm.h \
               migration/vmstate.h \
               plugins/plugin.h \
               qapi/error.h \
@@ -537,6 +564,8 @@ in
             grep -q '^vcpu_register_read_requested_by_index=true$' "$out/result"
             grep -q '^rr_current_vcpu_sentinel=UINT64_MAX$' "$out/result"
             grep -q '^ram_hash_includes_block_id_length_and_bytes=true$' "$out/result"
+            grep -q '^device_state_hash_covers_serialized_non_ram_vmstate=true$' "$out/result"
+            grep -q '^device_state_error_status_clears_outputs=true$' "$out/result"
             grep -q '^pause_vm_requests_run_state_paused=true$' "$out/result"
             grep -q '^migration_host_timer_zeroed_under_icount=true$' "$out/result"
             grep -q '^migration_host_timer_preserved_without_icount=true$' "$out/result"

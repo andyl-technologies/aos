@@ -209,7 +209,7 @@
       }
       {
         label = "trace importer rejects zero device observation hashes";
-        needle = "field `device_event_hash` must be non-zero";
+        needle = "field `device_state_hash` must be non-zero";
       }
       {
         label = "first differing sample component enum";
@@ -365,7 +365,7 @@
       }
       {
         label = "trace plugin versioned schema";
-        needle = "crucible.qemu.trace-fingerprint.v2";
+        needle = "crucible.qemu.trace-fingerprint.v3";
       }
       {
         label = "trace plugin register schema hashes";
@@ -390,6 +390,42 @@
       {
         label = "order-sensitive device event history";
         needle = "device_event_hash = fnv1a_u64(device_event_hash, event_hash)";
+      }
+      {
+        label = "current serialized device state";
+        needle = "qemu_plugin_crucible_device_state_hash(";
+      }
+      {
+        label = "device-state hash in trace samples";
+        needle = "device_state_hash";
+      }
+      {
+        label = "device-state byte count in trace samples";
+        needle = "device_state_bytes";
+      }
+      {
+        label = "independent definition-only mode";
+        needle = "definition_only=";
+      }
+      {
+        label = "definition mode suppresses translation callbacks";
+        needle = "if (!definition_only)";
+      }
+      {
+        label = "definition waits for all configured vCPUs";
+        needle = "all_register_sets_initialized()";
+      }
+      {
+        label = "definition record wire kind";
+        needle = ''{\"kind\":\"definition\"'';
+      }
+      {
+        label = "definition records pre-execution pause";
+        needle = "paused_before_guest_execution";
+      }
+      {
+        label = "definition records serialized device-state status";
+        needle = "device_state_status";
       }
       {
         label = "MMIO read and write values";
@@ -561,6 +597,15 @@ in
             initramfs_digest=$(sha256sum "$SMP_GUEST_INITRAMFS" | cut -d ' ' -f 1)
             firmware_digest=$(sha256sum "$SMP_GUEST_FIRMWARE" | cut -d ' ' -f 1)
             seed_digest=$(sha256sum "$seed" | cut -d ' ' -f 1)
+            guest_image_digest=$(printf '%s\n' \
+              "firmware=$firmware_digest" \
+              "kernel=$kernel_digest" \
+              "initramfs=$initramfs_digest" \
+              | sha256sum | cut -d ' ' -f 1)
+            injected_input_sequence_digest=$(printf '%s\n' \
+              'crucible.injected-input-sequence.v1' \
+              'events=0' \
+              | sha256sum | cut -d ' ' -f 1)
             launch_definition_digest=$(printf '%s\n' \
               'nodefaults=true' 'no_user_config=true' 'display=none' 'monitor=none' \
               'machine=q35' "firmware_digest=$firmware_digest" \
@@ -587,6 +632,7 @@ in
             for digest in \
               "$qemu_build_digest" "$trace_plugin_build_digest" \
               "$kernel_digest" "$initramfs_digest" "$firmware_digest" "$seed_digest" \
+              "$guest_image_digest" "$injected_input_sequence_digest" \
               "$launch_definition_digest"; do
               printf '%s\n' "$digest" | grep -E -q '^[0-9a-f]{64}$' \
                 || { echo "FAIL: invalid N-vCPU launch digest: $digest" >&2; exit 1; }
@@ -703,6 +749,86 @@ in
               return 1
             }
 
+            run_definition() {
+              label=definition
+              qmp_socket="$TMPDIR/qmp-nvcpu-definition.sock"
+              trace="$TMPDIR/qemu-nvcpu-definition.jsonl"
+              rm -f "$qmp_socket" "$trace"
+
+              timeout 2400 "$qemu_binary" \
+                -nodefaults \
+                -no-user-config \
+                -display none \
+                -monitor none \
+                -machine q35 \
+                -bios "$SMP_GUEST_FIRMWARE" \
+                -accel sim,thread=single \
+                -icount shift=0,sleep=off,align=off,rr_switch_quantum=4096 \
+                -cpu qemu64,-rdrand,-rdseed \
+                -m "$memory_mib" \
+                -smp 4 \
+                -rtc base=2026-01-01T00:00:00,clock=vm \
+                -seed 0x0010c016 \
+                -fw_cfg name=opt/crucible/seed,file="$seed" \
+                -object rng-builtin,id=crucible-rng0 \
+                -device virtio-rng-pci,rng=crucible-rng0 \
+                -kernel "$vmlinuz" \
+                -initrd "$SMP_GUEST_INITRAMFS" \
+                -append "$SMP_GUEST_KERNEL_APPEND" \
+                -chardev file,id=serial0,path="$TMPDIR/serial-definition.log" \
+                -serial chardev:serial0 \
+                -qmp "unix:$qmp_socket,server=on,wait=off" \
+                -plugin "$trace_plugin",out="$trace",definition_only=on,vcpus=4,launch_digest="$launch_definition_digest",qemu_build_digest="$qemu_build_digest",plugin_build_digest="$trace_plugin_build_digest" \
+                -no-shutdown \
+                -no-reboot &
+              qemu_pid="$!"
+
+              wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for the definition preflight"
+              wait_for_stop_at_pause "$label" "$qmp_socket" \
+                || fail "definition-only QEMU did not pause before guest execution"
+              qmp_cmd "$qmp_socket" '{"execute":"query-cpus-fast"}' "$TMPDIR/qmp-cpus-definition.json" \
+                || fail "definition preflight QMP topology query failed"
+              jq -e -s '[.[] | select(.return | type == "array")][-1].return | map(."cpu-index") | sort == [0,1,2,3]' \
+                "$TMPDIR/qmp-cpus-definition.json" >/dev/null \
+                || fail "definition preflight did not report exact CPU indexes 0..3"
+              jq -e -s \
+                --argjson quantum "$quantum" \
+                --arg launch_definition_digest "$launch_definition_digest" \
+                --arg qemu_build_digest "$qemu_build_digest" \
+                --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
+                'length == 1 and (.[0] | (
+                  .kind == "definition"
+                  and .schema == "crucible.qemu.trace-fingerprint.v3"
+                  and .definition_only == true
+                  and .paused_before_guest_execution == true
+                  and .retired == 0
+                  and .tracked_vcpus == 4
+                  and .rr_switch_quantum == $quantum
+                  and .launch_definition_digest == $launch_definition_digest
+                  and .qemu_build_digest == $qemu_build_digest
+                  and .trace_plugin_build_digest == $trace_plugin_build_digest
+                  and .ram_bytes > 0
+                  and .ram_hash != "0000000000000000"
+                  and .device_state_complete == true
+                  and .device_state_status == 0
+                  and .device_state_failures == 0
+                  and .device_state_bytes > 0
+                  and .device_state_hash != "0000000000000000"
+                  and .sample_register_failures == 0
+                  and .register_read_failures == 0
+                  and (.register_counts | length) == 4
+                  and all(.register_counts[]; . > 0)
+                  and (.register_file_bytes | length) == 4
+                  and all(.register_file_bytes[]; . > 0)
+                  and (.register_schema_hashes | length) == 4
+                  and all(.register_schema_hashes[]; . != "0000000000000000")
+                ))' "$trace" >/dev/null \
+                || fail "definition-only QEMU did not emit one complete paused preflight"
+              qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-definition.json" || true
+              wait "$qemu_pid" || fail "definition-only QEMU exited unsuccessfully"
+              qemu_pid=""
+            }
+
             run_one() {
               label="$1"
               qmp_socket="$TMPDIR/qmp-nvcpu-$label.sock"
@@ -761,7 +887,7 @@ in
                 | [ .[] | select((.kind // "sample") == "sample" and .final == true) ] as $finals
                 | ($samples | map(.retired)) == [range($cadence; $horizon + 1; $cadence)]
                 and all($samples[]; (
-                  .schema == "crucible.qemu.trace-fingerprint.v2"
+                  .schema == "crucible.qemu.trace-fingerprint.v3"
                   and .launch_definition_digest != null
                   and .qemu_build_digest != null
                   and .trace_plugin_build_digest != null
@@ -772,6 +898,10 @@ in
                   and .memory_events_enabled == true
                   and .device_event_capture == true
                   and .device_event_hash != null
+                  and .device_state_complete == true
+                  and .device_state_status == 0
+                  and .device_state_failures == 0
+                  and .device_state_bytes > 0
                   and .memory_events > 0
                   and .ram_bytes > 0
                   and .sample_register_failures == 0
@@ -791,10 +921,13 @@ in
                   and .rr_cursor_position >= 0
                   and .rr_cursor_position < .rr_switch_quantum
                   and .ram_hash != "0000000000000000"
+                  and .device_state_hash != "0000000000000000"
                   and .device_event_hash != "0000000000000000"
                 ))
                 and (($samples | last) | (
                   .retired == $horizon
+                  and .trigger == "event"
+                  and .event_boundary == "horizon-advance"
                   and all(.register_retired[]; . > 0)
                   and .io_events > 0
                 ))
@@ -835,34 +968,45 @@ in
                 > "$TMPDIR/provenance-$label.json"
             }
 
+            run_definition
             run_one a
             start_jitter
             run_one b
             stop_jitter
 
             jq -n \
-              --slurpfile trace "$TMPDIR/qemu-nvcpu-trace-a.jsonl" \
+              --slurpfile trace "$TMPDIR/qemu-nvcpu-definition.jsonl" \
               --arg schema 'crucible.qemu.trace-comparison-contract.v1' \
               --arg node 'qemu-nvcpu-gate' \
               --argjson cadence_icount "$cadence" \
               --argjson horizon_icount "$horizon" \
               --argjson rr_switch_quantum "$quantum" \
               --arg launch_definition_digest "$launch_definition_digest" \
+              --arg guest_image_digest "$guest_image_digest" \
+              --arg kernel_cmdline "$SMP_GUEST_KERNEL_APPEND" \
+              --arg seed_digest "$seed_digest" \
+              --arg injected_input_sequence_digest "$injected_input_sequence_digest" \
               --arg qemu_build_digest "$qemu_build_digest" \
               --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
-              '([$trace[] | select((.kind // "sample") == "sample" and .final != true)][0]) as $sample
+              '([$trace[] | select(.kind == "definition")][0]) as $sample
                | {schema:$schema,node:$node,cadence_icount:$cadence_icount,horizon_icount:$horizon_icount,
                   rr_switch_quantum:$rr_switch_quantum,baseline_ram_bytes:$sample.ram_bytes,
+                  device_state_bytes:$sample.device_state_bytes,
                   register_counts:$sample.register_counts,
                   register_file_bytes:$sample.register_file_bytes,
                   register_schema_hashes:$sample.register_schema_hashes,
                   launch_definition_digest:$launch_definition_digest,
+                  guest_image_digest:$guest_image_digest,
+                  kernel_cmdline:$kernel_cmdline,
+                  seed_digest:$seed_digest,
+                  injected_input_sequence_digest:$injected_input_sequence_digest,
                   qemu_build_digest:$qemu_build_digest,
                   trace_plugin_build_digest:$trace_plugin_build_digest}' \
               > "$TMPDIR/fingerprint-contract.json"
 
             "$fingerprint_cli" \
               "$TMPDIR/fingerprint-contract.json" \
+              "$TMPDIR/qemu-nvcpu-definition.jsonl" \
               "$TMPDIR/qmp-cpus-a.json" "$TMPDIR/provenance-a.json" \
               "$TMPDIR/qemu-nvcpu-trace-a.jsonl" \
               "$TMPDIR/qmp-cpus-b.json" "$TMPDIR/provenance-b.json" \
@@ -878,6 +1022,7 @@ in
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/qemu-nvcpu-trace-mutated.jsonl"
             if "$fingerprint_cli" \
               "$TMPDIR/fingerprint-contract.json" \
+              "$TMPDIR/qemu-nvcpu-definition.jsonl" \
               "$TMPDIR/qmp-cpus-a.json" "$TMPDIR/provenance-a.json" \
               "$TMPDIR/qemu-nvcpu-trace-a.jsonl" \
               "$TMPDIR/qmp-cpus-b.json" "$TMPDIR/provenance-b.json" \
@@ -901,6 +1046,7 @@ in
               expected="$4"
               if "$fingerprint_cli" \
                 "$TMPDIR/fingerprint-contract.json" \
+                "$TMPDIR/qemu-nvcpu-definition.jsonl" \
                 "$TMPDIR/qmp-cpus-a.json" "$TMPDIR/provenance-a.json" \
                 "$TMPDIR/qemu-nvcpu-trace-a.jsonl" \
                 "$qmp_b" "$TMPDIR/provenance-b.json" "$trace_b" \
@@ -937,7 +1083,7 @@ in
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
-              then .device_event_hash = "00000000000000fd" else . end
+              then .device_state_hash = "00000000000000fd" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-device-mutated.jsonl"
             expect_cli_failure device-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-device-mutated.jsonl" '^first_differing_component=device_state_digest$'
@@ -958,10 +1104,10 @@ in
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
-              then .device_event_hash = "0000000000000000" else . end
+              then .device_state_hash = "0000000000000000" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-device.jsonl"
             expect_cli_failure zero-device-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-zero-device.jsonl" 'field `device_event_hash` must be non-zero'
+              "$TMPDIR/trace-zero-device.jsonl" 'field `device_state_hash` must be non-zero'
 
             jq -c --argjson cadence "$cadence" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $cadence)
@@ -982,7 +1128,7 @@ in
               then .ram_bytes += 1 else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-ram-bytes-mutated.jsonl"
             expect_cli_failure ram-bytes-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-ram-bytes-mutated.jsonl" 'guest RAM observation differs from the run-A baseline'
+              "$TMPDIR/trace-ram-bytes-mutated.jsonl" 'guest RAM observation differs from the independent preflight'
 
             jq -c 'if (.return | type == "array") then .return[3]."cpu-index" = 2 else . end' \
               "$TMPDIR/qmp-cpus-b.json" > "$TMPDIR/qmp-topology-mutated.json"
@@ -990,10 +1136,12 @@ in
               "$TMPDIR/qemu-nvcpu-trace-b.jsonl" 'QMP CPU indexes must be the exact sorted set'
 
             mkdir -p "$out"
+            cp "$TMPDIR/qemu-nvcpu-definition.jsonl" "$out/qemu-nvcpu-definition.jsonl"
             cp "$TMPDIR/qemu-nvcpu-trace-a.jsonl" "$out/qemu-nvcpu-trace-a.jsonl"
             cp "$TMPDIR/qemu-nvcpu-trace-b.jsonl" "$out/qemu-nvcpu-trace-b.jsonl"
             cp "$TMPDIR/qmp-cpus-a.json" "$out/qmp-cpus-a.json"
             cp "$TMPDIR/qmp-cpus-b.json" "$out/qmp-cpus-b.json"
+            cp "$TMPDIR/qmp-cpus-definition.json" "$out/qmp-cpus-definition.json"
             cp "$TMPDIR/fingerprint-compare.result" "$out/fingerprint-compare.result"
             cp "$TMPDIR/fingerprint-negative.err" "$out/fingerprint-negative.err"
             cp "$TMPDIR/fingerprint-contract.json" "$out/fingerprint-contract.json"
@@ -1010,7 +1158,7 @@ in
             grep -q '"rr_switch_quantum":4096' "$out/qemu-nvcpu-trace-a.jsonl"
             grep -q '^PASS$' "$out/fingerprint-compare.result"
             grep -q '^status=partial$' "$out/fingerprint-compare.result"
-            grep -q '^definition_status=provisional$' "$out/fingerprint-compare.result"
+            grep -q '^definition_status=canonical-preflight-pinned$' "$out/fingerprint-compare.result"
             grep -q '^comparison=canonical-rust-stream$' "$out/fingerprint-compare.result"
             grep -q '^gate_hook=run_single_vm_fingerprint_gate$' "$out/fingerprint-compare.result"
             grep -q '^first_differing_component=vcpu_register_digest\[1\]$' "$out/fingerprint-negative.err"
@@ -1056,16 +1204,16 @@ in
             launch_identity=complete-canonical-guest-visible-options-plus-artifact-digests
             canonical_guest_visible_launch_material_complete=true
             actual_argv_hash_complete=false
-            observation_contract_source=first-run-baseline
-            independent_observation_contract=false
-            fingerprint_definition=provisional-periodic-trace-v2
+            observation_contract_source=independent-definition-only-qemu-preflight
+            independent_observation_contract=true
+            fingerprint_definition=canonical-periodic-and-event-boundary-trace-v3
             periodic_cadence=600000000-real-smp-guest
             live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum
             postprocessing_negative_controls=register,rr,retired,ram,device,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
             live_perturbation_controls=second-run-host-cpu-load
-            device_component_scope=ordered-cpu-mmio-read-write-history
-            event_boundary_sampling=false
-            full_device_state_complete=false
+            device_component_scope=current-non-ram-qemu-vmstate
+            event_boundary_sampling=horizon-advance-live;frame-and-fault-model-only
+            full_device_state_complete=true
             integrated_fixed_configuration_runner=false
             related_phase0_spike_source_check=checks.crucible.phase0.s11MultiVcpuFingerprint
             RESULT

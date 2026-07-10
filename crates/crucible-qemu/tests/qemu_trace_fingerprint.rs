@@ -7,35 +7,66 @@
 use std::io::Cursor;
 
 use crucible_qemu::{
-    QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceFingerprintDefinition, QemuTraceFingerprintImport,
-    QemuTraceFingerprintImportError, QemuTraceIdentityContract, QemuTraceObservationContract,
-    QemuTraceVcpuContract, SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintMismatchKind,
-    SingleVmFingerprintSampleDifference, compare_single_vm_fingerprint_streams,
+    QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
+    QemuTraceFingerprintImport, QemuTraceFingerprintImportError, QemuTraceIdentityContract,
+    QemuTraceObservationContract, QemuTraceVcpuContract, SINGLE_VM_FINGERPRINT_DIGEST_BYTES,
+    SingleVmFingerprintMismatchKind, SingleVmFingerprintSampleDifference,
+    compare_single_vm_fingerprint_streams,
 };
 use serde_json::{Value, json};
 
 #[test]
-fn provisional_trace_definition_names_its_limited_observation_semantics() {
-    let baseline_observation = observation(2);
-    let definition = QemuTraceFingerprintDefinition::new(4093, &baseline_observation)
-        .expect("provisional definition should validate");
+fn canonical_trace_definition_pins_complete_preflight_observation_semantics() {
+    let pinned_observation = observation(2);
+    let definition = QemuTraceFingerprintDefinition::new(4093, &pinned_observation)
+        .expect("canonical definition should validate");
     let material = definition.canonical_material();
-    assert!(material.contains("trigger=periodic-aggregate-icount-only"));
-    assert!(material.contains("component[3]=ordered-cpu-mmio-read-write-history"));
+    assert!(material.contains("trigger[0]=periodic-aggregate-icount"));
+    assert!(material.contains("trigger[1]=horizon-advance"));
+    assert!(material.contains("trigger[2]=frame-delivery"));
+    assert!(material.contains("trigger[3]=fault-activation"));
+    assert!(material.contains("component[3]=qemu-non-ram-vmstate"));
     assert!(material.contains("rr_switch_quantum=4096"));
-    assert!(material.contains("baseline_ram_bytes=67108864"));
+    assert!(material.contains("guest_ram_bytes=67108864"));
+    assert!(material.contains("device_state_bytes=4096"));
     assert!(material.contains("launch_definition_digest="));
-    assert!(material.contains("complete_current_device_state=false"));
-    assert!(material.contains("event_boundary_sampling=false"));
-    assert!(!material.contains("component[3]=device-state"));
+    assert!(material.contains("complete_current_device_state=true"));
+    assert!(material.contains("event_boundary_sampling=true"));
     let other_observation = observation(3);
     assert_ne!(
         definition.definition_digest(),
         QemuTraceFingerprintDefinition::new(4093, &other_observation)
-            .expect("alternate provisional definition should validate")
+            .expect("alternate canonical definition should validate")
             .definition_digest(),
         "vCPU/RAM/RR/identity observation parameters must be definition-hashed"
     );
+}
+
+#[test]
+fn definition_preflight_is_independent_complete_and_instruction_free() {
+    let preflight =
+        QemuTraceDefinitionPreflight::import(Cursor::new(definition_preflight(2).to_string()))
+            .expect("independent definition preflight should import");
+    let definition = QemuTraceFingerprintDefinition::new(4096, preflight.observation())
+        .expect("preflight should build the canonical definition");
+    assert!(definition.canonical_material().contains("vcpu[1].cpu_id=1"));
+    assert!(
+        definition
+            .canonical_material()
+            .contains("device_state_bytes=4096")
+    );
+
+    let mut incomplete = definition_preflight(2);
+    incomplete["device_state_failures"] = Value::from(1);
+    let error = QemuTraceDefinitionPreflight::import(Cursor::new(incomplete.to_string()))
+        .expect_err("failed VMState preflight must fail closed");
+    assert!(error.to_string().contains("device_state_failures"));
+
+    let mut executed = definition_preflight(2);
+    executed["retired"] = Value::from(1);
+    let error = QemuTraceDefinitionPreflight::import(Cursor::new(executed.to_string()))
+        .expect_err("preflight after guest execution must fail closed");
+    assert!(error.to_string().contains("`retired` must be zero"));
 }
 
 #[test]
@@ -89,11 +120,11 @@ fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
     ));
 
     let mut values = trace_values(2);
-    values[0]["device_event_capture"] = Value::Bool(false);
+    values[0]["device_state_complete"] = Value::Bool(false);
     let error = importer(2)
         .import(Cursor::new(json_lines(&values)))
         .expect_err("disabled device observation must fail");
-    assert!(error.to_string().contains("device_event_capture"));
+    assert!(error.to_string().contains("device_state_complete"));
 
     let mut values = trace_values(2);
     values[0]
@@ -145,14 +176,14 @@ fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
     assert!(error.to_string().contains("`ram_hash` must be non-zero"));
 
     let mut values = trace_values(2);
-    values[0]["device_event_hash"] = Value::String("0000000000000000".to_owned());
+    values[0]["device_state_hash"] = Value::String("0000000000000000".to_owned());
     let error = importer(2)
         .import(Cursor::new(json_lines(&values)))
         .expect_err("zero device observation hash must fail");
     assert!(
         error
             .to_string()
-            .contains("`device_event_hash` must be non-zero")
+            .contains("`device_state_hash` must be non-zero")
     );
 
     let mut values = trace_values(2);
@@ -281,7 +312,7 @@ fn real_qemu_trace_import_accepts_bounded_post_horizon_teardown() {
 fn importer(vcpus: usize) -> QemuTraceFingerprintImport {
     let observation = observation(vcpus);
     let definition = QemuTraceFingerprintDefinition::new(4096, &observation)
-        .expect("test provisional definition should validate");
+        .expect("test canonical definition should validate");
     QemuTraceFingerprintImport::new(
         "node-a",
         definition.definition_digest().to_vec(),
@@ -306,6 +337,7 @@ fn observation(vcpus: usize) -> QemuTraceObservationContract {
         (0..vcpus as u64).collect(),
         4096,
         64 * 1024 * 1024,
+        4096,
         vcpu_contracts,
         identity,
     )
@@ -322,6 +354,32 @@ fn trace_values(vcpus: usize) -> Vec<Value> {
         sample(8192, 1, vcpus),
         terminal(vcpus),
     ]
+}
+
+fn definition_preflight(vcpus: usize) -> Value {
+    json!({
+        "kind": "definition",
+        "schema": QEMU_TRACE_FINGERPRINT_SCHEMA,
+        "definition_only": true,
+        "paused_before_guest_execution": true,
+        "device_state_complete": true,
+        "retired": 0,
+        "tracked_vcpus": vcpus,
+        "rr_switch_quantum": 4096,
+        "launch_definition_digest": "10".repeat(32),
+        "qemu_build_digest": "20".repeat(32),
+        "trace_plugin_build_digest": "30".repeat(32),
+        "register_counts": (0..vcpus).map(|_| 24).collect::<Vec<_>>(),
+        "register_file_bytes": (0..vcpus).map(|_| 184).collect::<Vec<_>>(),
+        "register_schema_hashes": (0..vcpus)
+            .map(|vcpu| format!("{:016x}", 0x100 + vcpu as u64))
+            .collect::<Vec<_>>(),
+        "ram_bytes": 64 * 1024 * 1024,
+        "device_state_bytes": 4096,
+        "sample_register_failures": 0,
+        "register_read_failures": 0,
+        "device_state_failures": 0
+    })
 }
 
 fn sample(retired: u64, current_vcpu: u64, vcpus: usize) -> Value {
@@ -349,6 +407,8 @@ fn sample(retired: u64, current_vcpu: u64, vcpus: usize) -> Value {
         "tracked_vcpus": vcpus,
         "stop_at": 8192,
         "stop_requested": retired == 8192,
+        "trigger": if retired == 8192 { "event" } else { "periodic" },
+        "event_boundary": if retired == 8192 { Value::String("horizon-advance".to_owned()) } else { Value::Null },
         "rr_current_vcpu": current_vcpu,
         "rr_cursor_position": 0,
         "rr_switch_quantum": 4096,
@@ -362,8 +422,10 @@ fn sample(retired: u64, current_vcpu: u64, vcpus: usize) -> Value {
         "register_schema_hashes": register_schema_hashes,
         "register_retired": register_retired,
         "ram_hash": format!("{:016x}", retired + 2),
-        "device_event_hash": format!("{:016x}", retired + 3),
-        "device_event_capture": true,
+        "device_state_hash": format!("{:016x}", retired + 3),
+        "device_state_bytes": 4096,
+        "device_state_complete": true,
+        "device_state_failures": 0,
         "extended_hash": format!("{:016x}", retired + 4),
         "ram_bytes": 64 * 1024 * 1024,
         "memory_events": retired,

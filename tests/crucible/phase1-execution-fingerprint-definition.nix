@@ -271,12 +271,12 @@ in
             content_addressed=true
             implementation_scope=definition-and-model-observer
             provisional_trace_importer=crucible-qemu-fingerprint
-            provisional_trace_schema=crucible.qemu.trace-fingerprint.v2
-            provisional_device_component=ordered-cpu-mmio-read-write-history
-            provisional_event_boundary_sampling=false
-            provisional_observation_contract_source=first-run-baseline
-            independent_observation_contract=false
-            full_device_state_complete=false
+            provisional_trace_schema=crucible.qemu.trace-fingerprint.v3
+            provisional_device_component=current-non-ram-qemu-vmstate
+            provisional_event_boundary_sampling=horizon-advance-live;frame-and-fault-model-only
+            provisional_observation_contract_source=independent-definition-only-qemu-preflight
+            independent_observation_contract=true
+            full_device_state_complete=true
             task_completion=partial
             RESULT
           '';

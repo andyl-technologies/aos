@@ -194,8 +194,10 @@ in
             grep -q '^real_qemu_adversary=second-run-host-cpu-load$' "$real_qemu_result"
             grep -q '^real_qemu_comparison=canonical-rust-stream$' "$real_qemu_result"
             grep -q '^real_qemu_gate_hook=run_single_vm_fingerprint_gate$' "$real_qemu_result"
-            grep -q '^postprocessing_negative_controls=register,rr,retired,ram,device,cadence,horizon,ram-bytes,topology$' "$real_qemu_result"
-            grep -q '^fingerprint_definition=provisional-periodic-trace-v2$' "$real_qemu_result"
+            grep -q '^postprocessing_negative_controls=register,rr,retired,ram,device,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology$' "$real_qemu_result"
+            grep -q '^fingerprint_definition=canonical-periodic-and-event-boundary-trace-v3$' "$real_qemu_result"
+            grep -q '^independent_observation_contract=true$' "$real_qemu_result"
+            grep -q '^full_device_state_complete=true$' "$real_qemu_result"
 
             cp "$gate_result" "$out/single-vm-fingerprint.result"
             cat > "$out/result" <<'RESULT'
@@ -215,11 +217,11 @@ in
             production_real_qemu_runs=two-under-host-load
             postprocessing_mismatch_negatives=register,rr,retired,ram,device
             live_perturbation_controls=second-run-host-cpu-load
-            device_component_scope=ordered-cpu-mmio-read-write-history
-            event_boundary_sampling=false
-            full_device_state_complete=false
+            device_component_scope=current-non-ram-qemu-vmstate
+            event_boundary_sampling=horizon-advance-live;frame-and-fault-model-only
+            full_device_state_complete=true
             integrated_fixed_configuration_runner=false
-            independent_observation_contract=false
+            independent_observation_contract=true
             instruction_exact_refinement=false
             RESULT
           '';

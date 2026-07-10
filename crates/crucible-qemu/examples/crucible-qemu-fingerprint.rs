@@ -1,8 +1,9 @@
 //! Imports and compares two provenance-bound real-QEMU fingerprint traces.
 //!
-//! The surrounding gate launches the same fixed VM twice. This executable
-//! validates the launch/build provenance and exact QMP CPU topology of both
-//! runs before importing the provisional periodic trace schema.
+//! A definition-only QEMU preflight pins the observation shape before the
+//! surrounding gate launches the same fixed VM twice. This executable validates
+//! the launch/build provenance and exact QMP CPU topology of both runs before
+//! importing the canonical periodic and event-boundary trace schema.
 
 use std::env;
 use std::fs::File;
@@ -11,13 +12,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crucible_qemu::{
-    QemuTraceFingerprintDefinition, QemuTraceFingerprintImport, QemuTraceIdentityContract,
+    QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition, QemuTraceFingerprintImport,
     QemuTraceObservationContract, QemuTraceVcpuContract, SingleVmFingerprintBisectionError,
     SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
-    SingleVmFingerprintGateError, SingleVmFingerprintRunError, SingleVmFingerprintRunOrdinal,
-    SingleVmFingerprintRunRequest, SingleVmFingerprintRunner, SingleVmFingerprintScenario,
-    SingleVmFingerprintStream, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
-    run_single_vm_fingerprint_gate,
+    SingleVmFingerprintGateError, SingleVmFingerprintRunError, SingleVmFingerprintRunInputs,
+    SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
+    SingleVmFingerprintScenario, SingleVmFingerprintStream, SingleVmHostProfile,
+    SingleVmNvcpuFingerprintContract, run_single_vm_fingerprint_gate,
 };
 use serde_json::Value;
 
@@ -36,18 +37,20 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let args = env::args().skip(1).collect::<Vec<_>>();
-    if args.len() != 7 {
+    if args.len() != 8 {
         return Err(
-            "usage: crucible-qemu-fingerprint CONTRACT QMP_A PROVENANCE_A TRACE_A QMP_B PROVENANCE_B TRACE_B"
+            "usage: crucible-qemu-fingerprint CONTRACT DEFINITION_TRACE QMP_A PROVENANCE_A TRACE_A QMP_B PROVENANCE_B TRACE_B"
                 .to_owned(),
         );
     }
 
     let contract = ComparisonContract::read(Path::new(&args[0]))?;
-    let first_cpu_ids = read_qmp_cpu_ids(Path::new(&args[1]))?;
-    let first_provenance = RunProvenance::read(Path::new(&args[2]))?;
-    let second_cpu_ids = read_qmp_cpu_ids(Path::new(&args[4]))?;
-    let second_provenance = RunProvenance::read(Path::new(&args[5]))?;
+    let preflight = import_definition_preflight(Path::new(&args[1]))?;
+    contract.validate_preflight(preflight.observation())?;
+    let first_cpu_ids = read_qmp_cpu_ids(Path::new(&args[2]))?;
+    let first_provenance = RunProvenance::read(Path::new(&args[3]))?;
+    let second_cpu_ids = read_qmp_cpu_ids(Path::new(&args[5]))?;
+    let second_provenance = RunProvenance::read(Path::new(&args[6]))?;
     contract.validate_runs(
         &first_cpu_ids,
         &first_provenance,
@@ -55,18 +58,20 @@ fn run() -> Result<(), String> {
         &second_provenance,
     )?;
 
-    let first_observation = contract.observation(first_cpu_ids)?;
-    let second_observation = contract.observation(second_cpu_ids)?;
-    if first_observation != second_observation {
-        return Err("the two runs resolved different trace observation contracts".to_owned());
+    if first_cpu_ids != preflight.observation().qmp_cpu_ids()
+        || second_cpu_ids != preflight.observation().qmp_cpu_ids()
+    {
+        return Err(
+            "comparison-run QMP topology differs from the independent preflight".to_owned(),
+        );
     }
-    let definition =
-        QemuTraceFingerprintDefinition::new(contract.cadence_icount, &first_observation)
-            .map_err(|error| format!("invalid provisional trace definition: {error}"))?;
-    let first_importer = contract.importer(&definition, first_observation.clone())?;
-    let second_importer = contract.importer(&definition, second_observation)?;
-    let first_trace = PathBuf::from(&args[3]);
-    let second_trace = PathBuf::from(&args[6]);
+    let observation = preflight.observation().clone();
+    let definition = QemuTraceFingerprintDefinition::new(contract.cadence_icount, &observation)
+        .map_err(|error| format!("invalid preflight-pinned trace definition: {error}"))?;
+    let first_importer = contract.importer(&definition, observation.clone())?;
+    let second_importer = contract.importer(&definition, observation)?;
+    let first_trace = PathBuf::from(&args[4]);
+    let second_trace = PathBuf::from(&args[7]);
     let first = import_trace(&first_importer, &first_trace)?;
     let second = import_trace(&second_importer, &second_trace)?;
 
@@ -75,11 +80,26 @@ fn run() -> Result<(), String> {
         contract.rr_switch_quantum,
     )
     .map_err(|error| format!("invalid launch-derived vCPU contract: {error}"))?;
+    let run_inputs = SingleVmFingerprintRunInputs::new(
+        decode_digest("guest_image_digest", &contract.guest_image_digest)?,
+        contract.kernel_cmdline.clone(),
+        decode_digest("seed_digest", &contract.seed_digest)?,
+        decode_digest(
+            "injected_input_sequence_digest",
+            &contract.injected_input_sequence_digest,
+        )?,
+        decode_digest(
+            "launch_definition_digest",
+            &contract.launch_definition_digest,
+        )?,
+    )
+    .map_err(|error| format!("invalid fixed run inputs: {error}"))?;
     let scenario = SingleVmFingerprintScenario::new_with_nvcpu_contract(
         format!("{}:{}", contract.node, contract.launch_definition_digest),
         definition.definition_digest().to_vec(),
         contract.horizon_icount,
         nvcpu_contract,
+        run_inputs,
         SingleVmHostProfile::new("real-qemu-trace-gate", ["second-run-host-cpu-load"])
             .map_err(|error| format!("invalid host adversary profile: {error}"))?,
     )
@@ -90,7 +110,7 @@ fn run() -> Result<(), String> {
         Ok(report) => {
             println!("PASS");
             println!("status=partial");
-            println!("definition_status=provisional");
+            println!("definition_status=canonical-preflight-pinned");
             println!(
                 "definition_digest={}",
                 lower_hex(&definition.definition_digest())
@@ -99,14 +119,14 @@ fn run() -> Result<(), String> {
             println!("horizon_icount={}", contract.horizon_icount);
             println!("vcpu_count={}", contract.vcpu_contracts.len());
             println!("rr_switch_quantum={}", contract.rr_switch_quantum);
-            println!("fingerprint_source=real-qemu-trace-plugin-v2");
-            println!("device_component=ordered-cpu-mmio-read-write-history");
-            println!("event_boundary_sampling=false");
+            println!("fingerprint_source=real-qemu-trace-plugin-v3");
+            println!("device_component=current-non-ram-qemu-vmstate");
+            println!("event_boundary_sampling=true");
             println!("comparison=canonical-rust-stream");
             println!("gate_hook=run_single_vm_fingerprint_gate");
             println!("trace_identity_digests=validated-in-every-sample");
-            println!("observation_contract_source=first-run-baseline");
-            println!("independent_observation_contract=false");
+            println!("observation_contract_source=independent-definition-only-qemu-preflight");
+            println!("independent_observation_contract=true");
             println!("instruction_exact_refinement=false");
             Ok(())
         }
@@ -135,8 +155,13 @@ struct ComparisonContract {
     horizon_icount: u64,
     rr_switch_quantum: u64,
     baseline_ram_bytes: u64,
+    device_state_bytes: u64,
     vcpu_contracts: Vec<QemuTraceVcpuContract>,
     launch_definition_digest: String,
+    guest_image_digest: String,
+    kernel_cmdline: String,
+    seed_digest: String,
+    injected_input_sequence_digest: String,
     qemu_build_digest: String,
     trace_plugin_build_digest: String,
 }
@@ -175,28 +200,38 @@ impl ComparisonContract {
             horizon_icount: u64_field(&value, "horizon_icount", path)?,
             rr_switch_quantum: u64_field(&value, "rr_switch_quantum", path)?,
             baseline_ram_bytes: u64_field(&value, "baseline_ram_bytes", path)?,
+            device_state_bytes: u64_field(&value, "device_state_bytes", path)?,
             vcpu_contracts,
             launch_definition_digest,
+            guest_image_digest: digest_text(&value, "guest_image_digest", path)?,
+            kernel_cmdline: text_field(&value, "kernel_cmdline", path)?,
+            seed_digest: digest_text(&value, "seed_digest", path)?,
+            injected_input_sequence_digest: digest_text(
+                &value,
+                "injected_input_sequence_digest",
+                path,
+            )?,
             qemu_build_digest: digest_text(&value, "qemu_build_digest", path)?,
             trace_plugin_build_digest: digest_text(&value, "trace_plugin_build_digest", path)?,
         })
     }
 
-    fn observation(&self, cpu_ids: Vec<u64>) -> Result<QemuTraceObservationContract, String> {
-        let identity = QemuTraceIdentityContract::new(
-            self.launch_definition_digest.clone(),
-            self.qemu_build_digest.clone(),
-            self.trace_plugin_build_digest.clone(),
-        )
-        .map_err(|error| error.to_string())?;
-        QemuTraceObservationContract::new(
-            cpu_ids,
-            self.rr_switch_quantum,
-            self.baseline_ram_bytes,
-            self.vcpu_contracts.clone(),
-            identity,
-        )
-        .map_err(|error| error.to_string())
+    fn validate_preflight(&self, preflight: &QemuTraceObservationContract) -> Result<(), String> {
+        let identity = preflight.identity();
+        if preflight.qmp_cpu_ids().len() != self.vcpu_contracts.len()
+            || preflight.rr_switch_quantum() != self.rr_switch_quantum
+            || preflight.guest_ram_bytes() != self.baseline_ram_bytes
+            || preflight.device_state_bytes() != self.device_state_bytes
+            || preflight.vcpu_contracts() != self.vcpu_contracts
+            || identity.launch_definition_digest() != self.launch_definition_digest
+            || identity.qemu_build_digest() != self.qemu_build_digest
+            || identity.trace_plugin_build_digest() != self.trace_plugin_build_digest
+        {
+            return Err(
+                "definition-only QEMU preflight differs from the comparison contract".to_owned(),
+            );
+        }
+        Ok(())
     }
 
     fn importer(
@@ -345,6 +380,21 @@ fn import_trace(
     importer
         .import(BufReader::new(file))
         .map_err(|error| format!("failed to import trace {}: {error}", path.display()))
+}
+
+fn import_definition_preflight(path: &Path) -> Result<QemuTraceDefinitionPreflight, String> {
+    let file = File::open(path).map_err(|error| {
+        format!(
+            "failed to open definition preflight {}: {error}",
+            path.display()
+        )
+    })?;
+    QemuTraceDefinitionPreflight::import(BufReader::new(file)).map_err(|error| {
+        format!(
+            "failed to import definition preflight {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn read_qmp_cpu_ids(path: &Path) -> Result<Vec<u64>, String> {
@@ -497,6 +547,19 @@ fn validate_digest_text(label: &str, text: &str) -> Result<(), String> {
             "{label} must contain exactly 64 hexadecimal digits"
         ))
     }
+}
+
+fn decode_digest(label: &str, text: &str) -> Result<Vec<u8>, String> {
+    validate_digest_text(label, text)?;
+    text.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let digits = std::str::from_utf8(pair)
+                .map_err(|error| format!("invalid UTF-8 in {label}: {error}"))?;
+            u8::from_str_radix(digits, 16)
+                .map_err(|error| format!("invalid hexadecimal {label}: {error}"))
+        })
+        .collect()
 }
 
 fn emit_mismatch(mismatch: &crucible_qemu::SingleVmFingerprintMismatch) {

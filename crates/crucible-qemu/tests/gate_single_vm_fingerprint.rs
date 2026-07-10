@@ -12,13 +12,14 @@ use crucible_protocol::{
 use crucible_qemu::{
     SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
     SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
-    SingleVmFingerprintGateError, SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError,
-    SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
-    SingleVmFingerprintSample, SingleVmFingerprintSampleDifference,
+    SingleVmFingerprintDivergenceStateDump, SingleVmFingerprintGateError,
+    SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError, SingleVmFingerprintRunInputs,
+    SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunStateDump,
+    SingleVmFingerprintRunner, SingleVmFingerprintSample, SingleVmFingerprintSampleDifference,
     SingleVmFingerprintSampleMaterial, SingleVmFingerprintScenario, SingleVmFingerprintStream,
-    SingleVmFingerprintTrigger, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
-    SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor,
-    SingleVmVcpuRegisterDigest, compare_single_vm_fingerprint_streams,
+    SingleVmFingerprintTrigger, SingleVmFingerprintVcpuState, SingleVmHostProfile,
+    SingleVmNvcpuFingerprintContract, SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology,
+    SingleVmRoundRobinCursor, SingleVmVcpuRegisterDigest, compare_single_vm_fingerprint_streams,
     compute_single_vm_sample_rolling_fingerprint, initial_single_vm_rolling_fingerprint,
     run_single_vm_fingerprint_gate,
 };
@@ -55,6 +56,50 @@ fn gate_single_vm_fingerprint_runs_fixed_scenario_twice() {
             .requests
             .iter()
             .all(|request| request.scenario() == &scenario)
+    );
+    assert_eq!(
+        runner.requests[0].scenario().run_inputs(),
+        runner.requests[1].scenario().run_inputs(),
+        "both backend launches must receive the same image/cmdline/seed/input tuple"
+    );
+}
+
+#[test]
+fn gate_single_vm_fingerprint_content_addresses_exact_run_inputs() {
+    let baseline = SingleVmFingerprintRunInputs::new(
+        digest(0x31),
+        "console=ttyS0",
+        digest(0x32),
+        digest(0x33),
+        digest(0x34),
+    )
+    .unwrap_or_else(|error| panic!("baseline run inputs should validate: {error}"));
+    let changed_cmdline = SingleVmFingerprintRunInputs::new(
+        digest(0x31),
+        "console=ttyS0 debug",
+        digest(0x32),
+        digest(0x33),
+        digest(0x34),
+    )
+    .unwrap_or_else(|error| panic!("changed run inputs should validate: {error}"));
+    let changed_input_sequence = SingleVmFingerprintRunInputs::new(
+        digest(0x31),
+        "console=ttyS0",
+        digest(0x32),
+        digest(0x35),
+        digest(0x34),
+    )
+    .unwrap_or_else(|error| panic!("changed input sequence should validate: {error}"));
+
+    assert_ne!(baseline.content_digest(), changed_cmdline.content_digest());
+    assert_ne!(
+        baseline.content_digest(),
+        changed_input_sequence.content_digest()
+    );
+    assert!(
+        baseline
+            .canonical_material()
+            .contains("kernel_cmdline=console=ttyS0")
     );
 }
 
@@ -582,6 +627,14 @@ fn scenario_nvcpu(vcpu_count: usize, rr_switch_quantum: u64) -> SingleVmFingerpr
         digest(1),
         12_288,
         contract,
+        SingleVmFingerprintRunInputs::new(
+            digest(0x21),
+            "console=ttyS0",
+            digest(0x22),
+            digest(0x23),
+            digest(0x24),
+        )
+        .unwrap_or_else(|error| panic!("test run inputs should be valid: {error}")),
         SingleVmHostProfile::phase1_adversarial(),
     ) {
         Ok(scenario) => scenario,
@@ -772,11 +825,45 @@ fn bisection_report(
         first_different_sample_icount,
         last_matching_icount,
         first_different_icount,
+        divergence_state_dump(first_different_icount),
         "artifact://single-vm-bisect",
     ) {
         Ok(report) => report,
         Err(error) => panic!("test bisection report should be valid: {error}"),
     }
+}
+
+fn divergence_state_dump(icount: u64) -> SingleVmFingerprintDivergenceStateDump {
+    let first = SingleVmFingerprintRunStateDump::new(
+        "node-a",
+        icount,
+        vec![
+            SingleVmFingerprintVcpuState::new(0, [0x10, 0x11])
+                .unwrap_or_else(|error| panic!("first vCPU 0 state should validate: {error}")),
+            SingleVmFingerprintVcpuState::new(1, [0x20, 0x21])
+                .unwrap_or_else(|error| panic!("first vCPU 1 state should validate: {error}")),
+        ],
+        Vec::new(),
+        [0x40, 0x41],
+        vec!["quantum-boundary".to_owned()],
+    )
+    .unwrap_or_else(|error| panic!("first state dump should validate: {error}"));
+    let second = SingleVmFingerprintRunStateDump::new(
+        "node-a",
+        icount,
+        vec![
+            SingleVmFingerprintVcpuState::new(0, [0x10, 0x11])
+                .unwrap_or_else(|error| panic!("second vCPU 0 state should validate: {error}")),
+            SingleVmFingerprintVcpuState::new(1, [0x20, 0xff])
+                .unwrap_or_else(|error| panic!("second vCPU 1 state should validate: {error}")),
+        ],
+        Vec::new(),
+        [0x40, 0x41],
+        vec!["quantum-boundary".to_owned()],
+    )
+    .unwrap_or_else(|error| panic!("second state dump should validate: {error}"));
+    SingleVmFingerprintDivergenceStateDump::new(first, second)
+        .unwrap_or_else(|error| panic!("both-sides state dump should validate: {error}"))
 }
 
 fn digest(byte: u8) -> Vec<u8> {

@@ -475,6 +475,18 @@
         needle = ''"extended_hash",'';
       }
       {
+        label = "current serialized device-state hash requirement";
+        needle = ''"device_state_hash",'';
+      }
+      {
+        label = "serialized device-state byte coverage requirement";
+        needle = ''"device_state_bytes"'';
+      }
+      {
+        label = "serialized device-state status requirement";
+        needle = ''"device_state_status"'';
+      }
+      {
         label = "per-instruction guest architectural trajectory requirement";
         needle = ''"trajectory_hash",'';
       }
@@ -496,11 +508,19 @@
         label = "trace hashes writable guest RAM instead of firmware or device RAM";
         needle = "qemu_plugin_crucible_guest_ram_hash(&ram_bytes)";
       }
+      {
+        label = "trace fingerprints current non-RAM device state";
+        needle = "qemu_plugin_crucible_device_state_hash(";
+      }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch" qemuFingerprintPatch [
       {
         label = "writable guest-RAM fingerprint API";
         needle = "qemu_plugin_crucible_guest_ram_hash";
+      }
+      {
+        label = "non-RAM VMState fingerprint API";
+        needle = "qemu_plugin_crucible_device_state_hash";
       }
       {
         label = "guest-RAM fingerprint excludes ROM";

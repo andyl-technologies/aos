@@ -828,7 +828,7 @@ in
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
                 | ($samples | length) >= 4
                 and all($samples[]; (
-                  .schema == "crucible.qemu.trace-fingerprint.v2"
+                  .schema == "crucible.qemu.trace-fingerprint.v3"
                   and .tracked_vcpus == $vcpus
                   and .launch_definition_digest == $launch_definition_digest
                   and .qemu_build_digest == $qemu_build_digest

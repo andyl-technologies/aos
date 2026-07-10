@@ -45,7 +45,12 @@ where
                     second_stream: Box::new(second_stream.clone()),
                     source,
                 })?;
-            validate_bisection_report_for_mismatch(&bisection, &mismatch)?;
+            validate_bisection_report_for_mismatch(
+                &bisection,
+                &mismatch,
+                &first_stream,
+                &second_stream,
+            )?;
             return Err(SingleVmFingerprintGateError::Mismatch {
                 mismatch: Box::new(mismatch),
                 first_stream: Box::new(first_stream),
@@ -83,6 +88,8 @@ where
 fn validate_bisection_report_for_mismatch(
     bisection: &super::types::SingleVmFingerprintBisectionReport,
     mismatch: &super::compare::SingleVmFingerprintMismatch,
+    first_stream: &SingleVmFingerprintStream,
+    second_stream: &SingleVmFingerprintStream,
 ) -> Result<(), SingleVmFingerprintGateError> {
     if bisection.sample_index() != mismatch.sample_index {
         return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
@@ -99,6 +106,21 @@ fn validate_bisection_report_for_mismatch(
     {
         return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
             reason: "bisection sample icount must match the first differing stream icount",
+        });
+    }
+    let first_node = first_stream
+        .samples
+        .get(mismatch.sample_index)
+        .or_else(|| first_stream.samples.last())
+        .map(|sample| sample.node.as_str());
+    let second_node = second_stream
+        .samples
+        .get(mismatch.sample_index)
+        .or_else(|| second_stream.samples.last())
+        .map(|sample| sample.node.as_str());
+    if first_node != second_node || first_node != Some(bisection.responsible_node()) {
+        return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+            reason: "bisection responsible node must match both differing samples",
         });
     }
 

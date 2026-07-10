@@ -325,7 +325,7 @@ in rec {
         };
         dependencies = [replayOracle phase1.simDouble];
         phase = "phase1";
-        reason = "the live fingerprint remains provisional: its observation contract is first-run-derived and it lacks current device state, interaction samples, and exact refinement";
+        reason = "the live fingerprint still lacks frame/fault interaction sampling and an integrated rerun hook for exact refinement and both-side state dumps";
         taskIds = ["T-DET-8" "T-HARN-6" "T-HARN-7" "T-TIME-8" "T-TIME-9"];
       };
       divergenceBisect = greenBeforeAdvance {

@@ -14,6 +14,7 @@
 
 mod compare;
 mod run;
+mod state_dump;
 mod trace;
 mod types;
 
@@ -22,19 +23,24 @@ pub use compare::{
     SingleVmFingerprintSampleDifference, compare_single_vm_fingerprint_streams,
 };
 pub use run::run_single_vm_fingerprint_gate;
+pub use state_dump::{
+    SingleVmFingerprintDivergenceStateDump, SingleVmFingerprintMemoryRegionState,
+    SingleVmFingerprintRunStateDump, SingleVmFingerprintVcpuState,
+};
 pub use trace::{
-    QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceFingerprintDefinition, QemuTraceFingerprintImport,
-    QemuTraceFingerprintImportError, QemuTraceIdentityContract, QemuTraceObservationContract,
-    QemuTraceVcpuContract,
+    QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
+    QemuTraceFingerprintImport, QemuTraceFingerprintImportError, QemuTraceIdentityContract,
+    QemuTraceObservationContract, QemuTraceVcpuContract,
 };
 pub use types::{
     SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
     SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
     SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
-    SingleVmFingerprintRunError, SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest,
-    SingleVmFingerprintRunner, SingleVmFingerprintSample, SingleVmFingerprintSampleMaterial,
-    SingleVmFingerprintScenario, SingleVmFingerprintStream, SingleVmFingerprintTrigger,
-    SingleVmHostProfile, SingleVmNvcpuFingerprintContract, SingleVmNvcpuFingerprintMaterial,
-    SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor, SingleVmVcpuRegisterDigest,
-    compute_single_vm_sample_rolling_fingerprint, initial_single_vm_rolling_fingerprint,
+    SingleVmFingerprintRunError, SingleVmFingerprintRunInputs, SingleVmFingerprintRunOrdinal,
+    SingleVmFingerprintRunRequest, SingleVmFingerprintRunner, SingleVmFingerprintSample,
+    SingleVmFingerprintSampleMaterial, SingleVmFingerprintScenario, SingleVmFingerprintStream,
+    SingleVmFingerprintTrigger, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
+    SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor,
+    SingleVmVcpuRegisterDigest, compute_single_vm_sample_rolling_fingerprint,
+    initial_single_vm_rolling_fingerprint,
 };
