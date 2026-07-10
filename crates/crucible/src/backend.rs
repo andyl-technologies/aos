@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
-use crate::{Checkpoint, CheckpointKind, ContentHash, Icount, NodeId, VirtualTime};
+use crate::{
+    Checkpoint, CheckpointKind, ContentHash, Icount, NodeId, ObservableEvent, VirtualTime,
+};
 
 /// A VM backend boundary declared by the engine.
 pub trait Backend {
@@ -83,6 +85,21 @@ pub trait SimulationBackend {
     /// Returns a [`BackendError`] when a node, transport, or backend adapter
     /// cannot advance to the requested ceiling.
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError>;
+
+    /// Drains observations produced by the last completed backend step.
+    ///
+    /// Live adapters use a bounded transport whose consumer is read only after
+    /// the step publishes its completion boundary. Backends without an
+    /// observational transport return an empty batch. Callers must append every
+    /// returned event to the scheduler's unified event log before another step.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`BackendError`] when the observational transport is corrupt,
+    /// exceeds the completed boundary, or cannot be drained completely.
+    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
+        Ok(Vec::new())
+    }
 
     /// Applies a backend-level effect at a scheduler boundary.
     ///

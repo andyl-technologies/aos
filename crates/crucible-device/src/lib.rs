@@ -104,8 +104,8 @@ pub use netlink::{
     NetLink, PastDeliveryPolicy, ResolveOutcome,
 };
 pub use ninep::{
-    FsTree, NinepDevice, NinepLatency, NinepServer, NinepServerSnapshot, NinepSnapshot, Node, Qid,
-    QidType,
+    FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepServer, NinepServerSnapshot,
+    NinepSnapshot, Node, Qid, QidType,
 };
 pub use request::{AffineLatency, LatencyModel, Request, RequestId, Response, ResponseStatus};
 pub use subnode::{

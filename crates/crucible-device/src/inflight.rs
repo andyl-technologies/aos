@@ -38,6 +38,24 @@ impl PendingResponse {
         Self { key, response }
     }
 
+    /// Creates a pending response from explicit canonical delivery-key fields.
+    #[must_use]
+    pub fn from_parts(
+        delivery_icount: u64,
+        src_node: u32,
+        sequence: u32,
+        response: Response,
+    ) -> Self {
+        Self::new(
+            FrameDeliveryKey {
+                delivery_icount,
+                src_node,
+                seq: sequence,
+            },
+            response,
+        )
+    }
+
     /// Returns the exact icount at which this response becomes visible.
     #[must_use]
     pub fn delivery_icount(&self) -> u64 {
