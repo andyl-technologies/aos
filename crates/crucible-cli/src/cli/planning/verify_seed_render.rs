@@ -1,4 +1,14 @@
-fn plan_verify_invocation(
+//! Verification planning, seed resolution, and deterministic rendering helpers.
+
+use super::*;
+
+/// Validates verify arguments and constructs all deterministic reductions.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when comparison inputs, run counts, scenario selection,
+/// or the resulting verification-plan invariants are invalid.
+pub(crate) fn plan_verify_invocation(
     args: &VerifyArgs,
     store_root: &Path,
 ) -> Result<VerifyInvocationPlan, CliError> {
@@ -74,7 +84,7 @@ fn plan_verify_invocation(
     Ok(plan)
 }
 
-fn verify_reduction_plans(
+pub(crate) fn verify_reduction_plans(
     runs: usize,
     adversarial: bool,
     mode: &VerifyMode,
@@ -111,14 +121,26 @@ fn verify_reduction_plans(
     reductions
 }
 
-fn resolve_run_scenario(
+/// Resolves a scenario for the run command.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the scenario reference is absent, malformed,
+/// unreadable, or fails scenario validation.
+pub(crate) fn resolve_run_scenario(
     scenario: Option<&str>,
     store_root: &Path,
 ) -> Result<RunScenarioRef, CliError> {
     resolve_command_scenario("run", scenario, store_root)
 }
 
-fn resolve_command_scenario(
+/// Resolves a built-in, file-backed, or store-backed command scenario.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the reference is absent or malformed, a file or
+/// store object cannot be read, or the scenario fails canonical validation.
+pub(crate) fn resolve_command_scenario(
     command: &'static str,
     scenario: Option<&str>,
     store_root: &Path,
@@ -193,7 +215,15 @@ fn resolve_command_scenario(
     })
 }
 
-fn resolve_builtin_example_scenario(value: &str) -> Result<Option<RunScenarioRef>, CliError> {
+/// Resolves a supported built-in example name.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when constructing or sampling the named built-in fixture
+/// fails validation.
+pub(crate) fn resolve_builtin_example_scenario(
+    value: &str,
+) -> Result<Option<RunScenarioRef>, CliError> {
     let name = value.strip_prefix("builtin:").unwrap_or(value);
     let fixture = match name {
         crucible::HAPPY_PATH_SCENARIO_NAME | "happy-path" => Some(crucible::happy_path_scenario()),
@@ -243,7 +273,13 @@ fn resolve_builtin_example_scenario(value: &str) -> Result<Option<RunScenarioRef
     Ok(None)
 }
 
-fn parse_run_scenario_bytes(
+/// Parses canonical scenario TOML from raw bytes.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the bytes are not UTF-8 or do not form a valid
+/// canonical scenario definition.
+pub(crate) fn parse_run_scenario_bytes(
     label: &str,
     bytes: &[u8],
 ) -> Result<crucible::ScenarioDefForm, CliError> {
@@ -259,7 +295,12 @@ fn parse_run_scenario_bytes(
     })
 }
 
-fn reseed_run_scenario_ref(
+/// Rebuilds a resolved scenario with a pinned verification seed.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the scenario cannot be rematerialized with `seed`.
+pub(crate) fn reseed_run_scenario_ref(
     scenario: &RunScenarioRef,
     seed: crucible::Seed,
 ) -> Result<RunScenarioRef, CliError> {
@@ -297,7 +338,7 @@ fn reseed_run_scenario_ref(
     })
 }
 
-fn parse_run_duration_budget_ticks(duration: &str) -> Option<u64> {
+pub(crate) fn parse_run_duration_budget_ticks(duration: &str) -> Option<u64> {
     let trimmed = duration.trim();
     if trimmed.is_empty() {
         return None;
@@ -322,7 +363,7 @@ fn parse_run_duration_budget_ticks(duration: &str) -> Option<u64> {
     value.checked_mul(multiplier)
 }
 
-fn run_interactive_session_command_set() -> Vec<SessionCommandKind> {
+pub(crate) fn run_interactive_session_command_set() -> Vec<SessionCommandKind> {
     vec![
         SessionCommandKind::Continue,
         SessionCommandKind::Pause,
@@ -341,12 +382,12 @@ fn run_interactive_session_command_set() -> Vec<SessionCommandKind> {
     ]
 }
 
-trait SeedEnvironment {
+pub(crate) trait SeedEnvironment {
     fn variable(&self, name: &'static str) -> Option<String>;
 }
 
 #[derive(Default)]
-struct ProcessSeedEnvironment;
+pub(crate) struct ProcessSeedEnvironment;
 
 impl SeedEnvironment for ProcessSeedEnvironment {
     fn variable(&self, name: &'static str) -> Option<String> {
@@ -354,12 +395,12 @@ impl SeedEnvironment for ProcessSeedEnvironment {
     }
 }
 
-trait SeedEntropySource {
+pub(crate) trait SeedEntropySource {
     fn generated_seed(&mut self) -> Result<u64, CliError>;
 }
 
 #[derive(Default)]
-struct OsSeedEntropySource;
+pub(crate) struct OsSeedEntropySource;
 
 impl SeedEntropySource for OsSeedEntropySource {
     fn generated_seed(&mut self) -> Result<u64, CliError> {
@@ -378,7 +419,7 @@ impl SeedEntropySource for OsSeedEntropySource {
     }
 }
 
-trait DeterminismErgonomicsRecorder {
+pub(crate) trait DeterminismErgonomicsRecorder {
     fn record_seed_resolution(&mut self, seed: &ResolvedSeed);
 
     fn record_trace_format(&mut self, format: OutputFormat);
@@ -387,7 +428,7 @@ trait DeterminismErgonomicsRecorder {
 }
 
 #[derive(Default)]
-struct NullDeterminismErgonomicsRecorder;
+pub(crate) struct NullDeterminismErgonomicsRecorder;
 
 impl DeterminismErgonomicsRecorder for NullDeterminismErgonomicsRecorder {
     fn record_seed_resolution(&mut self, _seed: &ResolvedSeed) {}
@@ -397,7 +438,13 @@ impl DeterminismErgonomicsRecorder for NullDeterminismErgonomicsRecorder {
     fn record_failure_artifact_rule(&mut self, _rule: &FailureArtifactRule) {}
 }
 
-fn plan_determinism_ergonomics(
+/// Resolves seed and trace policy for a seed-consuming CLI command.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when trace format policy or explicit/environment seed
+/// syntax is invalid, or OS entropy cannot supply a generated seed.
+pub(crate) fn plan_determinism_ergonomics(
     cli: &Cli,
     environment: &impl SeedEnvironment,
     entropy: &mut impl SeedEntropySource,
@@ -426,7 +473,13 @@ fn plan_determinism_ergonomics(
     }))
 }
 
-fn execute_determinism_ergonomics_plan(
+/// Records and renders an already validated determinism-ergonomics plan.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the plan is internally inconsistent or rendering
+/// its canonical trace format fails.
+pub(crate) fn execute_determinism_ergonomics_plan(
     plan: &DeterminismErgonomicsPlan,
     recorder: &mut impl DeterminismErgonomicsRecorder,
 ) -> Result<(), CliError> {
@@ -468,18 +521,18 @@ fn execute_determinism_ergonomics_plan(
     Ok(())
 }
 
-fn subcommand_uses_seed_resolution(command: &Commands) -> bool {
+pub(crate) fn subcommand_uses_seed_resolution(command: &Commands) -> bool {
     seed_resolution_mode(command) == SeedResolutionMode::FreshRunIdentity
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum SeedResolutionMode {
+pub(crate) enum SeedResolutionMode {
     FreshRunIdentity,
     ArtifactOrSavepointOwned,
     NotApplicable,
 }
 
-fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
+pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
     matches!(
         command,
         Commands::Run(_)
@@ -506,7 +559,13 @@ fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
     })
 }
 
-fn validate_canonical_trace_format(cli: &Cli) -> Result<(), CliError> {
+/// Enforces canonical trace-format constraints for the selected command.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the command and requested output format are an
+/// unsupported combination.
+pub(crate) fn validate_canonical_trace_format(cli: &Cli) -> Result<(), CliError> {
     if cli.format == OutputFormat::Markdown && subcommand_uses_canonical_event_trace(&cli.command) {
         return Err(usage_error(
             "--format markdown is reserved for triage reports, not canonical event-log traces",
@@ -515,7 +574,7 @@ fn validate_canonical_trace_format(cli: &Cli) -> Result<(), CliError> {
     Ok(())
 }
 
-fn subcommand_uses_canonical_event_trace(command: &Commands) -> bool {
+pub(crate) fn subcommand_uses_canonical_event_trace(command: &Commands) -> bool {
     matches!(
         command,
         Commands::Run(_)
@@ -530,7 +589,13 @@ fn subcommand_uses_canonical_event_trace(command: &Commands) -> bool {
     )
 }
 
-fn resolve_seed(
+/// Resolves a seed from the flag, environment, or entropy source.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when a supplied seed is malformed or the entropy source
+/// cannot generate a seed.
+pub(crate) fn resolve_seed(
     cli: &Cli,
     environment: &impl SeedEnvironment,
     entropy: &mut impl SeedEntropySource,
@@ -556,7 +621,13 @@ fn resolve_seed(
     })
 }
 
-fn parse_seed_value(field: &'static str, value: &str) -> Result<u64, CliError> {
+/// Parses a CLI seed in decimal or hexadecimal notation.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the seed is empty, too wide, or contains invalid
+/// decimal or hexadecimal syntax.
+pub(crate) fn parse_seed_value(field: &'static str, value: &str) -> Result<u64, CliError> {
     if value.is_empty() {
         return Err(usage_error(format!("{field} must not be empty")));
     }
@@ -571,29 +642,35 @@ fn parse_seed_value(field: &'static str, value: &str) -> Result<u64, CliError> {
     parsed.map_err(|_| usage_error(format!("{field} must be a u64 decimal or hex value")))
 }
 
-fn format_seed(seed: u64) -> String {
+pub(crate) fn format_seed(seed: u64) -> String {
     format!("0x{seed:016x}")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CanonicalLogEntry {
-    sequence: u64,
-    virtual_time_ticks: u64,
-    node: String,
-    kind: String,
-    summary: String,
+pub(crate) struct CanonicalLogEntry {
+    pub(crate) sequence: u64,
+    pub(crate) virtual_time_ticks: u64,
+    pub(crate) node: String,
+    pub(crate) kind: String,
+    pub(crate) summary: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RenderedCanonicalLog {
-    format: OutputFormat,
-    bytes: Vec<u8>,
-    entry_count: usize,
-    canonical_digest: String,
-    jsonl_streams_entries: bool,
+pub(crate) struct RenderedCanonicalLog {
+    pub(crate) format: OutputFormat,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) entry_count: usize,
+    pub(crate) canonical_digest: String,
+    pub(crate) jsonl_streams_entries: bool,
 }
 
-fn render_canonical_event_log(
+/// Renders canonical event-log entries in the requested output format.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when an entry cannot be serialized or the requested
+/// format has no canonical event-log representation.
+pub(crate) fn render_canonical_event_log(
     format: OutputFormat,
     entries: &[CanonicalLogEntry],
 ) -> Result<RenderedCanonicalLog, CliError> {
@@ -629,7 +706,7 @@ fn render_canonical_event_log(
     })
 }
 
-fn jsonl_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
+pub(crate) fn jsonl_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
     let mut text = String::new();
     for entry in entries {
         text.push_str(&json_for_canonical_log_entry(entry));
@@ -638,7 +715,7 @@ fn jsonl_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
     text
 }
 
-fn canonical_log_digest(entries: &[CanonicalLogEntry]) -> String {
+pub(crate) fn canonical_log_digest(entries: &[CanonicalLogEntry]) -> String {
     let mut material = String::new();
     for entry in entries {
         artifact_line(
@@ -655,7 +732,7 @@ fn canonical_log_digest(entries: &[CanonicalLogEntry]) -> String {
     content_address_bytes(material.as_bytes())
 }
 
-fn json_for_canonical_log_entry(entry: &CanonicalLogEntry) -> String {
+pub(crate) fn json_for_canonical_log_entry(entry: &CanonicalLogEntry) -> String {
     format!(
         "{{\"seq\":{},\"virtual_time\":{},\"node\":\"{}\",\"kind\":\"{}\",\"summary\":\"{}\"}}",
         entry.sequence,
@@ -666,7 +743,7 @@ fn json_for_canonical_log_entry(entry: &CanonicalLogEntry) -> String {
     )
 }
 
-fn table_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
+pub(crate) fn table_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
     let mut lines = vec![String::from("seq\tvirtual_time\tnode\tkind\tsummary")];
     for entry in entries {
         lines.push(format!(
@@ -677,7 +754,7 @@ fn table_for_canonical_log_entries(entries: &[CanonicalLogEntry]) -> String {
     lines.join("\n")
 }
 
-fn json_escape(value: &str) -> String {
+pub(crate) fn json_escape(value: &str) -> String {
     let mut escaped = String::new();
     for ch in value.chars() {
         match ch {
@@ -693,7 +770,13 @@ fn json_escape(value: &str) -> String {
     escaped
 }
 
-fn render_canonical_trace_format_proof() -> Result<Vec<RenderedCanonicalLog>, CliError> {
+/// Renders the canonical trace-format proof used by CLI self-tests.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the proof event log cannot be rendered in one of
+/// the required canonical formats.
+pub(crate) fn render_canonical_trace_format_proof() -> Result<Vec<RenderedCanonicalLog>, CliError> {
     let entries = [CanonicalLogEntry {
         sequence: 0,
         virtual_time_ticks: 0,
@@ -707,21 +790,39 @@ fn render_canonical_trace_format_proof() -> Result<Vec<RenderedCanonicalLog>, Cl
         .collect()
 }
 
-fn canonical_state_wall_clock_guard() -> bool {
+pub(crate) fn canonical_state_wall_clock_guard() -> bool {
     let sources = [
         ("crucible-cli", include_str!("../../main.rs")),
         ("crucible-cli-planning", include_str!("../planning.rs")),
-        ("crucible-cli-planning-invocations", include_str!("invocations.rs")),
-        ("crucible-cli-planning-verify", include_str!("verify_seed_render.rs")),
+        (
+            "crucible-cli-planning-invocations",
+            include_str!("invocations.rs"),
+        ),
+        (
+            "crucible-cli-planning-verify",
+            include_str!("verify_seed_render.rs"),
+        ),
         ("crucible-cli-backend", include_str!("../backend.rs")),
         ("crucible-cli-run-save", include_str!("../run_save.rs")),
-        ("crucible-cli-resume-fork", include_str!("../resume_fork.rs")),
-        ("crucible-cli-verify-serve", include_str!("../verify_serve.rs")),
+        (
+            "crucible-cli-resume-fork",
+            include_str!("../resume_fork.rs"),
+        ),
+        (
+            "crucible-cli-verify-serve",
+            include_str!("../verify_serve.rs"),
+        ),
         ("crucible-cli-control", include_str!("../control.rs")),
         ("crucible-cli-dispatch", include_str!("../dispatch.rs")),
-        ("crucible-cli-exploration", include_str!("../exploration.rs")),
+        (
+            "crucible-cli-exploration",
+            include_str!("../exploration.rs"),
+        ),
         ("crucible-cli-replay", include_str!("../replay.rs")),
-        ("crucible-cli-triage-debug", include_str!("../triage_debug.rs")),
+        (
+            "crucible-cli-triage-debug",
+            include_str!("../triage_debug.rs"),
+        ),
         ("crucible-cli-artifact", include_str!("../artifact.rs")),
         ("crucible-cli-report", include_str!("../report.rs")),
         (
@@ -747,14 +848,14 @@ fn canonical_state_wall_clock_guard() -> bool {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FailureReproductionFooter {
-    artifact_path: PathBuf,
-    replay_command: String,
-    debug_command: String,
-    self_contained_artifact: bool,
+pub(crate) struct FailureReproductionFooter {
+    pub(crate) artifact_path: PathBuf,
+    pub(crate) replay_command: String,
+    pub(crate) debug_command: String,
+    pub(crate) self_contained_artifact: bool,
 }
 
-fn failure_reproduction_footer(path: PathBuf) -> FailureReproductionFooter {
+pub(crate) fn failure_reproduction_footer(path: PathBuf) -> FailureReproductionFooter {
     let artifact = path.display().to_string();
     FailureReproductionFooter {
         replay_command: format!(
@@ -767,7 +868,7 @@ fn failure_reproduction_footer(path: PathBuf) -> FailureReproductionFooter {
     }
 }
 
-fn shell_quote_command_argument(value: &str) -> String {
+pub(crate) fn shell_quote_command_argument(value: &str) -> String {
     if !value.is_empty() && value.bytes().all(is_shell_safe_unquoted_byte) {
         return value.to_owned();
     }
@@ -784,7 +885,7 @@ fn shell_quote_command_argument(value: &str) -> String {
     quoted
 }
 
-fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
+pub(crate) fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
     matches!(
         byte,
         b'a'..=b'z'

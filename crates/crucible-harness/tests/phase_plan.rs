@@ -214,7 +214,7 @@ fn advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage() -> Result<(
         advanced_feature_ladder_failures(phase_gate_order(), advanced_feature_task_order())
             .is_empty()
     );
-    assert!(advanced_features.contains("- [x] **T-ADV-1**"));
+    assert!(advanced_features.contains("**T-ADV-1**"));
     assert!(advanced_features.contains("exact-determinism →"));
     assert!(advanced_features.contains("coverage-guided fuzzing"));
     assert!(default_checks.contains("checks.crucible.phase6.gates.replayOracle"));
@@ -289,7 +289,7 @@ fn advanced_feature_schedule_rejects_unwrapped_default_check() {
     assert!(
         failures.iter().any(|failure| {
             failure.task_id == "T-ADV-12"
-                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingGreenBeforeAdvance
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAdvanceGuard
         }),
         "synthetic unwrapped ADV check was not rejected: {failures:#?}"
     );
@@ -300,6 +300,39 @@ fn advanced_feature_schedule_rejects_unwrapped_default_check() {
                 && failure.prerequisite_task_id.as_deref() == Some("T-ADV-11")
         }),
         "synthetic fuzz check without coverage prerequisite was not rejected: {failures:#?}"
+    );
+}
+
+#[test]
+fn advanced_feature_schedule_accepts_red_advance_guard() {
+    let default_checks = r#"
+      phase6 = {
+        advancedDependencyLadder = redBeforeAdvance {
+          attrPath = "checks.crucible.phase6.advancedDependencyLadder";
+          gate = import ./phase6-advanced-dependency-ladder.nix {
+            attrPath = "checks.crucible.phase6.advancedDependencyLadder";
+            taskIds = [];
+          };
+          dependencies = [
+            phase2.gates.singleVmFingerprint
+            phase4.gates.e2eDeterminism
+            phase5.gates.controlResponsive
+          ];
+          phase = "phase6";
+          reason = "live evidence is pending";
+          taskIds = ["T-ADV-1"];
+        };
+      };
+    "#;
+
+    let failures =
+        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    assert!(
+        !failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-1"
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAdvanceGuard
+        }),
+        "red guard did not safely block ADV work: {failures:#?}"
     );
 }
 

@@ -1,3 +1,7 @@
+//! Deterministic frame-delivery ordering and ABI error types.
+
+use super::*;
+
 /// The deterministic order key for frames visible to one consumer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameDeliveryKey {
@@ -28,8 +32,8 @@ pub fn deliverable_frames_at(
 /// An advance authorization bounded by the lookahead gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdvanceCeiling {
-    current_icount: u64,
-    max_advance_icount: u64,
+    pub(super) current_icount: u64,
+    pub(super) max_advance_icount: u64,
 }
 
 impl AdvanceCeiling {
@@ -419,7 +423,7 @@ pub enum LookaheadGateError {
     },
 }
 
-fn validated_capacity<T>(entries: &[T]) -> Result<u64, SpscRingError> {
+pub(super) fn validated_capacity<T>(entries: &[T]) -> Result<u64, SpscRingError> {
     if entries.is_empty() || !entries.len().is_power_of_two() {
         return Err(SpscRingError::InvalidCapacity {
             capacity: entries.len(),
@@ -428,7 +432,11 @@ fn validated_capacity<T>(entries: &[T]) -> Result<u64, SpscRingError> {
     Ok(entries.len() as u64)
 }
 
-fn live_count(read_idx: u64, write_idx: u64, capacity: u64) -> Result<u64, SpscRingError> {
+pub(super) fn live_count(
+    read_idx: u64,
+    write_idx: u64,
+    capacity: u64,
+) -> Result<u64, SpscRingError> {
     let live = write_idx
         .checked_sub(read_idx)
         .ok_or(SpscRingError::CorruptIndices {

@@ -1444,6 +1444,11 @@ fn resolve_process_symbol(symbol_name: &'static [u8]) -> *mut c_void {
 }
 
 /// Resolves the complete QEMU API for live basic-block coverage.
+///
+/// # Errors
+///
+/// Returns [`QemuPluginAbiError::RuntimeApiCapability`] when any required
+/// translation, execution, metadata, exact-icount, or flush symbol is absent.
 #[cfg(unix)]
 pub(crate) fn resolve_qemu_basic_block_coverage_apis()
 -> Result<crate::QemuBasicBlockCoverageApis, QemuPluginAbiError> {
@@ -1505,7 +1510,12 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
     })
 }
 
-/// Resolves the complete QEMU API for live basic-block coverage.
+/// Reports that live basic-block coverage is unavailable off Unix.
+///
+/// # Errors
+///
+/// Always returns [`QemuPluginAbiError::RuntimeApiCapability`] because the
+/// process-symbol lookup used by the live QEMU plugin is Unix-only.
 #[cfg(not(unix))]
 pub(crate) const fn resolve_qemu_basic_block_coverage_apis()
 -> Result<crate::QemuBasicBlockCoverageApis, QemuPluginAbiError> {

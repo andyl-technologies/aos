@@ -162,6 +162,28 @@ pub(crate) fn confinement_regression_failures() -> Result<Vec<String>, Box<dyn E
         );
     }
 
+    let parent_only_export_findings = package_source_confinement_findings(
+        "crucible-cli",
+        Path::new("crucible-cli"),
+        &source_pairs(&[(
+            "crucible-cli/src/cli/worker.rs",
+            r#"
+                pub(super) fn wait_for_worker() {
+                    let started = std::time::Instant::now();
+                    consume(started);
+                }
+            "#,
+        )]),
+    );
+    if finding_contains(
+        &parent_only_export_findings,
+        "public export from nondeterministic boundary source",
+    ) {
+        failures.push(
+            "harness-lint confinement regression rejected parent-only module wiring".to_string(),
+        );
+    }
+
     let direct_manifest: Value = r#"
         [package]
         name = "crucible-daemon"

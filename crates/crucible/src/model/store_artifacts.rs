@@ -1,5 +1,7 @@
-// DAG closure persistence, artifact bytes, and local-store helpers.
-fn persist_checkpoint_cow_deltas<S>(
+//! DAG closure persistence, artifact bytes, and local-store helpers.
+
+use super::*;
+pub(super) fn persist_checkpoint_cow_deltas<S>(
     store: &S,
     checkpoint: &Checkpoint,
     cow_deltas: &mut BTreeMap<CowDeltaRef, ContentHash>,
@@ -54,7 +56,10 @@ where
     Ok(())
 }
 
-fn insert_checkpoint_store_keys(checkpoint: &Checkpoint, keys: &mut BTreeSet<ContentHash>) {
+pub(super) fn insert_checkpoint_store_keys(
+    checkpoint: &Checkpoint,
+    keys: &mut BTreeSet<ContentHash>,
+) {
     keys.insert(ContentHash::from_bytes(&checkpoint_store_bytes(checkpoint)));
     if !checkpoint.schedule_delta.is_empty() {
         keys.insert(ContentHash::from_bytes(&schedule_delta_store_bytes(
@@ -74,7 +79,7 @@ fn insert_checkpoint_store_keys(checkpoint: &Checkpoint, keys: &mut BTreeSet<Con
     }
 }
 
-fn delete_collectible_store_keys<S>(
+pub(super) fn delete_collectible_store_keys<S>(
     store: &S,
     report: &mut TemporalGraphGcReport,
 ) -> Result<(), TemporalGraphStoreError>
@@ -97,7 +102,7 @@ where
     Ok(())
 }
 
-fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
+pub(super) fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
     format!(
         "crucible.dag-store.scenario-def.v1\nscenario_ref={}\n{}\n{}\n",
         content_hash_hex(def.id),
@@ -107,7 +112,7 @@ fn scenario_def_store_bytes(def: &ScenarioDef) -> Vec<u8> {
     .into_bytes()
 }
 
-fn reproduction_artifact_canonical_bytes(
+pub(super) fn reproduction_artifact_canonical_bytes(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
 ) -> Vec<u8> {
@@ -122,7 +127,7 @@ fn reproduction_artifact_canonical_bytes(
     writer.finish()
 }
 
-fn reproduction_event_log_artifact_id(
+pub(super) fn reproduction_event_log_artifact_id(
     reproduction_artifact: ContentHash,
     fork_point: EventLogOffset,
     causal_subsequence: ContentHash,
@@ -170,13 +175,13 @@ fn reproduction_event_log_artifact_id(
     )
 }
 
-fn sorted_unique_hashes(mut hashes: Vec<ContentHash>) -> Vec<ContentHash> {
+pub(super) fn sorted_unique_hashes(mut hashes: Vec<ContentHash>) -> Vec<ContentHash> {
     hashes.sort();
     hashes.dedup();
     hashes
 }
 
-fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
+pub(super) fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
     let mut lines = vec![
         String::from("crucible.dag-store.checkpoint-node.v1"),
         format!("id={}", content_hash_hex(checkpoint.id)),
@@ -245,7 +250,7 @@ fn checkpoint_store_bytes(checkpoint: &Checkpoint) -> Vec<u8> {
     lines.join("\n").into_bytes()
 }
 
-fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
+pub(super) fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
     let mut lines = vec![
         String::from("crucible.dag-store.schedule-delta.v1"),
         format!("id={}", content_hash_hex(schedule.content_hash())),
@@ -257,13 +262,17 @@ fn schedule_delta_store_bytes(schedule: &Schedule) -> Vec<u8> {
     lines.join("\n").into_bytes()
 }
 
-fn cow_delta_store_bytes(cow_ref: CowDeltaRef) -> Vec<u8> {
+pub(super) fn cow_delta_store_bytes(cow_ref: CowDeltaRef) -> Vec<u8> {
     let mut lines = vec![String::from("crucible.dag-store.cow-delta-ref.v1")];
     push_cow_delta_ref_lines("cow_delta", cow_ref, &mut lines);
     lines.join("\n").into_bytes()
 }
 
-fn push_cow_delta_ref_lines(prefix: &str, cow_ref: CowDeltaRef, lines: &mut Vec<String>) {
+pub(super) fn push_cow_delta_ref_lines(
+    prefix: &str,
+    cow_ref: CowDeltaRef,
+    lines: &mut Vec<String>,
+) {
     lines.push(format!(
         "{prefix}.kind={}",
         cow_delta_kind_label(cow_ref.kind)
@@ -274,7 +283,7 @@ fn push_cow_delta_ref_lines(prefix: &str, cow_ref: CowDeltaRef, lines: &mut Vec<
     ));
 }
 
-fn push_node_blob_ref_lines(prefix: &str, blob: &NodeBlobRef, lines: &mut Vec<String>) {
+pub(super) fn push_node_blob_ref_lines(prefix: &str, blob: &NodeBlobRef, lines: &mut Vec<String>) {
     match blob {
         NodeBlobRef::Baked(blob) => {
             lines.push(format!("{prefix}.kind=baked"));
@@ -293,7 +302,7 @@ fn push_node_blob_ref_lines(prefix: &str, blob: &NodeBlobRef, lines: &mut Vec<St
     }
 }
 
-fn push_decision_lines(index: usize, decision: &Decision, lines: &mut Vec<String>) {
+pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut Vec<String>) {
     let prefix = format!("decision.{index}");
     match decision {
         Decision::DeliveryOrder(order) => {
@@ -397,7 +406,7 @@ fn push_decision_lines(index: usize, decision: &Decision, lines: &mut Vec<String
     }
 }
 
-fn cow_delta_kind_label(kind: CowDeltaKind) -> &'static str {
+pub(super) fn cow_delta_kind_label(kind: CowDeltaKind) -> &'static str {
     match kind {
         CowDeltaKind::VmMemory => "vm-memory",
         CowDeltaKind::DeviceOverlay => "device-overlay",
@@ -406,7 +415,7 @@ fn cow_delta_kind_label(kind: CowDeltaKind) -> &'static str {
     }
 }
 
-fn checkpoint_closure_index_bytes(
+pub(super) fn checkpoint_closure_index_bytes(
     checkpoint: ContentHash,
     reproduction_artifact: ContentHash,
 ) -> Vec<u8> {
@@ -418,7 +427,7 @@ fn checkpoint_closure_index_bytes(
     .into_bytes()
 }
 
-fn parse_checkpoint_closure_index_sidecar(
+pub(super) fn parse_checkpoint_closure_index_sidecar(
     checkpoint: ContentHash,
     sidecar: &str,
 ) -> Result<ContentHash, DagStoreError> {
@@ -434,7 +443,7 @@ fn parse_checkpoint_closure_index_sidecar(
         .map_err(|error| corrupt_checkpoint_index(checkpoint, error.to_string()))
 }
 
-fn parse_checkpoint_closure_index_bytes(
+pub(super) fn parse_checkpoint_closure_index_bytes(
     expected_checkpoint: ContentHash,
     bytes: &[u8],
 ) -> Result<LocalCheckpointClosureIndex, DagStoreError> {
@@ -485,7 +494,7 @@ fn parse_checkpoint_closure_index_bytes(
     })
 }
 
-fn parse_checkpoint_index_field(
+pub(super) fn parse_checkpoint_index_field(
     checkpoint: ContentHash,
     line: Option<&str>,
     field: &'static str,
@@ -504,20 +513,23 @@ fn parse_checkpoint_index_field(
         .map_err(|error| corrupt_checkpoint_index(checkpoint, error.to_string()))
 }
 
-fn corrupt_checkpoint_index(checkpoint: ContentHash, reason: impl Into<String>) -> DagStoreError {
+pub(super) fn corrupt_checkpoint_index(
+    checkpoint: ContentHash,
+    reason: impl Into<String>,
+) -> DagStoreError {
     DagStoreError::CorruptIndex {
         checkpoint,
         reason: reason.into(),
     }
 }
 
-fn local_store_temp_path(path: &Path, key: &ContentHash) -> PathBuf {
+pub(super) fn local_store_temp_path(path: &Path, key: &ContentHash) -> PathBuf {
     let index = LOCAL_DAG_STORE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let file_name = format!("{}.tmp.{}.{}", key.to_hex(), std::process::id(), index);
     path.with_file_name(file_name)
 }
 
-fn search_replay_oracle_sampling_score(
+pub(super) fn search_replay_oracle_sampling_score(
     seed_tag: &str,
     sequence: u64,
     checkpoint: ContentHash,
@@ -529,7 +541,7 @@ fn search_replay_oracle_sampling_score(
     fold_fnv_bytes(hash, checkpoint.to_hex().as_bytes())
 }
 
-fn fold_fnv_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+pub(super) fn fold_fnv_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
     for byte in bytes {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(FNV_PRIME);
@@ -537,11 +549,11 @@ fn fold_fnv_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
     hash
 }
 
-fn content_hash_hex(hash: ContentHash) -> String {
+pub(super) fn content_hash_hex(hash: ContentHash) -> String {
     bytes_hex(&hash.bytes)
 }
 
-fn bytes_hex(bytes: &[u8]) -> String {
+pub(super) fn bytes_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));

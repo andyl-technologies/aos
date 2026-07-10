@@ -1,3 +1,7 @@
+//! Session command payloads, replies, and breakpoint specifications.
+
+use super::*;
+
 /// Actor-local breakpoint identifier.
 pub type BreakpointId = u64;
 
@@ -5,7 +9,8 @@ pub type BreakpointId = u64;
 ///
 /// The reply transport is deliberately not part of command equality or hashing:
 /// it routes completion back to the caller, but it is not model state.
-type CommandReplySender<T> = Arc<Mutex<Option<oneshot::Sender<Result<T, SessionError>>>>>;
+pub(super) type CommandReplySender<T> =
+    Arc<Mutex<Option<oneshot::Sender<Result<T, SessionError>>>>>;
 
 /// Reply channel carried by commands that return data to their caller.
 ///
@@ -34,7 +39,7 @@ impl<T> CommandReply<T> {
         )
     }
 
-    fn complete(&self, result: Result<T, SessionError>) {
+    pub(super) fn complete(&self, result: Result<T, SessionError>) {
         let Some(inner) = &self.inner else {
             return;
         };
@@ -178,7 +183,7 @@ pub struct SessionHandle {
 }
 
 impl SessionHandle {
-    fn new(parent: ContentHash, checkpoint: &Checkpoint) -> Self {
+    pub(super) fn new(parent: ContentHash, checkpoint: &Checkpoint) -> Self {
         Self {
             id: fork_session_handle_id(parent, checkpoint.id),
             checkpoint: checkpoint.id,
@@ -187,7 +192,7 @@ impl SessionHandle {
         }
     }
 
-    fn with_child(mut self, child: SessionChildHandle) -> Self {
+    pub(super) fn with_child(mut self, child: SessionChildHandle) -> Self {
         self.child = Some(child);
         self
     }
@@ -234,7 +239,7 @@ pub struct SessionForkRequest {
     pub configuration: ContentHash,
 }
 
-type SessionForkLoopFactory<L> = Arc<dyn Fn(SessionForkRequest) -> L + Send + Sync>;
+pub(super) type SessionForkLoopFactory<L> = Arc<dyn Fn(SessionForkRequest) -> L + Send + Sync>;
 
 /// Information returned after materializing a savepoint.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -509,7 +514,7 @@ impl SessionCommand {
         }
     }
 
-    const fn is_terminal_accepted(&self) -> bool {
+    pub(super) const fn is_terminal_accepted(&self) -> bool {
         match self {
             Self::Acknowledge { command, .. } => command.is_terminal_accepted(),
             Self::Snapshot | Self::Fork { .. } | Self::Query { .. } => true,
@@ -532,7 +537,7 @@ impl SessionCommand {
         }
     }
 
-    const fn is_control_acknowledged(&self) -> bool {
+    pub(super) const fn is_control_acknowledged(&self) -> bool {
         match self {
             Self::Acknowledge { command, .. } => command.is_control_acknowledged(),
             Self::Pause
@@ -554,7 +559,7 @@ impl SessionCommand {
         }
     }
 
-    const fn requires_running_quantum_ack(&self) -> bool {
+    pub(super) const fn requires_running_quantum_ack(&self) -> bool {
         match self {
             Self::Acknowledge { command, .. } => command.requires_running_quantum_ack(),
             Self::Snapshot | Self::Query { .. } => true,
@@ -578,7 +583,7 @@ impl SessionCommand {
         }
     }
 
-    const fn requires_non_canonical_debug_branch(&self) -> bool {
+    pub(super) const fn requires_non_canonical_debug_branch(&self) -> bool {
         match self {
             Self::Acknowledge { command, .. } => command.requires_non_canonical_debug_branch(),
             Self::Continue
@@ -603,7 +608,7 @@ impl SessionCommand {
         }
     }
 
-    fn complete_error(&self, error: SessionError) {
+    pub(super) fn complete_error(&self, error: SessionError) {
         match self {
             Self::InjectFault { reply, .. } => reply.complete(Err(error)),
             Self::HealFault { reply, .. } => reply.complete(Err(error)),
@@ -710,7 +715,7 @@ impl SessionCommandKind {
         Self::DebugForkNonCanonical,
     ];
 
-    const fn operation_name(self) -> &'static str {
+    pub(super) const fn operation_name(self) -> &'static str {
         match self {
             Self::Start => "start",
             Self::Continue => "continue",

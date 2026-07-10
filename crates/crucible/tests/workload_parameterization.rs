@@ -34,7 +34,7 @@ fn scalar_workload_parameters_are_cmdline_scenario_config() -> Result<(), Engine
     );
 
     let world = World::from_nodes(vec![world_node("client", cmdline, None)])?;
-    let node = only_node(world.nodes());
+    let node = only_node(world.vm_nodes());
     let scalars = node.guest_workload_scalar_parameters();
     assert_eq!(
         scalars.get(&GuestWorkloadParameterKey::Rate),
@@ -160,7 +160,7 @@ fn config_tree_change_changes_scenario_id_and_reproduces() -> Result<(), EngineE
     assert_eq!(rootfs_form_a.seed(), rootfs_form_b.seed());
     assert_eq!(ninep_form_a.seed(), ninep_form_b.seed());
 
-    let rootfs_node = only_node(rootfs_form_a.world().nodes());
+    let rootfs_node = only_node(rootfs_form_a.world().vm_nodes());
     assert_eq!(rootfs_node.root_image, Some(rootfs_a.export()));
     assert_eq!(
         rootfs_node.guest_workload_config_tree(),
@@ -176,7 +176,7 @@ fn config_tree_change_changes_scenario_id_and_reproduces() -> Result<(), EngineE
         }]
     );
 
-    let ninep_node = only_node(ninep_form_a.world().nodes());
+    let ninep_node = only_node(ninep_form_a.world().vm_nodes());
     assert_eq!(ninep_node.root_image, None);
     assert_eq!(
         ninep_node.guest_workload_config_tree(),

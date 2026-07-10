@@ -1,4 +1,6 @@
-// Fork/search runtime state and top-level engine operations.
+//! Fork/search runtime state and top-level engine operations.
+
+use super::*;
 
 /// Result of a graph-level fork operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -217,7 +219,10 @@ pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineErr
     })
 }
 
-fn validate_app_random_draw_cap(def: &ScenarioDef, schedule: &Schedule) -> Result<(), EngineError> {
+pub(super) fn validate_app_random_draw_cap(
+    def: &ScenarioDef,
+    schedule: &Schedule,
+) -> Result<(), EngineError> {
     let actual = count_app_random_decisions(schedule);
     if actual > def.app_random_draw_cap {
         return Err(EngineError::AppRandomDrawCapExceeded {
@@ -229,7 +234,10 @@ fn validate_app_random_draw_cap(def: &ScenarioDef, schedule: &Schedule) -> Resul
     Ok(())
 }
 
-fn validate_debug_gdb_endpoint(field: &'static str, value: &str) -> Result<(), EngineError> {
+pub(super) fn validate_debug_gdb_endpoint(
+    field: &'static str,
+    value: &str,
+) -> Result<(), EngineError> {
     if value.is_empty() || value.contains('\n') || value.contains('\0') {
         Err(EngineError::DebugGdbEndpointInvalid {
             field,
@@ -240,7 +248,7 @@ fn validate_debug_gdb_endpoint(field: &'static str, value: &str) -> Result<(), E
     }
 }
 
-fn count_app_random_decisions(schedule: &Schedule) -> u64 {
+pub(super) fn count_app_random_decisions(schedule: &Schedule) -> u64 {
     schedule
         .decisions()
         .iter()
@@ -372,7 +380,7 @@ pub fn app_random_branch_decisions(config: &AppRandomBranchConfig) -> Vec<Decisi
     decisions
 }
 
-fn run_coverage_guided_fuzz(
+pub(super) fn run_coverage_guided_fuzz(
     family: &ScenarioFamily,
     config: CoverageGuidedFuzzConfig,
     feedback: &[EventLogCoverageFeedback],
@@ -426,7 +434,7 @@ fn run_coverage_guided_fuzz(
     })
 }
 
-fn run_coverage_guided_fuzz_corpus<S>(
+pub(super) fn run_coverage_guided_fuzz_corpus<S>(
     family: &ScenarioFamily,
     store: &S,
     config: CoverageGuidedFuzzConfig,
@@ -637,7 +645,7 @@ where
     })
 }
 
-fn persist_corpus_artifact<S>(
+pub(super) fn persist_corpus_artifact<S>(
     store: &S,
     artifact: &ReproductionArtifact,
 ) -> Result<ContentHash, CoverageGuidedCorpusError>
@@ -660,19 +668,19 @@ where
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct CoverageGuidedCorpusEntryDescriptor {
-    artifact: ContentHash,
-    store_key: ContentHash,
-    scenario: ContentHash,
-    schedule: ContentHash,
-    replayed_state: ContentHash,
-    coverage_fingerprint: ContentHash,
-    energy: u64,
-    parent: Option<ContentHash>,
-    origin: CoverageGuidedCorpusEntryOrigin,
+pub(super) struct CoverageGuidedCorpusEntryDescriptor {
+    pub(super) artifact: ContentHash,
+    pub(super) store_key: ContentHash,
+    pub(super) scenario: ContentHash,
+    pub(super) schedule: ContentHash,
+    pub(super) replayed_state: ContentHash,
+    pub(super) coverage_fingerprint: ContentHash,
+    pub(super) energy: u64,
+    pub(super) parent: Option<ContentHash>,
+    pub(super) origin: CoverageGuidedCorpusEntryOrigin,
 }
 
-fn persist_corpus_entry_descriptor<S>(
+pub(super) fn persist_corpus_entry_descriptor<S>(
     store: &S,
     descriptor: CoverageGuidedCorpusEntryDescriptor,
 ) -> Result<ContentHash, CoverageGuidedCorpusError>
@@ -687,7 +695,7 @@ where
         })
 }
 
-fn coverage_guided_corpus_entry_descriptor_bytes(
+pub(super) fn coverage_guided_corpus_entry_descriptor_bytes(
     descriptor: CoverageGuidedCorpusEntryDescriptor,
 ) -> Vec<u8> {
     let origin = match descriptor.origin {
@@ -713,7 +721,7 @@ fn coverage_guided_corpus_entry_descriptor_bytes(
     .into_bytes()
 }
 
-fn coverage_guided_fuzz_feedback_fingerprint(
+pub(super) fn coverage_guided_fuzz_feedback_fingerprint(
     feedback: &[EventLogCoverageFeedback],
     sequence: u64,
 ) -> ContentHash {
@@ -725,7 +733,7 @@ fn coverage_guided_fuzz_feedback_fingerprint(
     feedback[index].fingerprint_for(EventLogCoverageFeedbackConsumer::CoverageGuidedFuzzing)
 }
 
-fn coverage_guided_fuzz_seed_corpus_entry(
+pub(super) fn coverage_guided_fuzz_seed_corpus_entry(
     config: CoverageGuidedFuzzConfig,
     cardinality: u64,
 ) -> ContentHash {
@@ -738,7 +746,7 @@ fn coverage_guided_fuzz_seed_corpus_entry(
     )
 }
 
-fn coverage_guided_fuzz_select_corpus_entry(
+pub(super) fn coverage_guided_fuzz_select_corpus_entry(
     config: CoverageGuidedFuzzConfig,
     sequence: u64,
     coverage_fingerprint: ContentHash,
@@ -758,7 +766,7 @@ fn coverage_guided_fuzz_select_corpus_entry(
     corpus[index]
 }
 
-fn coverage_guided_corpus_select_parent(
+pub(super) fn coverage_guided_corpus_select_parent(
     corpus: &CoverageGuidedCorpus,
     config: CoverageGuidedCorpusConfig,
     sequence: u64,
@@ -791,7 +799,7 @@ fn coverage_guided_corpus_select_parent(
     corpus.entries.keys().next_back().copied()
 }
 
-fn coverage_guided_corpus_energy(
+pub(super) fn coverage_guided_corpus_energy(
     seed: Seed,
     sequence: u64,
     coverage_fingerprint: ContentHash,
@@ -815,7 +823,7 @@ fn coverage_guided_corpus_energy(
     novelty_floor.saturating_add(base % GUIDANCE_SCORE_ONE_MICRO)
 }
 
-fn coverage_guided_fuzz_energy(
+pub(super) fn coverage_guided_fuzz_energy(
     config: CoverageGuidedFuzzConfig,
     sequence: u64,
     coverage_fingerprint: ContentHash,
@@ -832,7 +840,7 @@ fn coverage_guided_fuzz_energy(
     1 + (base % 1024)
 }
 
-fn coverage_guided_fuzz_sample_index(
+pub(super) fn coverage_guided_fuzz_sample_index(
     config: CoverageGuidedFuzzConfig,
     sequence: u64,
     coverage_fingerprint: ContentHash,
@@ -850,7 +858,7 @@ fn coverage_guided_fuzz_sample_index(
     bias.wrapping_add(sequence) % cardinality
 }
 
-fn coverage_guided_fuzz_override_decision(
+pub(super) fn coverage_guided_fuzz_override_decision(
     config: CoverageGuidedFuzzConfig,
     sequence: u64,
     sample_index: u64,
@@ -878,7 +886,9 @@ fn coverage_guided_fuzz_override_decision(
     })
 }
 
-fn coverage_guided_fuzz_order(iterations: &[CoverageGuidedFuzzIteration]) -> Vec<ContentHash> {
+pub(super) fn coverage_guided_fuzz_order(
+    iterations: &[CoverageGuidedFuzzIteration],
+) -> Vec<ContentHash> {
     let mut ordered = iterations.iter().collect::<Vec<_>>();
     ordered.sort_by(|left, right| {
         coverage_guided_fuzz_iteration_key(left)
@@ -891,7 +901,7 @@ fn coverage_guided_fuzz_order(iterations: &[CoverageGuidedFuzzIteration]) -> Vec
         .collect()
 }
 
-fn coverage_guided_fuzz_iteration_key(
+pub(super) fn coverage_guided_fuzz_iteration_key(
     iteration: &CoverageGuidedFuzzIteration,
 ) -> (u8, u8, ContentHash) {
     let old_coverage = u8::from(!iteration.new_coverage);
@@ -903,7 +913,7 @@ fn coverage_guided_fuzz_iteration_key(
     )
 }
 
-fn content_hash_low_u64(hash: ContentHash) -> u64 {
+pub(super) fn content_hash_low_u64(hash: ContentHash) -> u64 {
     u64::from_le_bytes([
         hash.bytes[0],
         hash.bytes[1],
@@ -916,7 +926,10 @@ fn content_hash_low_u64(hash: ContentHash) -> u64 {
     ])
 }
 
-fn guidance_signal_score(signal: GuidanceSignalKind, input: GuidanceSignalInput) -> GuidanceScore {
+pub(super) fn guidance_signal_score(
+    signal: GuidanceSignalKind,
+    input: GuidanceSignalInput,
+) -> GuidanceScore {
     match signal {
         GuidanceSignalKind::Coverage => CoverageGuidanceSignal.score(input),
         GuidanceSignalKind::NoveltyRarity => NoveltyRarityGuidanceSignal.score(input),
@@ -924,7 +937,7 @@ fn guidance_signal_score(signal: GuidanceSignalKind, input: GuidanceSignalInput)
     }
 }
 
-fn select_adaptive_strategy_arm(
+pub(super) fn select_adaptive_strategy_arm(
     config: &AdaptiveStrategyConfig,
     graph_fingerprint: ContentHash,
     rewards: &BTreeMap<AdaptiveStrategyArm, AdaptiveStrategyReward>,
@@ -961,7 +974,7 @@ fn select_adaptive_strategy_arm(
         .unwrap_or(AdaptiveStrategyArm::BreadthFirst)
 }
 
-fn adaptive_strategy_arm_score(
+pub(super) fn adaptive_strategy_arm_score(
     config: &AdaptiveStrategyConfig,
     graph_fingerprint: ContentHash,
     rewards: &BTreeMap<AdaptiveStrategyArm, AdaptiveStrategyReward>,
@@ -979,7 +992,7 @@ fn adaptive_strategy_arm_score(
     exploitation.saturating_add(exploration)
 }
 
-fn adaptive_strategy_reward_total(reward: AdaptiveStrategyReward) -> u64 {
+pub(super) fn adaptive_strategy_reward_total(reward: AdaptiveStrategyReward) -> u64 {
     let failure = if reward.confirmed_failure {
         ADAPTIVE_CONFIRMED_FAILURE_REWARD
     } else {
@@ -992,7 +1005,7 @@ fn adaptive_strategy_reward_total(reward: AdaptiveStrategyReward) -> u64 {
         .saturating_add(failure)
 }
 
-fn adaptive_strategy_exploration_bonus(
+pub(super) fn adaptive_strategy_exploration_bonus(
     seed: Seed,
     graph_fingerprint: ContentHash,
     sequence: u64,
@@ -1009,7 +1022,7 @@ fn adaptive_strategy_exploration_bonus(
     )) % GUIDANCE_SCORE_ONE_MICRO
 }
 
-fn adaptive_strategy_rewards_from_credits(
+pub(super) fn adaptive_strategy_rewards_from_credits(
     credits: &[AdaptiveStrategyCredit],
 ) -> BTreeMap<AdaptiveStrategyArm, AdaptiveStrategyReward> {
     let mut ordered = credits.to_vec();
@@ -1026,7 +1039,7 @@ fn adaptive_strategy_rewards_from_credits(
     rewards
 }
 
-fn combine_adaptive_strategy_rewards(
+pub(super) fn combine_adaptive_strategy_rewards(
     left: AdaptiveStrategyReward,
     right: AdaptiveStrategyReward,
 ) -> AdaptiveStrategyReward {
@@ -1040,7 +1053,7 @@ fn combine_adaptive_strategy_rewards(
     }
 }
 
-fn adaptive_strategy_graph_fingerprint(graph: &BTreeSet<ContentHash>) -> ContentHash {
+pub(super) fn adaptive_strategy_graph_fingerprint(graph: &BTreeSet<ContentHash>) -> ContentHash {
     if graph.is_empty() {
         return ContentHash::default();
     }
@@ -1052,7 +1065,7 @@ fn adaptive_strategy_graph_fingerprint(graph: &BTreeSet<ContentHash>) -> Content
     ContentHash::from_canonical_material("crucible.adaptive-strategy.graph.v1", &material)
 }
 
-fn adaptive_strategy_config_material(config: &AdaptiveStrategyConfig) -> String {
+pub(super) fn adaptive_strategy_config_material(config: &AdaptiveStrategyConfig) -> String {
     let arms = config
         .arms
         .iter()
@@ -1068,13 +1081,13 @@ fn adaptive_strategy_config_material(config: &AdaptiveStrategyConfig) -> String 
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SearchFrontierCandidate {
-    configuration: Configuration,
-    depth: usize,
+pub(super) struct SearchFrontierCandidate {
+    pub(super) configuration: Configuration,
+    pub(super) depth: usize,
 }
 
 impl SearchFrontierCandidate {
-    fn new(configuration: Configuration) -> Self {
+    pub(super) fn new(configuration: Configuration) -> Self {
         let depth = configuration.schedule.len();
         Self {
             configuration,
@@ -1082,12 +1095,12 @@ impl SearchFrontierCandidate {
         }
     }
 
-    fn id(&self) -> ContentHash {
+    pub(super) fn id(&self) -> ContentHash {
         self.configuration.id()
     }
 }
 
-fn select_search_frontier_candidate(
+pub(super) fn select_search_frontier_candidate(
     graph: &TemporalGraph,
     worklist: &[SearchFrontierCandidate],
     strategy: SearchStrategy,
@@ -1103,14 +1116,14 @@ fn select_search_frontier_candidate(
         .map(|(index, _)| index)
 }
 
-fn search_depth_allows_expansion(max_depth: Option<u64>, depth: usize) -> bool {
+pub(super) fn search_depth_allows_expansion(max_depth: Option<u64>, depth: usize) -> bool {
     match max_depth {
         Some(max_depth) => (depth as u64) < max_depth,
         None => true,
     }
 }
 
-fn select_fleet_work_stealing_candidate(
+pub(super) fn select_fleet_work_stealing_candidate(
     worklist: &[SearchFrontierCandidate],
     host_count: u64,
     seed: Seed,
@@ -1130,7 +1143,7 @@ fn select_fleet_work_stealing_candidate(
         .map(|(index, _)| index)
 }
 
-fn fleet_claim_host_index(host_count: u64, seed: Seed, sequence: u64) -> u64 {
+pub(super) fn fleet_claim_host_index(host_count: u64, seed: Seed, sequence: u64) -> u64 {
     let host_count = host_count.max(1);
     let hash = ContentHash::from_canonical_material(
         "crucible.fleet-equivalence.claim-host.v1",
@@ -1139,7 +1152,7 @@ fn fleet_claim_host_index(host_count: u64, seed: Seed, sequence: u64) -> u64 {
     content_hash_low_u64(hash) % host_count
 }
 
-fn fleet_work_stealing_score(
+pub(super) fn fleet_work_stealing_score(
     seed: Seed,
     sequence: u64,
     host_index: u64,
@@ -1156,7 +1169,7 @@ fn fleet_work_stealing_score(
     )
 }
 
-fn compare_search_frontier_candidates(
+pub(super) fn compare_search_frontier_candidates(
     graph: &TemporalGraph,
     left: &SearchFrontierCandidate,
     right: &SearchFrontierCandidate,
@@ -1180,7 +1193,7 @@ fn compare_search_frontier_candidates(
     }
 }
 
-fn fleet_artifacts_are_byte_identical(
+pub(super) fn fleet_artifacts_are_byte_identical(
     single: &TemporalGraphSearchRun,
     fleet: &FleetWorkStealingSearchRun,
     single_finding_set: &BTreeSet<FleetFindingSetEntry>,
@@ -1210,7 +1223,7 @@ fn fleet_artifacts_are_byte_identical(
     })
 }
 
-fn fleet_equivalence_divergence(
+pub(super) fn fleet_equivalence_divergence(
     single: &TemporalGraphSearchRun,
     fleet: &FleetWorkStealingSearchRun,
     single_finding_set: &BTreeSet<FleetFindingSetEntry>,
@@ -1360,7 +1373,7 @@ fn fleet_equivalence_divergence(
     }
 }
 
-fn fleet_equivalence_bisection(
+pub(super) fn fleet_equivalence_bisection(
     configuration: ContentHash,
     reason: &'static str,
 ) -> SearchReplayOracleBisectionRequest {
@@ -1371,14 +1384,14 @@ fn fleet_equivalence_bisection(
     }
 }
 
-fn search_priority_score(seed: Seed, candidate: &SearchFrontierCandidate) -> u64 {
+pub(super) fn search_priority_score(seed: Seed, candidate: &SearchFrontierCandidate) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
     hash = fold_fnv_bytes(hash, SEARCH_PRIORITY_SCORE_DOMAIN);
     hash = fold_fnv_bytes(hash, &seed.bytes());
     fold_fnv_bytes(hash, &(candidate.depth as u64).to_le_bytes())
 }
 
-fn search_coverage_guided_key(
+pub(super) fn search_coverage_guided_key(
     graph: &TemporalGraph,
     candidate: &SearchFrontierCandidate,
 ) -> (u8, ContentHash) {
@@ -1389,7 +1402,7 @@ fn search_coverage_guided_key(
     })
 }
 
-fn search_candidate_coverage_fingerprint(
+pub(super) fn search_candidate_coverage_fingerprint(
     graph: &TemporalGraph,
     configuration: &Configuration,
 ) -> ContentHash {
@@ -1401,7 +1414,7 @@ fn search_candidate_coverage_fingerprint(
         .unwrap_or_default()
 }
 
-fn search_run_reached_configurations(
+pub(super) fn search_run_reached_configurations(
     root: &Configuration,
     run: &TemporalGraphSearchRun,
 ) -> Vec<Configuration> {
@@ -1421,7 +1434,7 @@ fn search_run_reached_configurations(
     configurations.into_values().collect()
 }
 
-fn search_assertion_failure_fingerprint<O>(
+pub(super) fn search_assertion_failure_fingerprint<O>(
     scenario: &ScenarioDefForm,
     configuration: &Configuration,
     oracle: &mut O,
@@ -1445,7 +1458,7 @@ where
     )
 }
 
-fn search_assertion_failure_fingerprint_from_recorded_log<O>(
+pub(super) fn search_assertion_failure_fingerprint_from_recorded_log<O>(
     scenario: &ScenarioDefForm,
     configuration: &Configuration,
     recorded: &RecordedAssertionLog,
@@ -1476,7 +1489,7 @@ where
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
 }
 
-fn search_assertion_failure_fingerprint_from_retained_log(
+pub(super) fn search_assertion_failure_fingerprint_from_retained_log(
     scenario: &ScenarioDefForm,
     configuration: &Configuration,
     recorded: &RecordedAssertionLog,
@@ -1522,7 +1535,7 @@ fn search_assertion_failure_fingerprint_from_retained_log(
         .map(|outcome| search_assertion_outcome_fingerprint(configuration.id(), outcome)))
 }
 
-fn search_assertion_failure_fingerprint_with_named_truths(
+pub(super) fn search_assertion_failure_fingerprint_with_named_truths(
     scenario: &ScenarioDefForm,
     configuration: &Configuration,
     oracle: &mut SearchScheduleNamedPredicateHostOracle<'_>,
@@ -1541,13 +1554,13 @@ fn search_assertion_failure_fingerprint_with_named_truths(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SearchAssertionPredicateScope {
+pub(super) enum SearchAssertionPredicateScope {
     ScheduleOnly,
     ScheduleAndNamedTruths,
     RetainedLog,
 }
 
-fn prefix_safe_search_assertion_failure(
+pub(super) fn prefix_safe_search_assertion_failure(
     properties: &Properties,
     outcome: &HostAssertionOutcome,
     predicate_scope: SearchAssertionPredicateScope,
@@ -1609,7 +1622,7 @@ fn prefix_safe_search_assertion_failure(
                 ))
 }
 
-fn assertion_uses_only_search_schedule_predicates(
+pub(super) fn assertion_uses_only_search_schedule_predicates(
     properties: &Properties,
     assertion: &AssertionId,
     predicate_scope: SearchAssertionPredicateScope,
@@ -1630,7 +1643,7 @@ fn assertion_uses_only_search_schedule_predicates(
         })
 }
 
-fn property_uses_only_search_schedule_predicates(
+pub(super) fn property_uses_only_search_schedule_predicates(
     property: &Property,
     predicate_scope: SearchAssertionPredicateScope,
     resolutions: Option<&SearchRetainedLogPredicateResolutions>,
@@ -1669,7 +1682,7 @@ fn property_uses_only_search_schedule_predicates(
     }
 }
 
-fn predicate_uses_only_search_schedule_predicates(
+pub(super) fn predicate_uses_only_search_schedule_predicates(
     predicate: &Predicate,
     predicate_scope: SearchAssertionPredicateScope,
     resolutions: Option<&SearchRetainedLogPredicateResolutions>,
@@ -1734,7 +1747,7 @@ fn predicate_uses_only_search_schedule_predicates(
     }
 }
 
-fn search_assertion_outcome_fingerprint(
+pub(super) fn search_assertion_outcome_fingerprint(
     configuration: ContentHash,
     outcome: &HostAssertionOutcome,
 ) -> ContentHash {
@@ -1744,7 +1757,7 @@ fn search_assertion_outcome_fingerprint(
     )
 }
 
-fn search_assertion_outcome_fingerprint_material(
+pub(super) fn search_assertion_outcome_fingerprint_material(
     configuration: ContentHash,
     outcome: &HostAssertionOutcome,
 ) -> String {
@@ -1761,7 +1774,7 @@ fn search_assertion_outcome_fingerprint_material(
     )
 }
 
-fn record_search_discovered_failure(
+pub(super) fn record_search_discovered_failure(
     configuration: &Configuration,
     scenario: Option<&ScenarioDefForm>,
     failure_oracle: &SearchFailureOracle,
@@ -1791,11 +1804,11 @@ fn record_search_discovered_failure(
     Ok(())
 }
 
-fn search_frontier_choices(runtime: &RuntimeState) -> Vec<SearchFrontierChoice> {
+pub(super) fn search_frontier_choices(runtime: &RuntimeState) -> Vec<SearchFrontierChoice> {
     runtime.scheduler.search_frontier.choices().to_vec()
 }
 
-fn is_genuine_search_frontier_decision(decision: &Decision) -> bool {
+pub(super) fn is_genuine_search_frontier_decision(decision: &Decision) -> bool {
     match decision {
         Decision::DeliveryOrder(_) => false,
         Decision::FaultFires(_) | Decision::RngDraw(_) | Decision::Override(_) => true,

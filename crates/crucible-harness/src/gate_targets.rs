@@ -260,6 +260,20 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:basic-block-coverage",
+        package: "crucible",
+        test_target: "gate_basic_block_coverage",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
+        gate: "gate:basic-block-coverage",
+        package: "crucible-qemu",
+        test_target: "gate_basic_block_coverage",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:fleet-equivalence",
         package: "crucible",
         test_target: "gate_fleet_equivalence",

@@ -5,7 +5,7 @@ disallowed-methods = [
   { path = "rand::thread_rng", reason = "randomness must come from Crucible's seeded decision streams" },
   { path = "rand::rng", reason = "randomness must come from Crucible's seeded decision streams" },
   { path = "rand::random", reason = "randomness must come from Crucible's seeded decision streams" },
-  { path = "getrandom::getrandom", reason = "host entropy must not enter Crucible state paths" },
+  { path = "getrandom::getrandom", reason = "host entropy must not enter Crucible state paths", allow-invalid = true },
 ]
 
 disallowed-types = [

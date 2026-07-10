@@ -1,4 +1,6 @@
-// Guest workload parameters, fixtures, and black-box configuration.
+//! Guest workload parameters, fixtures, and black-box configuration.
+
+use super::*;
 /// Default app-random draw cap for scenarios that do not opt into a tighter cap.
 pub const DEFAULT_APP_RANDOM_DRAW_CAP: u64 = u64::MAX;
 
@@ -9,7 +11,7 @@ pub const DEFAULT_APP_RANDOM_DRAW_CAP: u64 = u64::MAX;
 /// [`ScenarioDef`].
 pub const WORKLOAD_SCENARIO_PARAMETER: &str = "crucible.workload";
 
-const WORKLOAD_SCENARIO_PARAMETER_PREFIX: &str = "crucible.workload=";
+pub(super) const WORKLOAD_SCENARIO_PARAMETER_PREFIX: &str = "crucible.workload=";
 
 /// Kernel command-line key that delivers an explicit in-guest workload seed.
 ///
@@ -19,7 +21,7 @@ const WORKLOAD_SCENARIO_PARAMETER_PREFIX: &str = "crucible.workload=";
 /// content address and the enclosing [`ScenarioDef`].
 pub const WORKLOAD_SEED_SCENARIO_PARAMETER: &str = "wseed";
 
-const WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX: &str = "wseed=";
+pub(super) const WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX: &str = "wseed=";
 
 /// Kernel command-line key that selects a classic in-guest load pattern.
 ///
@@ -28,7 +30,7 @@ const WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX: &str = "wseed=";
 /// host-side load-generation subsystem.
 pub const WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER: &str = "load_pattern";
 
-const WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX: &str = "load_pattern=";
+pub(super) const WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX: &str = "load_pattern=";
 
 /// Kernel command-line key that selects how a spike pattern is expressed.
 ///
@@ -37,7 +39,7 @@ const WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX: &str = "load_pattern=";
 /// ordinary [`Plan`] event-graph control path.
 pub const WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER: &str = "spike_mode";
 
-const WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX: &str = "spike_mode=";
+pub(super) const WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX: &str = "spike_mode=";
 
 /// Kernel command-line key that declares the clock driving load variation.
 ///
@@ -46,7 +48,7 @@ const WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX: &str = "spike_mode=";
 /// not an admissible load-shape input.
 pub const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER: &str = "load_time_source";
 
-const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX: &str = "load_time_source=";
+pub(super) const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX: &str = "load_time_source=";
 
 /// Kernel command-line key that declares a structured workload config tree.
 ///
@@ -55,7 +57,7 @@ const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX: &str = "load_time_source="
 /// hash therefore contributes to the world's canonical material.
 pub const WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER: &str = "wcfg";
 
-const WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER_PREFIX: &str = "wcfg=";
+pub(super) const WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER_PREFIX: &str = "wcfg=";
 
 /// Whether explicit workload seeds can be delivered without white-box support.
 pub const WORKLOAD_SEED_BLACK_BOX_CONFIG_SUFFICES: bool = true;
@@ -187,7 +189,7 @@ impl GuestWorkloadBinary {
 /// identity, while leaving the optional white-box guest-host channel disabled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GuestWorkloadSeed {
-    seed: Seed,
+    pub(super) seed: Seed,
 }
 
 impl GuestWorkloadSeed {
@@ -355,8 +357,8 @@ impl GuestWorkloadParameterKey {
 /// A single scalar workload parameter delivered through the guest command line.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GuestWorkloadScalarParameter {
-    key: GuestWorkloadParameterKey,
-    value: String,
+    pub(super) key: GuestWorkloadParameterKey,
+    pub(super) value: String,
 }
 
 impl GuestWorkloadScalarParameter {
@@ -450,9 +452,9 @@ impl GuestWorkloadConfigTreeDelivery {
 /// A content-addressed workload config tree delivered read-only to the guest.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GuestWorkloadConfigTreeRef {
-    delivery: GuestWorkloadConfigTreeDelivery,
-    export: ContentAddressedBlobRef,
-    mount: String,
+    pub(super) delivery: GuestWorkloadConfigTreeDelivery,
+    pub(super) export: ContentAddressedBlobRef,
+    pub(super) mount: String,
 }
 
 impl GuestWorkloadConfigTreeRef {
@@ -786,11 +788,11 @@ impl GuestWorkloadTimeSource {
 /// primitives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuestWorkloadLoadPatternFixture {
-    pattern: GuestWorkloadPattern,
-    spike_mode: Option<GuestWorkloadSpikeMode>,
-    time_source: Option<GuestWorkloadTimeSource>,
-    world: World,
-    plan: Plan,
+    pub(super) pattern: GuestWorkloadPattern,
+    pub(super) spike_mode: Option<GuestWorkloadSpikeMode>,
+    pub(super) time_source: Option<GuestWorkloadTimeSource>,
+    pub(super) world: World,
+    pub(super) plan: Plan,
 }
 
 impl GuestWorkloadLoadPatternFixture {

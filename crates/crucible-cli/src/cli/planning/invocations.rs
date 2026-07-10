@@ -1,19 +1,23 @@
+//! Command invocation plans for run, save, search, fuzz, and replay workflows.
+
+use super::*;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct DeterminismErgonomicsPlan {
-    subcommand: CliSubcommand,
-    seed: ResolvedSeed,
-    seed_printed_at_run_start: bool,
-    generated_seed_drawn_before_run: bool,
-    generated_seed_is_identity_only: bool,
-    failure_artifact_rule: FailureArtifactRule,
-    trace_formats: Vec<OutputFormat>,
-    jsonl_streams_entries: bool,
-    format_changes_only_rendering: bool,
-    no_wall_clock_feeds_canonical_state: bool,
+pub(crate) struct DeterminismErgonomicsPlan {
+    pub(crate) subcommand: CliSubcommand,
+    pub(crate) seed: ResolvedSeed,
+    pub(crate) seed_printed_at_run_start: bool,
+    pub(crate) generated_seed_drawn_before_run: bool,
+    pub(crate) generated_seed_is_identity_only: bool,
+    pub(crate) failure_artifact_rule: FailureArtifactRule,
+    pub(crate) trace_formats: Vec<OutputFormat>,
+    pub(crate) jsonl_streams_entries: bool,
+    pub(crate) format_changes_only_rendering: bool,
+    pub(crate) no_wall_clock_feeds_canonical_state: bool,
 }
 
 impl DeterminismErgonomicsPlan {
-    fn proves_t_cli_4(&self) -> bool {
+    pub(crate) fn proves_t_cli_4(&self) -> bool {
         self.seed_printed_at_run_start
             && self.failure_artifact_rule.self_contained_artifact
             && self.failure_artifact_rule.replay_command_copy_pasteable
@@ -35,20 +39,20 @@ impl DeterminismErgonomicsPlan {
             }
     }
 
-    fn seed_announcement(&self) -> String {
+    pub(crate) fn seed_announcement(&self) -> String {
         self.seed.announcement()
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ResolvedSeed {
-    value: u64,
-    source: SeedSource,
-    value_source_pinned: bool,
+pub(crate) struct ResolvedSeed {
+    pub(crate) value: u64,
+    pub(crate) source: SeedSource,
+    pub(crate) value_source_pinned: bool,
 }
 
 impl ResolvedSeed {
-    fn announcement(&self) -> String {
+    pub(crate) fn announcement(&self) -> String {
         match self.source {
             SeedSource::Flag => {
                 format!("crucible: seed = {} (--seed)", format_seed(self.value))
@@ -70,83 +74,84 @@ impl ResolvedSeed {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum SeedSource {
+pub(crate) enum SeedSource {
     Flag,
     Environment,
     Generated,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FailureArtifactRule {
-    self_contained_artifact: bool,
-    replay_command_copy_pasteable: bool,
-    debug_command_copy_pasteable: bool,
+pub(crate) struct FailureArtifactRule {
+    pub(crate) self_contained_artifact: bool,
+    pub(crate) replay_command_copy_pasteable: bool,
+    pub(crate) debug_command_copy_pasteable: bool,
 }
 
-const RUN_INTERACTIVE_ACK_QUANTA_BOUND: u64 = crucible_api::STREAMING_COMMAND_MAX_ACTOR_YIELDS;
-const SERVE_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+pub(crate) const RUN_INTERACTIVE_ACK_QUANTA_BOUND: u64 =
+    crucible_api::STREAMING_COMMAND_MAX_ACTOR_YIELDS;
+pub(crate) const SERVE_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RunInvocationPlan {
-    scenario: RunScenarioRef,
-    request_seed: Option<crucible::Seed>,
-    terminal_condition: RunTerminalCondition,
-    max_virtual_time: Option<String>,
-    max_virtual_time_ticks: Option<u64>,
-    max_quanta: Option<u64>,
-    execution_mode: RunExecutionMode,
-    save_policy: RunSavePolicy,
-    watch_streams_live_status: bool,
-    startup_commands: Vec<SessionCommandKind>,
-    initial_control_commands: Vec<SessionCommandKind>,
-    accepted_interactive_commands: Vec<SessionCommandKind>,
-    observer_profile: VerifyHostProfile,
-    collect_execution_fingerprints: bool,
-    bounded_ack_quanta: u64,
-    outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
-    invalid_scenario_exit_code: i32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SaveInvocationPlan {
-    at: SaveAtArg,
-    label: String,
-    output: SaveOutputTarget,
-    store_root: PathBuf,
-    selector: Option<SaveAtSelector>,
-    run_plan: RunInvocationPlan,
+pub(crate) struct RunInvocationPlan {
+    pub(crate) scenario: RunScenarioRef,
+    pub(crate) request_seed: Option<crucible::Seed>,
+    pub(crate) terminal_condition: RunTerminalCondition,
+    pub(crate) max_virtual_time: Option<String>,
+    pub(crate) max_virtual_time_ticks: Option<u64>,
+    pub(crate) max_quanta: Option<u64>,
+    pub(crate) execution_mode: RunExecutionMode,
+    pub(crate) save_policy: RunSavePolicy,
+    pub(crate) watch_streams_live_status: bool,
+    pub(crate) startup_commands: Vec<SessionCommandKind>,
+    pub(crate) initial_control_commands: Vec<SessionCommandKind>,
+    pub(crate) accepted_interactive_commands: Vec<SessionCommandKind>,
+    pub(crate) observer_profile: VerifyHostProfile,
+    pub(crate) collect_execution_fingerprints: bool,
+    pub(crate) bounded_ack_quanta: u64,
+    pub(crate) outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
+    pub(crate) invalid_scenario_exit_code: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum SaveAtSelector {
+pub(crate) struct SaveInvocationPlan {
+    pub(crate) at: SaveAtArg,
+    pub(crate) label: String,
+    pub(crate) output: SaveOutputTarget,
+    pub(crate) store_root: PathBuf,
+    pub(crate) selector: Option<SaveAtSelector>,
+    pub(crate) run_plan: RunInvocationPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SaveAtSelector {
     PropertyViolation { assertion: String },
     Marker { name: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SavepointOracleProof {
-    configuration: crucible::ContentHash,
-    fat_checkpoint: crucible::ContentHash,
-    thin_checkpoint: crucible::ContentHash,
-    frontier: crucible::VirtualTime,
-    schedule: crucible::Schedule,
-    store_objects: usize,
+pub(crate) struct SavepointOracleProof {
+    pub(crate) configuration: crucible::ContentHash,
+    pub(crate) fat_checkpoint: crucible::ContentHash,
+    pub(crate) thin_checkpoint: crucible::ContentHash,
+    pub(crate) frontier: crucible::VirtualTime,
+    pub(crate) schedule: crucible::Schedule,
+    pub(crate) store_objects: usize,
 }
 
 impl SavepointOracleProof {
-    fn status_label(&self) -> &'static str {
+    pub(crate) fn status_label(&self) -> &'static str {
         "fat==thin-passed"
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum SaveOutputTarget {
+pub(crate) enum SaveOutputTarget {
     Explicit(PathBuf),
     ArtifactDir(PathBuf),
 }
 
 impl SaveOutputTarget {
-    fn resolve(&self, label: &str, handle_digest: &str) -> PathBuf {
+    pub(crate) fn resolve(&self, label: &str, handle_digest: &str) -> PathBuf {
         match self {
             Self::Explicit(path) => path.clone(),
             Self::ArtifactDir(dir) => dir.join(format!(
@@ -159,143 +164,143 @@ impl SaveOutputTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ResumeInvocationPlan {
-    savepoint: ResumeSavepointRef,
-    store_root: PathBuf,
-    terminal_condition: RunTerminalCondition,
-    max_virtual_time: Option<String>,
-    max_virtual_time_ticks: Option<u64>,
-    execution_mode: RunExecutionMode,
-    watch_streams_live_status: bool,
-    startup_commands: Vec<SessionCommandKind>,
-    initial_control_commands: Vec<SessionCommandKind>,
-    accepted_interactive_commands: Vec<SessionCommandKind>,
+pub(crate) struct ResumeInvocationPlan {
+    pub(crate) savepoint: ResumeSavepointRef,
+    pub(crate) store_root: PathBuf,
+    pub(crate) terminal_condition: RunTerminalCondition,
+    pub(crate) max_virtual_time: Option<String>,
+    pub(crate) max_virtual_time_ticks: Option<u64>,
+    pub(crate) execution_mode: RunExecutionMode,
+    pub(crate) watch_streams_live_status: bool,
+    pub(crate) startup_commands: Vec<SessionCommandKind>,
+    pub(crate) initial_control_commands: Vec<SessionCommandKind>,
+    pub(crate) accepted_interactive_commands: Vec<SessionCommandKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ForkInvocationPlan {
-    source: ResumeSavepointRef,
-    label: String,
-    artifact_dir: PathBuf,
-    store_root: PathBuf,
-    decision_overrides: Vec<ForkDecisionOverride>,
-    fork_seed: Option<u64>,
-    terminal_condition: RunTerminalCondition,
-    max_virtual_time: Option<String>,
-    max_virtual_time_ticks: Option<u64>,
-    execution_mode: RunExecutionMode,
-    watch_streams_live_status: bool,
-    startup_commands: Vec<SessionCommandKind>,
-    initial_control_commands: Vec<SessionCommandKind>,
-    accepted_interactive_commands: Vec<SessionCommandKind>,
+pub(crate) struct ForkInvocationPlan {
+    pub(crate) source: ResumeSavepointRef,
+    pub(crate) label: String,
+    pub(crate) artifact_dir: PathBuf,
+    pub(crate) store_root: PathBuf,
+    pub(crate) decision_overrides: Vec<ForkDecisionOverride>,
+    pub(crate) fork_seed: Option<u64>,
+    pub(crate) terminal_condition: RunTerminalCondition,
+    pub(crate) max_virtual_time: Option<String>,
+    pub(crate) max_virtual_time_ticks: Option<u64>,
+    pub(crate) execution_mode: RunExecutionMode,
+    pub(crate) watch_streams_live_status: bool,
+    pub(crate) startup_commands: Vec<SessionCommandKind>,
+    pub(crate) initial_control_commands: Vec<SessionCommandKind>,
+    pub(crate) accepted_interactive_commands: Vec<SessionCommandKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ForkDecisionOverride {
-    decision: String,
-    value: String,
+pub(crate) struct ForkDecisionOverride {
+    pub(crate) decision: String,
+    pub(crate) value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SearchDriverPlan {
-    scenario: RunScenarioRef,
-    strategy_arg: SearchStrategyArg,
-    engine_strategy: crucible::SearchStrategy,
-    max_depth: Option<u64>,
-    max_states: u64,
-    budget: crucible::SearchBudget,
-    on_violation: SearchOnViolationArg,
-    explicit_on_violation: bool,
-    schedule_named_truths: Option<SearchScheduleNamedTruthsPlan>,
-    retained_evidence: Option<SearchRetainedEvidencePlan>,
-    delegates_policy_to_advanced_engine: bool,
-    opportunistic_replay_oracle_sampling: bool,
-    counterexamples_are_self_contained: bool,
+pub(crate) struct SearchDriverPlan {
+    pub(crate) scenario: RunScenarioRef,
+    pub(crate) strategy_arg: SearchStrategyArg,
+    pub(crate) engine_strategy: crucible::SearchStrategy,
+    pub(crate) max_depth: Option<u64>,
+    pub(crate) max_states: u64,
+    pub(crate) budget: crucible::SearchBudget,
+    pub(crate) on_violation: SearchOnViolationArg,
+    pub(crate) explicit_on_violation: bool,
+    pub(crate) schedule_named_truths: Option<SearchScheduleNamedTruthsPlan>,
+    pub(crate) retained_evidence: Option<SearchRetainedEvidencePlan>,
+    pub(crate) delegates_policy_to_advanced_engine: bool,
+    pub(crate) opportunistic_replay_oracle_sampling: bool,
+    pub(crate) counterexamples_are_self_contained: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SearchScheduleNamedTruthsPlan {
-    path: PathBuf,
-    digest: String,
-    material: Vec<u8>,
-    truths: crucible::SearchScheduleNamedPredicateTruths,
+pub(crate) struct SearchScheduleNamedTruthsPlan {
+    pub(crate) path: PathBuf,
+    pub(crate) digest: String,
+    pub(crate) material: Vec<u8>,
+    pub(crate) truths: crucible::SearchScheduleNamedPredicateTruths,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SearchRetainedEvidencePlan {
-    path: PathBuf,
-    digest: String,
-    material: Vec<u8>,
-    evidence: BTreeMap<crucible::ContentHash, SearchRetainedLogAssertionEvidence>,
+pub(crate) struct SearchRetainedEvidencePlan {
+    pub(crate) path: PathBuf,
+    pub(crate) digest: String,
+    pub(crate) material: Vec<u8>,
+    pub(crate) evidence: BTreeMap<crucible::ContentHash, SearchRetainedLogAssertionEvidence>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct LocalDoubleSearchReport {
-    root: crucible::ContentHash,
-    expansions: usize,
-    explored: usize,
-    failures: usize,
-    exhausted: bool,
-    failure_oracle: String,
-    schedule_named_truths: String,
-    schedule_named_truths_digest: String,
-    retained_evidence: String,
-    retained_evidence_digest: String,
-    counterexample: Option<LocalDoubleSearchCounterexample>,
-    replay_oracle_considered: usize,
-    replay_oracle_sampled: usize,
-    replay_oracle_skipped: usize,
+pub(crate) struct LocalDoubleSearchReport {
+    pub(crate) root: crucible::ContentHash,
+    pub(crate) expansions: usize,
+    pub(crate) explored: usize,
+    pub(crate) failures: usize,
+    pub(crate) exhausted: bool,
+    pub(crate) failure_oracle: String,
+    pub(crate) schedule_named_truths: String,
+    pub(crate) schedule_named_truths_digest: String,
+    pub(crate) retained_evidence: String,
+    pub(crate) retained_evidence_digest: String,
+    pub(crate) counterexample: Option<LocalDoubleSearchCounterexample>,
+    pub(crate) replay_oracle_considered: usize,
+    pub(crate) replay_oracle_sampled: usize,
+    pub(crate) replay_oracle_skipped: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct LocalDoubleSearchCounterexample {
-    configuration: crucible::ContentHash,
-    fingerprint: crucible::ContentHash,
-    artifact_digest: String,
+pub(crate) struct LocalDoubleSearchCounterexample {
+    pub(crate) configuration: crucible::ContentHash,
+    pub(crate) fingerprint: crucible::ContentHash,
+    pub(crate) artifact_digest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FuzzDriverPlan {
-    family: FuzzFamilyRef,
-    runs: u64,
-    coverage: FuzzCoverageArg,
-    corpus: Option<PathBuf>,
-    store_root: PathBuf,
-    config: crucible::CoverageGuidedFuzzConfig,
-    delegates_policy_to_advanced_engine: bool,
-    pins_one_scenario_def_per_iteration: bool,
-    counterexamples_are_self_contained: bool,
+pub(crate) struct FuzzDriverPlan {
+    pub(crate) family: FuzzFamilyRef,
+    pub(crate) runs: u64,
+    pub(crate) coverage: FuzzCoverageArg,
+    pub(crate) corpus: Option<PathBuf>,
+    pub(crate) store_root: PathBuf,
+    pub(crate) config: crucible::CoverageGuidedFuzzConfig,
+    pub(crate) delegates_policy_to_advanced_engine: bool,
+    pub(crate) pins_one_scenario_def_per_iteration: bool,
+    pub(crate) counterexamples_are_self_contained: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FuzzDispatchRoute {
+pub(crate) enum FuzzDispatchRoute {
     BuiltInFaultCampaignProof,
     LocalDouble,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct LocalDoubleFuzzReport {
-    family: String,
-    corpus: Option<PathBuf>,
-    iterations: usize,
-    coverage_biased_order: usize,
-    new_coverage: usize,
-    retained_entries: usize,
-    admissions: usize,
-    replay_oracle_validations: u64,
-    generated_mutants: u64,
-    store_puts: u64,
+pub(crate) struct LocalDoubleFuzzReport {
+    pub(crate) family: String,
+    pub(crate) corpus: Option<PathBuf>,
+    pub(crate) iterations: usize,
+    pub(crate) coverage_biased_order: usize,
+    pub(crate) new_coverage: usize,
+    pub(crate) retained_entries: usize,
+    pub(crate) admissions: usize,
+    pub(crate) replay_oracle_validations: u64,
+    pub(crate) generated_mutants: u64,
+    pub(crate) store_puts: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum FuzzFamilyRef {
+pub(crate) enum FuzzFamilyRef {
     BuiltInFaultCampaign,
     File(PathBuf),
     Stored(crucible::ContentHash),
 }
 
 impl FuzzFamilyRef {
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             Self::BuiltInFaultCampaign => crucible::FAULT_CAMPAIGN_FAMILY_NAME.to_owned(),
             Self::File(path) => path.display().to_string(),
@@ -303,109 +308,109 @@ impl FuzzFamilyRef {
         }
     }
 
-    fn is_builtin_fault_campaign(&self) -> bool {
+    pub(crate) fn is_builtin_fault_campaign(&self) -> bool {
         matches!(self, Self::BuiltInFaultCampaign)
     }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CliScenarioFamilyToml {
-    schema: String,
-    seed_space: CliSeedSpaceToml,
-    fault_density: CliFaultDensityToml,
-    topology_size: CliTopologySizeToml,
-    topology_shapes: Vec<String>,
-    node_template: CliNodeTemplateToml,
+pub(crate) struct CliScenarioFamilyToml {
+    pub(crate) schema: String,
+    pub(crate) seed_space: CliSeedSpaceToml,
+    pub(crate) fault_density: CliFaultDensityToml,
+    pub(crate) topology_size: CliTopologySizeToml,
+    pub(crate) topology_shapes: Vec<String>,
+    pub(crate) node_template: CliNodeTemplateToml,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CliSearchScheduleNamedTruthsToml {
-    schema: String,
+pub(crate) struct CliSearchScheduleNamedTruthsToml {
+    pub(crate) schema: String,
     #[serde(default)]
-    truth: Vec<CliSearchScheduleNamedTruthToml>,
+    pub(crate) truth: Vec<CliSearchScheduleNamedTruthToml>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CliSearchScheduleNamedTruthToml {
-    name: String,
-    value: bool,
+pub(crate) struct CliSearchScheduleNamedTruthToml {
+    pub(crate) name: String,
+    pub(crate) value: bool,
     #[serde(default)]
-    nodes: Vec<String>,
+    pub(crate) nodes: Vec<String>,
     #[serde(default)]
-    active_fault_tags: Vec<String>,
+    pub(crate) active_fault_tags: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CliSearchRetainedEvidenceToml {
-    schema: String,
+pub(crate) struct CliSearchRetainedEvidenceToml {
+    pub(crate) schema: String,
     #[serde(default)]
-    evidence: Vec<CliSearchRetainedEvidenceEntryToml>,
+    pub(crate) evidence: Vec<CliSearchRetainedEvidenceEntryToml>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CliSearchRetainedEvidenceEntryToml {
-    configuration: String,
-    kind: String,
+pub(crate) struct CliSearchRetainedEvidenceEntryToml {
+    pub(crate) configuration: String,
+    pub(crate) kind: String,
     #[serde(default)]
-    node: Option<String>,
+    pub(crate) node: Option<String>,
     #[serde(default)]
-    marker: Option<String>,
+    pub(crate) marker: Option<String>,
     #[serde(default)]
-    retired_icount: Option<u64>,
+    pub(crate) retired_icount: Option<u64>,
     #[serde(default)]
-    quiescent: Option<bool>,
+    pub(crate) quiescent: Option<bool>,
     #[serde(default)]
-    virtual_time_ticks: Option<u64>,
+    pub(crate) virtual_time_ticks: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, tag = "kind", rename_all = "kebab-case")]
-enum CliSeedSpaceToml {
+pub(crate) enum CliSeedSpaceToml {
     Generated { meta_seed: String, count: u32 },
     Explicit { seeds: Vec<String> },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CliFaultDensityToml {
-    min_millionths: u32,
-    max_millionths: u32,
+pub(crate) struct CliFaultDensityToml {
+    pub(crate) min_millionths: u32,
+    pub(crate) max_millionths: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CliTopologySizeToml {
-    min: u32,
-    max: u32,
+pub(crate) struct CliTopologySizeToml {
+    pub(crate) min: u32,
+    pub(crate) max: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CliNodeTemplateToml {
-    fixed_icount: Option<u64>,
-    network_idle_nanos: Option<u64>,
-    console_marker: Option<String>,
-    agent_signal: Option<bool>,
-    arch: Option<String>,
-    white_box: Option<String>,
-    memory_mib: Option<u32>,
-    cmdline: Option<String>,
-    smp_vcpus: Option<u16>,
-    icount_shift: Option<u8>,
-    kernel: Option<String>,
-    root_image: Option<String>,
-    initrd: Option<String>,
+pub(crate) struct CliNodeTemplateToml {
+    pub(crate) fixed_icount: Option<u64>,
+    pub(crate) network_idle_nanos: Option<u64>,
+    pub(crate) console_marker: Option<String>,
+    pub(crate) agent_signal: Option<bool>,
+    pub(crate) arch: Option<String>,
+    pub(crate) white_box: Option<String>,
+    pub(crate) memory_mib: Option<u32>,
+    pub(crate) cmdline: Option<String>,
+    pub(crate) smp_vcpus: Option<u16>,
+    pub(crate) icount_shift: Option<u8>,
+    pub(crate) kernel: Option<String>,
+    pub(crate) root_image: Option<String>,
+    pub(crate) initrd: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::large_enum_variant)]
-enum ResumeSavepointRef {
+pub(crate) enum ResumeSavepointRef {
     CheckpointHash(crucible::ContentHash),
     Handle {
         path: PathBuf,
@@ -414,14 +419,14 @@ enum ResumeSavepointRef {
 }
 
 impl ResumeSavepointRef {
-    fn checkpoint(&self) -> crucible::ContentHash {
+    pub(crate) fn checkpoint(&self) -> crucible::ContentHash {
         match self {
             Self::CheckpointHash(checkpoint) => *checkpoint,
             Self::Handle { handle, .. } => handle.checkpoint,
         }
     }
 
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             Self::CheckpointHash(checkpoint) => format_content_hash_ref(*checkpoint),
             Self::Handle { path, handle } => {
@@ -432,23 +437,23 @@ impl ResumeSavepointRef {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SavepointHandle {
-    label: String,
-    checkpoint: crucible::ContentHash,
-    scenario_id_hex: String,
-    scenario_label: String,
-    scenario_payload: Vec<u8>,
-    schedule_payload: Vec<u8>,
-    frontier_ticks: u64,
-    at: SaveAtArg,
-    terminal_condition: RunTerminalCondition,
-    materialization: String,
-    oracle_status: String,
-    canonical_log_digest: String,
+pub(crate) struct SavepointHandle {
+    pub(crate) label: String,
+    pub(crate) checkpoint: crucible::ContentHash,
+    pub(crate) scenario_id_hex: String,
+    pub(crate) scenario_label: String,
+    pub(crate) scenario_payload: Vec<u8>,
+    pub(crate) schedule_payload: Vec<u8>,
+    pub(crate) frontier_ticks: u64,
+    pub(crate) at: SaveAtArg,
+    pub(crate) terminal_condition: RunTerminalCondition,
+    pub(crate) materialization: String,
+    pub(crate) oracle_status: String,
+    pub(crate) canonical_log_digest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum RunScenarioRef {
+pub(crate) enum RunScenarioRef {
     BuiltInExample {
         name: String,
         form: crucible::ScenarioDefForm,
@@ -467,7 +472,7 @@ enum RunScenarioRef {
 }
 
 impl RunScenarioRef {
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         match self {
             Self::BuiltInExample { name, .. } => name.clone(),
             Self::File { path, .. } => path.display().to_string(),
@@ -475,7 +480,7 @@ impl RunScenarioRef {
         }
     }
 
-    fn scenario_id(&self) -> crucible::ContentHash {
+    pub(crate) fn scenario_id(&self) -> crucible::ContentHash {
         match self {
             Self::BuiltInExample { scenario, .. }
             | Self::File { scenario, .. }
@@ -483,7 +488,7 @@ impl RunScenarioRef {
         }
     }
 
-    fn scenario_def(&self) -> &crucible::ScenarioDef {
+    pub(crate) fn scenario_def(&self) -> &crucible::ScenarioDef {
         match self {
             Self::BuiltInExample { scenario, .. }
             | Self::File { scenario, .. }
@@ -491,7 +496,7 @@ impl RunScenarioRef {
         }
     }
 
-    fn scenario_form(&self) -> &crucible::ScenarioDefForm {
+    pub(crate) fn scenario_form(&self) -> &crucible::ScenarioDefForm {
         match self {
             Self::BuiltInExample { form, .. }
             | Self::File { form, .. }
@@ -501,29 +506,29 @@ impl RunScenarioRef {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct VerifyInvocationPlan {
-    mode: VerifyMode,
-    requested_runs: usize,
-    reductions: Vec<VerifyReductionPlan>,
-    compare_canonical_logs: bool,
-    compare_fingerprint_streams: bool,
-    pairwise_byte_identity: bool,
-    bisection_on_divergence: bool,
-    print_bisection_state_dump: bool,
-    writes_side_artifacts_on_divergence: bool,
-    applies_hostile_condition_matrix: bool,
-    outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
+pub(crate) struct VerifyInvocationPlan {
+    pub(crate) mode: VerifyMode,
+    pub(crate) requested_runs: usize,
+    pub(crate) reductions: Vec<VerifyReductionPlan>,
+    pub(crate) compare_canonical_logs: bool,
+    pub(crate) compare_fingerprint_streams: bool,
+    pub(crate) pairwise_byte_identity: bool,
+    pub(crate) bisection_on_divergence: bool,
+    pub(crate) print_bisection_state_dump: bool,
+    pub(crate) writes_side_artifacts_on_divergence: bool,
+    pub(crate) applies_hostile_condition_matrix: bool,
+    pub(crate) outcome_exit_codes: Vec<(BackendCommandStatus, i32)>,
 }
 
 impl VerifyInvocationPlan {
-    fn scenario(&self) -> Option<&RunScenarioRef> {
+    pub(crate) fn scenario(&self) -> Option<&RunScenarioRef> {
         match &self.mode {
             VerifyMode::RunScenario { scenario } => Some(scenario),
             VerifyMode::CompareArtifacts { .. } => None,
         }
     }
 
-    fn surface_shape_is_consistent(&self) -> bool {
+    pub(crate) fn surface_shape_is_consistent(&self) -> bool {
         let expected_reductions = match &self.mode {
             VerifyMode::RunScenario { .. } => {
                 self.requested_runs
@@ -564,13 +569,13 @@ impl VerifyInvocationPlan {
 #[derive(Clone, Debug, PartialEq, Eq)]
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::large_enum_variant)]
-enum VerifyMode {
+pub(crate) enum VerifyMode {
     RunScenario { scenario: RunScenarioRef },
     CompareArtifacts { left: PathBuf, right: PathBuf },
 }
 
 impl VerifyMode {
-    fn label(&self) -> &'static str {
+    pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::RunScenario { .. } => "run-scenario",
             Self::CompareArtifacts { .. } => "compare-artifacts",
@@ -579,35 +584,35 @@ impl VerifyMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct VerifyReductionPlan {
-    index: usize,
-    run_index: usize,
-    host_profile: VerifyHostProfile,
+pub(crate) struct VerifyReductionPlan {
+    pub(crate) index: usize,
+    pub(crate) run_index: usize,
+    pub(crate) host_profile: VerifyHostProfile,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct VerifyHostProfile {
-    label: &'static str,
-    poll_order: VerifyPollOrder,
-    event_timeout_ms: u64,
-    state_timeout_ms: u64,
-    pre_poll_yields: u8,
-    post_poll_yields: u8,
+pub(crate) struct VerifyHostProfile {
+    pub(crate) label: &'static str,
+    pub(crate) poll_order: VerifyPollOrder,
+    pub(crate) event_timeout_ms: u64,
+    pub(crate) state_timeout_ms: u64,
+    pub(crate) pre_poll_yields: u8,
+    pub(crate) post_poll_yields: u8,
 }
 
 impl VerifyHostProfile {
-    const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         self.label
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum VerifyPollOrder {
+pub(crate) enum VerifyPollOrder {
     EventThenState,
     StateThenEvent,
 }
 
-const VERIFY_BASELINE_PROFILE: VerifyHostProfile = VerifyHostProfile {
+pub(crate) const VERIFY_BASELINE_PROFILE: VerifyHostProfile = VerifyHostProfile {
     label: "baseline",
     poll_order: VerifyPollOrder::EventThenState,
     event_timeout_ms: 1,
@@ -615,7 +620,7 @@ const VERIFY_BASELINE_PROFILE: VerifyHostProfile = VerifyHostProfile {
     pre_poll_yields: 0,
     post_poll_yields: 1,
 };
-const VERIFY_HOSTILE_PROFILES: &[VerifyHostProfile] = &[
+pub(crate) const VERIFY_HOSTILE_PROFILES: &[VerifyHostProfile] = &[
     VerifyHostProfile {
         label: "randomized-host-scheduler",
         poll_order: VerifyPollOrder::StateThenEvent,
@@ -643,7 +648,7 @@ const VERIFY_HOSTILE_PROFILES: &[VerifyHostProfile] = &[
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RunTerminalCondition {
+pub(crate) enum RunTerminalCondition {
     Quiescence,
     VirtualTime,
     Property,
@@ -660,7 +665,7 @@ impl RunTerminalCondition {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Quiescence => "quiescence",
             Self::VirtualTime => "virtual-time",
@@ -671,13 +676,13 @@ impl RunTerminalCondition {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RunExecutionMode {
+pub(crate) enum RunExecutionMode {
     ToCompletion,
     Interactive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RunSavePolicy {
+pub(crate) enum RunSavePolicy {
     OnFail,
     Always,
     Never,
@@ -695,10 +700,10 @@ impl RunSavePolicy {
 
 #[cfg(test)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct SimBackendLifecycleLoop {
-    backend: crucible::SimBackend,
-    quanta: u64,
-    event_log_events: u64,
+pub(crate) struct SimBackendLifecycleLoop {
+    pub(crate) backend: crucible::SimBackend,
+    pub(crate) quanta: u64,
+    pub(crate) event_log_events: u64,
 }
 
 #[cfg(test)]
@@ -771,7 +776,16 @@ impl EngineLoop for SimBackendLifecycleLoop {
     }
 }
 
-fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocationPlan, CliError> {
+/// Validates run arguments and constructs the deterministic invocation plan.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the scenario cannot be resolved or a run budget
+/// or terminal-condition combination is invalid.
+pub(crate) fn plan_run_invocation(
+    args: &RunArgs,
+    store_root: &Path,
+) -> Result<RunInvocationPlan, CliError> {
     let scenario = resolve_run_scenario(args.scenario.as_deref(), store_root)?;
     if args.max_quanta == Some(0) {
         return Err(usage_error("--max-quanta must be greater than zero"));
@@ -848,7 +862,13 @@ fn plan_run_invocation(args: &RunArgs, store_root: &Path) -> Result<RunInvocatio
     })
 }
 
-fn plan_save_invocation(
+/// Validates save arguments and constructs the savepoint invocation plan.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the save boundary, selector, label, scenario, or
+/// derived run plan is invalid.
+pub(crate) fn plan_save_invocation(
     args: &SaveArgs,
     store_root: &Path,
     artifact_dir: &Path,
@@ -951,11 +971,21 @@ fn plan_save_invocation(
     })
 }
 
-fn plan_save_label(label: Option<&str>) -> Result<String, CliError> {
+/// Resolves and validates a savepoint label.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the label is empty or contains control whitespace.
+pub(crate) fn plan_save_label(label: Option<&str>) -> Result<String, CliError> {
     plan_nonempty_label(label, "savepoint")
 }
 
-fn validate_save_selector_for_scenario(
+/// Checks that a save selector names content declared by the scenario.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when a property selector names an undeclared assertion.
+pub(crate) fn validate_save_selector_for_scenario(
     selector: Option<&SaveAtSelector>,
     scenario: &crucible::ScenarioDefForm,
 ) -> Result<(), CliError> {
@@ -981,7 +1011,12 @@ fn validate_save_selector_for_scenario(
     }
 }
 
-fn plan_save_selector(value: &str, flag: &str) -> Result<String, CliError> {
+/// Normalizes one save selector supplied by `flag`.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the selector is empty or contains control whitespace.
+pub(crate) fn plan_save_selector(value: &str, flag: &str) -> Result<String, CliError> {
     let selector = value.trim();
     if selector.is_empty()
         || selector
@@ -995,11 +1030,25 @@ fn plan_save_selector(value: &str, flag: &str) -> Result<String, CliError> {
     Ok(selector.to_string())
 }
 
-fn plan_fork_label(label: Option<&str>) -> Result<String, CliError> {
+/// Resolves and validates a fork label.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the label is empty or contains control whitespace.
+pub(crate) fn plan_fork_label(label: Option<&str>) -> Result<String, CliError> {
     plan_nonempty_label(label, "fork")
 }
 
-fn plan_nonempty_label(label: Option<&str>, default: &'static str) -> Result<String, CliError> {
+/// Resolves an optional label and enforces the shared single-line label policy.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the resolved label is empty or contains control
+/// whitespace.
+pub(crate) fn plan_nonempty_label(
+    label: Option<&str>,
+    default: &'static str,
+) -> Result<String, CliError> {
     let label = label.unwrap_or(default).trim();
     if label.is_empty()
         || label
@@ -1013,7 +1062,13 @@ fn plan_nonempty_label(label: Option<&str>, default: &'static str) -> Result<Str
     Ok(label.to_string())
 }
 
-fn plan_resume_invocation(
+/// Validates resume arguments and constructs the resume invocation plan.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the savepoint cannot be resolved or the duration
+/// and terminal-condition arguments are inconsistent.
+pub(crate) fn plan_resume_invocation(
     args: &ResumeArgs,
     store_root: &Path,
 ) -> Result<ResumeInvocationPlan, CliError> {
@@ -1065,11 +1120,25 @@ fn plan_resume_invocation(
     })
 }
 
-fn resolve_resume_savepoint(savepoint: Option<&str>) -> Result<ResumeSavepointRef, CliError> {
+/// Resolves the savepoint reference accepted by the resume command.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the reference is absent, malformed, unreadable, or
+/// does not contain a valid savepoint handle.
+pub(crate) fn resolve_resume_savepoint(
+    savepoint: Option<&str>,
+) -> Result<ResumeSavepointRef, CliError> {
     resolve_savepoint_ref("resume", savepoint)
 }
 
-fn plan_fork_invocation(
+/// Validates fork arguments and constructs the fork invocation plan.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the source savepoint, label, decision overrides,
+/// duration, or terminal-condition arguments are invalid.
+pub(crate) fn plan_fork_invocation(
     args: &ForkArgs,
     fork_seed: Option<u64>,
     artifact_dir: &Path,
@@ -1139,7 +1208,13 @@ fn plan_fork_invocation(
 }
 
 #[cfg(test)]
-fn plan_fork_invocation_for_test(
+/// Constructs a fork plan with the test fixture's conventional local paths.
+///
+/// # Errors
+///
+/// Returns [`CliError`] under the same invalid-input conditions as
+/// [`plan_fork_invocation`].
+pub(crate) fn plan_fork_invocation_for_test(
     args: &ForkArgs,
     fork_seed: Option<u64>,
 ) -> Result<ForkInvocationPlan, CliError> {
@@ -1151,7 +1226,13 @@ fn plan_fork_invocation_for_test(
     )
 }
 
-fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliError> {
+/// Parses one `decision=value` fork override.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the override is multiline, omits either side, or
+/// does not contain exactly one separator.
+pub(crate) fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliError> {
     let value = raw.trim();
     if value.is_empty()
         || value
@@ -1185,7 +1266,13 @@ fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOverride, CliEr
     })
 }
 
-fn plan_search_invocation(
+/// Validates search arguments and constructs the advanced-engine search plan.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the scenario or budget is invalid, incompatible
+/// evidence inputs are selected, or an evidence file cannot be loaded.
+pub(crate) fn plan_search_invocation(
     args: &SearchArgs,
     store_root: &Path,
 ) -> Result<SearchDriverPlan, CliError> {
@@ -1229,7 +1316,13 @@ fn plan_search_invocation(
     })
 }
 
-fn resolve_search_scenario(
+/// Resolves a scenario for the search command's backend-facing error surface.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the scenario reference cannot be resolved or
+/// validated.
+pub(crate) fn resolve_search_scenario(
     scenario: Option<&str>,
     store_root: &Path,
 ) -> Result<RunScenarioRef, CliError> {
@@ -1239,7 +1332,13 @@ fn resolve_search_scenario(
     })
 }
 
-fn load_search_schedule_named_truths_file(
+/// Loads and validates schedule-named predicate truths from a TOML file.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the file cannot be read or its contents are not a
+/// valid predicate-truth document for `scenario`.
+pub(crate) fn load_search_schedule_named_truths_file(
     path: &Path,
     scenario: &crucible::ScenarioDefForm,
 ) -> Result<SearchScheduleNamedTruthsPlan, CliError> {
@@ -1262,7 +1361,13 @@ fn load_search_schedule_named_truths_file(
     })
 }
 
-fn load_search_schedule_named_truths_toml(
+/// Parses schedule-named predicate truths against a scenario definition.
+///
+/// # Errors
+///
+/// Returns [`CliError`] for invalid TOML, an unsupported schema, duplicate
+/// predicates, or references to unknown scenario nodes.
+pub(crate) fn load_search_schedule_named_truths_toml(
     label: &str,
     text: &str,
     scenario: &crucible::ScenarioDefForm,
@@ -1323,7 +1428,13 @@ fn load_search_schedule_named_truths_toml(
     Ok(truths)
 }
 
-fn load_search_retained_evidence_file(
+/// Loads and validates retained search evidence from a TOML file.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the file cannot be read or its contents cannot be
+/// admitted as retained evidence for `scenario`.
+pub(crate) fn load_search_retained_evidence_file(
     path: &Path,
     scenario: &crucible::ScenarioDefForm,
 ) -> Result<SearchRetainedEvidencePlan, CliError> {
@@ -1343,7 +1454,13 @@ fn load_search_retained_evidence_file(
     })
 }
 
-fn load_search_retained_evidence_toml(
+/// Parses retained search evidence against a scenario definition.
+///
+/// # Errors
+///
+/// Returns [`CliError`] for invalid TOML or schema, malformed evidence, unknown
+/// nodes or assertions, duplicate configurations, or inconsistent boundaries.
+pub(crate) fn load_search_retained_evidence_toml(
     label: &str,
     text: &str,
     scenario: &crucible::ScenarioDefForm,
@@ -1462,7 +1579,13 @@ fn load_search_retained_evidence_toml(
         .collect::<Result<_, CliError>>()
 }
 
-fn push_search_retained_guest_marker_entry(
+/// Adds one validated guest-marker record to retained search evidence.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when required marker fields are missing, forbidden
+/// fields are present, or the named node is absent from the scenario.
+pub(crate) fn push_search_retained_guest_marker_entry(
     label: &str,
     index: usize,
     entry: CliSearchRetainedEvidenceEntryToml,
@@ -1521,7 +1644,13 @@ fn push_search_retained_guest_marker_entry(
     Ok(())
 }
 
-fn parse_search_retained_evaluation_boundary_entry(
+/// Parses one retained assertion-evaluation boundary entry.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when required fields are missing or the entry carries
+/// fields forbidden for an evaluation boundary.
+pub(crate) fn parse_search_retained_evaluation_boundary_entry(
     label: &str,
     index: usize,
     entry: CliSearchRetainedEvidenceEntryToml,
@@ -1543,7 +1672,13 @@ fn parse_search_retained_evaluation_boundary_entry(
     Ok(ticks)
 }
 
-fn parse_search_retained_terminal_quiescence_entry(
+/// Parses one retained terminal-quiescence entry.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the entry is not explicitly quiescent or includes
+/// fields that are invalid at terminal quiescence.
+pub(crate) fn parse_search_retained_terminal_quiescence_entry(
     label: &str,
     index: usize,
     entry: CliSearchRetainedEvidenceEntryToml,
@@ -1568,7 +1703,13 @@ fn parse_search_retained_terminal_quiescence_entry(
     }
 }
 
-fn parse_search_retained_evidence_configuration(
+/// Parses the content hash identifying one retained-evidence configuration.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the configuration reference is not a valid
+/// BLAKE3 content hash.
+pub(crate) fn parse_search_retained_evidence_configuration(
     label: &str,
     index: usize,
     value: &str,
@@ -1586,7 +1727,13 @@ fn parse_search_retained_evidence_configuration(
         })
 }
 
-fn plan_fuzz_invocation(
+/// Validates fuzz arguments and constructs the coverage-guided fuzz plan.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when budgets, corpus paths, or the scenario-family
+/// reference are invalid.
+pub(crate) fn plan_fuzz_invocation(
     args: &FuzzArgs,
     seed: &DeterminismErgonomicsPlan,
     store_root: &Path,
@@ -1620,7 +1767,12 @@ fn plan_fuzz_invocation(
     })
 }
 
-fn resolve_fuzz_family_ref(
+/// Resolves the optional fuzz family reference or selects the built-in family.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the supplied family reference is malformed.
+pub(crate) fn resolve_fuzz_family_ref(
     positional: Option<&str>,
     flag: Option<&str>,
 ) -> Result<FuzzFamilyRef, CliError> {
@@ -1635,7 +1787,13 @@ fn resolve_fuzz_family_ref(
     }
 }
 
-fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError> {
+/// Parses a fuzz family as a built-in name, store reference, or file path.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the reference is empty, multiline, malformed, or
+/// names a path that is not a regular file.
+pub(crate) fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError> {
     let value = raw.trim();
     if value.is_empty()
         || value
@@ -1676,7 +1834,15 @@ fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError> {
     Ok(FuzzFamilyRef::File(path.to_path_buf()))
 }
 
-fn load_fuzz_family(plan: &FuzzDriverPlan) -> Result<crucible::ScenarioFamily, CliError> {
+/// Materializes the scenario family identified by a fuzz-family reference.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when built-in construction fails or file/store content
+/// cannot be loaded and validated.
+pub(crate) fn load_fuzz_family(
+    plan: &FuzzDriverPlan,
+) -> Result<crucible::ScenarioFamily, CliError> {
     match &plan.family {
         FuzzFamilyRef::BuiltInFaultCampaign => crucible::fault_campaign_family().map_err(|error| {
             backend_error(format!(
@@ -1688,7 +1854,13 @@ fn load_fuzz_family(plan: &FuzzDriverPlan) -> Result<crucible::ScenarioFamily, C
     }
 }
 
-fn load_fuzz_family_file(path: &Path) -> Result<crucible::ScenarioFamily, CliError> {
+/// Loads a scenario family from a TOML file.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the file cannot be read or decoded as a supported
+/// scenario-family document.
+pub(crate) fn load_fuzz_family_file(path: &Path) -> Result<crucible::ScenarioFamily, CliError> {
     let text = fs::read_to_string(path).map_err(|error| {
         backend_error(format!(
             "family `{}` could not be read: {error}",
@@ -1698,7 +1870,13 @@ fn load_fuzz_family_file(path: &Path) -> Result<crucible::ScenarioFamily, CliErr
     load_fuzz_family_toml(&format!("file `{}`", path.display()), &text)
 }
 
-fn load_stored_fuzz_family(
+/// Loads a scenario family from the local content-addressed store.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the referenced object is absent or cannot be
+/// decoded as a supported scenario-family document.
+pub(crate) fn load_stored_fuzz_family(
     plan: &FuzzDriverPlan,
     reference: crucible::ContentHash,
 ) -> Result<crucible::ScenarioFamily, CliError> {
@@ -1727,7 +1905,16 @@ fn load_stored_fuzz_family(
     )
 }
 
-fn load_fuzz_family_toml(label: &str, text: &str) -> Result<crucible::ScenarioFamily, CliError> {
+/// Parses and validates a scenario-family TOML document.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the document is not UTF-8, is invalid TOML, uses
+/// an unsupported schema, or cannot form a valid scenario family.
+pub(crate) fn load_fuzz_family_toml(
+    label: &str,
+    text: &str,
+) -> Result<crucible::ScenarioFamily, CliError> {
     let authored = toml::from_str::<CliScenarioFamilyToml>(text).map_err(|error| {
         backend_error(format!(
             "family {label} is not valid scenario-family TOML: {error}"
@@ -1736,7 +1923,13 @@ fn load_fuzz_family_toml(label: &str, text: &str) -> Result<crucible::ScenarioFa
     scenario_family_from_toml(label, authored)
 }
 
-fn scenario_family_from_toml(
+/// Converts the CLI scenario-family schema into the core model.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when ranges, topology shapes, seeds, or the node
+/// template are invalid, or core family validation fails.
+pub(crate) fn scenario_family_from_toml(
     label: &str,
     authored: CliScenarioFamilyToml,
 ) -> Result<crucible::ScenarioFamily, CliError> {
@@ -1780,7 +1973,13 @@ fn scenario_family_from_toml(
     Ok(crucible::ScenarioFamily::new(space, node_template))
 }
 
-fn seed_space_from_toml(
+/// Converts an authored seed-space declaration into the core seed space.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when a seed is malformed, the generated count is zero,
+/// or the explicit seed list is empty or contains duplicates.
+pub(crate) fn seed_space_from_toml(
     label: &str,
     authored: CliSeedSpaceToml,
 ) -> Result<crucible::SeedSpace, CliError> {
@@ -1806,7 +2005,15 @@ fn seed_space_from_toml(
     }
 }
 
-fn topology_shape_from_toml(label: &str, shape: &str) -> Result<crucible::TopologyShape, CliError> {
+/// Parses one authored topology-shape label.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the label is not a supported topology shape.
+pub(crate) fn topology_shape_from_toml(
+    label: &str,
+    shape: &str,
+) -> Result<crucible::TopologyShape, CliError> {
     match shape {
         "ring" => Ok(crucible::TopologyShape::Ring),
         "star" => Ok(crucible::TopologyShape::Star),
@@ -1819,7 +2026,13 @@ fn topology_shape_from_toml(label: &str, shape: &str) -> Result<crucible::Topolo
     }
 }
 
-fn node_template_from_toml(
+/// Converts an authored node template into the core family template.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when architecture, white-box mode, artifact references,
+/// sizes, clocks, or template invariants are invalid.
+pub(crate) fn node_template_from_toml(
     label: &str,
     authored: CliNodeTemplateToml,
 ) -> Result<crucible::NodeTemplate, CliError> {
@@ -1885,7 +2098,12 @@ fn node_template_from_toml(
     Ok(template)
 }
 
-fn vm_architecture_from_toml(
+/// Parses one authored VM architecture label.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the architecture label is unsupported.
+pub(crate) fn vm_architecture_from_toml(
     label: &str,
     value: &str,
 ) -> Result<crucible::VmArchitecture, CliError> {
@@ -1899,7 +2117,15 @@ fn vm_architecture_from_toml(
     }
 }
 
-fn white_box_from_toml(label: &str, value: &str) -> Result<crucible::WhiteBoxPolicy, CliError> {
+/// Parses one authored white-box capability label.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the white-box label is unsupported.
+pub(crate) fn white_box_from_toml(
+    label: &str,
+    value: &str,
+) -> Result<crucible::WhiteBoxPolicy, CliError> {
     match value {
         "enabled" => Ok(crucible::WhiteBoxPolicy::Enabled),
         "disabled" => Ok(crucible::WhiteBoxPolicy::Disabled),
@@ -1910,7 +2136,12 @@ fn white_box_from_toml(label: &str, value: &str) -> Result<crucible::WhiteBoxPol
     }
 }
 
-fn blob_ref_from_toml(
+/// Parses one content-addressed blob reference from family TOML.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the reference has invalid syntax or hash material.
+pub(crate) fn blob_ref_from_toml(
     label: &str,
     field: &'static str,
     value: &str,
@@ -1919,7 +2150,17 @@ fn blob_ref_from_toml(
         .map_err(|error| family_file_error(label, format!("has invalid {field}: {error}")))
 }
 
-fn parse_family_seed(label: &str, field: &str, value: &str) -> Result<crucible::Seed, CliError> {
+/// Parses a decimal or hexadecimal family seed.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the seed is empty, out of range, or has invalid
+/// decimal or hexadecimal syntax.
+pub(crate) fn parse_family_seed(
+    label: &str,
+    field: &str,
+    value: &str,
+) -> Result<crucible::Seed, CliError> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(family_file_error(
@@ -1955,7 +2196,17 @@ fn parse_family_seed(label: &str, field: &str, value: &str) -> Result<crucible::
     Ok(crucible::Seed::from_u64(value))
 }
 
-fn parse_family_seed_hex(label: &str, field: &str, value: &str) -> Result<[u8; 32], CliError> {
+/// Parses the hexadecimal form of a family seed.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the hexadecimal payload is empty, too wide, or
+/// contains a non-hexadecimal digit.
+pub(crate) fn parse_family_seed_hex(
+    label: &str,
+    field: &str,
+    value: &str,
+) -> Result<[u8; 32], CliError> {
     let mut bytes = [0; 32];
     for (index, chunk) in value.as_bytes().chunks(2).enumerate() {
         let high = hex_nibble(chunk[0]).ok_or_else(|| {
@@ -1969,11 +2220,16 @@ fn parse_family_seed_hex(label: &str, field: &str, value: &str) -> Result<[u8; 3
     Ok(bytes)
 }
 
-fn family_file_error(label: &str, message: impl Into<String>) -> CliError {
+pub(crate) fn family_file_error(label: &str, message: impl Into<String>) -> CliError {
     backend_error(format!("family {label} {}", message.into()))
 }
 
-fn validate_positive_optional_budget(
+/// Validates that an optional exploration budget is positive.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the supplied budget is zero.
+pub(crate) fn validate_positive_optional_budget(
     label: &'static str,
     value: Option<u64>,
 ) -> Result<(), CliError> {
@@ -1983,14 +2239,28 @@ fn validate_positive_optional_budget(
     Ok(())
 }
 
-fn validate_positive_budget(label: &'static str, value: u64) -> Result<(), CliError> {
+/// Validates that a required exploration budget is positive.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when `value` is zero.
+pub(crate) fn validate_positive_budget(label: &'static str, value: u64) -> Result<(), CliError> {
     if value == 0 {
         return Err(usage_error(format!("{label} must be greater than zero")));
     }
     Ok(())
 }
 
-fn validate_exploration_path_arg(label: &'static str, path: &Path) -> Result<(), CliError> {
+/// Validates a user-supplied exploration input path.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the path is empty, contains control whitespace, or
+/// does not name a regular file.
+pub(crate) fn validate_exploration_path_arg(
+    label: &'static str,
+    path: &Path,
+) -> Result<(), CliError> {
     if path.as_os_str().is_empty()
         || path
             .to_string_lossy()
@@ -2004,7 +2274,13 @@ fn validate_exploration_path_arg(label: &'static str, path: &Path) -> Result<(),
     Ok(())
 }
 
-fn resolve_savepoint_ref(
+/// Resolves a command's savepoint argument as a hash or exported handle.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the argument is absent, malformed, unreadable, or
+/// cannot be decoded as a savepoint handle.
+pub(crate) fn resolve_savepoint_ref(
     command_name: &'static str,
     savepoint: Option<&str>,
 ) -> Result<ResumeSavepointRef, CliError> {
@@ -2042,7 +2318,13 @@ fn resolve_savepoint_ref(
     })
 }
 
-fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, CliError> {
+/// Decodes and validates the canonical line-oriented savepoint-handle format.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when fields are missing, duplicated, malformed, or
+/// internally inconsistent, or when embedded payloads fail validation.
+pub(crate) fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, CliError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| artifact_error(format!("savepoint handle is not UTF-8: {error}")))?;
     let mut schema = None;
@@ -2167,7 +2449,13 @@ fn decode_savepoint_handle(bytes: &[u8]) -> Result<SavepointHandle, CliError> {
     })
 }
 
-fn parse_hex_payload_line(
+/// Decodes one hexadecimal payload field from a savepoint handle.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the payload has odd width or contains a non-hex
+/// digit.
+pub(crate) fn parse_hex_payload_line(
     line_index: usize,
     tag: &str,
     digest: &str,
@@ -2192,7 +2480,13 @@ fn parse_hex_payload_line(
     Ok(payload)
 }
 
-fn parse_blake3_content_hash(
+/// Parses a BLAKE3 content hash used by a savepoint handle.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the value lacks the BLAKE3 prefix or contains an
+/// invalid digest.
+pub(crate) fn parse_blake3_content_hash(
     field: &'static str,
     value: &str,
 ) -> Result<crucible::ContentHash, CliError> {
@@ -2201,7 +2495,17 @@ fn parse_blake3_content_hash(
         .map_err(|error| artifact_error(format!("invalid {field} `{value}`: {error}")))
 }
 
-fn parse_save_at_label(line_index: usize, tag: &str, value: &str) -> Result<SaveAtArg, CliError> {
+/// Parses the save-boundary label stored in a savepoint handle.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the label is not one of the canonical save-boundary
+/// names.
+pub(crate) fn parse_save_at_label(
+    line_index: usize,
+    tag: &str,
+    value: &str,
+) -> Result<SaveAtArg, CliError> {
     match value {
         "virtual-time" => Ok(SaveAtArg::VirtualTime),
         "quiescence" => Ok(SaveAtArg::Quiescence),
@@ -2215,7 +2519,13 @@ fn parse_save_at_label(line_index: usize, tag: &str, value: &str) -> Result<Save
     }
 }
 
-fn parse_run_terminal_condition_label(
+/// Parses the terminal-condition label stored in a savepoint handle.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the label is not a canonical run terminal
+/// condition.
+pub(crate) fn parse_run_terminal_condition_label(
     line_index: usize,
     tag: &str,
     value: &str,
@@ -2233,7 +2543,12 @@ fn parse_run_terminal_condition_label(
     }
 }
 
-fn validate_content_hash_hex_line(
+/// Validates a raw fixed-width content-hash field.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the value is not exactly 64 hexadecimal digits.
+pub(crate) fn validate_content_hash_hex_line(
     line_index: usize,
     tag: &str,
     value: &str,

@@ -1,3 +1,7 @@
+//! Shared-memory region headers, geometry, validation, and initialization.
+
+use super::*;
+
 /// A shared-memory region header describing the ABI identity and geometry.
 #[repr(C, align(128))]
 pub struct RegionHeader {
@@ -76,21 +80,21 @@ pub const REGION_HEADER_SIZE: usize = core::mem::size_of::<RegionHeader>();
 /// Wire alignment of one [`RegionHeader`].
 pub const REGION_HEADER_ALIGN: usize = core::mem::align_of::<RegionHeader>();
 
-const _: () = assert!(REGION_HEADER_MAGIC_OFFSET == 0);
-const _: () = assert!(REGION_HEADER_ABI_VERSION_OFFSET == 8);
-const _: () = assert!(REGION_HEADER_NODE_COUNT_OFFSET == 12);
-const _: () = assert!(REGION_HEADER_QUEUE_CAPACITY_OFFSET == 16);
-const _: () = assert!(REGION_HEADER_RING_COUNT_OFFSET == 20);
-const _: () = assert!(REGION_HEADER_RING_HDR_OFF_OFFSET == 24);
-const _: () = assert!(REGION_HEADER_RING_DATA_OFF_OFFSET == 32);
-const _: () = assert!(REGION_HEADER_ENTRY_STRIDE_OFFSET == 40);
-const _: () = assert!(REGION_HEADER_REGION_SIZE_OFFSET == 48);
-const _: () = assert!(REGION_HEADER_ICOUNT_SHIFT_OFFSET == 56);
-const _: () = assert!(REGION_HEADER_PAUSE_REQUESTED_OFFSET == 60);
-const _: () = assert!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61);
-const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 62);
-const _: () = assert!(REGION_HEADER_SIZE == 256);
-const _: () = assert!(REGION_HEADER_ALIGN == 128);
+pub(super) const _: () = assert!(REGION_HEADER_MAGIC_OFFSET == 0);
+pub(super) const _: () = assert!(REGION_HEADER_ABI_VERSION_OFFSET == 8);
+pub(super) const _: () = assert!(REGION_HEADER_NODE_COUNT_OFFSET == 12);
+pub(super) const _: () = assert!(REGION_HEADER_QUEUE_CAPACITY_OFFSET == 16);
+pub(super) const _: () = assert!(REGION_HEADER_RING_COUNT_OFFSET == 20);
+pub(super) const _: () = assert!(REGION_HEADER_RING_HDR_OFF_OFFSET == 24);
+pub(super) const _: () = assert!(REGION_HEADER_RING_DATA_OFF_OFFSET == 32);
+pub(super) const _: () = assert!(REGION_HEADER_ENTRY_STRIDE_OFFSET == 40);
+pub(super) const _: () = assert!(REGION_HEADER_REGION_SIZE_OFFSET == 48);
+pub(super) const _: () = assert!(REGION_HEADER_ICOUNT_SHIFT_OFFSET == 56);
+pub(super) const _: () = assert!(REGION_HEADER_PAUSE_REQUESTED_OFFSET == 60);
+pub(super) const _: () = assert!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61);
+pub(super) const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 62);
+pub(super) const _: () = assert!(REGION_HEADER_SIZE == 256);
+pub(super) const _: () = assert!(REGION_HEADER_ALIGN == 128);
 
 impl RegionHeader {
     /// Builds a zero-reserved region header from a computed layout.
@@ -287,7 +291,7 @@ pub fn validate_setup_region_header(
         .map(|(validated, _layout)| validated)
 }
 
-fn validate_setup_region_header_and_layout(
+pub(super) fn validate_setup_region_header_and_layout(
     snapshot: RegionHeaderSnapshot,
     region_len: u64,
 ) -> Result<(ValidatedSetupRegion, RegionLayout), RegionSetupValidationError> {
@@ -331,7 +335,7 @@ fn validate_setup_region_header_and_layout(
     ))
 }
 
-fn layout_from_setup_region_header(
+pub(super) fn layout_from_setup_region_header(
     snapshot: RegionHeaderSnapshot,
     region_len: u64,
 ) -> Result<RegionLayout, RegionSetupValidationError> {
@@ -607,7 +611,7 @@ pub struct SchedulerWakePublication {
 }
 
 #[derive(Clone, Debug)]
-struct SchedulerWakeEnqueuePlan {
+pub(super) struct SchedulerWakeEnqueuePlan {
     ring_index: usize,
     entry_range: std::ops::Range<usize>,
     input_index: usize,
@@ -1155,7 +1159,7 @@ pub fn validate_layout_target() -> Result<(), RegionLayoutError> {
     }
 }
 
-fn compiled_layout_target() -> &'static str {
+pub(super) fn compiled_layout_target() -> &'static str {
     if LAYOUT_TARGET_SUPPORTED {
         LAYOUT_TARGET_TRIPLE
     } else if cfg!(all(
@@ -1192,7 +1196,7 @@ fn compiled_layout_target() -> &'static str {
     }
 }
 
-fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutError> {
+pub(super) fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutError> {
     let mut rings = Vec::new();
     for vm_slot in 0..vm_node_count {
         for executor in ReservedExecutorSlot::all() {
@@ -1217,7 +1221,7 @@ fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutE
     Ok(rings)
 }
 
-fn layout_from_setup_region_geometry(
+pub(super) fn layout_from_setup_region_geometry(
     snapshot: RegionHeaderSnapshot,
     region_len: u64,
 ) -> Result<RegionLayout, RegionSetupValidationError> {
@@ -1273,7 +1277,7 @@ fn layout_from_setup_region_geometry(
     Ok(layout)
 }
 
-fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
+pub(super) fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
     if slot < vm_node_count as usize {
         NodeSlot::new_with_status(KIND_VM, STATUS_IDLE)
     } else if slot == SLOT_NET_ROUTER {
@@ -1287,11 +1291,11 @@ fn node_slot_for_physical_index(vm_node_count: u32, slot: usize) -> NodeSlot {
     }
 }
 
-fn usize_to_u64(value: usize) -> Result<u64, RegionLayoutError> {
+pub(super) fn usize_to_u64(value: usize) -> Result<u64, RegionLayoutError> {
     u64::try_from(value).map_err(|_| RegionLayoutError::GeometryOverflow)
 }
 
-fn checked_align_up(value: u64, alignment: u64) -> Result<u64, RegionLayoutError> {
+pub(super) fn checked_align_up(value: u64, alignment: u64) -> Result<u64, RegionLayoutError> {
     let mask = alignment
         .checked_sub(1)
         .ok_or(RegionLayoutError::GeometryOverflow)?;
@@ -1304,7 +1308,7 @@ fn checked_align_up(value: u64, alignment: u64) -> Result<u64, RegionLayoutError
         .ok_or(RegionLayoutError::GeometryOverflow)
 }
 
-fn checked_segment_offset(
+pub(super) fn checked_segment_offset(
     segment: &'static str,
     index: usize,
     base: u64,
@@ -1333,7 +1337,7 @@ fn checked_segment_offset(
     Ok(offset)
 }
 
-fn write_region_header_bytes(
+pub(super) fn write_region_header_bytes(
     bytes: &mut [u8],
     snapshot: RegionHeaderSnapshot,
 ) -> Result<(), RegionSerializationError> {
@@ -1400,7 +1404,7 @@ fn write_region_header_bytes(
     Ok(())
 }
 
-fn write_node_slot_bytes(bytes: &mut [u8], snapshot: NodeSlotSnapshot) {
+pub(super) fn write_node_slot_bytes(bytes: &mut [u8], snapshot: NodeSlotSnapshot) {
     write_u64_at(
         bytes,
         NODE_SLOT_CURRENT_ICOUNT_OFFSET,
@@ -1428,7 +1432,7 @@ fn write_node_slot_bytes(bytes: &mut [u8], snapshot: NodeSlotSnapshot) {
     write_u32_at(bytes, NODE_SLOT_PUBLISH_GEN_OFFSET, snapshot.publish_gen);
 }
 
-fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader) {
+pub(super) fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader) {
     write_u64_at(bytes, RING_HEADER_READ_IDX_OFFSET, ring_header.read_index());
     write_u64_at(
         bytes,
@@ -1437,7 +1441,7 @@ fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader) {
     );
 }
 
-fn write_frame_entry_bytes(bytes: &mut [u8], frame: &FrameEntry) {
+pub(super) fn write_frame_entry_bytes(bytes: &mut [u8], frame: &FrameEntry) {
     write_u64_at(
         bytes,
         FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
@@ -1452,7 +1456,7 @@ fn write_frame_entry_bytes(bytes: &mut [u8], frame: &FrameEntry) {
         .copy_from_slice(&frame.data);
 }
 
-fn write_coverage_entry_bytes(bytes: &mut [u8], entry: &CoverageEntry) {
+pub(super) fn write_coverage_entry_bytes(bytes: &mut [u8], entry: &CoverageEntry) {
     write_u64_at(
         bytes,
         COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET,
@@ -1465,23 +1469,23 @@ fn write_coverage_entry_bytes(bytes: &mut [u8], entry: &CoverageEntry) {
     bytes[COVERAGE_ENTRY_RESERVED_OFFSET..COVERAGE_ENTRY_SIZE].copy_from_slice(&entry._reserved);
 }
 
-fn write_u8_at(bytes: &mut [u8], offset: usize, value: u8) {
+pub(super) fn write_u8_at(bytes: &mut [u8], offset: usize, value: u8) {
     bytes[offset] = value;
 }
 
-fn write_u16_at(bytes: &mut [u8], offset: usize, value: u16) {
+pub(super) fn write_u16_at(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
 
-fn write_u32_at(bytes: &mut [u8], offset: usize, value: u32) {
+pub(super) fn write_u32_at(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) {
+pub(super) fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) {
     bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-fn validate_pending_input_source(
+pub(super) fn validate_pending_input_source(
     input_index: usize,
     expected_src_slot: u32,
     frame: &FrameEntry,
@@ -1497,7 +1501,7 @@ fn validate_pending_input_source(
     }
 }
 
-fn preflight_ring_enqueue_capacity(
+pub(super) fn preflight_ring_enqueue_capacity(
     ring: &RingHeader,
     entries: &[FrameEntry],
     batch_count: impl TryInto<u64>,
@@ -1512,7 +1516,7 @@ fn preflight_ring_enqueue_capacity(
     }
 }
 
-fn wake_all_slots_for_control<'a>(
+pub(super) fn wake_all_slots_for_control<'a>(
     slots: impl IntoIterator<Item = &'a NodeSlot>,
 ) -> Result<WakeAllResult, RegionControlError> {
     let mut slots_signaled = 0;

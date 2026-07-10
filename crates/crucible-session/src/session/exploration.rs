@@ -1,3 +1,7 @@
+//! Exploration-driver lifecycle commands, reports, and bounded polling.
+
+use super::*;
+
 /// Maximum lifecycle acknowledgement latency accepted for exploration drivers.
 pub const EXPLORATION_LIFECYCLE_RESPONSE_BOUND_QUANTA: u64 = 1;
 
@@ -254,7 +258,7 @@ impl ExplorationLifecycleDriver {
     }
 }
 
-fn lifecycle_acknowledgement(
+pub(super) fn lifecycle_acknowledgement(
     command: ExplorationLifecycleCommand,
     before: LiveSnapshotView,
     after: LiveSnapshotView,
@@ -494,7 +498,7 @@ impl LiveSnapshot {
         }
     }
 
-    fn publish(&self, snapshot: &EngineSnapshot, control_acknowledgements: u64) {
+    pub(super) fn publish(&self, snapshot: &EngineSnapshot, control_acknowledgements: u64) {
         let write_epoch = self.epoch.load(Ordering::Relaxed).wrapping_add(1) | 1;
         self.epoch.store(write_epoch, Ordering::Release);
         self.state_kind.store(
@@ -531,18 +535,18 @@ impl LiveSnapshot {
     }
 }
 
-fn usize_to_u64(value: usize) -> u64 {
+pub(super) fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-fn u64_to_usize(value: u64) -> usize {
+pub(super) fn u64_to_usize(value: u64) -> usize {
     match usize::try_from(value) {
         Ok(value) => value,
         Err(_) => usize::MAX,
     }
 }
 
-fn fork_session_handle_id(parent: ContentHash, checkpoint: ContentHash) -> ContentHash {
+pub(super) fn fork_session_handle_id(parent: ContentHash, checkpoint: ContentHash) -> ContentHash {
     ContentHash::from_canonical_material(
         "crucible.session.fork-handle.v1",
         &format!(
@@ -554,7 +558,7 @@ fn fork_session_handle_id(parent: ContentHash, checkpoint: ContentHash) -> Conte
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct NoBreakpointLeaves;
+pub(super) struct NoBreakpointLeaves;
 
 impl ConditionLeafOracle for NoBreakpointLeaves {
     fn leaf_is_true(&mut self, _leaf: ConditionLeaf<'_>) -> bool {
@@ -562,7 +566,7 @@ impl ConditionLeafOracle for NoBreakpointLeaves {
     }
 }
 
-fn breakpoint_action_kind(action: &Action) -> &'static str {
+pub(super) fn breakpoint_action_kind(action: &Action) -> &'static str {
     match action {
         Action::InjectFault { .. } => "inject-fault",
         Action::HealFault { .. } => "heal-fault",
@@ -579,7 +583,9 @@ fn breakpoint_action_kind(action: &Action) -> &'static str {
     }
 }
 
-fn control_operation_command_kind(control: &ControlOperationKind) -> Option<SessionCommandKind> {
+pub(super) fn control_operation_command_kind(
+    control: &ControlOperationKind,
+) -> Option<SessionCommandKind> {
     match control {
         ControlOperationKind::InjectFault { .. } => Some(SessionCommandKind::InjectFault),
         ControlOperationKind::HealFault { .. } => Some(SessionCommandKind::HealFault),

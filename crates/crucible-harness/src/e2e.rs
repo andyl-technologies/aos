@@ -520,6 +520,14 @@ impl From<AdversarialComparisonError> for E2eGateError {
     }
 }
 
+/// Shared-memory ABI version used by canonical harness identities.
+///
+/// The included expression is compile-time checked against the authoritative
+/// [`crucible_shmem::ABI_VERSION`](https://docs.rs/crucible-shmem) declaration
+/// inside the owning crate without adding a runtime dependency from this
+/// test-only harness.
+pub const CANONICAL_SHMEM_ABI_VERSION: u32 = include!("../../crucible-shmem/src/abi_version.in");
+
 /// Returns the canonical mock backend build identity.
 #[must_use]
 pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
@@ -531,7 +539,7 @@ pub fn canonical_mock_build_identity() -> E2eBuildIdentity {
         qemu_patch_series_hash: String::from(
             "crucible-hash:68444481cdcf0b86f376d0dafe6cfd40c39ba1fcecbab2a371a96d864fd3378c",
         ),
-        shmem_abi_version: String::from("1"),
+        shmem_abi_version: CANONICAL_SHMEM_ABI_VERSION.to_string(),
         guest_host_protocol_version: String::from("1"),
         rpc_abi_version: String::from("4.0.0"),
         rpc_abi_build: String::from("crucible-rpc-abi-v4"),

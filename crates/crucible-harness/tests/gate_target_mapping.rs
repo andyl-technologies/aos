@@ -261,6 +261,16 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_e2e_determinism"
             ),
             (
+                "gate:basic-block-coverage",
+                "crucible",
+                "gate_basic_block_coverage"
+            ),
+            (
+                "gate:basic-block-coverage",
+                "crucible-qemu",
+                "gate_basic_block_coverage"
+            ),
+            (
                 "gate:fleet-equivalence",
                 "crucible",
                 "gate_fleet_equivalence"

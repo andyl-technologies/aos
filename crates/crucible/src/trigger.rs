@@ -43,12 +43,19 @@ pub use crate::model::EventId;
 /// event trigger.
 pub type Condition = Predicate;
 
-include!("trigger/observability.rs");
-include!("trigger/conditions.rs");
-include!("trigger/assertions.rs");
-include!("trigger/evidence.rs");
-include!("trigger/evaluation.rs");
-include!("trigger/event_graph.rs");
+mod assertions;
+mod conditions;
+mod evaluation;
+mod event_graph;
+mod evidence;
+mod observability;
+
+pub use assertions::*;
+pub use conditions::*;
+pub use evaluation::*;
+pub use event_graph::*;
+use evidence::*;
+pub use observability::*;
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

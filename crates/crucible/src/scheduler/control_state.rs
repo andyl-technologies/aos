@@ -1,4 +1,6 @@
-// Trigger action state, verdicts, actor control, and scheduler observations.
+//! Trigger action state, verdicts, actor control, and scheduler observations.
+
+use super::*;
 /// Determinism class for a scheduler event-log entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SchedulerEventLogClass {
@@ -623,7 +625,7 @@ impl SchedulerTopologyChange {
     }
 }
 
-fn topology_change_order(
+pub(super) fn topology_change_order(
     left: &SchedulerTopologyChange,
     right: &SchedulerTopologyChange,
 ) -> std::cmp::Ordering {
@@ -851,24 +853,24 @@ pub struct SchedulerActorStateSnapshot {
 /// A message-only scheduler actor that owns the authoritative scheduler state.
 #[derive(Debug)]
 pub struct SchedulerActor {
-    scheduler: SingleScheduler,
-    inbox: Receiver<SchedulerActorMessage>,
-    deferred: VecDeque<SchedulerActorMessage>,
+    pub(super) scheduler: SingleScheduler,
+    pub(super) inbox: Receiver<SchedulerActorMessage>,
+    pub(super) deferred: VecDeque<SchedulerActorMessage>,
 }
 
 /// A clonable sender for scheduler actor messages.
 #[derive(Clone, Debug)]
 pub struct SchedulerActorHandle {
-    inbox: Sender<SchedulerActorMessage>,
+    pub(super) inbox: Sender<SchedulerActorMessage>,
 }
 
 /// A typed reply receiver for scheduler actor requests.
 #[derive(Debug)]
 pub struct SchedulerActorReply<T> {
-    receiver: Receiver<T>,
+    pub(super) receiver: Receiver<T>,
 }
 
-enum SchedulerActorMessage {
+pub(super) enum SchedulerActorMessage {
     QueueControl(ControlOperation),
     QueueTopologyChange(SchedulerTopologyChange),
     DriveQuantum {

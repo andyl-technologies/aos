@@ -80,9 +80,6 @@ pub(super) fn is_public_function_start(trimmed: &str) -> bool {
     trimmed.starts_with("pub fn ")
         || trimmed.starts_with("pub async fn ")
         || trimmed.starts_with("pub const fn ")
-        || trimmed.starts_with("pub(crate) fn ")
-        || trimmed.starts_with("pub(crate) async fn ")
-        || trimmed.starts_with("pub(crate) const fn ")
 }
 
 pub(super) fn collect_signature(lines: &[&str], start: usize) -> String {

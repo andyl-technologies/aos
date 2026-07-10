@@ -608,10 +608,7 @@ impl PluginIdleHotLoop {
     /// authorization, inbound preview/drain, RX injection, or running-state
     /// publication fails.
     // crucible-lint: allow rust-allow -- this boundary carries the exact request, completion, ring, and RX owners.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the completion boundary must carry the exact request, token, QEMU completion, rings, and RX owner"
-    )]
+    #[allow(clippy::too_many_arguments)]
     pub fn complete_after_time_advance_from_inbound_rings_with_rx_injection<'a, Q>(
         slot: &NodeSlot,
         clock: &mut PluginVirtualClock,
@@ -717,6 +714,13 @@ impl PluginIdleHotLoop {
         })
     }
 
+    /// Validates a QEMU completion and publishes the resulting clock advance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when QEMU's completion does not match the
+    /// pending request, the scheduler ceiling no longer authorizes the wake, or
+    /// clock and shared-memory publication fails.
     fn finish_advance_after_completion(
         slot: &NodeSlot,
         clock: &mut PluginVirtualClock,

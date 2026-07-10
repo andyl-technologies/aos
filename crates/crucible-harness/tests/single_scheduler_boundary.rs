@@ -12,9 +12,21 @@ use toml::Value;
 fn engine_owns_quantum_loop_and_session_is_only_driver() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let engine_lib = read_repo_file(&root, "crates/crucible/src/lib.rs")?;
-    let engine_model = read_repo_file(&root, "crates/crucible/src/model.rs")?;
-    let scheduler = read_repo_file(&root, "crates/crucible/src/scheduler.rs")?;
-    let session = read_repo_file(&root, "crates/crucible-session/src/lib.rs")?;
+    let engine_model = read_module_tree(
+        &root,
+        "crates/crucible/src/model.rs",
+        "crates/crucible/src/model",
+    )?;
+    let scheduler = read_module_tree(
+        &root,
+        "crates/crucible/src/scheduler.rs",
+        "crates/crucible/src/scheduler",
+    )?;
+    let session = read_module_tree(
+        &root,
+        "crates/crucible-session/src/lib.rs",
+        "crates/crucible-session/src/session",
+    )?;
     let session_manifest: Value =
         read_repo_file(&root, "crates/crucible-session/Cargo.toml")?.parse()?;
     let mut failures = Vec::new();
@@ -118,6 +130,19 @@ fn read_repo_file(root: &Path, relative: &str) -> Result<String, Box<dyn Error>>
     Ok(fs::read_to_string(root.join(relative))?)
 }
 
+fn read_module_tree(
+    root: &Path,
+    entry: &str,
+    fragment_dir: &str,
+) -> Result<String, Box<dyn Error>> {
+    let mut content = read_repo_file(root, entry)?;
+    for path in rust_source_files(&root.join(fragment_dir))? {
+        content.push('\n');
+        content.push_str(&fs::read_to_string(path)?);
+    }
+    Ok(content)
+}
+
 fn require_contains(content: &str, needle: &str, message: &str, failures: &mut Vec<String>) {
     if !content.contains(needle) {
         failures.push(message.to_string());
@@ -192,6 +217,7 @@ fn rust_source_files(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
             files.push(path);
         }
     }
+    files.sort();
     Ok(files)
 }
 

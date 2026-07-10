@@ -1,5 +1,9 @@
-// Process entrypoint, CLI dispatch, selftest, and savepoint export.
-fn main() {
+//! Process entrypoint, CLI dispatch, selftest, and savepoint export.
+
+use super::*;
+// crucible-lint: allow rust-allow -- the test harness builds the binary root without invoking its imported entrypoint.
+#[cfg_attr(test, allow(dead_code))]
+pub(super) fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => handle_cli_parse_error(error),
@@ -10,7 +14,9 @@ fn main() {
     }
 }
 
-fn handle_cli_parse_error(error: clap::Error) -> ! {
+// crucible-lint: allow rust-allow -- this is reachable only through the imported process entrypoint.
+#[cfg_attr(test, allow(dead_code))]
+pub(super) fn handle_cli_parse_error(error: clap::Error) -> ! {
     let exit_code = cli_parse_error_exit_code(&error);
     if let Err(print_error) = error.print() {
         eprintln!("crucible: {print_error}");
@@ -19,14 +25,14 @@ fn handle_cli_parse_error(error: clap::Error) -> ! {
     std::process::exit(exit_code);
 }
 
-fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
+pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
     match error.kind() {
         clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => 0,
         _ => CliError::Usage(error.to_string()).exit_code(),
     }
 }
 
-fn dispatch(cli: &Cli) -> Result<(), CliError> {
+pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     let thin_plan = plan_cli_invocation(cli);
     execute_cli_dispatch_plan(&thin_plan, &mut NullOperationRecorder)?;
     let mut seed_entropy = OsSeedEntropySource;
@@ -350,7 +356,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
     }
 }
 
-fn write_replay_report_human(
+pub(super) fn write_replay_report_human(
     output: &mut impl Write,
     report: &ReplayArtifactReport,
 ) -> io::Result<()> {
@@ -426,13 +432,13 @@ fn write_replay_report_human(
     Ok(())
 }
 
-fn default_run_store_root(cli: &Cli) -> PathBuf {
+pub(super) fn default_run_store_root(cli: &Cli) -> PathBuf {
     cli.store
         .clone()
         .unwrap_or_else(|| cli.artifact_dir.join("store"))
 }
 
-fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
+pub(super) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
     let mut requested = match args.gates.as_deref() {
         Some(raw) => raw.split(',').map(str::trim).collect::<Vec<_>>(),
         None => BUILT_IN_CORPUS_SELFTEST_GATES.to_vec(),
@@ -479,7 +485,7 @@ fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
     Ok(requested.into_iter().map(ToOwned::to_owned).collect())
 }
 
-fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
+pub(super) fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliError> {
     let selected_gates = plan_selftest_gates(args)?;
     let qemu_backend = if selected_gates
         .iter()
@@ -520,7 +526,7 @@ fn run_selftest(cli: &Cli, args: &SelftestArgs) -> Result<SelftestReport, CliErr
 }
 
 #[cfg(not(test))]
-fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
+pub(super) fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
     require_qemu_artifacts(
         cli,
         &ProcessQemuDiscoveryEnvironment,
@@ -529,11 +535,11 @@ fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliE
 }
 
 #[cfg(test)]
-fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
+pub(super) fn require_selftest_qemu_backend(cli: &Cli) -> Result<ResolvedLocalBackend, CliError> {
     require_qemu_artifacts(cli, &ProcessQemuDiscoveryEnvironment, &NoAosQemuPackageSet)
 }
 
-fn verify_selftest_corpus(
+pub(super) fn verify_selftest_corpus(
     args: &SelftestArgs,
 ) -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
     match &args.corpus {
@@ -542,8 +548,8 @@ fn verify_selftest_corpus(
     }
 }
 
-fn verify_selftest_builtin_corpus() -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError>
-{
+pub(super) fn verify_selftest_builtin_corpus()
+-> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
     let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
     let mut verified = Vec::with_capacity(corpus.len());
     for fixture in corpus {
@@ -555,7 +561,7 @@ fn verify_selftest_builtin_corpus() -> Result<Vec<crucible::ExampleScenarioVerif
     Ok(verified)
 }
 
-fn verify_selftest_corpus_manifest(
+pub(super) fn verify_selftest_corpus_manifest(
     path: &Path,
 ) -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
     if !path.is_file() {
@@ -593,7 +599,7 @@ fn verify_selftest_corpus_manifest(
     Ok(verified)
 }
 
-fn verify_selftest_fixture_by_name(
+pub(super) fn verify_selftest_fixture_by_name(
     raw_name: &str,
 ) -> Result<crucible::ExampleScenarioVerifyReport, String> {
     let name = raw_name.strip_prefix("builtin:").unwrap_or(raw_name);
@@ -618,13 +624,13 @@ fn verify_selftest_fixture_by_name(
         .map_err(|error| error.to_string())
 }
 
-fn write_completions<W: Write>(shell: Shell, writer: &mut W) {
+pub(super) fn write_completions<W: Write>(shell: Shell, writer: &mut W) {
     let mut command = Cli::command();
     let name = command.get_name().to_string();
     clap_complete::generate(shell, &mut command, name, writer);
 }
 
-fn mark_mock_failure_outcome(
+pub(super) fn mark_mock_failure_outcome(
     _cli: &Cli,
     backend_plan: &BackendSelectionPlan,
     outcome: &mut BackendCommandOutcome,
@@ -662,7 +668,7 @@ fn mark_mock_failure_outcome(
     Ok(())
 }
 
-fn export_savepoint_handle(
+pub(super) fn export_savepoint_handle(
     plan: &SaveInvocationPlan,
     outcome: &mut BackendCommandOutcome,
 ) -> Result<(), CliError> {
@@ -729,12 +735,12 @@ fn export_savepoint_handle(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SavepointClosureStoreReport {
-    artifact: crucible::ContentHash,
-    index: crucible::ContentHash,
+pub(super) struct SavepointClosureStoreReport {
+    pub(super) artifact: crucible::ContentHash,
+    pub(super) index: crucible::ContentHash,
 }
 
-fn persist_savepoint_closure_artifact(
+pub(super) fn persist_savepoint_closure_artifact(
     plan: &SaveInvocationPlan,
     savepoint: crucible::ContentHash,
     oracle: &SavepointOracleProof,
@@ -781,7 +787,7 @@ fn persist_savepoint_closure_artifact(
     })
 }
 
-fn savepoint_handle_bytes(
+pub(super) fn savepoint_handle_bytes(
     plan: &SaveInvocationPlan,
     checkpoint: &str,
     outcome: &BackendCommandOutcome,
@@ -836,7 +842,7 @@ fn savepoint_handle_bytes(
     text.into_bytes()
 }
 
-fn unsupported_resume_backend_error(plan: &ResumeInvocationPlan) -> CliError {
+pub(super) fn unsupported_resume_backend_error(plan: &ResumeInvocationPlan) -> CliError {
     backend_error(format!(
         "resume from checkpoint {} ({}) requires remaining resume runner coverage tracked by T-CLI-10",
         format_content_hash_ref(plan.savepoint.checkpoint()),
@@ -844,7 +850,7 @@ fn unsupported_resume_backend_error(plan: &ResumeInvocationPlan) -> CliError {
     ))
 }
 
-fn unsupported_fork_backend_error(plan: &ForkInvocationPlan) -> CliError {
+pub(super) fn unsupported_fork_backend_error(plan: &ForkInvocationPlan) -> CliError {
     backend_error(format!(
         "fork from checkpoint {} ({}) as branch `{}` requires the independent child checkpoint-instantiation runner tracked by T-CLI-11",
         format_content_hash_ref(plan.source.checkpoint()),

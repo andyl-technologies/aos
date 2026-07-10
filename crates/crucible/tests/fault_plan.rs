@@ -881,6 +881,53 @@ fn fault_plan_rejects_undeclared_or_unordered_references() {
 }
 
 #[test]
+fn fault_plan_rejects_ambiguous_legacy_link_ids() {
+    let world = World::from_nodes_and_links(
+        vec![
+            ready_node("a"),
+            ready_node("b--c"),
+            ready_node("a--b"),
+            ready_node("c"),
+        ],
+        vec![
+            LinkDef::new(node("a"), node("b--c")).expect("first link should build"),
+            LinkDef::new(node("a--b"), node("c")).expect("second link should build"),
+        ],
+    )
+    .expect("adversarial link-name World should validate");
+    let ambiguous = Plan::from_fault_plan_for_world(
+        &world,
+        FaultPlan::from_entries(vec![FaultPlanEntry::PermanentAt {
+            at: time(0),
+            tag: tag("ambiguous-link"),
+            fault: Fault::Network(NetworkFault::Loss {
+                link: LinkId::from_name("a--b--c"),
+                rate: FaultRateBasisPoints::ONE,
+            }),
+        }]),
+    );
+
+    assert!(matches!(
+        ambiguous,
+        Err(EngineError::PlanFaultUnknownLinkId { .. })
+    ));
+    for canonical in [link_id("a", "b--c"), link_id("a--b", "c")] {
+        Plan::from_fault_plan_for_world(
+            &world,
+            FaultPlan::from_entries(vec![FaultPlanEntry::PermanentAt {
+                at: time(0),
+                tag: FaultTag::from_name(format!("canonical-{}", canonical.name)),
+                fault: Fault::Network(NetworkFault::Loss {
+                    link: canonical,
+                    rate: FaultRateBasisPoints::ONE,
+                }),
+            }]),
+        )
+        .expect("each canonical structured link id should remain valid");
+    }
+}
+
+#[test]
 fn fault_plan_round_trips_through_canonical_toml_and_binary() {
     let world = world();
     let plan = Plan::from_fault_plan_for_world(

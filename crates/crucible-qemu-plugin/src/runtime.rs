@@ -333,6 +333,12 @@ impl RequiredOwnedCallbacksRegistered {
         &self.state.as_ref().get_ref().setup
     }
 
+    /// Installs live basic-block coverage into the pinned callback state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoverageError`] when the slot ring cannot be mapped, its
+    /// capacity is invalid, or coverage was already registered.
     pub(crate) fn register_basic_block_coverage(
         &mut self,
         plugin_id: QemuPluginId,
@@ -345,6 +351,12 @@ impl RequiredOwnedCallbacksRegistered {
             .register_basic_block_coverage(plugin_id, slot_index, callback, apis)
     }
 
+    /// Registers the setup wake fd after every owned callback is live.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginSetupError`] when the setup sequence is out of order,
+    /// QEMU rejects the wake fd, or the failure acknowledgement cannot be sent.
     pub(crate) fn register_wake_fd_after_callbacks<W>(
         &mut self,
         writer: &mut W,
@@ -361,6 +373,12 @@ impl RequiredOwnedCallbacksRegistered {
             .register_wake_fd_after_callbacks(writer, register_wake_fd)
     }
 
+    /// Waits for the scheduler's initial ceiling after the ready acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::PluginSetupBootBarrierError`] when the acknowledgement
+    /// is invalid, the slot does not match, or the shared-memory barrier fails.
     pub(crate) fn wait_boot_barrier(
         &mut self,
         setup_ack: crate::PluginReadySetupAck,

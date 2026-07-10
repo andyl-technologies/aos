@@ -3,6 +3,7 @@
 #
 # Format:
 # repo-relative crate source<TAB>finding detail<TAB>count
+crucible-cli/src/main.rs	contains non-ASCII comment/doc text	21
 crucible-device/src/backpressure.rs	contains non-ASCII comment/doc text	6
 crucible-device/src/block.rs	contains non-ASCII comment/doc text	5
 crucible-device/src/block/codec.rs	contains non-ASCII comment/doc text	2
@@ -18,27 +19,26 @@ crucible-device/src/lib.rs	contains non-ASCII comment/doc text	7
 crucible-device/src/lib.rs	missing crate-root `Module map:` in `//!` overview	1
 crucible-device/src/netlink.rs	contains non-ASCII comment/doc text	7
 crucible-device/src/netlink/link.rs	contains non-ASCII comment/doc text	7
-crucible-device/src/ninep.rs	contains non-ASCII comment/doc text	11
+crucible-device/src/ninep.rs	contains non-ASCII comment/doc text	10
 crucible-device/src/ninep/codec.rs	contains non-ASCII comment/doc text	4
 crucible-device/src/ninep/device.rs	contains non-ASCII comment/doc text	5
 crucible-device/src/ninep/golden.rs	public panicking function `reply_vectors` is missing `# Panics`	1
 crucible-device/src/ninep/server.rs	contains non-ASCII comment/doc text	8
-crucible-device/src/ninep/tree.rs	contains non-ASCII comment/doc text	8
+crucible-device/src/ninep/tree.rs	contains non-ASCII comment/doc text	6
 crucible-device/src/request.rs	contains non-ASCII comment/doc text	1
 crucible-device/src/subnode.rs	contains non-ASCII comment/doc text	7
 crucible-qemu-plugin/src/ninep_io.rs	public Result-returning function `request` is missing `# Errors`	1
-crucible-qemu-plugin/src/registration.rs	public Result-returning function `record_test_ready_setup_ack` is missing `# Errors`	1
-crucible-qemu/src/shutdown.rs	public Result-returning function `signal_child` is missing `# Errors`	1
-crucible-qemu/src/shutdown.rs	public Result-returning function `wait_child` is missing `# Errors`	1
-crucible-session/src/lib.rs	contains non-ASCII comment/doc text	3
-crucible-session/src/lib.rs	public Result-returning function `channel` is missing `# Errors`	1
-crucible-session/src/lib.rs	public Result-returning function `query` is missing `# Errors`	1
+crucible-session/src/session/commands.rs	contains non-ASCII comment/doc text	2
+crucible-session/src/session/commands.rs	public Result-returning function `channel` is missing `# Errors`	1
+crucible-session/src/session/core.rs	contains non-ASCII comment/doc text	1
+crucible-session/src/session/exploration.rs	public Result-returning function `query` is missing `# Errors`	1
 crucible/src/backend.rs	contains non-ASCII comment/doc text	1
 crucible/src/device.rs	contains non-ASCII comment/doc text	6
 crucible/src/device_subnode.rs	contains non-ASCII comment/doc text	13
-crucible/src/model.rs	public Result-returning function `compare_to` is missing `# Errors`	1
-crucible/src/scheduler.rs	contains non-ASCII comment/doc text	14
-crucible/src/scheduler.rs	public panicking function `scheduler_event_log_segment_bytes` is missing `# Panics`	1
-crucible/src/trigger.rs	contains non-ASCII comment/doc text	1
-crucible/src/trigger.rs	public Result-returning function `from_scheduler_event_log_entries_with_base` is missing `# Errors`	1
-crucible/src/trigger.rs	public panicking function `lint_host_assertion_harness_source` is missing `# Panics`	1
+crucible/src/model/failure/model.rs	public Result-returning function `compare_to` is missing `# Errors`	1
+crucible/src/scheduler/runtime_state.rs	contains non-ASCII comment/doc text	1
+crucible/src/scheduler/single_scheduler_drive.rs	contains non-ASCII comment/doc text	4
+crucible/src/scheduler/single_scheduler_state.rs	contains non-ASCII comment/doc text	5
+crucible/src/scheduler/tests.rs	contains non-ASCII comment/doc text	3
+crucible/src/scheduler/topology.rs	contains non-ASCII comment/doc text	1
+crucible/src/trigger/observability.rs	contains non-ASCII comment/doc text	1

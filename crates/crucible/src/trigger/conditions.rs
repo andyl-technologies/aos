@@ -1,9 +1,11 @@
-// Observable events, condition leaves, log prefixes, state facts, and host oracles.
+//! Observable events, condition leaves, log prefixes, state facts, and host oracles.
+
+use super::*;
 /// One observable event visible to condition evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ObservableEvent {
-    at: VirtualTime,
-    payload: ObservableEventPayload,
+    pub(super) at: VirtualTime,
+    pub(super) payload: ObservableEventPayload,
 }
 
 impl ObservableEvent {
@@ -527,7 +529,7 @@ pub fn observable_event_from_whitebox_marker_payload(
 }
 
 #[cfg(feature = "test-double")]
-fn guest_assertion_marker_from_whitebox_body(
+pub(super) fn guest_assertion_marker_from_whitebox_body(
     body: &crucible_protocol::WhiteboxAssertionMarkerBody,
 ) -> GuestAssertionMarker {
     GuestAssertionMarker::new(
@@ -545,7 +547,7 @@ fn guest_assertion_marker_from_whitebox_body(
 }
 
 #[cfg(feature = "test-double")]
-fn guest_assertion_kind_from_whitebox_flavor(
+pub(super) fn guest_assertion_kind_from_whitebox_flavor(
     flavor: crucible_protocol::WhiteboxAssertionMarkerFlavor,
 ) -> GuestAssertionKind {
     match flavor {
@@ -674,7 +676,7 @@ pub trait ConditionEvaluator: condition_evaluator_sealed::Sealed {
     }
 }
 
-mod condition_evaluator_sealed {
+pub(super) mod condition_evaluator_sealed {
     pub trait Sealed {}
 }
 
@@ -797,17 +799,17 @@ impl Error for ConditionEvaluationError {}
 /// Observable event-log prefix visible at one deterministic evaluation point.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionEventLogPrefix {
-    point: EventEvaluationPoint,
-    base_sequence: u64,
-    event_log_offset: EventLogOffset,
-    prefix_offsets: BTreeMap<u64, EventLogOffset>,
-    scheduler_entries: Vec<SchedulerEventLogEntry>,
-    observable_events: Vec<ObservableEvent>,
-    black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
-    event_firings: BTreeMap<EventId, VirtualTime>,
-    timer_fires: BTreeMap<TimerId, VirtualTime>,
-    ordering_facts: Vec<ObservedOrderingFact>,
-    fault_facts: Vec<ObservedFaultFact>,
+    pub(super) point: EventEvaluationPoint,
+    pub(super) base_sequence: u64,
+    pub(super) event_log_offset: EventLogOffset,
+    pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
+    pub(super) scheduler_entries: Vec<SchedulerEventLogEntry>,
+    pub(super) observable_events: Vec<ObservableEvent>,
+    pub(super) black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
+    pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
+    pub(super) timer_fires: BTreeMap<TimerId, VirtualTime>,
+    pub(super) ordering_facts: Vec<ObservedOrderingFact>,
+    pub(super) fault_facts: Vec<ObservedFaultFact>,
 }
 
 impl ConditionEventLogPrefix {
@@ -1141,11 +1143,11 @@ impl ConditionEventLogPrefix {
 /// wall-clock data are not part of this API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ObservedState<'log> {
-    point: EventEvaluationPoint,
-    event_log_offset: EventLogOffset,
-    observable_events: &'log [ObservableEvent],
-    ordering_facts: &'log [ObservedOrderingFact],
-    fault_facts: &'log [ObservedFaultFact],
+    pub(super) point: EventEvaluationPoint,
+    pub(super) event_log_offset: EventLogOffset,
+    pub(super) observable_events: &'log [ObservableEvent],
+    pub(super) ordering_facts: &'log [ObservedOrderingFact],
+    pub(super) fault_facts: &'log [ObservedFaultFact],
 }
 
 impl<'log> ObservedState<'log> {
@@ -1535,7 +1537,7 @@ impl HostAssertionOracle for SearchScheduleNamedPredicateHostOracle<'_> {
     }
 }
 
-fn active_search_fault_tags(facts: &[ObservedFaultFact]) -> Vec<FaultTag> {
+pub(super) fn active_search_fault_tags(facts: &[ObservedFaultFact]) -> Vec<FaultTag> {
     let mut active = BTreeSet::new();
     for fact in facts {
         match fact {

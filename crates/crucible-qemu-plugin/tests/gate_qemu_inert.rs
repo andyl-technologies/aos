@@ -34,7 +34,7 @@ fn gate_qemu_inert_plugin_half_is_backed_by_phase_check() -> Result<(), Box<dyn 
         &phase_check,
         "plugin_sim_off_rejects_every_load_or_effect_vector",
     );
-    assert_contains(&phase_check, "full_real_qemu_corpus=implemented-T-PATCH-3");
+    assert_contains(&phase_check, "full_real_qemu_corpus=pending-T-PATCH-3");
     assert_contains(&phase_check, "phase2-qemu-inert.nix");
 
     Ok(())

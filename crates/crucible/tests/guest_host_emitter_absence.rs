@@ -472,7 +472,7 @@ fn convergence_observations() -> Vec<ObservableEvent> {
 }
 
 fn assert_world_has_no_guest_content(world: &World, white_box: WhiteBoxPolicy) {
-    for node in world.nodes() {
+    for node in world.vm_nodes() {
         assert_eq!(node.white_box, white_box);
         assert!(node.cmdline.is_empty());
         assert!(matches!(node.ready_point, ReadyPoint::FixedIcount { .. }));

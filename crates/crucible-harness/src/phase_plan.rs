@@ -237,8 +237,8 @@ pub enum AdvancedFeatureScheduleFailureKind {
     DuplicateTaskSchedule,
     /// A scheduled ADV check does not expose a check attr path.
     MissingAttrPath,
-    /// A scheduled ADV check is not wrapped in `greenBeforeAdvance`.
-    MissingGreenBeforeAdvance,
+    /// A scheduled ADV check is not wrapped in an advance guard.
+    MissingAdvanceGuard,
     /// A scheduled ADV check does not depend on a required green lower gate.
     MissingGateDependency,
     /// A scheduled ADV check appears before its prerequisite task has a check.
@@ -702,6 +702,14 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
         false,
     ),
     catalog_gate(
+        PhasePlanPhase::Phase6,
+        "gate:basic-block-coverage",
+        "checks.crucible.phase6.basicBlockCoverage",
+        "loaded-QEMU coverage boundary",
+        false,
+        false,
+    ),
+    catalog_gate(
         PhasePlanPhase::Phase7,
         "gate:perf-bench",
         "checks.crucible.phase7.gates.perfBench",
@@ -1022,10 +1030,10 @@ pub fn advanced_feature_schedule_failures(
                 });
             }
 
-            if !scheduled.green_before_advance {
+            if !scheduled.advance_guarded {
                 failures.push(AdvancedFeatureScheduleFailure {
                     task_id: task_id.clone(),
-                    kind: AdvancedFeatureScheduleFailureKind::MissingGreenBeforeAdvance,
+                    kind: AdvancedFeatureScheduleFailureKind::MissingAdvanceGuard,
                     attr_path: scheduled.attr_path.clone(),
                     dependency: None,
                     prerequisite_task_id: None,
@@ -1098,7 +1106,7 @@ struct ScheduledAdvancedFeatureCheck {
     attr_path: Option<String>,
     task_ids: Vec<String>,
     dependencies: BTreeSet<String>,
-    green_before_advance: bool,
+    advance_guarded: bool,
 }
 
 fn scheduled_advanced_feature_checks(default_checks: &str) -> Vec<ScheduledAdvancedFeatureCheck> {
@@ -1121,37 +1129,42 @@ fn scheduled_advanced_feature_checks(default_checks: &str) -> Vec<ScheduledAdvan
             continue;
         }
 
-        let green_block =
-            enclosing_green_before_advance_block(default_checks, task_ids_start).map(str::to_owned);
+        let advance_guard_block =
+            enclosing_advance_guard_block(default_checks, task_ids_start).map(str::to_owned);
         let fallback_start = task_ids_start.saturating_sub(1024);
         let fallback_end = default_checks.len().min(search_from + 1024);
         let fallback_block = &default_checks[fallback_start..fallback_end];
-        let block = green_block.as_deref().unwrap_or(fallback_block);
+        let block = advance_guard_block.as_deref().unwrap_or(fallback_block);
 
         checks.push(ScheduledAdvancedFeatureCheck {
             attr_path: attr_path_from_block(block),
             task_ids,
-            dependencies: if green_block.is_some() {
+            dependencies: if advance_guard_block.is_some() {
                 top_level_dependency_tokens(block)
             } else {
                 dependency_tokens(block)
             },
-            green_before_advance: green_block.is_some(),
+            advance_guarded: advance_guard_block.is_some(),
         });
     }
 
     checks
 }
 
-fn enclosing_green_before_advance_block(content: &str, position: usize) -> Option<&str> {
-    let marker = "= greenBeforeAdvance {";
-    let mut candidates = content[..position]
-        .match_indices(marker)
-        .map(|(index, _)| index)
+fn enclosing_advance_guard_block(content: &str, position: usize) -> Option<&str> {
+    const MARKERS: [&str; 2] = ["= greenBeforeAdvance {", "= redBeforeAdvance {"];
+    let mut candidates = MARKERS
+        .iter()
+        .flat_map(|marker| {
+            content[..position]
+                .match_indices(marker)
+                .map(move |(index, _)| (index, *marker))
+        })
         .collect::<Vec<_>>();
+    candidates.sort_unstable_by_key(|(index, _)| *index);
     candidates.reverse();
 
-    for start in candidates {
+    for (start, marker) in candidates {
         let open_brace = start + marker.len() - 1;
         let Some(end) = matching_brace_end(content, open_brace) else {
             continue;

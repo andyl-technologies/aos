@@ -1,4 +1,6 @@
-// Search, fuzzing, guidance, fleet work stealing, and unified operations.
+//! Search, fuzzing, guidance, fleet work stealing, and unified operations.
+
+use super::*;
 
 /// Result of an on-demand replay-oracle check.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -326,8 +328,8 @@ impl CoverageGuidedFuzzThroughputTarget {
 /// Durable coverage-guided corpus keyed by reproduction-artifact id.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CoverageGuidedCorpus {
-    entries: BTreeMap<ContentHash, CoverageGuidedCorpusEntry>,
-    coverage_index: BTreeMap<ContentHash, ContentHash>,
+    pub(super) entries: BTreeMap<ContentHash, CoverageGuidedCorpusEntry>,
+    pub(super) coverage_index: BTreeMap<ContentHash, ContentHash>,
 }
 
 impl CoverageGuidedCorpus {
@@ -380,7 +382,7 @@ impl CoverageGuidedCorpus {
         ContentHash::from_canonical_material("crucible.coverage-guided-corpus.v1", &material)
     }
 
-    fn insert(&mut self, entry: CoverageGuidedCorpusEntry) {
+    pub(super) fn insert(&mut self, entry: CoverageGuidedCorpusEntry) {
         self.coverage_index
             .insert(entry.coverage_fingerprint, entry.artifact);
         self.entries.insert(entry.artifact, entry);
@@ -761,7 +763,7 @@ pub struct GuidanceSignalWeight {
 /// Deterministic fixed-order guidance signal composition.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GuidanceSignalComposition {
-    weights: Vec<GuidanceSignalWeight>,
+    pub(super) weights: Vec<GuidanceSignalWeight>,
 }
 
 impl GuidanceSignalComposition {
@@ -1212,8 +1214,8 @@ impl FleetEquivalenceReport {
 /// Host-resolution facts used by retained-log search assertion lowering.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchRetainedLogPredicateResolutions {
-    code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
-    mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
+    pub(super) code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
+    pub(super) mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
 }
 
 impl SearchRetainedLogPredicateResolutions {
@@ -1247,12 +1249,12 @@ impl SearchRetainedLogPredicateResolutions {
         self
     }
 
-    fn resolves_code_point(&self, node: &NodeId, point: &CodePoint) -> bool {
+    pub(super) fn resolves_code_point(&self, node: &NodeId, point: &CodePoint) -> bool {
         self.code_points
             .contains_key(&(node.clone(), point.clone()))
     }
 
-    fn resolves_mem_place(&self, node: &NodeId, place: &MemPlace) -> bool {
+    pub(super) fn resolves_mem_place(&self, node: &NodeId, place: &MemPlace) -> bool {
         self.mem_places.contains_key(&(node.clone(), place.clone()))
     }
 }
@@ -1260,9 +1262,9 @@ impl SearchRetainedLogPredicateResolutions {
 /// Configuration-bound retained-log assertion evidence for search lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchRetainedLogAssertionEvidence {
-    recorded_log: RecordedAssertionLog,
-    resolutions: SearchRetainedLogPredicateResolutions,
-    terminal_quiescence: Option<SchedulerQuiescence>,
+    pub(super) recorded_log: RecordedAssertionLog,
+    pub(super) resolutions: SearchRetainedLogPredicateResolutions,
+    pub(super) terminal_quiescence: Option<SchedulerQuiescence>,
 }
 
 impl SearchRetainedLogAssertionEvidence {
@@ -1312,7 +1314,7 @@ impl SearchRetainedLogAssertionEvidence {
 /// Read-only failure input for strategy-driven graph search.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SearchFailureOracle {
-    failures: BTreeMap<ContentHash, ContentHash>,
+    pub(super) failures: BTreeMap<ContentHash, ContentHash>,
 }
 
 impl SearchFailureOracle {
@@ -1845,7 +1847,7 @@ impl UnifiedGraphOperationEvidence {
         }
     }
 
-    fn validate_report(
+    pub(super) fn validate_report(
         &self,
         graph: &TemporalGraph,
         configuration: &Configuration,
@@ -1950,7 +1952,7 @@ impl UnifiedGraphOperationEvidence {
     }
 }
 
-fn operation_kind_label(kind: UnifiedGraphOperationKind) -> &'static str {
+pub(super) fn operation_kind_label(kind: UnifiedGraphOperationKind) -> &'static str {
     match kind {
         UnifiedGraphOperationKind::Resume => "resume",
         UnifiedGraphOperationKind::Fork => "fork",
@@ -1963,14 +1965,14 @@ fn operation_kind_label(kind: UnifiedGraphOperationKind) -> &'static str {
     }
 }
 
-fn unified_operation_evidence_mismatch(
+pub(super) fn unified_operation_evidence_mismatch(
     operation: &'static str,
     reason: &'static str,
 ) -> EngineError {
     EngineError::UnifiedOperationEvidenceMismatch { operation, reason }
 }
 
-fn expect_content_hash(
+pub(super) fn expect_content_hash(
     actual: ContentHash,
     expected: ContentHash,
     _field: &'static str,
@@ -1981,7 +1983,7 @@ fn expect_content_hash(
     Ok(())
 }
 
-fn expect_runtime_configuration(
+pub(super) fn expect_runtime_configuration(
     runtime: &TemporalGraphRuntime,
     configuration: &Configuration,
 ) -> Result<(), EngineError> {
@@ -2004,7 +2006,7 @@ fn expect_runtime_configuration(
     expect_content_hash(runtime.runtime.id, reduced.id, "runtime-state")
 }
 
-fn expect_checkpoint_configuration(
+pub(super) fn expect_checkpoint_configuration(
     checkpoint: &Checkpoint,
     configuration: &Configuration,
 ) -> Result<(), EngineError> {
@@ -2025,14 +2027,16 @@ fn expect_checkpoint_configuration(
     Ok(())
 }
 
-fn configuration_from_fork(fork: &TemporalGraphFork) -> Result<Configuration, EngineError> {
+pub(super) fn configuration_from_fork(
+    fork: &TemporalGraphFork,
+) -> Result<Configuration, EngineError> {
     let base = configuration_prefix_with_id(&fork.branch, fork.base.configuration)?;
     expect_runtime_configuration(&fork.base, &base)?;
     expect_checkpoint_configuration(&fork.branch_checkpoint, &fork.branch)?;
     Ok(fork.branch.clone())
 }
 
-fn configuration_prefix_with_id(
+pub(super) fn configuration_prefix_with_id(
     configuration: &Configuration,
     expected: ContentHash,
 ) -> Result<Configuration, EngineError> {
@@ -2056,7 +2060,7 @@ fn configuration_prefix_with_id(
 }
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn configuration_from_state_space_search(
+pub(super) fn configuration_from_state_space_search(
     graph: &TemporalGraph,
     scenario: &ScenarioDefForm,
     root: &Configuration,
@@ -2110,7 +2114,7 @@ fn configuration_from_state_space_search(
     Ok(configuration)
 }
 
-fn configuration_from_coverage_guided_fuzzing(
+pub(super) fn configuration_from_coverage_guided_fuzzing(
     family: &ScenarioFamily,
     run: &CoverageGuidedFuzzRun,
     feedback_fingerprints: &[ContentHash],
@@ -2139,7 +2143,7 @@ fn configuration_from_coverage_guided_fuzzing(
     Ok(iteration.configuration.clone())
 }
 
-fn coverage_guided_fuzz_run_from_fingerprints(
+pub(super) fn coverage_guided_fuzz_run_from_fingerprints(
     family: &ScenarioFamily,
     config: CoverageGuidedFuzzConfig,
     feedback_fingerprints: &[ContentHash],
@@ -2194,7 +2198,7 @@ fn coverage_guided_fuzz_run_from_fingerprints(
     })
 }
 
-fn coverage_guided_feedback_fingerprint_for_sequence(
+pub(super) fn coverage_guided_feedback_fingerprint_for_sequence(
     feedback_fingerprints: &[ContentHash],
     sequence: u64,
 ) -> ContentHash {
@@ -2205,7 +2209,7 @@ fn coverage_guided_feedback_fingerprint_for_sequence(
     feedback_fingerprints[index]
 }
 
-fn configuration_from_finding_artifact(
+pub(super) fn configuration_from_finding_artifact(
     finding: &FindingReproductionArtifact,
 ) -> Result<Configuration, EngineError> {
     let configuration = Configuration {
@@ -2220,7 +2224,7 @@ fn configuration_from_finding_artifact(
     Ok(configuration)
 }
 
-fn configuration_from_validated_finding(
+pub(super) fn configuration_from_validated_finding(
     finding: &FindingReproductionArtifact,
 ) -> Result<Configuration, EngineError> {
     let replay = finding.artifact.replay()?;
@@ -2234,7 +2238,7 @@ fn configuration_from_validated_finding(
     configuration_from_finding_artifact(finding)
 }
 
-fn configuration_from_minimization_run(
+pub(super) fn configuration_from_minimization_run(
     run: &MinimizationRun,
 ) -> Result<Configuration, EngineError> {
     configuration_from_validated_finding(&run.original)?;
@@ -2355,7 +2359,7 @@ fn configuration_from_minimization_run(
     Ok(minimized)
 }
 
-fn temporal_graph_store_keys_for_configuration(
+pub(super) fn temporal_graph_store_keys_for_configuration(
     graph: &TemporalGraph,
     frontier: &Configuration,
 ) -> Result<TemporalGraphStoreKeys, EngineError> {
@@ -2413,7 +2417,7 @@ fn temporal_graph_store_keys_for_configuration(
     })
 }
 
-fn insert_checkpoint_cow_delta_store_keys(
+pub(super) fn insert_checkpoint_cow_delta_store_keys(
     checkpoint: &Checkpoint,
     cow_deltas: &mut BTreeMap<CowDeltaRef, ContentHash>,
     schedule_deltas: &mut Vec<ContentHash>,

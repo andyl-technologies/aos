@@ -1,4 +1,6 @@
-// World topology, device declarations, and the complete fault taxonomy.
+//! World topology, device declarations, and the complete fault taxonomy.
+
+use super::*;
 
 /// A node identifier inside a scenario definition.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -41,7 +43,7 @@ pub enum VmArchitecture {
 }
 
 impl VmArchitecture {
-    fn material(self) -> &'static str {
+    pub(super) fn material(self) -> &'static str {
         match self {
             Self::X86_64 => "x86_64",
             Self::Aarch64 => "aarch64",
@@ -86,7 +88,7 @@ pub enum WorldDeviceKind {
 }
 
 impl WorldDeviceKind {
-    fn material(self) -> &'static str {
+    pub(super) fn material(self) -> &'static str {
         match self {
             Self::Block => "block",
             Self::NineP => "9p",
@@ -346,18 +348,18 @@ impl WorldNode {
 /// One logical symmetric link between two nodes in a [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LinkDef {
-    endpoint_a: NodeId,
-    endpoint_b: NodeId,
-    latency: SimDuration,
-    jitter: SimDuration,
-    loss: LinkLossProbability,
-    bandwidth_bps: Option<u64>,
+    pub(super) endpoint_a: NodeId,
+    pub(super) endpoint_b: NodeId,
+    pub(super) latency: SimDuration,
+    pub(super) jitter: SimDuration,
+    pub(super) loss: LinkLossProbability,
+    pub(super) bandwidth_bps: Option<u64>,
 }
 
 /// A deterministic fixed-point link loss probability.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LinkLossProbability {
-    millionths: u32,
+    pub(super) millionths: u32,
 }
 
 impl LinkLossProbability {
@@ -713,7 +715,7 @@ pub enum IoFailureMode {
 /// A positive POSIX errno value returned by a 9p failure fault.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NinePErrno {
-    code: i32,
+    pub(super) code: i32,
 }
 
 impl NinePErrno {
@@ -744,7 +746,7 @@ impl NinePErrno {
 /// A fixed-point fault probability or ratio in integer basis points.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FaultRateBasisPoints {
-    basis_points: u16,
+    pub(super) basis_points: u16,
 }
 
 impl FaultRateBasisPoints {
@@ -812,7 +814,7 @@ impl FaultRateBasisPoints {
 /// A fixed-point slowdown factor in integer basis points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FaultSlowdownFactorBasisPoints {
-    basis_points: u32,
+    pub(super) basis_points: u32,
 }
 
 impl FaultSlowdownFactorBasisPoints {
@@ -851,7 +853,7 @@ impl FaultSlowdownFactorBasisPoints {
 /// An integer virtual-time duration used by fault parameters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FaultDuration {
-    nanos: u64,
+    pub(super) nanos: u64,
 }
 
 impl FaultDuration {
@@ -888,7 +890,7 @@ impl FaultDuration {
 /// An integer bandwidth limit used by network faults.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FaultBandwidthBitsPerSecond {
-    bits_per_second: u64,
+    pub(super) bits_per_second: u64,
 }
 
 impl FaultBandwidthBitsPerSecond {
@@ -1543,7 +1545,7 @@ impl ActiveFaultTable {
     }
 }
 
-fn directed_network_fault_table(
+pub(super) fn directed_network_fault_table(
     network: &BTreeMap<LinkId, CombinedNetworkFaults>,
 ) -> BTreeMap<ActiveNetworkEdgeKey, CombinedNetworkFaults> {
     let mut table = BTreeMap::new();
@@ -1566,7 +1568,7 @@ fn directed_network_fault_table(
     table
 }
 
-fn directed_network_faults(
+pub(super) fn directed_network_faults(
     faults: &CombinedNetworkFaults,
     direction: ActiveNetworkEdgeDirection,
 ) -> CombinedNetworkFaults {
@@ -1761,7 +1763,7 @@ impl CombinedNinePFaults {
     }
 }
 
-fn combine_network_fault(
+pub(super) fn combine_network_fault(
     combined: &mut BTreeMap<LinkId, CombinedNetworkFaults>,
     fault: &NetworkFault,
 ) {
@@ -1825,7 +1827,10 @@ fn combine_network_fault(
     }
 }
 
-fn combine_node_fault(combined: &mut BTreeMap<NodeId, CombinedNodeFaults>, fault: &NodeFault) {
+pub(super) fn combine_node_fault(
+    combined: &mut BTreeMap<NodeId, CombinedNodeFaults>,
+    fault: &NodeFault,
+) {
     match fault {
         NodeFault::Crash { node, restart } => {
             let entry = combined.entry(node.clone()).or_default();
@@ -1850,7 +1855,10 @@ fn combine_node_fault(combined: &mut BTreeMap<NodeId, CombinedNodeFaults>, fault
     }
 }
 
-fn combine_block_fault(combined: &mut BTreeMap<DeviceId, CombinedBlockFaults>, fault: &BlockFault) {
+pub(super) fn combine_block_fault(
+    combined: &mut BTreeMap<DeviceId, CombinedBlockFaults>,
+    fault: &BlockFault,
+) {
     match fault {
         BlockFault::Latency {
             device,
@@ -1910,7 +1918,10 @@ fn combine_block_fault(combined: &mut BTreeMap<DeviceId, CombinedBlockFaults>, f
     }
 }
 
-fn combine_ninep_fault(combined: &mut BTreeMap<DeviceId, CombinedNinePFaults>, fault: &NinePFault) {
+pub(super) fn combine_ninep_fault(
+    combined: &mut BTreeMap<DeviceId, CombinedNinePFaults>,
+    fault: &NinePFault,
+) {
     match fault {
         NinePFault::Latency {
             device,
@@ -1972,11 +1983,14 @@ fn combine_ninep_fault(combined: &mut BTreeMap<DeviceId, CombinedNinePFaults>, f
     }
 }
 
-fn max_duration(current: Option<FaultDuration>, candidate: FaultDuration) -> FaultDuration {
+pub(super) fn max_duration(
+    current: Option<FaultDuration>,
+    candidate: FaultDuration,
+) -> FaultDuration {
     current.map_or(candidate, |current| current.max(candidate))
 }
 
-fn max_duplicate(
+pub(super) fn max_duplicate(
     current: CombinedDuplicateFault,
     candidate: CombinedDuplicateFault,
 ) -> CombinedDuplicateFault {
@@ -1987,7 +2001,7 @@ fn max_duplicate(
     }
 }
 
-fn max_io_corruption(
+pub(super) fn max_io_corruption(
     current: CombinedIoCorruptionFault,
     candidate: CombinedIoCorruptionFault,
 ) -> CombinedIoCorruptionFault {
@@ -1998,7 +2012,7 @@ fn max_io_corruption(
     }
 }
 
-fn corruption_rate(fault: &NetworkCorruptionFault) -> FaultRateBasisPoints {
+pub(super) fn corruption_rate(fault: &NetworkCorruptionFault) -> FaultRateBasisPoints {
     match fault {
         NetworkCorruptionFault::BitFlip { rate, .. }
         | NetworkCorruptionFault::FieldMutation { rate }
@@ -2006,7 +2020,7 @@ fn corruption_rate(fault: &NetworkCorruptionFault) -> FaultRateBasisPoints {
     }
 }
 
-fn network_corruption_strategy_cmp(
+pub(super) fn network_corruption_strategy_cmp(
     left: &NetworkCorruptionFault,
     right: &NetworkCorruptionFault,
 ) -> std::cmp::Ordering {
@@ -2015,7 +2029,7 @@ fn network_corruption_strategy_cmp(
         .then_with(|| left.canonical_material().cmp(&right.canonical_material()))
 }
 
-fn network_corruption_kind_order(fault: &NetworkCorruptionFault) -> u8 {
+pub(super) fn network_corruption_kind_order(fault: &NetworkCorruptionFault) -> u8 {
     match fault {
         NetworkCorruptionFault::BitFlip { .. } => 0,
         NetworkCorruptionFault::FieldMutation { .. } => 1,
@@ -2023,18 +2037,18 @@ fn network_corruption_kind_order(fault: &NetworkCorruptionFault) -> u8 {
     }
 }
 
-fn sort_rates_highest_first(rates: &mut [FaultRateBasisPoints]) {
+pub(super) fn sort_rates_highest_first(rates: &mut [FaultRateBasisPoints]) {
     rates.sort_by(|left, right| right.cmp(left));
 }
 
-fn saturating_offset_add(left: SimOffset, right: SimOffset) -> SimOffset {
+pub(super) fn saturating_offset_add(left: SimOffset, right: SimOffset) -> SimOffset {
     let sum = i128::from(left.nanos) + i128::from(right.nanos);
     SimOffset {
         nanos: sum.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64,
     }
 }
 
-fn partition_direction_key(direction: PartitionDirection) -> &'static str {
+pub(super) fn partition_direction_key(direction: PartitionDirection) -> &'static str {
     match direction {
         PartitionDirection::Bidirectional => "bidirectional",
         PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
@@ -2042,7 +2056,7 @@ fn partition_direction_key(direction: PartitionDirection) -> &'static str {
     }
 }
 
-fn restart_policy_key(policy: RestartPolicy) -> &'static str {
+pub(super) fn restart_policy_key(policy: RestartPolicy) -> &'static str {
     match policy {
         RestartPolicy::FromReadyPoint => "from-ready-point",
         RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
@@ -2050,22 +2064,22 @@ fn restart_policy_key(policy: RestartPolicy) -> &'static str {
     }
 }
 
-fn io_failure_mode_key(mode: IoFailureMode) -> &'static str {
+pub(super) fn io_failure_mode_key(mode: IoFailureMode) -> &'static str {
     match mode {
         IoFailureMode::Drop => "drop",
         IoFailureMode::ErrorStatus => "error-status",
     }
 }
 
-fn fault_link_material(link: &LinkId) -> String {
+pub(super) fn fault_link_material(link: &LinkId) -> String {
     format!("link_len={}\nlink={}", link.name.len(), link.name)
 }
 
-fn fault_node_material(node: &NodeId) -> String {
+pub(super) fn fault_node_material(node: &NodeId) -> String {
     format!("node_len={}\nnode={}", node.name.len(), node.name)
 }
 
-fn fault_device_material(device: &DeviceId) -> String {
+pub(super) fn fault_device_material(device: &DeviceId) -> String {
     format!("device_len={}\ndevice={}", device.name.len(), device.name)
 }
 
@@ -2152,13 +2166,13 @@ impl MembershipFault {
     }
 }
 
-struct CanonicalPartitionFault {
-    endpoint_a: NodeId,
-    endpoint_b: NodeId,
-    direction: PartitionDirection,
+pub(super) struct CanonicalPartitionFault {
+    pub(super) endpoint_a: NodeId,
+    pub(super) endpoint_b: NodeId,
+    pub(super) direction: PartitionDirection,
 }
 
-fn canonical_partition_fault(
+pub(super) fn canonical_partition_fault(
     endpoint_a: &NodeId,
     endpoint_b: &NodeId,
     direction: PartitionDirection,

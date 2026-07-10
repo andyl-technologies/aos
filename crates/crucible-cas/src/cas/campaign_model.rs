@@ -1,3 +1,7 @@
+//! Campaign manifests, heads, summaries, and content-addressed records.
+
+use super::*;
+
 /// Immutable manifest named by a persistent campaign head.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CampaignManifest {
@@ -502,15 +506,15 @@ impl CampaignCheckpointEviction {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CampaignCorpusRetentionRecord {
-    source_root: ContentHash,
-    policy: CampaignCorpusRetentionPolicy,
-    entries: BTreeMap<ContentHash, ContentHash>,
+pub(super) struct CampaignCorpusRetentionRecord {
+    pub(super) source_root: ContentHash,
+    pub(super) policy: CampaignCorpusRetentionPolicy,
+    pub(super) entries: BTreeMap<ContentHash, ContentHash>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CampaignRootMerge {
-    label: &'static str,
-    left: ContentHash,
-    right: ContentHash,
+pub(super) struct CampaignRootMerge {
+    pub(super) label: &'static str,
+    pub(super) left: ContentHash,
+    pub(super) right: ContentHash,
 }

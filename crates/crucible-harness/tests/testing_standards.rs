@@ -50,6 +50,7 @@ enum TestShape {
     AdversarialCompare,
     FleetEquivalence,
     CampaignContinuity,
+    BasicBlockCoverage,
     PerfBenchRegression,
 }
 
@@ -194,6 +195,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         backend: TestBackend::Mixed,
     },
     GateTestingStandard {
+        gate: "gate:basic-block-coverage",
+        owner_packages: &["crucible", "crucible-qemu"],
+        layers: &[Layer::L2, Layer::L3],
+        shape: TestShape::BasicBlockCoverage,
+        backend: TestBackend::Mixed,
+    },
+    GateTestingStandard {
         gate: "gate:fleet-equivalence",
         owner_packages: &["crucible"],
         layers: &[Layer::L3],
@@ -246,6 +254,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:single-vm-fingerprint",
             "gate:any-guest",
             "gate:qemu-inert",
+            "gate:basic-block-coverage",
         ],
     },
     CrateTestingOwnership {
@@ -273,6 +282,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
             "gate:adversarial-determinism",
             "gate:e2e-determinism",
             "gate:fleet-equivalence",
+            "gate:basic-block-coverage",
         ],
     },
     CrateTestingOwnership {

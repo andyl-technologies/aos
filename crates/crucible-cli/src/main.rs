@@ -117,6 +117,7 @@ const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:patch-microtests",
     "gate:adversarial-determinism",
     "gate:e2e-determinism",
+    "gate:basic-block-coverage",
     "gate:perf-bench",
     "gate:fleet-equivalence",
     "gate:campaign-continuity",
@@ -1323,18 +1324,43 @@ fn execute_cli_dispatch_plan(
     Ok(())
 }
 
-include!("cli/planning.rs");
-include!("cli/backend.rs");
-include!("cli/run_save.rs");
-include!("cli/resume_fork.rs");
-include!("cli/verify_serve.rs");
-include!("cli/control.rs");
-include!("cli/dispatch.rs");
-include!("cli/exploration.rs");
-include!("cli/replay.rs");
-include!("cli/triage_debug.rs");
-include!("cli/artifact.rs");
-include!("cli/report.rs");
+#[path = "cli/artifact.rs"]
+mod cli_artifact;
+#[path = "cli/backend.rs"]
+mod cli_backend;
+#[path = "cli/control.rs"]
+mod cli_control;
+#[path = "cli/dispatch.rs"]
+mod cli_dispatch;
+#[path = "cli/exploration.rs"]
+mod cli_exploration;
+#[path = "cli/planning.rs"]
+mod cli_planning;
+#[path = "cli/replay.rs"]
+mod cli_replay;
+#[path = "cli/report.rs"]
+mod cli_report;
+#[path = "cli/resume_fork.rs"]
+mod cli_resume_fork;
+#[path = "cli/run_save.rs"]
+mod cli_run_save;
+#[path = "cli/triage_debug.rs"]
+mod cli_triage_debug;
+#[path = "cli/verify_serve.rs"]
+mod cli_verify_serve;
+
+use cli_artifact::*;
+use cli_backend::*;
+use cli_control::*;
+use cli_dispatch::*;
+use cli_exploration::*;
+use cli_planning::*;
+use cli_replay::*;
+use cli_report::*;
+use cli_resume_fork::*;
+use cli_run_save::*;
+use cli_triage_debug::*;
+use cli_verify_serve::*;
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

@@ -821,27 +821,52 @@ impl Error for TemporalGraphStoreError {
     }
 }
 
-include!("model/workload.rs");
-include!("model/scenario.rs");
-include!("model/family.rs");
-include!("model/failure.rs");
-include!("model/reproduction.rs");
-include!("model/configuration.rs");
-include!("model/time.rs");
-include!("model/topology_faults.rs");
-include!("model/plan_properties.rs");
-include!("model/materialized.rs");
-include!("model/temporal_graph.rs");
-include!("model/exploration.rs");
-include!("model/debug.rs");
-include!("model/runtime.rs");
-include!("model/engine.rs");
-include!("model/validation.rs");
-include!("model/toml.rs");
-include!("model/binary_state.rs");
-include!("model/binary_plan.rs");
-include!("model/material.rs");
-include!("model/store_artifacts.rs");
+mod binary_plan;
+mod binary_state;
+mod configuration;
+mod debug;
+mod engine;
+mod exploration;
+mod failure;
+mod family;
+mod material;
+mod materialized;
+mod plan_properties;
+mod reproduction;
+mod runtime;
+mod scenario;
+mod store_artifacts;
+mod temporal_graph;
+mod time;
+#[path = "model/toml.rs"]
+mod toml_codec;
+mod topology_faults;
+mod validation;
+mod workload;
+
+use binary_plan::*;
+use binary_state::*;
+pub use configuration::*;
+pub use debug::*;
+pub use engine::*;
+pub use exploration::*;
+use failure::failure_assertion_quantifier_label;
+pub use failure::*;
+pub use family::*;
+use material::*;
+pub use materialized::*;
+pub use plan_properties::*;
+pub use reproduction::*;
+pub use runtime::*;
+pub use scenario::*;
+use store_artifacts::*;
+pub use temporal_graph::*;
+use temporal_graph::{debug_configuration_prefix, maps_equal_except_key};
+pub use time::*;
+use toml_codec::*;
+pub use topology_faults::*;
+use validation::*;
+pub use workload::*;
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

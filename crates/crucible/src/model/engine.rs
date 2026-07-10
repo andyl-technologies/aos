@@ -1,4 +1,6 @@
-// Engine errors, replay reconstruction, reduction, and symmetry helpers.
+//! Engine errors, replay reconstruction, reduction, and symmetry helpers.
+
+use super::*;
 
 /// An engine-spine error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1070,7 +1072,7 @@ impl fmt::Display for EngineError {
 
 impl Error for EngineError {}
 
-fn load_snapshot(
+pub(super) fn load_snapshot(
     configuration: &Configuration,
     checkpoint: &Checkpoint,
 ) -> Result<RuntimeState, EngineError> {
@@ -1094,7 +1096,7 @@ fn load_snapshot(
     )
 }
 
-fn runtime_for_configuration_with_scheduler(
+pub(super) fn runtime_for_configuration_with_scheduler(
     configuration: &Configuration,
     node_blobs: BTreeMap<NodeId, NodeBlobRef>,
     node_icounts: BTreeMap<NodeId, Icount>,
@@ -1111,7 +1113,7 @@ fn runtime_for_configuration_with_scheduler(
     })
 }
 
-fn replay_suffix(
+pub(super) fn replay_suffix(
     runtime: RuntimeState,
     start: &Configuration,
     suffix: &Schedule,
@@ -1166,17 +1168,17 @@ fn replay_suffix(
     )
 }
 
-fn scheduler_state_for_configuration(configuration: &Configuration) -> SchedulerState {
+pub(super) fn scheduler_state_for_configuration(configuration: &Configuration) -> SchedulerState {
     SchedulerState::from_schedule(&configuration.schedule)
 }
 
-fn configuration_virtual_time(configuration: &Configuration) -> VirtualTime {
+pub(super) fn configuration_virtual_time(configuration: &Configuration) -> VirtualTime {
     VirtualTime {
         ticks: u64::try_from(configuration.schedule.len()).unwrap_or(u64::MAX),
     }
 }
 
-fn instantiate_thin_replay(
+pub(super) fn instantiate_thin_replay(
     graph: &TemporalGraph,
     config: &Configuration,
 ) -> Result<RuntimeState, EngineError> {
@@ -1208,7 +1210,7 @@ fn instantiate_thin_replay(
     replay_suffix(genesis_runtime, &genesis, &suffix, config)
 }
 
-fn materialized_checkpoint_for_runtime(
+pub(super) fn materialized_checkpoint_for_runtime(
     configuration: &Configuration,
     runtime: RuntimeState,
 ) -> Result<Checkpoint, EngineError> {
@@ -1239,7 +1241,7 @@ fn materialized_checkpoint_for_runtime(
     Ok(checkpoint)
 }
 
-fn validate_loadable_checkpoint(
+pub(super) fn validate_loadable_checkpoint(
     checkpoint: &Checkpoint,
     configuration: &Configuration,
 ) -> Result<(), EngineError> {
@@ -1290,11 +1292,11 @@ fn validate_loadable_checkpoint(
     Ok(())
 }
 
-fn replay_oracle_failure_rejects_cache(error: &EngineError) -> bool {
+pub(super) fn replay_oracle_failure_rejects_cache(error: &EngineError) -> bool {
     !matches!(error, EngineError::MissingBakedGenesis { .. })
 }
 
-fn sample_search_replay_oracle_checkpoint(
+pub(super) fn sample_search_replay_oracle_checkpoint(
     graph: &TemporalGraph,
     configuration: &Configuration,
     checkpoint: &Checkpoint,
@@ -1320,7 +1322,7 @@ fn sample_search_replay_oracle_checkpoint(
         .map_err(|error| search_replay_oracle_error(sequence, error))
 }
 
-fn merge_search_replay_oracle_sampling_report(
+pub(super) fn merge_search_replay_oracle_sampling_report(
     total: &mut SearchReplayOracleSamplingReport,
     frontier: &SearchReplayOracleSamplingReport,
 ) {
@@ -1332,7 +1334,7 @@ fn merge_search_replay_oracle_sampling_report(
         .extend(frontier.sampled_checkpoints.iter().copied());
 }
 
-fn search_replay_oracle_error(sequence: u64, error: EngineError) -> EngineError {
+pub(super) fn search_replay_oracle_error(sequence: u64, error: EngineError) -> EngineError {
     match error {
         EngineError::ReplayOracleMismatch {
             checkpoint,
@@ -1352,7 +1354,7 @@ fn search_replay_oracle_error(sequence: u64, error: EngineError) -> EngineError 
     }
 }
 
-fn sampled_search_replay_oracle_error(
+pub(super) fn sampled_search_replay_oracle_error(
     sequence: u64,
     config: &SearchReplayOracleSamplingConfig,
     error: EngineError,
@@ -1385,7 +1387,7 @@ fn sampled_search_replay_oracle_error(
     }
 }
 
-fn validate_materialized_state(checkpoint: &Checkpoint) -> Result<(), EngineError> {
+pub(super) fn validate_materialized_state(checkpoint: &Checkpoint) -> Result<(), EngineError> {
     let state =
         checkpoint
             .state
@@ -1454,14 +1456,14 @@ fn validate_materialized_state(checkpoint: &Checkpoint) -> Result<(), EngineErro
     Ok(())
 }
 
-fn checkpoint_kind_label(kind: CheckpointKind) -> &'static str {
+pub(super) fn checkpoint_kind_label(kind: CheckpointKind) -> &'static str {
     match kind {
         CheckpointKind::Fat => "fat",
         CheckpointKind::Thin => "thin",
     }
 }
 
-fn materialized_state_for_kind(
+pub(super) fn materialized_state_for_kind(
     kind: CheckpointKind,
     node_icounts: &BTreeMap<NodeId, Icount>,
     node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
@@ -1474,7 +1476,7 @@ fn materialized_state_for_kind(
     )
 }
 
-fn materialized_state_for_kind_with_scheduler(
+pub(super) fn materialized_state_for_kind_with_scheduler(
     kind: CheckpointKind,
     node_icounts: &BTreeMap<NodeId, Icount>,
     node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
@@ -1492,7 +1494,7 @@ fn materialized_state_for_kind_with_scheduler(
     }
 }
 
-fn materialized_vm_snapshots(
+pub(super) fn materialized_vm_snapshots(
     node_icounts: &BTreeMap<NodeId, Icount>,
     node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
 ) -> BTreeMap<NodeId, VmSnapshotRef> {
@@ -1505,7 +1507,7 @@ fn materialized_vm_snapshots(
         .collect()
 }
 
-fn replayed_node_blobs(
+pub(super) fn replayed_node_blobs(
     ancestor_blobs: &BTreeMap<NodeId, NodeBlobRef>,
     start: &Configuration,
     suffix: &Schedule,
@@ -1542,7 +1544,7 @@ fn replayed_node_blobs(
         .collect()
 }
 
-fn replayed_node_icounts(
+pub(super) fn replayed_node_icounts(
     ancestor_icounts: &BTreeMap<NodeId, Icount>,
     suffix: &Schedule,
 ) -> BTreeMap<NodeId, Icount> {
@@ -1560,7 +1562,7 @@ fn replayed_node_icounts(
         .collect()
 }
 
-fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>> {
+pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>> {
     match decision {
         Decision::Preemption(preemption) => Some(BTreeSet::from([preemption.node.clone()])),
         Decision::AppRandom(random) => Some(BTreeSet::from([random.node.clone()])),
@@ -1572,7 +1574,7 @@ fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>> {
     }
 }
 
-fn decisions_are_independent(
+pub(super) fn decisions_are_independent(
     left: &Decision,
     right: &Decision,
     policy: &PartialOrderReductionPolicy,
@@ -1591,7 +1593,7 @@ fn decisions_are_independent(
     decisions_have_commuting_resources(left, right)
 }
 
-fn decisions_have_commuting_resources(left: &Decision, right: &Decision) -> bool {
+pub(super) fn decisions_have_commuting_resources(left: &Decision, right: &Decision) -> bool {
     match (left, right) {
         (Decision::Preemption(_), Decision::Preemption(_))
         | (Decision::Preemption(_), Decision::AppRandom(_))
@@ -1601,11 +1603,11 @@ fn decisions_have_commuting_resources(left: &Decision, right: &Decision) -> bool
     }
 }
 
-fn decision_reduction_order_key(decision: &Decision) -> ContentHash {
+pub(super) fn decision_reduction_order_key(decision: &Decision) -> ContentHash {
     Schedule::empty().appended(decision.clone()).content_hash()
 }
 
-fn partial_order_cover(
+pub(super) fn partial_order_cover(
     graph: &mut TemporalGraph,
     decision: Decision,
     configuration: Configuration,
@@ -1627,7 +1629,7 @@ fn partial_order_cover(
     }))
 }
 
-fn partial_order_canonical_representative(
+pub(super) fn partial_order_canonical_representative(
     configuration: &Configuration,
     policy: &PartialOrderReductionPolicy,
 ) -> Option<Configuration> {
@@ -1654,11 +1656,11 @@ fn partial_order_canonical_representative(
     })
 }
 
-fn schedule_from_decisions(decisions: Vec<Decision>) -> Schedule {
+pub(super) fn schedule_from_decisions(decisions: Vec<Decision>) -> Schedule {
     Schedule::from_decisions(decisions)
 }
 
-fn minimization_candidates(
+pub(super) fn minimization_candidates(
     seed: Seed,
     artifact: ContentHash,
     schedule: &Schedule,
@@ -1686,7 +1688,7 @@ fn minimization_candidates(
     candidates
 }
 
-fn collect_minimization_candidates_for_len(
+pub(super) fn collect_minimization_candidates_for_len(
     seed: Seed,
     artifact: ContentHash,
     decisions: &[Decision],
@@ -1721,7 +1723,7 @@ fn collect_minimization_candidates_for_len(
     }
 }
 
-fn minimization_candidate_from_kept_indices(
+pub(super) fn minimization_candidate_from_kept_indices(
     seed: Seed,
     artifact: ContentHash,
     decisions: &[Decision],
@@ -1750,7 +1752,7 @@ fn minimization_candidate_from_kept_indices(
     }
 }
 
-fn minimization_candidate_key(
+pub(super) fn minimization_candidate_key(
     seed: Seed,
     artifact: ContentHash,
     schedule: &Schedule,
@@ -1772,7 +1774,7 @@ fn minimization_candidate_key(
     )
 }
 
-fn partial_order_reduction_key(
+pub(super) fn partial_order_reduction_key(
     representative: &Configuration,
     covered: &Configuration,
 ) -> PartialOrderReductionKey {
@@ -1788,7 +1790,7 @@ fn partial_order_reduction_key(
     }
 }
 
-fn checkpoint_symmetry_reduction_key(
+pub(super) fn checkpoint_symmetry_reduction_key(
     checkpoint: &Checkpoint,
     classes: &SymmetryReductionClasses,
 ) -> Option<SymmetryReductionKey> {
@@ -1816,7 +1818,7 @@ fn checkpoint_symmetry_reduction_key(
     })
 }
 
-fn canonical_symmetry_node_labels(
+pub(super) fn canonical_symmetry_node_labels(
     checkpoint: &Checkpoint,
     state: &MaterializedState,
     classes: &SymmetryReductionClasses,
@@ -1855,7 +1857,10 @@ fn canonical_symmetry_node_labels(
     Some(labels)
 }
 
-fn symmetry_nodes(checkpoint: &Checkpoint, state: &MaterializedState) -> BTreeSet<NodeId> {
+pub(super) fn symmetry_nodes(
+    checkpoint: &Checkpoint,
+    state: &MaterializedState,
+) -> BTreeSet<NodeId> {
     let mut nodes = BTreeSet::new();
     nodes.extend(checkpoint.node_blobs.keys().cloned());
     nodes.extend(checkpoint.node_icounts.keys().cloned());
@@ -1903,7 +1908,7 @@ fn symmetry_nodes(checkpoint: &Checkpoint, state: &MaterializedState) -> BTreeSe
     nodes
 }
 
-fn symmetry_node_local_signature(
+pub(super) fn symmetry_node_local_signature(
     checkpoint: &Checkpoint,
     state: &MaterializedState,
     node: &NodeId,
@@ -1927,7 +1932,7 @@ fn symmetry_node_local_signature(
     lines.join("\n")
 }
 
-fn push_symmetry_checkpoint_lines(
+pub(super) fn push_symmetry_checkpoint_lines(
     checkpoint: &Checkpoint,
     labels: &BTreeMap<NodeId, String>,
     lines: &mut Vec<String>,
@@ -1956,7 +1961,7 @@ fn push_symmetry_checkpoint_lines(
     Some(())
 }
 
-fn push_symmetry_materialized_state_lines(
+pub(super) fn push_symmetry_materialized_state_lines(
     state: &MaterializedState,
     labels: &BTreeMap<NodeId, String>,
     lines: &mut Vec<String>,
@@ -1997,7 +2002,7 @@ fn push_symmetry_materialized_state_lines(
     Some(())
 }
 
-fn scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
+pub(super) fn scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
     match kind {
         SchedulingNodeKind::Vm => "vm",
         SchedulingNodeKind::Disk => "disk",
@@ -2007,7 +2012,7 @@ fn scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
     }
 }
 
-fn push_symmetry_scheduler_lines(
+pub(super) fn push_symmetry_scheduler_lines(
     scheduler: &SchedulerState,
     labels: &BTreeMap<NodeId, String>,
     lines: &mut Vec<String>,
@@ -2187,7 +2192,7 @@ fn push_symmetry_scheduler_lines(
     Some(())
 }
 
-fn push_symmetry_topology_edge_lines(
+pub(super) fn push_symmetry_topology_edge_lines(
     prefix: &str,
     edge: &crate::scheduler::SchedulerLookaheadEdge,
     labels: &BTreeMap<NodeId, String>,
@@ -2204,7 +2209,7 @@ fn push_symmetry_topology_edge_lines(
     Some(())
 }
 
-fn push_symmetry_topology_change_lines(
+pub(super) fn push_symmetry_topology_change_lines(
     change: &crate::scheduler::SchedulerTopologyChange,
     labels: &BTreeMap<NodeId, String>,
     lines: &mut Vec<String>,
@@ -2265,7 +2270,11 @@ fn push_symmetry_topology_change_lines(
     Some(())
 }
 
-fn push_symmetry_device_rng_lines(prefix: &str, state: &DeviceRngState, lines: &mut Vec<String>) {
+pub(super) fn push_symmetry_device_rng_lines(
+    prefix: &str,
+    state: &DeviceRngState,
+    lines: &mut Vec<String>,
+) {
     lines.push(format!("{prefix}.streams={}", state.streams.len()));
     for (stream, position) in &state.streams {
         push_rng_stream_lines(prefix, stream, lines);
@@ -2273,7 +2282,7 @@ fn push_symmetry_device_rng_lines(prefix: &str, state: &DeviceRngState, lines: &
     }
 }
 
-fn push_symmetry_decision_rng_lines(
+pub(super) fn push_symmetry_decision_rng_lines(
     prefix: &str,
     state: &DecisionRngState,
     lines: &mut Vec<String>,
@@ -2285,7 +2294,7 @@ fn push_symmetry_decision_rng_lines(
     }
 }
 
-fn push_rng_stream_lines(prefix: &str, stream: &RngStreamId, lines: &mut Vec<String>) {
+pub(super) fn push_rng_stream_lines(prefix: &str, stream: &RngStreamId, lines: &mut Vec<String>) {
     lines.push(format!(
         "{prefix}.stream_domain_len={}",
         stream.domain.len()
@@ -2295,7 +2304,7 @@ fn push_rng_stream_lines(prefix: &str, stream: &RngStreamId, lines: &mut Vec<Str
     lines.push(format!("{prefix}.stream={}", stream.name));
 }
 
-fn push_symmetry_event_log_lines(event_log: EventLogOffset, lines: &mut Vec<String>) {
+pub(super) fn push_symmetry_event_log_lines(event_log: EventLogOffset, lines: &mut Vec<String>) {
     lines.push(format!(
         "event_log.prefix={}",
         content_hash_hex(event_log.prefix)
@@ -2311,7 +2320,7 @@ fn push_symmetry_event_log_lines(event_log: EventLogOffset, lines: &mut Vec<Stri
     lines.push(format!("event_log.events={}", event_log.events));
 }
 
-fn checkpoint_edge(
+pub(super) fn checkpoint_edge(
     configuration: &Configuration,
     parent: Option<&Configuration>,
 ) -> Result<(Option<ContentHash>, Schedule), EngineError> {
@@ -2357,7 +2366,7 @@ fn checkpoint_edge(
     }
 }
 
-fn immediate_parent_configuration(
+pub(super) fn immediate_parent_configuration(
     configuration: &Configuration,
 ) -> Result<Option<Configuration>, EngineError> {
     if configuration.is_genesis() {

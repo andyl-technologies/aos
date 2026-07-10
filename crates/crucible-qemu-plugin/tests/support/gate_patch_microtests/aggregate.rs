@@ -29,6 +29,16 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     assert_contains(&aggregate, "gate=gate:patch-microtests");
     assert_contains(
         &aggregate,
+        "taskIds ? [\"T-PATCH-20\" \"T-PATCH-21\" \"T-PATCH-22\" \"T-PATCH-23\" \"T-PATCH-24\"]",
+    );
+    assert_contains(
+        &aggregate,
+        "openTaskIds ? [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\"]",
+    );
+    assert_contains(&aggregate, "open_tasks=${builtins.concatStringsSep");
+    assert_contains(&aggregate, "status=partial");
+    assert_contains(
+        &aggregate,
         "qemuPatchSeries = import ./phase2-qemu-patch-series.nix",
     );
     assert_contains(
@@ -78,7 +88,7 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     assert_contains(&aggregate, "grep -q '^vcpus=2$'");
     assert_contains(
         &aggregate,
-        "grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,stop_at=16384)$'",
+        "grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=16384)$'",
     );
     assert_contains(
         &aggregate,
@@ -230,9 +240,9 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     assert_contains(&aggregate, "qemu_plugin_block_exports_present=true");
     assert_contains(&aggregate, "qemu_plugin_9p_exports_present=true");
     assert_contains(&aggregate, "qemu_plugin_icount_raw");
+    assert_contains(&aggregate, "qemu_plugin_icount_at_tb_entry");
     assert_contains(&aggregate, "qemu_plugin_force_vcpu_exit");
     assert_contains(&aggregate, "qemu_plugin_register_wake_fd");
-    assert_contains(&aggregate, "qemu_plugin_main_loop_wait");
     assert_contains(&aggregate, "qemu_plugin_register_tcg_exec_cb");
     assert_contains(&aggregate, "qemu_plugin_register_vcpu_idle_resume_cb");
     assert_contains(&aggregate, "qemu_plugin_register_sim_shmem_dispatch_cb");
@@ -274,10 +284,19 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
     );
 
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
-    assert_contains(&default_checks, "patchMicrotests = greenBeforeAdvance {");
+    assert_contains(&default_checks, "patchMicrotests = redBeforeAdvance {");
+    assert_contains(&default_checks, "qemuInert = redBeforeAdvance {");
     assert_contains(
         &default_checks,
         "gate = import ./phase2-patch-microtests.nix",
+    );
+    assert_contains(
+        &default_checks,
+        "openTaskIds = [\"T-PKG-4\" \"T-HARN-20\" \"T-PATCH-2\"]",
+    );
+    assert_contains(
+        &default_checks,
+        "openTaskIds = [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
     );
     assert_contains(
         &default_checks,
@@ -343,6 +362,15 @@ pub(super) fn assert_aggregate_and_default() -> Result<(), Box<dyn Error>> {
         &default_checks,
         "patchMicrotests = patchMicrotests.rawGate;",
     );
+
+    let qemu_inert = fs::read_to_string(root.join("tests/crucible/phase2-qemu-inert.nix"))?;
+    assert_contains(&qemu_inert, "taskIds ? []");
+    assert_contains(
+        &qemu_inert,
+        "openTaskIds ? [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
+    );
+    assert_contains(&qemu_inert, "open_tasks=${builtins.concatStringsSep");
+    assert_contains(&qemu_inert, "status=partial");
 
     Ok(())
 }

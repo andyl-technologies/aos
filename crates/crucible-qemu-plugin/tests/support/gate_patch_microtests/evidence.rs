@@ -192,13 +192,15 @@ pub(super) fn assert_per_patch_evidence() -> Result<(), Box<dyn Error>> {
             assert_contains(&nix_source, "patch=${patchName}");
             assert_contains(&nix_source, patch);
             assert_contains(&nix_source, "sim_correctness_fixture_exercised=true");
-            assert_contains(&nix_source, "sim_poll_immediate_repoll_microtest=true");
-            assert_contains(&nix_source, "sim_poll_immediate_requires_time_control=true");
+            assert_contains(&nix_source, "sim_block_wake_coqueue_microtest=true");
+            assert_contains(&nix_source, "sim_block_wake_failure_fails_waiter=true");
+            assert_contains(&nix_source, "sim_block_main_loop_reentry_absent=true");
+            assert_contains(&nix_source, "sim_idle_callbacks_missed_wake_microtest=true");
             assert_contains(
                 &nix_source,
-                "sim_poll_immediate_drain_bql_guard_validated=true",
+                "sim_idle_advance_completion_barrier_microtest=true",
             );
-            assert_contains(&nix_source, "sim_idle_callbacks_missed_wake_microtest=true");
+            assert_contains(&nix_source, "sim_idle_advance_rearms_while_halted=true");
             assert_contains(&nix_source, "sim_shmem_dispatch_ceiling_microtest=true");
             assert_contains(&nix_source, "sim_shmem_budget_clamp_microtest=true");
         } else if nix_path == "tests/crucible/phase1-qemu-sim-batch-tcg-exec.nix" {

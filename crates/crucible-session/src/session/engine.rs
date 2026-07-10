@@ -1,3 +1,7 @@
+//! Actor-owned engine state, lifecycle transitions, and command execution.
+
+use super::*;
+
 /// Host-side engine state machine owned by the session actor.
 ///
 /// The engine owns the source-of-truth [`Configuration`], a rebuildable runtime
@@ -9,30 +13,30 @@
 /// [`SessionActor`], the actor's private field ownership prevents external
 /// mutable access; live session interaction goes through the actor mailbox.
 pub struct Engine<L> {
-    configuration: Configuration,
-    runtime: Option<RuntimeState>,
-    runtime_instantiated: bool,
-    state: EngineState,
-    terminal_savepoint: Option<Checkpoint>,
-    active_step: Option<ActiveStep>,
-    graph: TemporalGraph,
-    breakpoints: BreakpointSet,
-    quantum_loop: L,
-    frontier: VirtualTime,
-    event_log_len: usize,
-    quanta: u64,
-    pending_control: Vec<ControlOperation>,
-    pending_event_log_entries: Vec<SchedulerEventLogEntry>,
-    debug_attach: Option<DebugAttachReport>,
-    debug_branch_required: bool,
-    next_control_sequence: u64,
-    boundary_control_log: Vec<SessionControlLogEntry>,
-    next_boundary_control_sequence: u64,
-    next_boundary_control_batch: u64,
-    scheduler_quiescence: Option<SchedulerQuiescence>,
-    breakpoint_firings: Vec<BreakpointFiring>,
-    next_breakpoint_firing_sequence: u64,
-    white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
+    pub(super) configuration: Configuration,
+    pub(super) runtime: Option<RuntimeState>,
+    pub(super) runtime_instantiated: bool,
+    pub(super) state: EngineState,
+    pub(super) terminal_savepoint: Option<Checkpoint>,
+    pub(super) active_step: Option<ActiveStep>,
+    pub(super) graph: TemporalGraph,
+    pub(super) breakpoints: BreakpointSet,
+    pub(super) quantum_loop: L,
+    pub(super) frontier: VirtualTime,
+    pub(super) event_log_len: usize,
+    pub(super) quanta: u64,
+    pub(super) pending_control: Vec<ControlOperation>,
+    pub(super) pending_event_log_entries: Vec<SchedulerEventLogEntry>,
+    pub(super) debug_attach: Option<DebugAttachReport>,
+    pub(super) debug_branch_required: bool,
+    pub(super) next_control_sequence: u64,
+    pub(super) boundary_control_log: Vec<SessionControlLogEntry>,
+    pub(super) next_boundary_control_sequence: u64,
+    pub(super) next_boundary_control_batch: u64,
+    pub(super) scheduler_quiescence: Option<SchedulerQuiescence>,
+    pub(super) breakpoint_firings: Vec<BreakpointFiring>,
+    pub(super) next_breakpoint_firing_sequence: u64,
+    pub(super) white_box_policies: BTreeMap<NodeId, WhiteBoxPolicy>,
 }
 
 impl<L> Engine<L> {
@@ -364,7 +368,7 @@ impl<L> Engine<L> {
         self.build_checkpoint_child(parent_state, checkpoint.id, child_quantum_loop)
     }
 
-    fn build_checkpoint_child<C>(
+    pub(super) fn build_checkpoint_child<C>(
         &mut self,
         parent_state: EngineState,
         checkpoint: ContentHash,
@@ -428,7 +432,7 @@ impl<L> Engine<L> {
         self.quantum_loop
     }
 
-    fn invalid_transition(&self, command: SessionCommand) -> SessionError {
+    pub(super) fn invalid_transition(&self, command: SessionCommand) -> SessionError {
         SessionError::InvalidTransition {
             state: Box::new(self.state.clone()),
             command: Box::new(command),
@@ -618,7 +622,7 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    fn record_boundary_control(
+    pub(super) fn record_boundary_control(
         &mut self,
         command: &SessionCommand,
         scheduler_control: Option<ControlOperationKind>,
@@ -693,7 +697,7 @@ impl<L> Engine<L> {
         self.next_boundary_control_batch
     }
 
-    fn evaluate_breakpoints(
+    pub(super) fn evaluate_breakpoints(
         &mut self,
         event_log_entries: &[SchedulerEventLogEntry],
         emitted_event_log_entries: usize,
@@ -892,7 +896,7 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    fn pending_control_len(&self) -> usize {
+    pub(super) fn pending_control_len(&self) -> usize {
         self.pending_control.len()
     }
 
@@ -903,11 +907,14 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    fn drain_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
+    pub(super) fn drain_event_log_entries(&mut self) -> Vec<SchedulerEventLogEntry> {
         std::mem::take(&mut self.pending_event_log_entries)
     }
 
-    fn resolve_fork_checkpoint(&mut self, from: CheckpointRef) -> Result<Checkpoint, SessionError> {
+    pub(super) fn resolve_fork_checkpoint(
+        &mut self,
+        from: CheckpointRef,
+    ) -> Result<Checkpoint, SessionError> {
         match from {
             CheckpointRef::Current => Ok(self.graph.save_checkpoint(&self.configuration)?),
             CheckpointRef::Checkpoint(checkpoint) => self
@@ -1595,7 +1602,7 @@ impl<L: QuantumLoop> Engine<L> {
         Ok(outcome)
     }
 
-    fn stop_on_continuous_quiescence(&mut self) -> Result<(), SessionError> {
+    pub(super) fn stop_on_continuous_quiescence(&mut self) -> Result<(), SessionError> {
         if matches!(self.state, EngineState::Running)
             && self.active_step.is_none()
             && self.breakpoints.is_empty()

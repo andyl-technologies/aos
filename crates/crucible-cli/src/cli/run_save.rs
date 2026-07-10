@@ -1,125 +1,127 @@
-// Local run/save workflows and remote resume control setup.
+//! Local run/save workflows and remote resume control setup.
+
+use super::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RunWorkflowReport {
-    status: BackendCommandStatus,
-    created_state: String,
-    final_state: String,
-    outcome: Option<OutcomeKind>,
-    terminal_savepoint: Option<crucible::ContentHash>,
-    final_frontier_ticks: u64,
-    final_quanta: u64,
-    budget_timed_out: bool,
-    state_updates: Vec<String>,
-    streamed_events: Vec<String>,
-    streamed_event_frames: Vec<Vec<u8>>,
-    execution_fingerprints: Vec<crucible::FingerprintSample>,
-    acknowledged_commands: Vec<SessionCommandKind>,
-    watch_statuses: Vec<String>,
+pub(super) struct RunWorkflowReport {
+    pub(super) status: BackendCommandStatus,
+    pub(super) created_state: String,
+    pub(super) final_state: String,
+    pub(super) outcome: Option<OutcomeKind>,
+    pub(super) terminal_savepoint: Option<crucible::ContentHash>,
+    pub(super) final_frontier_ticks: u64,
+    pub(super) final_quanta: u64,
+    pub(super) budget_timed_out: bool,
+    pub(super) state_updates: Vec<String>,
+    pub(super) streamed_events: Vec<String>,
+    pub(super) streamed_event_frames: Vec<Vec<u8>>,
+    pub(super) execution_fingerprints: Vec<crucible::FingerprintSample>,
+    pub(super) acknowledged_commands: Vec<SessionCommandKind>,
+    pub(super) watch_statuses: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SaveWorkflowReport {
-    run: RunWorkflowReport,
-    oracle: SavepointOracleProof,
+pub(super) struct SaveWorkflowReport {
+    pub(super) run: RunWorkflowReport,
+    pub(super) oracle: SavepointOracleProof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ResumeWorkflowReport {
-    run: RunWorkflowReport,
-    source_checkpoint: crucible::ContentHash,
-    resumed_configuration: crucible::ContentHash,
-    terminal_configuration: CliModelConfiguration,
-    scenario_label: String,
-    terminal_oracle: SavepointOracleProof,
+pub(super) struct ResumeWorkflowReport {
+    pub(super) run: RunWorkflowReport,
+    pub(super) source_checkpoint: crucible::ContentHash,
+    pub(super) resumed_configuration: crucible::ContentHash,
+    pub(super) terminal_configuration: CliModelConfiguration,
+    pub(super) scenario_label: String,
+    pub(super) terminal_oracle: SavepointOracleProof,
 }
 
-type CliModelConfiguration = crucible::Configuration;
-type CliModelScenarioDef = crucible::ScenarioDef;
+pub(super) type CliModelConfiguration = crucible::Configuration;
+pub(super) type CliModelScenarioDef = crucible::ScenarioDef;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ForkWorkflowReport {
-    run: RunWorkflowReport,
-    source_checkpoint: crucible::ContentHash,
-    branch_checkpoint: crucible::ContentHash,
-    branch_configuration: crucible::ContentHash,
-    terminal_configuration: crucible::Configuration,
-    scenario_form: crucible::ScenarioDefForm,
-    scenario_label: String,
-    label: String,
-    terminal_oracle: SavepointOracleProof,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ForkReproductionArtifactReport {
-    path: PathBuf,
-    digest: String,
-    seed: u64,
-    fork_seed: Option<u64>,
-    model_artifact: crucible::ContentHash,
-    replay_state: crucible::ContentHash,
-    schedule: crucible::ContentHash,
-    finding_fingerprint: crucible::ContentHash,
+pub(super) struct ForkWorkflowReport {
+    pub(super) run: RunWorkflowReport,
+    pub(super) source_checkpoint: crucible::ContentHash,
+    pub(super) branch_checkpoint: crucible::ContentHash,
+    pub(super) branch_configuration: crucible::ContentHash,
+    pub(super) terminal_configuration: crucible::Configuration,
+    pub(super) scenario_form: crucible::ScenarioDefForm,
+    pub(super) scenario_label: String,
+    pub(super) label: String,
+    pub(super) terminal_oracle: SavepointOracleProof,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ResumeHandleEvidence {
-    scenario_form: crucible::ScenarioDefForm,
-    scenario: crucible::ScenarioDef,
-    schedule: Schedule,
-    configuration: crucible::Configuration,
-    checkpoint: Checkpoint,
+pub(super) struct ForkReproductionArtifactReport {
+    pub(super) path: PathBuf,
+    pub(super) digest: String,
+    pub(super) seed: u64,
+    pub(super) fork_seed: Option<u64>,
+    pub(super) model_artifact: crucible::ContentHash,
+    pub(super) replay_state: crucible::ContentHash,
+    pub(super) schedule: crucible::ContentHash,
+    pub(super) finding_fingerprint: crucible::ContentHash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct VerifyWorkflowReport {
-    witnesses: Vec<VerifyRunWitness>,
-    divergence: Option<VerifyDivergenceReport>,
+pub(super) struct ResumeHandleEvidence {
+    pub(super) scenario_form: crucible::ScenarioDefForm,
+    pub(super) scenario: crucible::ScenarioDef,
+    pub(super) schedule: Schedule,
+    pub(super) configuration: crucible::Configuration,
+    pub(super) checkpoint: Checkpoint,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct VerifyRunWitness {
-    reduction: VerifyReductionPlan,
-    canonical_log: Vec<CanonicalLogEntry>,
-    canonical_log_bytes: Vec<u8>,
-    fingerprint_samples: Vec<VerifyFingerprintSample>,
-    fingerprint_stream: Vec<u8>,
-    state_dump: String,
-    artifact: Option<Vec<u8>>,
+pub(super) struct VerifyWorkflowReport {
+    pub(super) witnesses: Vec<VerifyRunWitness>,
+    pub(super) divergence: Option<VerifyDivergenceReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct VerifyFingerprintSample {
-    index: u64,
-    instruction: u64,
-    node: String,
-    digest: String,
+pub(super) struct VerifyRunWitness {
+    pub(super) reduction: VerifyReductionPlan,
+    pub(super) canonical_log: Vec<CanonicalLogEntry>,
+    pub(super) canonical_log_bytes: Vec<u8>,
+    pub(super) fingerprint_samples: Vec<VerifyFingerprintSample>,
+    pub(super) fingerprint_stream: Vec<u8>,
+    pub(super) state_dump: String,
+    pub(super) artifact: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct VerifyDivergenceReport {
-    left: usize,
-    right: usize,
-    mismatch: VerifyMismatchKind,
-    first_different_decision: Option<usize>,
-    first_different_fingerprint_sample: Option<usize>,
-    first_different_instruction: u64,
-    node: Option<String>,
-    first_different_byte: usize,
-    left_state_digest: String,
-    right_state_digest: String,
-    left_state_dump: String,
-    right_state_dump: String,
+pub(super) struct VerifyFingerprintSample {
+    pub(super) index: u64,
+    pub(super) instruction: u64,
+    pub(super) node: String,
+    pub(super) digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct VerifyDivergenceReport {
+    pub(super) left: usize,
+    pub(super) right: usize,
+    pub(super) mismatch: VerifyMismatchKind,
+    pub(super) first_different_decision: Option<usize>,
+    pub(super) first_different_fingerprint_sample: Option<usize>,
+    pub(super) first_different_instruction: u64,
+    pub(super) node: Option<String>,
+    pub(super) first_different_byte: usize,
+    pub(super) left_state_digest: String,
+    pub(super) right_state_digest: String,
+    pub(super) left_state_dump: String,
+    pub(super) right_state_dump: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum VerifyMismatchKind {
+pub(super) enum VerifyMismatchKind {
     CanonicalLog,
     FingerprintStream,
     CanonicalLogAndFingerprintStream,
 }
 
 impl VerifyMismatchKind {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::CanonicalLog => "canonical-log",
             Self::FingerprintStream => "fingerprint-stream",
@@ -129,17 +131,17 @@ impl VerifyMismatchKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RunObservation {
-    final_state: String,
-    outcome: Option<OutcomeKind>,
-    terminal_savepoint: Option<crucible::ContentHash>,
-    frontier_ticks: u64,
-    quanta: u64,
-    budget_timed_out: bool,
-    watch_statuses: Vec<String>,
+pub(super) struct RunObservation {
+    pub(super) final_state: String,
+    pub(super) outcome: Option<OutcomeKind>,
+    pub(super) terminal_savepoint: Option<crucible::ContentHash>,
+    pub(super) frontier_ticks: u64,
+    pub(super) quanta: u64,
+    pub(super) budget_timed_out: bool,
+    pub(super) watch_statuses: Vec<String>,
 }
 
-fn run_local_double_workflow(
+pub(super) fn run_local_double_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -163,7 +165,7 @@ fn run_local_double_workflow(
     finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
 }
 
-fn run_local_double_save_workflow(
+pub(super) fn run_local_double_save_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -173,22 +175,22 @@ fn run_local_double_save_workflow(
 }
 
 #[derive(Clone, Debug)]
-struct SaveRecordingSources {
-    assertion_evaluator: crucible::HostAssertionEvaluator,
-    assertion_oracle: crucible::BlackBoxHostOracle,
-    emitted_assertions: BTreeSet<crucible::AssertionId>,
-    guest_markers: Vec<SaveGuestMarkerSource>,
-    emitted_guest_markers: Vec<SaveGuestMarkerSource>,
+pub(super) struct SaveRecordingSources {
+    pub(super) assertion_evaluator: crucible::HostAssertionEvaluator,
+    pub(super) assertion_oracle: crucible::BlackBoxHostOracle,
+    pub(super) emitted_assertions: BTreeSet<crucible::AssertionId>,
+    pub(super) guest_markers: Vec<SaveGuestMarkerSource>,
+    pub(super) emitted_guest_markers: Vec<SaveGuestMarkerSource>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SaveGuestMarkerSource {
-    node: crucible::NodeId,
-    marker: crucible::MarkerId,
+pub(super) struct SaveGuestMarkerSource {
+    pub(super) node: crucible::NodeId,
+    pub(super) marker: crucible::MarkerId,
 }
 
 impl SaveRecordingSources {
-    fn from_scenario_form(scenario_form: &crucible::ScenarioDefForm) -> Self {
+    pub(super) fn from_scenario_form(scenario_form: &crucible::ScenarioDefForm) -> Self {
         Self {
             assertion_evaluator: crucible::HostAssertionEvaluator::new(scenario_form.properties())
                 .with_world_white_box_policies(scenario_form.world()),
@@ -200,7 +202,7 @@ impl SaveRecordingSources {
     }
 }
 
-fn save_guest_marker_sources(
+pub(super) fn save_guest_marker_sources(
     scenario_form: &crucible::ScenarioDefForm,
 ) -> Vec<SaveGuestMarkerSource> {
     scenario_form
@@ -223,15 +225,15 @@ fn save_guest_marker_sources(
 }
 
 #[derive(Clone, Debug)]
-struct SaveRecordingLifecycleLoop {
-    sources: SaveRecordingSources,
-    quanta: u64,
-    event_log_events: u64,
-    retained_event_log: Vec<crucible::SchedulerEventLogEntry>,
+pub(super) struct SaveRecordingLifecycleLoop {
+    pub(super) sources: SaveRecordingSources,
+    pub(super) quanta: u64,
+    pub(super) event_log_events: u64,
+    pub(super) retained_event_log: Vec<crucible::SchedulerEventLogEntry>,
 }
 
 impl SaveRecordingLifecycleLoop {
-    fn new(sources: SaveRecordingSources) -> Self {
+    pub(super) fn new(sources: SaveRecordingSources) -> Self {
         Self {
             sources,
             quanta: 0,
@@ -398,17 +400,17 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ResumeRecordingLifecycleLoop {
-    frontier: u64,
-    fixture: ResumeRecordingFixture,
-    fixture_emitted: bool,
-    event_log_events: u64,
-    post_fork_seed: Option<crucible::Seed>,
-    post_fork_draws: u64,
+pub(super) struct ResumeRecordingLifecycleLoop {
+    pub(super) frontier: u64,
+    pub(super) fixture: ResumeRecordingFixture,
+    pub(super) fixture_emitted: bool,
+    pub(super) event_log_events: u64,
+    pub(super) post_fork_seed: Option<crucible::Seed>,
+    pub(super) post_fork_draws: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-enum ResumeRecordingFixture {
+pub(super) enum ResumeRecordingFixture {
     #[default]
     None,
     PropertyViolation {
@@ -417,7 +419,7 @@ enum ResumeRecordingFixture {
 }
 
 impl ResumeRecordingLifecycleLoop {
-    fn new(frontier: VirtualTime) -> Self {
+    pub(super) fn new(frontier: VirtualTime) -> Self {
         Self {
             frontier: frontier.ticks,
             fixture: ResumeRecordingFixture::None,
@@ -428,14 +430,17 @@ impl ResumeRecordingLifecycleLoop {
         }
     }
 
-    fn with_property_violation(frontier: VirtualTime, assertion: crucible::AssertionId) -> Self {
+    pub(super) fn with_property_violation(
+        frontier: VirtualTime,
+        assertion: crucible::AssertionId,
+    ) -> Self {
         Self {
             fixture: ResumeRecordingFixture::PropertyViolation { assertion },
             ..Self::new(frontier)
         }
     }
 
-    fn with_post_fork_seed(mut self, seed: crucible::Seed) -> Self {
+    pub(super) fn with_post_fork_seed(mut self, seed: crucible::Seed) -> Self {
         self.post_fork_seed = Some(seed);
         self
     }
@@ -534,7 +539,7 @@ impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
     }
 }
 
-fn run_local_double_verify_workflow(
+pub(super) fn run_local_double_verify_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -564,7 +569,7 @@ fn run_local_double_verify_workflow(
     )
 }
 
-fn run_local_qemu_verify_workflow(
+pub(super) fn run_local_qemu_verify_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -596,7 +601,7 @@ fn run_local_qemu_verify_workflow(
     Ok(outcome)
 }
 
-fn run_local_qemu_save_workflow(
+pub(super) fn run_local_qemu_save_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -608,7 +613,7 @@ fn run_local_qemu_save_workflow(
     Ok(outcome)
 }
 
-fn run_local_save_recording_workflow(
+pub(super) fn run_local_save_recording_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -636,7 +641,7 @@ fn run_local_save_recording_workflow(
     finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
 }
 
-fn run_local_double_resume_workflow(
+pub(super) fn run_local_double_resume_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -659,7 +664,7 @@ fn run_local_double_resume_workflow(
     )
 }
 
-fn run_local_qemu_resume_workflow(
+pub(super) fn run_local_qemu_resume_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -685,7 +690,7 @@ fn run_local_qemu_resume_workflow(
     Ok(outcome)
 }
 
-fn realize_local_qemu_resume(
+pub(super) fn realize_local_qemu_resume(
     evidence: &ResumeHandleEvidence,
     terminal_configuration: &CliModelConfiguration,
 ) -> Result<ModelCheckpointVmResumeRealizationProof, CliError> {
@@ -702,7 +707,7 @@ fn realize_local_qemu_resume(
     })
 }
 
-fn run_local_resume_workflow_report_with_driver(
+pub(super) fn run_local_resume_workflow_report_with_driver(
     resume_plan: &ResumeInvocationPlan,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
 ) -> Result<(ResumeHandleEvidence, ResumeWorkflowReport), CliError> {
@@ -719,7 +724,7 @@ fn run_local_resume_workflow_report_with_driver(
 }
 
 #[cfg(test)]
-fn run_local_double_resume_workflow_with_driver(
+pub(super) fn run_local_double_resume_workflow_with_driver(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -738,7 +743,7 @@ fn run_local_double_resume_workflow_with_driver(
 }
 
 #[cfg(test)]
-fn run_local_double_resume_workflow_with_interactive_commands(
+pub(super) fn run_local_double_resume_workflow_with_interactive_commands(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -754,7 +759,7 @@ fn run_local_double_resume_workflow_with_interactive_commands(
     )
 }
 
-async fn run_remote_control_client_resume_workflow_async<C>(
+pub(super) async fn run_remote_control_client_resume_workflow_async<C>(
     client: &C,
     resume_plan: &ResumeInvocationPlan,
 ) -> Result<ResumeWorkflowReport, CliError>
@@ -775,7 +780,7 @@ where
     .await
 }
 
-async fn run_remote_control_client_resume_workflow_with_driver_async<C>(
+pub(super) async fn run_remote_control_client_resume_workflow_with_driver_async<C>(
     client: &C,
     resume_plan: &ResumeInvocationPlan,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
@@ -1094,7 +1099,7 @@ where
     })
 }
 
-async fn destroy_remote_resume_session_best_effort<C>(client: &C, session: SessionRef)
+pub(super) async fn destroy_remote_resume_session_best_effort<C>(client: &C, session: SessionRef)
 where
     C: ControlClient + Sync,
 {
@@ -1103,7 +1108,7 @@ where
         .await;
 }
 
-fn remote_resume_observed_outcome(
+pub(super) fn remote_resume_observed_outcome(
     snapshot: &crucible_session::EngineSnapshot,
     property_violation_reached: bool,
 ) -> Option<OutcomeKind> {
@@ -1116,7 +1121,7 @@ fn remote_resume_observed_outcome(
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-async fn drive_remote_resume_interactive_commands<C>(
+pub(super) async fn drive_remote_resume_interactive_commands<C>(
     client: &C,
     session: SessionRef,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
@@ -1169,7 +1174,7 @@ where
     }
 }
 
-async fn drive_remote_resume_interactive_stdin_commands<C>(
+pub(super) async fn drive_remote_resume_interactive_stdin_commands<C>(
     client: &C,
     session: SessionRef,
     command_id: &mut u64,
@@ -1199,7 +1204,7 @@ where
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-async fn drive_remote_resume_interactive_command_reader<R, W, C>(
+pub(super) async fn drive_remote_resume_interactive_command_reader<R, W, C>(
     client: &C,
     session: SessionRef,
     command_id: &mut u64,
@@ -1255,7 +1260,7 @@ where
     Ok(())
 }
 
-async fn acknowledge_remote_resume_command_kind<C>(
+pub(super) async fn acknowledge_remote_resume_command_kind<C>(
     client: &C,
     session: SessionRef,
     command_id: &mut u64,
@@ -1280,7 +1285,7 @@ where
     observe_remote_resume_interactive_boundary(client, session, command, &before).await
 }
 
-async fn observe_remote_resume_interactive_boundary<C>(
+pub(super) async fn observe_remote_resume_interactive_boundary<C>(
     client: &C,
     session: SessionRef,
     command: SessionCommandKind,
@@ -1319,7 +1324,7 @@ where
     }
 }
 
-async fn current_remote_resume_summary<C>(
+pub(super) async fn current_remote_resume_summary<C>(
     client: &C,
     session: SessionRef,
 ) -> Result<crucible_api::SessionSummary, CliError>

@@ -461,7 +461,8 @@ fn fresh_ninep(seed: Seed, device_id: &DeviceId) -> DeviceSchedulingSubNode {
             content: b"alpha".to_vec(),
         },
     );
-    let tree = FsTree::new(Node::Directory { children: root });
+    let tree = FsTree::try_new(Node::Directory { children: root })
+        .expect("test 9p tree components are valid");
     let device = NinepDevice::new(core, tree, NinepLatency::default());
     DeviceSchedulingSubNode::new_ninep(
         sub_node_id("ninep-sub", SchedulingNodeKind::NineP),

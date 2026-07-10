@@ -1,10 +1,15 @@
-// Scheduler topology transitions, advancement planning, authoritative quantum drive, and control drain.
+//! Scheduler topology transitions, advancement planning, authoritative quantum drive, and control drain.
+
+use super::*;
 impl SingleScheduler {
-    fn queue_control(&mut self, operation: ControlOperation) {
+    pub(super) fn queue_control(&mut self, operation: ControlOperation) {
         self.accept_control_at_boundary(operation);
     }
 
-    fn validate_max_host_workers(&self, max_host_workers: usize) -> Result<(), SchedulerError> {
+    pub(super) fn validate_max_host_workers(
+        &self,
+        max_host_workers: usize,
+    ) -> Result<(), SchedulerError> {
         if max_host_workers == 0 {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("concurrent scheduler max_host_workers must be positive"),
@@ -13,7 +18,7 @@ impl SingleScheduler {
         Ok(())
     }
 
-    fn vm_node_index(&self, node: &NodeId) -> Result<usize, SchedulerError> {
+    pub(super) fn vm_node_index(&self, node: &NodeId) -> Result<usize, SchedulerError> {
         self.nodes
             .iter()
             .position(|candidate| {
@@ -24,11 +29,14 @@ impl SingleScheduler {
             })
     }
 
-    fn node_current_time(&self, node: &RuntimeSchedulerNode) -> Result<SimInstant, SchedulerError> {
+    pub(super) fn node_current_time(
+        &self,
+        node: &RuntimeSchedulerNode,
+    ) -> Result<SimInstant, SchedulerError> {
         self.node_time_for_counter(node, node.counter)
     }
 
-    fn node_time_for_counter(
+    pub(super) fn node_time_for_counter(
         &self,
         node: &RuntimeSchedulerNode,
         counter: NodeCounter,
@@ -44,7 +52,7 @@ impl SingleScheduler {
         }
     }
 
-    fn node_counter_for_time_ceil(
+    pub(super) fn node_counter_for_time_ceil(
         &self,
         node: &RuntimeSchedulerNode,
         target_time: SimInstant,
@@ -63,7 +71,7 @@ impl SingleScheduler {
         }
     }
 
-    fn node_timeline_key(
+    pub(super) fn node_timeline_key(
         &self,
         node: &RuntimeSchedulerNode,
         sequence: u64,
@@ -75,7 +83,7 @@ impl SingleScheduler {
         })
     }
 
-    fn vm_delivery_time_for_icount(
+    pub(super) fn vm_delivery_time_for_icount(
         &self,
         node: &NodeId,
         icount: Icount,
@@ -84,7 +92,7 @@ impl SingleScheduler {
         self.node_time_for_counter(&self.nodes[index], NodeCounter::from_icount(icount))
     }
 
-    fn project_device_decisions_for_vm_time(
+    pub(super) fn project_device_decisions_for_vm_time(
         &self,
         node: &NodeId,
         decisions: Vec<Decision>,
@@ -109,7 +117,10 @@ impl SingleScheduler {
             .collect()
     }
 
-    fn effective_node_activity(&self, node: &RuntimeSchedulerNode) -> SchedulerNodeActivity {
+    pub(super) fn effective_node_activity(
+        &self,
+        node: &RuntimeSchedulerNode,
+    ) -> SchedulerNodeActivity {
         if self.node_execution_stopped(node) {
             SchedulerNodeActivity::Halted
         } else if node.activity == SchedulerNodeActivity::Idle
@@ -124,7 +135,7 @@ impl SingleScheduler {
         }
     }
 
-    fn is_node_down(&self, node: &NodeId) -> bool {
+    pub(super) fn is_node_down(&self, node: &NodeId) -> bool {
         self.nodes.iter().any(|runtime| {
             runtime.id.node == *node
                 && runtime.id.kind == SchedulingNodeKind::Vm
@@ -132,11 +143,14 @@ impl SingleScheduler {
         })
     }
 
-    fn node_execution_stopped(&self, node: &RuntimeSchedulerNode) -> bool {
+    pub(super) fn node_execution_stopped(&self, node: &RuntimeSchedulerNode) -> bool {
         node.crash.is_some() || node.stopped_crash.is_some()
     }
 
-    fn incident_effective_edges(&self, node: &SchedulerNodeId) -> Vec<SchedulerLookaheadEdge> {
+    pub(super) fn incident_effective_edges(
+        &self,
+        node: &SchedulerNodeId,
+    ) -> Vec<SchedulerLookaheadEdge> {
         self.effective_topology
             .edges()
             .iter()
@@ -145,7 +159,7 @@ impl SingleScheduler {
             .collect()
     }
 
-    fn discard_pending_events_for_node(
+    pub(super) fn discard_pending_events_for_node(
         &mut self,
         node: &SchedulerNodeId,
     ) -> Vec<SchedulerDiscardedEvent> {
@@ -167,7 +181,7 @@ impl SingleScheduler {
         discarded
     }
 
-    fn discard_device_completions_for_node(
+    pub(super) fn discard_device_completions_for_node(
         &mut self,
         node: &NodeId,
     ) -> Vec<SchedulerDiscardedIoCompletion> {
@@ -190,7 +204,10 @@ impl SingleScheduler {
         discarded
     }
 
-    fn suppress_down_edges(&mut self, graph: SchedulerLookaheadGraph) -> SchedulerLookaheadGraph {
+    pub(super) fn suppress_down_edges(
+        &mut self,
+        graph: SchedulerLookaheadGraph,
+    ) -> SchedulerLookaheadGraph {
         let down = self
             .nodes
             .iter()
@@ -211,7 +228,7 @@ impl SingleScheduler {
         SchedulerLookaheadGraph::from_edges(live_edges)
     }
 
-    fn replace_suppressed_down_edges(&mut self, edges: &[SchedulerLookaheadEdge]) {
+    pub(super) fn replace_suppressed_down_edges(&mut self, edges: &[SchedulerLookaheadEdge]) {
         for node in &mut self.nodes {
             if node.crash.is_none() && node.stopped_crash.is_none() {
                 continue;
@@ -231,7 +248,7 @@ impl SingleScheduler {
         }
     }
 
-    fn remove_suppressed_down_edges(
+    pub(super) fn remove_suppressed_down_edges(
         &mut self,
         sequence: u64,
         endpoints: &[SchedulerLookaheadEdgeEndpoint],
@@ -255,7 +272,10 @@ impl SingleScheduler {
         }
     }
 
-    fn update_suppressed_down_edges(&mut self, updated_edges: &[SchedulerLookaheadEdge]) {
+    pub(super) fn update_suppressed_down_edges(
+        &mut self,
+        updated_edges: &[SchedulerLookaheadEdge],
+    ) {
         let updates = updated_edges
             .iter()
             .map(|edge| (edge.endpoint(), edge.clone()))
@@ -270,7 +290,10 @@ impl SingleScheduler {
         }
     }
 
-    fn suppressed_down_edge_exists(&self, endpoint: &SchedulerLookaheadEdgeEndpoint) -> bool {
+    pub(super) fn suppressed_down_edge_exists(
+        &self,
+        endpoint: &SchedulerLookaheadEdgeEndpoint,
+    ) -> bool {
         let has_endpoint = |edges: &[SchedulerLookaheadEdge]| {
             edges.iter().any(|edge| edge.endpoint() == *endpoint)
         };
@@ -285,7 +308,7 @@ impl SingleScheduler {
         })
     }
 
-    fn remember_suppressed_down_edge(&mut self, edge: &SchedulerLookaheadEdge) {
+    pub(super) fn remember_suppressed_down_edge(&mut self, edge: &SchedulerLookaheadEdge) {
         for node in &mut self.nodes {
             if node.id != edge.from && node.id != edge.to {
                 continue;
@@ -299,7 +322,7 @@ impl SingleScheduler {
         }
     }
 
-    fn vcpu_quiescence_blockers(
+    pub(super) fn vcpu_quiescence_blockers(
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Vec<SchedulerQuiescenceBlocker> {
@@ -479,7 +502,7 @@ impl SingleScheduler {
         self.apply_topology_changes_at_boundary()
     }
 
-    fn apply_topology_changes_at_boundary(&mut self) -> Result<bool, SchedulerError> {
+    pub(super) fn apply_topology_changes_at_boundary(&mut self) -> Result<bool, SchedulerError> {
         if self.topology_changes.is_empty() {
             return Ok(false);
         }
@@ -575,7 +598,7 @@ impl SingleScheduler {
         Ok(applied)
     }
 
-    fn record_rendezvous(
+    pub(super) fn record_rendezvous(
         &mut self,
         purpose: SchedulerRendezvousPurpose,
         virtual_time: SimInstant,
@@ -617,7 +640,7 @@ impl SingleScheduler {
         Ok(())
     }
 
-    fn actor_state_snapshot(&self) -> SchedulerActorStateSnapshot {
+    pub(super) fn actor_state_snapshot(&self) -> SchedulerActorStateSnapshot {
         SchedulerActorStateSnapshot {
             configuration: self.configuration.clone(),
             node_counters: self
@@ -634,11 +657,11 @@ impl SingleScheduler {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
-    fn reached_time_limit(&self) -> Result<bool, SchedulerError> {
+    pub(super) fn reached_time_limit(&self) -> Result<bool, SchedulerError> {
         let mut saw_time_limited_state = false;
 
         for node in &self.nodes {
@@ -659,15 +682,17 @@ impl SingleScheduler {
         Ok(saw_time_limited_state)
     }
 
-    fn exhausted_quantum_budget(&self) -> bool {
+    pub(super) fn exhausted_quantum_budget(&self) -> bool {
         self.quanta >= self.quantum_budget
     }
 
-    fn pick_global_minimum_horizon_node(&self) -> Result<Option<AdvanceCandidate>, SchedulerError> {
+    pub(super) fn pick_global_minimum_horizon_node(
+        &self,
+    ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
         Ok(self.advance_candidates()?.into_iter().next())
     }
 
-    fn advance_candidates(&self) -> Result<Vec<AdvanceCandidate>, SchedulerError> {
+    pub(super) fn advance_candidates(&self) -> Result<Vec<AdvanceCandidate>, SchedulerError> {
         let mut candidates = Vec::new();
         let rendezvous_cap = self.shared_rendezvous_cap()?;
         let topology_activation_cap = self.pending_topology_activation_cap()?;
@@ -691,7 +716,7 @@ impl SingleScheduler {
         Ok(candidates)
     }
 
-    fn concurrent_run_set_from_candidates(
+    pub(super) fn concurrent_run_set_from_candidates(
         &self,
         max_host_workers: usize,
         candidates: &[AdvanceCandidate],
@@ -730,7 +755,7 @@ impl SingleScheduler {
         })
     }
 
-    fn advance_plan_draft(
+    pub(super) fn advance_plan_draft(
         &self,
         candidate: &AdvanceCandidate,
     ) -> Result<AdvancePlanDraft, SchedulerError> {
@@ -838,7 +863,7 @@ impl SingleScheduler {
         })
     }
 
-    fn advance_candidate(
+    pub(super) fn advance_candidate(
         &self,
         index: usize,
         node: &RuntimeSchedulerNode,
@@ -870,7 +895,7 @@ impl SingleScheduler {
         }))
     }
 
-    fn effective_horizon(
+    pub(super) fn effective_horizon(
         &self,
         node: &RuntimeSchedulerNode,
         current_time: SimInstant,
@@ -901,7 +926,7 @@ impl SingleScheduler {
         }
     }
 
-    fn idle_advance_candidate(
+    pub(super) fn idle_advance_candidate(
         &self,
         node: &RuntimeSchedulerNode,
         rendezvous_cap: Option<SimInstant>,
@@ -947,7 +972,7 @@ impl SingleScheduler {
         })
     }
 
-    fn effective_clock_for_node(
+    pub(super) fn effective_clock_for_node(
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<SchedulerEffectiveClock, SchedulerError> {
@@ -972,14 +997,14 @@ impl SingleScheduler {
         })
     }
 
-    fn idle_wake_time(
+    pub(super) fn idle_wake_time(
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<Option<SimInstant>, SchedulerError> {
         Ok(self.idle_wake_target(node)?.map(|target| target.wake_time))
     }
 
-    fn effective_exact_local_event(
+    pub(super) fn effective_exact_local_event(
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<ExactLocalEvent, SchedulerError> {
@@ -1016,7 +1041,7 @@ impl SingleScheduler {
         Ok(exact_local_event)
     }
 
-    fn idle_wake_target(
+    pub(super) fn idle_wake_target(
         &self,
         node: &RuntimeSchedulerNode,
     ) -> Result<Option<IdleWakeTarget>, SchedulerError> {
@@ -1042,14 +1067,14 @@ impl SingleScheduler {
         Ok(target)
     }
 
-    fn earliest_vcpu_deadline(&self, node: &RuntimeSchedulerNode) -> Option<SimInstant> {
+    pub(super) fn earliest_vcpu_deadline(&self, node: &RuntimeSchedulerNode) -> Option<SimInstant> {
         node.vcpu_idle_states
             .iter()
             .filter_map(|state| state.next_deadline)
             .min()
     }
 
-    fn advance_window(
+    pub(super) fn advance_window(
         &self,
         node: &RuntimeSchedulerNode,
         current_time: SimInstant,
@@ -1151,7 +1176,7 @@ impl SingleScheduler {
         })
     }
 
-    fn publish_run_ceiling(
+    pub(super) fn publish_run_ceiling(
         &mut self,
         node: SchedulerNodeId,
         current_icount: NodeCounter,
@@ -1180,7 +1205,7 @@ impl SingleScheduler {
         Ok(publication)
     }
 
-    fn planned_run_subdivision(
+    pub(super) fn planned_run_subdivision(
         &self,
         node: &SchedulerNodeId,
         current_icount: NodeCounter,
@@ -1206,7 +1231,7 @@ impl SingleScheduler {
         }))
     }
 
-    fn record_run_subdivision(
+    pub(super) fn record_run_subdivision(
         &mut self,
         planned: PlannedRunSubdivision,
         ceiling: SchedulerRunCeilingPublication,
@@ -1221,7 +1246,7 @@ impl SingleScheduler {
             });
     }
 
-    fn planned_preemptions_for_run(
+    pub(super) fn planned_preemptions_for_run(
         &self,
         node: &SchedulerNodeId,
         current_icount: NodeCounter,
@@ -1287,7 +1312,10 @@ impl SingleScheduler {
         Ok(planned)
     }
 
-    fn commit_preemption_applications(&mut self, planned: Vec<PlannedPreemptionApplication>) {
+    pub(super) fn commit_preemption_applications(
+        &mut self,
+        planned: Vec<PlannedPreemptionApplication>,
+    ) {
         for planned in planned {
             if let Some(index) = self
                 .preemption_requests
@@ -1310,7 +1338,7 @@ impl SingleScheduler {
         }
     }
 
-    fn topology_activation_ready(
+    pub(super) fn topology_activation_ready(
         &self,
         activation_time: SimInstant,
     ) -> Result<bool, SchedulerError> {
@@ -1339,7 +1367,9 @@ impl SingleScheduler {
         Ok(true)
     }
 
-    fn pending_topology_activation_cap(&self) -> Result<Option<SimInstant>, SchedulerError> {
+    pub(super) fn pending_topology_activation_cap(
+        &self,
+    ) -> Result<Option<SimInstant>, SchedulerError> {
         let mut cap = None;
 
         for change in &self.topology_changes {
@@ -1359,7 +1389,7 @@ impl SingleScheduler {
         Ok(cap)
     }
 
-    fn shared_rendezvous_cap(&self) -> Result<Option<SimInstant>, SchedulerError> {
+    pub(super) fn shared_rendezvous_cap(&self) -> Result<Option<SimInstant>, SchedulerError> {
         let fixed_cap = rendezvous_cap_for(
             SimInstant {
                 nanos: self.frontier.ticks,
@@ -1376,7 +1406,7 @@ impl SingleScheduler {
         })
     }
 
-    fn drive_concurrent_authoritative_quantum(
+    pub(super) fn drive_concurrent_authoritative_quantum(
         &mut self,
         request: QuantumRequest,
         max_host_workers: usize,
@@ -1580,7 +1610,7 @@ impl SingleScheduler {
         Ok(SchedulerConcurrentQuantumOutcome { run_set, outcomes })
     }
 
-    fn drive_authoritative_quantum(
+    pub(super) fn drive_authoritative_quantum(
         &mut self,
         request: QuantumRequest,
     ) -> Result<QuantumOutcome, SchedulerError> {
@@ -1739,7 +1769,7 @@ impl SingleScheduler {
         })
     }
 
-    fn emit_quantum_decisions(
+    pub(super) fn emit_quantum_decisions(
         &mut self,
         resolved_events: &[ScheduledEvent],
         preemptions: &[PlannedPreemptionApplication],
@@ -1810,7 +1840,7 @@ impl SingleScheduler {
         scheduler_ordered_decisions(decisions, at, self.timeline.shift(), &preemption_times)
     }
 
-    fn emit_quantum_event_log(
+    pub(super) fn emit_quantum_event_log(
         &mut self,
         resolved_events: &[ScheduledEvent],
         decisions: &[Decision],
@@ -1859,7 +1889,7 @@ impl SingleScheduler {
         self.event_log.append_entries(entries)
     }
 
-    fn step_quantum(&self, decisions: &[Decision]) -> Configuration {
+    pub(super) fn step_quantum(&self, decisions: &[Decision]) -> Configuration {
         let mut configuration = self.configuration.clone();
         for decision in decisions {
             configuration = step(&configuration, decision.clone());
@@ -1867,13 +1897,13 @@ impl SingleScheduler {
         configuration
     }
 
-    fn admit_control_at_boundary(&mut self, control: Vec<ControlOperation>) {
+    pub(super) fn admit_control_at_boundary(&mut self, control: Vec<ControlOperation>) {
         for operation in control {
             self.accept_control_at_boundary(operation);
         }
     }
 
-    fn accept_control_at_boundary(&mut self, operation: ControlOperation) {
+    pub(super) fn accept_control_at_boundary(&mut self, operation: ControlOperation) {
         self.control_admissions.push(SchedulerControlAdmission {
             operation: operation.clone(),
             accepted_after_quanta: self.quanta,
@@ -1882,11 +1912,11 @@ impl SingleScheduler {
         self.control_inbox.push(operation);
     }
 
-    fn yield_to_control_inbox(&mut self) {
+    pub(super) fn yield_to_control_inbox(&mut self) {
         self.boundary_yields = self.boundary_yields.saturating_add(1);
     }
 
-    fn take_control_admission(
+    pub(super) fn take_control_admission(
         &mut self,
         operation: &ControlOperation,
     ) -> Result<SchedulerControlAdmission, SchedulerError> {
@@ -1907,11 +1937,14 @@ impl SingleScheduler {
         Ok(self.control_admissions.remove(index))
     }
 
-    fn commit_control_applications(&mut self, mut applications: Vec<SchedulerControlApplication>) {
+    pub(super) fn commit_control_applications(
+        &mut self,
+        mut applications: Vec<SchedulerControlApplication>,
+    ) {
         self.control_applications.append(&mut applications);
     }
 
-    fn drain_control_events(&mut self) -> Result<SchedulerControlDrain, SchedulerError> {
+    pub(super) fn drain_control_events(&mut self) -> Result<SchedulerControlDrain, SchedulerError> {
         let mut control = std::mem::take(&mut self.control_inbox);
         control.sort();
         let node = SchedulerNodeId {
@@ -1974,7 +2007,7 @@ impl SingleScheduler {
         })
     }
 
-    fn apply_control_faults_at_boundary(
+    pub(super) fn apply_control_faults_at_boundary(
         &mut self,
         applications: &[SchedulerControlApplication],
     ) -> Result<(), SchedulerError> {
@@ -1997,12 +2030,12 @@ impl SingleScheduler {
         Ok(())
     }
 
-    fn advance_decision_rng_cursor(&mut self) {
+    pub(super) fn advance_decision_rng_cursor(&mut self) {
         let stream = RngStreamId::new(SCHEDULER_ACTOR_RNG_DOMAIN, SCHEDULER_QUANTUM_STREAM);
         self.advance_decision_rng_cursor_for(stream);
     }
 
-    fn advance_decision_rng_cursor_for(&mut self, stream: RngStreamId) {
+    pub(super) fn advance_decision_rng_cursor_for(&mut self, stream: RngStreamId) {
         let position = self
             .decision_rng_cursor
             .positions
@@ -2011,7 +2044,7 @@ impl SingleScheduler {
         position.draws = position.draws.saturating_add(1);
     }
 
-    fn advance_node_after_yield(
+    pub(super) fn advance_node_after_yield(
         &mut self,
         plan: &AdvancePlan,
     ) -> Result<(NodeCounter, SimInstant, bool), SchedulerError> {
@@ -2072,7 +2105,7 @@ impl SingleScheduler {
         Ok((after, after_time, true))
     }
 
-    fn stalled_active_node(&self) -> Option<&RuntimeSchedulerNode> {
+    pub(super) fn stalled_active_node(&self) -> Option<&RuntimeSchedulerNode> {
         self.nodes
             .iter()
             .find(|node| self.effective_node_activity(node) == SchedulerNodeActivity::Runnable)

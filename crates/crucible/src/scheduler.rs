@@ -59,15 +59,27 @@ const EVENT_LOG_LEVEL_ERROR: u8 = 4;
 const EVENT_LOG_CLASS_CAUSAL: u8 = 0;
 const EVENT_LOG_CLASS_OBSERVATIONAL: u8 = 1;
 
-include!("scheduler/event_log.rs");
-include!("scheduler/control_state.rs");
-include!("scheduler/topology.rs");
-include!("scheduler/scenario.rs");
-include!("scheduler/event_codec.rs");
-include!("scheduler/runtime_state.rs");
-include!("scheduler/single_scheduler_state.rs");
-include!("scheduler/single_scheduler_drive.rs");
-include!("scheduler/liveness.rs");
+mod control_state;
+mod event_codec;
+mod event_log;
+mod liveness;
+mod runtime_state;
+mod scenario;
+mod single_scheduler_drive;
+mod single_scheduler_state;
+mod topology;
+
+pub use control_state::*;
+pub(crate) use event_codec::*;
+pub(crate) use event_codec::{
+    recorded_assertion_log_from_schedule_for_search, scheduler_event_log_empty_prefix,
+    scheduler_event_log_segment_bytes,
+};
+pub use event_log::*;
+pub use liveness::*;
+pub use runtime_state::*;
+pub use scenario::*;
+pub use topology::*;
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

@@ -75,7 +75,7 @@ fn steady_fixture_is_guest_loop_plus_rate_parameter() -> Result<(), EngineError>
     assert_eq!(fixture.spike_mode(), None);
     assert_empty_plan(fixture.plan());
 
-    let node = only_node(fixture.world().nodes());
+    let node = only_node(fixture.world().vm_nodes());
     assert_eq!(node.guest_workload(), Some(GuestWorkloadBinary::ClientLoop));
     assert_eq!(
         node.guest_workload_pattern(),
@@ -101,7 +101,7 @@ fn spike_fixture_can_be_guest_virtual_time_rate() -> Result<(), EngineError> {
     );
     assert_empty_plan(fixture.plan());
 
-    let node = only_node(fixture.world().nodes());
+    let node = only_node(fixture.world().vm_nodes());
     assert_eq!(
         node.guest_workload_pattern(),
         Some(GuestWorkloadPattern::Spike)
@@ -132,15 +132,15 @@ fn spike_fixture_can_be_planned_start_node_burst() -> Result<(), EngineError> {
         fixture.time_source(),
         Some(GuestWorkloadTimeSource::VirtualTime)
     );
-    assert_eq!(fixture.world().nodes().len(), 2);
+    assert_eq!(fixture.world().vm_nodes().len(), 2);
     assert!(
         fixture
             .world()
-            .nodes()
+            .vm_nodes()
             .iter()
             .all(|node| node.guest_workload_pattern() == Some(GuestWorkloadPattern::Spike))
     );
-    assert!(fixture.world().nodes().iter().all(|node| {
+    assert!(fixture.world().vm_nodes().iter().all(|node| {
         node.guest_workload_time_source() == Some(GuestWorkloadTimeSource::VirtualTime)
     }));
 
@@ -196,7 +196,7 @@ fn cardinality_growth_fixture_is_guest_key_policy() -> Result<(), EngineError> {
     );
     assert_empty_plan(fixture.plan());
 
-    let node = only_node(fixture.world().nodes());
+    let node = only_node(fixture.world().vm_nodes());
     assert_eq!(
         node.guest_workload_pattern(),
         Some(GuestWorkloadPattern::CardinalityGrowth)
@@ -215,7 +215,7 @@ fn cardinality_growth_fixture_is_guest_key_policy() -> Result<(), EngineError> {
 fn correlated_failure_fixture_is_fault_plan_campaign() -> Result<(), EngineError> {
     let fixture = GuestWorkloadLoadPatternFixture::correlated_failure_campaign()?;
     assert_eq!(fixture.pattern(), GuestWorkloadPattern::CorrelatedFailure);
-    assert_eq!(fixture.world().nodes().len(), 2);
+    assert_eq!(fixture.world().vm_nodes().len(), 2);
     assert_eq!(fixture.world().links().len(), 1);
     assert!(fixture.plan().event_graph().is_none());
 

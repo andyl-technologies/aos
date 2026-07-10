@@ -1,5 +1,7 @@
-// Save control-client workflows, interactive run control, and outcome projection.
-async fn run_remote_control_client_save_workflow_async<C>(
+//! Save control-client workflows, interactive run control, and outcome projection.
+
+use super::*;
+pub(super) async fn run_remote_control_client_save_workflow_async<C>(
     client: &C,
     save_plan: &SaveInvocationPlan,
 ) -> Result<SaveWorkflowReport, CliError>
@@ -246,7 +248,7 @@ where
     })
 }
 
-async fn run_save_selector_to_boundary<C>(
+pub(super) async fn run_save_selector_to_boundary<C>(
     client: &C,
     session: SessionRef,
     save_plan: &SaveInvocationPlan,
@@ -322,7 +324,9 @@ where
     Ok(boundary)
 }
 
-fn save_selector_breakpoint_spec(selector: &SaveAtSelector) -> Result<BreakpointSpec, CliError> {
+pub(super) fn save_selector_breakpoint_spec(
+    selector: &SaveAtSelector,
+) -> Result<BreakpointSpec, CliError> {
     match selector {
         SaveAtSelector::PropertyViolation { assertion: _ } | SaveAtSelector::Marker { .. } => Ok(
             BreakpointSpec::suspend_once(save_selector_predicate(selector)?),
@@ -330,7 +334,9 @@ fn save_selector_breakpoint_spec(selector: &SaveAtSelector) -> Result<Breakpoint
     }
 }
 
-fn save_selector_predicate(selector: &SaveAtSelector) -> Result<crucible::Predicate, CliError> {
+pub(super) fn save_selector_predicate(
+    selector: &SaveAtSelector,
+) -> Result<crucible::Predicate, CliError> {
     match selector {
         SaveAtSelector::PropertyViolation { assertion } => {
             Ok(crucible::Predicate::assertion_state(
@@ -344,7 +350,7 @@ fn save_selector_predicate(selector: &SaveAtSelector) -> Result<crucible::Predic
     }
 }
 
-fn validate_save_selector_firing(
+pub(super) fn validate_save_selector_firing(
     selector: &SaveAtSelector,
     breakpoint_id: BreakpointId,
     boundary: &crucible_api::SessionSummary,
@@ -386,7 +392,7 @@ fn validate_save_selector_firing(
     Ok(())
 }
 
-async fn send_save_workflow_command<C>(
+pub(super) async fn send_save_workflow_command<C>(
     client: &C,
     session: SessionRef,
     command_id: &mut u64,
@@ -420,7 +426,7 @@ where
     }
 }
 
-async fn wait_for_save_workflow_state<C>(
+pub(super) async fn wait_for_save_workflow_state<C>(
     client: &C,
     session: SessionRef,
     expected: LiveStateKind,
@@ -439,7 +445,7 @@ where
     .await
 }
 
-async fn wait_for_save_workflow_advanced_paused<C>(
+pub(super) async fn wait_for_save_workflow_advanced_paused<C>(
     client: &C,
     session: SessionRef,
     before: &crucible_api::SessionSummary,
@@ -462,7 +468,7 @@ where
     .await
 }
 
-async fn wait_for_save_workflow_summary<C>(
+pub(super) async fn wait_for_save_workflow_summary<C>(
     client: &C,
     session: SessionRef,
     mut accepts: impl FnMut(&crucible_api::SessionSummary) -> bool,
@@ -497,7 +503,7 @@ where
     )))
 }
 
-fn validate_savepoint_checkpoint(
+pub(super) fn validate_savepoint_checkpoint(
     save_plan: &SaveInvocationPlan,
     configuration: &crucible::Configuration,
     checkpoint: &Checkpoint,
@@ -512,7 +518,7 @@ fn validate_savepoint_checkpoint(
     )
 }
 
-fn validate_resume_terminal_savepoint(
+pub(super) fn validate_resume_terminal_savepoint(
     evidence: &ResumeHandleEvidence,
     final_snapshot: &EngineSnapshot,
 ) -> Result<SavepointOracleProof, CliError> {
@@ -562,7 +568,7 @@ fn validate_resume_terminal_savepoint(
     })
 }
 
-fn validate_resume_terminal_source_ancestor(
+pub(super) fn validate_resume_terminal_source_ancestor(
     evidence: &ResumeHandleEvidence,
     final_configuration: &crucible::Configuration,
 ) -> Result<(), CliError> {
@@ -614,7 +620,7 @@ fn validate_resume_terminal_source_ancestor(
     )
 }
 
-fn validate_resume_replay_anchor(
+pub(super) fn validate_resume_replay_anchor(
     graph: &ValidationDag,
     evidence: &ResumeHandleEvidence,
     final_configuration: &crucible::Configuration,
@@ -645,7 +651,7 @@ fn validate_resume_replay_anchor(
     Ok(())
 }
 
-fn validate_checkpoint_with_replay_oracle(
+pub(super) fn validate_checkpoint_with_replay_oracle(
     operation: &'static str,
     scenario: &crucible::ScenarioDef,
     configuration: &crucible::Configuration,
@@ -662,7 +668,7 @@ fn validate_checkpoint_with_replay_oracle(
     )
 }
 
-fn validate_checkpoint_with_replay_oracle_anchored<'a>(
+pub(super) fn validate_checkpoint_with_replay_oracle_anchored<'a>(
     operation: &'static str,
     scenario: &crucible::ScenarioDef,
     anchors: impl IntoIterator<Item = (&'a crucible::Configuration, &'a Checkpoint)>,
@@ -722,7 +728,7 @@ fn validate_checkpoint_with_replay_oracle_anchored<'a>(
     })
 }
 
-fn validate_checkpoint_metadata(
+pub(super) fn validate_checkpoint_metadata(
     operation: &'static str,
     configuration: &crucible::Configuration,
     checkpoint: &Checkpoint,
@@ -753,7 +759,9 @@ fn validate_checkpoint_metadata(
     Ok(())
 }
 
-fn save_validation_graph(scenario: &crucible::ScenarioDef) -> Result<ValidationDag, CliError> {
+pub(super) fn save_validation_graph(
+    scenario: &crucible::ScenarioDef,
+) -> Result<ValidationDag, CliError> {
     let genesis = crucible::Configuration::genesis(scenario.clone());
     let checkpoint = Checkpoint::from_recorded_configuration(
         &genesis,
@@ -771,7 +779,7 @@ fn save_validation_graph(scenario: &crucible::ScenarioDef) -> Result<ValidationD
         .map_err(|error| CliError::Identity(format!("save validation graph setup failed: {error}")))
 }
 
-fn save_temporal_graph_error(error: ValidationDagStoreError) -> CliError {
+pub(super) fn save_temporal_graph_error(error: ValidationDagStoreError) -> CliError {
     match error {
         ValidationDagStoreError::Engine { operation, source } => CliError::Identity(format!(
             "save temporal graph {operation} failed replay-oracle validation: {source}"
@@ -780,15 +788,15 @@ fn save_temporal_graph_error(error: ValidationDagStoreError) -> CliError {
     }
 }
 
-fn save_control_client_error(error: crucible_api::ControlClientError) -> CliError {
+pub(super) fn save_control_client_error(error: crucible_api::ControlClientError) -> CliError {
     save_backend_error(format!("control API error: {error}"))
 }
 
-fn save_backend_error(reason: impl Into<String>) -> CliError {
+pub(super) fn save_backend_error(reason: impl Into<String>) -> CliError {
     CliError::Identity(reason.into())
 }
 
-fn run_save_policy_label(policy: RunSavePolicy) -> &'static str {
+pub(super) fn run_save_policy_label(policy: RunSavePolicy) -> &'static str {
     match policy {
         RunSavePolicy::OnFail => "fail",
         RunSavePolicy::Always => "always",
@@ -796,7 +804,7 @@ fn run_save_policy_label(policy: RunSavePolicy) -> &'static str {
     }
 }
 
-fn run_terminal_savepoint_for_policy(
+pub(super) fn run_terminal_savepoint_for_policy(
     run_plan: &RunInvocationPlan,
     report: &RunWorkflowReport,
 ) -> Result<Option<crucible::ContentHash>, CliError> {
@@ -816,7 +824,7 @@ fn run_terminal_savepoint_for_policy(
     })
 }
 
-async fn run_control_client_workflow_stdin_async<C>(
+pub(super) async fn run_control_client_workflow_stdin_async<C>(
     client: &C,
     run_plan: &RunInvocationPlan,
 ) -> Result<RunWorkflowReport, CliError>
@@ -831,12 +839,12 @@ where
     .await
 }
 
-enum InteractiveCommandDriver<'a> {
+pub(super) enum InteractiveCommandDriver<'a> {
     Preparsed(&'a [SessionCommandKind]),
     Stdin,
 }
 
-async fn run_control_client_workflow_with_interactive_driver<C>(
+pub(super) async fn run_control_client_workflow_with_interactive_driver<C>(
     client: &C,
     run_plan: &RunInvocationPlan,
     interactive_driver: InteractiveCommandDriver<'_>,
@@ -970,7 +978,7 @@ where
     })
 }
 
-async fn drive_interactive_stdin_commands(
+pub(super) async fn drive_interactive_stdin_commands(
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
@@ -987,7 +995,7 @@ async fn drive_interactive_stdin_commands(
     .await
 }
 
-async fn drive_interactive_command_reader<R, W>(
+pub(super) async fn drive_interactive_command_reader<R, W>(
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
@@ -1014,7 +1022,7 @@ where
     Ok(())
 }
 
-async fn acknowledge_stream_command(
+pub(super) async fn acknowledge_stream_command(
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     command: SessionCommandKind,
@@ -1025,7 +1033,7 @@ async fn acknowledge_stream_command(
         .await
 }
 
-async fn acknowledge_stream_command_payload(
+pub(super) async fn acknowledge_stream_command_payload(
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     model_command: SessionCommand,
@@ -1049,7 +1057,7 @@ async fn acknowledge_stream_command_payload(
     }
 }
 
-fn cli_stream_command(command: SessionCommandKind) -> Result<SessionCommand, CliError> {
+pub(super) fn cli_stream_command(command: SessionCommandKind) -> Result<SessionCommand, CliError> {
     if command == SessionCommandKind::Query {
         return Ok(SessionCommand::Query {
             kind: QueryKind::State,
@@ -1066,7 +1074,7 @@ fn cli_stream_command(command: SessionCommandKind) -> Result<SessionCommand, Cli
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-async fn observe_run_final_state<C>(
+pub(super) async fn observe_run_final_state<C>(
     client: &C,
     control: &mut crucible_api::ClientControlStream,
     run_plan: &RunInvocationPlan,
@@ -1229,7 +1237,7 @@ where
     })
 }
 
-async fn query_execution_fingerprint(
+pub(super) async fn query_execution_fingerprint(
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     run_plan: &RunInvocationPlan,
@@ -1286,7 +1294,7 @@ async fn query_execution_fingerprint(
     }
 }
 
-async fn observe_next_event(
+pub(super) async fn observe_next_event(
     control: &mut crucible_api::ClientControlStream,
     timeout_ms: u64,
     streamed_events: &mut Vec<String>,
@@ -1304,7 +1312,7 @@ async fn observe_next_event(
     }
 }
 
-async fn observe_next_state_update(
+pub(super) async fn observe_next_state_update(
     control: &mut crucible_api::ClientControlStream,
     timeout_ms: u64,
     state_updates: &mut Vec<String>,
@@ -1327,7 +1335,7 @@ async fn observe_next_state_update(
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-async fn stop_budget_timed_out_session<C>(
+pub(super) async fn stop_budget_timed_out_session<C>(
     client: &C,
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
@@ -1383,7 +1391,7 @@ where
     })
 }
 
-fn run_watch_status(session: &crucible_api::SessionSummary) -> String {
+pub(super) fn run_watch_status(session: &crucible_api::SessionSummary) -> String {
     format!(
         "state={}\tfrontier_ticks={}\tquanta={}\toutcome={}\tsavepoint={}",
         format!("{:?}", session.state).to_ascii_lowercase(),
@@ -1397,7 +1405,10 @@ fn run_watch_status(session: &crucible_api::SessionSummary) -> String {
     )
 }
 
-fn terminal_final_state(run_plan: &RunInvocationPlan, outcome: Option<OutcomeKind>) -> String {
+pub(super) fn terminal_final_state(
+    run_plan: &RunInvocationPlan,
+    outcome: Option<OutcomeKind>,
+) -> String {
     match run_plan.terminal_condition {
         RunTerminalCondition::Quiescence => match outcome {
             Some(OutcomeKind::Passed) => String::from("quiescent"),
@@ -1419,7 +1430,7 @@ fn terminal_final_state(run_plan: &RunInvocationPlan, outcome: Option<OutcomeKin
     }
 }
 
-fn terminal_outcome_label(outcome: Option<OutcomeKind>) -> &'static str {
+pub(super) fn terminal_outcome_label(outcome: Option<OutcomeKind>) -> &'static str {
     match outcome {
         Some(OutcomeKind::Passed) => "passed",
         Some(OutcomeKind::Failed) => "failed",
@@ -1430,7 +1441,7 @@ fn terminal_outcome_label(outcome: Option<OutcomeKind>) -> &'static str {
     }
 }
 
-fn run_status_from_observation(
+pub(super) fn run_status_from_observation(
     run_plan: &RunInvocationPlan,
     observation: &RunObservation,
 ) -> BackendCommandStatus {
@@ -1445,7 +1456,7 @@ fn run_status_from_observation(
     status_from_outcome(observation.outcome)
 }
 
-fn status_from_outcome(outcome: Option<OutcomeKind>) -> BackendCommandStatus {
+pub(super) fn status_from_outcome(outcome: Option<OutcomeKind>) -> BackendCommandStatus {
     match outcome {
         Some(OutcomeKind::Passed | OutcomeKind::Stopped) => BackendCommandStatus::Passed,
         Some(OutcomeKind::Failed) => BackendCommandStatus::Failed,
@@ -1455,14 +1466,16 @@ fn status_from_outcome(outcome: Option<OutcomeKind>) -> BackendCommandStatus {
 }
 
 #[cfg(test)]
-fn parse_interactive_session_commands(input: &str) -> Result<Vec<SessionCommandKind>, CliError> {
+pub(super) fn parse_interactive_session_commands(
+    input: &str,
+) -> Result<Vec<SessionCommandKind>, CliError> {
     input
         .lines()
         .filter_map(|line| parse_interactive_session_command_line(line).transpose())
         .collect()
 }
 
-fn parse_interactive_session_command_line(
+pub(super) fn parse_interactive_session_command_line(
     line: &str,
 ) -> Result<Option<SessionCommandKind>, CliError> {
     let command = line.split('#').next().unwrap_or("").trim();
@@ -1473,7 +1486,9 @@ fn parse_interactive_session_command_line(
     }
 }
 
-fn parse_interactive_session_command(command: &str) -> Result<SessionCommandKind, CliError> {
+pub(super) fn parse_interactive_session_command(
+    command: &str,
+) -> Result<SessionCommandKind, CliError> {
     match command {
         "continue" => Ok(SessionCommandKind::Continue),
         "pause" => Ok(SessionCommandKind::Pause),
@@ -1495,7 +1510,7 @@ fn parse_interactive_session_command(command: &str) -> Result<SessionCommandKind
     }
 }
 
-fn append_local_double_run_entries(
+pub(super) fn append_local_double_run_entries(
     outcome: &mut BackendCommandOutcome,
     run_plan: &RunInvocationPlan,
     report: &RunWorkflowReport,
@@ -1563,7 +1578,7 @@ fn append_local_double_run_entries(
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
 }
 
-fn session_command_name(command: SessionCommandKind) -> &'static str {
+pub(super) fn session_command_name(command: SessionCommandKind) -> &'static str {
     match command {
         SessionCommandKind::Start => "start",
         SessionCommandKind::Continue => "continue",
@@ -1591,11 +1606,11 @@ fn session_command_name(command: SessionCommandKind) -> &'static str {
     }
 }
 
-fn control_client_error(error: crucible_api::ControlClientError) -> CliError {
+pub(super) fn control_client_error(error: crucible_api::ControlClientError) -> CliError {
     backend_error(format!("control API error: {error}"))
 }
 
-fn backend_command_outcome(
+pub(super) fn backend_command_outcome(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -1633,7 +1648,7 @@ fn backend_command_outcome(
     }
 }
 
-fn backend_canonical_log_entries(
+pub(super) fn backend_canonical_log_entries(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,

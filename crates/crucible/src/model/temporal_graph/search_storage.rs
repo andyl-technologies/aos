@@ -1,7 +1,11 @@
+//! Temporal-graph search, frontier storage, and artifact persistence.
+
+use super::*;
+
 impl TemporalGraph {
     // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
     #[allow(clippy::too_many_arguments)]
-    fn search_with_strategy_inner(
+    pub(in crate::model) fn search_with_strategy_inner(
         &mut self,
         root: &Configuration,
         strategy: SearchStrategy,
@@ -153,7 +157,7 @@ impl TemporalGraph {
         )
     }
 
-    fn search_with_replay_oracle_sampling_offset(
+    pub(in crate::model) fn search_with_replay_oracle_sampling_offset(
         &mut self,
         frontier: &Configuration,
         reduction_policy: FrontierReductionPolicy,
@@ -172,7 +176,7 @@ impl TemporalGraph {
         )
     }
 
-    fn search_inner(
+    pub(in crate::model) fn search_inner(
         &mut self,
         frontier: &Configuration,
         reduction_policy: FrontierReductionPolicy,
@@ -486,7 +490,7 @@ impl TemporalGraph {
         Ok(FrontierReductionReport { explored, covered })
     }
 
-    fn enumerate_frontier_choices_reduced<I>(
+    pub(in crate::model) fn enumerate_frontier_choices_reduced<I>(
         &mut self,
         frontier: &Configuration,
         choices: I,
@@ -661,7 +665,7 @@ impl TemporalGraph {
             .and_then(|checkpoint| checkpoint.symmetry_reduction_key(classes))
     }
 
-    fn symmetry_representative_for_key_excluding(
+    pub(in crate::model) fn symmetry_representative_for_key_excluding(
         &self,
         key: SymmetryReductionKey,
         excluded: &BTreeSet<ContentHash>,
@@ -1110,7 +1114,7 @@ impl TemporalGraph {
             .len()
     }
 
-    fn record_configuration(&mut self, configuration: Configuration) -> bool {
+    pub(in crate::model) fn record_configuration(&mut self, configuration: Configuration) -> bool {
         let id = configuration.id();
         match self.recorded_configurations.entry(id) {
             Entry::Vacant(entry) => {
@@ -1121,7 +1125,7 @@ impl TemporalGraph {
         }
     }
 
-    fn cow_delta_refs(&self) -> Vec<CowDeltaRef> {
+    pub(in crate::model) fn cow_delta_refs(&self) -> Vec<CowDeltaRef> {
         let mut refs = Vec::new();
         for checkpoint in self.checkpoint_nodes.values() {
             refs.extend(checkpoint.cow_delta_refs());
@@ -1132,11 +1136,11 @@ impl TemporalGraph {
         refs
     }
 
-    fn cow_delta_ref_set(&self) -> BTreeSet<CowDeltaRef> {
+    pub(in crate::model) fn cow_delta_ref_set(&self) -> BTreeSet<CowDeltaRef> {
         self.cow_delta_refs().into_iter().collect()
     }
 
-    fn mark_live_checkpoints(
+    pub(in crate::model) fn mark_live_checkpoints(
         &self,
         roots: &TemporalGraphGcRoots,
     ) -> Result<BTreeSet<ContentHash>, EngineError> {
@@ -1148,7 +1152,10 @@ impl TemporalGraph {
         Ok(live)
     }
 
-    fn gc_root_checkpoint_ids(&self, roots: &TemporalGraphGcRoots) -> BTreeSet<ContentHash> {
+    pub(in crate::model) fn gc_root_checkpoint_ids(
+        &self,
+        roots: &TemporalGraphGcRoots,
+    ) -> BTreeSet<ContentHash> {
         let mut root_ids = BTreeSet::new();
         root_ids.extend(
             roots
@@ -1172,7 +1179,7 @@ impl TemporalGraph {
         root_ids
     }
 
-    fn reference_counts_for_live_checkpoints(
+    pub(in crate::model) fn reference_counts_for_live_checkpoints(
         &self,
         roots: &TemporalGraphGcRoots,
         live_checkpoints: &BTreeSet<ContentHash>,
@@ -1207,7 +1214,10 @@ impl TemporalGraph {
         counts
     }
 
-    fn gc_root_refcounts(&self, roots: &TemporalGraphGcRoots) -> BTreeMap<ContentHash, usize> {
+    pub(in crate::model) fn gc_root_refcounts(
+        &self,
+        roots: &TemporalGraphGcRoots,
+    ) -> BTreeMap<ContentHash, usize> {
         let mut refcounts = BTreeMap::new();
         for (checkpoint, count) in &roots.live_tips {
             if *count == 0 {
@@ -1227,7 +1237,7 @@ impl TemporalGraph {
         refcounts
     }
 
-    fn store_checkpoint_ids(&self) -> BTreeSet<ContentHash> {
+    pub(in crate::model) fn store_checkpoint_ids(&self) -> BTreeSet<ContentHash> {
         let mut checkpoints = self
             .checkpoint_nodes
             .keys()
@@ -1237,7 +1247,7 @@ impl TemporalGraph {
         checkpoints
     }
 
-    fn store_keys_for_checkpoint_ids(
+    pub(in crate::model) fn store_keys_for_checkpoint_ids(
         &self,
         checkpoints: &BTreeSet<ContentHash>,
     ) -> BTreeSet<ContentHash> {
@@ -1265,14 +1275,17 @@ impl TemporalGraph {
         keys
     }
 
-    fn has_replay_oracle_path(&self, configuration: &Configuration) -> Result<bool, EngineError> {
+    pub(in crate::model) fn has_replay_oracle_path(
+        &self,
+        configuration: &Configuration,
+    ) -> Result<bool, EngineError> {
         if configuration.is_genesis() {
             return Ok(self.genesis_snapshot(&configuration.def).is_some());
         }
         Ok(self.genesis_snapshot(&configuration.def).is_some())
     }
 
-    fn replay_oracle_admit_cached_ancestors(
+    pub(in crate::model) fn replay_oracle_admit_cached_ancestors(
         &mut self,
         configuration: &Configuration,
     ) -> Result<(), EngineError> {
@@ -1283,7 +1296,7 @@ impl TemporalGraph {
         Ok(())
     }
 
-    fn cached_ancestor_configurations(
+    pub(in crate::model) fn cached_ancestor_configurations(
         &self,
         configuration: &Configuration,
     ) -> Result<Vec<Configuration>, EngineError> {
@@ -1304,7 +1317,9 @@ impl TemporalGraph {
         Ok(ancestors)
     }
 
-    fn cached_snapshot_configurations(&self) -> Result<Vec<Configuration>, EngineError> {
+    pub(in crate::model) fn cached_snapshot_configurations(
+        &self,
+    ) -> Result<Vec<Configuration>, EngineError> {
         let mut configurations = Vec::new();
         for checkpoint in self.cached_snapshots.keys() {
             let configuration = self.recorded_configurations.get(checkpoint).ok_or(
@@ -1317,7 +1332,7 @@ impl TemporalGraph {
         Ok(configurations)
     }
 
-    fn record_checkpoint_closure(
+    pub(in crate::model) fn record_checkpoint_closure(
         &mut self,
         configuration: &Configuration,
     ) -> Result<bool, EngineError> {
@@ -1400,7 +1415,7 @@ impl TemporalGraph {
         Ok(None)
     }
 
-    fn debug_restore_configuration(
+    pub(in crate::model) fn debug_restore_configuration(
         &self,
         target: &Configuration,
     ) -> Result<Configuration, EngineError> {
@@ -1413,7 +1428,7 @@ impl TemporalGraph {
         Ok(Configuration::genesis(target.def.clone()))
     }
 
-    fn thin_checkpoint_node_icounts(
+    pub(in crate::model) fn thin_checkpoint_node_icounts(
         &self,
         configuration: &Configuration,
     ) -> Result<BTreeMap<NodeId, Icount>, EngineError> {
@@ -1428,7 +1443,7 @@ impl TemporalGraph {
         ))
     }
 
-    fn debug_resolve_coordinate(
+    pub(in crate::model) fn debug_resolve_coordinate(
         &self,
         current: &Configuration,
         coordinate: &DebugCoordinate,
@@ -1462,7 +1477,7 @@ impl TemporalGraph {
         }
     }
 
-    fn debug_resolve_scoped_node_icount(
+    pub(in crate::model) fn debug_resolve_scoped_node_icount(
         &self,
         current: &Configuration,
         node: &NodeId,
@@ -1489,7 +1504,7 @@ impl TemporalGraph {
             .map(|(candidate, _)| candidate.configuration)
     }
 
-    fn debug_scoped_node_material(
+    pub(in crate::model) fn debug_scoped_node_material(
         &mut self,
         current: &Configuration,
         target: &Configuration,
@@ -1565,7 +1580,7 @@ impl TemporalGraph {
         })
     }
 
-    fn debug_latest_checkpoint_at_or_before_time(
+    pub(in crate::model) fn debug_latest_checkpoint_at_or_before_time(
         &self,
         current: &Configuration,
         target: VirtualTime,
@@ -1583,7 +1598,7 @@ impl TemporalGraph {
             .map(|candidate| candidate.configuration)
     }
 
-    fn debug_latest_checkpoint_at_or_before_icount(
+    pub(in crate::model) fn debug_latest_checkpoint_at_or_before_icount(
         &self,
         current: &Configuration,
         node: &NodeId,
@@ -1610,7 +1625,7 @@ impl TemporalGraph {
             .map(|(candidate, _)| candidate.configuration)
     }
 
-    fn debug_checkpoint_coordinate_candidates(
+    pub(in crate::model) fn debug_checkpoint_coordinate_candidates(
         &self,
         current: &Configuration,
     ) -> Vec<DebugCheckpointCoordinateCandidate> {
@@ -1619,7 +1634,7 @@ impl TemporalGraph {
         })
     }
 
-    fn debug_scoped_node_coordinate_candidates(
+    pub(in crate::model) fn debug_scoped_node_coordinate_candidates(
         &self,
         current: &Configuration,
     ) -> Vec<DebugCheckpointCoordinateCandidate> {
@@ -1628,7 +1643,7 @@ impl TemporalGraph {
         })
     }
 
-    fn debug_checkpoint_coordinate_candidates_where<F>(
+    pub(in crate::model) fn debug_checkpoint_coordinate_candidates_where<F>(
         &self,
         current: &Configuration,
         include: F,
@@ -1671,7 +1686,7 @@ impl TemporalGraph {
         candidates.into_values().collect()
     }
 
-    fn debug_goto_error(
+    pub(in crate::model) fn debug_goto_error(
         &self,
         current: &Configuration,
         target: &Configuration,
@@ -1693,7 +1708,7 @@ impl TemporalGraph {
         }
     }
 
-    fn debug_replay_oracle_bisection(
+    pub(in crate::model) fn debug_replay_oracle_bisection(
         &self,
         current: &Configuration,
         target: &Configuration,

@@ -1,9 +1,11 @@
-// Serialized identity checks, parsing, and canonical material helpers.
-fn validate_world_serialized_identity(world: &World) -> Result<(), EngineError> {
+//! Serialized identity checks, parsing, and canonical material helpers.
+
+use super::*;
+pub(super) fn validate_world_serialized_identity(world: &World) -> Result<(), EngineError> {
     validate_serialized_id("world", world.id(), serialized_world_identity(world))
 }
 
-fn validate_serialized_id(
+pub(super) fn validate_serialized_id(
     component: &'static str,
     expected: ContentHash,
     actual: ContentHash,
@@ -19,14 +21,14 @@ fn validate_serialized_id(
     }
 }
 
-fn validate_no_host_path_image_refs_in_toml(value: &str) -> Result<(), EngineError> {
+pub(super) fn validate_no_host_path_image_refs_in_toml(value: &str) -> Result<(), EngineError> {
     let value = toml::from_str::<toml::Value>(value).map_err(|source| {
         scenario_serialization_error(format!("parse TOML before image-ref validation: {source}"))
     })?;
     validate_toml_image_refs_value(&value)
 }
 
-fn validate_plan_entries_in_toml(value: &str) -> Result<(), EngineError> {
+pub(super) fn validate_plan_entries_in_toml(value: &str) -> Result<(), EngineError> {
     let value = toml::from_str::<toml::Value>(value).map_err(|source| {
         scenario_serialization_error(format!("parse TOML before plan validation: {source}"))
     })?;
@@ -51,7 +53,7 @@ fn validate_plan_entries_in_toml(value: &str) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn toml_plan_table(value: &toml::Value) -> Option<&toml::map::Map<String, toml::Value>> {
+pub(super) fn toml_plan_table(value: &toml::Value) -> Option<&toml::map::Map<String, toml::Value>> {
     let table = value.as_table()?;
     match table.get("plan") {
         Some(plan) => plan.as_table(),
@@ -59,7 +61,10 @@ fn toml_plan_table(value: &toml::Value) -> Option<&toml::map::Map<String, toml::
     }
 }
 
-fn validate_plan_entry_toml_value(index: usize, entry: &toml::Value) -> Result<(), EngineError> {
+pub(super) fn validate_plan_entry_toml_value(
+    index: usize,
+    entry: &toml::Value,
+) -> Result<(), EngineError> {
     let Some(entry) = entry.as_table() else {
         return Err(scenario_serialization_error(
             "serialized plan entry must be a table",
@@ -84,7 +89,7 @@ fn validate_plan_entry_toml_value(index: usize, entry: &toml::Value) -> Result<(
     validate_membership_fault_toml_value(index, fault)
 }
 
-fn validate_membership_fault_toml_value(
+pub(super) fn validate_membership_fault_toml_value(
     index: usize,
     fault: &toml::Value,
 ) -> Result<(), EngineError> {
@@ -116,7 +121,7 @@ fn validate_membership_fault_toml_value(
     Ok(())
 }
 
-fn validate_partition_direction_toml_value(
+pub(super) fn validate_partition_direction_toml_value(
     index: usize,
     fault: &toml::map::Map<String, toml::Value>,
 ) -> Result<(), EngineError> {
@@ -136,7 +141,7 @@ fn validate_partition_direction_toml_value(
     }
 }
 
-fn validate_toml_image_refs_value(value: &toml::Value) -> Result<(), EngineError> {
+pub(super) fn validate_toml_image_refs_value(value: &toml::Value) -> Result<(), EngineError> {
     match value {
         toml::Value::Table(table) => {
             for (key, value) in table {
@@ -165,13 +170,13 @@ fn validate_toml_image_refs_value(value: &toml::Value) -> Result<(), EngineError
     Ok(())
 }
 
-fn image_ref_field(key: &str) -> Option<&'static str> {
+pub(super) fn image_ref_field(key: &str) -> Option<&'static str> {
     ["kernel", "root_image", "initrd"]
         .into_iter()
         .find(|field| key == *field)
 }
 
-fn parse_content_addressed_blob_ref(
+pub(super) fn parse_content_addressed_blob_ref(
     field: &'static str,
     value: &str,
 ) -> Result<ContentAddressedBlobRef, EngineError> {
@@ -190,7 +195,7 @@ fn parse_content_addressed_blob_ref(
     Ok(ContentAddressedBlobRef::from_hash(hash))
 }
 
-fn parse_optional_blob_ref(
+pub(super) fn parse_optional_blob_ref(
     field: &'static str,
     value: Option<String>,
 ) -> Result<Option<ContentAddressedBlobRef>, EngineError> {
@@ -200,7 +205,7 @@ fn parse_optional_blob_ref(
         .transpose()
 }
 
-fn parse_content_hash_ref(value: &str) -> Result<ContentHash, EngineError> {
+pub(super) fn parse_content_hash_ref(value: &str) -> Result<ContentHash, EngineError> {
     let Some(hex) = value.strip_prefix("blake3:") else {
         return Err(scenario_serialization_error(
             "content hash reference must start with blake3:",
@@ -209,12 +214,12 @@ fn parse_content_hash_ref(value: &str) -> Result<ContentHash, EngineError> {
     parse_content_hash_hex(hex)
 }
 
-fn parse_content_hash_hex(hex: &str) -> Result<ContentHash, EngineError> {
+pub(super) fn parse_content_hash_hex(hex: &str) -> Result<ContentHash, EngineError> {
     let bytes = parse_fixed_hex_32(hex, "content hash")?;
     Ok(ContentHash { bytes })
 }
 
-fn parse_seed_ref(value: &str) -> Result<Seed, EngineError> {
+pub(super) fn parse_seed_ref(value: &str) -> Result<Seed, EngineError> {
     let Some(hex) = value.strip_prefix("0x") else {
         return Err(scenario_serialization_error(
             "seed must start with 0x and contain 64 lowercase hex characters",
@@ -223,7 +228,7 @@ fn parse_seed_ref(value: &str) -> Result<Seed, EngineError> {
     Ok(Seed::from_bytes(parse_fixed_hex_32(hex, "seed")?))
 }
 
-fn parse_fixed_hex_32(hex: &str, label: &'static str) -> Result<[u8; 32], EngineError> {
+pub(super) fn parse_fixed_hex_32(hex: &str, label: &'static str) -> Result<[u8; 32], EngineError> {
     if hex.len() != 64 {
         return Err(scenario_serialization_error(format!(
             "{label} must contain 64 lowercase hex characters"
@@ -243,7 +248,7 @@ fn parse_fixed_hex_32(hex: &str, label: &'static str) -> Result<[u8; 32], Engine
     Ok(bytes)
 }
 
-fn parse_hex_bytes(label: &'static str, hex: &str) -> Result<Vec<u8>, EngineError> {
+pub(super) fn parse_hex_bytes(label: &'static str, hex: &str) -> Result<Vec<u8>, EngineError> {
     if !hex.len().is_multiple_of(2) {
         return Err(scenario_serialization_error(format!(
             "{label} must contain an even number of lowercase hex characters"
@@ -263,7 +268,7 @@ fn parse_hex_bytes(label: &'static str, hex: &str) -> Result<Vec<u8>, EngineErro
     Ok(bytes)
 }
 
-fn hex_value(byte: u8) -> Option<u8> {
+pub(super) fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),
@@ -271,11 +276,11 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn format_content_hash_ref(hash: ContentHash) -> String {
+pub(super) fn format_content_hash_ref(hash: ContentHash) -> String {
     format!("blake3:{}", content_hash_hex(hash))
 }
 
-fn parse_guest_workload_parameter(cmdline: &str) -> Option<GuestWorkloadBinary> {
+pub(super) fn parse_guest_workload_parameter(cmdline: &str) -> Option<GuestWorkloadBinary> {
     cmdline.split_whitespace().find_map(|token| {
         token
             .strip_prefix(WORKLOAD_SCENARIO_PARAMETER_PREFIX)
@@ -283,7 +288,7 @@ fn parse_guest_workload_parameter(cmdline: &str) -> Option<GuestWorkloadBinary> 
     })
 }
 
-fn parse_guest_workload_seed_parameter(cmdline: &str) -> Option<GuestWorkloadSeed> {
+pub(super) fn parse_guest_workload_seed_parameter(cmdline: &str) -> Option<GuestWorkloadSeed> {
     cmdline.split_whitespace().find_map(|token| {
         token
             .strip_prefix(WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX)
@@ -291,7 +296,7 @@ fn parse_guest_workload_seed_parameter(cmdline: &str) -> Option<GuestWorkloadSee
     })
 }
 
-fn parse_guest_workload_scalar_parameters(
+pub(super) fn parse_guest_workload_scalar_parameters(
     cmdline: &str,
 ) -> BTreeMap<GuestWorkloadParameterKey, String> {
     let mut parameters = BTreeMap::new();
@@ -311,7 +316,9 @@ fn parse_guest_workload_scalar_parameters(
     parameters
 }
 
-fn parse_guest_workload_config_tree_parameter(cmdline: &str) -> Option<GuestWorkloadConfigTreeRef> {
+pub(super) fn parse_guest_workload_config_tree_parameter(
+    cmdline: &str,
+) -> Option<GuestWorkloadConfigTreeRef> {
     cmdline.split_whitespace().find_map(|token| {
         token
             .strip_prefix(WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER_PREFIX)
@@ -319,7 +326,9 @@ fn parse_guest_workload_config_tree_parameter(cmdline: &str) -> Option<GuestWork
     })
 }
 
-fn parse_guest_workload_pattern_parameter(cmdline: &str) -> Option<GuestWorkloadPattern> {
+pub(super) fn parse_guest_workload_pattern_parameter(
+    cmdline: &str,
+) -> Option<GuestWorkloadPattern> {
     cmdline.split_whitespace().find_map(|token| {
         token
             .strip_prefix(WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX)
@@ -327,7 +336,9 @@ fn parse_guest_workload_pattern_parameter(cmdline: &str) -> Option<GuestWorkload
     })
 }
 
-fn parse_guest_workload_spike_mode_parameter(cmdline: &str) -> Option<GuestWorkloadSpikeMode> {
+pub(super) fn parse_guest_workload_spike_mode_parameter(
+    cmdline: &str,
+) -> Option<GuestWorkloadSpikeMode> {
     cmdline.split_whitespace().find_map(|token| {
         token
             .strip_prefix(WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX)
@@ -335,7 +346,9 @@ fn parse_guest_workload_spike_mode_parameter(cmdline: &str) -> Option<GuestWorkl
     })
 }
 
-fn parse_guest_workload_time_source_parameter(cmdline: &str) -> Option<GuestWorkloadTimeSource> {
+pub(super) fn parse_guest_workload_time_source_parameter(
+    cmdline: &str,
+) -> Option<GuestWorkloadTimeSource> {
     cmdline.split_whitespace().find_map(|token| {
         token
             .strip_prefix(WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX)
@@ -343,7 +356,9 @@ fn parse_guest_workload_time_source_parameter(cmdline: &str) -> Option<GuestWork
     })
 }
 
-fn parse_guest_workload_config_tree_value(value: &str) -> Option<GuestWorkloadConfigTreeRef> {
+pub(super) fn parse_guest_workload_config_tree_value(
+    value: &str,
+) -> Option<GuestWorkloadConfigTreeRef> {
     let mut parts = value.split(',');
     let delivery = parts
         .next()
@@ -363,11 +378,11 @@ fn parse_guest_workload_config_tree_value(value: &str) -> Option<GuestWorkloadCo
     })
 }
 
-fn valid_guest_workload_parameter_value(value: &str) -> bool {
+pub(super) fn valid_guest_workload_parameter_value(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_whitespace)
 }
 
-fn valid_guest_mount_path(mount: &str) -> bool {
+pub(super) fn valid_guest_mount_path(mount: &str) -> bool {
     if !mount.starts_with('/')
         || mount.is_empty()
         || mount.contains(',')
@@ -384,7 +399,7 @@ fn valid_guest_mount_path(mount: &str) -> bool {
         .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
-fn cmdline_with_guest_workload(cmdline: &str, workload: GuestWorkloadBinary) -> String {
+pub(super) fn cmdline_with_guest_workload(cmdline: &str, workload: GuestWorkloadBinary) -> String {
     let selection = workload.scenario_parameter();
     let mut rendered = String::new();
     for token in cmdline
@@ -397,7 +412,7 @@ fn cmdline_with_guest_workload(cmdline: &str, workload: GuestWorkloadBinary) -> 
     rendered
 }
 
-fn cmdline_with_guest_workload_seed(cmdline: &str, seed: GuestWorkloadSeed) -> String {
+pub(super) fn cmdline_with_guest_workload_seed(cmdline: &str, seed: GuestWorkloadSeed) -> String {
     let selection = seed.scenario_parameter();
     let mut rendered = String::new();
     for token in cmdline
@@ -410,7 +425,7 @@ fn cmdline_with_guest_workload_seed(cmdline: &str, seed: GuestWorkloadSeed) -> S
     rendered
 }
 
-fn cmdline_with_guest_workload_scalar_parameter(
+pub(super) fn cmdline_with_guest_workload_scalar_parameter(
     cmdline: &str,
     parameter: &GuestWorkloadScalarParameter,
 ) -> String {
@@ -430,7 +445,7 @@ fn cmdline_with_guest_workload_scalar_parameter(
     rendered
 }
 
-fn cmdline_with_guest_workload_config_tree(
+pub(super) fn cmdline_with_guest_workload_config_tree(
     cmdline: &str,
     config: &GuestWorkloadConfigTreeRef,
 ) -> String {
@@ -446,7 +461,10 @@ fn cmdline_with_guest_workload_config_tree(
     rendered
 }
 
-fn cmdline_with_guest_workload_pattern(cmdline: &str, pattern: GuestWorkloadPattern) -> String {
+pub(super) fn cmdline_with_guest_workload_pattern(
+    cmdline: &str,
+    pattern: GuestWorkloadPattern,
+) -> String {
     let selection = pattern.scenario_parameter();
     let mut rendered = String::new();
     for token in cmdline
@@ -459,7 +477,10 @@ fn cmdline_with_guest_workload_pattern(cmdline: &str, pattern: GuestWorkloadPatt
     rendered
 }
 
-fn cmdline_with_guest_workload_spike_mode(cmdline: &str, mode: GuestWorkloadSpikeMode) -> String {
+pub(super) fn cmdline_with_guest_workload_spike_mode(
+    cmdline: &str,
+    mode: GuestWorkloadSpikeMode,
+) -> String {
     let selection = mode.scenario_parameter();
     let mut rendered = String::new();
     for token in cmdline
@@ -472,7 +493,7 @@ fn cmdline_with_guest_workload_spike_mode(cmdline: &str, mode: GuestWorkloadSpik
     rendered
 }
 
-fn cmdline_with_guest_workload_time_source(
+pub(super) fn cmdline_with_guest_workload_time_source(
     cmdline: &str,
     source: GuestWorkloadTimeSource,
 ) -> String {
@@ -488,7 +509,7 @@ fn cmdline_with_guest_workload_time_source(
     rendered
 }
 
-fn workload_pattern_cmdline(
+pub(super) fn workload_pattern_cmdline(
     base_cmdline: &str,
     pattern: GuestWorkloadPattern,
     spike_mode: Option<GuestWorkloadSpikeMode>,
@@ -506,7 +527,7 @@ fn workload_pattern_cmdline(
     }
 }
 
-fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
+pub(super) fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
     WorldNode {
         id: NodeId {
             name: String::from(name),
@@ -526,41 +547,41 @@ fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
     }
 }
 
-fn workload_pattern_link_id(link: &LinkDef) -> LinkId {
+pub(super) fn workload_pattern_link_id(link: &LinkDef) -> LinkId {
     let (left, right) = link.endpoints();
     LinkId::from_name(format!("{}--{}", left.name, right.name))
 }
 
-fn push_cmdline_token(cmdline: &mut String, token: &str) {
+pub(super) fn push_cmdline_token(cmdline: &mut String, token: &str) {
     if !cmdline.is_empty() {
         cmdline.push(' ');
     }
     cmdline.push_str(token);
 }
 
-fn format_seed_ref(seed: Seed) -> String {
+pub(super) fn format_seed_ref(seed: Seed) -> String {
     format!("0x{}", seed.to_hex())
 }
 
-fn scenario_serialization_error(reason: impl Into<String>) -> EngineError {
+pub(super) fn scenario_serialization_error(reason: impl Into<String>) -> EngineError {
     EngineError::ScenarioSerialization {
         reason: reason.into(),
     }
 }
 
-fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
+pub(super) fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode> {
     let mut nodes = nodes.to_vec();
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     nodes
 }
 
-fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNodeDef> {
+pub(super) fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNodeDef> {
     let mut nodes = nodes.to_vec();
     nodes.sort_by(|left, right| left.id().cmp(right.id()));
     nodes
 }
 
-fn world_vm_node_projection(nodes: &[WorldNodeDef]) -> Vec<WorldNode> {
+pub(super) fn world_vm_node_projection(nodes: &[WorldNodeDef]) -> Vec<WorldNode> {
     nodes
         .iter()
         .filter_map(|node| match node {
@@ -570,7 +591,7 @@ fn world_vm_node_projection(nodes: &[WorldNodeDef]) -> Vec<WorldNode> {
         .collect()
 }
 
-fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
+pub(super) fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
     let mut links = links.to_vec();
     links.sort_by(|left, right| {
         let (left_a, left_b) = left.endpoints();
@@ -586,14 +607,14 @@ fn canonical_world_links(links: &[LinkDef]) -> Vec<LinkDef> {
     links
 }
 
-fn world_participants(world: &World) -> Vec<NodeId> {
+pub(super) fn world_participants(world: &World) -> Vec<NodeId> {
     canonical_world_nodes(&world.nodes)
         .into_iter()
         .map(|node| node.id)
         .collect()
 }
 
-fn world_scheduling_nodes(world: &World) -> Vec<SchedulerNodeId> {
+pub(super) fn world_scheduling_nodes(world: &World) -> Vec<SchedulerNodeId> {
     let mut nodes = canonical_world_node_defs(&world.topology_nodes)
         .into_iter()
         .map(|node| match node {
@@ -613,7 +634,7 @@ fn world_scheduling_nodes(world: &World) -> Vec<SchedulerNodeId> {
     nodes
 }
 
-fn world_rng_streams(world: &World) -> Vec<RngStreamId> {
+pub(super) fn world_rng_streams(world: &World) -> Vec<RngStreamId> {
     let mut streams = Vec::with_capacity(
         world
             .nodes
@@ -637,7 +658,7 @@ fn world_rng_streams(world: &World) -> Vec<RngStreamId> {
     streams
 }
 
-fn world_lookahead_edges(world: &World) -> Vec<WorldLookaheadEdge> {
+pub(super) fn world_lookahead_edges(world: &World) -> Vec<WorldLookaheadEdge> {
     let mut edges = Vec::with_capacity(world.links.len().saturating_mul(2));
     for link in canonical_world_links(&world.links) {
         let (left, right) = link.endpoints();
@@ -656,11 +677,11 @@ fn world_lookahead_edges(world: &World) -> Vec<WorldLookaheadEdge> {
     edges
 }
 
-fn world_bake_nodes(world: &World) -> Vec<NodeId> {
+pub(super) fn world_bake_nodes(world: &World) -> Vec<NodeId> {
     world_participants(world)
 }
 
-fn world_link_stream_name(link: &LinkDef) -> String {
+pub(super) fn world_link_stream_name(link: &LinkDef) -> String {
     let (left, right) = link.endpoints();
     format!(
         "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
@@ -671,13 +692,13 @@ fn world_link_stream_name(link: &LinkDef) -> String {
     )
 }
 
-fn link_minimum_latency(link: &LinkDef) -> SimDuration {
+pub(super) fn link_minimum_latency(link: &LinkDef) -> SimDuration {
     SimDuration {
         nanos: link.latency().nanos.saturating_sub(link.jitter().nanos),
     }
 }
 
-fn derive_family_seed(meta_seed: Seed, index: u64) -> Seed {
+pub(super) fn derive_family_seed(meta_seed: Seed, index: u64) -> Seed {
     let hash = ContentHash::from_canonical_material(
         "crucible.model.scenario-family.seed.v1",
         &format!("{}\nseed_index={index}", seed_material(meta_seed)),
@@ -685,13 +706,13 @@ fn derive_family_seed(meta_seed: Seed, index: u64) -> Seed {
     Seed::from_bytes(hash.bytes)
 }
 
-fn family_node_id(index: u32) -> NodeId {
+pub(super) fn family_node_id(index: u32) -> NodeId {
     NodeId {
         name: format!("node-{index}"),
     }
 }
 
-fn family_links(params: FamilyParams) -> Result<Vec<LinkDef>, EngineError> {
+pub(super) fn family_links(params: FamilyParams) -> Result<Vec<LinkDef>, EngineError> {
     let mut pairs = BTreeSet::new();
     match params.topology_shape {
         TopologyShape::Ring => {
@@ -744,7 +765,7 @@ fn family_links(params: FamilyParams) -> Result<Vec<LinkDef>, EngineError> {
         .collect()
 }
 
-fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, right: u32) {
+pub(super) fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, right: u32) {
     if left == right {
         return;
     }
@@ -756,7 +777,7 @@ fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, right: u32)
     pairs.insert(pair);
 }
 
-fn family_fault_candidates(world: &World) -> Vec<FamilyFaultCandidate> {
+pub(super) fn family_fault_candidates(world: &World) -> Vec<FamilyFaultCandidate> {
     let mut candidates =
         Vec::with_capacity(world.links().len().saturating_add(world.vm_nodes().len()));
     for link in world.links() {
@@ -772,7 +793,7 @@ fn family_fault_candidates(world: &World) -> Vec<FamilyFaultCandidate> {
     candidates
 }
 
-fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
+pub(super) fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
     let world_identity = canonical_world_identity(world);
     canonical_world_nodes(&world.nodes)
         .into_iter()
@@ -790,7 +811,7 @@ fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
         .collect()
 }
 
-fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
+pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
     canonical_world_nodes(&world.nodes)
         .into_iter()
         .map(|node| {
@@ -805,7 +826,7 @@ fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
         .collect()
 }
 
-fn canonical_world_identity(world: &World) -> ContentHash {
+pub(super) fn canonical_world_identity(world: &World) -> ContentHash {
     let nodes = canonical_world_node_defs(&world.topology_nodes);
     let links = canonical_world_links(&world.links);
     if nodes.is_empty() && links.is_empty() {
@@ -818,7 +839,7 @@ fn canonical_world_identity(world: &World) -> ContentHash {
     )
 }
 
-fn serialized_world_identity(world: &World) -> ContentHash {
+pub(super) fn serialized_world_identity(world: &World) -> ContentHash {
     let nodes = canonical_world_node_defs(&world.topology_nodes);
     ContentHash::from_canonical_material(
         world_identity_domain(&nodes),
@@ -826,7 +847,7 @@ fn serialized_world_identity(world: &World) -> ContentHash {
     )
 }
 
-fn scenario_world_plan_properties_seed_material(
+pub(super) fn scenario_world_plan_properties_seed_material(
     world: &World,
     plan: &Plan,
     properties: &Properties,
@@ -841,7 +862,7 @@ fn scenario_world_plan_properties_seed_material(
     )
 }
 
-fn scenario_world_plan_properties_seed_app_random_cap_material(
+pub(super) fn scenario_world_plan_properties_seed_app_random_cap_material(
     world: &World,
     plan: &Plan,
     properties: &Properties,
@@ -858,7 +879,7 @@ fn scenario_world_plan_properties_seed_app_random_cap_material(
     )
 }
 
-fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> String {
+pub(super) fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> String {
     if nodes.iter().all(|node| matches!(node, WorldNodeDef::Vm(_))) {
         let vm_nodes = world_vm_node_projection(nodes);
         format!(
@@ -877,7 +898,7 @@ fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> String {
     }
 }
 
-fn world_identity_domain(nodes: &[WorldNodeDef]) -> &'static str {
+pub(super) fn world_identity_domain(nodes: &[WorldNodeDef]) -> &'static str {
     if nodes.iter().any(|node| matches!(node, WorldNodeDef::Io(_))) {
         "crucible.model.world.v2"
     } else {
@@ -885,7 +906,7 @@ fn world_identity_domain(nodes: &[WorldNodeDef]) -> &'static str {
     }
 }
 
-fn world_nodes_material(nodes: &[WorldNode]) -> String {
+pub(super) fn world_nodes_material(nodes: &[WorldNode]) -> String {
     let mut lines = Vec::with_capacity(nodes.len().saturating_mul(5) + 1);
     lines.push(format!("nodes={}", nodes.len()));
     for node in nodes {
@@ -894,7 +915,7 @@ fn world_nodes_material(nodes: &[WorldNode]) -> String {
     lines.join("\n")
 }
 
-fn world_links_material(links: &[LinkDef]) -> String {
+pub(super) fn world_links_material(links: &[LinkDef]) -> String {
     let mut lines = Vec::with_capacity(links.len().saturating_mul(8) + 1);
     lines.push(format!("links={}", links.len()));
     for link in links {
@@ -903,7 +924,7 @@ fn world_links_material(links: &[LinkDef]) -> String {
     lines.join("\n")
 }
 
-fn world_node_defs_material(nodes: &[WorldNodeDef]) -> String {
+pub(super) fn world_node_defs_material(nodes: &[WorldNodeDef]) -> String {
     let mut lines = Vec::with_capacity(nodes.len().saturating_mul(8) + 1);
     lines.push(format!("nodes={}", nodes.len()));
     for node in nodes {
@@ -915,7 +936,7 @@ fn world_node_defs_material(nodes: &[WorldNodeDef]) -> String {
     lines.join("\n")
 }
 
-fn world_io_node_material(node: &WorldIoNode) -> String {
+pub(super) fn world_io_node_material(node: &WorldIoNode) -> String {
     let kind = match &node.kind {
         WorldIoNodeKind::Block {
             base_image,
@@ -950,7 +971,7 @@ fn world_io_node_material(node: &WorldIoNode) -> String {
     )
 }
 
-fn world_node_material(node: &WorldNode) -> String {
+pub(super) fn world_node_material(node: &WorldNode) -> String {
     format!(
         "node_id_len={}\nnode_id={}\narch={}\nmemory_mib={}\ncmdline_len={}\ncmdline={}\nsmp_vcpus={}\nicount_shift={}\nkernel_ref={}\nroot_image_ref={}\ninitrd_ref={}\n{}\nwhite_box={}",
         node.id.name.len(),
@@ -969,7 +990,7 @@ fn world_node_material(node: &WorldNode) -> String {
     )
 }
 
-fn world_link_material(link: &LinkDef) -> String {
+pub(super) fn world_link_material(link: &LinkDef) -> String {
     let (left, right) = link.endpoints();
     format!(
         "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}\nlink_latency_ns={}\nlink_jitter_ns={}\nlink_loss_millionths={}\nlink_bandwidth_bps={}",
@@ -985,11 +1006,11 @@ fn world_link_material(link: &LinkDef) -> String {
     )
 }
 
-fn plan_material(plan: &Plan) -> String {
+pub(super) fn plan_material(plan: &Plan) -> String {
     plan_kind_material(&plan.kind)
 }
 
-fn plan_kind_material(kind: &PlanKind) -> String {
+pub(super) fn plan_kind_material(kind: &PlanKind) -> String {
     match kind {
         PlanKind::ScheduledEntries { entries } => scheduled_plan_material(entries),
         PlanKind::FaultPlan { plan } => fault_plan_material(plan.entries()),
@@ -997,7 +1018,7 @@ fn plan_kind_material(kind: &PlanKind) -> String {
     }
 }
 
-fn scheduled_plan_material(entries: &[PlanEntry]) -> String {
+pub(super) fn scheduled_plan_material(entries: &[PlanEntry]) -> String {
     let mut lines = Vec::with_capacity(entries.len().saturating_mul(12) + 1);
     lines.push(format!("entries={}", entries.len()));
     for entry in entries {
@@ -1006,15 +1027,15 @@ fn scheduled_plan_material(entries: &[PlanEntry]) -> String {
     lines.join("\n")
 }
 
-fn fault_plan_material(entries: &[FaultPlanEntry]) -> String {
+pub(super) fn fault_plan_material(entries: &[FaultPlanEntry]) -> String {
     event_graph_plan_material_from_events(&fault_plan_material_events(entries))
 }
 
-fn event_graph_plan_material(graph: &EventGraph) -> String {
+pub(super) fn event_graph_plan_material(graph: &EventGraph) -> String {
     event_graph_plan_material_from_events(graph.events())
 }
 
-fn event_graph_plan_material_from_events(events: &[Event]) -> String {
+pub(super) fn event_graph_plan_material_from_events(events: &[Event]) -> String {
     let mut lines = Vec::with_capacity(events.len().saturating_mul(16) + 2);
     lines.push(String::from("plan=event-graph"));
     lines.push(format!("events={}", events.len()));
@@ -1025,16 +1046,16 @@ fn event_graph_plan_material_from_events(events: &[Event]) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FaultPlanMaterialAction {
-    at: VirtualTime,
-    kind: &'static str,
-    kind_order: u8,
-    tag: FaultTag,
-    material: String,
-    action: Action,
+pub(super) struct FaultPlanMaterialAction {
+    pub(super) at: VirtualTime,
+    pub(super) kind: &'static str,
+    pub(super) kind_order: u8,
+    pub(super) tag: FaultTag,
+    pub(super) material: String,
+    pub(super) action: Action,
 }
 
-fn fault_plan_material_events(entries: &[FaultPlanEntry]) -> Vec<Event> {
+pub(super) fn fault_plan_material_events(entries: &[FaultPlanEntry]) -> Vec<Event> {
     fault_plan_material_actions(entries)
         .iter()
         .enumerate()
@@ -1048,7 +1069,9 @@ fn fault_plan_material_events(entries: &[FaultPlanEntry]) -> Vec<Event> {
         .collect()
 }
 
-fn fault_plan_material_actions(entries: &[FaultPlanEntry]) -> Vec<FaultPlanMaterialAction> {
+pub(super) fn fault_plan_material_actions(
+    entries: &[FaultPlanEntry],
+) -> Vec<FaultPlanMaterialAction> {
     let mut actions = Vec::new();
     for entry in entries {
         match entry {
@@ -1083,7 +1106,7 @@ fn fault_plan_material_actions(entries: &[FaultPlanEntry]) -> Vec<FaultPlanMater
     actions
 }
 
-fn fault_plan_material_inject_action(
+pub(super) fn fault_plan_material_inject_action(
     at: VirtualTime,
     tag: &FaultTag,
     fault: &Fault,
@@ -1105,7 +1128,10 @@ fn fault_plan_material_inject_action(
     }
 }
 
-fn fault_plan_material_heal_action(at: VirtualTime, tag: &FaultTag) -> FaultPlanMaterialAction {
+pub(super) fn fault_plan_material_heal_action(
+    at: VirtualTime,
+    tag: &FaultTag,
+) -> FaultPlanMaterialAction {
     FaultPlanMaterialAction {
         at,
         kind: "heal",
@@ -1116,11 +1142,11 @@ fn fault_plan_material_heal_action(at: VirtualTime, tag: &FaultTag) -> FaultPlan
     }
 }
 
-fn fault_plan_material_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
+pub(super) fn fault_plan_material_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
     EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
 }
 
-fn event_material(event: &Event) -> String {
+pub(super) fn event_material(event: &Event) -> String {
     let trigger = match &event.trigger {
         Some(trigger) => format!("trigger=some\n{}", predicate_material(trigger)),
         None => String::from("trigger=entrypoint"),
@@ -1134,7 +1160,7 @@ fn event_material(event: &Event) -> String {
     )
 }
 
-fn fault_plan_entry_material(entry: &FaultPlanEntry) -> String {
+pub(super) fn fault_plan_entry_material(entry: &FaultPlanEntry) -> String {
     match entry {
         FaultPlanEntry::At {
             at,
@@ -1168,7 +1194,7 @@ fn fault_plan_entry_material(entry: &FaultPlanEntry) -> String {
     }
 }
 
-fn plan_entry_material(entry: &PlanEntry) -> String {
+pub(super) fn plan_entry_material(entry: &PlanEntry) -> String {
     match entry {
         PlanEntry::Activate { at, tag, fault } => {
             format!(
@@ -1188,7 +1214,7 @@ fn plan_entry_material(entry: &PlanEntry) -> String {
     }
 }
 
-fn action_material(action: &Action) -> String {
+pub(super) fn action_material(action: &Action) -> String {
     match action {
         Action::InjectFault { tag, fault } => {
             format!(
@@ -1252,7 +1278,7 @@ fn action_material(action: &Action) -> String {
     }
 }
 
-fn membership_fault_material(fault: &MembershipFault) -> String {
+pub(super) fn membership_fault_material(fault: &MembershipFault) -> String {
     match fault {
         MembershipFault::Crash { node, restart } => {
             format!(
@@ -1285,11 +1311,11 @@ fn membership_fault_material(fault: &MembershipFault) -> String {
     }
 }
 
-fn fault_tag_material(tag: &FaultTag) -> String {
+pub(super) fn fault_tag_material(tag: &FaultTag) -> String {
     format!("tag_len={}\ntag={}", tag.name.len(), tag.name)
 }
 
-fn properties_material(assertions: &[AssertionDef]) -> String {
+pub(super) fn properties_material(assertions: &[AssertionDef]) -> String {
     let mut lines = Vec::with_capacity(assertions.len().saturating_mul(16) + 1);
     lines.push(format!("assertions={}", assertions.len()));
     for assertion in assertions {
@@ -1298,7 +1324,7 @@ fn properties_material(assertions: &[AssertionDef]) -> String {
     lines.join("\n")
 }
 
-fn assertion_material(assertion: &AssertionDef) -> String {
+pub(super) fn assertion_material(assertion: &AssertionDef) -> String {
     format!(
         "{}\nmessage_len={}\nmessage={}\n{}",
         assertion_id_material(&assertion.id),
@@ -1308,7 +1334,7 @@ fn assertion_material(assertion: &AssertionDef) -> String {
     )
 }
 
-fn property_material(property: &Property) -> String {
+pub(super) fn property_material(property: &Property) -> String {
     match property {
         Property::Always { predicate } => {
             format!(
@@ -1367,7 +1393,7 @@ fn property_material(property: &Property) -> String {
     }
 }
 
-fn predicate_material(predicate: &Predicate) -> String {
+pub(super) fn predicate_material(predicate: &Predicate) -> String {
     match predicate {
         Predicate::At { at } => {
             format!("predicate=at\nat_ticks={}", at.ticks)
@@ -1471,7 +1497,7 @@ fn predicate_material(predicate: &Predicate) -> String {
     }
 }
 
-fn predicate_nodes_material(nodes: &[NodeId]) -> String {
+pub(super) fn predicate_nodes_material(nodes: &[NodeId]) -> String {
     let mut lines = Vec::with_capacity(nodes.len().saturating_mul(2) + 1);
     lines.push(format!("predicate_nodes={}", nodes.len()));
     for node in nodes {
@@ -1480,7 +1506,7 @@ fn predicate_nodes_material(nodes: &[NodeId]) -> String {
     lines.join("\n")
 }
 
-fn predicate_list_material(predicates: &[Predicate]) -> String {
+pub(super) fn predicate_list_material(predicates: &[Predicate]) -> String {
     let mut lines = Vec::with_capacity(predicates.len().saturating_mul(8) + 1);
     lines.push(format!("predicates={}", predicates.len()));
     for predicate in predicates {
@@ -1489,19 +1515,19 @@ fn predicate_list_material(predicates: &[Predicate]) -> String {
     lines.join("\n")
 }
 
-fn event_id_material(id: &EventId) -> String {
+pub(super) fn event_id_material(id: &EventId) -> String {
     format!("event_id_len={}\nevent_id={}", id.name.len(), id.name)
 }
 
-fn timer_id_material(id: &TimerId) -> String {
+pub(super) fn timer_id_material(id: &TimerId) -> String {
     format!("timer_id_len={}\ntimer_id={}", id.name.len(), id.name)
 }
 
-fn link_id_material(id: &LinkId) -> String {
+pub(super) fn link_id_material(id: &LinkId) -> String {
     format!("link_id_len={}\nlink_id={}", id.name.len(), id.name)
 }
 
-fn frame_predicate_material(predicate: &FramePredicate) -> String {
+pub(super) fn frame_predicate_material(predicate: &FramePredicate) -> String {
     match predicate {
         FramePredicate::Any => String::from("frame_predicate=any"),
         FramePredicate::Exact(bytes) => format!(
@@ -1522,11 +1548,11 @@ fn frame_predicate_material(predicate: &FramePredicate) -> String {
     }
 }
 
-fn regex_program_material(regex: &RegexProgram) -> String {
+pub(super) fn regex_program_material(regex: &RegexProgram) -> String {
     format!("regex_len={}\nregex={}", regex.pattern.len(), regex.pattern)
 }
 
-fn code_point_material(point: &CodePoint) -> String {
+pub(super) fn code_point_material(point: &CodePoint) -> String {
     match point {
         CodePoint::GuestAddress { address } => {
             format!("code_point=guest-address\ncode_address={address}")
@@ -1541,7 +1567,7 @@ fn code_point_material(point: &CodePoint) -> String {
     }
 }
 
-fn mem_place_material(place: &MemPlace) -> String {
+pub(super) fn mem_place_material(place: &MemPlace) -> String {
     match place {
         MemPlace::PhysicalAddress { address, width } => format!(
             "mem_place=physical-address\nmem_address={address}\nmem_width={}",
@@ -1566,7 +1592,7 @@ fn mem_place_material(place: &MemPlace) -> String {
     }
 }
 
-fn memory_width_label(width: MemoryWidth) -> &'static str {
+pub(super) fn memory_width_label(width: MemoryWidth) -> &'static str {
     match width {
         MemoryWidth::U8 => "u8",
         MemoryWidth::U16 => "u16",
@@ -1575,7 +1601,7 @@ fn memory_width_label(width: MemoryWidth) -> &'static str {
     }
 }
 
-fn memory_cmp_label(cmp: MemoryCmp) -> &'static str {
+pub(super) fn memory_cmp_label(cmp: MemoryCmp) -> &'static str {
     match cmp {
         MemoryCmp::Eq => "eq",
         MemoryCmp::Ne => "ne",
@@ -1586,7 +1612,7 @@ fn memory_cmp_label(cmp: MemoryCmp) -> &'static str {
     }
 }
 
-fn io_event_kind_label(kind: IoEventKind) -> &'static str {
+pub(super) fn io_event_kind_label(kind: IoEventKind) -> &'static str {
     match kind {
         IoEventKind::Any => "any",
         IoEventKind::BlockRead => "block-read",
@@ -1597,7 +1623,7 @@ fn io_event_kind_label(kind: IoEventKind) -> &'static str {
     }
 }
 
-fn node_lifecycle_label(state: NodeLifecycle) -> &'static str {
+pub(super) fn node_lifecycle_label(state: NodeLifecycle) -> &'static str {
     match state {
         NodeLifecycle::Started => "started",
         NodeLifecycle::Crashed => "crashed",
@@ -1606,14 +1632,14 @@ fn node_lifecycle_label(state: NodeLifecycle) -> &'static str {
     }
 }
 
-fn assertion_phase_label(state: AssertionPhase) -> &'static str {
+pub(super) fn assertion_phase_label(state: AssertionPhase) -> &'static str {
     match state {
         AssertionPhase::Satisfied => "satisfied",
         AssertionPhase::Violated => "violated",
     }
 }
 
-fn assertion_id_material(id: &AssertionId) -> String {
+pub(super) fn assertion_id_material(id: &AssertionId) -> String {
     format!(
         "assertion_id_len={}\nassertion_id={}",
         id.name.len(),
@@ -1621,19 +1647,19 @@ fn assertion_id_material(id: &AssertionId) -> String {
     )
 }
 
-fn marker_id_material(id: &MarkerId) -> String {
+pub(super) fn marker_id_material(id: &MarkerId) -> String {
     format!("marker_id_len={}\nmarker_id={}", id.name.len(), id.name)
 }
 
-fn seed_material(seed: Seed) -> String {
+pub(super) fn seed_material(seed: Seed) -> String {
     format!("seed_bytes={}", seed.to_hex())
 }
 
-fn app_random_draw_cap_material(app_random_draw_cap: u64) -> String {
+pub(super) fn app_random_draw_cap_material(app_random_draw_cap: u64) -> String {
     format!("app_random_draw_cap={app_random_draw_cap}")
 }
 
-fn optional_label_material(prefix: &str, label: Option<&str>) -> String {
+pub(super) fn optional_label_material(prefix: &str, label: Option<&str>) -> String {
     match label {
         Some(label) => format!(
             "{prefix}=some\n{prefix}_len={}\n{prefix}={label}",
@@ -1643,15 +1669,15 @@ fn optional_label_material(prefix: &str, label: Option<&str>) -> String {
     }
 }
 
-fn optional_blob_ref_material(reference: Option<ContentAddressedBlobRef>) -> String {
+pub(super) fn optional_blob_ref_material(reference: Option<ContentAddressedBlobRef>) -> String {
     reference.map_or_else(|| String::from("none"), ContentAddressedBlobRef::to_uri)
 }
 
-fn node_ref_material(prefix: &str, node: &NodeId) -> String {
+pub(super) fn node_ref_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}_len={}\n{prefix}={}", node.name.len(), node.name)
 }
 
-fn restart_policy_label(policy: RestartPolicy) -> &'static str {
+pub(super) fn restart_policy_label(policy: RestartPolicy) -> &'static str {
     match policy {
         RestartPolicy::FromReadyPoint => "from-ready-point",
         RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
@@ -1659,7 +1685,7 @@ fn restart_policy_label(policy: RestartPolicy) -> &'static str {
     }
 }
 
-fn partition_direction_label(direction: PartitionDirection) -> &'static str {
+pub(super) fn partition_direction_label(direction: PartitionDirection) -> &'static str {
     match direction {
         PartitionDirection::Bidirectional => "bidirectional",
         PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
@@ -1667,21 +1693,21 @@ fn partition_direction_label(direction: PartitionDirection) -> &'static str {
     }
 }
 
-fn reachable_disposition_label(disposition: ReachableDisposition) -> &'static str {
+pub(super) fn reachable_disposition_label(disposition: ReachableDisposition) -> &'static str {
     match disposition {
         ReachableDisposition::Warn => "warn",
         ReachableDisposition::Fail => "fail",
     }
 }
 
-fn fire_policy_label(policy: FirePolicy) -> &'static str {
+pub(super) fn fire_policy_label(policy: FirePolicy) -> &'static str {
     match policy {
         FirePolicy::Once => "once",
         FirePolicy::Repeatable => "repeatable",
     }
 }
 
-fn log_level_label(level: LogLevel) -> &'static str {
+pub(super) fn log_level_label(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Debug => "debug",
         LogLevel::Info => "info",
@@ -1690,7 +1716,7 @@ fn log_level_label(level: LogLevel) -> &'static str {
     }
 }
 
-fn ready_point_material(ready_point: &ReadyPoint) -> String {
+pub(super) fn ready_point_material(ready_point: &ReadyPoint) -> String {
     match ready_point {
         ReadyPoint::FixedIcount { icount } => {
             format!("ready_point=fixed-icount\nready_icount={}", icount.retired)
@@ -1706,7 +1732,7 @@ fn ready_point_material(ready_point: &ReadyPoint) -> String {
     }
 }
 
-fn white_box_material(policy: WhiteBoxPolicy) -> &'static str {
+pub(super) fn white_box_material(policy: WhiteBoxPolicy) -> &'static str {
     match policy {
         WhiteBoxPolicy::Disabled => "disabled",
         WhiteBoxPolicy::Enabled => "enabled",

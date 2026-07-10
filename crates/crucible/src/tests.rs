@@ -2,5 +2,9 @@
 
 use super::*;
 
-include!("tests/model_core.rs");
-include!("tests/world_validation.rs");
+#[path = "tests/model_core.rs"]
+mod model_core;
+#[path = "tests/world_validation.rs"]
+mod world_validation;
+
+use world_validation::*;

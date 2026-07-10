@@ -1,6 +1,8 @@
-// Search, replay, artifact, and deterministic execution tests.
+//! Search, replay, artifact, and deterministic execution tests.
+
+use super::*;
 #[test]
-fn cli_search_fuzz_help_surface_lists_wip_flags() {
+pub(super) fn cli_search_fuzz_help_surface_lists_wip_flags() {
     let mut command = Cli::command();
     for (name, needles) in [
         (
@@ -40,7 +42,8 @@ fn cli_search_fuzz_help_surface_lists_wip_flags() {
 }
 
 #[test]
-fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let named_truths = write_search_schedule_named_truths(&temp, true)?;
@@ -575,7 +578,7 @@ quiescent = false
 }
 
 #[test]
-fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse_from([
         "crucible",
         "--quiet",
@@ -611,7 +614,8 @@ fn cli_fuzz_runs_builtin_fault_campaign_family() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<(), Box<dyn Error>>
+{
     assert_eq!(
         local_double_search_status(false, false, SearchOnViolationArg::Stop),
         BackendCommandStatus::Timeout
@@ -1294,7 +1298,7 @@ fn cli_search_fuzz_workflow_executes_local_double_search() -> Result<(), Box<dyn
 }
 
 #[test]
-fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let family_path = write_valid_fuzz_family(&temp)?;
     let corpus = temp.path().join("fuzz-corpus");
@@ -1553,7 +1557,8 @@ fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn cli_run_workflow_plans_start_continue_stream_and_budgets() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_run_workflow_plans_start_continue_stream_and_budgets()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -1591,7 +1596,7 @@ fn cli_run_workflow_plans_start_continue_stream_and_budgets() -> Result<(), Box<
 }
 
 #[test]
-fn cli_run_workflow_supports_virtual_time_budget() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_run_workflow_supports_virtual_time_budget() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -1620,7 +1625,7 @@ fn cli_run_workflow_supports_virtual_time_budget() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
-fn cli_run_workflow_interactive_pauses_at_genesis_and_accepts_session_commands()
+pub(super) fn cli_run_workflow_interactive_pauses_at_genesis_and_accepts_session_commands()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
@@ -1681,7 +1686,8 @@ fn cli_run_workflow_interactive_pauses_at_genesis_and_accepts_session_commands()
 }
 
 #[test]
-fn cli_run_workflow_rejects_bad_scenarios_and_invalid_budgets() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_run_workflow_rejects_bad_scenarios_and_invalid_budgets()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let error = match plan_run_invocation(
         &RunArgs {
@@ -1844,7 +1850,8 @@ fn cli_run_workflow_rejects_bad_scenarios_and_invalid_budgets() -> Result<(), Bo
 }
 
 #[test]
-fn cli_run_workflow_uses_uniform_outcome_exit_code_mapping() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_run_workflow_uses_uniform_outcome_exit_code_mapping() -> Result<(), Box<dyn Error>>
+{
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let scenario_bytes = fs::read(&scenario)?;
@@ -1878,7 +1885,7 @@ fn cli_run_workflow_uses_uniform_outcome_exit_code_mapping() -> Result<(), Box<d
 }
 
 #[test]
-fn cli_exit_machine_readable_mapping_matches_rfc_15() {
+pub(super) fn cli_exit_machine_readable_mapping_matches_rfc_15() {
     let cases = [
         (CliError::Outcome(BackendCommandStatus::Passed), 0),
         (CliError::Outcome(BackendCommandStatus::Failed), 1),
@@ -1902,7 +1909,8 @@ fn cli_exit_machine_readable_mapping_matches_rfc_15() {
 }
 
 #[test]
-fn cli_exit_machine_readable_output_records_final_outcome() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_exit_machine_readable_output_records_final_outcome() -> Result<(), Box<dyn Error>>
+{
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -1965,8 +1973,8 @@ fn cli_exit_machine_readable_output_records_final_outcome() -> Result<(), Box<dy
 }
 
 #[test]
-fn cli_run_workflow_executes_local_double_session_and_timeout_budget() -> Result<(), Box<dyn Error>>
-{
+pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let pass_cli = Cli::parse_from([
@@ -2161,7 +2169,7 @@ fn cli_run_workflow_executes_local_double_session_and_timeout_budget() -> Result
 }
 
 #[test]
-fn cli_run_workflow_executes_remote_daemon_session_against_production_server()
+pub(super) fn cli_run_workflow_executes_remote_daemon_session_against_production_server()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
@@ -2218,7 +2226,7 @@ fn cli_run_workflow_executes_remote_daemon_session_against_production_server()
 }
 
 #[test]
-fn cli_run_workflow_parses_interactive_session_commands() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_run_workflow_parses_interactive_session_commands() -> Result<(), Box<dyn Error>> {
     let commands = parse_interactive_session_commands(
         "\n# comment\nquery\nstep\ninject-fault\nheal\nsave\nfork\nstop\n",
     )?;
@@ -2247,7 +2255,8 @@ fn cli_run_workflow_parses_interactive_session_commands() -> Result<(), Box<dyn 
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn cli_run_workflow_acknowledges_interactive_reader_commands() -> Result<(), Box<dyn Error>> {
+pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -2307,7 +2316,8 @@ async fn cli_run_workflow_acknowledges_interactive_reader_commands() -> Result<(
 }
 
 #[test]
-fn cli_backend_selection_covers_every_backend_routed_subcommand() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
 
@@ -2410,7 +2420,8 @@ fn cli_backend_selection_covers_every_backend_routed_subcommand() -> Result<(), 
 }
 
 #[test]
-fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -2446,7 +2457,7 @@ fn cli_verify_workflow_plans_runs_adversarial_matrix_and_bisection() -> Result<(
 }
 
 #[test]
-fn cli_verify_builtin_example_corpus_adversarial() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_builtin_example_corpus_adversarial() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     for scenario_name in [
         crucible::HAPPY_PATH_SCENARIO_NAME,
@@ -2532,7 +2543,7 @@ fn cli_verify_builtin_example_corpus_adversarial() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
-fn cli_verify_workflow_rejects_single_fresh_reduction() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_workflow_rejects_single_fresh_reduction() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -2562,7 +2573,7 @@ fn cli_verify_workflow_rejects_single_fresh_reduction() -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn cli_verify_sim_backend_loop_fingerprints_backend_state_after_quantum()
+pub(super) fn cli_verify_sim_backend_loop_fingerprints_backend_state_after_quantum()
 -> Result<(), Box<dyn Error>> {
     let mut loop_impl = SimBackendLifecycleLoop::default();
     let node = crucible::NodeId {
@@ -2591,7 +2602,8 @@ fn cli_verify_sim_backend_loop_fingerprints_backend_state_after_quantum()
 }
 
 #[test]
-fn cli_verify_workflow_collects_post_step_backend_fingerprint() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_workflow_collects_post_step_backend_fingerprint()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([
@@ -2655,7 +2667,8 @@ fn cli_verify_workflow_collects_post_step_backend_fingerprint() -> Result<(), Bo
 }
 
 #[test]
-fn cli_verify_workflow_runs_fresh_local_double_reductions() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_workflow_runs_fresh_local_double_reductions() -> Result<(), Box<dyn Error>>
+{
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let cli = Cli::parse_from([

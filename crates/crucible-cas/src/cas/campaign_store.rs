@@ -1,3 +1,7 @@
+//! Persistent campaign-store layout, locking, and manifest updates.
+
+use super::*;
+
 /// Persistent campaign store with a content-addressed manifest and CAS head.
 ///
 /// Campaign manifests are immutable objects in the same [`SharedDagStore`] used
@@ -303,7 +307,7 @@ impl SharedCampaignStore {
             })
     }
 
-    fn seed_next_run_from_prior_corpus(
+    pub(super) fn seed_next_run_from_prior_corpus(
         &self,
         corpus_root: ContentHash,
     ) -> Result<Vec<CampaignCorpusSeed>, CasError> {
@@ -1499,12 +1503,12 @@ impl SharedCampaignStore {
 }
 
 #[derive(Debug)]
-struct CampaignHeadLock {
+pub(super) struct CampaignHeadLock {
     file: fs::File,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CampaignHeadPointer {
-    generation: u64,
-    manifest_hash: ContentHash,
+pub(super) struct CampaignHeadPointer {
+    pub(super) generation: u64,
+    pub(super) manifest_hash: ContentHash,
 }

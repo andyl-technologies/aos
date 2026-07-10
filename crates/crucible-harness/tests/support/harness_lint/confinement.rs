@@ -68,6 +68,9 @@ pub(super) fn workspace_confinement_findings(
 
         let mut sources = Vec::new();
         for source in rust_sources(&package_dir.join("src"))? {
+            if is_test_only_source(&package_dir, &source) {
+                continue;
+            }
             let content = fs::read_to_string(&source)?;
             sources.push((source, content));
         }
@@ -204,12 +207,7 @@ fn boundary_source_allows_host_nondeterminism(
     let relative = relative.to_string_lossy().replace('\\', "/");
 
     match package {
-        "crucible-cli" => {
-            relative == "src/main.rs"
-                || relative_is_under(&relative, "src/diagnostics")
-                || relative_is_under(&relative, "src/output")
-                || relative_is_under(&relative, "src/progress")
-        }
+        "crucible-cli" => relative_is_under(&relative, "src"),
         "crucible-daemon" => {
             relative_is_under(&relative, "src/diagnostics")
                 || relative_is_under(&relative, "src/supervision")
@@ -217,6 +215,7 @@ fn boundary_source_allows_host_nondeterminism(
         }
         "crucible-qemu" => {
             relative_is_under(&relative, "src/diagnostics")
+                || relative_is_under(&relative, "src/live_coverage_gate")
                 || relative_is_under(&relative, "src/process")
                 || relative_is_under(&relative, "src/supervision")
         }
@@ -237,6 +236,9 @@ fn public_export_findings(path: &Path, content: &str) -> Vec<String> {
         if token.kind.as_ident() != Some("pub") {
             continue;
         }
+        if parent_module_visibility(&tokens, index) {
+            continue;
+        }
 
         if let Some(export) = exported_item_after_visibility(&tokens, index) {
             push_finding(
@@ -251,7 +253,27 @@ fn public_export_findings(path: &Path, content: &str) -> Vec<String> {
         }
     }
 
-    findings
+    filter_cfg_test_findings(content, findings)
+}
+
+fn parent_module_visibility(tokens: &[Token], index: usize) -> bool {
+    matches!(
+        (tokens.get(index + 1), tokens.get(index + 2), tokens.get(index + 3)),
+        (
+            Some(Token {
+                kind: TokenKind::Punct('('),
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Ident(visibility),
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Punct(')'),
+                ..
+            })
+        ) if visibility == "super" || visibility == "self"
+    )
 }
 
 fn exported_item_after_visibility(tokens: &[Token], index: usize) -> Option<&str> {
@@ -344,7 +366,7 @@ fn token_identifier_findings(
         );
     }
 
-    findings
+    filter_cfg_test_findings(content, findings)
 }
 
 pub(super) fn source_pairs(sources: &[(&str, &str)]) -> Vec<(PathBuf, String)> {

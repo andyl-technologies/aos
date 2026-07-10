@@ -1,3 +1,7 @@
+//! Session event-log and state-transition broadcast streams.
+
+use super::*;
+
 /// Cursor into a session event-log stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventLogCursor {
@@ -27,7 +31,7 @@ pub struct SessionEventLogFrame {
 }
 
 impl SessionEventLogFrame {
-    fn new(entry: SchedulerEventLogEntry, generation: u64) -> Self {
+    pub(super) fn new(entry: SchedulerEventLogEntry, generation: u64) -> Self {
         let sequence = entry.sequence();
         Self {
             generation,
@@ -71,7 +75,7 @@ pub struct SessionEventLog {
 }
 
 #[derive(Debug)]
-struct SessionEventLogInner {
+pub(super) struct SessionEventLogInner {
     entries: Mutex<Vec<SchedulerEventLogEntry>>,
     generation: AtomicU64,
     generation_start: AtomicU64,
@@ -180,7 +184,7 @@ impl SessionEventLog {
         }
     }
 
-    fn append_entries(&self, entries: &[SchedulerEventLogEntry]) {
+    pub(super) fn append_entries(&self, entries: &[SchedulerEventLogEntry]) {
         if entries.is_empty() {
             return;
         }
@@ -197,7 +201,7 @@ impl SessionEventLog {
         }
     }
 
-    fn truncate_to_len(&self, len: usize) {
+    pub(super) fn truncate_to_len(&self, len: usize) {
         let mut entries = self.lock_entries();
         if entries.len() > len {
             entries.truncate(len);
@@ -216,7 +220,7 @@ impl SessionEventLog {
         EventLogCursor::new(self.inner.generation_start.load(Ordering::Acquire))
     }
 
-    fn lock_entries(&self) -> std::sync::MutexGuard<'_, Vec<SchedulerEventLogEntry>> {
+    pub(super) fn lock_entries(&self) -> std::sync::MutexGuard<'_, Vec<SchedulerEventLogEntry>> {
         match self.inner.entries.lock() {
             Ok(entries) => entries,
             Err(poisoned) => poisoned.into_inner(),
@@ -288,7 +292,7 @@ impl SessionReproductionLog {
         self.lock_entries().is_empty()
     }
 
-    fn sync_from_boundary_log(&self, entries: &[SessionControlLogEntry]) {
+    pub(super) fn sync_from_boundary_log(&self, entries: &[SessionControlLogEntry]) {
         let mut current = self.lock_entries();
         if current.as_slice() == entries {
             return;
@@ -508,7 +512,7 @@ impl SessionStateTransitionBus {
         }
     }
 
-    fn publish(&self, frame: SessionStateTransitionFrame) {
+    pub(super) fn publish(&self, frame: SessionStateTransitionFrame) {
         let _ = self.tail.send(frame);
     }
 }

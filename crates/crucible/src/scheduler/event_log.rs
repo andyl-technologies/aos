@@ -1,4 +1,6 @@
-// Quantum-loop contracts plus canonical scheduler event-log storage and projections.
+//! Quantum-loop contracts plus canonical scheduler event-log storage and projections.
+
+use super::*;
 
 /// Advances the system by one scheduler quantum.
 ///
@@ -121,8 +123,8 @@ pub trait QuantumLoop {
 /// unified event-log owner before returning to the session actor.
 #[derive(Clone, Debug)]
 pub struct BackendQuantumLoop<L, B> {
-    loop_impl: L,
-    backend: B,
+    pub(super) loop_impl: L,
+    pub(super) backend: B,
 }
 
 impl<L, B> BackendQuantumLoop<L, B> {
@@ -438,8 +440,8 @@ pub enum EventAttributeValue {
 /// Open-set event payload read by observability projections.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventPayload {
-    kind: String,
-    attributes: BTreeMap<String, EventAttributeValue>,
+    pub(super) kind: String,
+    pub(super) attributes: BTreeMap<String, EventAttributeValue>,
 }
 
 impl EventPayload {
@@ -587,22 +589,22 @@ impl EventPayload {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerEventLogEntry {
     /// Dense per-run sequence number assigned by the scheduler append path.
-    sequence: u64,
+    pub(super) sequence: u64,
     /// Virtual-time coordinate, optionally enriched with per-node icount.
-    at: EventLogTime,
+    pub(super) at: EventLogTime,
     /// Closed source that identifies where the entry originated.
-    source: EventSource,
+    pub(super) source: EventSource,
     /// Display verbosity, orthogonal to determinism class.
-    level: EventLevel,
+    pub(super) level: EventLevel,
     /// Causal-vs-observational class recorded by the typed append path.
-    class: SchedulerEventLogClass,
+    pub(super) class: SchedulerEventLogClass,
     /// Open-set payload kind and typed named attributes.
-    event_payload: EventPayload,
+    pub(super) event_payload: EventPayload,
     /// Typed payload carried by the event-log entry.
-    payload: SchedulerEventLogPayload,
+    pub(super) payload: SchedulerEventLogPayload,
     /// Content address of this entry's canonical material.
-    content_hash: ContentHash,
-    provenance: SchedulerEventLogEntryProvenance,
+    pub(super) content_hash: ContentHash,
+    pub(super) provenance: SchedulerEventLogEntryProvenance,
 }
 
 /// Compatibility name for entries in the unified event log.
@@ -612,7 +614,7 @@ pub type LogEntry = SchedulerEventLogEntry;
 pub type EventClass = SchedulerEventLogClass;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct SchedulerEventLogEntryProvenance;
+pub(super) struct SchedulerEventLogEntryProvenance;
 
 impl SchedulerEventLogEntry {
     /// Builds a scheduler-owned assertion-state observation for deterministic
@@ -857,8 +859,8 @@ impl SchedulerEventLogEntry {
 }
 
 #[derive(Clone)]
-struct EventLogSegmentStore {
-    store: Arc<dyn DagStore>,
+pub(super) struct EventLogSegmentStore {
+    pub(super) store: Arc<dyn DagStore>,
 }
 
 impl EventLogSegmentStore {
@@ -908,14 +910,14 @@ impl fmt::Debug for EventLogSegmentStore {
 /// observability consumers take projections of this one stream.
 #[derive(Clone, Debug)]
 pub struct EventLog {
-    segment_store: EventLogSegmentStore,
-    prefix: ContentHash,
-    offset: EventLogOffset,
-    bytes: u64,
-    events: u64,
-    condition_entries: Vec<LogEntry>,
-    condition_base_events: u64,
-    condition_prefix: ConditionEventLogPrefix,
+    pub(super) segment_store: EventLogSegmentStore,
+    pub(super) prefix: ContentHash,
+    pub(super) offset: EventLogOffset,
+    pub(super) bytes: u64,
+    pub(super) events: u64,
+    pub(super) condition_entries: Vec<LogEntry>,
+    pub(super) condition_base_events: u64,
+    pub(super) condition_prefix: ConditionEventLogPrefix,
 }
 
 impl EventLog {
@@ -1171,9 +1173,9 @@ pub struct EventLogCausalProjectionEntry {
 /// versioned binary segment encoder used for stored event-log segments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLogCausalProjection {
-    entries: Vec<EventLogCausalProjectionEntry>,
-    canonical_bytes: Vec<u8>,
-    content_hash: ContentHash,
+    pub(super) entries: Vec<EventLogCausalProjectionEntry>,
+    pub(super) canonical_bytes: Vec<u8>,
+    pub(super) content_hash: ContentHash,
 }
 
 impl EventLogCausalProjection {
@@ -1253,10 +1255,10 @@ impl EventLogDeterminismMismatch {
 /// Result of comparing two unified event logs for deterministic equality.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLogDeterminismComparison {
-    expected: EventLogCausalProjection,
-    reproduced: EventLogCausalProjection,
-    byte_identical: bool,
-    mismatch: Option<EventLogDeterminismMismatch>,
+    pub(super) expected: EventLogCausalProjection,
+    pub(super) reproduced: EventLogCausalProjection,
+    pub(super) byte_identical: bool,
+    pub(super) mismatch: Option<EventLogDeterminismMismatch>,
 }
 
 impl EventLogDeterminismComparison {
@@ -1354,7 +1356,7 @@ pub fn compare_event_log_determinism(
     }
 }
 
-fn event_log_determinism_mismatch(
+pub(super) fn event_log_determinism_mismatch(
     expected: &EventLogCausalProjection,
     reproduced: &EventLogCausalProjection,
 ) -> Option<EventLogDeterminismMismatch> {
@@ -1382,7 +1384,7 @@ fn event_log_determinism_mismatch(
     None
 }
 
-fn event_log_causal_divergence_point(
+pub(super) fn event_log_causal_divergence_point(
     entry: &EventLogCausalProjectionEntry,
 ) -> EventLogCausalDivergencePoint {
     EventLogCausalDivergencePoint {
@@ -1440,8 +1442,8 @@ pub struct EventLogCoverageProjectionEntry {
 /// observation set so duplicate basic-block hits do not perturb feedback identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLogCoverageProjection {
-    entries: Vec<EventLogCoverageProjectionEntry>,
-    content_hash: ContentHash,
+    pub(super) entries: Vec<EventLogCoverageProjectionEntry>,
+    pub(super) content_hash: ContentHash,
 }
 
 impl EventLogCoverageProjection {
@@ -1516,7 +1518,7 @@ pub enum EventLogCoverageFeedbackConsumer {
 /// The single coverage feedback signal read by search and fuzzing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLogCoverageFeedback {
-    projection: EventLogCoverageProjection,
+    pub(super) projection: EventLogCoverageProjection,
 }
 
 impl EventLogCoverageFeedback {
@@ -1581,8 +1583,8 @@ pub struct EventLogAssertionProximityProjectionEntry {
 /// deterministic per-checkpoint steering fingerprint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventLogAssertionProximityProjection {
-    entries: Vec<EventLogAssertionProximityProjectionEntry>,
-    content_hash: ContentHash,
+    pub(super) entries: Vec<EventLogAssertionProximityProjectionEntry>,
+    pub(super) content_hash: ContentHash,
 }
 
 impl EventLogAssertionProximityProjection {
@@ -1664,7 +1666,7 @@ pub fn assertion_proximity_fingerprint_from_event_log(
     event_log_assertion_proximity_projection(entries).content_hash()
 }
 
-fn event_log_coverage_entry(
+pub(super) fn event_log_coverage_entry(
     raw_index: usize,
     entry: &SchedulerEventLogEntry,
 ) -> Option<EventLogCoverageProjectionEntry> {
@@ -1703,7 +1705,7 @@ fn event_log_coverage_entry(
     })
 }
 
-fn event_log_assertion_proximity_entry(
+pub(super) fn event_log_assertion_proximity_entry(
     raw_index: usize,
     entry: &SchedulerEventLogEntry,
 ) -> Option<EventLogAssertionProximityProjectionEntry> {
@@ -1727,7 +1729,7 @@ fn event_log_assertion_proximity_entry(
     })
 }
 
-fn assertion_proximity_entry_is_better(
+pub(super) fn assertion_proximity_entry_is_better(
     candidate: &EventLogAssertionProximityProjectionEntry,
     current: &EventLogAssertionProximityProjectionEntry,
 ) -> bool {
@@ -1739,7 +1741,7 @@ fn assertion_proximity_entry_is_better(
         .is_lt()
 }
 
-fn event_log_assertion_proximity_minimum_material(
+pub(super) fn event_log_assertion_proximity_minimum_material(
     entry: &EventLogAssertionProximityProjectionEntry,
 ) -> String {
     let node_material = match &entry.node {
@@ -1760,7 +1762,9 @@ fn event_log_assertion_proximity_minimum_material(
     )
 }
 
-fn event_log_coverage_observation_material(entry: &EventLogCoverageProjectionEntry) -> String {
+pub(super) fn event_log_coverage_observation_material(
+    entry: &EventLogCoverageProjectionEntry,
+) -> String {
     match &entry.observation {
         EventLogCoverageObservation::BasicBlock {
             node,

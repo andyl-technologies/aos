@@ -1,3 +1,7 @@
+//! Dependency snapshots and deterministic invalidation reports.
+
+use super::*;
+
 /// A named set of content-addressed inputs recorded for an invalidation query.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DependencySnapshot {
@@ -120,16 +124,16 @@ pub struct DependencyChange {
     pub after: Option<ContentHash>,
 }
 
-fn local_store_temp_path(path: &Path, key: &ContentHash) -> PathBuf {
+pub(super) fn local_store_temp_path(path: &Path, key: &ContentHash) -> PathBuf {
     let mut temp_path = path.to_path_buf();
     temp_path.set_file_name(format!(".{}.tmp", key.to_hex()));
     temp_path
 }
 
-static SHARED_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-const SHARED_STORE_TEMP_CREATE_ATTEMPTS: usize = 4096;
+pub(super) static SHARED_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub(super) const SHARED_STORE_TEMP_CREATE_ATTEMPTS: usize = 4096;
 
-fn shared_store_temp_path(path: &Path, key: &ContentHash, sequence: u64) -> PathBuf {
+pub(super) fn shared_store_temp_path(path: &Path, key: &ContentHash, sequence: u64) -> PathBuf {
     let mut temp_path = path.to_path_buf();
     temp_path.set_file_name(format!(
         ".{}.{}.{}.tmp",
@@ -140,7 +144,7 @@ fn shared_store_temp_path(path: &Path, key: &ContentHash, sequence: u64) -> Path
     temp_path
 }
 
-fn create_shared_store_temp_file(
+pub(super) fn create_shared_store_temp_file(
     path: &Path,
     key: &ContentHash,
     bytes: &[u8],
@@ -150,7 +154,7 @@ fn create_shared_store_temp_file(
     })
 }
 
-fn create_shared_store_temp_file_with(
+pub(super) fn create_shared_store_temp_file_with(
     path: &Path,
     key: &ContentHash,
     bytes: &[u8],

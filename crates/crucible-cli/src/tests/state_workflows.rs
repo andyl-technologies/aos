@@ -1,6 +1,9 @@
-// Save, resume, fork, and search/fuzz workflow tests.
+//! Save, resume, fork, and search/fuzz workflow tests.
+
+use super::*;
 #[test]
-fn cli_save_workflow_executes_local_double_and_exports_handle() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_save_workflow_executes_local_double_and_exports_handle()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let artifact_dir = temp.path().join("artifacts");
@@ -466,7 +469,7 @@ fn cli_save_workflow_executes_local_double_and_exports_handle() -> Result<(), Bo
 }
 
 #[test]
-fn cli_save_workflow_executes_remote_daemon_savepoint() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_save_workflow_executes_remote_daemon_savepoint() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let daemon = spawn_production_lifecycle_server()?;
@@ -585,7 +588,8 @@ fn cli_save_workflow_executes_remote_daemon_savepoint() -> Result<(), Box<dyn Er
 }
 
 #[test]
-fn cli_save_workflow_executes_remote_daemon_selector_savepoint() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_save_workflow_executes_remote_daemon_selector_savepoint()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_property_selector_scenario(&temp)?;
     let daemon = spawn_save_recording_lifecycle_server()?;
@@ -647,7 +651,8 @@ fn cli_save_workflow_executes_remote_daemon_selector_savepoint() -> Result<(), B
 }
 
 #[test]
-fn cli_save_selector_proof_rejects_invalid_breakpoint_evidence() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_save_selector_proof_rejects_invalid_breakpoint_evidence()
+-> Result<(), Box<dyn Error>> {
     let selector = SaveAtSelector::PropertyViolation {
         assertion: String::from(SAVE_DOUBLE_ASSERTION_VIOLATION),
     };
@@ -741,7 +746,10 @@ fn cli_save_selector_proof_rejects_invalid_breakpoint_evidence() -> Result<(), B
     Ok(())
 }
 
-fn save_selector_test_boundary(frontier: u64, quanta: u64) -> crucible_api::SessionSummary {
+pub(super) fn save_selector_test_boundary(
+    frontier: u64,
+    quanta: u64,
+) -> crucible_api::SessionSummary {
     crucible_api::SessionSummary {
         session: SessionRef::new(
             crucible_api::SessionId::new(1),
@@ -757,7 +765,7 @@ fn save_selector_test_boundary(frontier: u64, quanta: u64) -> crucible_api::Sess
     }
 }
 
-fn save_selector_test_firing(
+pub(super) fn save_selector_test_firing(
     id: BreakpointId,
     predicate: crucible::Predicate,
     disposition: BreakpointDisposition,
@@ -776,7 +784,7 @@ fn save_selector_test_firing(
 }
 
 #[test]
-fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs()
+pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
@@ -902,7 +910,8 @@ fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs()
 }
 
 #[test]
-fn cli_resume_workflow_executes_local_double_bare_hash_from_store() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_resume_workflow_executes_local_double_bare_hash_from_store()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let store_root = temp.path().join("store");
     let fixture = crucible::happy_path_scenario()?;
@@ -969,7 +978,7 @@ fn cli_resume_workflow_executes_local_double_bare_hash_from_store() -> Result<()
 }
 
 #[test]
-fn cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact()
+pub(super) fn cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let checkpoint = crucible::ContentHash::from_bytes(b"missing-resume-store-index");
@@ -1004,7 +1013,8 @@ fn cli_resume_workflow_rejects_missing_bare_hash_store_index_as_artifact()
 }
 
 #[test]
-fn cli_resume_workflow_rejects_unverified_handle_evidence() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_resume_workflow_rejects_unverified_handle_evidence() -> Result<(), Box<dyn Error>>
+{
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
@@ -1069,7 +1079,7 @@ fn cli_resume_workflow_rejects_unverified_handle_evidence() -> Result<(), Box<dy
 }
 
 #[test]
-fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
@@ -1118,7 +1128,8 @@ fn cli_resume_workflow_rejects_tampered_handle_frontier() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot()
+-> Result<(), Box<dyn Error>> {
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
     let scenario = form.scenario_def();
@@ -1174,7 +1185,7 @@ fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot() -> Result<(), Bo
 }
 
 #[test]
-fn cli_resume_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_resume_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
@@ -1387,7 +1398,7 @@ fn cli_resume_workflow_executes_local_double_handle() -> Result<(), Box<dyn Erro
 }
 
 #[test]
-fn cli_resume_workflow_executes_remote_daemon_handle() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_resume_workflow_executes_remote_daemon_handle() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
@@ -1627,7 +1638,8 @@ fn cli_resume_workflow_executes_remote_daemon_handle() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;
@@ -1687,7 +1699,7 @@ fn cli_resume_workflow_allows_virtual_time_beyond_ack_yield_bound() -> Result<()
 }
 
 #[test]
-fn cli_fork_help_surface_lists_wip_flags() {
+pub(super) fn cli_fork_help_surface_lists_wip_flags() {
     let mut command = Cli::command();
     command.build();
     let help = command
@@ -1712,7 +1724,7 @@ fn cli_fork_help_surface_lists_wip_flags() {
 }
 
 #[test]
-fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs()
+pub(super) fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
@@ -1895,7 +1907,8 @@ fn cli_fork_workflow_plans_savepoint_overrides_and_rejects_malformed_inputs()
 }
 
 #[test]
-fn cli_fork_workflow_executes_local_double_bare_hash_from_store() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_fork_workflow_executes_local_double_bare_hash_from_store()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("fork-artifacts");
     let store_root = temp.path().join("store");
@@ -1969,7 +1982,7 @@ fn cli_fork_workflow_executes_local_double_bare_hash_from_store() -> Result<(), 
 }
 
 #[test]
-fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("fork-artifacts");
     let store_root = temp.path().join("store");
@@ -2471,7 +2484,8 @@ fn cli_fork_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>
 }
 
 #[test]
-fn cli_fork_workflow_executes_local_qemu_handle_with_identity() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_fork_workflow_executes_local_qemu_handle_with_identity()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("qemu-fork-artifacts");
     let store_root = temp.path().join("store");
@@ -2582,7 +2596,7 @@ fn cli_fork_workflow_executes_local_qemu_handle_with_identity() -> Result<(), Bo
 }
 
 #[test]
-fn cli_fork_workflow_rejects_tampered_handle_frontier() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_fork_workflow_rejects_tampered_handle_frontier() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let fixture = crucible::happy_path_scenario()?;
     let form = fixture.scenario;

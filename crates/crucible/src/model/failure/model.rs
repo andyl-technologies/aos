@@ -1,4 +1,6 @@
-// Failure findings, signatures, clustering, reports, and triage artifacts.
+//! Failure findings, signatures, clustering, reports, and triage artifacts.
+
+use super::*;
 
 /// Discovery path that produced an interesting finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -304,7 +306,7 @@ pub enum SignaturePolicyLevel {
 /// triage result identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignaturePolicy {
-    level: SignaturePolicyLevel,
+    pub(in crate::model) level: SignaturePolicyLevel,
 }
 
 impl SignaturePolicy {
@@ -430,8 +432,8 @@ impl SignaturePolicy {
 /// Deterministic projection of a signature under a [`SignaturePolicy`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FailureSignatureKey {
-    policy: SignaturePolicy,
-    canonical_material: String,
+    pub(in crate::model) policy: SignaturePolicy,
+    pub(in crate::model) canonical_material: String,
 }
 
 impl FailureSignatureKey {
@@ -1465,9 +1467,9 @@ impl FailureClusteringResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FailureClusterBuilder {
-    signature_key: FailureSignatureKey,
-    members: BTreeMap<ContentHash, FailureClusterMember>,
+pub(in crate::model) struct FailureClusterBuilder {
+    pub(in crate::model) signature_key: FailureSignatureKey,
+    pub(in crate::model) members: BTreeMap<ContentHash, FailureClusterMember>,
 }
 
 /// Signature-preserving minimization evidence for one failure cluster.
@@ -1591,7 +1593,7 @@ impl FailureClusterReportDivergence {
         }
     }
 
-    fn to_divergence_point(&self) -> EventLogCausalDivergencePoint {
+    pub(super) fn to_divergence_point(&self) -> EventLogCausalDivergencePoint {
         EventLogCausalDivergencePoint {
             raw_index: self.raw_index,
             at: EventLogIcountStamp {
@@ -1934,7 +1936,7 @@ impl FailureClusterReportSet {
 /// Full canonical causal-cone material retained for exact policy keys.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FailureCausalCone {
-    canonical_material: String,
+    pub(in crate::model) canonical_material: String,
 }
 
 impl FailureCausalCone {
@@ -1988,8 +1990,8 @@ impl FailureSignatureNormalization {
 /// findings on different replicas share one `faulting_node` key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FailureSymmetryCanonicalizer {
-    coverage_fingerprint: ContentHash,
-    classes: SymmetryReductionClasses,
+    pub(in crate::model) coverage_fingerprint: ContentHash,
+    pub(in crate::model) classes: SymmetryReductionClasses,
 }
 
 impl FailureSymmetryCanonicalizer {
@@ -2037,12 +2039,12 @@ impl FailureSymmetryCanonicalizer {
 /// and caches only deterministic projections used by signature construction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailureRecordedEventLog {
-    artifact: ContentHash,
-    event_log_artifact: ContentHash,
-    causal_subsequence: ContentHash,
-    causal_subsequence_events: usize,
-    coverage_fingerprint: ContentHash,
-    projection: EventLogCausalProjection,
+    pub(in crate::model) artifact: ContentHash,
+    pub(in crate::model) event_log_artifact: ContentHash,
+    pub(in crate::model) causal_subsequence: ContentHash,
+    pub(in crate::model) causal_subsequence_events: usize,
+    pub(in crate::model) coverage_fingerprint: ContentHash,
+    pub(in crate::model) projection: EventLogCausalProjection,
 }
 
 impl FailureRecordedEventLog {

@@ -29,7 +29,7 @@ fn happy_path_is_shipped_as_builtin_corpus_fixture() -> Result<(), ExampleCorpus
     assert_eq!(fixture.rfc_section, "33.A.1");
     assert!(fixture.zero_guest_components);
     assert!(!fixture.requires_white_box);
-    assert!(fixture.scenario.world().nodes().len() == 2);
+    assert!(fixture.scenario.world().vm_nodes().len() == 2);
     assert!(fixture.scenario.world().links().len() == 1);
     Ok(())
 }
@@ -45,7 +45,7 @@ fn partition_recovery_is_shipped_as_builtin_corpus_fixture() -> Result<(), Examp
     assert_eq!(fixture.rfc_section, "33.A.2");
     assert!(fixture.zero_guest_components);
     assert!(!fixture.requires_white_box);
-    assert_eq!(fixture.scenario.world().nodes().len(), 3);
+    assert_eq!(fixture.scenario.world().vm_nodes().len(), 3);
     assert_eq!(fixture.scenario.world().links().len(), 3);
     Ok(())
 }
@@ -61,7 +61,7 @@ fn crash_restart_is_shipped_as_builtin_corpus_fixture() -> Result<(), ExampleCor
     assert_eq!(fixture.rfc_section, "33.A.3");
     assert!(fixture.zero_guest_components);
     assert!(!fixture.requires_white_box);
-    assert_eq!(fixture.scenario.world().nodes().len(), 3);
+    assert_eq!(fixture.scenario.world().vm_nodes().len(), 3);
     assert_eq!(fixture.scenario.world().links().len(), 3);
     Ok(())
 }
@@ -83,7 +83,7 @@ fn fault_campaign_is_shipped_as_builtin_family() -> Result<(), ExampleCorpusErro
     );
 
     let sample = family.instantiate_sample(0)?;
-    assert_eq!(sample.form().world().nodes().len(), 3);
+    assert_eq!(sample.form().world().vm_nodes().len(), 3);
     assert!(!sample.form().plan().entries().is_empty());
     assert!(
         sample
@@ -101,7 +101,7 @@ fn fault_campaign_is_shipped_as_builtin_family() -> Result<(), ExampleCorpusErro
             .iter()
             .any(|assertion| assertion.id.name == "no-split-brain")
     );
-    assert!(sample.form().world().nodes().iter().all(|node| {
+    assert!(sample.form().world().vm_nodes().iter().all(|node| {
         node.white_box == WhiteBoxPolicy::Disabled && node.cmdline.contains("cluster=crucible-a4")
     }));
     Ok(())
@@ -238,7 +238,7 @@ fn fault_campaign_fuzz_replay_save_resume_and_fork_are_proven() -> Result<(), Ex
 fn happy_path_authoring_uses_only_black_box_guest_observables() -> Result<(), ExampleCorpusError> {
     let fixture = happy_path_scenario()?;
     let world = fixture.scenario.world();
-    let nodes = world.nodes();
+    let nodes = world.vm_nodes();
     let server = nodes
         .iter()
         .find(|node| node.id.name == "server")
@@ -293,8 +293,8 @@ fn happy_path_authoring_uses_only_black_box_guest_observables() -> Result<(), Ex
 fn partition_recovery_uses_observable_trigger_graph() -> Result<(), ExampleCorpusError> {
     let fixture = partition_recovery_scenario()?;
     let world = fixture.scenario.world();
-    assert_eq!(world.nodes().len(), 3);
-    for node in world.nodes() {
+    assert_eq!(world.vm_nodes().len(), 3);
+    for node in world.vm_nodes() {
         assert_eq!(node.white_box, WhiteBoxPolicy::Disabled);
         assert!(node.kernel.is_some());
         assert!(node.root_image.is_some());
@@ -382,8 +382,8 @@ fn partition_recovery_uses_observable_trigger_graph() -> Result<(), ExampleCorpu
 fn crash_restart_uses_observable_trigger_graph() -> Result<(), ExampleCorpusError> {
     let fixture = crash_restart_scenario()?;
     let world = fixture.scenario.world();
-    assert_eq!(world.nodes().len(), 3);
-    for node in world.nodes() {
+    assert_eq!(world.vm_nodes().len(), 3);
+    for node in world.vm_nodes() {
         assert_eq!(node.white_box, WhiteBoxPolicy::Disabled);
         assert!(node.kernel.is_some());
         assert!(node.root_image.is_some());

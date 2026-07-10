@@ -2141,4 +2141,5 @@ pub enum WhiteboxDoorbellError {
     },
 }
 
-include!("whitebox_doorbell/tests.rs");
+#[cfg(test)]
+mod tests;

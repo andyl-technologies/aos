@@ -13,7 +13,6 @@ pub(super) const REDUCTION_PATH_PACKAGES: &[&str] = &[
 pub(super) const NONDETERMINISTIC_BOUNDARY_PACKAGES: &[&str] =
     &["crucible-daemon", "crucible-cli", "crucible-qemu"];
 pub(super) const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
-pub(super) const BINARY_BOUNDARY_ROOT: &str = "src/main.rs";
 pub(super) const CLIPPY_DISALLOWED_METHODS: &[&str] = &[
     "std::time::Instant::now",
     "std::time::Instant::elapsed",
@@ -167,9 +166,18 @@ pub(super) fn is_binary_boundary_source(package: &str, package_dir: &Path, sourc
     matches!(
         source.strip_prefix(package_dir),
         Ok(relative)
-            if package == BINARY_BOUNDARY_PACKAGE && relative == Path::new(BINARY_BOUNDARY_ROOT)
+            if package == BINARY_BOUNDARY_PACKAGE && relative.starts_with(Path::new("src"))
                 || relative.starts_with(Path::new("src/bin"))
     )
+}
+
+pub(super) fn is_test_only_source(package_dir: &Path, source: &Path) -> bool {
+    source.strip_prefix(package_dir).is_ok_and(|relative| {
+        relative
+            .components()
+            .any(|component| component.as_os_str() == "tests")
+            || relative.file_name().is_some_and(|name| name == "tests.rs")
+    })
 }
 
 pub(super) fn cfg_test_line_ranges(content: &str) -> Vec<std::ops::RangeInclusive<usize>> {
@@ -213,10 +221,15 @@ pub(super) fn finding_line(finding: &str) -> Option<usize> {
 }
 
 fn line_is_cfg_test(line: &str) -> bool {
-    line.chars()
+    let normalized = line
+        .chars()
         .filter(|ch| !ch.is_whitespace())
-        .collect::<String>()
-        == "#[cfg(test)]"
+        .collect::<String>();
+    normalized == "#[cfg(test)]"
+        || normalized
+            .strip_prefix("#[cfg(all(")
+            .and_then(|cfg| cfg.strip_suffix("))]"))
+            .is_some_and(|cfg| cfg.split(',').any(|predicate| predicate == "test"))
 }
 
 fn braced_item_line_range_after(

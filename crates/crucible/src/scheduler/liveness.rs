@@ -1,4 +1,6 @@
-// Public fault bridges, scheduler traits, liveness gate, runtime nodes, and errors.
+//! Public fault bridges, scheduler traits, liveness gate, runtime nodes, and errors.
+
+use super::*;
 /// Applies combined node timing faults to a scheduler VM node.
 ///
 /// This is the scheduler-facing bridge used by trigger/fault application code:
@@ -193,36 +195,36 @@ pub fn check_scheduler_liveness(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RuntimeSchedulerNode {
-    id: SchedulerNodeId,
-    counter: NodeCounter,
-    timing_faults: NodeTimingFaults,
-    last_checkpoint: Option<SchedulerNodeCheckpoint>,
-    crash: Option<RuntimeNodeCrashState>,
-    stopped_crash: Option<RuntimeNodeStoppedState>,
-    activity: SchedulerNodeActivity,
-    network_lookahead: NetworkLookahead,
-    exact_local_event: ExactLocalEvent,
-    vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
+pub(super) struct RuntimeSchedulerNode {
+    pub(super) id: SchedulerNodeId,
+    pub(super) counter: NodeCounter,
+    pub(super) timing_faults: NodeTimingFaults,
+    pub(super) last_checkpoint: Option<SchedulerNodeCheckpoint>,
+    pub(super) crash: Option<RuntimeNodeCrashState>,
+    pub(super) stopped_crash: Option<RuntimeNodeStoppedState>,
+    pub(super) activity: SchedulerNodeActivity,
+    pub(super) network_lookahead: NetworkLookahead,
+    pub(super) exact_local_event: ExactLocalEvent,
+    pub(super) vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RuntimeNodeCrashState {
-    activation_sequence: u64,
-    restart: RestartPolicy,
-    previous_activity: SchedulerNodeActivity,
-    counter_at_crash: NodeCounter,
-    timing_faults_at_crash: NodeTimingFaults,
-    removed_edges: Vec<SchedulerLookaheadEdge>,
-    checkpoint: Option<SchedulerNodeCheckpoint>,
+pub(super) struct RuntimeNodeCrashState {
+    pub(super) activation_sequence: u64,
+    pub(super) restart: RestartPolicy,
+    pub(super) previous_activity: SchedulerNodeActivity,
+    pub(super) counter_at_crash: NodeCounter,
+    pub(super) timing_faults_at_crash: NodeTimingFaults,
+    pub(super) removed_edges: Vec<SchedulerLookaheadEdge>,
+    pub(super) checkpoint: Option<SchedulerNodeCheckpoint>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RuntimeNodeStoppedState {
-    activation_sequence: u64,
-    previous_activity: SchedulerNodeActivity,
-    timing_faults_at_stop: NodeTimingFaults,
-    removed_edges: Vec<SchedulerLookaheadEdge>,
+pub(super) struct RuntimeNodeStoppedState {
+    pub(super) activation_sequence: u64,
+    pub(super) previous_activity: SchedulerNodeActivity,
+    pub(super) timing_faults_at_stop: NodeTimingFaults,
+    pub(super) removed_edges: Vec<SchedulerLookaheadEdge>,
 }
 
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
@@ -242,7 +244,7 @@ impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
     }
 }
 
-fn assign_vcpu_idle_snapshots(
+pub(super) fn assign_vcpu_idle_snapshots(
     nodes: &mut [RuntimeSchedulerNode],
     snapshots: &mut Vec<SchedulerNodeVcpuIdleSnapshot>,
     run_subdivision_policies: &[SchedulerRunSubdivisionPolicy],
@@ -291,17 +293,17 @@ fn assign_vcpu_idle_snapshots(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct AdvanceCandidate {
-    index: usize,
-    key: SharedTimelineKey,
-    target_time: SimInstant,
-    quiescent_horizon: Option<SimInstant>,
-    conservative_dependency: Option<UnresolvedCrossNodeDependency>,
-    allow_ceil_past_target: bool,
+pub(super) struct AdvanceCandidate {
+    pub(super) index: usize,
+    pub(super) key: SharedTimelineKey,
+    pub(super) target_time: SimInstant,
+    pub(super) quiescent_horizon: Option<SimInstant>,
+    pub(super) conservative_dependency: Option<UnresolvedCrossNodeDependency>,
+    pub(super) allow_ceil_past_target: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum EffectiveHorizonProjection {
+pub(super) enum EffectiveHorizonProjection {
     Infinite,
     Finite {
         target_time: SimInstant,
@@ -312,20 +314,20 @@ enum EffectiveHorizonProjection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct AdvanceWindow {
-    target_time: SimInstant,
-    quiescent_horizon: Option<SimInstant>,
-    conservative_dependency: Option<UnresolvedCrossNodeDependency>,
-    allow_ceil_past_target: bool,
+pub(super) struct AdvanceWindow {
+    pub(super) target_time: SimInstant,
+    pub(super) quiescent_horizon: Option<SimInstant>,
+    pub(super) conservative_dependency: Option<UnresolvedCrossNodeDependency>,
+    pub(super) allow_ceil_past_target: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct IdleWakeTarget {
-    wake_time: SimInstant,
-    allow_ceil_past_target: bool,
+pub(super) struct IdleWakeTarget {
+    pub(super) wake_time: SimInstant,
+    pub(super) allow_ceil_past_target: bool,
 }
 
-fn merge_idle_wake_target(
+pub(super) fn merge_idle_wake_target(
     target: &mut Option<IdleWakeTarget>,
     wake_time: SimInstant,
     allow_ceil_past_target: bool,
@@ -345,44 +347,44 @@ fn merge_idle_wake_target(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct AdvancePlan {
-    index: usize,
-    node: SchedulerNodeId,
-    before: NodeCounter,
-    target_counter: u64,
-    projected_target_time: SimInstant,
-    ceiling: SchedulerRunCeilingPublication,
-    subdivision: Option<PlannedRunSubdivision>,
-    quiescent_horizon: Option<SimInstant>,
+pub(super) struct AdvancePlan {
+    pub(super) index: usize,
+    pub(super) node: SchedulerNodeId,
+    pub(super) before: NodeCounter,
+    pub(super) target_counter: u64,
+    pub(super) projected_target_time: SimInstant,
+    pub(super) ceiling: SchedulerRunCeilingPublication,
+    pub(super) subdivision: Option<PlannedRunSubdivision>,
+    pub(super) quiescent_horizon: Option<SimInstant>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct AdvancePlanDraft {
-    index: usize,
-    node: SchedulerNodeId,
-    before: NodeCounter,
-    target_counter: u64,
-    projected_target_time: SimInstant,
-    quiescent_horizon: Option<SimInstant>,
+pub(super) struct AdvancePlanDraft {
+    pub(super) index: usize,
+    pub(super) node: SchedulerNodeId,
+    pub(super) before: NodeCounter,
+    pub(super) target_counter: u64,
+    pub(super) projected_target_time: SimInstant,
+    pub(super) quiescent_horizon: Option<SimInstant>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PlannedRunSubdivision {
-    policy: SchedulerRunSubdivisionPolicy,
-    slices: Vec<SchedulerRunSubdivisionSlice>,
+pub(super) struct PlannedRunSubdivision {
+    pub(super) policy: SchedulerRunSubdivisionPolicy,
+    pub(super) slices: Vec<SchedulerRunSubdivisionSlice>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PlannedPreemptionApplication {
-    node: SchedulerNodeId,
-    decision: PreemptionDecision,
-    virtual_time: SimInstant,
-    deadline_icount: Icount,
-    horizon_icount: Icount,
-    ceiling: SchedulerRunCeilingPublication,
+pub(super) struct PlannedPreemptionApplication {
+    pub(super) node: SchedulerNodeId,
+    pub(super) decision: PreemptionDecision,
+    pub(super) virtual_time: SimInstant,
+    pub(super) deadline_icount: Icount,
+    pub(super) horizon_icount: Icount,
+    pub(super) ceiling: SchedulerRunCeilingPublication,
 }
 
-fn preemption_event_times(
+pub(super) fn preemption_event_times(
     preemptions: &[PlannedPreemptionApplication],
 ) -> Vec<(PreemptionDecision, SimInstant)> {
     preemptions
@@ -391,7 +393,7 @@ fn preemption_event_times(
         .collect()
 }
 
-fn concurrent_completion_order_key(
+pub(super) fn concurrent_completion_order_key(
     plan: &AdvancePlan,
     preemptions: &[PlannedPreemptionApplication],
     _shift: Shift,
@@ -404,25 +406,28 @@ fn concurrent_completion_order_key(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct NodeAdvance {
-    node: SchedulerNodeId,
-    before: NodeCounter,
-    after: NodeCounter,
-    ceiling: SchedulerRunCeilingPublication,
-    yielded_before_advance: bool,
+pub(super) struct NodeAdvance {
+    pub(super) node: SchedulerNodeId,
+    pub(super) before: NodeCounter,
+    pub(super) after: NodeCounter,
+    pub(super) ceiling: SchedulerRunCeilingPublication,
+    pub(super) yielded_before_advance: bool,
 }
 
-struct SchedulerCriticalSection<'a> {
-    scheduler: &'a mut SingleScheduler,
+pub(super) struct SchedulerCriticalSection<'a> {
+    pub(super) scheduler: &'a mut SingleScheduler,
 }
 
 impl<'a> SchedulerCriticalSection<'a> {
-    fn enter(scheduler: &'a mut SingleScheduler) -> Self {
+    pub(super) fn enter(scheduler: &'a mut SingleScheduler) -> Self {
         scheduler.lock_held = true;
         Self { scheduler }
     }
 
-    fn advance_plan(self, candidate: AdvanceCandidate) -> Result<AdvancePlan, SchedulerError> {
+    pub(super) fn advance_plan(
+        self,
+        candidate: AdvanceCandidate,
+    ) -> Result<AdvancePlan, SchedulerError> {
         let draft = self.scheduler.advance_plan_draft(&candidate)?;
         let subdivision = self.scheduler.planned_run_subdivision(
             &draft.node,
@@ -454,7 +459,7 @@ impl Drop for SchedulerCriticalSection<'_> {
     }
 }
 
-fn frontier_for(
+pub(super) fn frontier_for(
     nodes: &[RuntimeSchedulerNode],
     shift: Shift,
 ) -> Result<VirtualTime, SchedulerError> {
@@ -489,11 +494,14 @@ fn frontier_for(
     })
 }
 
-fn min_instant(left: SimInstant, right: SimInstant) -> SimInstant {
+pub(super) fn min_instant(left: SimInstant, right: SimInstant) -> SimInstant {
     if left <= right { left } else { right }
 }
 
-fn upsert_edge_by_endpoint(edges: &mut Vec<SchedulerLookaheadEdge>, edge: SchedulerLookaheadEdge) {
+pub(super) fn upsert_edge_by_endpoint(
+    edges: &mut Vec<SchedulerLookaheadEdge>,
+    edge: SchedulerLookaheadEdge,
+) {
     let endpoint = edge.endpoint();
     if let Some(index) = edges
         .iter()
@@ -507,7 +515,7 @@ fn upsert_edge_by_endpoint(edges: &mut Vec<SchedulerLookaheadEdge>, edge: Schedu
     edges.dedup();
 }
 
-fn canonical_edges_by_endpoint<I>(edges: I) -> Vec<SchedulerLookaheadEdge>
+pub(super) fn canonical_edges_by_endpoint<I>(edges: I) -> Vec<SchedulerLookaheadEdge>
 where
     I: IntoIterator<Item = SchedulerLookaheadEdge>,
 {
@@ -518,7 +526,7 @@ where
     canonical
 }
 
-fn replace_existing_edges_by_endpoint(
+pub(super) fn replace_existing_edges_by_endpoint(
     edges: &mut Vec<SchedulerLookaheadEdge>,
     updates: &BTreeMap<SchedulerLookaheadEdgeEndpoint, SchedulerLookaheadEdge>,
 ) {

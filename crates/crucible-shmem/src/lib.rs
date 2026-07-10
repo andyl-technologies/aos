@@ -132,7 +132,16 @@ pub const LAYOUT_TARGET_SUPPORTED: bool = cfg!(all(
 
 const _: () = assert!(MAX_FRAME_DATA <= u16::MAX as usize);
 
-include!("shmem/region.rs");
-include!("shmem/ring_coverage.rs");
-include!("shmem/frame_node.rs");
-include!("shmem/delivery_errors.rs");
+#[path = "shmem/delivery_errors.rs"]
+mod delivery_errors;
+#[path = "shmem/frame_node.rs"]
+mod frame_node;
+#[path = "shmem/region.rs"]
+mod region;
+#[path = "shmem/ring_coverage.rs"]
+mod ring_coverage;
+
+pub use delivery_errors::*;
+pub use frame_node::*;
+pub use region::*;
+pub use ring_coverage::*;

@@ -1,18 +1,20 @@
-// Code-first scenario builders, family generation, and reproduction artifacts.
+//! Code-first scenario builders, family generation, and reproduction artifacts.
+
+use super::*;
 
 /// Reusable node settings for code-first scenario authoring.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodeTemplate {
-    arch: VmArchitecture,
-    memory_mib: u32,
-    cmdline: String,
-    ready_point: ReadyPoint,
-    white_box: WhiteBoxPolicy,
-    smp_vcpus: u16,
-    icount_shift: u8,
-    kernel: Option<ContentAddressedBlobRef>,
-    root_image: Option<ContentAddressedBlobRef>,
-    initrd: Option<ContentAddressedBlobRef>,
+    pub(super) arch: VmArchitecture,
+    pub(super) memory_mib: u32,
+    pub(super) cmdline: String,
+    pub(super) ready_point: ReadyPoint,
+    pub(super) white_box: WhiteBoxPolicy,
+    pub(super) smp_vcpus: u16,
+    pub(super) icount_shift: u8,
+    pub(super) kernel: Option<ContentAddressedBlobRef>,
+    pub(super) root_image: Option<ContentAddressedBlobRef>,
+    pub(super) initrd: Option<ContentAddressedBlobRef>,
 }
 
 impl NodeTemplate {
@@ -275,23 +277,23 @@ impl From<WorldNode> for NodeTemplate {
 /// Code-first scenario authoring surface for the four orthogonal scenario layers.
 #[derive(Clone, Debug, Default)]
 pub struct ScenarioBuilder {
-    nodes: Vec<PendingScenarioNode>,
-    links: Vec<PendingScenarioLink>,
-    plan: Option<Plan>,
-    plan_entries: Vec<PlanEntry>,
-    properties: Option<Properties>,
-    assertions: Vec<AssertionDef>,
-    seed: Seed,
+    pub(super) nodes: Vec<PendingScenarioNode>,
+    pub(super) links: Vec<PendingScenarioLink>,
+    pub(super) plan: Option<Plan>,
+    pub(super) plan_entries: Vec<PlanEntry>,
+    pub(super) properties: Option<Properties>,
+    pub(super) assertions: Vec<AssertionDef>,
+    pub(super) seed: Seed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum PendingScenarioNode {
+pub(super) enum PendingScenarioNode {
     Concrete(WorldNode),
     Like { id: NodeId, template: NodeId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum PendingScenarioLink {
+pub(super) enum PendingScenarioLink {
     Default {
         left: NodeId,
         right: NodeId,
@@ -532,7 +534,7 @@ impl ScenarioBuilder {
 /// A deterministic fixed-point fault density for [`ScenarioFamily`] generation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FaultDensity {
-    millionths: u32,
+    pub(super) millionths: u32,
 }
 
 impl FaultDensity {
@@ -585,8 +587,8 @@ impl FaultDensity {
 /// Inclusive finite range of family fault-density values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FaultDensityRange {
-    min: FaultDensity,
-    max: FaultDensity,
+    pub(super) min: FaultDensity,
+    pub(super) max: FaultDensity,
 }
 
 impl FaultDensityRange {
@@ -640,8 +642,8 @@ impl FaultDensityRange {
 /// Inclusive finite range of generated family topology sizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TopologySizeRange {
-    min: u32,
-    max: u32,
+    pub(super) min: u32,
+    pub(super) max: u32,
 }
 
 impl TopologySizeRange {
@@ -719,11 +721,11 @@ pub enum TopologyShape {
 /// Finite seed axis for [`ScenarioFamily`] generation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SeedSpace {
-    kind: SeedSpaceKind,
+    pub(super) kind: SeedSpaceKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum SeedSpaceKind {
+pub(super) enum SeedSpaceKind {
     Explicit(Vec<Seed>),
     Generated { meta_seed: Seed, count: u32 },
 }
@@ -830,10 +832,10 @@ impl SeedSpace {
 /// The deterministic parameter space a [`ScenarioFamily`] ranges over.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FamilySpace {
-    seeds: SeedSpace,
-    fault_density: FaultDensityRange,
-    topology_size: TopologySizeRange,
-    topology_shapes: Vec<TopologyShape>,
+    pub(super) seeds: SeedSpace,
+    pub(super) fault_density: FaultDensityRange,
+    pub(super) topology_size: TopologySizeRange,
+    pub(super) topology_shapes: Vec<TopologyShape>,
 }
 
 impl FamilySpace {
@@ -1017,9 +1019,9 @@ pub struct FamilyParams {
 /// Parametric generator over concrete, validated scenario definitions.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioFamily {
-    space: FamilySpace,
-    node_template: NodeTemplate,
-    assertions: Vec<AssertionDef>,
+    pub(super) space: FamilySpace,
+    pub(super) node_template: NodeTemplate,
+    pub(super) assertions: Vec<AssertionDef>,
 }
 
 impl ScenarioFamily {
@@ -1169,8 +1171,8 @@ impl ScenarioFamily {
 /// A concrete scenario pinned from a [`ScenarioFamily`] parameter point.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PinnedScenario {
-    params: FamilyParams,
-    form: ScenarioDefForm,
+    pub(super) params: FamilyParams,
+    pub(super) form: ScenarioDefForm,
 }
 
 impl PinnedScenario {
@@ -1217,8 +1219,8 @@ impl PinnedScenario {
 /// A run configuration pinned to a concrete materialized scenario form.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PinnedConfiguration {
-    scenario: ScenarioDefForm,
-    configuration: Configuration,
+    pub(super) scenario: ScenarioDefForm,
+    pub(super) configuration: Configuration,
 }
 
 impl PinnedConfiguration {
@@ -1249,9 +1251,9 @@ impl PinnedConfiguration {
 /// RFC tuple `(seed, scenario, schedule)` without a parent family or host path.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReproductionArtifact {
-    id: ContentHash,
-    scenario: ScenarioDefForm,
-    schedule: Schedule,
+    pub(super) id: ContentHash,
+    pub(super) scenario: ScenarioDefForm,
+    pub(super) schedule: Schedule,
 }
 
 impl ReproductionArtifact {

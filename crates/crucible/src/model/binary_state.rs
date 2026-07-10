@@ -1,50 +1,52 @@
-// Canonical binary writer and checkpoint/materialized-state codec.
-struct ScenarioBinaryWriter {
-    bytes: Vec<u8>,
+//! Canonical binary writer and checkpoint/materialized-state codec.
+
+use super::*;
+pub(super) struct ScenarioBinaryWriter {
+    pub(super) bytes: Vec<u8>,
 }
 
 impl ScenarioBinaryWriter {
-    fn new(magic: &[u8]) -> Self {
+    pub(super) fn new(magic: &[u8]) -> Self {
         let mut bytes = Vec::with_capacity(magic.len().saturating_add(256));
         bytes.extend_from_slice(magic);
         Self { bytes }
     }
 
-    fn write_u8(&mut self, value: u8) {
+    pub(super) fn write_u8(&mut self, value: u8) {
         self.bytes.push(value);
     }
 
-    fn write_u32(&mut self, value: u32) {
+    pub(super) fn write_u32(&mut self, value: u32) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn write_u64(&mut self, value: u64) {
+    pub(super) fn write_u64(&mut self, value: u64) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn write_i64(&mut self, value: i64) {
+    pub(super) fn write_i64(&mut self, value: i64) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    fn write_count(&mut self, count: usize) {
+    pub(super) fn write_count(&mut self, count: usize) {
         self.write_u64(count as u64);
     }
 
-    fn write_string(&mut self, value: &str) {
+    pub(super) fn write_string(&mut self, value: &str) {
         self.write_count(value.len());
         self.bytes.extend_from_slice(value.as_bytes());
     }
 
-    fn write_binary_blob(&mut self, value: &[u8]) {
+    pub(super) fn write_binary_blob(&mut self, value: &[u8]) {
         self.write_count(value.len());
         self.bytes.extend_from_slice(value);
     }
 
-    fn write_hash(&mut self, hash: ContentHash) {
+    pub(super) fn write_hash(&mut self, hash: ContentHash) {
         self.bytes.extend_from_slice(&hash.bytes);
     }
 
-    fn write_optional_blob_ref(&mut self, reference: Option<ContentAddressedBlobRef>) {
+    pub(super) fn write_optional_blob_ref(&mut self, reference: Option<ContentAddressedBlobRef>) {
         match reference {
             Some(reference) => {
                 self.write_u8(1);
@@ -54,22 +56,22 @@ impl ScenarioBinaryWriter {
         }
     }
 
-    fn write_seed(&mut self, seed: Seed) {
+    pub(super) fn write_seed(&mut self, seed: Seed) {
         self.bytes.extend_from_slice(&seed.bytes());
     }
 
-    fn finish(self) -> Vec<u8> {
+    pub(super) fn finish(self) -> Vec<u8> {
         self.bytes
     }
 }
 
-struct ScenarioBinaryReader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+pub(super) struct ScenarioBinaryReader<'a> {
+    pub(super) bytes: &'a [u8],
+    pub(super) offset: usize,
 }
 
 impl<'a> ScenarioBinaryReader<'a> {
-    fn new(bytes: &'a [u8], magic: &[u8]) -> Result<Self, EngineError> {
+    pub(super) fn new(bytes: &'a [u8], magic: &[u8]) -> Result<Self, EngineError> {
         if !bytes.starts_with(magic) {
             return Err(scenario_serialization_error("binary magic mismatch"));
         }
@@ -79,7 +81,7 @@ impl<'a> ScenarioBinaryReader<'a> {
         })
     }
 
-    fn finish(&self) -> Result<(), EngineError> {
+    pub(super) fn finish(&self) -> Result<(), EngineError> {
         if self.offset == self.bytes.len() {
             Ok(())
         } else {
@@ -87,7 +89,7 @@ impl<'a> ScenarioBinaryReader<'a> {
         }
     }
 
-    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], EngineError> {
+    pub(super) fn read_exact(&mut self, len: usize) -> Result<&'a [u8], EngineError> {
         let end = self
             .offset
             .checked_add(len)
@@ -100,38 +102,41 @@ impl<'a> ScenarioBinaryReader<'a> {
         Ok(bytes)
     }
 
-    fn read_u8(&mut self) -> Result<u8, EngineError> {
+    pub(super) fn read_u8(&mut self) -> Result<u8, EngineError> {
         let bytes = self.read_exact(1)?;
         Ok(bytes[0])
     }
 
-    fn read_u32(&mut self) -> Result<u32, EngineError> {
+    pub(super) fn read_u32(&mut self) -> Result<u32, EngineError> {
         let bytes = self.read_exact(4)?;
         let mut fixed = [0; 4];
         fixed.copy_from_slice(bytes);
         Ok(u32::from_le_bytes(fixed))
     }
 
-    fn read_u64(&mut self) -> Result<u64, EngineError> {
+    pub(super) fn read_u64(&mut self) -> Result<u64, EngineError> {
         let bytes = self.read_exact(8)?;
         let mut fixed = [0; 8];
         fixed.copy_from_slice(bytes);
         Ok(u64::from_le_bytes(fixed))
     }
 
-    fn read_i64(&mut self) -> Result<i64, EngineError> {
+    pub(super) fn read_i64(&mut self) -> Result<i64, EngineError> {
         let bytes = self.read_exact(8)?;
         let mut fixed = [0; 8];
         fixed.copy_from_slice(bytes);
         Ok(i64::from_le_bytes(fixed))
     }
 
-    fn read_count(&mut self) -> Result<usize, EngineError> {
+    pub(super) fn read_count(&mut self) -> Result<usize, EngineError> {
         usize::try_from(self.read_u64()?)
             .map_err(|_| scenario_serialization_error("binary count does not fit usize"))
     }
 
-    fn read_collection_count(&mut self, label: &'static str) -> Result<usize, EngineError> {
+    pub(super) fn read_collection_count(
+        &mut self,
+        label: &'static str,
+    ) -> Result<usize, EngineError> {
         let count = self.read_count()?;
         if count > MAX_SCENARIO_BINARY_COLLECTION_ITEMS {
             Err(scenario_serialization_error(format!(
@@ -142,7 +147,7 @@ impl<'a> ScenarioBinaryReader<'a> {
         }
     }
 
-    fn read_string(&mut self) -> Result<String, EngineError> {
+    pub(super) fn read_string(&mut self) -> Result<String, EngineError> {
         let len = self.read_count()?;
         if len > MAX_SCENARIO_BINARY_STRING_BYTES {
             return Err(scenario_serialization_error(
@@ -154,7 +159,10 @@ impl<'a> ScenarioBinaryReader<'a> {
             .map_err(|source| scenario_serialization_error(format!("invalid UTF-8: {source}")))
     }
 
-    fn read_binary_blob(&mut self, label: &'static str) -> Result<&'a [u8], EngineError> {
+    pub(super) fn read_binary_blob(
+        &mut self,
+        label: &'static str,
+    ) -> Result<&'a [u8], EngineError> {
         let len = self.read_count()?;
         if len > MAX_SCENARIO_BINARY_BLOB_BYTES {
             return Err(scenario_serialization_error(format!(
@@ -164,14 +172,16 @@ impl<'a> ScenarioBinaryReader<'a> {
         self.read_exact(len)
     }
 
-    fn read_hash(&mut self) -> Result<ContentHash, EngineError> {
+    pub(super) fn read_hash(&mut self) -> Result<ContentHash, EngineError> {
         let bytes = self.read_exact(32)?;
         let mut fixed = [0; 32];
         fixed.copy_from_slice(bytes);
         Ok(ContentHash { bytes: fixed })
     }
 
-    fn read_optional_blob_ref(&mut self) -> Result<Option<ContentAddressedBlobRef>, EngineError> {
+    pub(super) fn read_optional_blob_ref(
+        &mut self,
+    ) -> Result<Option<ContentAddressedBlobRef>, EngineError> {
         match self.read_u8()? {
             0 => Ok(None),
             1 => Ok(Some(ContentAddressedBlobRef::from_hash(self.read_hash()?))),
@@ -181,7 +191,7 @@ impl<'a> ScenarioBinaryReader<'a> {
         }
     }
 
-    fn read_seed(&mut self) -> Result<Seed, EngineError> {
+    pub(super) fn read_seed(&mut self) -> Result<Seed, EngineError> {
         let bytes = self.read_exact(32)?;
         let mut fixed = [0; 32];
         fixed.copy_from_slice(bytes);
@@ -189,7 +199,7 @@ impl<'a> ScenarioBinaryReader<'a> {
     }
 }
 
-fn scenario_binary_reader_for_versions<'a>(
+pub(super) fn scenario_binary_reader_for_versions<'a>(
     bytes: &'a [u8],
     v1_magic: &[u8],
     v2_magic: &[u8],
@@ -203,7 +213,7 @@ fn scenario_binary_reader_for_versions<'a>(
     Err(scenario_serialization_error("binary magic mismatch"))
 }
 
-fn write_scenario_form_binary(
+pub(super) fn write_scenario_form_binary(
     form: &ScenarioDefForm,
     writer: &mut ScenarioBinaryWriter,
     includes_devices: bool,
@@ -216,7 +226,7 @@ fn write_scenario_form_binary(
     writer.write_u64(form.app_random_draw_cap);
 }
 
-fn read_scenario_form_binary(
+pub(super) fn read_scenario_form_binary(
     reader: &mut ScenarioBinaryReader<'_>,
     includes_devices: bool,
 ) -> Result<ScenarioDefForm, EngineError> {
@@ -237,7 +247,7 @@ fn read_scenario_form_binary(
     Ok(form)
 }
 
-fn write_schedule_binary(schedule: &Schedule, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_schedule_binary(schedule: &Schedule, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(schedule.content_hash());
     writer.write_count(schedule.decisions().len());
     for decision in schedule.decisions() {
@@ -245,7 +255,9 @@ fn write_schedule_binary(schedule: &Schedule, writer: &mut ScenarioBinaryWriter)
     }
 }
 
-fn read_schedule_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Schedule, EngineError> {
+pub(super) fn read_schedule_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Schedule, EngineError> {
     let expected = reader.read_hash()?;
     let count = reader.read_collection_count("schedule.decision")?;
     let mut decisions = Vec::with_capacity(count);
@@ -257,7 +269,7 @@ fn read_schedule_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Schedul
     Ok(schedule)
 }
 
-fn write_checkpoint_binary(checkpoint: &Checkpoint, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_checkpoint_binary(checkpoint: &Checkpoint, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(checkpoint.id);
     writer.write_hash(checkpoint.configuration);
     writer.write_hash(checkpoint.scenario_ref);
@@ -273,7 +285,7 @@ fn write_checkpoint_binary(checkpoint: &Checkpoint, writer: &mut ScenarioBinaryW
     write_node_blobs_binary(&checkpoint.node_blobs, writer);
 }
 
-fn read_checkpoint_binary(
+pub(super) fn read_checkpoint_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Checkpoint, EngineError> {
     let id = reader.read_hash()?;
@@ -308,7 +320,7 @@ fn read_checkpoint_binary(
     })
 }
 
-fn validate_checkpoint_binary_shape(checkpoint: &Checkpoint) -> Result<(), EngineError> {
+pub(super) fn validate_checkpoint_binary_shape(checkpoint: &Checkpoint) -> Result<(), EngineError> {
     match (checkpoint.kind, checkpoint.state.is_some()) {
         (CheckpointKind::Fat, false) => {
             return Err(scenario_serialization_error(
@@ -330,14 +342,17 @@ fn validate_checkpoint_binary_shape(checkpoint: &Checkpoint) -> Result<(), Engin
     Ok(())
 }
 
-fn write_checkpoint_kind_binary(kind: CheckpointKind, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_checkpoint_kind_binary(
+    kind: CheckpointKind,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_u8(match kind {
         CheckpointKind::Fat => 0,
         CheckpointKind::Thin => 1,
     });
 }
 
-fn read_checkpoint_kind_binary(
+pub(super) fn read_checkpoint_kind_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<CheckpointKind, EngineError> {
     match reader.read_u8()? {
@@ -347,7 +362,10 @@ fn read_checkpoint_kind_binary(
     }
 }
 
-fn write_optional_hash_binary(hash: Option<ContentHash>, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_optional_hash_binary(
+    hash: Option<ContentHash>,
+    writer: &mut ScenarioBinaryWriter,
+) {
     match hash {
         Some(hash) => {
             writer.write_u8(1);
@@ -357,7 +375,7 @@ fn write_optional_hash_binary(hash: Option<ContentHash>, writer: &mut ScenarioBi
     }
 }
 
-fn read_optional_hash_binary(
+pub(super) fn read_optional_hash_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Option<ContentHash>, EngineError> {
     match reader.read_u8()? {
@@ -367,7 +385,7 @@ fn read_optional_hash_binary(
     }
 }
 
-fn write_node_icounts_binary(
+pub(super) fn write_node_icounts_binary(
     node_icounts: &BTreeMap<NodeId, Icount>,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -378,7 +396,7 @@ fn write_node_icounts_binary(
     }
 }
 
-fn read_node_icounts_binary(
+pub(super) fn read_node_icounts_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<BTreeMap<NodeId, Icount>, EngineError> {
     let count = reader.read_collection_count("checkpoint.node-icount")?;
@@ -396,7 +414,7 @@ fn read_node_icounts_binary(
     Ok(node_icounts)
 }
 
-fn write_optional_materialized_state_binary(
+pub(super) fn write_optional_materialized_state_binary(
     state: Option<&MaterializedState>,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -409,7 +427,7 @@ fn write_optional_materialized_state_binary(
     }
 }
 
-fn read_optional_materialized_state_binary(
+pub(super) fn read_optional_materialized_state_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Option<MaterializedState>, EngineError> {
     match reader.read_u8()? {
@@ -421,7 +439,10 @@ fn read_optional_materialized_state_binary(
     }
 }
 
-fn write_materialized_state_binary(state: &MaterializedState, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_materialized_state_binary(
+    state: &MaterializedState,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_hash(state.id);
     write_vm_snapshots_binary(&state.vm_snapshots, writer);
     write_device_overlays_binary(&state.device_overlays, writer);
@@ -434,7 +455,7 @@ fn write_materialized_state_binary(state: &MaterializedState, writer: &mut Scena
     }
 }
 
-fn read_materialized_state_binary(
+pub(super) fn read_materialized_state_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<MaterializedState, EngineError> {
     let expected = reader.read_hash()?;
@@ -460,7 +481,7 @@ fn read_materialized_state_binary(
     Ok(state)
 }
 
-fn write_vm_snapshots_binary(
+pub(super) fn write_vm_snapshots_binary(
     snapshots: &BTreeMap<NodeId, VmSnapshotRef>,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -472,7 +493,7 @@ fn write_vm_snapshots_binary(
     }
 }
 
-fn read_vm_snapshots_binary(
+pub(super) fn read_vm_snapshots_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<BTreeMap<NodeId, VmSnapshotRef>, EngineError> {
     let count = reader.read_collection_count("materialized-state.vm-snapshot")?;
@@ -490,7 +511,7 @@ fn read_vm_snapshots_binary(
     Ok(snapshots)
 }
 
-fn write_device_overlays_binary(
+pub(super) fn write_device_overlays_binary(
     overlays: &BTreeMap<DeviceId, DeviceOverlayDelta>,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -504,7 +525,7 @@ fn write_device_overlays_binary(
     }
 }
 
-fn read_device_overlays_binary(
+pub(super) fn read_device_overlays_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<BTreeMap<DeviceId, DeviceOverlayDelta>, EngineError> {
     let count = reader.read_collection_count("materialized-state.device-overlay")?;
@@ -530,7 +551,7 @@ fn read_device_overlays_binary(
     Ok(overlays)
 }
 
-fn write_node_blobs_binary(
+pub(super) fn write_node_blobs_binary(
     node_blobs: &BTreeMap<NodeId, NodeBlobRef>,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -541,7 +562,7 @@ fn write_node_blobs_binary(
     }
 }
 
-fn read_node_blobs_binary(
+pub(super) fn read_node_blobs_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<BTreeMap<NodeId, NodeBlobRef>, EngineError> {
     let count = reader.read_collection_count("checkpoint.node-blob")?;
@@ -557,7 +578,7 @@ fn read_node_blobs_binary(
     Ok(node_blobs)
 }
 
-fn write_node_blob_ref_binary(blob: &NodeBlobRef, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_node_blob_ref_binary(blob: &NodeBlobRef, writer: &mut ScenarioBinaryWriter) {
     match blob {
         NodeBlobRef::Baked(hash) => {
             writer.write_u8(0);
@@ -576,7 +597,7 @@ fn write_node_blob_ref_binary(blob: &NodeBlobRef, writer: &mut ScenarioBinaryWri
     }
 }
 
-fn read_node_blob_ref_binary(
+pub(super) fn read_node_blob_ref_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<NodeBlobRef, EngineError> {
     match reader.read_u8()? {
@@ -590,7 +611,10 @@ fn read_node_blob_ref_binary(
     }
 }
 
-fn write_device_rng_state_binary(state: &DeviceRngState, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_device_rng_state_binary(
+    state: &DeviceRngState,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_count(state.streams.len());
     for (stream, position) in &state.streams {
         write_rng_stream_binary(stream, writer);
@@ -598,7 +622,7 @@ fn write_device_rng_state_binary(state: &DeviceRngState, writer: &mut ScenarioBi
     }
 }
 
-fn read_device_rng_state_binary(
+pub(super) fn read_device_rng_state_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<DeviceRngState, EngineError> {
     let count = reader.read_collection_count("device-rng-state.stream")?;
@@ -614,7 +638,10 @@ fn read_device_rng_state_binary(
     Ok(DeviceRngState { streams })
 }
 
-fn write_decision_rng_state_binary(state: &DecisionRngState, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_decision_rng_state_binary(
+    state: &DecisionRngState,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_count(state.positions.len());
     for (stream, position) in &state.positions {
         write_rng_stream_binary(stream, writer);
@@ -622,7 +649,7 @@ fn write_decision_rng_state_binary(state: &DecisionRngState, writer: &mut Scenar
     }
 }
 
-fn read_decision_rng_state_binary(
+pub(super) fn read_decision_rng_state_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<DecisionRngState, EngineError> {
     let count = reader.read_collection_count("decision-rng-state.stream")?;
@@ -638,14 +665,17 @@ fn read_decision_rng_state_binary(
     Ok(DecisionRngState { positions })
 }
 
-fn write_event_log_offset_binary(offset: EventLogOffset, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_event_log_offset_binary(
+    offset: EventLogOffset,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_hash(offset.prefix);
     write_optional_hash_binary(offset.appended_segment, writer);
     writer.write_u64(offset.bytes);
     writer.write_u64(offset.events);
 }
 
-fn read_event_log_offset_binary(
+pub(super) fn read_event_log_offset_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<EventLogOffset, EngineError> {
     Ok(EventLogOffset {
@@ -656,7 +686,10 @@ fn read_event_log_offset_binary(
     })
 }
 
-fn write_scheduler_state_binary(state: &SchedulerState, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_scheduler_state_binary(
+    state: &SchedulerState,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_count(state.horizons.len());
     for (node, horizon) in &state.horizons {
         writer.write_string(&node.name);
@@ -728,7 +761,7 @@ fn write_scheduler_state_binary(state: &SchedulerState, writer: &mut ScenarioBin
     write_search_frontier_choices_binary(&state.search_frontier, writer);
 }
 
-fn read_scheduler_state_binary(
+pub(super) fn read_scheduler_state_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<SchedulerState, EngineError> {
     let horizon_count = reader.read_collection_count("scheduler-state.horizon")?;
@@ -901,7 +934,7 @@ fn read_scheduler_state_binary(
     })
 }
 
-fn write_scheduler_lookahead_edge_binary(
+pub(super) fn write_scheduler_lookahead_edge_binary(
     edge: &crate::scheduler::SchedulerLookaheadEdge,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -910,7 +943,7 @@ fn write_scheduler_lookahead_edge_binary(
     writer.write_u64(edge.minimum_latency.nanos);
 }
 
-fn read_scheduler_lookahead_edge_binary(
+pub(super) fn read_scheduler_lookahead_edge_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<crate::scheduler::SchedulerLookaheadEdge, EngineError> {
     Ok(crate::scheduler::SchedulerLookaheadEdge::new(
@@ -922,7 +955,7 @@ fn read_scheduler_lookahead_edge_binary(
     ))
 }
 
-fn write_scheduler_topology_change_binary(
+pub(super) fn write_scheduler_topology_change_binary(
     change: &crate::scheduler::SchedulerTopologyChange,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -974,7 +1007,7 @@ fn write_scheduler_topology_change_binary(
     }
 }
 
-fn read_scheduler_topology_change_binary(
+pub(super) fn read_scheduler_topology_change_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<crate::scheduler::SchedulerTopologyChange, EngineError> {
     use crate::scheduler::{
@@ -1047,7 +1080,7 @@ fn read_scheduler_topology_change_binary(
     })
 }
 
-fn write_optional_virtual_time_binary(
+pub(super) fn write_optional_virtual_time_binary(
     value: Option<VirtualTime>,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -1060,7 +1093,7 @@ fn write_optional_virtual_time_binary(
     }
 }
 
-fn read_optional_virtual_time_binary(
+pub(super) fn read_optional_virtual_time_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Option<VirtualTime>, EngineError> {
     match reader.read_u8()? {
@@ -1074,7 +1107,7 @@ fn read_optional_virtual_time_binary(
     }
 }
 
-fn write_search_frontier_choices_binary(
+pub(super) fn write_search_frontier_choices_binary(
     frontier: &SearchFrontierChoices,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -1088,7 +1121,7 @@ fn write_search_frontier_choices_binary(
     }
 }
 
-fn read_search_frontier_choices_binary(
+pub(super) fn read_search_frontier_choices_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<SearchFrontierChoices, EngineError> {
     let count = reader.read_collection_count("scheduler-state.search-frontier-choice")?;
@@ -1113,7 +1146,10 @@ fn read_search_frontier_choices_binary(
     Ok(SearchFrontierChoices { choices, decisions })
 }
 
-fn write_checkpoint_metadata_binary(metadata: &CheckpointMeta, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_checkpoint_metadata_binary(
+    metadata: &CheckpointMeta,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_count(metadata.labels.len());
     for (key, value) in &metadata.labels {
         writer.write_string(key);
@@ -1121,7 +1157,7 @@ fn write_checkpoint_metadata_binary(metadata: &CheckpointMeta, writer: &mut Scen
     }
 }
 
-fn read_checkpoint_metadata_binary(
+pub(super) fn read_checkpoint_metadata_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<CheckpointMeta, EngineError> {
     let count = reader.read_collection_count("checkpoint.metadata-label")?;
@@ -1132,7 +1168,7 @@ fn read_checkpoint_metadata_binary(
     Ok(CheckpointMeta { labels })
 }
 
-fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBinaryWriter) {
     match decision {
         Decision::DeliveryOrder(order) => {
             writer.write_u8(0);
@@ -1184,7 +1220,9 @@ fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBinaryWriter)
     }
 }
 
-fn read_decision_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Decision, EngineError> {
+pub(super) fn read_decision_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Decision, EngineError> {
     match reader.read_u8()? {
         0 => {
             let at = VirtualTime {
@@ -1254,7 +1292,7 @@ fn read_decision_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Decisio
     }
 }
 
-fn write_control_fault_action_binary(
+pub(super) fn write_control_fault_action_binary(
     action: &ControlFaultAction,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -1271,7 +1309,7 @@ fn write_control_fault_action_binary(
     }
 }
 
-fn read_control_fault_action_binary(
+pub(super) fn read_control_fault_action_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<ControlFaultAction, EngineError> {
     match reader.read_u8()? {
@@ -1292,12 +1330,12 @@ fn read_control_fault_action_binary(
     }
 }
 
-fn write_rng_stream_binary(stream: &RngStreamId, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_rng_stream_binary(stream: &RngStreamId, writer: &mut ScenarioBinaryWriter) {
     writer.write_string(&stream.domain);
     writer.write_string(&stream.name);
 }
 
-fn read_rng_stream_binary(
+pub(super) fn read_rng_stream_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<RngStreamId, EngineError> {
     Ok(RngStreamId::new(
@@ -1306,12 +1344,15 @@ fn read_rng_stream_binary(
     ))
 }
 
-fn write_scheduler_node_id_binary(node: &SchedulerNodeId, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_scheduler_node_id_binary(
+    node: &SchedulerNodeId,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_string(&node.node.name);
     write_scheduling_node_kind_binary(node.kind, writer);
 }
 
-fn read_scheduler_node_id_binary(
+pub(super) fn read_scheduler_node_id_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<SchedulerNodeId, EngineError> {
     Ok(SchedulerNodeId {
@@ -1322,7 +1363,10 @@ fn read_scheduler_node_id_binary(
     })
 }
 
-fn write_scheduling_node_kind_binary(kind: SchedulingNodeKind, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_scheduling_node_kind_binary(
+    kind: SchedulingNodeKind,
+    writer: &mut ScenarioBinaryWriter,
+) {
     let tag = match kind {
         SchedulingNodeKind::Vm => 0,
         SchedulingNodeKind::Disk => 1,
@@ -1333,7 +1377,7 @@ fn write_scheduling_node_kind_binary(kind: SchedulingNodeKind, writer: &mut Scen
     writer.write_u8(tag);
 }
 
-fn read_scheduling_node_kind_binary(
+pub(super) fn read_scheduling_node_kind_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<SchedulingNodeKind, EngineError> {
     match reader.read_u8()? {
@@ -1348,7 +1392,10 @@ fn read_scheduling_node_kind_binary(
     }
 }
 
-fn write_preemption_kind_binary(kind: &PreemptionKind, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_preemption_kind_binary(
+    kind: &PreemptionKind,
+    writer: &mut ScenarioBinaryWriter,
+) {
     match kind {
         PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => {
             writer.write_u8(0);
@@ -1363,7 +1410,7 @@ fn write_preemption_kind_binary(kind: &PreemptionKind, writer: &mut ScenarioBina
     }
 }
 
-fn read_preemption_kind_binary(
+pub(super) fn read_preemption_kind_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<PreemptionKind, EngineError> {
     match reader.read_u8()? {
@@ -1387,11 +1434,11 @@ fn read_preemption_kind_binary(
     }
 }
 
-fn write_binary_bool(writer: &mut ScenarioBinaryWriter, value: bool) {
+pub(super) fn write_binary_bool(writer: &mut ScenarioBinaryWriter, value: bool) {
     writer.write_u8(u8::from(value));
 }
 
-fn read_binary_bool(
+pub(super) fn read_binary_bool(
     reader: &mut ScenarioBinaryReader<'_>,
     label: &'static str,
 ) -> Result<bool, EngineError> {
@@ -1404,7 +1451,11 @@ fn read_binary_bool(
     }
 }
 
-fn write_world_binary(world: &World, writer: &mut ScenarioBinaryWriter, includes_io_nodes: bool) {
+pub(super) fn write_world_binary(
+    world: &World,
+    writer: &mut ScenarioBinaryWriter,
+    includes_io_nodes: bool,
+) {
     writer.write_hash(world.id());
     if includes_io_nodes {
         writer.write_count(world.topology_nodes().len());
@@ -1429,7 +1480,7 @@ fn write_world_binary(world: &World, writer: &mut ScenarioBinaryWriter, includes
     }
 }
 
-fn read_world_binary(
+pub(super) fn read_world_binary(
     reader: &mut ScenarioBinaryReader<'_>,
     includes_io_nodes: bool,
 ) -> Result<World, EngineError> {
@@ -1463,7 +1514,7 @@ fn read_world_binary(
     Ok(world)
 }
 
-fn write_world_io_node_binary(node: &WorldIoNode, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_world_io_node_binary(node: &WorldIoNode, writer: &mut ScenarioBinaryWriter) {
     writer.write_u8(match &node.kind {
         WorldIoNodeKind::Block { .. } => 1,
         WorldIoNodeKind::NineP { .. } => 2,
@@ -1494,7 +1545,7 @@ fn write_world_io_node_binary(node: &WorldIoNode, writer: &mut ScenarioBinaryWri
     }
 }
 
-fn read_world_io_node_header(
+pub(super) fn read_world_io_node_header(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<(NodeId, NodeId, WorldIoCoreConfig), EngineError> {
     let id = NodeId {
@@ -1507,7 +1558,7 @@ fn read_world_io_node_header(
     Ok((id, owner, core))
 }
 
-fn read_world_block_node_binary(
+pub(super) fn read_world_block_node_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<WorldIoNode, EngineError> {
     let (id, owner, core) = read_world_io_node_header(reader)?;
@@ -1527,7 +1578,7 @@ fn read_world_block_node_binary(
     ))
 }
 
-fn read_world_ninep_node_binary(
+pub(super) fn read_world_ninep_node_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<WorldIoNode, EngineError> {
     let (id, owner, core) = read_world_io_node_header(reader)?;
@@ -1540,7 +1591,7 @@ fn read_world_ninep_node_binary(
     ))
 }
 
-fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBinaryWriter) {
     writer.write_string(&node.id.name);
     write_vm_arch_binary(node.arch, writer);
     writer.write_u32(node.memory_mib);
@@ -1557,7 +1608,9 @@ fn write_world_node_binary(node: &WorldNode, writer: &mut ScenarioBinaryWriter) 
     });
 }
 
-fn read_world_node_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<WorldNode, EngineError> {
+pub(super) fn read_world_node_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<WorldNode, EngineError> {
     let id = NodeId {
         name: reader.read_string()?,
     };
@@ -1591,14 +1644,14 @@ fn read_world_node_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<World
     })
 }
 
-fn write_vm_arch_binary(arch: VmArchitecture, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_vm_arch_binary(arch: VmArchitecture, writer: &mut ScenarioBinaryWriter) {
     writer.write_u8(match arch {
         VmArchitecture::X86_64 => 0,
         VmArchitecture::Aarch64 => 1,
     });
 }
 
-fn read_vm_arch_binary(
+pub(super) fn read_vm_arch_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<VmArchitecture, EngineError> {
     match reader.read_u8()? {
@@ -1610,7 +1663,10 @@ fn read_vm_arch_binary(
     }
 }
 
-fn write_ready_point_binary(ready_point: &ReadyPoint, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_ready_point_binary(
+    ready_point: &ReadyPoint,
+    writer: &mut ScenarioBinaryWriter,
+) {
     match ready_point {
         ReadyPoint::FixedIcount { icount } => {
             writer.write_u8(0);
@@ -1630,7 +1686,7 @@ fn write_ready_point_binary(ready_point: &ReadyPoint, writer: &mut ScenarioBinar
     }
 }
 
-fn read_ready_point_binary(
+pub(super) fn read_ready_point_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<ReadyPoint, EngineError> {
     match reader.read_u8()? {
@@ -1652,7 +1708,7 @@ fn read_ready_point_binary(
     }
 }
 
-fn write_link_binary(link: &LinkDef, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_link_binary(link: &LinkDef, writer: &mut ScenarioBinaryWriter) {
     let (endpoint_a, endpoint_b) = link.endpoints();
     writer.write_string(&endpoint_a.name);
     writer.write_string(&endpoint_b.name);
@@ -1668,7 +1724,9 @@ fn write_link_binary(link: &LinkDef, writer: &mut ScenarioBinaryWriter) {
     }
 }
 
-fn read_link_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LinkDef, EngineError> {
+pub(super) fn read_link_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<LinkDef, EngineError> {
     let endpoint_a = NodeId {
         name: reader.read_string()?,
     };
@@ -1690,7 +1748,7 @@ fn read_link_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LinkDef, En
     LinkDef::with_transport(endpoint_a, endpoint_b, latency, jitter, loss, bandwidth_bps)
 }
 
-fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(plan.content_hash());
     match &plan.kind {
         PlanKind::ScheduledEntries { entries } => {
@@ -1716,7 +1774,7 @@ fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) {
     }
 }
 
-fn read_plan_binary(
+pub(super) fn read_plan_binary(
     world: &World,
     assertions: impl IntoIterator<Item = AssertionId>,
     reader: &mut ScenarioBinaryReader<'_>,
@@ -1728,14 +1786,14 @@ fn read_plan_binary(
     )
 }
 
-fn read_plan_binary_for_scenario(
+pub(super) fn read_plan_binary_for_scenario(
     world: &World,
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Plan, EngineError> {
     read_plan_binary_inner(world, None, reader)
 }
 
-fn read_plan_binary_inner(
+pub(super) fn read_plan_binary_inner(
     world: &World,
     assertions: Option<Vec<AssertionId>>,
     reader: &mut ScenarioBinaryReader<'_>,

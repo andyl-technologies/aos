@@ -1268,7 +1268,7 @@ mod tests {
             qemu_patch_series_hash: String::from(
                 "crucible-hash:1dd48f47cea3da029d47aeb44cb8b4ead05dc367833bcddb365e0810253c10ce",
             ),
-            shmem_abi_version: String::from("1"),
+            shmem_abi_version: crate::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string(),
             guest_host_protocol_version: String::from("1"),
             rpc_abi_version: String::from("4.0.0"),
             rpc_abi_build: String::from("crucible-rpc-abi-v4"),

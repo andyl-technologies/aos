@@ -137,7 +137,12 @@ fn run_channel_material(
     boundary_ticks: u64,
 ) -> ChannelRunMaterial {
     let world = channel_world(white_box);
-    assert!(world.nodes().iter().all(|node| node.white_box == white_box));
+    assert!(
+        world
+            .vm_nodes()
+            .iter()
+            .all(|node| node.white_box == white_box)
+    );
     let mut scheduler = SingleScheduler::new(channel_scenario("channel-determinism", &world))
         .expect("channel determinism scheduler should build");
     let mut event_log = Vec::new();

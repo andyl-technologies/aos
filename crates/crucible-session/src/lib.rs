@@ -80,12 +80,25 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::oneshot;
 
-include!("session/core.rs");
-include!("session/commands.rs");
-include!("session/exploration.rs");
-include!("session/streams.rs");
-include!("session/engine.rs");
-include!("session/actor.rs");
+#[path = "session/actor.rs"]
+mod session_actor;
+#[path = "session/commands.rs"]
+mod session_commands;
+#[path = "session/core.rs"]
+mod session_core;
+#[path = "session/engine.rs"]
+mod session_engine;
+#[path = "session/exploration.rs"]
+mod session_exploration;
+#[path = "session/streams.rs"]
+mod session_streams;
+
+pub use session_actor::*;
+pub use session_commands::*;
+pub use session_core::*;
+pub use session_engine::*;
+pub use session_exploration::*;
+pub use session_streams::*;
 
 #[cfg(test)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
