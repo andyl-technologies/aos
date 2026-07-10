@@ -15,10 +15,8 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginVcpu = builtins.readFile ../../crates/crucible-qemu-plugin/src/vcpu_introspection.rs;
   pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
-  pluginAbi = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs)
-  ];
+  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
   pluginInertness = builtins.readFile ../../crates/crucible-qemu-plugin/src/inertness.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   patchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
@@ -193,7 +191,7 @@
         needle = "pub const fn cursor_position";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs + abi/tests.rs" pluginAbi [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "vCPU introspection install scaffold";
         needle = "pub fn install_required_vcpu_introspection_scaffold";
@@ -214,6 +212,8 @@
         label = "ABI vCPU introspection error";
         needle = "VcpuIntrospectionCapability";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "ABI vCPU introspection test";
         needle = "abi_install_requires_vcpu_introspection_symbols";

@@ -5,7 +5,7 @@
   root = ../..;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineModelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  engineModelTests = builtins.readFile ../../crates/crucible/src/tests/model_core.rs;
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
   rustFilesUnder = relativeRoot: let
     absoluteRoot = root + "/${relativeRoot}";
@@ -651,7 +651,7 @@
     }
   ];
 
-  engineLibRequirements = [
+  engineModelTestRequirements = [
     {
       label = "generic scenario identity stability test";
       needle = "canonical_material_builds_stable_scenario_identity";
@@ -665,7 +665,7 @@
   failures =
     failuresFor "crates/crucible/src/model.rs" engineModel engineModelRequirements
     ++ failuresFor "crates/crucible/src/model/canonical.rs" engineModelCanonical engineModelCanonicalRequirements
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib engineLibRequirements
+    ++ failuresFor "crates/crucible/src/tests/model_core.rs" engineModelTests engineModelTestRequirements
     ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo qemuCargoRequirements
     ++ failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust sourceRequirements
     ++ forbiddenFor "crates/crucible-qemu/src/launch*.rs" launchRust forbiddenSourceRequirements

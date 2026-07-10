@@ -1079,12 +1079,11 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   symmetry representatives at graph scope outside the current candidate set via
   canonical relabeling keys, and gates the behavior as DAG node deduplication
   rather than model checking or spec-language evaluation.
-- [ ] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
+- [x] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
   hook (12 §12.8) as a registration-time opt-in with zero fingerprint effect,
   working on any binary with no guest instrumentation. — satisfies [ADV-21]; spec
   §22.6.1; cross-ref 12 §12.8.
-  Partial evidence is provided by `checks.crucible.phase6.basicBlockCoverage`:
-  the engine exposes
+  Completed by `checks.crucible.phase6.basicBlockCoverage`: the engine exposes
   a registration-time `BasicBlockCoverageConfig` that defaults off, creates no
   engine coverage consumer in off mode, rejects invalid enabled maps, and
   produces a consumer token only for enabled coverage. The plugin coverage model
@@ -1104,9 +1103,13 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   that same canonical entry. Shutdown returns any final drained entries through
   the same dense-sequence admission path before the actor publishes the stopped
   state. No QEMU-local observation collection survives the boundary as a
-  parallel record. A
-  real loaded-QEMU run must still prove observation of an arbitrary guest and
-  coverage-on/off real-fingerprint equivalence, so this task remains open.
+  parallel record. The production loaded-QEMU gate runs an uninstrumented
+  standalone multiboot guest to the same exact icount with coverage off and on.
+  The enabled run observes live guest blocks, while the execution fingerprint,
+  canonical causal log, and independent instruction/register/RR-cursor/
+  writable-RAM/device-I/O trajectory remain identical. The disabled run
+  installs no coverage callback, and both teardown triggers drain admitted
+  callbacks before clean QEMU exit.
 - [x] **T-ADV-11** Record coverage as observational `coverage` event-log entries
   (19) excluded from the determinism comparison, feeding search/fuzzing and the
   per-checkpoint coverage fingerprint; assert coverage never affects `reduce`. —

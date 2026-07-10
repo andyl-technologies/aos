@@ -158,16 +158,20 @@
         needle = "\"-drive\".to_owned(),";
       }
       {
-        label = "root backing file appears in drive argv";
-        needle = "backing.file={}";
+        label = "root backing driver appears in drive argv";
+        needle = "backing.driver=qcow2";
       }
       {
-        label = "root backing format appears in drive argv";
-        needle = "backing.format=qcow2";
+        label = "root backing file driver appears in drive argv";
+        needle = "backing.file.driver=file";
+      }
+      {
+        label = "root overlay backing file path syntax";
+        needle = "backing.file.filename={}";
       }
       {
         label = "virtio-blk device argv";
-        needle = "\"virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID},bootindex=0\"";
+        needle = "\"virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID}\"";
       }
       {
         label = "store-path validator";
@@ -289,7 +293,7 @@
       }
       {
         label = "CoW drive argv assertion";
-        needle = "backing.file=/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2";
+        needle = "backing.file.filename=/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2";
       }
       {
         label = "virtio-blk argv assertion";

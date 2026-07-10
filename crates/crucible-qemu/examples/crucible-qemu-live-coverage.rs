@@ -3,6 +3,8 @@
 #[cfg(target_os = "linux")]
 use std::env;
 #[cfg(target_os = "linux")]
+use std::error::Error;
+#[cfg(target_os = "linux")]
 use std::process::ExitCode;
 
 #[cfg(target_os = "linux")]
@@ -46,7 +48,7 @@ fn run() -> Result<(), String> {
         off_directory,
         on_directory,
     );
-    let report = run_loaded_qemu_coverage_gate(&config).map_err(|error| error.to_string())?;
+    let report = run_loaded_qemu_coverage_gate(&config).map_err(|error| error_chain(&error))?;
     println!("PASS");
     println!("gate=gate:basic-block-coverage");
     println!("loaded_qemu_callback_evidence=present");
@@ -86,6 +88,18 @@ fn run() -> Result<(), String> {
         report.independent_trace_fingerprint.to_hex()
     );
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn error_chain(error: &(dyn Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(current) = source {
+        message.push_str(": ");
+        message.push_str(&current.to_string());
+        source = current.source();
+    }
+    message
 }
 
 #[cfg(target_os = "linux")]

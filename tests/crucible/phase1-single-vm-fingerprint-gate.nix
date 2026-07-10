@@ -245,8 +245,7 @@
         needle = "#[ignore";
       }
     ]
-    ++
-    failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
       {
         label = "single-VM fingerprint module";
         needle = "mod single_vm_fingerprint;";
@@ -442,12 +441,12 @@
         needle = "struct register_hash_summary";
       }
       {
-        label = "vCPU register reader";
-        needle = "qemu_plugin_crucible_read_vcpu_register";
+        label = "canonical batched vCPU register reader";
+        needle = "qemu_plugin_read_vcpu_regs(";
       }
       {
-        label = "guest RAM hash";
-        needle = "qemu_plugin_crucible_ram_hash(&ram_bytes)";
+        label = "writable guest RAM hash";
+        needle = "qemu_plugin_crucible_guest_ram_hash(&ram_bytes)";
       }
       {
         label = "register hash folded into rolling fingerprint";
@@ -657,13 +656,15 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.grep
-        pkgs.rust
-        pkgs.sed
-        s1Fingerprint
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.grep
+          pkgs.rust
+          pkgs.sed
+          s1Fingerprint
+        ]
+        ++ dependencies;
 
       phases = [
         {

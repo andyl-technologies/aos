@@ -2,13 +2,34 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.perfBench",
-  taskIds ? ["T-PERF-26"],
+  taskIds ? ["T-PERF-15" "T-PERF-26"],
   openTaskIds ? [
-    "T-PERF-1" "T-PERF-2" "T-PERF-3" "T-PERF-4" "T-PERF-5" "T-PERF-6"
-    "T-PERF-7" "T-PERF-8" "T-PERF-9" "T-PERF-10" "T-PERF-11" "T-PERF-12"
-    "T-PERF-13" "T-PERF-14" "T-PERF-15" "T-PERF-16" "T-PERF-17" "T-PERF-18"
-    "T-PERF-19" "T-PERF-20" "T-PERF-21" "T-PERF-22" "T-PERF-23" "T-PERF-24"
-    "T-PERF-25" "T-PERF-27" "T-PERF-28"
+    "T-PERF-1"
+    "T-PERF-2"
+    "T-PERF-3"
+    "T-PERF-4"
+    "T-PERF-5"
+    "T-PERF-6"
+    "T-PERF-7"
+    "T-PERF-8"
+    "T-PERF-9"
+    "T-PERF-10"
+    "T-PERF-11"
+    "T-PERF-12"
+    "T-PERF-13"
+    "T-PERF-14"
+    "T-PERF-16"
+    "T-PERF-17"
+    "T-PERF-18"
+    "T-PERF-19"
+    "T-PERF-20"
+    "T-PERF-21"
+    "T-PERF-22"
+    "T-PERF-23"
+    "T-PERF-24"
+    "T-PERF-25"
+    "T-PERF-27"
+    "T-PERF-28"
   ],
   dependencies ? [],
 }: let
@@ -38,6 +59,7 @@
   defaultChecks = builtins.readFile ./default.nix;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   perfDoc = builtins.readFile ../../docs/rfcs/0010-crucible/25-performance-targets.md;
+  liveCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -78,9 +100,13 @@
 
   # The modeled gate remains diagnostic while the live measurements are open.
   perfCheckboxFailures =
-    lib.optionals (!(hasInfix "- [x] **T-PERF-26**" perfDoc)) [
-      "docs/rfcs/0010-crucible/25-performance-targets.md: T-PERF-26 checklist box must be ticked"
-    ]
+    lib.concatMap (
+      id:
+        lib.optionals (!(hasInfix "- [x] **${id}**" perfDoc)) [
+          "docs/rfcs/0010-crucible/25-performance-targets.md: ${id} checklist box must be ticked"
+        ]
+    )
+    taskIds
     ++ lib.concatMap (
       id:
         lib.optionals (!(hasInfix "- [ ] **${id}**" perfDoc)) [
@@ -99,6 +125,16 @@
       {
         label = "cost-model term attribution";
         needle = "wall_clock ≈";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase6-basic-block-coverage.nix" liveCoverageGate [
+      {
+        label = "production coverage observation-only fingerprint proof";
+        needle = "loaded_qemu_fingerprint_equivalence=coverage-off-equals-coverage-on";
+      }
+      {
+        label = "production coverage observation-only canonical-log proof";
+        needle = "canonical_event_log_effect=none";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
@@ -334,11 +370,13 @@ in
       version = "0";
       src = crucibleSrc;
 
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.rust
-        pkgs.sed
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.coreutils
+          pkgs.rust
+          pkgs.sed
+        ]
+        ++ dependencies;
 
       phases = [
         {
@@ -420,6 +458,7 @@ in
             real_restore_latency=checks.fleet.crucible-perf [PERF-12]
             real_throughput_baseline=checks.fleet.crucible-perf [PERF-13]
             real_coverage_ips=pending-real-qemu-exec [PERF-14]
+            real_coverage_observation=checks.crucible.phase6.basicBlockCoverage [PERF-15]
             real_fleet_sweep=deferred-to-gate:fleet-equivalence [PERF-27]
             real_guest_boot=pending-spawn-exec
             host_profile=pinned

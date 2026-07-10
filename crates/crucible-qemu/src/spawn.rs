@@ -288,7 +288,7 @@ fn spawn_process_with_resources(
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::inherit());
     if let Some(run_directory) = run_directory {
         command.current_dir(run_directory);
     }

@@ -550,11 +550,11 @@ fn read_run_control_trigger(
 fn run_control_reader(
     control: ControlLifecycleStream<UnixStream>,
     teardown_sender: mpsc::Sender<LiveRuntimeTeardownTrigger>,
-) {
+) -> bool {
     let trigger = read_run_control_trigger(control);
     // A send failure means the sole teardown worker already selected another
     // concurrently delivered proof and returned. No second shutdown may run.
-    let _selected_elsewhere = teardown_sender.send(trigger);
+    teardown_sender.send(trigger).is_ok()
 }
 
 #[cfg(unix)]
@@ -1247,7 +1247,7 @@ where
                     .name(String::from("crucible-run-control"))
                     .spawn(move || {
                         run_runtime_thread_fail_loud("RUN control reader", || {
-                            run_control_reader(control_stream, reader_sender);
+                            let _delivered = run_control_reader(control_stream, reader_sender);
                         });
                     }) {
                     Ok(reader) => reader,
