@@ -674,6 +674,91 @@ in
           run_one b
           stop_jitter
 
+          diagnose_trace_structure() {
+            label="$1"
+            trace="$TMPDIR/trace-$label.jsonl"
+            echo "S11 structural diagnostic for trace $label" >&2
+            jq -s -c \
+              --argjson stop_at "$STOP_AT_VALUE" \
+              '
+                [ .[] | select((.kind // "sample") == "sample") ] as $samples
+                | [ .[] | select(.kind == "rr_switch") ] as $switches
+                | {
+                    sample_count: ($samples | length),
+                    rr_switch_count: ($switches | length),
+                    final_sample_count: ([ $samples[] | select(.final == true) ] | length),
+                    horizon_pre_stop_count: ([ $samples[]
+                      | select(.final != true and .retired == $stop_at)
+                    ] | length),
+                    horizon_final_count: ([ $samples[]
+                      | select(.final == true and .retired == $stop_at)
+                    ] | length)
+                  }
+              ' "$trace" >&2 || true
+            jq -n -c \
+              --arg launch_definition_digest "$launch_definition_digest" \
+              --arg qemu_build_digest "$qemu_build_digest" \
+              --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
+              '
+                inputs
+                | select((.kind // "sample") == "sample")
+                | {
+                    retired,
+                    final,
+                    stop_at,
+                    stop_requested,
+                    schema,
+                    tracked_vcpus,
+                    launch_digest_match: (.launch_definition_digest == $launch_definition_digest),
+                    qemu_digest_match: (.qemu_build_digest == $qemu_build_digest),
+                    plugin_digest_match: (.trace_plugin_build_digest == $trace_plugin_build_digest),
+                    rr_current_vcpu,
+                    rr_cursor_position,
+                    rr_switch_quantum,
+                    rr_cursor_valid,
+                    rr_cursor_source,
+                    sample_register_failures,
+                    register_read_failures,
+                    ram_bytes,
+                    ram_hash,
+                    memory_events_enabled,
+                    device_event_capture,
+                    device_event_hash,
+                    register_hash,
+                    register_hashes,
+                    register_counts,
+                    register_file_bytes,
+                    register_schema_hashes
+                  }
+              ' "$trace" >&2 || true
+            jq -n -c \
+              --argjson vcpus "$VCPU_COUNT" \
+              --argjson quantum "$RR_SWITCH_QUANTUM" \
+              '
+                limit(10;
+                  inputs
+                  | select(.kind == "rr_switch")
+                  | select((
+                      .rr_switch_event > 0
+                      and .previous_rr_switch_quantum == $quantum
+                      and .rr_switch_quantum == $quantum
+                      and .from_vcpu >= 0
+                      and .from_vcpu < $vcpus
+                      and .to_vcpu >= 0
+                      and .to_vcpu < $vcpus
+                      and .rr_cursor_position <= $quantum
+                      and (.per_vcpu_retired | type == "array")
+                      and (.per_vcpu_retired | length) == $vcpus
+                      and (.per_vcpu_delta | type == "array")
+                      and (.per_vcpu_delta | length) == $vcpus
+                      and all(.per_vcpu_retired[]; . >= 0)
+                      and all(.per_vcpu_delta[]; . >= 0)
+                      and any(.per_vcpu_delta[]; . > 0)
+                    ) | not)
+                )
+              ' "$trace" >&2 || true
+          }
+
           for label in a b; do
             if [ "$REQUIRE_GUEST_PASS" -eq 1 ]; then
               grep -q "TEST_RESULT:PASS" "$TMPDIR/serial-$label.log" \
@@ -692,7 +777,7 @@ in
                 fail "guest $label failed to bind a contention worker to its vCPU"
               fi
             fi
-            jq -e -s \
+            if ! jq -e -s \
               --argjson vcpus "$VCPU_COUNT" \
               --argjson quantum "$RR_SWITCH_QUANTUM" \
               --argjson stop_at "$STOP_AT_VALUE" \
@@ -804,8 +889,10 @@ in
                     ($switches | length) == 0
                   end
                 )
-              ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
-              || fail "trace $label failed structural S11 assertions"
+              ' "$TMPDIR/trace-$label.jsonl" >/dev/null; then
+              diagnose_trace_structure "$label"
+              fail "trace $label failed structural S11 assertions"
+            fi
           done
 
           samples_a=$(jq -s '[.[] | select((.kind // "sample") == "sample")] | length' "$TMPDIR/trace-a.jsonl")
