@@ -6,7 +6,13 @@ use std::collections::{BTreeSet, VecDeque};
 
 use crucible_shmem::{FrameEntry, RingHeader, SpscRingError, SpscRingSnapshot};
 
-const RING_SOURCE: &str = include_str!("../src/lib.rs");
+const RING_SOURCE: &str = concat!(
+    include_str!("../src/lib.rs"),
+    include_str!("../src/shmem/region.rs"),
+    include_str!("../src/shmem/ring_coverage.rs"),
+    include_str!("../src/shmem/frame_node.rs"),
+    include_str!("../src/shmem/delivery_errors.rs"),
+);
 const RANDOM_PROPERTY_SEEDS: &[u64] = &[
     0x4352_5543_4942_4c45,
     0x5350_5343_0000_0001,

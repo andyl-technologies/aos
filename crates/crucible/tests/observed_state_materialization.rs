@@ -322,7 +322,7 @@ fn observed_state_rejects_future_invalid_or_non_dense_prefixes() {
 
 #[test]
 fn observed_state_implementation_avoids_host_time_and_unordered_maps() {
-    let trigger_source = include_str!("../src/trigger.rs");
+    let trigger_source = include_str!("../src/trigger/conditions.rs");
     let observed_state_block = trigger_source
         .split("pub struct ObservedState")
         .nth(1)

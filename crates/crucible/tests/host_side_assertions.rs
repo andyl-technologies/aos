@@ -489,7 +489,10 @@ fn host_named_predicates_receive_read_only_observed_state() {
 
 #[test]
 fn host_assertion_evaluator_avoids_host_time_rng_and_unordered_maps() {
-    let trigger = include_str!("../src/trigger.rs");
+    let trigger = concat!(
+        include_str!("../src/trigger/assertions.rs"),
+        include_str!("../src/trigger/evaluation.rs"),
+    );
     let evaluator_block = trigger
         .split("pub struct HostAssertionEvaluator")
         .nth(1)
