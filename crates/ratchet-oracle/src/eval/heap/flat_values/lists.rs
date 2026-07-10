@@ -140,10 +140,9 @@ impl EvalHeap {
     ///
     /// This is the flat analog of the record table's staged heap-field
     /// writeback commit: the header (address identity, kind) is untouched,
-    /// the payload is replaced wholesale, the header hash is marked stale for
-    /// hash-cons admission, and the address's cutoff-cache hashes are
-    /// dropped, mirroring `structural_hash = None` plus cold-hash clearing on
-    /// a record commit.
+    /// the payload is replaced wholesale, the header hash is marked stale
+    /// until the enclosing structural-writeback commit repairs the header and
+    /// hash-cons bucket, and the address's cutoff-cache hashes are dropped.
     ///
     /// # Errors
     ///
@@ -168,8 +167,8 @@ impl EvalHeap {
     /// Hash-cons admission for serial lists over the flat list store.
     ///
     /// Confirmation compares the header hash word and the element spine
-    /// (`raw_eq`); addresses whose hash went stale after a writeback are
-    /// skipped (never deduplicated against).
+    /// (`raw_eq`). The stale-address check is a fail-closed guard for a
+    /// payload write whose enclosing structural commit has not yet published.
     fn admit_flat_list_cons(
         &mut self,
         hash: HotXxh3Hash,

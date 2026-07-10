@@ -7,9 +7,8 @@
 //! representation/shape metadata, [`EvalLambda`], [`EvalPrimOp`], and
 //! [`EvalThunk`] values.
 //!
-//! Strings, paths, lists, and attrsets are the exception since RFC-0007
-//! doc 30 stages FV-1/FV-2: their payloads live *flat* behind the value
-//! address (header plus payload in a flat object store) and never enter the
+//! Strings, paths, lists, and attrsets live *flat* behind the value address
+//! (header plus payload in a flat object store) and never enter the
 //! record table — in serial mode with string bytes inlined after the payload
 //! (FV-1b), and in shared mode as per-shard published flat slots. Lists and
 //! attrsets carry heap edges, so their serial flat stores participate in the
@@ -64,6 +63,7 @@ mod root_scan;
 mod roots;
 mod shared_arena;
 mod shared_backend;
+mod structural_writeback;
 mod thunk;
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};

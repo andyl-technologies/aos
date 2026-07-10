@@ -292,6 +292,21 @@ impl Value {
         self.payload
     }
 
+    /// Returns representation identity within a no-relocation interval.
+    ///
+    /// Inline values return their scalar payload, while heap-backed values
+    /// return their current address. Callers that mix tags must include the
+    /// tag in their key and must not retain this result across a moving-GC
+    /// safepoint.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds when the tag and payload violate the value ABI.
+    pub const fn transient_identity_bits(self) -> u64 {
+        self.debug_assert_payload_invariant();
+        self.payload
+    }
+
     /// Returns representation-identity bits that require relocation repair.
     ///
     /// This accessor marks a raw address-derived key or reference as live across a
@@ -808,11 +823,19 @@ mod tests {
 
         assert_eq!(thunk.address_identity_bits(), ptr.as_ptr() as usize as u64);
         assert_eq!(
+            thunk.transient_identity_bits(),
+            ptr.as_ptr() as usize as u64
+        );
+        assert_eq!(
             thunk.relocation_sensitive_identity_bits(),
             ptr.as_ptr() as usize as u64
         );
         assert_eq!(
             Value::int(i64::MIN).relocation_sensitive_identity_bits(),
+            i64::MIN as u64
+        );
+        assert_eq!(
+            Value::int(i64::MIN).transient_identity_bits(),
             i64::MIN as u64
         );
     }

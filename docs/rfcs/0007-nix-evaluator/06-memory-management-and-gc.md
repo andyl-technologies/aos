@@ -436,12 +436,12 @@ across requests. That case is Tier B.
 > leaves only independently live thunk-state/parallel cells side-owned with
 > sweep release. This closes the value-representation prerequisite. The
 > copying nursery remains mandated and unimplemented. The checked-in
-> `payload_bits` identity gate is now closed: 40 raw scalar/diagnostic reads,
-> four collector-free address identities, and 24 relocation-sensitive
+> `payload_bits` identity gate is now closed: 40 raw scalar/diagnostic
+> reads, five collector-free address identities, and 19 relocation-sensitive
 > identities are count-pinned with explicit root-writeback/rekey/rebuild
-> dispositions. B2 still has to implement those repair hooks, mutable root
-> slots/JIT stack maps, and pass the full-corpus moving-collector stress gate;
-> the table makes that remaining work finite rather than implicit. This
+> dispositions, all of which are now closed. B2 still has to implement the
+> copying collector, complete mutable root-slot/JIT stack-map integration, and
+> pass the full-corpus moving-collector stress gate. This
 > staging follows `S-8`'s
 > alloc-via-symbols swap-ability and `C-10`'s measure-gated daemon framing
 > (see [decision register](19-decision-register.md)).
@@ -3218,6 +3218,25 @@ GC must be observationally invisible (§8): every item is gated by the different
       zlib cold/warm at -1.4%/-3.4%, wide at +4.0%/+3.4%, and JIT fib at
       +0.4%/-3.0%. Retained-RSS medians were lower in all six comparisons, and
       arena peaks were exactly unchanged at 7.5/67.5/160 MiB.
+- [x] Current structural-key relocation repair:
+      collector heap-field staging computes the final structural hash for
+      every changed record list, flat list, and flat attrset, and builds
+      replacement list/attr hash-cons tables before mutating the live heap.
+      Commit remains allocation-free: payload writes publish first, followed
+      by repaired record/header hashes, stale-marker removal, and the rebuilt
+      buckets. Focused tests prove that the relocated payload reuses the parent
+      identity while the old payload no longer resolves through its stale
+      bucket. Shaped-attr fingerprints are collector-free transient walks
+      using a dedicated no-safepoint scalar-or-address identity accessor. This
+      completes the dispositions for the final three callers in the original
+      22-caller production-sensitive worklist; it closes that identity-repair
+      worklist, not the still-open copying collector itself. Final gates were
+      green across 351 `ratchet-value`, 354 `ratchet-core`, and 3,030
+      `ratchet-oracle` tests (34 ignored), 322 `aos-nix` tests, 38 pinned
+      language tests, 32 Miri flat-heap tests, the 16-leg package matrix, seven
+      wide-closure modes, compute x8, cache validation, and all 648 generated
+      strict-JSON seeds in serial/K4/JIT/sweep-zero modes. The frozen
+      source-size offender set was unchanged.
 - [x] Current tree-walk transient value-stack registration precursor:
       `TreeWalk` owns scoped transient value-stack root storage for evaluator
       paths that keep heap values in Rust locals across allocation safepoints.

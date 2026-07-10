@@ -344,7 +344,7 @@ fn fingerprint_shaped_attrs(attrs: &ShapedAttrs) -> ShapedAttrsFingerprint {
     attrs.values_by_symbol().len().hash(&mut hasher);
     for value in attrs.values_by_symbol() {
         value.tag().hash(&mut hasher);
-        value.relocation_sensitive_identity_bits().hash(&mut hasher);
+        value.transient_identity_bits().hash(&mut hasher);
     }
     ShapedAttrsFingerprint::from_u64(hasher.finish())
 }

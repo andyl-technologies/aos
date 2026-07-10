@@ -211,11 +211,11 @@ begins.
 ### 2.4 The parity-critical identity audit (`payload_bits`)
 
 The record side table is not only overhead — it is where **address
-identity** is currently anchored. The executable audit now classifies 68
-accessor sites across 21 source files: 40 raw scalar/diagnostic reads, four
-address-only reads confined to collector-free recursive walks, and 24
-relocation-sensitive identities. The production subset is 66 sites across 20
-files (40/4/22); the two additional relocation-sensitive sites are the
+identity** is currently anchored. The executable audit now classifies 64
+accessor sites across 21 source files: 40 raw scalar/diagnostic reads,
+five address-only reads confined to collector-free recursive walks, and 19
+relocation-sensitive identities. The production subset is 62 sites across 20
+files (40/5/17); the two additional relocation-sensitive sites are the
 `cfg(test)` capture-plan validator, retained in the B2 worklist so moving-GC
 tests cannot silently use stale identities. The families (the B2 repair
 worklist, enumerated):
@@ -256,8 +256,9 @@ key/reference that B2 must repair. The checked-in table at
 `ratchet-value`, `ratchet-oracle`, and `ratchet-jit`, pins per-file counts,
 and gives every relocation-sensitive family a concrete B2 disposition.
 Any new or reclassified production caller fails the audit until reviewed.
-The first four B2 repair slices now close 19 of the 22 production-sensitive
-callers. `relocation_identity.rs` stages the live survivor mapping before any
+The five B2 repair slices now disposition all 22 callers in the original
+production-sensitive worklist. `relocation_identity.rs` stages the live
+survivor mapping before any
 root or heap mutation, rekeys the lazy-identity/fold and tier-1 publish tables
 after a successful live writeback commit, prunes dead young keys before nursery
 address reuse, and clears the advisory unhashable-value memo. The JIT lowerer
@@ -274,14 +275,29 @@ strict-JSON seeds in four execution modes stayed byte-green. Five interleaved
 release A/B rounds against pristine `e613b5b19` measured zlib cold/warm at
 -1.4%/-5.6%, wide at -0.6%/-2.3%, and JIT fib at +0.3%/+0.3%, with exact
 7.5/67.5/160 MiB arena peaks; five-sample wide retained-RSS medians were 6.0%
-lower cold and 3.9% lower warm. The remaining three callers are the list/attr
-structural hashes and shaped-attr fingerprints enumerated by the same table.
-The force/render landing's full battery remained byte-green, including all 645
-generated strict-JSON seed expressions in four modes. Five interleaved release
+lower cold and 3.9% lower warm. The final structural slice transactionally
+stages rebuilt list/attr hashes and replacement hash-cons tables before any
+collector field mutation, then publishes payloads, flat header hashes, stale
+markers, and buckets in an allocation-free commit. Shaped-attr fingerprints
+are transient collector-free walks: a dedicated no-safepoint accessor supplies
+scalar payload or heap-address representation identity, so no persistent
+fingerprint requires relocation repair. The force/render landing's full battery
+remained byte-green, including all 645 generated strict-JSON seed expressions
+in four modes. Five interleaved release
 A/B rounds against pristine `a91f2ae31` measured zlib cold/warm at
 -1.4%/-3.4%, wide at +4.0%/+3.4%, and JIT fib at +0.4%/-3.0%; retained-RSS
 medians were lower in every comparison and the 7.5/67.5/160 MiB arena peaks
-were unchanged.
+were unchanged. The structural landing's final suites passed 351
+`ratchet-value`, 354 `ratchet-core`, and 3,030 `ratchet-oracle` tests (34
+ignored), 322 `aos-nix` tests, 38 pinned language tests, and 32 Miri flat-heap
+tests. Its differential battery was byte-green across the 16 package legs,
+wide serial/K4/JIT/sweep-zero plus all three shape modes, compute x8, cache
+validation, and all 648 generated strict-JSON seeds in four modes; the frozen
+source-size offender set did not grow. Five alternating release A/B rounds
+against pristine `51dddcb18` measured zlib cold/warm at -5.2%/-5.7%, wide at
++0.8%/+9.5%, and JIT fib at -0.05%/+0.74%. Median retained RSS moved about
++1.3% for zlib and +2.5%/+3.9% for wide cold/warm, while JIT fib was flat;
+arena peaks matched exactly at 7.5/71.5/160 MiB.
 
 ### 2.5 GC integration: header-resident marks
 
@@ -903,9 +919,9 @@ shipped this way):
 
 ### 9.4 Risks
 
-- **The payload-identity audit** (§2.4): 68 audited sites across 21 files,
-  mechanically split 40 raw / 4 address-only / 24 relocation-sensitive
-  (66 production sites; two `cfg(test)` validator sites). Stable Tier-A
+- **The payload-identity audit** (§2.4): 64 audited sites across 21 files,
+  mechanically split 40 raw / 5 address-only / 19 relocation-sensitive
+  (62 production sites; two `cfg(test)` validator sites). Stable Tier-A
   addresses keep them sound through the campaign, but every stage must
   re-verify no site depended on *record
   table* semantics (e.g. `UnknownPointer` fail-loud shape changes under
@@ -1090,10 +1106,10 @@ list only their *additional* gates.
       B2's rehash-hook worklist derivable from it.
       *Landed: the sealed `Value` API distinguishes raw scalar/diagnostic
       bits, address-only identities, and relocation-sensitive identities.
-      The executable audit pins 40/4/24 sites respectively across 21 source
+      The executable audit pins 40/5/19 sites respectively across 21 source
       files and records the required root writeback, side-table rekey,
       structural-hash rebuild, compiled-constant patch/reject, or no-repair
-      disposition for every family. The production subset is 40/4/22 across
+      disposition for every family. The production subset is 40/5/17 across
       20 files; two `cfg(test)` capture-validator sites remain deliberately in
       the worklist. Test directories and `tests.rs` modules are excluded;
       UFCS and method-call spellings are both counted.*

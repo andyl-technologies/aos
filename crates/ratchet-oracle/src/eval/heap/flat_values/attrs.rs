@@ -274,10 +274,9 @@ impl EvalHeap {
     ///
     /// The attrs analog of `flat_list_commit_writeback`: the header (address
     /// identity, kind) and the payload metadata are untouched, the entry
-    /// storage is replaced wholesale, the header hash is marked stale for
-    /// hash-cons admission, and the address's cutoff-cache hashes are
-    /// dropped, mirroring `structural_hash = None` plus cold-hash clearing on
-    /// a record commit.
+    /// storage is replaced wholesale, the header hash is marked stale until
+    /// the enclosing structural-writeback commit repairs the header and
+    /// hash-cons bucket, and the address's cutoff-cache hashes are dropped.
     ///
     /// # Errors
     ///
@@ -303,8 +302,9 @@ impl EvalHeap {
     ///
     /// Confirmation compares the header hash word, the metadata (part of the
     /// structural key, exactly as the record-backed admission compared it),
-    /// and the entry storage (`raw_eq`); addresses whose hash went stale
-    /// after a writeback are skipped (never deduplicated against).
+    /// and the entry storage (`raw_eq`). The stale-address check is a
+    /// fail-closed guard for a payload write whose enclosing structural
+    /// commit has not yet published.
     fn admit_flat_attrs_cons(
         &mut self,
         hash: HotXxh3Hash,

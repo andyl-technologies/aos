@@ -49,6 +49,25 @@ fn alloc_and_resolve_round_trip_header_and_payload() {
 }
 
 #[test]
+fn structural_hash_header_can_be_repaired_in_place() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let allocation = store
+        .alloc(FlatObjectKind::List, 7, 0, payload("list", &drops))
+        .expect("allocation succeeds");
+
+    store
+        .update_structural_hash(allocation.ptr, FlatObjectKind::List, 19)
+        .expect("header hash updates");
+
+    let object = store
+        .resolve(allocation.ptr, FlatObjectKind::List)
+        .expect("updated object resolves");
+    assert_eq!(object.structural_hash(), 19);
+    assert_eq!(object.payload().text, "list");
+}
+
+#[test]
 fn resolution_rejects_wrong_kind_with_the_actual_kind() {
     let drops = Rc::new(Cell::new(0));
     let mut store = FlatObjectStore::new();

@@ -634,6 +634,38 @@ impl<T> FlatObjectStore<T> {
         Ok(&mut object.payload)
     }
 
+    /// Replaces the structural-hash header word of one resolved object.
+    ///
+    /// Collector writeback uses this after staging a rebuilt hash-cons table:
+    /// the object payload and table bucket then publish the same repaired key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FlatObjectError::UnknownAddress`] if `ptr` is not a flat
+    /// object of this store, and [`FlatObjectError::KindMismatch`] if it is a
+    /// flat object of another kind.
+    pub fn update_structural_hash(
+        &mut self,
+        ptr: NonNull<HeapObject>,
+        kind: FlatObjectKind,
+        structural_hash: u64,
+    ) -> Result<(), FlatObjectError> {
+        self.check_kind_allowed(kind)?;
+        let actual = self.kind_at(ptr)?;
+        if actual != kind {
+            return Err(FlatObjectError::KindMismatch {
+                expected: kind,
+                actual,
+                address: ptr.as_ptr() as usize,
+            });
+        }
+        // SAFETY: the same proof as `resolve_mut` applies; `&mut self` excludes
+        // every shared resolution while the header word is replaced.
+        let object = unsafe { &mut *(ptr.as_ptr() as *mut FlatObject<T>) };
+        object.header.hash = structural_hash;
+        Ok(())
+    }
+
     /// Returns the flat kind stored at `ptr`, if it is one of this store's
     /// objects.
     pub fn kind_of(&self, ptr: NonNull<HeapObject>) -> Option<FlatObjectKind> {

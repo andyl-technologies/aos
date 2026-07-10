@@ -195,6 +195,41 @@ where
             .map(|(key, (index, value))| (key, index, value))
     }
 
+    /// Rebuilds every committed value under a caller-computed key.
+    ///
+    /// Outstanding reservations are deliberately omitted, matching
+    /// [`Self::committed_entries`]. The returned table is independent of
+    /// `self`, so callers can finish every fallible key computation and bucket
+    /// reservation before atomically replacing a live table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error from `key_for` or a converted [`HashConsError`] if the
+    /// rebuilt table cannot reserve a bucket or candidate slot.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an internal table invariant loses a freshly reserved
+    /// slot before its immediately following insertion.
+    pub fn try_rekey_committed<E>(
+        &self,
+        mut key_for: impl FnMut(&V) -> Result<K, E>,
+    ) -> Result<Self, E>
+    where
+        K: Clone,
+        V: Clone,
+        E: From<HashConsError>,
+    {
+        let mut rebuilt = Self::new();
+        for (_old_key, _index, value) in self.committed_entries() {
+            let slot = rebuilt.reserve_slot(key_for(value)?)?;
+            if !rebuilt.push_reserved(slot, value.clone()) {
+                unreachable!("fresh hash-cons reservation disappeared");
+            }
+        }
+        Ok(rebuilt)
+    }
+
     /// Returns the first candidate whose predicate confirms equality.
     ///
     /// The predicate is where callers compare the candidate payload with the
@@ -557,5 +592,25 @@ mod tests {
         let cloned_slot = cloned.reserve_slot(7).expect("clone reserves its own slot");
         assert!(cloned.push_reserved(cloned_slot, "clone"));
         assert_eq!(cloned.bucket(&7), Some(["existing", "clone"].as_slice()));
+    }
+
+    #[test]
+    fn try_rekey_committed_rebuilds_values_without_outstanding_reservations() {
+        let mut table = HashConsTable::<u8, &str>::new();
+        let short = table.reserve_slot(1).expect("short slot reserves");
+        assert!(table.push_reserved(short, "a"));
+        let long = table.reserve_slot(2).expect("long slot reserves");
+        assert!(table.push_reserved(long, "three"));
+        let outstanding = table.reserve_slot(9).expect("outstanding slot reserves");
+
+        let rebuilt = table
+            .try_rekey_committed::<HashConsError>(|value| Ok(value.len() as u8))
+            .expect("committed values rekey");
+
+        assert_eq!(rebuilt.bucket(&1), Some(["a"].as_slice()));
+        assert_eq!(rebuilt.bucket(&5), Some(["three"].as_slice()));
+        assert_eq!(rebuilt.bucket(&9), None);
+        assert_eq!(table.bucket(&1), Some(["a"].as_slice()));
+        assert!(table.cancel_reserved(outstanding));
     }
 }

@@ -25,6 +25,7 @@ use super::root_scan::{
     heap_ptr, is_scannable_eval_heap_value, push_heap_edge, push_object_scan, push_visited,
     push_worklist,
 };
+use super::structural_writeback::StructuralWritebackStage;
 use crate::eval::EvalWithScope;
 use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
 use crate::eval::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
@@ -63,7 +64,8 @@ const MINOR_GC_FORWARDING_VALUES_TABLE: &str = "minor-GC forwarding values";
 const MINOR_GC_REFERENCE_BUFFER_TABLE: &str = "minor-GC reference buffer";
 const MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE: &str = "minor-GC heap field writebacks";
 const MINOR_GC_COPIED_HEAP_FIELD_WRITES_TABLE: &str = "minor-GC copied heap field writes";
-const MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE: &str = "minor-GC direct heap field writes";
+pub(super) const MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE: &str =
+    "minor-GC direct heap field writes";
 const MINOR_GC_ROOT_WRITEBACKS_TABLE: &str = "minor-GC root writebacks";
 const MINOR_GC_DESTINATION_RECORD_RESERVATIONS_TABLE: &str =
     "minor-GC destination record reservations";
@@ -2404,7 +2406,7 @@ struct CollectorPollCopiedHeapFieldWrite {
     base_object: Option<HeapObjectValue>,
 }
 
-struct CollectorPollDirectHeapFieldWrite {
+pub(super) struct CollectorPollDirectHeapFieldWrite {
     target: HeapFieldWriteTarget,
     writeback_object: GcHeapAddress,
     field_index: usize,
@@ -2437,6 +2439,7 @@ pub(crate) struct AllocationCollectorPollLiveHeapFieldWriteStage {
     staged_flat_list_writes: Vec<(NonNull<HeapObject>, NixList)>,
     staged_flat_attrs_writes: Vec<(NonNull<HeapObject>, FlatAttrs)>,
     staged_environment_writes: EnvironmentWritebackStage,
+    staged_structural_writebacks: StructuralWritebackStage,
     staged_barriers: Option<(RememberedSet, GcCardTable)>,
     object_body_and_generation_write_report:
         AllocationCollectorPollObjectBodyAndGenerationWriteReport,
@@ -4950,8 +4953,10 @@ impl EvalHeap {
             self.plan_collector_poll_minor_gc_copied_heap_field_writes(writes)?;
         let (staged, staged_environment) =
             self.stage_collector_poll_minor_gc_copied_heap_field_writes(&planned)?;
+        let staged_structural = self.stage_structural_writebacks(&staged, &[], &[])?;
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
         staged_environment.commit();
+        self.commit_structural_writebacks(staged_structural);
 
         Ok(report)
     }
@@ -5367,12 +5372,19 @@ impl EvalHeap {
     ) -> Result<AllocationCollectorPollDirectHeapFieldWriteReport, EvalHeapError> {
         let (planned, report) =
             self.plan_collector_poll_minor_gc_direct_heap_field_writes(writes, false)?;
-        let (staged, staged_flat_lists, staged_flat_attrs, staged_environment) =
+        let (
+            staged,
+            staged_flat_lists,
+            staged_flat_attrs,
+            staged_environment,
+            staged_structural,
+        ) =
             self.stage_collector_poll_minor_gc_direct_heap_field_writes(&planned)?;
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
         self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_lists);
         self.commit_collector_poll_minor_gc_staged_flat_attrs_writes(staged_flat_attrs);
         staged_environment.commit();
+        self.commit_structural_writebacks(staged_structural);
 
         Ok(report)
     }
@@ -5545,6 +5557,11 @@ impl EvalHeap {
             &mut staged_environment,
             entries,
         )?;
+        let staged_structural_writebacks = self.stage_structural_writebacks(
+            &staged,
+            &staged_flat_lists,
+            &staged_flat_attrs,
+        )?;
         let staged_barriers = self.stage_collector_poll_minor_gc_direct_heap_field_write_barriers(
             &planned_direct,
             remembered_set,
@@ -5558,6 +5575,7 @@ impl EvalHeap {
             staged_flat_list_writes: staged_flat_lists,
             staged_flat_attrs_writes: staged_flat_attrs,
             staged_environment_writes: staged_environment,
+            staged_structural_writebacks,
             staged_barriers,
             object_body_and_generation_write_report:
                 AllocationCollectorPollObjectBodyAndGenerationWriteReport::new(
@@ -5587,6 +5605,7 @@ impl EvalHeap {
             staged_flat_list_writes,
             staged_flat_attrs_writes,
             staged_environment_writes,
+            staged_structural_writebacks,
             staged_barriers,
             object_body_and_generation_write_report,
             copied_report,
@@ -5603,6 +5622,7 @@ impl EvalHeap {
         self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_list_writes);
         self.commit_collector_poll_minor_gc_staged_flat_attrs_writes(staged_flat_attrs_writes);
         staged_environment_writes.commit();
+        self.commit_structural_writebacks(staged_structural_writebacks);
 
         (
             object_body_and_generation_write_report,
@@ -5670,6 +5690,11 @@ impl EvalHeap {
             &mut staged_environment,
             entries,
         )?;
+        let staged_structural = self.stage_structural_writebacks(
+            &staged,
+            &staged_flat_lists,
+            &staged_flat_attrs,
+        )?;
 
         if let Some((remembered_set, card_table)) = barrier_targets {
             self.record_collector_poll_minor_gc_direct_heap_field_write_barriers(
@@ -5682,6 +5707,7 @@ impl EvalHeap {
         self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_lists);
         self.commit_collector_poll_minor_gc_staged_flat_attrs_writes(staged_flat_attrs);
         staged_environment.commit();
+        self.commit_structural_writebacks(staged_structural);
 
         Ok((copied_report, direct_report))
     }
@@ -6018,54 +6044,7 @@ impl EvalHeap {
         })
     }
 
-    #[cfg(test)]
-    #[allow(clippy::type_complexity)]
-    fn stage_collector_poll_minor_gc_direct_heap_field_writes(
-        &self,
-        writes: &[CollectorPollDirectHeapFieldWrite],
-    ) -> Result<
-        (
-            Vec<(usize, HeapObjectValue)>,
-            Vec<(NonNull<HeapObject>, NixList)>,
-            Vec<(NonNull<HeapObject>, FlatAttrs)>,
-            EnvironmentWritebackStage,
-        ),
-        EvalHeapError,
-    > {
-        let mut staged: Vec<(usize, HeapObjectValue)> = Vec::new();
-        staged.try_reserve_exact(writes.len()).map_err(|_| {
-            EvalHeapError::RootScanAllocationFailed {
-                table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
-                entries: writes.len(),
-            }
-        })?;
-        let mut staged_flat_lists: Vec<(NonNull<HeapObject>, NixList)> = Vec::new();
-        let mut staged_flat_attrs: Vec<(NonNull<HeapObject>, FlatAttrs)> = Vec::new();
-        let mut staged_environment = EnvironmentWritebackStage::try_new(writes.len()).map_err(
-            |_| EvalHeapError::RootScanAllocationFailed {
-                table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
-                entries: writes.len(),
-            },
-        )?;
-
-        self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
-            writes,
-            &mut staged,
-            &mut staged_flat_lists,
-            &mut staged_flat_attrs,
-            &mut staged_environment,
-            writes.len(),
-        )?;
-
-        Ok((
-            staged,
-            staged_flat_lists,
-            staged_flat_attrs,
-            staged_environment,
-        ))
-    }
-
-    fn stage_collector_poll_minor_gc_direct_heap_field_writes_into(
+    pub(super) fn stage_collector_poll_minor_gc_direct_heap_field_writes_into(
         &self,
         writes: &[CollectorPollDirectHeapFieldWrite],
         staged: &mut Vec<(usize, HeapObjectValue)>,

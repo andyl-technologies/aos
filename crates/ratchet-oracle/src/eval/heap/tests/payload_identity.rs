@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 // `Value::payload_bits(value)` are counted too.
 const RAW_ACCESSOR: &str = "payload_bits(";
 const ADDRESS_ONLY_ACCESSOR: &str = "address_identity_bits(";
+const TRANSIENT_IDENTITY_ACCESSOR: &str = "transient_identity_bits(";
 const RELOCATION_SENSITIVE_ACCESSOR: &str = "relocation_sensitive_identity_bits(";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,16 +170,17 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
     PayloadIdentityAuditRow {
         path: "ratchet-value/src/attrs/shape/instance.rs",
         raw_representation: 0,
-        address_identity_only: 0,
-        relocation_sensitive: 1,
-        b2_disposition: "rebuild shape-instance structural hashes after forwarding",
+        address_identity_only: 1,
+        relocation_sensitive: 0,
+        b2_disposition: "transient representation identity in a collector-free fingerprint walk",
     },
 ];
 
 fn count_accessors(source: &str) -> (usize, usize, usize) {
     (
         source.matches(RAW_ACCESSOR).count(),
-        source.matches(ADDRESS_ONLY_ACCESSOR).count(),
+        source.matches(ADDRESS_ONLY_ACCESSOR).count()
+            + source.matches(TRANSIENT_IDENTITY_ACCESSOR).count(),
         source.matches(RELOCATION_SENSITIVE_ACCESSOR).count(),
     )
 }
@@ -278,14 +280,14 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .iter()
             .map(|row| row.address_identity_only)
             .sum::<usize>(),
-        4
+        5
     );
     assert_eq!(
         PAYLOAD_IDENTITY_AUDIT
             .iter()
             .map(|row| row.relocation_sensitive)
             .sum::<usize>(),
-        20
+        19
     );
     let production_rows = PAYLOAD_IDENTITY_AUDIT
         .iter()
@@ -303,6 +305,6 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .fold((0, 0, 0), |left, right| {
                 (left.0 + right.0, left.1 + right.1, left.2 + right.2)
             }),
-        (40, 4, 18)
+        (40, 5, 17)
     );
 }

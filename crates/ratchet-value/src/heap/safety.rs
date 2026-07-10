@@ -308,6 +308,10 @@ mod tests {
         // trailing-bytes inline copy plus its object-head write) moved
         // verbatim into `flat/alloc.rs`; resolution, iteration, pops, and
         // drop stay in `flat.rs`. No operation was added or changed.
+        // flat.rs count 8 -> 9 (B2 structural writeback): the exclusive
+        // header reconstruction behind `&mut self` repairs the staged
+        // structural-hash word after collector payload relocation, under the
+        // existing `FlatObjectPayloadAccess` operation.
         // flat/slice.rs count 0 -> 5 (doc 30 FV-4): the `FlatSlice` inline
         // element witness — one `from_raw_parts` read over the sealed
         // construction contract (`as_slice`), the `Send`/`Sync` impls
@@ -324,7 +328,7 @@ mod tests {
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 13usize),
-            ("flat.rs", 8usize),
+            ("flat.rs", 9usize),
             ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
             ("flat/slice.rs", 5usize),

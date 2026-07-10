@@ -5125,11 +5125,11 @@ and helps the oracle directly.
       **The value-rep-flattening and identity-audit gates are now closed by
       the flat-value campaign** ([30](30-flat-value-architecture.md);
       stages FV-1..FV-6 plus FV-0's executable `payload_bits` table). The
-      table mechanically pins 40 raw scalar/diagnostic readers, four
-      collector-free address identities, and 24 relocation-sensitive
-      identities with explicit B2 repair dispositions. The moving collector
-      itself, mutable root-slot/JIT stack-map integration, and those repair
-      hooks remain open.
+      table mechanically pins 40 raw scalar/diagnostic readers, five
+      collector-free address identities, and 19 relocation-sensitive
+      identities with explicit B2 repair dispositions. The identity repair
+      hooks are now closed; the moving collector itself and complete mutable
+      root-slot/JIT stack-map integration remain open.
 - [x] Current #52 registered-root mid-operation sweep precursor:
       strict raw rendering now publishes every pending list element and attr
       value through the transient safepoint root stack, including nested
@@ -8304,6 +8304,19 @@ and helps the oracle directly.
       at -1.4%/-3.4%, wide at +4.0%/+3.4%, and JIT fib at +0.4%/-3.0%.
       Retained-RSS medians were lower in all six comparisons, and arena peaks
       were exactly unchanged at 7.5/67.5/160 MiB.
+- [x] Current structural-key relocation repair: collector heap-field staging
+      computes final record-list, flat-list, and flat-attr hashes and builds
+      replacement hash-cons tables before live mutation. The allocation-free
+      commit repairs record/header hashes, stale markers, and buckets after
+      payload publication. Shaped-attr fingerprints are collector-free
+      transient walks using a dedicated no-safepoint scalar-or-address
+      identity accessor. This completes the dispositions for the final three
+      callers in the original 22-caller production-sensitive worklist; the
+      copying collector itself remains open. Final gates covered 351 value,
+      354 core, 3,030 oracle (34 ignored), 322 `aos-nix`, 38 pinned language,
+      and 32 Miri tests; the 16 package legs, seven wide modes, compute x8,
+      cache validation, and 648 strict-JSON seeds in four modes were
+      byte-green. The frozen source-size offender set did not grow.
 - [x] Current tree-walk transient value-stack registration precursor:
       `TreeWalk` owns scoped transient value-stack root storage for evaluator
       paths that keep heap values in Rust locals across allocation safepoints.
@@ -11605,7 +11618,7 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       reproduce the allocation/deref columns; analysis version 7 persists
       capture plans and Chunk-D facts; the executable identity audit discovers
       the three representation-owning crates and rejects any drift from its
-      reviewed 40/4/24 raw/address-only/relocation-sensitive inventory.
+      reviewed 40/5/19 raw/address-only/relocation-sensitive inventory.
 - [x] FV-1 — flat strings/paths/lists: header + inline payload in the
       Tier-A arena; hash-cons key migration; `heap/safety.rs` audit-table
       extension ([30](30-flat-value-architecture.md) §2).
