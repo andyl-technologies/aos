@@ -28,8 +28,9 @@
 //! written tag/payload pair; the per-slot release-on-tag / acquire-on-tag
 //! ordering then guarantees the payload matches the tag it reads.
 
+use std::ops::Deref;
 use std::ptr::NonNull;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
@@ -37,6 +38,11 @@ use thiserror::Error;
 use super::module::{EvalModuleId, EvalNodeRef};
 use crate::compile::IrId;
 use crate::value::{HeapObject, Value, ValueTag};
+
+mod capture;
+
+pub use capture::{EvalEnv, EvalEnvFrames};
+pub(crate) use capture::{EvalFlatCapture, EvalFlatCaptureBuffer};
 
 /// Process-wide environment capture/allocation counters (RFC-0007 doc 30 FV-0).
 ///
@@ -53,6 +59,8 @@ pub(crate) mod capture_stats {
 
     static ENV_CAPTURES: AtomicU64 = AtomicU64::new(0);
     static ENV_CAPTURE_FRAME_HANDLES: AtomicU64 = AtomicU64::new(0);
+    static FLAT_ENV_CAPTURES: AtomicU64 = AtomicU64::new(0);
+    static FLAT_ENV_CAPTURE_VALUES: AtomicU64 = AtomicU64::new(0);
     static WITH_ENV_CAPTURES: AtomicU64 = AtomicU64::new(0);
     static WITH_ENV_CAPTURE_SCOPES: AtomicU64 = AtomicU64::new(0);
     static SCOPED_GLOBAL_ENV_CAPTURES: AtomicU64 = AtomicU64::new(0);
@@ -67,6 +75,10 @@ pub(crate) mod capture_stats {
         pub(crate) env_captures: u64,
         /// Frame handles copied across all lexical captures (8 bytes each).
         pub(crate) env_capture_frame_handles: u64,
+        /// Flat capture-plan environments materialized.
+        pub(crate) flat_env_captures: u64,
+        /// Values copied across all flat capture-plan environments.
+        pub(crate) flat_env_capture_values: u64,
         /// `with`-scope stack copies performed by [`super::EvalWithEnv::capture`].
         pub(crate) with_env_captures: u64,
         /// Scope entries copied across all `with`-stack captures.
@@ -89,6 +101,12 @@ pub(crate) mod capture_stats {
                 env_capture_frame_handles: self
                     .env_capture_frame_handles
                     .saturating_sub(baseline.env_capture_frame_handles),
+                flat_env_captures: self
+                    .flat_env_captures
+                    .saturating_sub(baseline.flat_env_captures),
+                flat_env_capture_values: self
+                    .flat_env_capture_values
+                    .saturating_sub(baseline.flat_env_capture_values),
                 with_env_captures: self
                     .with_env_captures
                     .saturating_sub(baseline.with_env_captures),
@@ -116,6 +134,8 @@ pub(crate) mod capture_stats {
         EnvCaptureStats {
             env_captures: ENV_CAPTURES.load(Ordering::Relaxed),
             env_capture_frame_handles: ENV_CAPTURE_FRAME_HANDLES.load(Ordering::Relaxed),
+            flat_env_captures: FLAT_ENV_CAPTURES.load(Ordering::Relaxed),
+            flat_env_capture_values: FLAT_ENV_CAPTURE_VALUES.load(Ordering::Relaxed),
             with_env_captures: WITH_ENV_CAPTURES.load(Ordering::Relaxed),
             with_env_capture_scopes: WITH_ENV_CAPTURE_SCOPES.load(Ordering::Relaxed),
             scoped_global_env_captures: SCOPED_GLOBAL_ENV_CAPTURES.load(Ordering::Relaxed),
@@ -130,6 +150,12 @@ pub(crate) mod capture_stats {
     pub(super) fn note_env_capture(frames: usize) {
         ENV_CAPTURES.fetch_add(1, Ordering::Relaxed);
         ENV_CAPTURE_FRAME_HANDLES.fetch_add(frames as u64, Ordering::Relaxed);
+    }
+
+    /// Records one flat capture and its copied-value count.
+    pub(super) fn note_flat_env_capture(values: usize) {
+        FLAT_ENV_CAPTURES.fetch_add(1, Ordering::Relaxed);
+        FLAT_ENV_CAPTURE_VALUES.fetch_add(values as u64, Ordering::Relaxed);
     }
 
     /// Records one `with`-scope stack copy of `scopes` entries.
@@ -151,58 +177,85 @@ pub(crate) mod capture_stats {
     }
 }
 
-/// A captured lexical environment snapshot.
-///
-/// The frame list is held behind an [`Arc`] so cloning a snapshot — the
-/// dominant operation when one lexical environment is captured by many
-/// thunks — is an O(1) reference-count bump rather than a fresh frame-list
-/// allocation.
-#[derive(Clone, Debug)]
-pub struct EvalEnv {
-    frames: Arc<[Arc<EvalFrame>]>,
+/// One immutable node in a persistent environment stack.
+#[derive(Debug)]
+struct PersistentEnvNode<T> {
+    value: T,
+    parent: Option<Arc<Self>>,
+    len: usize,
+    values: OnceLock<Box<[T]>>,
 }
 
-impl Default for EvalEnv {
+/// A persistent stack whose captures clone only the innermost node pointer.
+#[derive(Clone, Debug)]
+struct PersistentEnvStack<T> {
+    head: Option<Arc<PersistentEnvNode<T>>>,
+}
+
+impl<T> Default for PersistentEnvStack<T> {
     fn default() -> Self {
-        static EMPTY: std::sync::LazyLock<Arc<[Arc<EvalFrame>]>> =
-            std::sync::LazyLock::new(|| Arc::from(Vec::new()));
-        Self {
-            frames: Arc::clone(&EMPTY),
-        }
+        Self { head: None }
     }
 }
 
-impl EvalEnv {
-    /// Captures the active frame stack.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EvalEnvError::CaptureAllocationFailed`] if the snapshot frame
-    /// list cannot be reserved.
-    pub fn capture(frames: &[Arc<EvalFrame>]) -> Result<Self, EvalEnvError> {
-        capture_stats::note_env_capture(frames.len());
-        let mut captured = Vec::new();
-        captured.try_reserve_exact(frames.len()).map_err(|_| {
-            EvalEnvError::CaptureAllocationFailed {
-                frames: frames.len(),
+impl<T: Copy> PersistentEnvStack<T> {
+    fn from_slice(values: &[T]) -> Self {
+        let mut stack = Self::default();
+        for value in values.iter().copied() {
+            stack.push(value);
+        }
+        stack
+    }
+
+    fn push(&mut self, value: T) {
+        let parent = self.head.take();
+        let len = parent.as_ref().map_or(1, |parent| parent.len + 1);
+        self.head = Some(Arc::new(PersistentEnvNode {
+            value,
+            parent,
+            len,
+            values: OnceLock::new(),
+        }));
+    }
+
+    fn pop(&mut self) -> Option<T> {
+        let head = self.head.take()?;
+        let value = head.value;
+        self.head = head.parent.clone();
+        Some(value)
+    }
+
+    fn as_slice(&self) -> &[T] {
+        let Some(head) = self.head.as_ref() else {
+            return &[];
+        };
+        head.values.get_or_init(|| {
+            let mut values = Vec::with_capacity(head.len);
+            let mut cursor = Some(head);
+            while let Some(node) = cursor {
+                values.push(node.value);
+                cursor = node.parent.as_ref();
             }
-        })?;
-        captured.extend_from_slice(frames);
-        Ok(Self {
-            frames: captured.into(),
+            values.reverse();
+            values.into_boxed_slice()
         })
     }
 
-    /// Returns the captured frame stack, ordered outermost to innermost.
-    pub fn frames(&self) -> &[Arc<EvalFrame>] {
-        &self.frames
+    fn replace(&mut self, index: usize, value: T) -> bool {
+        let mut values = self.as_slice().to_vec();
+        let Some(slot) = values.get_mut(index) else {
+            return false;
+        };
+        *slot = value;
+        *self = Self::from_slice(&values);
+        true
     }
 }
 
 /// A captured dynamic `with` scope stack.
 #[derive(Clone, Debug, Default)]
 pub struct EvalWithEnv {
-    scopes: Box<[EvalWithScope]>,
+    scopes: PersistentEnvStack<EvalWithScope>,
 }
 
 impl EvalWithEnv {
@@ -214,28 +267,64 @@ impl EvalWithEnv {
     /// scope list cannot be reserved.
     pub fn capture(scopes: &[EvalWithScope]) -> Result<Self, EvalEnvError> {
         capture_stats::note_with_env_capture(scopes.len());
-        let mut captured = Vec::new();
-        captured.try_reserve_exact(scopes.len()).map_err(|_| {
-            EvalEnvError::WithCaptureAllocationFailed {
-                scopes: scopes.len(),
-            }
-        })?;
-        captured.extend_from_slice(scopes);
         Ok(Self {
-            scopes: captured.into_boxed_slice(),
+            scopes: PersistentEnvStack::from_slice(scopes),
         })
+    }
+
+    /// Captures another persistent stack by cloning its head pointer.
+    pub(crate) fn capture_persistent(scopes: &Self) -> Self {
+        capture_stats::note_with_env_capture(0);
+        scopes.clone()
     }
 
     /// Returns the captured `with` scopes, ordered outermost to innermost.
     pub fn scopes(&self) -> &[EvalWithScope] {
-        &self.scopes
+        self.scopes.as_slice()
+    }
+
+    /// Pushes one active scope while preserving the prior stack as its parent.
+    pub(crate) fn push(&mut self, scope: EvalWithScope) {
+        self.scopes.push(scope);
+    }
+
+    /// Removes and returns the innermost active scope.
+    pub(crate) fn pop(&mut self) -> Option<EvalWithScope> {
+        self.scopes.pop()
+    }
+
+    /// Rebuilds the stack with one relocated scope value.
+    pub(crate) fn replace_value(&mut self, index: usize, value: Value) -> bool {
+        let Some(scope) = self.scopes().get(index).copied() else {
+            return false;
+        };
+        self.scopes.replace(
+            index,
+            EvalWithScope::new(scope.module(), scope.scope(), value),
+        )
+    }
+}
+
+impl Deref for EvalWithEnv {
+    type Target = [EvalWithScope];
+
+    fn deref(&self) -> &Self::Target {
+        self.scopes()
+    }
+}
+
+impl From<Vec<EvalWithScope>> for EvalWithEnv {
+    fn from(scopes: Vec<EvalWithScope>) -> Self {
+        Self {
+            scopes: PersistentEnvStack::from_slice(&scopes),
+        }
     }
 }
 
 /// A captured scoped-import global scope stack.
 #[derive(Clone, Debug, Default)]
 pub struct EvalScopedGlobalEnv {
-    scopes: Box<[Value]>,
+    scopes: PersistentEnvStack<Value>,
 }
 
 impl EvalScopedGlobalEnv {
@@ -247,21 +336,46 @@ impl EvalScopedGlobalEnv {
     /// snapshot scope list cannot be reserved.
     pub fn capture(scopes: &[Value]) -> Result<Self, EvalEnvError> {
         capture_stats::note_scoped_global_env_capture(scopes.len());
-        let mut captured = Vec::new();
-        captured.try_reserve_exact(scopes.len()).map_err(|_| {
-            EvalEnvError::ScopedGlobalCaptureAllocationFailed {
-                scopes: scopes.len(),
-            }
-        })?;
-        captured.extend_from_slice(scopes);
         Ok(Self {
-            scopes: captured.into_boxed_slice(),
+            scopes: PersistentEnvStack::from_slice(scopes),
         })
+    }
+
+    /// Captures another persistent stack by cloning its head pointer.
+    pub(crate) fn capture_persistent(scopes: &Self) -> Self {
+        capture_stats::note_scoped_global_env_capture(0);
+        scopes.clone()
     }
 
     /// Returns the captured scoped-import globals, ordered outermost to innermost.
     pub fn scopes(&self) -> &[Value] {
-        &self.scopes
+        self.scopes.as_slice()
+    }
+
+    /// Pushes one active global while preserving the prior stack as its parent.
+    pub(crate) fn push(&mut self, value: Value) {
+        self.scopes.push(value);
+    }
+
+    /// Rebuilds the stack with one relocated global value.
+    pub(crate) fn replace_value(&mut self, index: usize, value: Value) -> bool {
+        self.scopes.replace(index, value)
+    }
+}
+
+impl Deref for EvalScopedGlobalEnv {
+    type Target = [Value];
+
+    fn deref(&self) -> &Self::Target {
+        self.scopes()
+    }
+}
+
+impl From<Vec<Value>> for EvalScopedGlobalEnv {
+    fn from(scopes: Vec<Value>) -> Self {
+        Self {
+            scopes: PersistentEnvStack::from_slice(&scopes),
+        }
     }
 }
 
@@ -437,6 +551,8 @@ pub(crate) enum AtomicValueCellError {
 #[derive(Debug)]
 pub struct EvalFrame {
     slots: Box<[AtomicValueCell]>,
+    /// The next outer shared frame in the persistent capture chain.
+    parent: Option<Arc<EvalFrame>>,
     /// Emulates the historical `RefCell` shared-borrow guard for tests that
     /// exercise the borrow-conflict error path of GC root writebacks. The
     /// counter only exists in test builds; production code cannot observe a
@@ -453,6 +569,14 @@ impl EvalFrame {
     /// Returns [`EvalEnvError::FrameAllocationFailed`] if the slot vector
     /// cannot be reserved.
     pub fn new(slot_count: usize) -> Result<Arc<Self>, EvalEnvError> {
+        Self::new_linked(slot_count, None)
+    }
+
+    /// Creates a production frame linked to the active outer frame.
+    pub(crate) fn new_linked(
+        slot_count: usize,
+        parent: Option<Arc<EvalFrame>>,
+    ) -> Result<Arc<Self>, EvalEnvError> {
         capture_stats::note_env_frame_alloc(
             slot_count.saturating_mul(std::mem::size_of::<AtomicValueCell>()),
         );
@@ -465,9 +589,15 @@ impl EvalFrame {
         }
         Ok(Arc::new(Self {
             slots: slots.into_boxed_slice(),
+            parent,
             #[cfg(test)]
             test_borrows: std::sync::atomic::AtomicUsize::new(0),
         }))
+    }
+
+    /// Returns the next outer frame in the persistent capture chain.
+    pub(crate) const fn parent(&self) -> Option<&Arc<EvalFrame>> {
+        self.parent.as_ref()
     }
 
     /// Reads a slot value.
@@ -779,6 +909,43 @@ mod tests {
 
         frame.set(0, Value::int(6)).expect("mutation readmitted");
         assert!(frame.get(0).expect("slot reads").raw_eq(Value::int(6)));
+    }
+
+    #[test]
+    fn persistent_dynamic_environments_share_heads_and_rebuild_writebacks() {
+        let mut with_scopes = EvalWithEnv::default();
+        with_scopes.push(EvalWithScope::new(
+            EvalModuleId::ROOT,
+            IrId::new(1),
+            Value::int(10),
+        ));
+        let captured_with = EvalWithEnv::capture_persistent(&with_scopes);
+        assert!(Arc::ptr_eq(
+            with_scopes.scopes.head.as_ref().expect("active with head"),
+            captured_with
+                .scopes
+                .head
+                .as_ref()
+                .expect("captured with head")
+        ));
+        assert!(with_scopes.replace_value(0, Value::int(11)));
+        assert!(with_scopes[0].value().raw_eq(Value::int(11)));
+        assert!(captured_with[0].value().raw_eq(Value::int(10)));
+
+        let mut globals = EvalScopedGlobalEnv::default();
+        globals.push(Value::int(20));
+        let captured_globals = EvalScopedGlobalEnv::capture_persistent(&globals);
+        assert!(Arc::ptr_eq(
+            globals.scopes.head.as_ref().expect("active global head"),
+            captured_globals
+                .scopes
+                .head
+                .as_ref()
+                .expect("captured global head")
+        ));
+        assert!(globals.replace_value(0, Value::int(21)));
+        assert!(globals[0].raw_eq(Value::int(21)));
+        assert!(captured_globals[0].raw_eq(Value::int(20)));
     }
 
     #[test]

@@ -62,6 +62,11 @@ impl EvalLambda {
         &self.env
     }
 
+    /// Replaces the lexical environment before the closure is published.
+    pub(crate) fn replace_env(&mut self, env: EvalEnv) {
+        self.env = env;
+    }
+
     /// Returns the dynamic `with` environment captured when this lambda was allocated.
     pub const fn with_scope_env(&self) -> &EvalWithEnv {
         &self.with_env

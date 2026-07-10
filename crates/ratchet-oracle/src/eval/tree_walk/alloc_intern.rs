@@ -561,16 +561,15 @@ impl TreeWalk {
         let IrData::Local { slot } = node.data else {
             return Err(self.invalid_payload(id, node, "local payload"));
         };
-        let Some(frame) = self.env.last() else {
+        if self.active_env_frame_count() == 0 {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::MissingEnvironment { id },
                 node.span,
             ));
-        };
+        }
         #[cfg(test)]
         self.capture_validation_on_slot_read(0, slot);
-        frame
-            .get(slot)
+        self.active_env_value_for_read(id, 0, slot)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span))
     }
 
@@ -579,21 +578,20 @@ impl TreeWalk {
             return Err(self.invalid_payload(id, node, "upvalue payload"));
         };
         let depth = depth as usize;
-        if depth >= self.env.len() {
+        let frame_count = self.active_env_frame_count();
+        if depth >= frame_count {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::InvalidUpvalueDepth {
                     id,
                     depth,
-                    frames: self.env.len(),
+                    frames: frame_count,
                 },
                 node.span,
             ));
         }
-        let index = self.env.len() - 1 - depth;
         #[cfg(test)]
         self.capture_validation_on_slot_read(depth, slot);
-        self.env[index]
-            .get(slot)
+        self.active_env_value_for_read(id, depth, slot)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span))
     }
 
@@ -690,12 +688,14 @@ impl TreeWalk {
         body: IrId,
         span: Span,
     ) -> Result<Value, TreeWalkError> {
-        let thunk = self.thunk_for_node(id, body, span)?.into_single_entry();
+        let (thunk, capture) = self.thunk_for_node(id, body, span)?;
+        let thunk = thunk.into_single_entry();
         // Single-entry storage bypasses the parallel payload-cell admission
         // entirely (S7): the C-8 frame-local proof keeps the thunk off every
         // cross-thread path, so it gets a plain cell with no CAS protocol and
         // skips the admission's per-allocation claim-error construction.
-        let value = self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk)?;
+        let value =
+            self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk, capture)?;
         self.increment_single_entry_thunks_allocated();
         let region_plan = self.region_plan_for_allocation(id, RegionRuntimeTier::OneShotArena);
         self.record_source_thunk_region_plan_decision(region_plan);
@@ -703,13 +703,16 @@ impl TreeWalk {
     }
 
     pub(super) fn begin_order_sensitive_binding_assembly(&mut self) {
+        if self.order_sensitive_binding_depth == 0 {
+            debug_assert!(self.pending_flat_captures.is_empty());
+            self.order_sensitive_binding_failed = false;
+        }
         self.order_sensitive_binding_depth = self.order_sensitive_binding_depth.saturating_add(1);
         self.begin_gc_stress_composite_accumulator();
     }
 
-    pub(super) fn end_order_sensitive_binding_assembly(&mut self) {
-        self.order_sensitive_binding_depth = self.order_sensitive_binding_depth.saturating_sub(1);
-        self.end_gc_stress_composite_accumulator();
+    pub(super) fn end_order_sensitive_binding_assembly(&mut self, succeeded: bool) {
+        self.finish_order_sensitive_binding_assembly(succeeded);
     }
 
     fn begin_gc_stress_composite_accumulator(&mut self) {
@@ -717,7 +720,7 @@ impl TreeWalk {
             self.active_composite_accumulator_depth.saturating_add(1);
     }
 
-    fn end_gc_stress_composite_accumulator(&mut self) {
+    pub(super) fn end_gc_stress_composite_accumulator(&mut self) {
         self.active_composite_accumulator_depth =
             self.active_composite_accumulator_depth.saturating_sub(1);
     }
@@ -792,8 +795,8 @@ impl TreeWalk {
         body: IrId,
         span: Span,
     ) -> Result<Value, TreeWalkError> {
-        let thunk = self.thunk_for_node(id, body, span)?;
-        let value = self.alloc_tree_walk_thunk(id, span, thunk)?;
+        let (thunk, capture) = self.thunk_for_node(id, body, span)?;
+        let value = self.alloc_tree_walk_thunk_with_flat_capture(id, span, thunk, capture)?;
         Ok(value)
     }
 
@@ -802,17 +805,20 @@ impl TreeWalk {
         id: IrId,
         body: IrId,
         span: Span,
-    ) -> Result<EvalThunk, TreeWalkError> {
+    ) -> Result<(EvalThunk, Option<EvalFlatCaptureBuffer>), TreeWalkError> {
         self.node(body)?;
-        let env = self.capture_env(id, span)?;
+        let (env, capture) = self.capture_env(id, span)?;
         let with_env = self.capture_with_env(id, span)?;
         let scoped_globals = self.capture_scoped_global_env(id, span)?;
-        Ok(EvalThunk::with_captures(
-            self.current_module,
-            body,
-            env,
-            with_env,
-            scoped_globals,
+        Ok((
+            EvalThunk::with_captures(
+                self.current_module,
+                body,
+                env,
+                with_env,
+                scoped_globals,
+            ),
+            capture,
         ))
     }
 
@@ -913,8 +919,18 @@ impl TreeWalk {
         span: Span,
         thunk: EvalThunk,
     ) -> Result<Value, TreeWalkError> {
+        self.alloc_tree_walk_thunk_with_flat_capture(id, span, thunk, None)
+    }
+
+    fn alloc_tree_walk_thunk_with_flat_capture(
+        &mut self,
+        id: IrId,
+        span: Span,
+        thunk: EvalThunk,
+        capture: Option<EvalFlatCaptureBuffer>,
+    ) -> Result<Value, TreeWalkError> {
         let thunk = self.admit_parallel_thunk_payload_cell(id, span, thunk);
-        self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk)
+        self.alloc_tree_walk_thunk_without_parallel_cell(id, span, thunk, capture)
     }
 
     /// Allocates a thunk record without consulting the parallel payload-cell
@@ -929,21 +945,26 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         thunk: EvalThunk,
+        capture: Option<EvalFlatCaptureBuffer>,
     ) -> Result<Value, TreeWalkError> {
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_thunk_allocation_safepoint(id, &thunk);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
+        let pending_env = capture
+            .as_ref()
+            .filter(|capture| !capture.is_ready())
+            .and_then(|_| thunk.env().cloned());
         #[cfg(test)]
         let kind_is_node = matches!(thunk.kind(), EvalThunkKind::Node { .. });
-        let value = self
+        let (value, pending_tail) = self
             .heap
-            .alloc_thunk(thunk)
+            .alloc_thunk_with_flat_capture(thunk, capture)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         #[cfg(test)]
         self.capture_validation_record_alloc(id, value, kind_is_node);
         self.increment_thunks_allocated();
-        if dispatch_gc_stress_safepoint {
+        let value = if dispatch_gc_stress_safepoint {
             self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
                 id,
                 span,
@@ -951,27 +972,34 @@ impl TreeWalk {
                 previous_poll,
                 value,
                 true,
-            )
+            )?
         } else {
-            Ok(value)
-        }
+            value
+        };
+        self.defer_flat_capture_if_assembling(id, value, pending_tail, pending_env);
+        Ok(value)
     }
 
-    pub(super) fn alloc_tree_walk_lambda(
+    pub(super) fn alloc_tree_walk_lambda_with_flat_capture(
         &mut self,
         id: IrId,
         span: Span,
         lambda: EvalLambda,
+        capture: Option<EvalFlatCaptureBuffer>,
     ) -> Result<Value, TreeWalkError> {
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_lambda_allocation_safepoint(id, &lambda);
         let previous_poll =
             self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
-        let value = self
+        let pending_env = capture
+            .as_ref()
+            .filter(|capture| !capture.is_ready())
+            .map(|_| lambda.env().clone());
+        let (value, pending_tail) = self
             .heap
-            .alloc_lambda(lambda)
+            .alloc_lambda_with_flat_capture(lambda, capture)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        if dispatch_gc_stress_safepoint {
+        let value = if dispatch_gc_stress_safepoint {
             self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
                 id,
                 span,
@@ -979,10 +1007,12 @@ impl TreeWalk {
                 previous_poll,
                 value,
                 false,
-            )
+            )?
         } else {
-            Ok(value)
-        }
+            value
+        };
+        self.defer_flat_capture_if_assembling(id, value, pending_tail, pending_env);
+        Ok(value)
     }
 
     pub(super) fn alloc_tree_walk_primop(
@@ -1324,7 +1354,7 @@ impl TreeWalk {
     }
 
     fn is_gc_stress_uncaptured_lambda(lambda: &EvalLambda) -> bool {
-        lambda.env().frames().is_empty()
+        lambda.env().is_empty()
             && lambda.with_scope_env().scopes().is_empty()
             && lambda.scoped_global_env().scopes().is_empty()
     }
@@ -1337,7 +1367,7 @@ impl TreeWalk {
                 with_env,
                 scoped_globals,
                 ..
-            } if env.frames().is_empty()
+            } if env.is_empty()
                 && with_env.scopes().is_empty()
                 && scoped_globals.scopes().is_empty()
         )
@@ -1359,7 +1389,7 @@ impl TreeWalk {
 
     fn can_dispatch_gc_stress_ambient_allocation_safepoint(&self) -> bool {
         self.active_root_eval_node.is_some()
-            && self.env.is_empty()
+            && self.active_env_is_empty()
             && self.with_scopes.is_empty()
             && self.scoped_globals.is_empty()
             && self.active_composite_accumulator_depth == 0

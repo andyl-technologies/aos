@@ -429,6 +429,46 @@ fn capture_plans_translate_nested_lambda_coordinates() {
 }
 
 #[test]
+fn capture_plans_assign_constant_indices_to_captured_reads() {
+    let ir = annotate_captures("let a = 1 + 1; in (x: a + x)");
+    let lambda = *lambda_nodes(&ir).first().expect("lambda exists");
+    let accesses: Vec<_> = ir
+        .facts
+        .flat_capture_accesses()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, access)| access.map(|access| (IrId::new(index as u32), access)))
+        .collect();
+
+    assert_eq!(accesses.len(), 1, "only `a` crosses the lambda frame");
+    assert_eq!(accesses[0].1.site, lambda);
+    assert_eq!(accesses[0].1.index, 0);
+    assert!(matches!(node(&ir, accesses[0].0).data, IrData::Upval { .. }));
+}
+
+#[test]
+fn capture_indices_belong_to_the_nearest_nested_closure() {
+    let ir = annotate_captures("x: y: x");
+    let lambdas = lambda_nodes(&ir);
+    let inner = lambdas
+        .iter()
+        .copied()
+        .find(|id| !flat_plan_slots(&ir, *id).is_empty())
+        .expect("inner capturing lambda exists");
+    let accesses: Vec<_> = ir
+        .facts
+        .flat_capture_accesses()
+        .iter()
+        .flatten()
+        .copied()
+        .collect();
+
+    assert_eq!(accesses.len(), 1);
+    assert_eq!(accesses[0].site, inner);
+    assert_eq!(accesses[0].index, 0);
+}
+
+#[test]
 fn capture_plans_record_thunk_free_variables() {
     // `b`'s deferred body reads `a` from the frame active at allocation.
     let ir = annotate_captures("let a = 1; b = a + 1; in b");
@@ -479,7 +519,7 @@ fn capture_plans_decline_dynamic_scope_probes() {
 
 #[test]
 fn capture_plans_cap_flat_width() {
-    // Eleven distinct free variables exceed FLAT_CAPTURE_MAX_SLOTS = 8.
+    // Eleven distinct free variables exceed the configured flat-width ceiling.
     let source = "let a=1; b=2; c=3; d=4; e=5; f=6; g=7; h=8; i=9; j=10; k=11; \
                   in (x: a+b+c+d+e+f+g+h+i+j+k)";
     let ir = annotate_captures(source);

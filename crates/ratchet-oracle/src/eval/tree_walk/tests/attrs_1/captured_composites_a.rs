@@ -30,7 +30,7 @@ fn captured_unsupported_heap_values_wait_for_canonical_value_hashes() {
             .expect("a is a node thunk");
         let env = thunk.env().expect("a captures x");
         let mut captured = None;
-        for frame in env.frames() {
+        for frame in env.frames().iter() {
             for slot in 0..8 {
                 let Ok(value) = frame.get(slot) else {
                     continue;

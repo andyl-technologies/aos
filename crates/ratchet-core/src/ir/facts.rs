@@ -206,6 +206,21 @@ pub enum CapturePlan {
     SharedChain(SharedChainReason),
 }
 
+/// A lexical read rewritten to one slot of its owning flat closure.
+///
+/// The capture analysis attaches this fact to local/upvalue nodes whose
+/// coordinate crosses the frames introduced inside a flat-planned lambda or
+/// thunk. At runtime, matching [`Self::site`] against the active flat capture
+/// licenses a single indexed load from [`Self::index`]; a mismatch retains
+/// the ordinary lexical-coordinate fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FlatCaptureAccess {
+    /// The lambda or thunk allocation site whose plan owns the slot.
+    pub site: IrId,
+    /// The zero-based index into that site's [`CapturePlan::Flat`] slots.
+    pub index: u16,
+}
+
 /// Why a capture plan fell back to the shared frame chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SharedChainReason {
@@ -221,7 +236,7 @@ pub enum SharedChainReason {
 ///
 /// Entries are indexed by [`IrId`] and are expected to stay in one-to-one order
 /// with the node arena. Alongside the per-node [`ExprFacts`] records the table
-/// carries two per-node bits and one sparse per-node plan:
+/// carries two per-node bits and two sparse per-node capture tables:
 ///
 /// - a `tryEval` barrier bit: nodes that root the argument subtree of a
 ///   `builtins.tryEval` application. No transform in the current pipeline
@@ -231,12 +246,15 @@ pub enum SharedChainReason {
 ///   allocations that a frame assembler may evaluate directly to WHNF.
 /// - a capture plan ([`Self::capture_plan`]): the free-variable capture plan
 ///   for lambda construction and thunk allocation sites (FV-5 input).
+/// - a flat-capture access ([`Self::flat_capture_access`]): the constant
+///   capture index for a lexical read owned by a flat-planned site.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IrFacts {
     nodes: Box<[ExprFacts]>,
     try_eval_barriers: Box<[bool]>,
     assembly_eager: Box<[bool]>,
     capture_plans: Box<[Option<CapturePlan>]>,
+    flat_capture_accesses: Box<[Option<FlatCaptureAccess>]>,
 }
 
 impl IrFacts {
@@ -247,6 +265,7 @@ impl IrFacts {
             try_eval_barriers: vec![false; node_count].into_boxed_slice(),
             assembly_eager: vec![false; node_count].into_boxed_slice(),
             capture_plans: vec![None; node_count].into_boxed_slice(),
+            flat_capture_accesses: vec![None; node_count].into_boxed_slice(),
         }
     }
 
@@ -367,5 +386,30 @@ impl IrFacts {
     /// Returns all capture plans in IR node order.
     pub fn capture_plans(&self) -> &[Option<CapturePlan>] {
         &self.capture_plans
+    }
+
+    /// Returns the constant flat-capture access for a lexical read, if any.
+    ///
+    /// A missing fact means the read is frame-local, belongs to a
+    /// shared-chain site, has an ambiguous shared IR context, or analysis has
+    /// not run. Consumers must retain coordinate lookup for those cases.
+    #[inline]
+    pub fn flat_capture_access(&self, id: IrId) -> Option<FlatCaptureAccess> {
+        self.flat_capture_accesses.get(id.index()).copied().flatten()
+    }
+
+    /// Installs the constant flat-capture access for one lexical read.
+    ///
+    /// Out-of-range ids are ignored; the access table always mirrors the
+    /// node-fact table length.
+    pub fn set_flat_capture_access(&mut self, id: IrId, access: Option<FlatCaptureAccess>) {
+        if let Some(slot) = self.flat_capture_accesses.get_mut(id.index()) {
+            *slot = access;
+        }
+    }
+
+    /// Returns all flat-capture accesses in IR node order.
+    pub fn flat_capture_accesses(&self) -> &[Option<FlatCaptureAccess>] {
+        &self.flat_capture_accesses
     }
 }

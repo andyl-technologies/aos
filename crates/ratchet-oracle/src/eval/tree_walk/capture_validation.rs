@@ -192,7 +192,7 @@ impl TreeWalk {
     }
 
     /// Returns the capture-plan violations recorded so far.
-    pub(crate) fn capture_plan_violations(&self) -> Vec<CapturePlanViolation> {
+    pub(super) fn capture_plan_violations(&self) -> Vec<CapturePlanViolation> {
         self.capture_plan_validation
             .as_ref()
             .map(|state| state.borrow().violations().to_vec())
@@ -264,7 +264,7 @@ impl TreeWalk {
         if let Some(state) = self.capture_plan_validation.as_ref() {
             state
                 .borrow_mut()
-                .on_slot_read(self.env.len(), depth, slot);
+                .on_slot_read(self.active_env_frame_count(), depth, slot);
         }
     }
 }

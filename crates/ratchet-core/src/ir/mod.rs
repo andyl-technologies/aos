@@ -26,8 +26,8 @@ pub use annotate::{
     IrFrameCaptureFootprint, annotate_ir,
 };
 pub use facts::{
-    BindingLowering, CapturePlan, Cardinality, Escape, ExprFacts, IrFacts, SharedChainReason,
-    Strictness, ThunkSharing,
+    BindingLowering, CapturePlan, Cardinality, Escape, ExprFacts, FlatCaptureAccess, IrFacts,
+    SharedChainReason, Strictness, ThunkSharing,
 };
 
 /// Lowers a scope-resolved AST into evaluator IR.

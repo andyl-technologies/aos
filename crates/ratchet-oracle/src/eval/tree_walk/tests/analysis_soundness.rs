@@ -598,6 +598,71 @@ fn capture_plans_match_runtime_slot_reads() {
 }
 
 #[test]
+fn flat_capture_plans_replace_outer_frames_after_publication() {
+    let mut ir = lower("let a = 1 + 1; in x: a + x");
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::default());
+    let value = evaluator.eval_root().expect("lambda evaluates");
+    let lambda = evaluator
+        .heap()
+        .get_lambda(value)
+        .expect("root is a heap-owned lambda");
+    let env = lambda.env();
+
+    assert!(env.frames().is_empty(), "flat sites retain no outer frames");
+    let flat = env.flat_base().expect("lambda consumes its flat plan");
+    assert!(
+        flat.inline_owner().raw_eq(value),
+        "the closure value must own its inlined capture tail"
+    );
+    let values = evaluator
+        .flat_capture_values(flat)
+        .expect("flat capture values resolve");
+    assert_eq!(flat.frame_count(), 1);
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0].tag(), ValueTag::Thunk);
+    let campaign = evaluator.stats_snapshot().campaign();
+    assert!(campaign.flat_env_captures > 0);
+    assert!(campaign.flat_env_capture_values > 0);
+}
+
+#[test]
+fn recursive_assembly_flattens_only_after_publication() {
+    let mut ir = lower("rec { a = 1; b = a; }");
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+    let b = symbol_for(&ir, b"b");
+    let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::default());
+    let value = evaluator.eval_root().expect("recursive attrset evaluates");
+    let attrs = evaluator
+        .heap()
+        .get_attrs(value)
+        .expect("root is a heap-owned attrset");
+    let b_value = attrs.get(b).expect("b exists");
+    let thunk = evaluator
+        .heap()
+        .get_thunk(b_value)
+        .expect("b remains a suspended thunk");
+    let env = thunk.env().expect("node thunk has a lexical environment");
+
+    assert!(
+        env.frames().is_empty(),
+        "published recursive closures must release their assembly frame"
+    );
+    let flat = env
+        .flat_base()
+        .expect("published recursive closure consumes its flat plan");
+    assert!(
+        flat.inline_owner().raw_eq(b_value),
+        "publication must point the environment at its owning closure"
+    );
+    let values = evaluator
+        .flat_capture_values(flat)
+        .expect("flat capture values resolve");
+    assert_eq!(flat.frame_count(), 1);
+    assert_eq!(values.len(), 1);
+}
+
+#[test]
 fn capture_plan_validation_detects_understated_plans() {
     // Harness self-check: corrupt one thunk site's plan to claim an empty
     // free-variable set; the body's real captured-prefix read must surface
@@ -623,7 +688,6 @@ fn capture_plan_validation_detects_understated_plans() {
         }
     }
     assert!(corrupted > 0, "corpus must contain a capturing thunk site");
-
     let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::default());
     evaluator.enable_capture_plan_validation();
     evaluator.eval_root().expect("source evaluates");
@@ -644,8 +708,10 @@ fn capture_plan_validation_detects_understated_plans() {
 #[test]
 #[ignore = "measurement probe; needs AOS_NIX_CAPTURE_HISTOGRAM_DIR"]
 fn capture_plan_free_var_histogram_over_corpus() {
-    use crate::compile::analysis::{FREE_VAR_HISTOGRAM_BUCKETS, annotate_capture_plans};
-
+    use crate::compile::analysis::{
+        FREE_VAR_HISTOGRAM_BUCKETS, annotate_capture_plans, annotate_cardinality,
+        annotate_escape, annotate_strictness,
+    };
     let Ok(root) = std::env::var("AOS_NIX_CAPTURE_HISTOGRAM_DIR") else {
         panic!("set AOS_NIX_CAPTURE_HISTOGRAM_DIR to the corpus root");
     };
@@ -658,6 +724,7 @@ fn capture_plan_free_var_histogram_over_corpus() {
     let mut max_free = 0usize;
     let mut files = 0usize;
     let mut skipped = 0usize;
+    let mut phase_times = [std::time::Duration::ZERO; 4];
     let mut stack = vec![std::path::PathBuf::from(root)];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -691,10 +758,30 @@ fn capture_plan_free_var_histogram_over_corpus() {
                 skipped += 1;
                 continue;
             };
+            let started = std::time::Instant::now();
+            if annotate_strictness(&mut ir).is_err() {
+                skipped += 1;
+                continue;
+            }
+            phase_times[0] += started.elapsed();
+            let started = std::time::Instant::now();
+            if annotate_cardinality(&mut ir).is_err() {
+                skipped += 1;
+                continue;
+            }
+            phase_times[1] += started.elapsed();
+            let started = std::time::Instant::now();
+            if annotate_escape(&mut ir).is_err() {
+                skipped += 1;
+                continue;
+            }
+            phase_times[2] += started.elapsed();
+            let started = std::time::Instant::now();
             let Ok(report) = annotate_capture_plans(&mut ir) else {
                 skipped += 1;
                 continue;
             };
+            phase_times[3] += started.elapsed();
             files += 1;
             for (bucket, count) in report.free_var_histogram.iter().enumerate() {
                 histogram[bucket] += count;
@@ -712,6 +799,7 @@ fn capture_plan_free_var_histogram_over_corpus() {
     println!("flat plans: {flat}, shared-chain plans: {shared}");
     println!("pure-silent thunk bodies (call-by-name candidates): {silent}");
     println!("max free vars: {max_free}");
+    println!("analysis times [strict, cardinality, escape, capture]: {phase_times:?}");
     let total: usize = histogram.iter().sum();
     let mut cumulative = 0usize;
     for (size, count) in histogram.iter().enumerate() {

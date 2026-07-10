@@ -347,25 +347,26 @@ impl TreeWalk {
         }
         self.with_current_module(lambda.module(), |eval| {
             let slot_count = eval.frame_info(id, lambda.frame(), span)?.slot_count as usize;
-            let call_frame = EvalFrame::new(slot_count).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
-            })?;
             let mut call_env = eval.clone_env_frames(id, lambda.env(), span)?;
+            let call_frame = EvalFrame::new_linked(slot_count, call_env.frames.last().cloned())
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })?;
             let call_with_env = eval.clone_with_scopes(id, lambda.with_scope_env(), span)?;
             let call_scoped_globals =
                 eval.clone_scoped_globals(id, lambda.scoped_global_env(), span)?;
-            call_env.try_reserve_exact(1).map_err(|_| {
+            call_env.frames.try_reserve_exact(1).map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Env {
                         id,
                         source: EvalEnvError::CaptureAllocationFailed {
-                            frames: call_env.len() + 1,
+                            frames: call_env.frame_count() + 1,
                         },
                     },
                     span,
                 )
             })?;
-            call_env.push(call_frame);
+            call_env.frames.push(call_frame);
             eval.reserve_suspended_env_root_frame(id, span)?;
             eval.enter_call(id, span)?;
             let saved_env = eval.swap_env_frames(call_env);
@@ -388,7 +389,7 @@ impl TreeWalk {
                     argument,
                     span,
                 );
-                eval.end_order_sensitive_binding_assembly();
+                eval.end_order_sensitive_binding_assembly(bind_result.is_ok());
                 bind_result?;
                 eval.eval_node(lambda.body())
             })();

@@ -31,7 +31,8 @@ pub use analysis::{
     CardinalityAnalysisReport, DeadBindingElimination,
     DeadBindingEliminationError, DeadBindingEliminationPlan, DeadBindingReplacement,
     DeadBindingRetention, DeadBindingRetentionReason, EscapeAnalysisError, EscapeAnalysisReport,
-    FrameLocalSingleEntryThunk, FrameLocalThunkDowngrade, FrameLocalThunkDowngradeError,
+    FLAT_CAPTURE_MAX_SLOTS, FrameLocalSingleEntryThunk, FrameLocalThunkDowngrade,
+    FrameLocalThunkDowngradeError,
     FrameLocalThunkUpdateReason, FullLazinessAnalysisError, FullLazinessAnalysisReport,
     FullLazinessCandidate, PrimOpArgumentEscape, PrimOpEscapeSignature, ScalarReplacement,
     ScalarReplacementError,
@@ -47,7 +48,7 @@ pub use analysis::{
 };
 pub use ir::{
     BindingLowering, CapturePlan, Cardinality, Effect, EffectClass, Escape, ExprFacts,
-    IR_ANALYSIS_VERSION, Ir,
+    FlatCaptureAccess, IR_ANALYSIS_VERSION, Ir,
     IrAnalysisError, SharedChainReason,
     IrAnalysisReport, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice,
     IrChildSlice, IrData, IrDependencyFootprint, IrDialectOp, IrError, IrErrorKind, IrFacts,

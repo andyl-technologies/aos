@@ -246,19 +246,19 @@ impl TreeWalk {
     /// default expressions decline in MEMO-1 (a rarely captured shape whose
     /// hashing recurses through nested scopes).
     fn memo_free_var_hashes(&mut self, body: EvalNodeRef, env: &EvalEnv) -> Option<Vec<ValueHash>> {
-        let frames = env.frames();
-        if frames.is_empty() {
+        let env = self.captured_env_ref(env);
+        if env.is_empty() {
             return Some(Vec::new());
         }
         let module_id = body.module();
         let dependencies = {
             let module = self.modules.get(module_id.index())?;
-            Self::captured_free_variable_dependencies(&module.ir, body.id(), frames.len())?
+            Self::captured_free_variable_dependencies(&module.ir, body.id(), env.frame_count())?
         };
         let mut unhashable = std::mem::take(&mut self.memo_unhashable_values);
         let hashes = self.memo_free_var_hashes_with_memo(
             module_id,
-            frames,
+            env,
             &dependencies,
             &mut unhashable,
         );
@@ -270,7 +270,7 @@ impl TreeWalk {
     fn memo_free_var_hashes_with_memo(
         &self,
         module_id: EvalModuleId,
-        frames: &[Arc<EvalFrame>],
+        env: EvalEnvRef<'_>,
         dependencies: &BTreeSet<CapturedFreeVariableDependency>,
         unhashable: &mut HashSet<u64>,
     ) -> Option<Vec<ValueHash>> {
@@ -279,7 +279,7 @@ impl TreeWalk {
         for dependency in dependencies {
             let hash = match dependency {
                 CapturedFreeVariableDependency::Slot { frame_index, slot } => {
-                    let value = frames.get(*frame_index)?.get(*slot).ok()?;
+                    let value = self.env_ref_value_at_index(env, *frame_index, *slot)?;
                     self.memo_hash_captured_value(value, unhashable)?
                 }
                 CapturedFreeVariableDependency::StaticHasAttr {
@@ -287,7 +287,7 @@ impl TreeWalk {
                     slot,
                     path,
                 } => {
-                    let receiver = frames.get(*frame_index)?.get(*slot).ok()?;
+                    let receiver = self.env_ref_value_at_index(env, *frame_index, *slot)?;
                     match self.force_cache_static_has_attr_value_hash(
                         module_id,
                         receiver,
@@ -306,7 +306,7 @@ impl TreeWalk {
                     path,
                     default: None,
                 } => {
-                    let receiver = frames.get(*frame_index)?.get(*slot).ok()?;
+                    let receiver = self.env_ref_value_at_index(env, *frame_index, *slot)?;
                     match self.force_cache_static_select_value_hash(
                         module_id,
                         receiver,

@@ -52,8 +52,8 @@ impl TreeWalk {
         let thunk_env = self.clone_env_frames(id, env, span)?;
         self.reserve_suspended_env_root_frame(id, span)?;
         let saved_env = self.swap_env_frames(thunk_env);
-        let saved_with_scopes = std::mem::replace(&mut self.with_scopes, Vec::new());
-        let saved_scoped_globals = std::mem::replace(&mut self.scoped_globals, Vec::new());
+        let saved_with_scopes = std::mem::take(&mut self.with_scopes);
+        let saved_scoped_globals = std::mem::take(&mut self.scoped_globals);
         self.push_suspended_env_roots(saved_env, saved_with_scopes, saved_scoped_globals);
         let result = self.with_current_module(node.module(), |eval| eval.eval_node(id));
         if let Some(saved) = self.pop_suspended_env_roots() {

@@ -60,6 +60,10 @@ pub struct CampaignCounters {
     pub env_captures: u64,
     /// Frame handles copied across all lexical captures (8 bytes each).
     pub env_capture_frame_handles: u64,
+    /// Flat capture-plan environments materialized (FV-5).
+    pub flat_env_captures: u64,
+    /// Values copied across all flat capture-plan environments (FV-5).
+    pub flat_env_capture_values: u64,
     /// `with`-scope stack capture copies.
     pub with_env_captures: u64,
     /// Scope entries copied across all `with`-stack captures.
@@ -151,6 +155,12 @@ impl CampaignCounters {
             env_capture_frame_handles: self
                 .env_capture_frame_handles
                 .saturating_add(other.env_capture_frame_handles),
+            flat_env_captures: self
+                .flat_env_captures
+                .saturating_add(other.flat_env_captures),
+            flat_env_capture_values: self
+                .flat_env_capture_values
+                .saturating_add(other.flat_env_capture_values),
             with_env_captures: self
                 .with_env_captures
                 .saturating_add(other.with_env_captures),

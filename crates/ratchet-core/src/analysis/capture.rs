@@ -28,18 +28,20 @@
 use thiserror::Error;
 
 use crate::ir::{
-    CapturePlan, Ir, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId, IrKind,
-    SharedChainReason,
+    CapturePlan, FlatCaptureAccess, Ir, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData,
+    IrId, IrKind, SharedChainReason,
 };
 use crate::scope::Upvalue;
 
 /// Maximum coordinate count a flat capture plan may carry.
 ///
 /// Chosen from the measured free-variable distribution across the repository
-/// corpus (see the RFC-0007 Phase 4 Chunk D report): 8 slots cover ~97.8% of
-/// allocation sites while keeping the flat capture record within one cache
-/// line of inline `(depth, slot)` pairs.
-pub const FLAT_CAPTURE_MAX_SLOTS: usize = 8;
+/// corpus (see the RFC-0007 FV-5 report): 2 slots cover ~87.9% of allocation
+/// sites while reducing the measured wide-workload arena peak by 4 MiB
+/// compared with an 8-slot ceiling. Wider context-bearing captures stay on
+/// the one-head linked representation, which is required for source-path
+/// parity and avoids reserving trailing value storage at those sites.
+pub const FLAT_CAPTURE_MAX_SLOTS: usize = 2;
 
 /// Number of buckets in [`CaptureAnalysisReport::free_var_histogram`].
 ///
@@ -59,6 +61,8 @@ pub struct CaptureAnalysisReport {
     pub flat_plans: usize,
     /// Sites whose plan is [`CapturePlan::SharedChain`].
     pub shared_chain_plans: usize,
+    /// Lexical reads rewritten to constant indices in flat capture arrays.
+    pub flat_capture_accesses: usize,
     /// Distribution of free-variable set sizes across all planned sites.
     ///
     /// Bucket `i < FREE_VAR_HISTOGRAM_BUCKETS - 1` counts sites with exactly
@@ -184,7 +188,244 @@ pub fn annotate_capture_plans(
     for (id, plan) in plans {
         ir.facts.set_capture_plan(id, Some(plan));
     }
+    let accesses = CaptureAccessWalk::new(ir).run()?;
+    for (index, access) in accesses.into_iter().enumerate() {
+        if access.is_some() {
+            report.flat_capture_accesses += 1;
+        }
+        ir.facts
+            .set_flat_capture_access(IrId::new(index as u32), access);
+    }
     Ok(report)
+}
+
+/// The nearest closure owner and the number of frames introduced inside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CaptureAccessContext {
+    owner: Option<IrId>,
+    inner_frames: usize,
+}
+
+impl CaptureAccessContext {
+    const ROOT: Self = Self {
+        owner: None,
+        inner_frames: 0,
+    };
+
+    const fn closure(owner: IrId, inner_frames: usize) -> Self {
+        Self {
+            owner: Some(owner),
+            inner_frames,
+        }
+    }
+
+    const fn crossing(self, frames: usize) -> Self {
+        Self {
+            owner: self.owner,
+            inner_frames: self.inner_frames.saturating_add(frames),
+        }
+    }
+}
+
+/// Assigns each captured lexical read its flat-plan slot in one top-down walk.
+struct CaptureAccessWalk<'a> {
+    ir: &'a Ir,
+    accesses: Vec<Option<FlatCaptureAccess>>,
+    ambiguous: Vec<bool>,
+}
+
+impl<'a> CaptureAccessWalk<'a> {
+    fn new(ir: &'a Ir) -> Self {
+        let node_count = ir.arena.nodes().len();
+        Self {
+            ir,
+            accesses: vec![None; node_count],
+            ambiguous: vec![false; node_count],
+        }
+    }
+
+    fn run(mut self) -> Result<Vec<Option<FlatCaptureAccess>>, CaptureAnalysisError> {
+        self.visit(self.ir.root, CaptureAccessContext::ROOT)?;
+        Ok(self.accesses)
+    }
+
+    fn visit(
+        &mut self,
+        id: IrId,
+        context: CaptureAccessContext,
+    ) -> Result<(), CaptureAnalysisError> {
+        let ir_node = *node(self.ir, id)?;
+        match ir_node.data {
+            IrData::None
+            | IrData::Int(_)
+            | IrData::Float(_)
+            | IrData::Bool(_)
+            | IrData::Symbol(_)
+            | IrData::GlobalVar { .. }
+            | IrData::DialectScopeVar { .. } => {}
+            IrData::Local { slot } => self.record_access(id, context, 0, slot),
+            IrData::Upval { depth, slot } => self.record_access(id, context, depth, slot),
+            IrData::SearchPath { search_path, .. } => {
+                if let Some(search_path) = search_path {
+                    self.visit(search_path, context)?;
+                }
+            }
+            IrData::Node(child) if ir_node.kind == IrKind::ThunkAlloc => {
+                self.visit(child, CaptureAccessContext::closure(id, 0))?;
+            }
+            IrData::Node(child) | IrData::Unary { operand: child, .. } => {
+                self.visit(child, context)?;
+            }
+            IrData::Pair { first, second }
+            | IrData::Binary {
+                lhs: first,
+                rhs: second,
+                ..
+            } => {
+                self.visit(first, context)?;
+                self.visit(second, context)?;
+            }
+            IrData::Triple {
+                first,
+                second,
+                third,
+            } => {
+                self.visit(first, context)?;
+                self.visit(second, context)?;
+                self.visit(third, context)?;
+            }
+            IrData::Children(slice) | IrData::PrimOp { args: slice, .. } => {
+                for child in child_ids(self.ir, id, slice)?.to_vec() {
+                    self.visit(child, context)?;
+                }
+            }
+            IrData::Bindings(slice) => self.visit_bindings(id, slice, context, context)?,
+            IrData::Select {
+                receiver,
+                path,
+                default,
+                ..
+            } => {
+                self.visit(receiver, context)?;
+                if let Some(default) = default {
+                    self.visit(default, context)?;
+                }
+                self.visit_attr_path(id, path.index(), context)?;
+            }
+            IrData::HasAttr { receiver, path, .. } => {
+                self.visit(receiver, context)?;
+                self.visit_attr_path(id, path.index(), context)?;
+            }
+            IrData::DialectNode { argument, .. } => self.visit(argument, context)?,
+            IrData::Lambda { pattern, body, .. } => {
+                let body_context = CaptureAccessContext::closure(id, 1);
+                self.visit(pattern, body_context)?;
+                self.visit(body, body_context)?;
+            }
+            IrData::Let { bindings, body, .. } => {
+                let body_context = context.crossing(1);
+                self.visit_bindings(id, bindings, body_context, body_context)?;
+                self.visit(body, body_context)?;
+            }
+            IrData::AttrSet {
+                bindings,
+                recursive,
+                ..
+            } => {
+                let value_context = context.crossing(usize::from(recursive));
+                self.visit_bindings(id, bindings, context, value_context)?;
+            }
+            IrData::FormalSet { formals, .. } => {
+                for formal in child_ids(self.ir, id, formals)?.to_vec() {
+                    self.visit(formal, context)?;
+                }
+            }
+            IrData::Formal { default, .. } => {
+                if let Some(default) = default {
+                    self.visit(default, context)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn record_access(
+        &mut self,
+        id: IrId,
+        context: CaptureAccessContext,
+        depth: u32,
+        slot: u32,
+    ) {
+        let Some(owner) = context.owner else {
+            return;
+        };
+        let depth = depth as usize;
+        let Some(capture_depth) = depth.checked_sub(context.inner_frames) else {
+            return;
+        };
+        let Some(CapturePlan::Flat(slots)) = self.ir.facts.capture_plan(owner) else {
+            return;
+        };
+        let Some(index) = slots.iter().position(|capture| {
+            usize::from(capture.depth) == capture_depth && u32::from(capture.slot) == slot
+        }) else {
+            return;
+        };
+        let Ok(index) = u16::try_from(index) else {
+            return;
+        };
+        let access = FlatCaptureAccess { site: owner, index };
+        let Some(existing) = self.accesses.get_mut(id.index()) else {
+            return;
+        };
+        if self.ambiguous[id.index()] {
+            return;
+        }
+        match *existing {
+            Some(previous) if previous != access => {
+                *existing = None;
+                self.ambiguous[id.index()] = true;
+            }
+            Some(_) => {}
+            None => *existing = Some(access),
+        }
+    }
+
+    fn visit_bindings(
+        &mut self,
+        id: IrId,
+        slice: IrBindingSlice,
+        key_context: CaptureAccessContext,
+        value_context: CaptureAccessContext,
+    ) -> Result<(), CaptureAnalysisError> {
+        for binding in bindings(self.ir, id, slice)?.to_vec() {
+            if let IrAttrPathSegment::Dynamic(key) = binding.key {
+                self.visit(key, key_context)?;
+            }
+            self.visit(binding.value, value_context)?;
+        }
+        Ok(())
+    }
+
+    fn visit_attr_path(
+        &mut self,
+        id: IrId,
+        path: usize,
+        context: CaptureAccessContext,
+    ) -> Result<(), CaptureAnalysisError> {
+        let segments = self
+            .ir
+            .attr_paths
+            .get(path)
+            .ok_or(CaptureAnalysisError::InvalidAttrPath { id })?
+            .to_vec();
+        for segment in segments {
+            if let IrAttrPathSegment::Dynamic(dynamic) = segment {
+                self.visit(dynamic, context)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The memoized free-variable entry for one node.

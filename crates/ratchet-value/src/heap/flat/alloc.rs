@@ -9,6 +9,7 @@
 //! fail-loud contract.
 
 use super::*;
+use crate::value::Value;
 
 /// Post-monomorphization payload layout checks for [`FlatObject<T>`].
 struct FlatLayoutCheck<T>(PhantomData<T>);
@@ -64,9 +65,8 @@ impl<T> FlatObjectStore<T> {
         let () = FlatLayoutCheck::<T>::PAYLOAD_FITS_ARENA_ALIGNMENT;
         self.check_kind_allowed(kind)?;
         let size = mem::size_of::<FlatObject<T>>();
-        let entries = self
-            .entries
-            .len()
+        let store_index = self.entries.len();
+        let entries = store_index
             .checked_add(1)
             .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
         self.entries
@@ -93,12 +93,14 @@ impl<T> FlatObjectStore<T> {
         // check above. The bump arena never reissues this address, so no other
         // object aliases it.
         unsafe { ptr.as_ptr().cast::<FlatObject<T>>().write(object) };
-        self.entries.push(FlatStoreEntry {
-            ptr,
-            size_bytes: allocation.reserved_size,
-        });
+        self.entries
+            .push(FlatStoreEntry::plain(ptr, allocation.reserved_size));
         self.refresh_regions();
-        Ok(FlatAllocation { ptr, allocation })
+        Ok(FlatAllocation {
+            ptr,
+            store_index,
+            allocation,
+        })
     }
 
     /// Allocates a flat object whose payload references `bytes` written
@@ -129,9 +131,8 @@ impl<T> FlatObjectStore<T> {
         let size = object_size
             .checked_add(bytes.len())
             .ok_or(FlatObjectError::Arena(ArenaError::SizeOverflow))?;
-        let entries = self
-            .entries
-            .len()
+        let store_index = self.entries.len();
+        let entries = store_index
             .checked_add(1)
             .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
         self.entries
@@ -178,12 +179,14 @@ impl<T> FlatObjectStore<T> {
         // arena; the struct write covers only the object head and leaves the
         // already-written tail bytes untouched.
         unsafe { ptr.as_ptr().cast::<FlatObject<T>>().write(object) };
-        self.entries.push(FlatStoreEntry {
-            ptr,
-            size_bytes: allocation.reserved_size,
-        });
+        self.entries
+            .push(FlatStoreEntry::plain(ptr, allocation.reserved_size));
         self.refresh_regions();
-        Ok(FlatAllocation { ptr, allocation })
+        Ok(FlatAllocation {
+            ptr,
+            store_index,
+            allocation,
+        })
     }
 
     /// Allocates a flat object whose payload references typed element runs
@@ -192,7 +195,8 @@ impl<T> FlatObjectStore<T> {
     /// `tail` plans the trailing region ([`FlatTailLayout`]); `make_payload`
     /// receives a [`FlatTailWriter`] over the reservation's tail, copies each
     /// run through [`FlatTailWriter::write_slice`], and must store the
-    /// returned [`FlatSlice`] witnesses inside the returned payload, which is
+    /// returned [`FlatSlice`] witnesses inside the returned payload (except
+    /// for [`Self::alloc_with_value_tail`]'s registry-owned witness), which is
     /// then written in place exactly like [`FlatObjectStore::alloc`]. The
     /// header kind word carries the caller's saturating `aux` size class.
     ///
@@ -220,9 +224,8 @@ impl<T> FlatObjectStore<T> {
         let size = object_size
             .checked_add(tail.bytes())
             .ok_or(FlatObjectError::Arena(ArenaError::SizeOverflow))?;
-        let entries = self
-            .entries
-            .len()
+        let store_index = self.entries.len();
+        let entries = store_index
             .checked_add(1)
             .ok_or(FlatObjectError::RegistryAllocationFailed { entries: usize::MAX })?;
         self.entries
@@ -266,11 +269,59 @@ impl<T> FlatObjectStore<T> {
         // arena; the struct write covers only the object head and leaves the
         // already-written tail runs untouched.
         unsafe { ptr.as_ptr().cast::<FlatObject<T>>().write(object) };
-        self.entries.push(FlatStoreEntry {
-            ptr,
-            size_bytes: allocation.reserved_size,
-        });
+        self.entries
+            .push(FlatStoreEntry::plain(ptr, allocation.reserved_size));
         self.refresh_regions();
-        Ok(FlatAllocation { ptr, allocation })
+        Ok(FlatAllocation {
+            ptr,
+            store_index,
+            allocation,
+        })
+    }
+
+    /// Allocates one object followed by an initialized inline `Value` run.
+    ///
+    /// Unlike [`Self::alloc_with_trailing`], the payload stores no pointer
+    /// witness. The exact registry entry carries a compact private flag, and
+    /// [`Self::value_tail`] reconstructs a borrow only after validating that
+    /// flag, the header length, and the reservation extent. This keeps a
+    /// closure payload enum at its plain pointer-sized layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::alloc_with_trailing`], plus an
+    /// unknown-address error if the just-created registry entry is not the
+    /// returned allocation (an internal consistency failure).
+    pub fn alloc_with_value_tail(
+        &mut self,
+        kind: FlatObjectKind,
+        hash: u64,
+        epoch: u64,
+        values: &[Value],
+        payload: T,
+    ) -> Result<FlatValueTailAllocation, FlatObjectError> {
+        let mut tail = FlatTailLayout::new();
+        tail.add_slice::<Value>(values.len())?;
+        let allocation = self.alloc_with_trailing(
+            kind,
+            flat_aux_for_len(values.len()),
+            hash,
+            epoch,
+            tail,
+            |writer| {
+                let _witness = writer.write_slice(values)?;
+                Ok(payload)
+            },
+        )?;
+        let address = allocation.ptr.as_ptr() as usize;
+        let Some(entry) = self.entries.last_mut() else {
+            return Err(FlatObjectError::UnknownAddress { address });
+        };
+        if entry.ptr != allocation.ptr {
+            return Err(FlatObjectError::UnknownAddress { address });
+        }
+        entry.mark_value_tail();
+        let handle = FlatValueTailHandle::new(allocation.ptr, allocation.store_index, values.len());
+        Ok(FlatValueTailAllocation { allocation, handle })
     }
 }

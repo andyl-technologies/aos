@@ -335,3 +335,33 @@ fn validation_sweep_preserves_later_forcing() {
         .expect("b still forces after the sweep");
     assert!(b_forced.raw_eq(Value::int(6)));
 }
+
+#[test]
+fn validation_sweep_marks_values_held_only_by_flat_captures() {
+    let mut ir = lower("let x = 1 + 1; in y: x + y");
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("lambda evaluates");
+    let captured = {
+        let lambda = evaluator
+            .heap()
+            .get_lambda(root)
+            .expect("root is a heap-owned lambda");
+        lambda
+            .env()
+            .flat_base()
+            .and_then(|capture| evaluator.flat_capture_values(capture))
+            .expect("lambda uses a resolvable flat plan")[0]
+    };
+    assert_eq!(captured.tag(), ValueTag::Thunk);
+
+    evaluator
+        .sweep_heap_for_validation(&[root])
+        .expect("validation sweep succeeds");
+    evaluator
+        .heap()
+        .get_thunk(captured)
+        .expect("flat-captured thunk remains reachable after sweep");
+}

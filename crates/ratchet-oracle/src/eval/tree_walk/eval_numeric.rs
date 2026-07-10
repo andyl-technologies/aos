@@ -655,7 +655,11 @@ impl TreeWalk {
         self.reserve_suspended_env_root_frame(id, span)?;
         let saved_env = self.swap_env_frames(thunk_env);
         let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
-        self.push_suspended_env_roots(saved_env, saved_with_scopes, Vec::new());
+        self.push_suspended_env_roots(
+            saved_env,
+            saved_with_scopes,
+            EvalScopedGlobalEnv::default(),
+        );
         let result = self.with_current_module(body.module(), |eval| {
             eval.eval_nested_equality_operand(body.id())
         });

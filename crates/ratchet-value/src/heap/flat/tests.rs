@@ -5,6 +5,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use super::*;
+use crate::value::Value;
 
 /// A payload with drop glue, so leaks and double drops are observable.
 #[derive(Debug)]
@@ -333,6 +334,29 @@ fn addresses_stay_stable_across_chunk_growth() {
     }
 }
 
+#[test]
+fn flat_arena_growth_stops_at_the_measured_four_mibibyte_ceiling() {
+    let arena = SharedFlatStoreArena::new();
+    let sizes = [
+        INITIAL_CHUNK_BYTES,
+        INITIAL_CHUNK_BYTES * 2,
+        INITIAL_CHUNK_BYTES * 4,
+        MAX_CHUNK_BYTES,
+        MAX_CHUNK_BYTES,
+    ];
+    for size in sizes {
+        arena
+            .alloc_raw(size, MAX_ALIGN, FlatObjectKind::String)
+            .expect("flat arena allocation succeeds");
+    }
+
+    let stats = arena.stats();
+    assert_eq!(stats.chunks, sizes.len());
+    assert_eq!(stats.used_bytes, sizes.iter().sum());
+    assert_eq!(stats.reserved_bytes, sizes.iter().sum());
+    assert_eq!(MAX_CHUNK_BYTES, 4 << 20);
+}
+
 /// A metadata-leading composite payload approximating the evaluator's
 /// FV-2 flat attrs payload: fixed metadata words followed by entry storage.
 #[derive(Debug)]
@@ -586,6 +610,93 @@ fn trailing_arrays_are_written_inline_and_resolve_by_witness() {
 
     drop(store);
     assert_eq!(drops.get(), 1, "payload drop glue ran exactly once");
+}
+
+#[test]
+fn registry_backed_value_tail_resolves_and_mutates_exclusively() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let tail_allocation = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &[Value::int(1), Value::int(2)],
+            payload("closure", &drops),
+        )
+        .expect("allocation succeeds");
+    let allocation = tail_allocation.allocation;
+
+    let (object, values) = store
+        .resolve_with_value_tail(allocation.ptr, FlatObjectKind::Thunk)
+        .expect("shared resolution succeeds");
+    assert_eq!(object.payload().text, "closure");
+    let values = values.expect("value tail is registered");
+    assert!(values[0].raw_eq(Value::int(1)));
+    assert!(values[1].raw_eq(Value::int(2)));
+    let (fast_object, fast_value) = store
+        .value_tail_get_at(allocation.store_index, allocation.ptr, 2, 1)
+        .expect("registry-index fast path resolves");
+    assert_eq!(fast_object.payload().text, "closure");
+    assert!(fast_value.is_some_and(|value| value.raw_eq(Value::int(2))));
+    let handle = tail_allocation.handle.expect("allocation signs a handle");
+    assert_eq!(handle.len(), 2);
+    let handle_value = store
+        .value_tail_get_handle(handle, 1)
+        .expect("prevalidated handle resolves");
+    assert!(handle_value.is_some_and(|value| value.raw_eq(Value::int(2))));
+    assert!(
+        store
+            .resolve_value_tail_at(allocation.store_index, allocation.ptr, 1)
+            .is_err(),
+        "the fast path rejects a mismatched signed length"
+    );
+
+    let (payload, values) = store
+        .resolve_mut_with_value_tail_handle(handle, FlatObjectKind::Thunk)
+        .expect("prevalidated exclusive resolution succeeds");
+    assert_eq!(payload.text, "closure");
+    values.copy_from_slice(&[Value::int(3), Value::int(4)]);
+
+    let values = store
+        .value_tail(allocation.ptr, FlatObjectKind::Thunk)
+        .expect("tail resolves")
+        .expect("tail remains registered");
+    assert!(values[0].raw_eq(Value::int(3)));
+    assert!(values[1].raw_eq(Value::int(4)));
+    assert!(store.retire_value_tail(allocation.ptr));
+    assert!(
+        store.value_tail_get_handle(handle, 0).is_err(),
+        "retirement invalidates the prevalidated read handle"
+    );
+    assert!(
+        store
+            .resolve_mut_with_value_tail_handle(handle, FlatObjectKind::Thunk)
+            .is_err(),
+        "retirement invalidates the prevalidated write handle"
+    );
+}
+
+#[test]
+fn value_tail_allocation_keeps_wide_runs_without_a_compact_handle() {
+    let drops = Rc::new(Cell::new(0));
+    let mut store = FlatObjectStore::new();
+    let values = [Value::null(); 16];
+    let tail_allocation = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &values,
+            payload("wide-closure", &drops),
+        )
+        .expect("wide value-tail allocation succeeds");
+    assert!(tail_allocation.handle.is_none());
+    let resolved = store
+        .value_tail(tail_allocation.allocation.ptr, FlatObjectKind::Thunk)
+        .expect("wide value tail resolves")
+        .expect("wide value tail remains registered");
+    assert_eq!(resolved.len(), values.len());
 }
 
 #[test]

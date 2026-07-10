@@ -25,7 +25,9 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::env::{EvalEnv, EvalEnvError, EvalScopedGlobalEnv, EvalWithEnv};
+use super::env::{
+    EvalEnv, EvalEnvError, EvalFlatCaptureBuffer, EvalScopedGlobalEnv, EvalWithEnv,
+};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceError, ThunkCell};
 use super::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
@@ -706,6 +708,9 @@ pub enum EvalHeapError {
         /// The requested record capacity.
         records: usize,
     },
+    /// Inline capture values were handed to a heap placement without tails.
+    #[error("inline flat capture requires the serial flat closure store")]
+    InlineCapturePlacementUnsupported,
     /// The evaluator heap cons table length overflowed.
     #[error("evaluator heap cons table length overflow")]
     ConsTableLengthOverflow,

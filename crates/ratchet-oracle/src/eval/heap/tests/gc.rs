@@ -72,6 +72,48 @@ fn shed_forced_thunk_drops_captured_env_and_preserves_result() {
 }
 
 #[test]
+fn shed_flat_thunk_retains_tail_inherited_by_conservative_descendant() {
+    let mut heap = EvalHeap::new();
+    let site = EvalNodeRef::new(EvalModuleId::ROOT, IrId::new(1));
+    let mut capture = EvalFlatCaptureBuffer::new(site, 1);
+    capture.push(Value::int(7)).expect("capture value fits");
+    let owner = heap
+        .alloc_thunk_with_flat_capture(EvalThunk::new(IrId::new(2)), Some(capture.finish()))
+        .expect("flat owner allocates")
+        .0;
+    let inherited = heap
+        .get_thunk(owner)
+        .expect("owner resolves")
+        .env()
+        .expect("owner is a node thunk")
+        .flat_base()
+        .cloned();
+    let descendant_env = EvalEnv::capture_linked_with_flat_base(&[], inherited);
+    let _descendant = heap
+        .alloc_thunk(EvalThunk::with_env(
+            EvalModuleId::ROOT,
+            IrId::new(3),
+            descendant_env,
+        ))
+        .expect("conservative descendant allocates");
+
+    force_thunk_to(&heap, owner, Value::int(9));
+    assert!(
+        heap.shed_forced_thunk_captures(owner)
+            .expect("owner sheds")
+    );
+    let values = heap
+        .flat_closure_capture_values(owner)
+        .expect("owner lookup succeeds")
+        .expect("inherited inline tail remains attached");
+    assert!(values[0].raw_eq(Value::int(7)));
+    assert!(matches!(
+        heap.get_thunk(owner).expect("shed owner resolves").kind(),
+        EvalThunkKind::Released
+    ));
+}
+
+#[test]
 fn shed_rejects_unforced_thunk() {
     let mut heap = EvalHeap::new();
     let (thunk, _frame) = alloc_capturing_thunk(&mut heap);

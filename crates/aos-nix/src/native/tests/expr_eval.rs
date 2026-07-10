@@ -40,6 +40,24 @@ fn native_expression_eval_renders_strict_json() -> Result<()> {
 }
 
 #[test]
+fn native_uncached_expression_eval_runs_analysis_in_process() -> Result<()> {
+    let native = NixNative::new(0)?;
+    let (json, stats) =
+        native.eval_expr_with_stats("let a = 1 + 1; in (x: a + x) 3")?;
+
+    assert_eq!(json, "5");
+    assert!(
+        stats.campaign().flat_env_captures > 0,
+        "uncached lowering must produce and consume FV-5 capture plans"
+    );
+    assert!(
+        stats.campaign().flat_env_capture_values > 0,
+        "the fixture must copy its captured `a` value"
+    );
+    Ok(())
+}
+
+#[test]
 fn native_jit_enabled_eval_gates_and_matches_tree_walk() -> Result<()> {
     // With the JIT enabled but promotion gated by default (every current tier-1
     // shape is net-negative on wall time), a hot `r = k` binding is gated rather

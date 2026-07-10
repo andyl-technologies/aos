@@ -30,9 +30,10 @@ impl TreeWalk {
                 node.span,
             ));
         }
-        let frame_values = EvalFrame::new(slot_count).map_err(|source| {
-            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
-        })?;
+        let frame_values = EvalFrame::new_linked(slot_count, self.env.last().cloned())
+            .map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+            })?;
         self.push_env_frame(Arc::clone(&frame_values));
         self.begin_order_sensitive_binding_assembly();
         let init_result = (|| {
@@ -63,7 +64,7 @@ impl TreeWalk {
             }
             Ok(())
         })();
-        self.end_order_sensitive_binding_assembly();
+        self.end_order_sensitive_binding_assembly(init_result.is_ok());
         let result = init_result.and_then(|()| self.eval_node(body));
         self.pop_env_frame();
         result
@@ -79,15 +80,6 @@ impl TreeWalk {
         };
         self.node(body)?;
         let value = self.eval_lazy_node(scope)?;
-        self.with_scopes.try_reserve_exact(1).map_err(|_| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::WithScopeAllocationFailed {
-                    id,
-                    scopes: self.with_scopes.len() + 1,
-                },
-                node.span,
-            )
-        })?;
         self.with_scopes
             .push(EvalWithScope::new(self.current_module, scope, value));
         let result = self.eval_node(body);
@@ -171,10 +163,10 @@ impl TreeWalk {
         self.node(pattern)?;
         self.node(body)?;
         self.frame_info(id, frame, node.span)?;
-        let env = self.capture_env(id, node.span)?;
+        let (env, capture) = self.capture_env(id, node.span)?;
         let with_env = self.capture_with_env(id, node.span)?;
         let scoped_globals = self.capture_scoped_global_env(id, node.span)?;
-        self.alloc_tree_walk_lambda(
+        self.alloc_tree_walk_lambda_with_flat_capture(
             id,
             node.span,
             EvalLambda::with_captures(
@@ -186,6 +178,7 @@ impl TreeWalk {
                 with_env,
                 scoped_globals,
             ),
+            capture,
         )
     }
 

@@ -25,7 +25,7 @@ use crate::cache::{
 };
 #[cfg(test)]
 use crate::compile::{EffectClass, IrFacts};
-use crate::compile::{Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, resolve};
+use crate::compile::{Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, annotate_capture_plans, resolve};
 use crate::diagnostic::EvalTraceStyle;
 use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
@@ -743,8 +743,11 @@ impl NixNative {
             .map_err(|source| unsupported_parse_error(source, source_map, diagnostic_source))?;
         let resolved = resolve(parsed)
             .map_err(|source| unsupported_scope_error(source, source_map, diagnostic_source))?;
-        nix_lower(resolved)
-            .map_err(|source| unsupported_ir_error(source, source_map, diagnostic_source).into())
+        let mut ir = nix_lower(resolved)
+            .map_err(|source| unsupported_ir_error(source, source_map, diagnostic_source))?;
+        // Fresh uncached IR needs FV-5 capture facts; durable-cache runs the full pipeline.
+        let _ = annotate_capture_plans(&mut ir);
+        Ok(ir)
     }
 
     fn eval_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {

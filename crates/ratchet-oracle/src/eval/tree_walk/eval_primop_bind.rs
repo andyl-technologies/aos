@@ -733,9 +733,11 @@ impl TreeWalk {
                     node.span,
                 ));
             }
-            Some(EvalFrame::new(slot_count).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
-            })?)
+            Some(
+                EvalFrame::new_linked(slot_count, self.env.last().cloned()).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                })?,
+            )
         } else {
             None
         };
@@ -785,7 +787,7 @@ impl TreeWalk {
                     }
                     Ok(())
                 })();
-                self.end_order_sensitive_binding_assembly();
+                self.end_order_sensitive_binding_assembly(init_result.is_ok());
                 init_result?;
             }
 
@@ -922,7 +924,7 @@ impl TreeWalk {
             }
             Ok(entries)
         })();
-        self.end_order_sensitive_binding_assembly();
+        self.end_order_sensitive_binding_assembly(result.is_ok());
         if recursive {
             self.pop_env_frame();
         }

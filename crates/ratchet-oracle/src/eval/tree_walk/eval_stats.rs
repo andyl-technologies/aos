@@ -139,6 +139,8 @@ impl TreeWalk {
             payload_arc_clones: deref.payload_arc_clones,
             env_captures: env.env_captures,
             env_capture_frame_handles: env.env_capture_frame_handles,
+            flat_env_captures: env.flat_env_captures,
+            flat_env_capture_values: env.flat_env_capture_values,
             with_env_captures: env.with_env_captures,
             with_env_capture_scopes: env.with_env_capture_scopes,
             scoped_global_env_captures: env.scoped_global_env_captures,

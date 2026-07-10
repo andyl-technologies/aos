@@ -82,6 +82,20 @@ the `LatestIndex` append-only sidecar index with tail-reload
 `files/` packs with `ensure_blob_indexed` CAS dedup, and the
 canonicalized impure-input trace (§2.3).
 
+**FV-5 status boundary (2026-07-09).** Hybrid closure capture changes the
+runtime representation, not this memo contract. `facts.bin` analysis version
+5 now persists an ordered per-site `CapturePlan` and constant
+`FlatCaptureAccess` indices; serial closures with at most two free values keep
+those words in their flat object, while conservative/shared sites retain one
+persistent-frame-chain head. Existing force-cache key construction still
+observes the same ordered lexical coordinates and produces the same
+`DemandCacheKey` bytes — the cold/warm shadow gate is byte-clean. This does
+*not* make arbitrary closures durably hashable, does not implement recursive
+thunk keys, and does not close any MEMO-1/MEMO-2 acceptance item by itself;
+those rows remain governed by §10. It does remove frame-array-copy cost from
+the future per-subtree slice path and gives the closure-hashcons extension in
+[30](30-flat-value-architecture.md) a bounded canonical capture vector.
+
 ### 1.3 What unification adds
 
 Three things the four instances do **not** share today, and should:

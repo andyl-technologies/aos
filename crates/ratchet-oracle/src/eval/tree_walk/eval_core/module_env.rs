@@ -1,7 +1,7 @@
 //! Module, environment, scope, attr-path, and scoped-global helpers.
 
 use super::*;
-use crate::compile::IrInlineCacheSiteId;
+use crate::compile::{FLAT_CAPTURE_MAX_SLOTS, IrInlineCacheSiteId, Upvalue};
 
 impl TreeWalk {
     pub(super) fn cache_module_identity_hash(module: &TreeWalkModule) -> Option<DurableBlake3Hash> {
@@ -264,85 +264,284 @@ impl TreeWalk {
         &mut self,
         id: IrId,
         span: Span,
-    ) -> Result<EvalEnv, TreeWalkError> {
-        // Thunk allocation captures the same frame stack many times between
-        // mutations; replay the generation-keyed snapshot as an O(1) clone.
-        if let Some((generation, cached)) = &self.env_capture_cache
-            && *generation == self.env_generation
+    ) -> Result<(EvalEnv, Option<EvalFlatCaptureBuffer>), TreeWalkError> {
+        #[cfg(test)]
+        let runtime_conversion_enabled = self.capture_plan_validation.is_none();
+        #[cfg(not(test))]
+        let runtime_conversion_enabled = true;
+        // FV-5a: a plan may copy values only after the enclosing binding form
+        // has finished its order-sensitive assembly. During `let`/`rec` and
+        // `__overrides` assembly, later slot writes must remain visible through
+        // shared frames, so those allocations deliberately take the fallback.
+        // The B2 record-placement proving ground likewise keeps shared frames:
+        // its collector writebacks mutate captured slots and does not yet own a
+        // flat-capture writeback protocol.
+        if runtime_conversion_enabled
+            && self.heap.supports_post_assembly_flat_capture()
+            && let Some(CapturePlan::Flat(slots)) = self.current_ir().facts.capture_plan(id)
         {
-            debug_assert!(
-                cached.frames().len() == self.env.len()
-                    && cached
-                        .frames()
-                        .iter()
-                        .zip(self.env.iter())
-                        .all(|(cached, live)| Arc::ptr_eq(cached, live)),
-                "env capture cache generation matched a mutated frame stack"
+            if slots.is_empty() {
+                return Ok((EvalEnv::default(), None));
+            }
+            if slots.len() > FLAT_CAPTURE_MAX_SLOTS {
+                let env =
+                    EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+                return Ok((env, None));
+            }
+            let mut capture_slots = [Upvalue { depth: 0, slot: 0 }; FLAT_CAPTURE_MAX_SLOTS];
+            let capture_len = slots.len();
+            capture_slots[..capture_len].copy_from_slice(slots);
+            let allocation_site = EvalNodeRef::new(self.current_module, id);
+            let frame_count = self.active_env_frame_count();
+            if self.order_sensitive_binding_depth != 0 {
+                let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+                let buffer = EvalFlatCaptureBuffer::pending(
+                    allocation_site,
+                    frame_count,
+                    capture_len,
+                )
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })?;
+                return Ok((env, Some(buffer)));
+            }
+            let mut buffer = EvalFlatCaptureBuffer::new(
+                allocation_site,
+                frame_count,
             );
-            return Ok(cached.clone());
+            for capture_slot in &capture_slots[..capture_len] {
+                let value = self
+                    .active_env_value_at_depth(
+                        usize::from(capture_slot.depth),
+                        u32::from(capture_slot.slot),
+                    )
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                    })?;
+                buffer.push(value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })?;
+            }
+            return Ok((EvalEnv::default(), Some(buffer.finish())));
         }
-        let captured = EvalEnv::capture(&self.env)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))?;
-        self.env_capture_cache = Some((self.env_generation, captured.clone()));
-        Ok(captured)
+
+        let env = EvalEnv::capture_linked_with_flat_base(&self.env, self.flat_env.clone());
+        Ok((env, None))
     }
 
-    /// Pushes a lexical frame onto the active stack, invalidating the
-    /// env-capture cache via the generation counter.
+    /// Returns the conceptual active frame count, including a flat prefix.
+    pub(in crate::eval::tree_walk) fn active_env_frame_count(&self) -> usize {
+        self.active_env_ref().frame_count()
+    }
+
+    /// Returns whether the active composed environment captures no values.
+    pub(in crate::eval::tree_walk) fn active_env_is_empty(&self) -> bool {
+        self.active_env_ref().is_empty()
+    }
+
+    /// Returns a borrowed view over the active composed environment.
+    pub(super) fn active_env_ref(&self) -> EvalEnvRef<'_> {
+        EvalEnvRef {
+            frames: EvalEnvFramesRef::Active(&self.env),
+            flat_base: self.flat_env.as_ref(),
+        }
+    }
+
+    /// Returns a borrowed view over one captured composed environment.
+    pub(super) fn captured_env_ref<'a>(&self, env: &'a EvalEnv) -> EvalEnvRef<'a> {
+        EvalEnvRef {
+            frames: EvalEnvFramesRef::Captured(env.frames()),
+            flat_base: env.flat_base(),
+        }
+    }
+
+    /// Resolves one depth-relative slot from the active composed environment.
+    pub(in crate::eval::tree_walk) fn active_env_value_at_depth(
+        &self,
+        depth: usize,
+        slot: u32,
+    ) -> Result<Value, EvalEnvError> {
+        if depth < self.env.len() {
+            return self.env[self.env.len() - 1 - depth].get(slot);
+        }
+        let Some(flat) = self.flat_env.as_ref() else {
+            return Err(EvalEnvError::SlotOutOfBounds {
+                slot,
+                slots: self.env.len(),
+            });
+        };
+        self.flat_capture_value(flat, depth - self.env.len(), slot)
+            .ok_or(EvalEnvError::SlotOutOfBounds {
+                slot,
+                slots: flat.len(),
+            })
+    }
+
+    /// Resolves one lexical read, using its closure-converted capture index.
+    ///
+    /// The constant-index arm is valid only when the active flat base is the
+    /// allocation site recorded on the read fact. Hybrid conservative
+    /// closures may execute the same node against an inherited flat base, so
+    /// every mismatch retains coordinate lookup.
+    #[inline]
+    pub(in crate::eval::tree_walk) fn active_env_value_for_read(
+        &self,
+        id: IrId,
+        depth: usize,
+        slot: u32,
+    ) -> Result<Value, EvalEnvError> {
+        if depth >= self.env.len()
+            && let Some(flat) = self.flat_env.as_ref()
+            && let Some(access) = self.current_ir().facts.flat_capture_access(id)
+            // The full module/site identity is load-bearing after annotation;
+            // an unqualified direct-base shortcut can consume another fact.
+            && EvalNodeRef::new(self.current_module, access.site) == flat.allocation_site()
+            && let Some(value) = self.flat_capture_value_at_index(flat, usize::from(access.index))
+        {
+            return Ok(value);
+        }
+        self.active_env_value_at_depth(depth, slot)
+    }
+
+    /// Resolves one outermost-indexed slot from a captured composed env.
+    pub(in crate::eval::tree_walk) fn captured_env_value_at_index(
+        &self,
+        env: &EvalEnv,
+        frame_index: usize,
+        slot: u32,
+    ) -> Option<Value> {
+        self.env_ref_value_at_index(self.captured_env_ref(env), frame_index, slot)
+    }
+
+    /// Resolves one outermost-indexed slot from a borrowed composed env.
+    pub(super) fn env_ref_value_at_index(
+        &self,
+        env: EvalEnvRef<'_>,
+        frame_index: usize,
+        slot: u32,
+    ) -> Option<Value> {
+        let flat_count = env.flat_base.map_or(0, EvalFlatCapture::frame_count);
+        if frame_index < flat_count {
+            let depth = flat_count.checked_sub(frame_index + 1)?;
+            return self.flat_capture_value(env.flat_base?, depth, slot);
+        }
+        env.frames.get(frame_index - flat_count)?.get(slot).ok()
+    }
+
+    /// Resolves one depth-relative slot from a captured composed env.
+    pub(in crate::eval::tree_walk) fn captured_env_value_at_depth(
+        &self,
+        env: &EvalEnv,
+        depth: usize,
+        slot: u32,
+    ) -> Option<Value> {
+        let frame_index = env.frame_count().checked_sub(depth + 1)?;
+        self.captured_env_value_at_index(env, frame_index, slot)
+    }
+
+    /// Looks up a copied value by the flat plan's canonical coordinate.
+    #[inline]
+    fn flat_capture_value(
+        &self,
+        capture: &EvalFlatCapture,
+        depth: usize,
+        slot: u32,
+    ) -> Option<Value> {
+        let site = capture.allocation_site();
+        let module = self.modules.get(site.module().index())?;
+        let CapturePlan::Flat(slots) = module.ir.facts.capture_plan(site.id())? else {
+            return None;
+        };
+        let index = slots.iter().position(|capture| {
+            usize::from(capture.depth) == depth && u32::from(capture.slot) == slot
+        })?;
+        self.flat_capture_values(capture)?.get(index).copied()
+    }
+
+    /// Copies one value through the closure tail's registry-index fast path.
+    #[inline]
+    fn flat_capture_value_at_index(
+        &self,
+        capture: &EvalFlatCapture,
+        index: usize,
+    ) -> Option<Value> {
+        self.heap
+            .flat_closure_capture_value_at(
+                capture.inline_owner(),
+                capture.tail_handle(),
+                index,
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// Resolves closure-inline capture values through the owning flat object.
+    pub(in crate::eval::tree_walk) fn flat_capture_values<'a>(
+        &'a self,
+        capture: &'a EvalFlatCapture,
+    ) -> Option<&'a [Value]> {
+        let owner = capture.inline_owner();
+        let values = self
+            .heap
+            .flat_closure_capture_values_at(owner, capture.tail_handle())
+            .ok()
+            .flatten()?;
+        Some(values)
+    }
+
+    /// Pushes a lexical frame onto the active stack.
     #[inline]
     pub(in crate::eval::tree_walk) fn push_env_frame(&mut self, frame: Arc<EvalFrame>) {
-        self.env_generation = self.env_generation.wrapping_add(1);
         self.env.push(frame);
     }
 
-    /// Pops the innermost lexical frame, invalidating the env-capture cache
-    /// via the generation counter.
+    /// Pops the innermost lexical frame.
     #[inline]
     pub(in crate::eval::tree_walk) fn pop_env_frame(&mut self) {
-        self.env_generation = self.env_generation.wrapping_add(1);
         let _ = self.env.pop();
     }
 
-    /// Replaces the active frame stack with `frames` and returns the previous
-    /// stack, invalidating the env-capture cache via the generation counter.
+    /// Replaces the active frame stack and returns the previous stack.
     #[inline]
     pub(in crate::eval::tree_walk) fn swap_env_frames(
         &mut self,
-        frames: Vec<Arc<EvalFrame>>,
-    ) -> Vec<Arc<EvalFrame>> {
-        self.env_generation = self.env_generation.wrapping_add(1);
+        env: impl Into<ActiveEvalEnv>,
+    ) -> ActiveEvalEnv {
+        let env = env.into();
         #[cfg(test)]
-        self.capture_validation_on_swap(frames.len());
-        std::mem::replace(&mut self.env, frames)
+        self.capture_validation_on_swap(env.frame_count());
+        let saved = ActiveEvalEnv {
+            frames: std::mem::replace(&mut self.env, env.frames),
+            flat_base: std::mem::replace(&mut self.flat_env, env.flat_base),
+        };
+        saved
     }
 
-    /// Restores a frame stack previously returned by
-    /// [`Self::swap_env_frames`], invalidating the env-capture cache via the
-    /// generation counter.
+    /// Restores a frame stack previously returned by [`Self::swap_env_frames`].
     #[inline]
-    pub(in crate::eval::tree_walk) fn restore_env_frames(&mut self, frames: Vec<Arc<EvalFrame>>) {
-        self.env_generation = self.env_generation.wrapping_add(1);
+    pub(in crate::eval::tree_walk) fn restore_env_frames(&mut self, env: ActiveEvalEnv) {
         #[cfg(test)]
         self.capture_validation_on_restore();
-        self.env = frames;
+        self.env = env.frames;
+        self.flat_env = env.flat_base;
     }
 
     pub(in crate::eval::tree_walk) fn capture_with_env(
         &self,
-        id: IrId,
-        span: Span,
+        _id: IrId,
+        _span: Span,
     ) -> Result<EvalWithEnv, TreeWalkError> {
-        EvalWithEnv::capture(&self.with_scopes)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
+        Ok(EvalWithEnv::capture_persistent(&self.with_scopes))
     }
 
     pub(in crate::eval::tree_walk) fn capture_scoped_global_env(
         &self,
-        id: IrId,
-        span: Span,
+        _id: IrId,
+        _span: Span,
     ) -> Result<EvalScopedGlobalEnv, TreeWalkError> {
-        EvalScopedGlobalEnv::capture(&self.scoped_globals)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
+        Ok(EvalScopedGlobalEnv::capture_persistent(
+            &self.scoped_globals,
+        ))
     }
 
     pub(in crate::eval::tree_walk) fn clone_env_frames(
@@ -350,7 +549,7 @@ impl TreeWalk {
         id: IrId,
         env: &EvalEnv,
         span: Span,
-    ) -> Result<Vec<Arc<EvalFrame>>, TreeWalkError> {
+    ) -> Result<ActiveEvalEnv, TreeWalkError> {
         let frames = env.frames();
         let mut cloned = Vec::new();
         cloned.try_reserve_exact(frames.len()).map_err(|_| {
@@ -364,54 +563,29 @@ impl TreeWalk {
                 span,
             )
         })?;
-        cloned.extend_from_slice(frames);
-        Ok(cloned)
+        cloned.extend(frames.iter().cloned());
+        Ok(ActiveEvalEnv {
+            frames: cloned,
+            flat_base: env.flat_base().cloned(),
+        })
     }
 
     pub(in crate::eval::tree_walk) fn clone_with_scopes(
         &self,
-        id: IrId,
+        _id: IrId,
         env: &EvalWithEnv,
-        span: Span,
-    ) -> Result<Vec<EvalWithScope>, TreeWalkError> {
-        let scopes = env.scopes();
-        let mut cloned = Vec::new();
-        cloned.try_reserve_exact(scopes.len()).map_err(|_| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Env {
-                    id,
-                    source: EvalEnvError::WithCaptureAllocationFailed {
-                        scopes: scopes.len(),
-                    },
-                },
-                span,
-            )
-        })?;
-        cloned.extend_from_slice(scopes);
-        Ok(cloned)
+        _span: Span,
+    ) -> Result<EvalWithEnv, TreeWalkError> {
+        Ok(env.clone())
     }
 
     pub(in crate::eval::tree_walk) fn clone_scoped_globals(
         &self,
-        id: IrId,
+        _id: IrId,
         env: &EvalScopedGlobalEnv,
-        span: Span,
-    ) -> Result<Vec<Value>, TreeWalkError> {
-        let scopes = env.scopes();
-        let mut cloned = Vec::new();
-        cloned.try_reserve_exact(scopes.len()).map_err(|_| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Env {
-                    id,
-                    source: EvalEnvError::ScopedGlobalCaptureAllocationFailed {
-                        scopes: scopes.len(),
-                    },
-                },
-                span,
-            )
-        })?;
-        cloned.extend_from_slice(scopes);
-        Ok(cloned)
+        _span: Span,
+    ) -> Result<EvalScopedGlobalEnv, TreeWalkError> {
+        Ok(env.clone())
     }
 
     pub(in crate::eval::tree_walk) fn validate_attrset_shape(

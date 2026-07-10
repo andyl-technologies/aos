@@ -115,10 +115,12 @@ mod backing;
 mod bytes;
 pub mod shared;
 mod slice;
+mod value_tail;
 
 pub use backing::{FlatKindSet, SharedFlatStoreArena};
 pub use bytes::FlatBytes;
 pub use slice::{FlatSlice, FlatTailLayout, FlatTailWriter};
+pub use value_tail::{FlatValueTailAllocation, FlatValueTailHandle};
 
 /// The magic tag stored in the upper 32 bits of every flat object's word 0.
 pub const FLAT_OBJECT_MAGIC: u64 = 0x464c_5431; // ASCII "FLT1"
@@ -139,8 +141,12 @@ const MAX_ALIGN: usize = mem::align_of::<u64>();
 /// doubling step ahead of the byte mass on byte-heavy workloads (the
 /// `string-builder` arena-watch case). Capping the chunk size keeps the
 /// mapped peak within one cap-sized chunk of the used bytes while chunk
-/// counts stay small enough for the sorted region index.
-const MAX_CHUNK_BYTES: usize = 32 << 20;
+/// counts stay small enough for the sorted region index. FV-5's wide-eval
+/// profile used 16.1--16.4 MiB in each flat domain: the former doubling step
+/// mapped 16 MiB for only 0.3--0.6 MiB of overflow. A 4 MiB ceiling keeps the
+/// sorted region index to eight chunks at that workload while removing 24
+/// MiB of unused mappings across the two domains.
+const MAX_CHUNK_BYTES: usize = 4 << 20;
 
 /// First chunk size for a flat store's owned arena.
 ///
@@ -245,8 +251,8 @@ struct FlatObject<T> {
 struct FlatStoreEntry {
     /// The stable object address (also the runtime value handle).
     ptr: NonNull<HeapObject>,
-    /// The reserved allocation size, for memory-advice ranges.
-    size_bytes: usize,
+    /// The reserved size plus registry-only low-bit tail metadata.
+    size_and_flags: usize,
 }
 
 /// A shared view of one resolved flat object.
@@ -383,6 +389,8 @@ impl FlatStorePopReport {
 pub struct FlatAllocation {
     /// The stable object address; becomes the runtime value handle.
     pub ptr: NonNull<HeapObject>,
+    /// The stable allocation-registry index while this object remains live.
+    pub store_index: usize,
     /// The underlying arena allocation, for allocator accounting parity.
     pub allocation: ArenaAllocation,
 }
@@ -642,7 +650,7 @@ impl<T> FlatObjectStore<T> {
             let object = unsafe { &*(entry.ptr.as_ptr() as *const FlatObject<T>) };
             FlatStoredObject {
                 ptr: entry.ptr,
-                size_bytes: entry.size_bytes,
+                size_bytes: entry.size_bytes(),
                 object: FlatObjectRef { object },
             }
         })

@@ -176,6 +176,9 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        // Fresh uncached imports need FV-5 capture facts immediately. Durable
+        // parse-cache refresh owns the complete analysis pipeline.
+        let _ = annotate_capture_plans(&mut ir);
         // Adopt the freshly lowered symbol table as the live table without a
         // clone; the module keeps the emptied husk and reads `self.symbols`.
         self.symbols = std::mem::take(&mut ir.symbols);
@@ -234,7 +237,7 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
-        let ir = if global_scope.is_scoped() {
+        let mut ir = if global_scope.is_scoped() {
             nix_lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
         } else {
             nix_lower(resolved)
@@ -251,6 +254,7 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
+        let _ = annotate_capture_plans(&mut ir);
         let ir = self.remap_cached_import_ir(argument, argument_span, path, ir)?;
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }
@@ -576,21 +580,12 @@ impl TreeWalk {
 
     pub(super) fn import_scoped_globals(
         &self,
-        id: IrId,
-        span: Span,
+        _id: IrId,
+        _span: Span,
         global_scope: ImportGlobalScope,
-    ) -> Result<Vec<Value>, TreeWalkError> {
-        let mut scoped_globals = Vec::new();
+    ) -> Result<EvalScopedGlobalEnv, TreeWalkError> {
+        let mut scoped_globals = EvalScopedGlobalEnv::default();
         if let ImportGlobalScope::Scoped(scope) = global_scope {
-            scoped_globals.try_reserve_exact(1).map_err(|_| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Env {
-                        id,
-                        source: EvalEnvError::ScopedGlobalCaptureAllocationFailed { scopes: 1 },
-                    },
-                    span,
-                )
-            })?;
             scoped_globals.push(scope);
         }
         Ok(scoped_globals)

@@ -311,6 +311,12 @@ mod tests {
         // pattern), and the tail writer's bounds-checked
         // `copy_nonoverlapping` plus in-allocation cursor advance
         // (`write_slice`), all under `FlatObjectPayloadAccess`.
+        // flat/value_tail.rs count 0 -> 3 (doc 30 FV-5): one shared object
+        // reference reconstructed from an exact live registry entry, one
+        // shared `Value` slice reconstructed after the private tail flag,
+        // header length, and reservation extent validate the initialized run,
+        // and one exclusive object/tail block behind `&mut self`, all under
+        // `FlatObjectPayloadAccess`.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 12usize),
@@ -318,6 +324,7 @@ mod tests {
             ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
             ("flat/slice.rs", 5usize),
+            ("flat/value_tail.rs", 3usize),
             ("resident.rs", 6usize),
         ] {
             let source_path = heap_root.join(file_name);
@@ -388,6 +395,7 @@ mod tests {
                     | "flat/alloc.rs"
                     | "flat/bytes.rs"
                     | "flat/slice.rs"
+                    | "flat/value_tail.rs"
                     | "resident.rs"
             )
         )

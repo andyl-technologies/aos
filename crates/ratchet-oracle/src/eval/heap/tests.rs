@@ -6558,7 +6558,6 @@ fn collector_poll_minor_gc_copied_heap_field_writes_reject_flat_attrs_writeback_
 }
 
 #[test]
-#[test]
 fn collector_poll_minor_gc_copied_heap_field_writes_rewrite_bound_primop_args() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");
     // FV-3: this fixture exercises the Tier-B B2 record-relocation
@@ -7107,7 +7106,6 @@ fn collector_poll_minor_gc_direct_heap_field_writes_reject_worker_domain_flat_at
     assert!(attrs.get(key).expect("original binding exists").raw_eq(child));
 }
 
-#[test]
 #[test]
 fn collector_poll_minor_gc_direct_heap_field_writes_rewrite_old_primop_args() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(1024).expect("heap creates");

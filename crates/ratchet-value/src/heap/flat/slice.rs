@@ -24,7 +24,8 @@
 //! The trailing region is sized up front by a [`FlatTailLayout`] and written
 //! exactly once through a [`FlatTailWriter`] inside the store's
 //! `alloc_with_trailing` callback; each written run yields one witness that
-//! must be stored in the returned payload.
+//! must be stored in the returned payload unless the store immediately takes
+//! ownership through its dedicated registry-backed `Value`-tail door.
 //!
 //! # Sealing discipline
 //!
@@ -71,13 +72,14 @@ impl<T> FlatSlice<T> {
     ///
     /// Sealed to the flat store module: every constructed witness carries the
     /// obligation that `ptr..ptr + len` is an initialized, aligned, readable
-    /// element run that is never written again and stays mapped for the whole
-    /// lifetime of the witness — [`FlatSlice::as_slice`]'s `unsafe` block
+    /// element run that is never written while the witness lives and stays
+    /// mapped for its whole lifetime — [`FlatSlice::as_slice`]'s `unsafe` block
     /// discharges against exactly this contract. [`FlatTailWriter`] is the
     /// only construction site and satisfies it by copying the elements into
-    /// the object's own arena reservation immediately before construction,
-    /// never mutating them afterwards, and living in a payload that drops
-    /// before the arena unmaps.
+    /// the object's own arena reservation immediately before construction.
+    /// Normal witnesses live in a payload that drops before the arena unmaps;
+    /// the registry-backed `Value`-tail door drops its witness before taking
+    /// exclusive ownership of the run.
     pub(super) const fn new(ptr: NonNull<T>, len: usize) -> Self {
         Self { ptr, len }
     }

@@ -1093,6 +1093,9 @@ impl TreeWalk {
                 roots.try_push_tree_walk_frame(frame_index, slot_index, value)?;
             }
         }
+        if let Some(flat) = &self.flat_env {
+            roots.try_push_tree_walk_flat_capture_owner(flat.inline_owner())?;
+        }
 
         for (depth, scope) in self.with_scopes.iter().enumerate() {
             roots.try_push_with_scope(depth, scope.value())?;
@@ -1103,7 +1106,7 @@ impl TreeWalk {
         }
 
         for (depth, suspended) in self.suspended_env_roots.iter().rev().enumerate() {
-            for (frame_index, frame) in suspended.env.iter().enumerate() {
+            for (frame_index, frame) in suspended.env.frames.iter().enumerate() {
                 let slots = frame.slot_values()?;
                 for (slot_index, value) in slots.into_iter().enumerate() {
                     roots.try_push_suspended_tree_walk_frame(
@@ -1113,6 +1116,12 @@ impl TreeWalk {
                         value,
                     )?;
                 }
+            }
+            if let Some(flat) = &suspended.env.flat_base {
+                roots.try_push_suspended_tree_walk_flat_capture_owner(
+                    depth,
+                    flat.inline_owner(),
+                )?;
             }
             for (scope_depth, scope) in suspended.with_scopes.iter().enumerate() {
                 roots.try_push_suspended_with_scope(depth, scope_depth, scope.value())?;
@@ -3037,6 +3046,14 @@ impl TreeWalk {
                 .ok_or_else(|| root_writeback_source_unavailable(source))?
                 .get(root_writeback_frame_slot(source, *slot)?)
                 .map_err(TreeWalkSafepointRootWritebackError::Environment),
+            EvalRootSource::TreeWalkFlatCapture { .. } => {
+                Err(root_writeback_source_unavailable(source))
+            }
+            EvalRootSource::TreeWalkFlatCaptureOwner => self
+                .flat_env
+                .as_ref()
+                .map(EvalFlatCapture::inline_owner)
+                .ok_or_else(|| root_writeback_source_unavailable(source)),
             EvalRootSource::SuspendedTreeWalkFrame { depth, frame, slot } => {
                 let suspended = self
                     .suspended_env_roots
@@ -3048,10 +3065,30 @@ impl TreeWalk {
                     .ok_or_else(|| root_writeback_source_unavailable(source))?;
                 suspended
                     .env
+                    .frames
                     .get(*frame)
                     .ok_or_else(|| root_writeback_source_unavailable(source))?
                     .get(root_writeback_frame_slot(source, *slot)?)
                     .map_err(TreeWalkSafepointRootWritebackError::Environment)
+            }
+            EvalRootSource::SuspendedTreeWalkFlatCapture { .. } => {
+                Err(root_writeback_source_unavailable(source))
+            }
+            EvalRootSource::SuspendedTreeWalkFlatCaptureOwner { depth } => {
+                let suspended = self
+                    .suspended_env_roots
+                    .get(suspended_root_index(
+                        self.suspended_env_roots.len(),
+                        *depth,
+                        source,
+                    )?)
+                    .ok_or_else(|| root_writeback_source_unavailable(source))?;
+                suspended
+                    .env
+                    .flat_base
+                    .as_ref()
+                    .map(EvalFlatCapture::inline_owner)
+                    .ok_or_else(|| root_writeback_source_unavailable(source))
             }
             EvalRootSource::WithScope { depth } => self
                 .with_scopes
@@ -3139,6 +3176,12 @@ impl TreeWalk {
                 .ok_or_else(|| root_writeback_source_unavailable(source))?
                 .validate_set(root_writeback_frame_slot(source, *slot)?)
                 .map_err(TreeWalkSafepointRootWritebackError::Environment),
+            EvalRootSource::TreeWalkFlatCapture { .. }
+            | EvalRootSource::TreeWalkFlatCaptureOwner
+            | EvalRootSource::SuspendedTreeWalkFlatCapture { .. }
+            | EvalRootSource::SuspendedTreeWalkFlatCaptureOwner { .. } => {
+                Err(root_writeback_source_unsupported(source))
+            }
             EvalRootSource::SuspendedTreeWalkFrame { depth, frame, slot } => {
                 let suspended = self
                     .suspended_env_roots
@@ -3150,6 +3193,7 @@ impl TreeWalk {
                     .ok_or_else(|| root_writeback_source_unavailable(source))?;
                 suspended
                     .env
+                    .frames
                     .get(*frame)
                     .ok_or_else(|| root_writeback_source_unavailable(source))?
                     .validate_set(root_writeback_frame_slot(source, *slot)?)
@@ -3248,6 +3292,12 @@ impl TreeWalk {
                 .ok_or_else(|| root_writeback_source_unavailable(source))?
                 .set(root_writeback_frame_slot(source, *slot)?, value)
                 .map_err(TreeWalkSafepointRootWritebackError::Environment),
+            EvalRootSource::TreeWalkFlatCapture { .. }
+            | EvalRootSource::TreeWalkFlatCaptureOwner
+            | EvalRootSource::SuspendedTreeWalkFlatCapture { .. }
+            | EvalRootSource::SuspendedTreeWalkFlatCaptureOwner { .. } => {
+                Err(root_writeback_source_unsupported(source))
+            }
             EvalRootSource::SuspendedTreeWalkFrame { depth, frame, slot } => {
                 let suspended_index =
                     suspended_root_index(self.suspended_env_roots.len(), *depth, source)?;
@@ -3257,48 +3307,47 @@ impl TreeWalk {
                     .ok_or_else(|| root_writeback_source_unavailable(source))?;
                 suspended
                     .env
+                    .frames
                     .get(*frame)
                     .ok_or_else(|| root_writeback_source_unavailable(source))?
                     .set(root_writeback_frame_slot(source, *slot)?, value)
                     .map_err(TreeWalkSafepointRootWritebackError::Environment)
             }
             EvalRootSource::WithScope { depth } => {
-                let scope = self
-                    .with_scopes
-                    .get_mut(*depth)
-                    .ok_or_else(|| root_writeback_source_unavailable(source))?;
-                *scope = EvalWithScope::new(scope.module(), scope.scope(), value);
-                Ok(())
+                self.with_scopes
+                    .replace_value(*depth, value)
+                    .then_some(())
+                    .ok_or_else(|| root_writeback_source_unavailable(source))
             }
             EvalRootSource::SuspendedWithScope { depth, scope_depth } => {
                 let suspended_index =
                     suspended_root_index(self.suspended_env_roots.len(), *depth, source)?;
-                let scope = self
+                self
                     .suspended_env_roots
                     .get_mut(suspended_index)
-                    .and_then(|suspended| suspended.with_scopes.get_mut(*scope_depth))
-                    .ok_or_else(|| root_writeback_source_unavailable(source))?;
-                *scope = EvalWithScope::new(scope.module(), scope.scope(), value);
-                Ok(())
+                    .is_some_and(|suspended| {
+                        suspended.with_scopes.replace_value(*scope_depth, value)
+                    })
+                    .then_some(())
+                    .ok_or_else(|| root_writeback_source_unavailable(source))
             }
             EvalRootSource::ScopedGlobal { depth } => {
-                let target = self
-                    .scoped_globals
-                    .get_mut(*depth)
-                    .ok_or_else(|| root_writeback_source_unavailable(source))?;
-                *target = value;
-                Ok(())
+                self.scoped_globals
+                    .replace_value(*depth, value)
+                    .then_some(())
+                    .ok_or_else(|| root_writeback_source_unavailable(source))
             }
             EvalRootSource::SuspendedScopedGlobal { depth, scope_depth } => {
                 let suspended_index =
                     suspended_root_index(self.suspended_env_roots.len(), *depth, source)?;
-                let target = self
+                self
                     .suspended_env_roots
                     .get_mut(suspended_index)
-                    .and_then(|suspended| suspended.scoped_globals.get_mut(*scope_depth))
-                    .ok_or_else(|| root_writeback_source_unavailable(source))?;
-                *target = value;
-                Ok(())
+                    .is_some_and(|suspended| {
+                        suspended.scoped_globals.replace_value(*scope_depth, value)
+                    })
+                    .then_some(())
+                    .ok_or_else(|| root_writeback_source_unavailable(source))
             }
             EvalRootSource::ForceContinuation { depth } => {
                 let root_index = reverse_root_index(self.active_force_roots.len(), *depth, source)?;
@@ -3429,12 +3478,15 @@ impl TreeWalk {
 
     pub(in crate::eval::tree_walk) fn push_suspended_env_roots(
         &mut self,
-        env: Vec<Arc<EvalFrame>>,
-        with_scopes: Vec<EvalWithScope>,
-        scoped_globals: Vec<Value>,
+        env: impl Into<ActiveEvalEnv>,
+        with_scopes: impl Into<EvalWithEnv>,
+        scoped_globals: impl Into<EvalScopedGlobalEnv>,
     ) {
-        self.suspended_env_roots
-            .push(SuspendedTreeWalkEnv::new(env, with_scopes, scoped_globals));
+        self.suspended_env_roots.push(SuspendedTreeWalkEnv::new(
+            env.into(),
+            with_scopes.into(),
+            scoped_globals.into(),
+        ));
     }
 
     pub(in crate::eval::tree_walk) fn pop_suspended_env_roots(

@@ -196,6 +196,13 @@ pub enum EvalRootSource {
         /// The slot index inside the frame.
         slot: usize,
     },
+    /// A copied value in the active flat lexical capture base.
+    TreeWalkFlatCapture {
+        /// The capture-plan index in canonical coordinate order.
+        index: usize,
+    },
+    /// The flat closure object owning the active inline capture base.
+    TreeWalkFlatCaptureOwner,
     /// A slot in a tree-walk lexical frame stack suspended by nested
     /// evaluation.
     SuspendedTreeWalkFrame {
@@ -206,6 +213,19 @@ pub enum EvalRootSource {
         frame: usize,
         /// The slot index inside the suspended frame.
         slot: usize,
+    },
+    /// A copied value in a suspended flat lexical capture base.
+    SuspendedTreeWalkFlatCapture {
+        /// The suspended evaluator context depth, with zero nearest the active
+        /// evaluation.
+        depth: usize,
+        /// The capture-plan index in canonical coordinate order.
+        index: usize,
+    },
+    /// The flat closure object owning a suspended inline capture base.
+    SuspendedTreeWalkFlatCaptureOwner {
+        /// The suspended evaluator context depth, with zero nearest active.
+        depth: usize,
     },
     /// An active dynamic `with` scope in the tree-walk evaluator.
     WithScope {
@@ -364,6 +384,32 @@ impl EvalRootSet {
         self.try_push_heap_root(EvalRootSource::TreeWalkFrame { frame, slot }, value)
     }
 
+    /// Records a copied value in the active flat lexical capture base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_tree_walk_flat_capture(
+        &mut self,
+        index: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::TreeWalkFlatCapture { index }, value)
+    }
+
+    /// Records the flat closure owning the active inline capture base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set cannot grow.
+    pub fn try_push_tree_walk_flat_capture_owner(
+        &mut self,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(EvalRootSource::TreeWalkFlatCaptureOwner, value)
+    }
+
     /// Records a suspended tree-walk lexical frame slot when it contains a heap
     /// value.
     ///
@@ -383,6 +429,40 @@ impl EvalRootSet {
     ) -> Result<bool, EvalRootSetError> {
         self.try_push_heap_root(
             EvalRootSource::SuspendedTreeWalkFrame { depth, frame, slot },
+            value,
+        )
+    }
+
+    /// Records a copied value in a suspended flat lexical capture base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set length overflows or storage
+    /// for another root cannot be reserved.
+    pub fn try_push_suspended_tree_walk_flat_capture(
+        &mut self,
+        depth: usize,
+        index: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(
+            EvalRootSource::SuspendedTreeWalkFlatCapture { depth, index },
+            value,
+        )
+    }
+
+    /// Records the flat closure owning a suspended inline capture base.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalRootSetError`] if the root set cannot grow.
+    pub fn try_push_suspended_tree_walk_flat_capture_owner(
+        &mut self,
+        depth: usize,
+        value: Value,
+    ) -> Result<bool, EvalRootSetError> {
+        self.try_push_heap_root(
+            EvalRootSource::SuspendedTreeWalkFlatCaptureOwner { depth },
             value,
         )
     }
@@ -666,6 +746,18 @@ pub enum HeapEdgeSource {
         frame: usize,
         /// The slot index inside the captured frame.
         slot: usize,
+    },
+    /// A copied value in a flat lexical capture plan.
+    CapturedFlatEnv {
+        /// The heap object kind that owns the capture.
+        owner: CapturedRootOwner,
+        /// The capture-plan index in canonical coordinate order.
+        index: usize,
+    },
+    /// The flat closure object that owns an inherited inline capture.
+    CapturedFlatEnvOwner {
+        /// The heap object kind that retains the owning closure.
+        owner: CapturedRootOwner,
     },
     /// A captured dynamic `with` scope.
     CapturedWithScope {
@@ -7071,6 +7163,24 @@ impl EvalHeap {
                 });
             }
         }
+        let (kind, owner) = match payload.tag() {
+            ValueTag::Lambda => (FlatObjectKind::Lambda, CapturedRootOwner::Lambda),
+            ValueTag::Thunk => (FlatObjectKind::Thunk, CapturedRootOwner::Thunk),
+            _ => return Ok(edges),
+        };
+        if let Some(values) = self
+            .flat_closures
+            .value_tail(ptr, kind)
+            .map_err(|error| self.closure_resolution_error(payload.tag(), ptr, error))?
+        {
+            for (index, value) in values.iter().copied().enumerate() {
+                push_heap_edge(
+                    &mut edges,
+                    HeapEdgeSource::CapturedFlatEnv { owner, index },
+                    value,
+                )?;
+            }
+        }
         Ok(edges)
     }
 
@@ -9147,6 +9257,13 @@ fn push_capture_edges(
                 value,
             )?;
         }
+    }
+    if let Some(flat) = env.flat_base() {
+        push_heap_edge(
+            edges,
+            HeapEdgeSource::CapturedFlatEnvOwner { owner },
+            flat.inline_owner(),
+        )?;
     }
 
     for (index, scope) in with_env.scopes().iter().enumerate() {

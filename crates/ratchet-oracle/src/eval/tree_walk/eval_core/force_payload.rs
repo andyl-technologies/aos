@@ -29,7 +29,12 @@ impl TreeWalk {
         if !with_env.scopes().is_empty() || !scoped_globals.scopes().is_empty() {
             return None;
         }
-        self.force_cache_payload_for_ir_node_with_frames(*body, env.frames(), depth, seen_thunks)
+        self.force_cache_payload_for_ir_node_with_env(
+            *body,
+            self.captured_env_ref(env),
+            depth,
+            seen_thunks,
+        )
     }
 
     pub(super) fn force_cache_payload_for_suspended_closed_thunk(
@@ -50,7 +55,8 @@ impl TreeWalk {
             return None;
         }
         let module = self.modules.get(body.module().index())?;
-        let slots = Self::captured_free_variable_slots(&module.ir, body.id(), env.frames().len())?;
+        let slots =
+            Self::captured_free_variable_slots(&module.ir, body.id(), env.frame_count())?;
         if !slots.is_empty() {
             return None;
         }
@@ -144,14 +150,14 @@ impl TreeWalk {
         }
     }
 
-    fn force_cache_payload_for_ir_node_with_frames(
+    fn force_cache_payload_for_ir_node_with_env(
         &self,
         id: EvalNodeRef,
-        frames: &[Arc<EvalFrame>],
+        env: EvalEnvRef<'_>,
         depth: usize,
         seen_thunks: &mut BTreeSet<u64>,
     ) -> Option<CachedExpressionValue> {
-        if frames.is_empty() {
+        if env.is_empty() {
             return self.force_cache_payload_for_closed_ir_node(id, depth);
         }
         if depth > FORCE_CACHE_PAYLOAD_MAX_DEPTH {
@@ -170,8 +176,8 @@ impl TreeWalk {
         }
         match node.data {
             IrData::Local { slot } => {
-                let frame_index = frames.len().checked_sub(1)?;
-                let value = frames.get(frame_index)?.get(slot).ok()?;
+                let frame_index = env.frame_count().checked_sub(1)?;
+                let value = self.env_ref_value_at_index(env, frame_index, slot)?;
                 self.force_cache_payload_for_value_with_depth(
                     value,
                     depth.saturating_add(1),
@@ -184,11 +190,11 @@ impl TreeWalk {
                 slot,
             } => {
                 let upval_depth = upval_depth as usize;
-                if upval_depth >= frames.len() {
+                if upval_depth >= env.frame_count() {
                     return None;
                 }
-                let frame_index = frames.len() - 1 - upval_depth;
-                let value = frames.get(frame_index)?.get(slot).ok()?;
+                let frame_index = env.frame_count() - 1 - upval_depth;
+                let value = self.env_ref_value_at_index(env, frame_index, slot)?;
                 self.force_cache_payload_for_value_with_depth(
                     value,
                     depth.saturating_add(1),
@@ -197,9 +203,9 @@ impl TreeWalk {
                 )
             }
             IrData::Node(child) if node.kind == IrKind::ThunkAlloc => self
-                .force_cache_payload_for_ir_node_with_frames(
+                .force_cache_payload_for_ir_node_with_env(
                     EvalNodeRef::new(module_id, child),
-                    frames,
+                    env,
                     depth.saturating_add(1),
                     seen_thunks,
                 ),
@@ -211,17 +217,17 @@ impl TreeWalk {
                 | IrKind::Str
                 | IrKind::Uri
                 | IrKind::Path => self.force_cache_payload_for_closed_ir_node(id, depth),
-                IrKind::List => self.force_cache_payload_for_ir_list_with_frames(
+                IrKind::List => self.force_cache_payload_for_ir_list_with_env(
                     module_id,
                     node.data,
-                    frames,
+                    env,
                     depth,
                     seen_thunks,
                 ),
-                IrKind::AttrSet => self.force_cache_payload_for_ir_attrset_with_frames(
+                IrKind::AttrSet => self.force_cache_payload_for_ir_attrset_with_env(
                     module_id,
                     node.data,
-                    frames,
+                    env,
                     depth,
                     seen_thunks,
                 ),
@@ -230,11 +236,11 @@ impl TreeWalk {
         }
     }
 
-    fn force_cache_payload_for_ir_list_with_frames(
+    fn force_cache_payload_for_ir_list_with_env(
         &self,
         module_id: EvalModuleId,
         data: IrData,
-        frames: &[Arc<EvalFrame>],
+        env: EvalEnvRef<'_>,
         depth: usize,
         seen_thunks: &mut BTreeSet<u64>,
     ) -> Option<CachedExpressionValue> {
@@ -251,9 +257,9 @@ impl TreeWalk {
         let mut elements = Vec::new();
         elements.try_reserve_exact(children.len()).ok()?;
         for child in children {
-            elements.push(self.force_cache_payload_for_ir_node_with_frames(
+            elements.push(self.force_cache_payload_for_ir_node_with_env(
                 EvalNodeRef::new(module_id, child),
-                frames,
+                env,
                 depth.saturating_add(1),
                 seen_thunks,
             )?);
@@ -261,11 +267,11 @@ impl TreeWalk {
         Some(CachedExpressionValue::strict_list(elements))
     }
 
-    fn force_cache_payload_for_ir_attrset_with_frames(
+    fn force_cache_payload_for_ir_attrset_with_env(
         &self,
         module_id: EvalModuleId,
         data: IrData,
-        frames: &[Arc<EvalFrame>],
+        env: EvalEnvRef<'_>,
         depth: usize,
         seen_thunks: &mut BTreeSet<u64>,
     ) -> Option<CachedExpressionValue> {
@@ -312,9 +318,9 @@ impl TreeWalk {
             payload_entries.push((
                 name,
                 position,
-                self.force_cache_payload_for_ir_node_with_frames(
+                self.force_cache_payload_for_ir_node_with_env(
                     EvalNodeRef::new(module_id, value),
-                    frames,
+                    env,
                     depth.saturating_add(1),
                     seen_thunks,
                 )?,

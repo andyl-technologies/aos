@@ -45,7 +45,10 @@ use super::{Ir, IrFacts, IrId};
 ///   consumes per-argument primop escape signatures, and per-site
 ///   free-variable capture plans ([`crate::ir::IrFacts::capture_plan`]) are
 ///   produced and persisted in `facts.bin`.
-pub const IR_ANALYSIS_VERSION: u32 = 4;
+/// - `5` — FV-5 closure conversion assigns constant flat-capture indices to
+///   lexical reads ([`crate::ir::IrFacts::flat_capture_access`]) and persists
+///   them beside the allocation-site plans.
+pub const IR_ANALYSIS_VERSION: u32 = 5;
 
 /// Summary of one complete IR fact annotation run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

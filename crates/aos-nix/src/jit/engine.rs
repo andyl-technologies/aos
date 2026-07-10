@@ -929,7 +929,15 @@ fn published_body(
 /// environment stack, which nested forcing swaps out mid-dispatch.
 fn dispatch_env(eval: &TreeWalk, thunk: Value) -> Option<EvalEnv> {
     let heap_thunk = eval.heap().get_thunk(thunk).ok()?;
-    Some(heap_thunk.env()?.clone())
+    let env = heap_thunk.env()?;
+    // The frozen tier-1 env-get ABI walks shared frames only. FV-5 flat
+    // captures live inline in the owning closure and require the tree walk's
+    // constant-index resolver, so these sites deopt until the runtime ABI
+    // grows an inline-capture operand.
+    if env.frame_count() != env.frames().len() {
+        return None;
+    }
+    Some(env.clone())
 }
 
 /// Returns true when a primop `body`'s thunk captured dynamic scopes.

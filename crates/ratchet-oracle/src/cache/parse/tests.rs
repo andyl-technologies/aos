@@ -233,6 +233,13 @@ fn lowered_ir_fact_artifacts_roundtrip_capture_plans() {
         Some(CapturePlan::SharedChain(SharedChainReason::DynamicScope)),
     );
     facts.set_capture_plan(IrId::new(3), Some(CapturePlan::Flat(Box::new([]))));
+    facts.set_flat_capture_access(
+        IrId::new(0),
+        Some(FlatCaptureAccess {
+            site: IrId::new(1),
+            index: 1,
+        }),
+    );
 
     let encoded = encode_ir_facts(&facts, fingerprint, crate::compile::IR_ANALYSIS_VERSION)
         .expect("fact artifact encodes");
@@ -246,6 +253,31 @@ fn lowered_ir_fact_artifacts_roundtrip_capture_plans() {
         decoded.capture_plan(IrId::new(2)),
         Some(&CapturePlan::SharedChain(SharedChainReason::DynamicScope))
     );
+}
+
+#[test]
+fn version_four_fact_artifacts_decode_without_flat_capture_accesses() {
+    let mut facts = IrFacts::conservative(2);
+    facts.set_capture_plan(
+        IrId::new(1),
+        Some(CapturePlan::Flat(Box::new([Upvalue { depth: 0, slot: 0 }]))),
+    );
+    facts.set_flat_capture_access(
+        IrId::new(0),
+        Some(FlatCaptureAccess {
+            site: IrId::new(1),
+            index: 0,
+        }),
+    );
+    let fingerprint = test_lowered_ir_fingerprint(b"fact-capture-access-version-test");
+
+    let encoded = encode_ir_facts(&facts, fingerprint, 4).expect("version 4 facts encode");
+    let (decoded, version) =
+        decode_ir_facts(&encoded, 2, fingerprint).expect("version 4 facts decode");
+
+    assert_eq!(version, 4);
+    assert!(decoded.capture_plan(IrId::new(1)).is_some());
+    assert!(decoded.flat_capture_accesses().iter().all(Option::is_none));
 }
 
 #[test]

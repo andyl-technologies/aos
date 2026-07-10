@@ -15,6 +15,10 @@
 //!  "attrsets_built":6042,"attrs_entries_total":38110,"values_allocated":24901,
 //!  "function_calls":16233,"hashcons_attempts":31044,"hashcons_hits":6143,
 //!  "symbols_interned":4021,"imports_evaluated":37,"root_cutoffs":0,
+//!  "heap_chunks":0,"heap_reserved_bytes":0,"heap_mapped_bytes":0,
+//!  "heap_used_bytes":0,"permanent_heap_chunks":0,
+//!  "permanent_heap_reserved_bytes":0,"permanent_heap_mapped_bytes":0,
+//!  "permanent_heap_used_bytes":0,
 //!  "inline_cache_hits":0,"inline_cache_misses":0,
 //!  "thunks_shed":0,"gc_sweeps":0,"gc_records_swept":0,
 //!  "gc_sweeps_skipped_nonquiescent":0,
@@ -37,6 +41,7 @@
 //!  "flat_thunk_resolutions":0,"flat_lambda_resolutions":0,
 //!  "flat_primop_resolutions":0,
 //!  "payload_arc_clones":0,"env_captures":0,"env_capture_frame_handles":0,
+//!  "flat_env_captures":0,"flat_env_capture_values":0,
 //!  "with_env_captures":0,"with_env_capture_scopes":0,
 //!  "scoped_global_env_captures":0,"scoped_global_env_capture_scopes":0,
 //!  "env_frame_allocs":0,"env_frame_slot_bytes":0,"string_payload_bytes":0,
@@ -80,6 +85,14 @@ impl NixNative {
 \"symbols_interned\":{},\
 \"imports_evaluated\":{},\
 \"root_cutoffs\":{},\
+\"heap_chunks\":{},\
+\"heap_reserved_bytes\":{},\
+\"heap_mapped_bytes\":{},\
+\"heap_used_bytes\":{},\
+\"permanent_heap_chunks\":{},\
+\"permanent_heap_reserved_bytes\":{},\
+\"permanent_heap_mapped_bytes\":{},\
+\"permanent_heap_used_bytes\":{},\
 \"inline_cache_hits\":{},\
 \"inline_cache_misses\":{},\
 \"thunks_shed\":{},\
@@ -129,6 +142,8 @@ impl NixNative {
 \"payload_arc_clones\":{},\
 \"env_captures\":{},\
 \"env_capture_frame_handles\":{},\
+\"flat_env_captures\":{},\
+\"flat_env_capture_values\":{},\
 \"with_env_captures\":{},\
 \"with_env_capture_scopes\":{},\
 \"scoped_global_env_captures\":{},\
@@ -158,6 +173,14 @@ impl NixNative {
             stats.symbols_interned(),
             stats.imports_evaluated(),
             stats.root_cutoffs(),
+            stats.heap_chunks(),
+            stats.heap_reserved_bytes(),
+            stats.heap_mapped_bytes(),
+            stats.heap_used_bytes(),
+            stats.permanent_heap_chunks(),
+            stats.permanent_heap_reserved_bytes(),
+            stats.permanent_heap_mapped_bytes(),
+            stats.permanent_heap_used_bytes(),
             stats.inline_cache_hits(),
             stats.inline_cache_misses(),
             stats.thunks_shed(),
@@ -206,6 +229,8 @@ impl NixNative {
             stats.campaign().payload_arc_clones,
             stats.campaign().env_captures,
             stats.campaign().env_capture_frame_handles,
+            stats.campaign().flat_env_captures,
+            stats.campaign().flat_env_capture_values,
             stats.campaign().with_env_captures,
             stats.campaign().with_env_capture_scopes,
             stats.campaign().scoped_global_env_captures,

@@ -11415,24 +11415,31 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `payload_bits` identity classification table, and P4 **Chunk D**
       (per-def-site free-var/escape facts)
       ([30](30-flat-value-architecture.md) §2.4, §4.4).
-- [ ] FV-1 — flat strings/paths/lists: header + inline payload in the
+- [x] FV-1 — flat strings/paths/lists: header + inline payload in the
       Tier-A arena; hash-cons key migration; `heap/safety.rs` audit-table
       extension ([30](30-flat-value-architecture.md) §2).
-- [ ] FV-2 — flat attrsets (shape id in the header; PICs land on object
-      memory; **after Phase 5**)
+- [x] FV-2 — flat attrsets (shape metadata leads the payload; PICs land on
+      object memory; **after Phase 5**)
       ([30](30-flat-value-architecture.md) §2.3, §9.1).
-- [ ] FV-3 — flat thunks/lambdas/primops carrying the claim protocol and
-      B1 shedding as header states; the sweep converted to
-      header-resident marks ([30](30-flat-value-architecture.md) §2.3, §2.5).
+- [x] FV-3 — flat thunks/lambdas/primops bypassing the record table while
+      preserving the interior claim protocol; B1 shedding uses retired
+      payload tombstones and flat-object mark traversal
+      ([30](30-flat-value-architecture.md) §2.3, §2.5).
 - [ ] FV-4 — the 8-byte value word: compressed 32-bit arena index
       (recommended primary; needs the reservation-based arena) vs the
       tagged 61-bit-immediate word (fallback), built head-to-head per the
       P8 mandate — this executes the P8 pointer-tagging row and
       `M-4`/`Q-E` ([30](30-flat-value-architecture.md) §3).
-- [ ] FV-5 — hybrid closures: flat inline free-var capture
+- [x] FV-5 — hybrid closures: flat inline free-var capture
       (`|FV| <= K`) + linked persistent frame chains; persistent
       `with`/scoped-global lists; delete the generation-keyed capture
       cache (needs Chunk D) ([30](30-flat-value-architecture.md) §4).
+      *Landed with `K = 2`: 87.9% static-site coverage, a 35.5 MiB wide
+      arena peak versus 39.5 MiB at `K = 8`, zero lexical frame-array
+      captures (down from 156,581 / 620,967 copied handles), and persistent
+      dynamic/scoped-global stacks copying zero entries. Shared-parallel and
+      B2 record-stress placement use the one-head linked form; doc 30 §12
+      records the representation boundary and full gate evidence.*
 - [ ] FV-6 — arena-owned payloads (payload `Arc` removal; the sweep owns
       reclamation) — **closes the value-rep-flattening gate on Tier-B
       stage B2** ([06](06-memory-management-and-gc.md) §4,

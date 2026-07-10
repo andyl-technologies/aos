@@ -398,7 +398,7 @@ pub(super) fn chain_guard_argv(
     }
     if !root_frames
         .iter()
-        .zip(frames[..prefix_len].iter())
+        .zip(frames.iter().take(prefix_len))
         .all(|(left, right)| Arc::ptr_eq(left, right))
     {
         return None;

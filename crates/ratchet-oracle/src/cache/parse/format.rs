@@ -19,6 +19,8 @@
 //!               <strictness/cardinality/escape tags + flag byte>
 //!               capture_plan_count
 //!               <node_id plan_tag [reason | slot_count <depth slot>*]>
+//!               flat_capture_access_count
+//!               <read_node_id allocation_site_id capture_index>
 //! ```
 //!
 //! The per-node `facts.bin` flag byte packs the boolean fact bits: bit 0 is
@@ -30,6 +32,8 @@
 //! (`0` = flat capture followed by a `(depth, slot)` coordinate list, `1` =
 //! shared chain followed by a reason tag). Version 3 and older sidecars end
 //! after the per-node records and decode with no capture plans.
+//! Analysis version 5 appends the constant flat-capture access table; version
+//! 4 sidecars end after capture plans and decode with no rewritten accesses.
 //!
 //! Per-element encoders and the [`BinaryReader`] live in the sibling
 //! [`mod@codec`] module; structural validation of decoded artifacts lives in
@@ -260,6 +264,9 @@ pub(super) fn encode_ir_facts(
     if analysis_version >= 4 {
         encode_capture_plans(&mut out, facts)?;
     }
+    if analysis_version >= 5 {
+        encode_flat_capture_accesses(&mut out, facts)?;
+    }
     Ok(out)
 }
 
@@ -351,6 +358,70 @@ fn decode_capture_plans(
     Ok(())
 }
 
+fn encode_flat_capture_accesses(
+    out: &mut Vec<u8>,
+    facts: &IrFacts,
+) -> Result<(), ParseCacheError> {
+    let access_count = facts
+        .flat_capture_accesses()
+        .iter()
+        .filter(|access| access.is_some())
+        .count();
+    write_len(out, access_count, "IR flat capture access count")?;
+    for (index, access) in facts.flat_capture_accesses().iter().enumerate() {
+        let Some(access) = access else {
+            continue;
+        };
+        write_u32(out, index as u32);
+        write_u32(out, access.site.as_u32());
+        out.extend_from_slice(&access.index.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn decode_flat_capture_accesses(
+    reader: &mut BinaryReader<'_>,
+    facts: &mut IrFacts,
+    expected_node_count: usize,
+) -> Result<(), String> {
+    let access_count = reader.read_len("IR flat capture access count")?;
+    for _ in 0..access_count {
+        let read_index = reader.read_u32()? as usize;
+        let site_index = reader.read_u32()? as usize;
+        let capture_index = reader.read_u16()?;
+        if read_index >= expected_node_count {
+            return Err(format!(
+                "IR flat capture read node id {read_index} exceeds node count {expected_node_count}"
+            ));
+        }
+        if site_index >= expected_node_count {
+            return Err(format!(
+                "IR flat capture site node id {site_index} exceeds node count {expected_node_count}"
+            ));
+        }
+        let site = IrId::new(site_index as u32);
+        let Some(CapturePlan::Flat(slots)) = facts.capture_plan(site) else {
+            return Err(format!(
+                "IR flat capture access site {site_index} has no flat capture plan"
+            ));
+        };
+        if usize::from(capture_index) >= slots.len() {
+            return Err(format!(
+                "IR flat capture index {capture_index} exceeds site {site_index} width {}",
+                slots.len()
+            ));
+        }
+        facts.set_flat_capture_access(
+            IrId::new(read_index as u32),
+            Some(FlatCaptureAccess {
+                site,
+                index: capture_index,
+            }),
+        );
+    }
+    Ok(())
+}
+
 /// Bit 0 of the per-node flag byte: `tryEval` barrier.
 const FACT_FLAG_TRY_EVAL_BARRIER: u8 = 1 << 0;
 
@@ -417,6 +488,9 @@ pub(super) fn decode_ir_facts(
     // sidecars end after the per-node records and hydrate with no plans.
     if analysis_version >= 4 {
         decode_capture_plans(&mut reader, &mut facts, expected_node_count)?;
+    }
+    if analysis_version >= 5 {
+        decode_flat_capture_accesses(&mut reader, &mut facts, expected_node_count)?;
     }
     reader.expect_eof()?;
     Ok((facts, analysis_version))

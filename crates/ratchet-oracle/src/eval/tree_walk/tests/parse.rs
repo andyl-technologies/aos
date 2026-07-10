@@ -281,6 +281,40 @@ fn import_uses_fresh_scope_and_shared_result_cache() {
 }
 
 #[test]
+fn uncached_filesystem_import_runs_analysis_in_process() {
+    let root = fs::canonicalize(unique_temp_dir("import-uncached-analysis"))
+        .expect("temp directory canonicalizes");
+    fs::write(
+        root.join("dep.nix"),
+        b"let captured = 2; in (x: captured + x) 3",
+    )
+    .expect("dep writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    let ir = lower("import ./dep.nix");
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+
+    assert_eq!(
+        evaluator
+            .eval_root()
+            .expect("uncached import evaluates")
+            .as_int()
+            .expect("uncached result is int"),
+        5
+    );
+    assert!(
+        evaluator.stats().campaign().flat_env_captures > 0,
+        "uncached imported IR should consume its in-process capture plans"
+    );
+    assert_eq!(evaluator.import_parse_cache_stats(), (0, 0));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
 fn ordinary_filesystem_import_uses_configured_parse_cache() {
     let root = fs::canonicalize(unique_temp_dir("import-parse-cache"))
         .expect("temp directory canonicalizes");

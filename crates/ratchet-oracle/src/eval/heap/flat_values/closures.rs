@@ -76,7 +76,7 @@ pub enum WorkerClosurePlacement {
 /// retirement keeps the header intact and swaps only the payload, so a
 /// retired address stays recognizable (and fails loudly) without reissuing
 /// header state.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) enum FlatClosurePayload {
     /// A suspended (or forced, or shed) thunk handle.
     Thunk(Arc<EvalThunk>),
@@ -105,12 +105,193 @@ impl FlatClosurePayload {
     pub(in crate::eval::heap) const fn is_retired(&self) -> bool {
         matches!(self, Self::Retired(_))
     }
+
 }
 
 impl EvalHeap {
     /// Returns the placement newly allocated worker closures receive.
     pub fn worker_closure_placement(&self) -> WorkerClosurePlacement {
         self.worker_closure_placement
+    }
+
+    /// Returns whether serial flat closures can be rewritten before publish.
+    pub(in crate::eval) fn supports_post_assembly_flat_capture(&self) -> bool {
+        self.shared.is_none() && self.worker_closure_placement == WorkerClosurePlacement::Flat
+    }
+
+    /// Returns values stored in a serial flat closure's registry-backed tail.
+    #[cfg(test)]
+    pub(in crate::eval) fn flat_closure_capture_values(
+        &self,
+        value: Value,
+    ) -> Result<Option<&[Value]>, EvalHeapError> {
+        if self.shared.is_some() {
+            return Ok(None);
+        }
+        let (ptr, kind) = match value.tag() {
+            ValueTag::Thunk => (
+                value.as_thunk_ptr().map_err(EvalHeapError::Value)?,
+                FlatObjectKind::Thunk,
+            ),
+            ValueTag::Lambda => (
+                value.as_lambda_ptr().map_err(EvalHeapError::Value)?,
+                FlatObjectKind::Lambda,
+            ),
+            _ => return Ok(None),
+        };
+        let (object, values) = self
+            .flat_closures
+            .resolve_with_value_tail(ptr, kind)
+            .map_err(|error| self.closure_resolution_error(value.tag(), ptr, error))?;
+        if object.payload().is_retired() {
+            return Err(EvalHeapError::unknown(value.tag(), ptr));
+        }
+        Ok(values)
+    }
+
+    /// Returns closure capture values through a prevalidated tail handle.
+    #[inline]
+    pub(in crate::eval) fn flat_closure_capture_values_at(
+        &self,
+        value: Value,
+        handle: FlatValueTailHandle,
+    ) -> Result<Option<&[Value]>, EvalHeapError> {
+        let ptr = handle.object_ptr();
+        let (object, values) = self
+            .flat_closures
+            .resolve_value_tail_handle(handle)
+            .map_err(|error| self.closure_resolution_error(value.tag(), ptr, error))?;
+        if object.payload().is_retired() {
+            return Err(EvalHeapError::unknown(value.tag(), ptr));
+        }
+        Ok(Some(values))
+    }
+
+    /// Copies one closure capture through its prevalidated tail handle.
+    #[inline]
+    pub(in crate::eval) fn flat_closure_capture_value_at(
+        &self,
+        value: Value,
+        handle: FlatValueTailHandle,
+        index: usize,
+    ) -> Result<Option<Value>, EvalHeapError> {
+        let ptr = handle.object_ptr();
+        let captured = self
+            .flat_closures
+            .value_tail_get_handle(handle, index)
+            .map_err(|error| self.closure_resolution_error(value.tag(), ptr, error))?;
+        Ok(captured)
+    }
+
+    /// Installs a flat lexical environment in one unique serial closure.
+    ///
+    /// Returns `false` if another payload handle was published in the interim.
+    pub(in crate::eval) fn replace_unique_flat_closure_env(
+        &mut self,
+        value: Value,
+        env: EvalEnv,
+    ) -> Result<bool, EvalHeapError> {
+        let (ptr, kind) = match value.tag() {
+            ValueTag::Thunk => (
+                value.as_thunk_ptr().map_err(EvalHeapError::Value)?,
+                FlatObjectKind::Thunk,
+            ),
+            ValueTag::Lambda => (
+                value.as_lambda_ptr().map_err(EvalHeapError::Value)?,
+                FlatObjectKind::Lambda,
+            ),
+            tag => {
+                return Err(EvalHeapError::record_type_mismatch(
+                    ValueTag::Thunk,
+                    tag,
+                    value.as_heap_ptr().map_err(EvalHeapError::Value)?,
+                ));
+            }
+        };
+        let payload = match self.flat_closures.resolve_mut(ptr, kind) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return Err(self.closure_resolution_error(value.tag(), ptr, error));
+            }
+        };
+        match payload {
+            FlatClosurePayload::Thunk(thunk) => Ok(Arc::get_mut(thunk)
+                .is_some_and(|thunk| thunk.replace_node_env(env))),
+            FlatClosurePayload::Lambda(lambda) => {
+                let Some(lambda) = Arc::get_mut(lambda) else {
+                    return Ok(false);
+                };
+                lambda.replace_env(env);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Publishes final recursive-binding values into a reserved capture tail.
+    ///
+    /// Returns `false` if the closure is no longer uniquely owned or its
+    /// reserved metadata disagrees with `buffer`; no bytes are written in
+    /// those cases.
+    pub(in crate::eval) fn publish_unique_flat_closure_capture(
+        &mut self,
+        value: Value,
+        handle: FlatValueTailHandle,
+        buffer: EvalFlatCaptureBuffer,
+    ) -> Result<bool, EvalHeapError> {
+        if !buffer.is_ready() {
+            return Ok(false);
+        }
+        let (ptr, kind) = match value.tag() {
+            ValueTag::Thunk => (
+                value.as_thunk_ptr().map_err(EvalHeapError::Value)?,
+                FlatObjectKind::Thunk,
+            ),
+            ValueTag::Lambda => (
+                value.as_lambda_ptr().map_err(EvalHeapError::Value)?,
+                FlatObjectKind::Lambda,
+            ),
+            _ => return Ok(false),
+        };
+        if handle.object_ptr() != ptr || handle.len() != buffer.values().len() {
+            return Ok(false);
+        }
+        let env = EvalEnv::inline_flat(
+            buffer.allocation_site(),
+            buffer.frame_count(),
+            value,
+            handle,
+        );
+        let (payload, tail) = match self
+            .flat_closures
+            .resolve_mut_with_value_tail_handle(handle, kind)
+        {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return Err(self.closure_resolution_error(value.tag(), ptr, error));
+            }
+        };
+        match payload {
+            FlatClosurePayload::Thunk(thunk) => {
+                if !matches!(thunk.kind(), EvalThunkKind::Node { .. }) {
+                    return Ok(false);
+                }
+                let Some(thunk) = Arc::get_mut(thunk) else {
+                    return Ok(false);
+                };
+                tail.copy_from_slice(buffer.values());
+                Ok(thunk.replace_node_env(env))
+            }
+            FlatClosurePayload::Lambda(lambda) => {
+                let Some(lambda) = Arc::get_mut(lambda) else {
+                    return Ok(false);
+                };
+                tail.copy_from_slice(buffer.values());
+                lambda.replace_env(env);
+                Ok(true)
+            }
+            FlatClosurePayload::Primop(_) | FlatClosurePayload::Retired(_) => Ok(false),
+        }
     }
 
     /// Switches new worker-closure allocations to the record-table layout.
@@ -126,46 +307,122 @@ impl EvalHeap {
     pub(in crate::eval::heap) fn flat_alloc_thunk(
         &mut self,
         thunk: EvalThunk,
-    ) -> Result<Value, EvalHeapError> {
+        capture: Option<EvalFlatCaptureBuffer>,
+    ) -> Result<(Value, Option<FlatValueTailHandle>), EvalHeapError> {
         let epoch = self.next_access_epoch();
-        let allocation = self
-            .flat_closures
-            .alloc(
-                FlatObjectKind::Thunk,
-                0,
-                epoch,
-                FlatClosurePayload::Thunk(Arc::new(thunk)),
+        let capture_metadata = capture.as_ref().map(|capture| {
+            (
+                capture.allocation_site(),
+                capture.frame_count(),
+                capture.values().len(),
+                capture.is_ready(),
             )
-            .map_err(flat_alloc_error)?;
+        });
+        let (allocation, tail) = match capture {
+            Some(capture) => {
+                let tail_allocation = self
+                    .flat_closures
+                    .alloc_with_value_tail(
+                        FlatObjectKind::Thunk,
+                        0,
+                        epoch,
+                        capture.values(),
+                        FlatClosurePayload::Thunk(Arc::new(thunk)),
+                    )
+                    .map_err(flat_alloc_error)?;
+                let handle = tail_allocation.handle.ok_or_else(|| {
+                    flat_alloc_error(FlatObjectError::UnknownAddress {
+                        address: tail_allocation.allocation.ptr.as_ptr() as usize,
+                    })
+                })?;
+                (tail_allocation.allocation, Some(handle))
+            }
+            None => (
+                self.flat_closures
+                    .alloc(
+                        FlatObjectKind::Thunk,
+                        0,
+                        epoch,
+                        FlatClosurePayload::Thunk(Arc::new(thunk)),
+                    )
+                    .map_err(flat_alloc_error)?,
+                None,
+            ),
+        };
         self.allocator
             .record_flat_thunk_allocation_safepoint(allocation.allocation);
         let value = Value::thunk(allocation.ptr).map_err(EvalHeapError::Value)?;
+        if let (Some((allocation_site, frame_count, _, true)), Some(handle)) =
+            (capture_metadata, tail)
+        {
+            let env = EvalEnv::inline_flat(allocation_site, frame_count, value, handle);
+            let replaced = self.replace_unique_flat_closure_env(value, env)?;
+            debug_assert!(replaced, "fresh flat thunk payload must be unique");
+        }
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
-        Ok(value)
+        Ok((value, tail))
     }
 
     /// Serial flat lambda allocation (no heap record, no address-map insert).
     pub(in crate::eval::heap) fn flat_alloc_lambda(
         &mut self,
         lambda: EvalLambda,
-    ) -> Result<Value, EvalHeapError> {
+        capture: Option<EvalFlatCaptureBuffer>,
+    ) -> Result<(Value, Option<FlatValueTailHandle>), EvalHeapError> {
         let epoch = self.next_access_epoch();
-        let allocation = self
-            .flat_closures
-            .alloc(
-                FlatObjectKind::Lambda,
-                0,
-                epoch,
-                FlatClosurePayload::Lambda(Arc::new(lambda)),
+        let capture_metadata = capture.as_ref().map(|capture| {
+            (
+                capture.allocation_site(),
+                capture.frame_count(),
+                capture.values().len(),
+                capture.is_ready(),
             )
-            .map_err(flat_alloc_error)?;
+        });
+        let (allocation, tail) = match capture {
+            Some(capture) => {
+                let tail_allocation = self
+                    .flat_closures
+                    .alloc_with_value_tail(
+                        FlatObjectKind::Lambda,
+                        0,
+                        epoch,
+                        capture.values(),
+                        FlatClosurePayload::Lambda(Arc::new(lambda)),
+                    )
+                    .map_err(flat_alloc_error)?;
+                let handle = tail_allocation.handle.ok_or_else(|| {
+                    flat_alloc_error(FlatObjectError::UnknownAddress {
+                        address: tail_allocation.allocation.ptr.as_ptr() as usize,
+                    })
+                })?;
+                (tail_allocation.allocation, Some(handle))
+            }
+            None => (
+                self.flat_closures
+                    .alloc(
+                        FlatObjectKind::Lambda,
+                        0,
+                        epoch,
+                        FlatClosurePayload::Lambda(Arc::new(lambda)),
+                    )
+                    .map_err(flat_alloc_error)?,
+                None,
+            ),
+        };
         self.allocator
             .record_flat_lambda_allocation_safepoint(allocation.allocation);
         let value = Value::lambda(allocation.ptr).map_err(EvalHeapError::Value)?;
+        if let (Some((allocation_site, frame_count, _, true)), Some(handle)) =
+            (capture_metadata, tail)
+        {
+            let env = EvalEnv::inline_flat(allocation_site, frame_count, value, handle);
+            let replaced = self.replace_unique_flat_closure_env(value, env)?;
+            debug_assert!(replaced, "fresh flat lambda payload must be unique");
+        }
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
-        Ok(value)
+        Ok((value, tail))
     }
 
     /// Serial flat primop allocation (no heap record, no address-map insert).
@@ -268,12 +525,14 @@ impl EvalHeap {
         Some(payload.tag())
     }
 
-    /// Swaps a live flat thunk's payload handle in place (capture shedding).
+    /// Swaps a live flat thunk's thunk handle in place (capture shedding).
     ///
     /// The flat analog of the record table's `HeapObjectValue` swap at shed
     /// time: the header (address identity, kind) is untouched and only the
-    /// payload handle is replaced, so outstanding `Arc` clones keep their
-    /// snapshot while later resolutions observe the released thunk.
+    /// thunk handle is replaced, so outstanding `Arc` clones keep their
+    /// snapshot while later resolutions observe the released thunk. An inline
+    /// capture tail remains attached because conservative descendants may
+    /// inherit that tail through their flat-base owner edge.
     ///
     /// # Errors
     ///
@@ -285,8 +544,8 @@ impl EvalHeap {
         thunk: Arc<EvalThunk>,
     ) -> Result<(), EvalHeapError> {
         match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
-            Ok(payload @ FlatClosurePayload::Thunk(_)) => {
-                *payload = FlatClosurePayload::Thunk(thunk);
+            Ok(FlatClosurePayload::Thunk(payload)) => {
+                *payload = thunk;
                 Ok(())
             }
             Ok(_) => Err(EvalHeapError::unknown(ValueTag::Thunk, ptr)),
@@ -325,6 +584,7 @@ impl EvalHeap {
         }
         let tag = payload.tag();
         *payload = FlatClosurePayload::Retired(tag);
+        let _ = self.flat_closures.retire_value_tail(ptr);
         self.flat_cold_hashes.clear(ptr.as_ptr() as usize);
         self.flat_closures_retired = self.flat_closures_retired.saturating_add(1);
         Ok(Some(tag))
@@ -366,5 +626,18 @@ impl EvalHeap {
             .iter()
             .filter(|entry| !entry.object().payload().is_retired())
             .count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FlatClosurePayload;
+
+    #[test]
+    fn closure_payload_stays_two_words_with_registry_backed_capture_tails() {
+        assert_eq!(
+            std::mem::size_of::<FlatClosurePayload>(),
+            std::mem::size_of::<usize>() * 2,
+        );
     }
 }

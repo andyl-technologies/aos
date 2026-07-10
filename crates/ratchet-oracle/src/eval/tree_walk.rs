@@ -43,7 +43,8 @@ use url::Url;
 use xz2::read::XzDecoder;
 
 use super::env::{
-    EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
+    EvalEnv, EvalEnvError, EvalEnvFrames, EvalFlatCapture, EvalFlatCaptureBuffer, EvalFrame,
+    EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
 };
 use super::heap::{
     AllocationCollectorPollCopiedHeapFieldWrite, AllocationCollectorPollDirectHeapFieldWrite,
@@ -105,11 +106,13 @@ use crate::cache::{
     PersistNodeTracePayload, ValueHash, lowered_ir_fingerprint,
 };
 use crate::compile::{
-    DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
+    CapturePlan, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
     IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind,
-    IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, Strictness,
-    dead_binding_elimination_plan, resolve,
+    IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver,
+    annotate_capture_plans, dead_binding_elimination_plan, resolve,
 };
+#[cfg(test)]
+use crate::compile::Strictness;
 use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GcDirtyCard, GcHeapAddress,
     GenerationalGcError, GenerationalGcTier, HeapMemoryBudget, MinorGcCommitReport,
@@ -1134,22 +1137,112 @@ struct ActivePrimopArgFrame {
 
 #[derive(Debug)]
 struct SuspendedTreeWalkEnv {
-    env: Vec<Arc<EvalFrame>>,
-    with_scopes: Vec<EvalWithScope>,
-    scoped_globals: Vec<Value>,
+    env: ActiveEvalEnv,
+    with_scopes: EvalWithEnv,
+    scoped_globals: EvalScopedGlobalEnv,
 }
 
 impl SuspendedTreeWalkEnv {
     fn new(
-        env: Vec<Arc<EvalFrame>>,
-        with_scopes: Vec<EvalWithScope>,
-        scoped_globals: Vec<Value>,
+        env: ActiveEvalEnv,
+        with_scopes: EvalWithEnv,
+        scoped_globals: EvalScopedGlobalEnv,
     ) -> Self {
         Self {
             env,
             with_scopes,
             scoped_globals,
         }
+    }
+}
+
+/// The active lexical environment split at an optional flat captured prefix.
+///
+/// `frames` contains only the live shared-frame suffix introduced inside the
+/// flat prefix (or the complete stack when `flat_base` is absent). Lowered IR
+/// still sees `flat_base.frame_count() + frames.len()` conceptual frames.
+#[derive(Clone, Debug, Default)]
+struct ActiveEvalEnv {
+    frames: Vec<Arc<EvalFrame>>,
+    flat_base: Option<EvalFlatCapture>,
+}
+
+impl ActiveEvalEnv {
+    fn from_frames(frames: Vec<Arc<EvalFrame>>) -> Self {
+        Self {
+            frames,
+            flat_base: None,
+        }
+    }
+
+    fn frame_count(&self) -> usize {
+        self.flat_base
+            .as_ref()
+            .map_or(0, EvalFlatCapture::frame_count)
+            .saturating_add(self.frames.len())
+    }
+}
+
+impl From<Vec<Arc<EvalFrame>>> for ActiveEvalEnv {
+    fn from(frames: Vec<Arc<EvalFrame>>) -> Self {
+        Self::from_frames(frames)
+    }
+}
+
+#[cfg(test)]
+impl std::ops::Index<usize> for ActiveEvalEnv {
+    type Output = Arc<EvalFrame>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.frames[index]
+    }
+}
+
+/// A borrowed view of either an active or captured composed lexical env.
+#[derive(Clone, Copy, Debug)]
+struct EvalEnvRef<'a> {
+    frames: EvalEnvFramesRef<'a>,
+    flat_base: Option<&'a EvalFlatCapture>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EvalEnvFramesRef<'a> {
+    Active(&'a [Arc<EvalFrame>]),
+    Captured(EvalEnvFrames<'a>),
+}
+
+impl<'a> EvalEnvFramesRef<'a> {
+    fn len(self) -> usize {
+        match self {
+            Self::Active(frames) => frames.len(),
+            Self::Captured(frames) => frames.len(),
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(self, index: usize) -> Option<&'a Arc<EvalFrame>> {
+        match self {
+            Self::Active(frames) => frames.get(index),
+            Self::Captured(frames) => frames.get(index),
+        }
+    }
+}
+
+impl EvalEnvRef<'_> {
+    fn frame_count(self) -> usize {
+        self.flat_base
+            .map_or(0, EvalFlatCapture::frame_count)
+            .saturating_add(self.frames.len())
+    }
+
+    fn is_empty(self) -> bool {
+        self.frames.is_empty()
+            && self
+                .flat_base
+                .is_none_or(EvalFlatCapture::is_empty)
     }
 }
 
@@ -1162,25 +1255,18 @@ pub struct TreeWalk {
     heap: EvalHeap,
     /// The active lexical frame stack.
     ///
-    /// Every mutation must go through the `push_env_frame` /
-    /// `pop_env_frame` / `swap_env_frames` / `restore_env_frames` helpers so
-    /// [`Self::env_generation`] is bumped and the capture cache stays
-    /// coherent.
+    /// Every production frame carries an immutable parent link, so capturing
+    /// the shared suffix clones only its innermost head pointer.
     env: Vec<Arc<EvalFrame>>,
-    /// Generation counter bumped on every [`Self::env`] mutation.
-    ///
-    /// Keys [`Self::env_capture_cache`]: a cached [`EvalEnv`] snapshot is
-    /// valid exactly while the generation it was captured under is current.
-    env_generation: u64,
-    /// The last [`EvalEnv`] captured from [`Self::env`], keyed by the
-    /// generation it was captured under.
-    ///
-    /// Thunk allocation captures the same environment many times between
-    /// frame-stack mutations; replaying the cached snapshot turns those
-    /// captures into O(1) `Arc` clones.
-    env_capture_cache: Option<(u64, EvalEnv)>,
-    with_scopes: Vec<EvalWithScope>,
-    scoped_globals: Vec<Value>,
+    /// Compact immutable outer prefix installed while a flat-captured closure
+    /// runs. Frames pushed by the body remain in [`Self::env`].
+    flat_env: Option<EvalFlatCapture>,
+    /// Flat-plan closures awaiting the outermost binding publication boundary.
+    pending_flat_captures: Vec<flat_capture::PendingFlatCapture>,
+    /// Whether any nested binding assembly failed before publication.
+    order_sensitive_binding_failed: bool,
+    with_scopes: EvalWithEnv,
+    scoped_globals: EvalScopedGlobalEnv,
     options: TreeWalkOptions,
     stats: EvalStats,
     /// Process-wide environment capture counters observed at construction;
@@ -1591,6 +1677,7 @@ mod eval_list_filter;
 mod eval_list_group;
 mod eval_list_map;
 mod eval_load;
+mod flat_capture;
 mod eval_numeric;
 mod eval_path_ops;
 mod eval_primop_apply;

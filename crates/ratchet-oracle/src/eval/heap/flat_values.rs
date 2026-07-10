@@ -42,7 +42,8 @@ use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
 use crate::heap::flat::{
-    FlatObjectError, FlatObjectKind, FlatObjectRef, FlatTailLayout, flat_aux_for_len,
+    FlatObjectError, FlatObjectKind, FlatObjectRef, FlatTailLayout, FlatValueTailHandle,
+    flat_aux_for_len,
 };
 
 use super::record_table::AddressHasher;

@@ -31,7 +31,7 @@ use thiserror::Error;
 use crate::cache::hashing::ParseCacheSourceHash;
 use crate::cache::{DurableBlake3Hash, LoweredIrFingerprint, ParseFileContentHash};
 use crate::compile::{
-    CapturePlan, Cardinality, EffectClass, Escape, ExprFacts, FrameId, FrameInfo,
+    CapturePlan, Cardinality, EffectClass, Escape, ExprFacts, FlatCaptureAccess, FrameId, FrameInfo,
     IR_ANALYSIS_VERSION,
     InheritGroupId, SharedChainReason,
     InheritResolution, InheritSource, Ir, IrAnalysisError, IrAnalysisReport, IrArena, IrAttrPathId,

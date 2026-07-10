@@ -449,9 +449,10 @@ pointer walk for nothing. The design — the GHC/OCaml/V8 convergence
 point — is a **static, per-allocation-site choice** between two forms,
 made by the front-end from free-variable facts:
 
-- **Flat closure** (`|free set| <= K`, K ≈ 4–8, tuned by measurement):
+- **Flat closure** (`|free set| <= K`, with the shipped `K = 2` selected by
+  measurement):
   the closure/thunk object (flat, per §2) inlines the captured `Value`s
-  directly after its header. Capture cost: K value copies into the
+  directly after its header. Capture cost: `|free set|` value copies into the
   object being allocated anyway. Access cost: **one load at a constant
   offset** — no frame chain, no slot indirection. The lexical
   coordinates in the lowered IR ([25](25-intermediate-representation.md)
@@ -1018,13 +1019,20 @@ list only their *additional* gates.
       tagged {address-identity-only | relocation-sensitive}, checked in
       as a reviewed table (extends the B1 audit). Exit: table complete;
       B2's rehash-hook worklist derivable from it.
-- [ ] P4 **Chunk D** — per-def-site free-variable sets, capture
+- [x] P4 **Chunk D** — per-def-site free-variable sets, capture
       publication-boundary proof, single-use/escape refinement
       (`ratchet-core/src/analysis/` beside `strictness/` and
       `escape.rs`); facts persisted behind an `IR_ANALYSIS_VERSION`
       bump. Gate: adversarial differential arms for `__overrides` and
       rec-forward-reference capture shapes. Exit: every lambda/thunk
       def-site carries `|FV|` + a capture plan or an explicit decline.
+      *Landed in the P4 Chunk-D landing and extended for FV-5:
+      `IR_ANALYSIS_VERSION = 5` persists both the per-site
+      `CapturePlan` and constant-index `FlatCaptureAccess` facts. Dynamic
+      scope, over-width, and conservative publication sites retain an
+      explicit `SharedChainReason`; the recursive-assembly validation arms
+      cover deferred publication after `__overrides` and forward-slot
+      writes.*
 
 ### Stage FV-1 — flat strings, paths, lists
 
@@ -1343,19 +1351,56 @@ FV-0 columns rather than sketch estimates:**
 
 ### Stage FV-5 — hybrid closures (needs FV-3 + Chunk D)
 
-- [ ] Flat free-var capture for `|FV| <= K` sites: closure conversion
+- [x] Flat free-var capture for `|FV| <= K` sites: closure conversion
       pass in `ratchet-core` (capture plans in facts), inline `Value`
       capture in flat lambda/thunk objects, access rewritten to capture
       indices. K tuned by A/B.
-- [ ] Linked persistent frame chains + persistent `with`/scoped-global
+- [x] Linked persistent frame chains + persistent `with`/scoped-global
       lists for the remainder (`eval/env.rs`): capture = one pointer;
       depth-walk access by lexical coordinates. Gate: `__overrides` and
       rec-assembly adversarial corpus from FV-0's Chunk-D arms.
-- [ ] Delete the generation-keyed capture cache and its four
+- [x] Delete the generation-keyed capture cache and its four
       mutation-site helpers (`eval_core/module_env.rs`) once both forms
       land; capture counters (FV-0) show the copy mass gone. Exit:
       capture-array copies ~0 at flat sites; wide-eval env allocation
       mass reduced with the delta recorded.
+      *Landed (FV-5). Serial production flat closures reserve a typed
+      trailing `Value` run in the closure object; reads use the persisted
+      constant capture index and a prevalidated registry handle. Recursive
+      binding assembly initially retains the linked frame graph, then writes
+      the tail and publishes the flat environment only at the outermost
+      immutable boundary. The shared-parallel `OnceLock` slot layout and the
+      record-placed B2 stress proving ground deliberately use the linked form:
+      both still capture one persistent-chain head and perform no frame-array
+      copy, while avoiding a second shared object layout or an unsound
+      collector writeback seam.*
+
+      *`K = 2` was selected from the repository census and an isolated A/B:
+      it covers 87.9% of statically eligible sites and reduced
+      `bench.wide-eval` arena peak from 39.5 MiB at `K = 8` to 35.5 MiB.
+      The ceiling is also a correctness boundary: at `K = 8`, the
+      `native_file_cache_parity_harness_covers_source_path_inputs` canary
+      flattened a wider context-bearing capture and failed
+      `derivationStrict` context parity; at `K = 2`, that site takes the
+      linked fallback and the canary passes.
+      Capture reads retain the complete module/allocation-site identity check.
+      A trial direct-base shortcut that skipped it failed the fresh
+      cache/full-analysis `bench.wide-eval` gate (`expected attrs, got Lambda`)
+      and was rejected before landing.
+      Valid alternating compact-handle pairs split within noise (`K = 2`
+      ~2.2% slower cold and ~1.9% faster warm by paired median), so no
+      throughput win is claimed for the ceiling choice. Five valid interleaved
+      exact-final/baseline pairs likewise put the paired-median ratio at
+      ~0.987 cold and ~1.035 warm; the arena peak fell from 47.5 MiB to
+      35.5 MiB, while median post-run RSS moved from 177.2 MiB to 172.4 MiB
+      cold and from 191.2 MiB to 186.7 MiB warm. Earlier load-contaminated
+      probes were excluded before this five-pair run. On the final wide
+      workload, the FV-0 counters move lexical array capture from
+      156,584 captures / 620,980 copied frame handles to zero; 205,084 flat
+      captures copy 256,555 `Value`s, while linked captures clone one head.
+      Persistent `with` and scoped-global captures each retain their 240,223
+      capture events but copy zero scope entries. The generation-keyed cache
+      and its invalidation helpers are gone.*
 
 ### Stage FV-6 — arena-owned payloads
 

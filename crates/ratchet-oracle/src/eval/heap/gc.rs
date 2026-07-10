@@ -144,15 +144,18 @@ impl EvalHeap {
         // the same payload replacement, through the flat store's exclusive
         // mutation door instead of the record slot.
         let flat_result = if let Some(payload) = self.flat_closure_payload_any(ptr) {
-            let FlatClosurePayload::Thunk(thunk) = payload else {
-                if payload.is_retired() {
-                    return Err(EvalHeapError::unknown(ValueTag::Thunk, ptr));
+            let thunk = match payload {
+                FlatClosurePayload::Thunk(thunk) => thunk,
+                payload => {
+                    if payload.is_retired() {
+                        return Err(EvalHeapError::unknown(ValueTag::Thunk, ptr));
+                    }
+                    return Err(EvalHeapError::record_type_mismatch(
+                        ValueTag::Thunk,
+                        payload.tag(),
+                        ptr,
+                    ));
                 }
-                return Err(EvalHeapError::record_type_mismatch(
-                    ValueTag::Thunk,
-                    payload.tag(),
-                    ptr,
-                ));
             };
             if !thunk_kind_has_reclaimable_captures(thunk.kind()) {
                 return Ok(false);
@@ -403,7 +406,11 @@ impl EvalHeap {
                 live_worker_records += 1;
                 continue;
             }
-            if let FlatClosurePayload::Thunk(thunk) = payload
+            let thunk = match payload {
+                FlatClosurePayload::Thunk(thunk) => Some(thunk),
+                _ => None,
+            };
+            if let Some(thunk) = thunk
                 && thunk.cell().state().map_err(EvalHeapError::Thunk)? == ThunkState::Blackhole
             {
                 return Err(EvalHeapError::ShedRejected {
@@ -466,7 +473,7 @@ fn thunk_kind_has_reclaimable_captures(kind: &EvalThunkKind) -> bool {
             scoped_globals,
             ..
         } => {
-            !env.frames().is_empty()
+            !env.is_empty()
                 || !with_env.scopes().is_empty()
                 || !scoped_globals.scopes().is_empty()
         }

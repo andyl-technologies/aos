@@ -234,6 +234,17 @@ impl EvalThunk {
         }
     }
 
+    /// Replaces a suspended node thunk's lexical environment before publish.
+    ///
+    /// Returns `false` for synthetic thunks, which carry no lexical capture.
+    pub(crate) fn replace_node_env(&mut self, replacement: EvalEnv) -> bool {
+        let EvalThunkKind::Node { env, .. } = &mut self.kind else {
+            return false;
+        };
+        *env = replacement;
+        true
+    }
+
     /// Returns the captured dynamic `with` environment, if any.
     pub const fn with_scope_env(&self) -> Option<&EvalWithEnv> {
         match &self.kind {

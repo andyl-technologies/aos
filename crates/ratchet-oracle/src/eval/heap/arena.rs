@@ -1899,11 +1899,32 @@ impl EvalHeap {
     /// runtime allocator cannot reserve a lambda handle, or if the resulting
     /// handle violates the runtime value alignment contract.
     pub fn alloc_lambda(&mut self, lambda: EvalLambda) -> Result<Value, EvalHeapError> {
+        self.alloc_lambda_with_flat_capture(lambda, None).map(|(value, _)| value)
+    }
+
+    /// Allocates a lambda, optionally inlines its capture tail, and returns its handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::InlineCapturePlacementUnsupported`] if capture
+    /// values are supplied outside the serial flat-closure placement, plus
+    /// the allocation errors documented by [`Self::alloc_lambda`].
+    pub(crate) fn alloc_lambda_with_flat_capture(
+        &mut self,
+        lambda: EvalLambda,
+        capture: Option<EvalFlatCaptureBuffer>,
+    ) -> Result<(Value, Option<crate::heap::flat::FlatValueTailHandle>), EvalHeapError> {
+        if capture.is_some()
+            && (self.shared.is_some()
+                || self.worker_closure_placement != WorkerClosurePlacement::Flat)
+        {
+            return Err(EvalHeapError::InlineCapturePlacementUnsupported);
+        }
         if self.shared.is_some() {
-            return self.shared_alloc_lambda(lambda);
+            return self.shared_alloc_lambda(lambda).map(|value| (value, None));
         }
         if self.worker_closure_placement == WorkerClosurePlacement::Flat {
-            return self.flat_alloc_lambda(lambda);
+            return self.flat_alloc_lambda(lambda, capture);
         }
         self.reserve_record_slot()?;
         let allocation = self
@@ -1924,7 +1945,7 @@ impl EvalHeap {
         });
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
-        Ok(value)
+        Ok((value, None))
     }
 
     /// Allocates a builtin function object and returns its opaque runtime value.
@@ -1977,11 +1998,32 @@ impl EvalHeap {
     /// runtime allocator cannot reserve a thunk handle, or if the resulting
     /// handle violates the runtime value alignment contract.
     pub fn alloc_thunk(&mut self, thunk: EvalThunk) -> Result<Value, EvalHeapError> {
+        self.alloc_thunk_with_flat_capture(thunk, None).map(|(value, _)| value)
+    }
+
+    /// Allocates a thunk, optionally inlines its capture tail, and returns its handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalHeapError::InlineCapturePlacementUnsupported`] if capture
+    /// values are supplied outside the serial flat-closure placement, plus
+    /// the allocation errors documented by [`Self::alloc_thunk`].
+    pub(crate) fn alloc_thunk_with_flat_capture(
+        &mut self,
+        thunk: EvalThunk,
+        capture: Option<EvalFlatCaptureBuffer>,
+    ) -> Result<(Value, Option<crate::heap::flat::FlatValueTailHandle>), EvalHeapError> {
+        if capture.is_some()
+            && (self.shared.is_some()
+                || self.worker_closure_placement != WorkerClosurePlacement::Flat)
+        {
+            return Err(EvalHeapError::InlineCapturePlacementUnsupported);
+        }
         if self.shared.is_some() {
-            return self.shared_alloc_thunk(thunk);
+            return self.shared_alloc_thunk(thunk).map(|value| (value, None));
         }
         if self.worker_closure_placement == WorkerClosurePlacement::Flat {
-            return self.flat_alloc_thunk(thunk);
+            return self.flat_alloc_thunk(thunk, capture);
         }
         self.reserve_record_slot()?;
         let allocation = self
@@ -2002,7 +2044,7 @@ impl EvalHeap {
         });
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
-        Ok(value)
+        Ok((value, None))
     }
 
     /// Allocates a worker-domain placeholder record for a reserved minor-GC destination.
