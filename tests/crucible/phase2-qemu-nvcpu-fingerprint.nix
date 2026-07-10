@@ -204,12 +204,8 @@
         needle = "record appeared after the terminal plugin stop record";
       }
       {
-        label = "trace importer rejects zero RAM observation hashes";
-        needle = "field `ram_digest` must be non-zero";
-      }
-      {
-        label = "trace importer rejects zero device observation hashes";
-        needle = "field `device_state_digest` must be non-zero";
+        label = "trace importer rejects zero component digests";
+        needle = ''field `{field}` must be non-zero'';
       }
       {
         label = "first differing sample component enum";
