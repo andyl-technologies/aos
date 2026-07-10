@@ -1,4 +1,7 @@
-{pkgs}: let
+{
+  pkgs,
+  lib ? pkgs.lib,
+}: let
   qemuNixSource = builtins.readFile ../../pkgs/emulation/qemu.nix;
   pluginSource = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
   qemuPatchDir = builtins.path {
@@ -13,6 +16,7 @@
     path = ../../docs/rfcs/0010-crucible;
     name = "crucible-rfc0010-docs";
   };
+  s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-s12-preemption-decision";
@@ -37,6 +41,7 @@ in
     QEMU_PATCH_DIR = builtins.toString qemuPatchDir;
     CRATES_SRC = builtins.toString cratesSource;
     RFC_DOCS = builtins.toString rfcDocs;
+    S11_RESULT = "${s11MultiVcpuFingerprint}/result";
 
     phases = [
       {
@@ -99,6 +104,15 @@ in
           require_fixed crates/crucible/tests/preemption_discrimination.rs 'commanded_preemption_discriminates_a_known_two_vcpu_race'
           require_fixed crates/crucible/tests/preemption_discrimination.rs 'single_vcpu_interrupt_timing_variation_is_distinct'
 
+          require_fixed "$S11_RESULT" "PASS"
+          require_fixed "$S11_RESULT" "accelerator=sim,thread=single"
+          require_fixed "$S11_RESULT" "vcpus=4"
+          require_fixed "$S11_RESULT" "rr_switch_quantum=4096"
+          require_fixed "$S11_RESULT" "horizon_icount=3300000000"
+          require_fixed "$S11_RESULT" "workload_affinity_active=true"
+          require_fixed "$S11_RESULT" "extended_fingerprint_match=true"
+          require_fixed "$S11_RESULT" "fallback=smp1_not_needed"
+
           decision_doc="rfc-docs/31-decision-register.md"
           require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
           require_fixed "$decision_doc" "checks.crucible.phase0.s1Fingerprint"
@@ -106,14 +120,17 @@ in
           require_fixed "$decision_doc" "\`s1_pause_retired=3200000005\`"
           require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
           require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
-          require_fixed "$decision_doc" "PENDING RERUN"
-          require_fixed "$decision_doc" "\`s11_result_status=PENDING_SIM_RERUN\`"
+          require_fixed "$decision_doc" "\`s11_result_status=PASS\`"
+          require_fixed "$decision_doc" "\`s11_rr_switch_quantum=4096\`"
+          require_fixed "$decision_doc" "\`s11_horizon_icount=3300000000\`"
+          require_fixed "$decision_doc" "\`s11_extended_fingerprint_match=true\`"
 
           mkdir -p "$out"
           cp qemu.nix "$out/qemu.nix"
           cp -r qemu-patches "$out/qemu-patches"
           cp crucible-qemu-trace-plugin.c "$out/crucible-qemu-trace-plugin.c"
           cp "$decision_doc" "$out/31-decision-register.md"
+          cp "$S11_RESULT" "$out/s11-result"
           {
             echo PASS_WITH_PATCH_SURFACE
             echo spike=decision-preemption
@@ -134,14 +151,17 @@ in
             echo single_vcpu_interrupt_variation_distinct=modeled
             echo commanded_preemption_discrimination_witness=crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race
             echo commanded_preemption_injection_witness=checks.crucible.phase2.qemuPreemptionInject
-            echo default_determinism_prereqs_green=false
+            echo default_determinism_prereqs_green=true
             echo default_determinism_prereqs_source=decision_register_s1_s11
             echo s1_decision_entry_consumed=true
             echo s1_result_status=PASS
             echo s1_horizon_extended_hash=9d1e61606ac54920
             echo s1_pause_retired=3200000005
-            echo s11_decision_entry_consumed=false
-            echo s11_result_status=PENDING_SIM_RERUN
+            echo s11_decision_entry_consumed=true
+            echo s11_result_status=PASS
+            echo s11_rr_switch_quantum=4096
+            echo s11_horizon_icount=3300000000
+            echo s11_extended_fingerprint_match=true
             echo decision_preemption_exploration_enabled=false
             echo fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending
             echo s12_complete=true
