@@ -1,32 +1,44 @@
 //! Plugin time-control registration order.
 //!
-//! The QEMU plugin ABI entry point will eventually execute this sequence while
-//! holding raw QEMU handles. This module keeps the ordering contract in safe
-//! Rust so the launch and harness layers can test the invariant before the FFI
-//! body exists.
+//! The QEMU plugin ABI executes this safe contract while holding raw QEMU handles.
 
 use std::collections::BTreeSet;
+use std::os::raw::{c_int, c_void};
 
 use thiserror::Error;
 
+mod request;
+pub use request::{PluginTimeControlRequestError, QemuRequestTimeControlFn};
+
 /// QEMU plugin API symbol used to acquire virtual-time control.
 pub const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL: &str = "qemu_plugin_request_time_control";
-/// Crucible-stable plugin API symbol used for synchronous idle jumps.
-pub const QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL: &str =
-    "qemu_plugin_advance_virtual_time_direct";
+/// Crucible-stable plugin API symbol used to enqueue idle time advances.
+pub const QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL: &str = "qemu_plugin_advance_time_ns";
+/// Crucible-stable plugin API symbol used to register queued-advance completion.
+pub const QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL: &str =
+    "qemu_plugin_register_time_advance_cb";
 /// QEMU plugin API predicate used by the no-warp patch.
 pub const QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL: &str = "qemu_plugin_has_time_control";
-/// QEMU plugin API symbol wrapped by Crucible's direct advance helper.
+/// Upstream QEMU plugin API symbol used by the time-control owner.
 pub const QEMU_PLUGIN_UPDATE_NS_SYMBOL: &str = "qemu_plugin_update_ns";
 /// Largest `-icount shift=N` value representable by a `u64` nanosecond scale.
 pub const MAX_PLUGIN_ICOUNT_SHIFT: u8 = 63;
 
-/// QEMU's synchronous virtual-time advance function.
+/// QEMU's callback-safe queued virtual-time advance function.
 ///
-/// The patched QEMU plugin API exports this symbol as a no-handle function that
-/// advances `QEMU_CLOCK_VIRTUAL` to an absolute nanosecond target, runs due
-/// virtual-clock timers inline, and drains bottom halves before returning.
-pub type QemuAdvanceVirtualTimeDirectFn = extern "C" fn(i64);
+/// Zero means the request was queued. A negative errno-style value rejects the
+/// request before ownership transfers to QEMU.
+pub type QemuAdvanceTimeNsFn = extern "C" fn(i64) -> c_int;
+
+/// Normal-main-loop completion callback for a queued virtual-time advance.
+pub type QemuTimeAdvanceCompletionCbFn = extern "C" fn(c_int, i64, *mut c_void);
+
+/// QEMU function that registers the queued-advance completion callback.
+///
+/// Zero means the callback was installed. A negative errno-style value rejects
+/// registration, including while another advance remains outstanding.
+pub type QemuRegisterTimeAdvanceCbFn =
+    extern "C" fn(Option<QemuTimeAdvanceCompletionCbFn>, *mut c_void) -> c_int;
 
 /// The canonical registration steps that protect virtual time before guest code runs.
 pub const CANONICAL_TIME_CONTROL_REGISTRATION_ORDER: [PluginRegistrationStep; 10] = [
@@ -190,72 +202,140 @@ impl PluginClockAdvance {
     }
 }
 
-/// Required handle for synchronous idle jumps through QEMU.
+/// Required handle for enqueueing idle jumps through QEMU.
 #[derive(Clone, Copy, Debug)]
-pub struct SynchronousIdleAdvance {
-    advance_virtual_time_direct: QemuAdvanceVirtualTimeDirectFn,
+pub struct QueuedIdleAdvance {
+    advance_time_ns: QemuAdvanceTimeNsFn,
 }
 
-impl SynchronousIdleAdvance {
-    /// Requires QEMU's synchronous direct-advance export.
+impl QueuedIdleAdvance {
+    /// Requires QEMU's callback-safe queued-advance export.
     ///
     /// # Errors
     ///
-    /// Returns [`SynchronousIdleAdvanceError::CapabilityUnavailable`] when the
-    /// `qemu_plugin_advance_virtual_time_direct` export was not resolved.
+    /// Returns [`QueuedIdleAdvanceError::CapabilityUnavailable`] when the
+    /// `qemu_plugin_advance_time_ns` export was not resolved.
     pub fn require(
-        advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
-    ) -> Result<Self, SynchronousIdleAdvanceError> {
-        let Some(advance_virtual_time_direct) = advance_virtual_time_direct else {
-            return Err(SynchronousIdleAdvanceError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
+        advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+    ) -> Result<Self, QueuedIdleAdvanceError> {
+        let Some(advance_time_ns) = advance_time_ns else {
+            return Err(QueuedIdleAdvanceError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL,
             });
         };
 
-        Ok(Self {
-            advance_virtual_time_direct,
-        })
+        Ok(Self { advance_time_ns })
     }
 
-    /// Advances QEMU virtual time synchronously and drains timer-produced BH work.
+    /// Enqueues a QEMU virtual-time advance without claiming completion.
     ///
     /// # Errors
     ///
-    /// Returns [`SynchronousIdleAdvanceError::VirtualTimeOutOfRange`] when the
-    /// target cannot be passed through QEMU's signed nanosecond ABI.
-    pub fn advance_and_drain(
+    /// Returns [`QueuedIdleAdvanceError::VirtualTimeOutOfRange`] when the target
+    /// cannot be passed through QEMU's signed nanosecond ABI, or
+    /// [`QueuedIdleAdvanceError::EnqueueRejected`] when QEMU rejects the request.
+    pub fn enqueue(
         &self,
         target_virtual_ns: u64,
-    ) -> Result<SynchronousIdleDrain, SynchronousIdleAdvanceError> {
+    ) -> Result<PendingIdleAdvance, QueuedIdleAdvanceError> {
         let qemu_target_ns = i64::try_from(target_virtual_ns).map_err(|_error| {
-            SynchronousIdleAdvanceError::VirtualTimeOutOfRange { target_virtual_ns }
+            QueuedIdleAdvanceError::VirtualTimeOutOfRange { target_virtual_ns }
         })?;
-        (self.advance_virtual_time_direct)(qemu_target_ns);
-        Ok(SynchronousIdleDrain {
+        let status = (self.advance_time_ns)(qemu_target_ns);
+        if status != 0 {
+            return Err(QueuedIdleAdvanceError::EnqueueRejected {
+                target_virtual_ns,
+                status,
+            });
+        }
+        Ok(PendingIdleAdvance {
             target_virtual_ns,
-            drained_bottom_halves: true,
+            completion_pending: true,
         })
     }
 }
 
-/// Evidence that one synchronous idle advance returned after draining.
+/// Evidence that QEMU accepted an advance whose completion is still pending.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SynchronousIdleDrain {
+pub struct PendingIdleAdvance {
     target_virtual_ns: u64,
-    drained_bottom_halves: bool,
+    completion_pending: bool,
 }
 
-impl SynchronousIdleDrain {
-    /// Returns the absolute QEMU virtual nanosecond target that was advanced to.
+/// Completion delivered by QEMU's normal-main-loop advance callback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeAdvanceCompletion {
+    status: c_int,
+    target_virtual_ns: i64,
+}
+
+impl TimeAdvanceCompletion {
+    /// Captures the exact status and target delivered by QEMU.
+    #[must_use]
+    pub const fn from_qemu(status: c_int, target_virtual_ns: i64) -> Self {
+        Self {
+            status,
+            target_virtual_ns,
+        }
+    }
+
+    /// Returns QEMU's errno-style completion status.
+    #[must_use]
+    pub const fn status(self) -> c_int {
+        self.status
+    }
+
+    /// Returns the signed target echoed by QEMU.
+    #[must_use]
+    pub const fn target_virtual_ns(self) -> i64 {
+        self.target_virtual_ns
+    }
+}
+
+impl PendingIdleAdvance {
+    /// Returns the absolute QEMU virtual nanosecond target that was queued.
     #[must_use]
     pub const fn target_virtual_ns(self) -> u64 {
         self.target_virtual_ns
     }
 
-    /// Returns whether the patched direct-advance path drained bottom halves.
+    /// Returns whether normal-main-loop completion is still required.
     #[must_use]
-    pub const fn drained_bottom_halves(self) -> bool {
-        self.drained_bottom_halves
+    pub const fn completion_pending(self) -> bool {
+        self.completion_pending
+    }
+
+    /// Validates the later normal-main-loop completion for this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueuedIdleAdvanceError::CompletionFailed`] when QEMU reports a
+    /// failure, or [`QueuedIdleAdvanceError::CompletionTargetMismatch`] when the
+    /// callback does not echo this request's exact target.
+    pub fn validate_completion(
+        mut self,
+        completion: TimeAdvanceCompletion,
+    ) -> Result<Self, QueuedIdleAdvanceError> {
+        if completion.status != 0 {
+            return Err(QueuedIdleAdvanceError::CompletionFailed {
+                target_virtual_ns: self.target_virtual_ns,
+                status: completion.status,
+            });
+        }
+        let Ok(completed_target) = u64::try_from(completion.target_virtual_ns) else {
+            return Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
+                expected_target_virtual_ns: self.target_virtual_ns,
+                completed_target_virtual_ns: completion.target_virtual_ns,
+            });
+        };
+        if completed_target != self.target_virtual_ns {
+            return Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
+                expected_target_virtual_ns: self.target_virtual_ns,
+                completed_target_virtual_ns: completion.target_virtual_ns,
+            });
+        }
+        self.completion_pending = false;
+        Ok(self)
     }
 }
 
@@ -617,20 +697,46 @@ pub enum PluginClockError {
     },
 }
 
-/// An error produced while requiring or using QEMU's synchronous idle advance.
+/// An error produced while requiring or enqueueing QEMU's idle advance.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum SynchronousIdleAdvanceError {
-    /// QEMU does not expose the required direct-advance symbol.
-    #[error("required QEMU plugin synchronous idle-advance symbol {symbol} is unavailable")]
+pub enum QueuedIdleAdvanceError {
+    /// QEMU does not expose the required queued-advance symbol.
+    #[error("required QEMU plugin queued idle-advance symbol {symbol} is unavailable")]
     CapabilityUnavailable {
         /// Missing QEMU plugin symbol.
         symbol: &'static str,
     },
     /// The target virtual time cannot pass through QEMU's signed nanosecond ABI.
-    #[error("synchronous idle advance target {target_virtual_ns}ns exceeds QEMU int64 range")]
+    #[error("queued idle advance target {target_virtual_ns}ns exceeds QEMU int64 range")]
     VirtualTimeOutOfRange {
         /// Rejected absolute virtual-time target.
         target_virtual_ns: u64,
+    },
+    /// QEMU rejected the request before accepting ownership.
+    #[error("QEMU rejected queued idle advance to {target_virtual_ns}ns with status {status}")]
+    EnqueueRejected {
+        /// Rejected absolute virtual-time target.
+        target_virtual_ns: u64,
+        /// Negative errno-style status returned by QEMU.
+        status: c_int,
+    },
+    /// The accepted request later failed in QEMU's queued worker.
+    #[error("QEMU failed queued idle advance to {target_virtual_ns}ns with status {status}")]
+    CompletionFailed {
+        /// Requested absolute virtual-time target.
+        target_virtual_ns: u64,
+        /// Negative errno-style completion status.
+        status: c_int,
+    },
+    /// QEMU's completion did not identify the outstanding request.
+    #[error(
+        "QEMU completed idle advance target {completed_target_virtual_ns}ns while {expected_target_virtual_ns}ns was pending"
+    )]
+    CompletionTargetMismatch {
+        /// Outstanding request target.
+        expected_target_virtual_ns: u64,
+        /// Target supplied by the completion callback.
+        completed_target_virtual_ns: i64,
     },
 }
 
@@ -893,48 +999,90 @@ mod tests {
     }
 
     #[test]
-    fn synchronous_idle_advance_requires_qemu_direct_advance_symbol() {
-        let Err(error) = SynchronousIdleAdvance::require(None) else {
-            panic!("missing direct advance symbol should fail closed");
+    fn queued_idle_advance_requires_qemu_enqueue_symbol() {
+        let Err(error) = QueuedIdleAdvance::require(None) else {
+            panic!("missing queued advance symbol should fail closed");
         };
 
         assert_eq!(
             error,
-            SynchronousIdleAdvanceError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
+            QueuedIdleAdvanceError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL,
             }
         );
     }
 
     #[test]
-    fn synchronous_idle_advance_calls_qemu_and_reports_bottom_half_drain() {
+    fn queued_idle_advance_reports_pending_completion() {
         set_last_direct_advance_ns(-1);
-        let advance = match SynchronousIdleAdvance::require(Some(test_direct_advance)) {
+        let advance = match QueuedIdleAdvance::require(Some(test_direct_advance)) {
             Ok(advance) => advance,
-            Err(error) => panic!("direct advance symbol should be accepted: {error}"),
+            Err(error) => panic!("queued advance symbol should be accepted: {error}"),
         };
 
-        let drain = match advance.advance_and_drain(4096) {
-            Ok(drain) => drain,
-            Err(error) => panic!("direct advance should accept signed target: {error}"),
+        let pending = match advance.enqueue(4096) {
+            Ok(pending) => pending,
+            Err(error) => panic!("queued advance should accept signed target: {error}"),
         };
 
         assert_eq!(last_direct_advance_ns(), 4096);
-        assert_eq!(drain.target_virtual_ns(), 4096);
-        assert!(drain.drained_bottom_halves());
+        assert_eq!(pending.target_virtual_ns(), 4096);
+        assert!(pending.completion_pending());
+        let completed = pending
+            .validate_completion(TimeAdvanceCompletion::from_qemu(0, 4096))
+            .unwrap_or_else(|error| panic!("matching completion should validate: {error}"));
+        assert!(!completed.completion_pending());
     }
 
     #[test]
-    fn synchronous_idle_advance_rejects_targets_outside_qemu_signed_range() {
-        set_last_direct_advance_ns(-1);
-        let advance = match SynchronousIdleAdvance::require(Some(test_direct_advance)) {
+    fn queued_idle_advance_rejects_failed_or_mismatched_completion() {
+        let pending = PendingIdleAdvance {
+            target_virtual_ns: 4096,
+            completion_pending: true,
+        };
+        assert_eq!(
+            pending.validate_completion(TimeAdvanceCompletion::from_qemu(-34, 4096)),
+            Err(QueuedIdleAdvanceError::CompletionFailed {
+                target_virtual_ns: 4096,
+                status: -34,
+            })
+        );
+        assert_eq!(
+            pending.validate_completion(TimeAdvanceCompletion::from_qemu(0, 4097)),
+            Err(QueuedIdleAdvanceError::CompletionTargetMismatch {
+                expected_target_virtual_ns: 4096,
+                completed_target_virtual_ns: 4097,
+            })
+        );
+    }
+
+    #[test]
+    fn queued_idle_advance_preserves_qemu_rejection_status() {
+        let advance = match QueuedIdleAdvance::require(Some(test_rejected_direct_advance)) {
             Ok(advance) => advance,
-            Err(error) => panic!("direct advance symbol should be accepted: {error}"),
+            Err(error) => panic!("queued advance symbol should be accepted: {error}"),
         };
 
         assert_eq!(
-            advance.advance_and_drain(i64::MAX as u64 + 1),
-            Err(SynchronousIdleAdvanceError::VirtualTimeOutOfRange {
+            advance.enqueue(4096),
+            Err(QueuedIdleAdvanceError::EnqueueRejected {
+                target_virtual_ns: 4096,
+                status: -16,
+            })
+        );
+    }
+
+    #[test]
+    fn queued_idle_advance_rejects_targets_outside_qemu_signed_range() {
+        set_last_direct_advance_ns(-1);
+        let advance = match QueuedIdleAdvance::require(Some(test_direct_advance)) {
+            Ok(advance) => advance,
+            Err(error) => panic!("queued advance symbol should be accepted: {error}"),
+        };
+
+        assert_eq!(
+            advance.enqueue(i64::MAX as u64 + 1),
+            Err(QueuedIdleAdvanceError::VirtualTimeOutOfRange {
                 target_virtual_ns: i64::MAX as u64 + 1,
             })
         );
@@ -1004,7 +1152,7 @@ mod tests {
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == PluginRegistrationStep::RegisterCallbacks {
                 sequence
-                    .register_callbacks_with_exact_deadline(
+                    .register_callbacks_for_test(
                         &args,
                         Some(time_control_test_deadline),
                         Some(time_control_test_direct_advance),
@@ -1039,7 +1187,9 @@ mod tests {
         1
     }
 
-    extern "C" fn time_control_test_direct_advance(_target_virtual_ns: i64) {}
+    extern "C" fn time_control_test_direct_advance(_target_virtual_ns: i64) -> c_int {
+        0
+    }
 
     fn publish_boot_barrier_ceiling(slot: &NodeSlot) {
         let ceiling = authorize_advance_ceiling(0, crate::BOOT_BARRIER_FIRST_GUEST_ICOUNT, None)
@@ -1048,8 +1198,13 @@ mod tests {
             .unwrap_or_else(|error| panic!("boot barrier ceiling should publish: {error}"));
     }
 
-    extern "C" fn test_direct_advance(target_virtual_ns: i64) {
+    extern "C" fn test_direct_advance(target_virtual_ns: i64) -> c_int {
         set_last_direct_advance_ns(target_virtual_ns);
+        0
+    }
+
+    extern "C" fn test_rejected_direct_advance(_target_virtual_ns: i64) -> c_int {
+        -16
     }
 
     fn set_last_direct_advance_ns(value: i64) {

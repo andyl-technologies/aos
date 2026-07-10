@@ -2,10 +2,10 @@
 //!
 //! The setup path consumes the `Setup` descriptors, maps the shared-memory
 //! region for exactly the advertised byte length, validates the region header,
-//! and arms plus registers the wake fd for event-loop use. The caller then
-//! registers plugin callbacks before sending `SetupAck(0)` with the returned
-//! completion token. Descriptor validity comes from the fixed SCM_RIGHTS
-//! handoff, and mmap lifetime is owned by the returned
+//! and arms the wake fd for later event-loop registration. The caller then
+//! proves plugin callback ownership, registers the wake fd, and sends
+//! `SetupAck(0)` with the returned completion token.
+//! Descriptor validity comes from the fixed SCM_RIGHTS handoff; mmap lifetime is owned by the returned
 //! [`PluginSetupCompletion`] token.
 
 #[cfg(unix)]
@@ -29,8 +29,17 @@ use crucible_shmem::{
 #[cfg(unix)]
 use crate::{
     PluginCallbackCapabilities, PluginControlHandshake, QemuRegisterWakeFdFn,
-    shmem_ordering::PluginShmemOrdering,
+    RequiredOwnedCallbacksRegistered, shmem_ordering::PluginShmemOrdering,
 };
+
+#[cfg(unix)]
+mod boot_barrier;
+#[cfg(unix)]
+pub use boot_barrier::PluginSetupBootBarrierError;
+#[cfg(unix)]
+mod failure_ack;
+#[cfg(unix)]
+pub use failure_ack::{PluginSetupFailureStage, send_callback_registration_failure_ack};
 
 /// An eventfd descriptor armed for setup-complete wake handling.
 #[cfg(unix)]
@@ -44,8 +53,13 @@ impl ArmedWakeFd {
     /// Arms an owned wake fd for run-loop integration.
     ///
     /// The current implementation configures close-on-exec and nonblocking
-    /// operation on the descriptor received through the validated setup
-    /// handoff. Call [`Self::register_with_qemu`] before sending `SetupAck(0)`.
+    /// operation on the descriptor received through the validated setup handoff.
+    /// Linux exposes no stable descriptor-identity query for eventfd, so the
+    /// implementation proves non-semaphore eventfd behavior by writing counters
+    /// one and two, reading the aggregated value three, and proving the counter
+    /// empty again. Non-Linux builds retain only the empty nonblocking-descriptor
+    /// check for portable model tests; production QEMU activation remains Linux.
+    /// Call [`Self::register_with_qemu`] before sending `SetupAck(0)`.
     ///
     /// # Errors
     ///
@@ -54,6 +68,7 @@ impl ArmedWakeFd {
     pub fn arm(fd: OwnedFd) -> Result<Self, WakeFdArmError> {
         set_close_on_exec(fd.as_raw_fd())?;
         set_nonblocking(fd.as_raw_fd())?;
+        validate_wake_descriptor(fd.as_raw_fd())?;
         Ok(Self { fd })
     }
 
@@ -109,7 +124,7 @@ pub struct PluginSetupCompletion {
     mapped_region: MappedSetupRegion,
     validated_region: ValidatedSetupRegion,
     wake_fd: ArmedWakeFd,
-    registered_wake_fd: RegisteredWakeFd,
+    registered_wake_fd: Option<RegisteredWakeFd>,
 }
 
 #[cfg(unix)]
@@ -118,6 +133,11 @@ impl PluginSetupCompletion {
     #[must_use]
     pub const fn mapped_region(&self) -> &MappedSetupRegion {
         &self.mapped_region
+    }
+
+    /// Returns mutable access to the owned mapping for disjoint typed views.
+    pub(crate) fn mapped_region_mut(&mut self) -> &mut MappedSetupRegion {
+        &mut self.mapped_region
     }
 
     /// Returns the validated setup region header token.
@@ -134,7 +154,7 @@ impl PluginSetupCompletion {
 
     /// Returns evidence that the wake fd was registered with QEMU.
     #[must_use]
-    pub const fn registered_wake_fd(&self) -> RegisteredWakeFd {
+    pub const fn registered_wake_fd(&self) -> Option<RegisteredWakeFd> {
         self.registered_wake_fd
     }
 }
@@ -146,13 +166,13 @@ pub struct PluginReadySetupAck {
 }
 
 impl PluginReadySetupAck {
-    const fn acknowledged() -> Self {
+    const fn acknowledged(_owned_callbacks: &RequiredOwnedCallbacksRegistered) -> Self {
         Self { _private: () }
     }
 
     #[cfg(test)]
     pub(crate) const fn test_acknowledged() -> Self {
-        Self::acknowledged()
+        Self { _private: () }
     }
 }
 
@@ -189,36 +209,34 @@ where
 pub fn receive_and_prepare_setup_completion<S>(
     stream: &mut S,
     handshake: PluginControlHandshake,
-    register_wake_fd: QemuRegisterWakeFdFn,
 ) -> Result<PluginSetupCompletion, PluginSetupError>
 where
     S: AsRawFd + Write,
 {
     let setup = receive_setup_with_descriptors(stream)?;
-    prepare_setup_completion(stream, setup, handshake, register_wake_fd)
+    prepare_setup_completion(stream, setup, handshake)
 }
 
 /// Prepares plugin setup completion before callback registration and ready ack.
 ///
 /// On success, this function has mapped the shared-memory descriptor for
 /// exactly `Setup.region_len`, validated the shmem ABI marker and geometry, and
-/// armed plus registered the wake fd after cross-checking the mapped region
-/// against the negotiated handshake assignment. It intentionally does not send
-/// `SetupAck(0)`; callers must first register plugin callbacks and then call
-/// [`send_ready_setup_ack`]. On setup failure before callback registration, it
+/// armed the wake fd after cross-checking the mapped region against the
+/// negotiated handshake assignment. It intentionally defers QEMU wake-fd
+/// registration and does not send `SetupAck(0)`; callers must first prove plugin
+/// callback ownership, register the wake fd, and then call [`send_ready_setup_ack`].
+/// On setup failure before callback registration, it
 /// attempts to send a nonzero `SetupAck` before returning the setup error.
 ///
 /// # Errors
 ///
 /// Returns [`PluginSetupError`] when mapping, validation, handshake/header slot
-/// consistency, wake-fd arming or registration, or failure-acknowledgement I/O
-/// fails.
+/// consistency, wake-fd arming, or failure-acknowledgement I/O fails.
 #[cfg(unix)]
 pub fn prepare_setup_completion<W>(
     writer: &mut W,
     setup: ReceivedSetup,
     handshake: PluginControlHandshake,
-    register_wake_fd: QemuRegisterWakeFdFn,
 ) -> Result<PluginSetupCompletion, PluginSetupError>
 where
     W: Write,
@@ -255,19 +273,11 @@ where
             return Err(PluginSetupError::ArmWakeFd { source });
         }
     };
-    let registered_wake_fd = match wake_fd.register_with_qemu(register_wake_fd) {
-        Ok(registered_wake_fd) => registered_wake_fd,
-        Err(source) => {
-            send_setup_failure_ack(writer, PluginSetupFailureStage::RegisterWakeFd)?;
-            return Err(PluginSetupError::RegisterWakeFd { source });
-        }
-    };
-
     Ok(PluginSetupCompletion {
         mapped_region,
         validated_region,
         wake_fd,
-        registered_wake_fd,
+        registered_wake_fd: None,
     })
 }
 
@@ -308,15 +318,19 @@ where
 #[cfg(unix)]
 pub fn send_ready_setup_ack<W>(
     writer: &mut W,
-    _completion: &PluginSetupCompletion,
     _callbacks: &PluginCallbackCapabilities,
+    owned_callbacks: &RequiredOwnedCallbacksRegistered,
 ) -> Result<PluginReadySetupAck, PluginSetupError>
 where
     W: Write,
 {
+    if owned_callbacks.setup().registered_wake_fd.is_none() {
+        send_setup_failure_ack(writer, PluginSetupFailureStage::RegisterWakeFd)?;
+        return Err(PluginSetupError::WakeFdNotRegistered);
+    }
     plugin_send_setup_ack(writer, SETUP_ACK_STATUS_READY)
         .map_err(|source| PluginSetupError::SendReadyAck { source })?;
-    Ok(PluginReadySetupAck::acknowledged())
+    Ok(PluginReadySetupAck::acknowledged(owned_callbacks))
 }
 
 #[cfg(unix)]
@@ -380,6 +394,106 @@ fn set_nonblocking(fd: RawFd) -> Result<(), WakeFdArmError> {
 }
 
 #[cfg(unix)]
+fn validate_wake_descriptor(fd: RawFd) -> Result<(), WakeFdArmError> {
+    validate_empty_wake_descriptor(fd)?;
+    #[cfg(target_os = "linux")]
+    validate_eventfd_counter_semantics(fd)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_empty_wake_descriptor(fd: RawFd) -> Result<(), WakeFdArmError> {
+    let mut value = 0_u64;
+    loop {
+        // SAFETY: `value` is writable for eight bytes and `fd` is owned by the
+        // caller. Nonblocking mode guarantees this validation cannot park.
+        let result = unsafe {
+            libc::read(
+                fd,
+                (&mut value as *mut u64).cast::<libc::c_void>(),
+                core::mem::size_of::<u64>(),
+            )
+        };
+        if result > 0 {
+            return Err(WakeFdArmError::NotEmpty {
+                bytes_read: result as usize,
+            });
+        }
+        if result == 0 {
+            return Err(WakeFdArmError::EndOfFile);
+        }
+        let errno = last_errno();
+        if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+            return Ok(());
+        }
+        if errno == libc::EINTR {
+            continue;
+        }
+        return Err(WakeFdArmError::Read { errno });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn validate_eventfd_counter_semantics(fd: RawFd) -> Result<(), WakeFdArmError> {
+    write_eventfd_probe(fd, 1)?;
+    write_eventfd_probe(fd, 2)?;
+
+    let mut observed = 0_u64;
+    let bytes_read = loop {
+        // SAFETY: `observed` is writable for the exact eventfd counter width and
+        // `fd` remains owned by the caller for this validation.
+        let result = unsafe {
+            libc::read(
+                fd,
+                (&mut observed as *mut u64).cast::<libc::c_void>(),
+                core::mem::size_of::<u64>(),
+            )
+        };
+        if result >= 0 {
+            break result as usize;
+        }
+        let errno = last_errno();
+        if errno != libc::EINTR {
+            return Err(WakeFdArmError::EventFdProbeRead { errno });
+        }
+    };
+    if bytes_read != core::mem::size_of::<u64>() || observed != 3 {
+        return Err(WakeFdArmError::EventFdCounterSemantics {
+            bytes_read,
+            observed,
+        });
+    }
+    validate_empty_wake_descriptor(fd)
+}
+
+#[cfg(target_os = "linux")]
+fn write_eventfd_probe(fd: RawFd, value: u64) -> Result<(), WakeFdArmError> {
+    loop {
+        // SAFETY: `value` is readable for the exact eventfd counter width and
+        // `fd` remains owned by the caller for this validation.
+        let result = unsafe {
+            libc::write(
+                fd,
+                (&value as *const u64).cast::<libc::c_void>(),
+                core::mem::size_of::<u64>(),
+            )
+        };
+        if result == core::mem::size_of::<u64>() as isize {
+            return Ok(());
+        }
+        if result >= 0 {
+            return Err(WakeFdArmError::EventFdProbeWriteSize {
+                bytes_written: result as usize,
+            });
+        }
+        let errno = last_errno();
+        if errno != libc::EINTR {
+            return Err(WakeFdArmError::EventFdProbeWrite { errno });
+        }
+    }
+}
+
+#[cfg(unix)]
 fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
@@ -396,36 +510,64 @@ pub enum WakeFdArmError {
         /// Raw OS errno value.
         errno: i32,
     },
+    /// The descriptor already contained a wake value.
+    #[error("wake fd was not empty; read {bytes_read} pending bytes")]
+    NotEmpty {
+        /// Bytes consumed while detecting the invalid pending wake.
+        bytes_read: usize,
+    },
+    /// The descriptor reports permanent EOF instead of an empty wake queue.
+    #[error("wake fd reports end-of-file instead of an empty wake queue")]
+    EndOfFile,
+    /// Reading the nonblocking descriptor failed unexpectedly.
+    #[error("validating empty wake fd failed with errno {errno}")]
+    Read {
+        /// Raw OS errno value.
+        errno: i32,
+    },
+    /// Writing a Linux eventfd counter probe failed.
+    #[error("writing eventfd counter probe failed with errno {errno}")]
+    EventFdProbeWrite {
+        /// Raw OS errno value.
+        errno: i32,
+    },
+    /// A Linux eventfd counter probe produced a short write.
+    #[error("eventfd counter probe wrote {bytes_written} bytes instead of 8")]
+    EventFdProbeWriteSize {
+        /// Number of bytes accepted by the descriptor.
+        bytes_written: usize,
+    },
+    /// Reading a Linux eventfd counter probe failed.
+    #[error("reading eventfd counter probe failed with errno {errno}")]
+    EventFdProbeRead {
+        /// Raw OS errno value.
+        errno: i32,
+    },
+    /// The descriptor did not aggregate two writes like a non-semaphore eventfd.
+    #[error(
+        "wake descriptor lacks eventfd counter semantics: read {bytes_read} bytes with value {observed}"
+    )]
+    EventFdCounterSemantics {
+        /// Number of bytes returned by the counter read.
+        bytes_read: usize,
+        /// Counter value returned after writing one and two.
+        observed: u64,
+    },
 }
 
 /// An error produced while registering the armed wake fd with QEMU.
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum WakeFdRegisterError {
+    /// The descriptor was already registered for this setup completion.
+    #[error("QEMU wake fd was already registered")]
+    AlreadyRegistered,
     /// QEMU rejected the descriptor.
     #[error("QEMU wake-fd registration rejected descriptor with status {status}")]
     Rejected {
         /// Raw QEMU status code.
         status: i32,
     },
-}
-
-/// Setup stage whose failure triggered a nonzero `SetupAck`.
-#[cfg(unix)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PluginSetupFailureStage {
-    /// Receiving the setup frame or descriptors failed.
-    ReceiveSetup,
-    /// Mapping the shared-memory region failed.
-    MapRegion,
-    /// Validating the mapped shared-memory header failed.
-    ValidateRegion,
-    /// Cross-checking the handshake assignment against the mapped header failed.
-    CrossCheckSlot,
-    /// Arming the wake fd failed.
-    ArmWakeFd,
-    /// Registering the armed wake fd with QEMU failed.
-    RegisterWakeFd,
 }
 
 /// An error produced while completing plugin setup.
@@ -480,6 +622,9 @@ pub enum PluginSetupError {
         /// Underlying wake-fd registration error.
         source: WakeFdRegisterError,
     },
+    /// Ready acknowledgement was attempted before QEMU wake registration.
+    #[error("setup wake fd is not registered with QEMU")]
+    WakeFdNotRegistered,
     /// The ready `SetupAck(0)` could not be sent.
     #[error("sending ready SetupAck failed")]
     SendReadyAck {
@@ -500,12 +645,10 @@ pub enum PluginSetupError {
 mod tests {
     use super::*;
 
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::fs::{File, OpenOptions};
     use std::io::{Cursor, Read, Write};
     use std::os::fd::FromRawFd;
-    #[cfg(not(target_os = "linux"))]
-    use std::os::fd::IntoRawFd;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -527,7 +670,7 @@ mod tests {
 
     use crate::{
         CoverageCapabilities, PluginArgs, PluginRegistrationSequence, PluginRegistrationStep,
-        validate_plugin_handshake,
+        RequiredOwnedCallbacksRegistered, validate_plugin_handshake,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -548,7 +691,6 @@ mod tests {
             &mut io,
             setup,
             plugin_handshake(1, layout.node_count),
-            accept_wake_fd_registration,
         ) {
             Ok(completion) => completion,
             Err(error) => panic!("valid setup should complete: {error}"),
@@ -557,15 +699,23 @@ mod tests {
         assert_eq!(completion.mapped_region().region_len(), layout.region_size);
         assert_eq!(completion.validated_region().region_len, layout.region_size);
         assert_nonblocking(completion.wake_fd().as_raw_fd());
-        assert_eq!(
-            completion.registered_wake_fd().as_raw_fd(),
-            last_registered_wake_fd()
-        );
+        assert_eq!(completion.registered_wake_fd(), None);
         assert!(io.written().is_empty());
         assert_eq!(io.flush_count(), 0);
 
         let callbacks = callback_capabilities();
-        if let Err(error) = send_ready_setup_ack(&mut io, &completion, &callbacks) {
+        let mut owned_callbacks = owned_callbacks(1, completion);
+        owned_callbacks
+            .register_wake_fd_after_callbacks(&mut io, accept_wake_fd_registration)
+            .unwrap_or_else(|error| panic!("wake registration should succeed: {error}"));
+        assert_eq!(
+            owned_callbacks
+                .setup()
+                .registered_wake_fd()
+                .map(RegisteredWakeFd::as_raw_fd),
+            Some(last_registered_wake_fd())
+        );
+        if let Err(error) = send_ready_setup_ack(&mut io, &callbacks, &owned_callbacks) {
             panic!("ready setup acknowledgement should send: {error}");
         }
         assert_eq!(
@@ -588,12 +738,7 @@ mod tests {
         let mut io = ScriptedIo::default();
 
         assert!(matches!(
-            prepare_setup_completion(
-                &mut io,
-                setup,
-                plugin_handshake(0, 1),
-                accept_wake_fd_registration
-            ),
+            prepare_setup_completion(&mut io, setup, plugin_handshake(0, 1)),
             Err(PluginSetupError::ValidateRegion { .. })
         ));
         assert_eq!(
@@ -646,17 +791,17 @@ mod tests {
         }
 
         let handshake = plugin_handshake(1, layout.node_count);
-        let completion = receive_and_prepare_setup_completion(
-            &mut plugin,
-            handshake,
-            accept_wake_fd_registration,
-        )
-        .unwrap_or_else(|error| panic!("setup should complete: {error}"));
+        let completion = receive_and_prepare_setup_completion(&mut plugin, handshake)
+            .unwrap_or_else(|error| panic!("setup should complete: {error}"));
 
         assert_eq!(completion.validated_region().region_len, layout.region_size);
         assert_nonblocking(completion.wake_fd().as_raw_fd());
         let callbacks = callback_capabilities();
-        send_ready_setup_ack(&mut plugin, &completion, &callbacks)
+        let mut owned_callbacks = owned_callbacks(1, completion);
+        owned_callbacks
+            .register_wake_fd_after_callbacks(&mut plugin, accept_wake_fd_registration)
+            .unwrap_or_else(|error| panic!("wake registration should succeed: {error}"));
+        send_ready_setup_ack(&mut plugin, &callbacks, &owned_callbacks)
             .unwrap_or_else(|error| panic!("ready ack should send: {error}"));
         assert_eq!(
             decode_single_setup_ack_from_stream(&mut host),
@@ -677,10 +822,9 @@ mod tests {
         let mut io = ScriptedIo::default();
         let handshake = plugin_handshake(1, layout.node_count + 1);
 
-        let error =
-            prepare_setup_completion(&mut io, setup, handshake, accept_wake_fd_registration)
-                .err()
-                .unwrap_or_else(|| panic!("node-count mismatch should fail"));
+        let error = prepare_setup_completion(&mut io, setup, handshake)
+            .err()
+            .unwrap_or_else(|| panic!("node-count mismatch should fail"));
         assert_eq!(
             error,
             PluginSetupError::NodeCountMismatch {
@@ -707,10 +851,9 @@ mod tests {
         let mut io = ScriptedIo::default();
         let handshake = plugin_handshake(layout.node_count, layout.node_count + 1);
 
-        let error =
-            prepare_setup_completion(&mut io, setup, handshake, accept_wake_fd_registration)
-                .err()
-                .unwrap_or_else(|| panic!("slot beyond region should fail"));
+        let error = prepare_setup_completion(&mut io, setup, handshake)
+            .err()
+            .unwrap_or_else(|| panic!("slot beyond region should fail"));
         assert_eq!(
             error,
             PluginSetupError::NodeCountMismatch {
@@ -734,6 +877,19 @@ mod tests {
         };
 
         assert_nonblocking(armed.as_raw_fd());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wake_fd_arm_rejects_pipe_socket_and_regular_file() {
+        let (pipe_read, _pipe_write) = wake_pipe();
+        assert!(ArmedWakeFd::arm(pipe_read.into()).is_err());
+
+        let (socket, _socket_peer) = std::os::unix::net::UnixStream::pair()
+            .unwrap_or_else(|error| panic!("wake socket pair should open: {error}"));
+        assert!(ArmedWakeFd::arm(socket.into()).is_err());
+
+        assert!(ArmedWakeFd::arm(temp_region_file().into()).is_err());
     }
 
     #[test]
@@ -774,14 +930,14 @@ mod tests {
         };
         let mut io = ScriptedIo::default();
 
-        let error = prepare_setup_completion(
-            &mut io,
-            setup,
-            plugin_handshake(1, layout.node_count),
-            reject_wake_fd_registration,
-        )
-        .err()
-        .unwrap_or_else(|| panic!("wake-fd registration rejection should fail setup"));
+        let completion =
+            prepare_setup_completion(&mut io, setup, plugin_handshake(1, layout.node_count))
+                .unwrap_or_else(|error| panic!("local setup should succeed: {error}"));
+        let mut owned_callbacks = owned_callbacks(1, completion);
+        let error = owned_callbacks
+            .register_wake_fd_after_callbacks(&mut io, reject_wake_fd_registration)
+            .err()
+            .unwrap_or_else(|| panic!("wake-fd registration rejection should fail setup"));
 
         assert_eq!(
             error,
@@ -915,7 +1071,7 @@ mod tests {
         let args = PluginArgs::parse("simfd=3,slot=0")
             .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
         sequence
-            .register_callbacks_with_exact_deadline(
+            .register_callbacks_for_test(
                 &args,
                 Some(setup_test_deadline),
                 Some(setup_test_direct_advance),
@@ -924,14 +1080,26 @@ mod tests {
             .unwrap_or_else(|error| panic!("test callbacks should register: {error}"))
     }
 
+    fn owned_callbacks(
+        slot: u32,
+        completion: PluginSetupCompletion,
+    ) -> RequiredOwnedCallbacksRegistered {
+        let args = PluginArgs::parse(&format!("simfd=3,slot={slot}"))
+            .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
+        RequiredOwnedCallbacksRegistered::for_test(&args, completion)
+    }
+
     extern "C" fn setup_test_deadline() -> i64 {
         777
     }
 
-    extern "C" fn setup_test_direct_advance(_target_virtual_ns: i64) {}
+    extern "C" fn setup_test_direct_advance(_target_virtual_ns: i64) -> std::os::raw::c_int {
+        0
+    }
 
     thread_local! {
         static LAST_REGISTERED_WAKE_FD: Cell<i32> = const { Cell::new(-1) };
+        static WAKE_PEERS: RefCell<Vec<File>> = const { RefCell::new(Vec::new()) };
     }
 
     fn last_registered_wake_fd() -> i32 {
@@ -982,15 +1150,33 @@ mod tests {
         unsafe { File::from_raw_fd(fd) }
     }
 
+    #[cfg(target_os = "linux")]
+    fn wake_pipe() -> (File, File) {
+        let mut fds = [-1; 2];
+        // SAFETY: `fds` has room for both descriptors returned by `pipe`.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            panic!("failed to create wake pipe: errno {}", last_errno());
+        }
+        // SAFETY: successful `pipe` returned a uniquely owned read descriptor.
+        let read_end = unsafe { File::from_raw_fd(fds[0]) };
+        // SAFETY: successful `pipe` returned a distinct uniquely owned writer.
+        let write_end = unsafe { File::from_raw_fd(fds[1]) };
+        (read_end, write_end)
+    }
+
     #[cfg(not(target_os = "linux"))]
     fn wake_fd() -> File {
-        let (wake, peer) = match std::os::unix::net::UnixStream::pair() {
-            Ok(pair) => pair,
-            Err(error) => panic!("failed to create wake fd pair: {error}"),
-        };
-        drop(peer);
-        // SAFETY: ownership moves from `UnixStream` into `File`.
-        unsafe { File::from_raw_fd(wake.into_raw_fd()) }
+        let mut fds = [-1; 2];
+        // SAFETY: `fds` has room for both descriptors returned by `pipe`.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            panic!("failed to create wake pipe: errno {}", last_errno());
+        }
+        // SAFETY: successful `pipe` returned a uniquely owned read descriptor.
+        let wake = unsafe { File::from_raw_fd(fds[0]) };
+        // SAFETY: successful `pipe` returned a distinct uniquely owned writer.
+        let peer = unsafe { File::from_raw_fd(fds[1]) };
+        WAKE_PEERS.with(|peers| peers.borrow_mut().push(peer));
+        wake
     }
 
     fn assert_nonblocking(fd: RawFd) {

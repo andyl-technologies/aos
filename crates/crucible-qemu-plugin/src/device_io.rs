@@ -22,6 +22,7 @@ static NEXT_FREEZE_OWNER_ID: AtomicU64 = AtomicU64::new(1);
 pub struct PluginDeviceIoFreeze {
     owner_id: u64,
     pending_requests: u32,
+    burst_pending_requests: u32,
     burst_active: bool,
     next_request_seq: u64,
 }
@@ -37,6 +38,7 @@ impl PluginDeviceIoFreeze {
             // behavior.
             owner_id: NEXT_FREEZE_OWNER_ID.fetch_add(1, Ordering::Relaxed),
             pending_requests: 0,
+            burst_pending_requests: 0,
             burst_active: false,
             next_request_seq: 0,
         }
@@ -106,6 +108,33 @@ impl PluginDeviceIoFreeze {
         slot: &NodeSlot,
         submit_icount: u64,
     ) -> Result<DeviceIoRequestToken, DeviceIoFreezeError> {
+        self.begin_submit_with_burst_membership(slot, submit_icount, self.burst_active)
+    }
+
+    /// Records an independent request while preserving any unrelated burst.
+    ///
+    /// Block callbacks use this entry point because a block coroutine can be in
+    /// flight concurrently with a 9p burst. The request contributes to the
+    /// global device-I/O hold but does not prevent that unrelated burst from
+    /// reaching `burst_done`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::begin_submit`].
+    pub fn begin_independent_submit(
+        &mut self,
+        slot: &NodeSlot,
+        submit_icount: u64,
+    ) -> Result<DeviceIoRequestToken, DeviceIoFreezeError> {
+        self.begin_submit_with_burst_membership(slot, submit_icount, false)
+    }
+
+    fn begin_submit_with_burst_membership(
+        &mut self,
+        slot: &NodeSlot,
+        submit_icount: u64,
+        burst_member: bool,
+    ) -> Result<DeviceIoRequestToken, DeviceIoFreezeError> {
         if self.pending_requests == u32::MAX {
             return Err(DeviceIoFreezeError::PendingCounterOverflow {
                 pending_requests: self.pending_requests,
@@ -120,10 +149,14 @@ impl PluginDeviceIoFreeze {
 
         PluginShmemOrdering::publish_device_io_active(slot);
         self.pending_requests += 1;
+        if burst_member {
+            self.burst_pending_requests += 1;
+        }
         Ok(DeviceIoRequestToken {
             owner_id: self.owner_id,
             request_seq,
             submit_icount,
+            burst_member,
         })
     }
 
@@ -169,18 +202,24 @@ impl PluginDeviceIoFreeze {
         if !self.burst_active {
             return Err(DeviceIoFreezeError::BurstDoneWithoutActiveBurst);
         }
-        if self.pending_requests != 0 {
+        if self.burst_pending_requests != 0 {
             return Err(DeviceIoFreezeError::BurstDoneWithPendingRequests {
-                pending_requests: self.pending_requests,
+                pending_requests: self.burst_pending_requests,
             });
         }
 
         self.burst_active = false;
-        PluginShmemOrdering::clear_device_io_active(slot);
-        let release_wake = PluginShmemOrdering::wake_for_device_io_release(slot)
-            .map_err(|source| DeviceIoFreezeError::DeviceIoReleaseWake { source })?;
+        let release_wake = if self.pending_requests == 0 {
+            PluginShmemOrdering::clear_device_io_active(slot);
+            Some(
+                PluginShmemOrdering::wake_for_device_io_release(slot)
+                    .map_err(|source| DeviceIoFreezeError::DeviceIoReleaseWake { source })?,
+            )
+        } else {
+            None
+        };
         Ok(DeviceIoBurstState {
-            release_wake: Some(release_wake),
+            release_wake,
             ..self.burst_state(slot)
         })
     }
@@ -208,7 +247,16 @@ impl PluginDeviceIoFreeze {
             });
         }
 
+        if token.burst_member && self.burst_pending_requests == 0 {
+            return Err(DeviceIoFreezeError::BurstMembershipUnderflow {
+                request_seq: token.request_seq,
+                submit_icount: token.submit_icount,
+            });
+        }
         self.pending_requests -= 1;
+        if token.burst_member {
+            self.burst_pending_requests -= 1;
+        }
         let mut release_wake = None;
         if self.pending_requests == 0 && !self.burst_active {
             PluginShmemOrdering::clear_device_io_active(slot);
@@ -253,6 +301,7 @@ pub struct DeviceIoRequestToken {
     owner_id: u64,
     request_seq: u64,
     submit_icount: u64,
+    burst_member: bool,
 }
 
 impl DeviceIoRequestToken {
@@ -272,6 +321,12 @@ impl DeviceIoRequestToken {
     #[must_use]
     pub const fn submit_icount(&self) -> u64 {
         self.submit_icount
+    }
+
+    /// Returns whether the request belongs to the active multi-request burst.
+    #[must_use]
+    pub const fn burst_member(&self) -> bool {
+        self.burst_member
     }
 }
 
@@ -446,6 +501,16 @@ pub enum DeviceIoFreezeError {
         /// The pending count that prevented burst release.
         pending_requests: u32,
     },
+    /// A burst-member token was released after its membership count was lost.
+    #[error(
+        "device-I/O burst membership underflow for request {request_seq} submitted at {submit_icount}"
+    )]
+    BurstMembershipUnderflow {
+        /// Token sequence whose membership could not be released.
+        request_seq: u64,
+        /// Token submit icount.
+        submit_icount: u64,
+    },
 }
 
 #[cfg(test)]
@@ -608,6 +673,7 @@ mod tests {
             owner_id: freeze.owner_id(),
             request_seq: 17,
             submit_icount: 90,
+            burst_member: false,
         };
 
         assert_eq!(
@@ -628,6 +694,7 @@ mod tests {
         let mut freeze = PluginDeviceIoFreeze {
             owner_id: 4242,
             pending_requests: u32::MAX,
+            burst_pending_requests: 0,
             burst_active: false,
             next_request_seq: 0,
         };
@@ -647,6 +714,7 @@ mod tests {
         let mut freeze = PluginDeviceIoFreeze {
             owner_id: 4243,
             pending_requests: 0,
+            burst_pending_requests: 0,
             burst_active: false,
             next_request_seq: u64::MAX,
         };
@@ -659,6 +727,34 @@ mod tests {
         );
         assert_eq!(freeze.pending_requests(), 0);
         assert_eq!(slot.snapshot().device_io_active, 0);
+    }
+
+    #[test]
+    fn independent_request_keeps_hold_after_unrelated_burst_finishes() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut freeze = PluginDeviceIoFreeze::new();
+        freeze
+            .begin_burst(&slot)
+            .unwrap_or_else(|error| panic!("burst should start: {error}"));
+        let burst_request = begin_submit(&mut freeze, &slot, 120);
+        let independent = freeze
+            .begin_independent_submit(&slot, 121)
+            .unwrap_or_else(|error| panic!("independent request should submit: {error}"));
+
+        let burst_release = complete_request(&mut freeze, &slot, burst_request);
+        assert_eq!(burst_release.pending_requests(), 1);
+        let burst_done = freeze
+            .burst_done(&slot)
+            .unwrap_or_else(|error| panic!("answered burst should finish: {error}"));
+        assert_eq!(burst_done.pending_requests(), 1);
+        assert!(!burst_done.burst_active());
+        assert!(burst_done.device_io_active());
+        assert_eq!(burst_done.release_wake(), None);
+
+        let independent_release = complete_request(&mut freeze, &slot, independent);
+        assert_eq!(independent_release.pending_requests(), 0);
+        assert!(!independent_release.device_io_active());
+        assert!(independent_release.release_wake().is_some());
     }
 
     fn begin_submit(
