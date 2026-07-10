@@ -60,10 +60,12 @@ shape-line|crates/crucible-harness/tests/reproduction_artifact.rs|691
 shape-line|crates/crucible-harness/tests/support/harness_lint/scan.rs|1087
 shape-line|crates/crucible-harness/tests/support/testing_standards.rs|710
 shape-line|crates/crucible-protocol/src/doorbell_marker.rs|821
-shape-line|crates/crucible-protocol/src/lib.rs|2719
+shape-line|crates/crucible-protocol/src/lib.rs|2796
 shape-line|crates/crucible-qemu-plugin/src/abi.rs|2747
+shape-line|crates/crucible-qemu-plugin/src/abi/tests.rs|770
 shape-line|crates/crucible-qemu-plugin/src/block_io.rs|1763
 shape-line|crates/crucible-qemu-plugin/src/coverage.rs|1696
+shape-line|crates/crucible-qemu-plugin/src/coverage/tests.rs|696
 shape-line|crates/crucible-qemu-plugin/src/device_io.rs|792
 shape-line|crates/crucible-qemu-plugin/src/idle_loop.rs|2062
 shape-line|crates/crucible-qemu-plugin/src/inbound.rs|697
@@ -72,10 +74,13 @@ shape-line|crates/crucible-qemu-plugin/src/network_tx.rs|800
 shape-line|crates/crucible-qemu-plugin/src/ninep_io.rs|1742
 shape-line|crates/crucible-qemu-plugin/src/preemption.rs|986
 shape-line|crates/crucible-qemu-plugin/src/registration.rs|1450
+shape-line|crates/crucible-qemu-plugin/src/registration/tests.rs|710
 shape-line|crates/crucible-qemu-plugin/src/round_robin.rs|779
 shape-line|crates/crucible-qemu-plugin/src/runtime.rs|2095
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|2011
+shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|646
 shape-line|crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|1117
+shape-line|crates/crucible-qemu-plugin/src/runtime/tests.rs|1108
 shape-line|crates/crucible-qemu-plugin/src/setup.rs|1245
 shape-line|crates/crucible-qemu-plugin/src/time_control.rs|1217
 shape-line|crates/crucible-qemu-plugin/src/vcpu_introspection.rs|774

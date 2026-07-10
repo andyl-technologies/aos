@@ -8,30 +8,47 @@
 //! QEMU callback registration; optional white-box mode remains closed until its
 //! concrete trap and guest-memory callback ABI is available.
 
+pub(crate) mod callback_quiescence;
 mod live_callbacks;
+
+use callback_quiescence::LiveCallbackQuiescence;
 
 #[cfg(test)]
 use live_callbacks::clear_live_vcpu_time_state_for_test;
 pub use live_callbacks::{LiveDeviceCallbackError, LiveVcpuTimeCallbackError};
 use live_callbacks::{LiveVcpuTimeCallbackCapabilities, LiveVcpuTimeCallbackRegistrar};
 
+#[cfg(unix)]
+use std::io::{self, Write as _};
 use std::marker::PhantomPinned;
+#[cfg(unix)]
+use std::net::Shutdown;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use thiserror::Error;
 
+#[cfg(unix)]
+use crucible_protocol::ControlLifecycleStream;
+#[cfg(unix)]
+use crucible_shmem::{NodeSlot, RegionHeader};
+
 use crate::coverage::{LiveBasicBlockCoverage, LiveCoverageShmemProducer};
+#[cfg(unix)]
+use crate::setup::signal_teardown_wake_fd;
 use crate::{
     BootBarrierRelease, CoverageCapabilities, CoverageError, PluginArgs, PluginLifecyclePhase,
     PluginRegistrationReady, PluginRegistrationSequence, PluginRegistrationSequenceError,
     PluginRegistrationStep, PluginSetupCompletion, PluginSetupError, PluginStatePartition,
     PluginTimeControlOwnership, QemuAdvanceTimeNsFn, QemuBasicBlockCoverageApis,
-    QemuClockDeadlineFn, QemuPluginId, QemuRegisterWakeFdFn, QemuRequestTimeControlFn,
-    send_callback_registration_failure_ack,
+    QemuClockDeadlineFn, QemuPluginId, QemuRegisterWakeFdFn, QemuRequestShutdownFn,
+    QemuRequestTimeControlFn, send_callback_registration_failure_ack,
 };
+#[cfg(unix)]
+use crate::{PluginHostQuit, PluginQemuShutdownError, PluginTeardown};
 
 /// Callback families that must be live before the plugin can acknowledge setup.
 pub const REQUIRED_OWNED_CALLBACK_FAMILIES: &str = "vCPU init/resume/idle, network TX/RX, block submit/poll, 9p burst/submit/poll, and optional white-box doorbell";
@@ -85,8 +102,6 @@ pub(crate) fn install_failure_diagnostic(error: &PluginLiveBoundaryError) -> Str
 
 /// Writes a deterministic install failure to standard error.
 pub(crate) fn emit_install_failure_diagnostic(error: &PluginLiveBoundaryError) {
-    use std::io::Write as _;
-
     let diagnostic = install_failure_diagnostic(error);
     let _write_result = writeln!(std::io::stderr().lock(), "{diagnostic}");
 }
@@ -147,6 +162,7 @@ impl OwnedCallbackRegistrationMask {
 /// owned callback may be registered. The allocation remains pinned while the
 /// proof is live, so moving the proof never moves callback-addressable state.
 pub(crate) struct OwnedCallbackRuntimeState {
+    quiescence: Arc<LiveCallbackQuiescence>,
     live_vcpu_time: Option<Pin<Box<live_callbacks::LiveVcpuTimeCallbackState>>>,
     setup: PluginSetupCompletion,
     coverage: Option<LiveBasicBlockCoverage>,
@@ -156,6 +172,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
 impl OwnedCallbackRuntimeState {
     fn pin(setup: PluginSetupCompletion) -> Pin<Box<Self>> {
         Box::pin(Self {
+            quiescence: Arc::new(LiveCallbackQuiescence::new()),
             live_vcpu_time: None,
             setup,
             coverage: None,
@@ -233,6 +250,7 @@ impl OwnedCallbackRuntimeState {
             queued_idle_advance,
             header,
             mapped.node_slot,
+            Arc::clone(&state.quiescence),
         )?
         .attach_network(slot_index, mapped.first, mapped.second, network_rx)?;
         let block_slot = crucible_shmem::SLOT_BLK_IO as u32;
@@ -287,7 +305,11 @@ impl OwnedCallbackRuntimeState {
             )
         };
         state.coverage = Some(LiveBasicBlockCoverage::register(
-            plugin_id, callback, apis, output,
+            plugin_id,
+            callback,
+            apis,
+            output,
+            Arc::clone(&state.quiescence),
         )?);
         Ok(())
     }
@@ -405,6 +427,136 @@ impl RequiredOwnedCallbacksRegistered {
     fn coverage_is_registered_for_test(&self) -> bool {
         self.state.as_ref().get_ref().coverage.is_some()
     }
+
+    #[cfg(unix)]
+    fn control_teardown_handle(
+        &self,
+        slot_index: u32,
+    ) -> Result<LiveControlTeardownHandle, PluginRuntimeInstallError> {
+        let state = self.state.as_ref().get_ref();
+        let slot = state
+            .setup
+            .mapped_region()
+            .node_slot(slot_index)
+            .map_err(|source| PluginRuntimeInstallError::TeardownSlot { source })?;
+        Ok(LiveControlTeardownHandle {
+            quiescence: Arc::clone(&state.quiescence),
+            header_address: std::ptr::from_ref(state.setup.mapped_region().header()) as usize,
+            slot_address: std::ptr::from_ref(slot) as usize,
+            wake_fd: state.setup.wake_fd().as_raw_fd(),
+        })
+    }
+}
+
+#[cfg(unix)]
+struct PluginSetupWriter<'a, S>(&'a mut ControlLifecycleStream<S>);
+
+#[cfg(unix)]
+impl<S> std::io::Write for PluginSetupWriter<'_, S>
+where
+    S: std::io::Write,
+{
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0
+            .plugin_setup_io_mut()
+            .map_err(io::Error::other)?
+            .write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0
+            .plugin_setup_io_mut()
+            .map_err(io::Error::other)?
+            .flush()
+    }
+}
+
+#[cfg(unix)]
+struct LiveControlTeardownHandle {
+    quiescence: Arc<LiveCallbackQuiescence>,
+    header_address: usize,
+    slot_address: usize,
+    wake_fd: i32,
+}
+
+#[cfg(unix)]
+impl LiveControlTeardownHandle {
+    fn quiesce(&self) -> &NodeSlot {
+        self.quiescence.close();
+        let header = self.header();
+        let slot = self.slot();
+        if let Err(error) = header.request_shutdown([slot]) {
+            emit_control_worker_diagnostic(&format!("shared-memory teardown wake failed: {error}"));
+        }
+        if let Err(error) = signal_teardown_wake_fd(self.wake_fd) {
+            emit_control_worker_diagnostic(&format!("QEMU teardown wake failed: {error}"));
+        }
+        self.quiescence.wait_until_drained();
+        slot
+    }
+
+    fn header(&self) -> &RegionHeader {
+        // SAFETY: the active runtime owns the mapping and its `Drop` joins the
+        // control worker before dropping callback state. Production leaks that
+        // owner for QEMU's process lifetime.
+        unsafe { &*(self.header_address as *const RegionHeader) }
+    }
+
+    fn slot(&self) -> &NodeSlot {
+        // SAFETY: construction validated this slot in the same mapping whose
+        // owner is retained until after the worker joins.
+        unsafe { &*(self.slot_address as *const NodeSlot) }
+    }
+}
+
+#[cfg(unix)]
+fn run_control_worker(
+    mut control: ControlLifecycleStream<UnixStream>,
+    teardown_handle: LiveControlTeardownHandle,
+    request_shutdown: QemuRequestShutdownFn,
+) {
+    let host_quit = PluginHostQuit::read_from_run_control(&mut control);
+    let slot = teardown_handle.quiesce();
+    let mut teardown = PluginTeardown::new();
+    let failure = host_quit.is_err();
+    if let Err(error) = host_quit.as_ref() {
+        emit_control_worker_diagnostic(&format!(
+            "rejected run control and selected fail-loud shutdown: {error}"
+        ));
+    }
+    let mut shutdown = LiveQemuShutdown {
+        request_shutdown,
+        failure,
+    };
+    let result = match host_quit {
+        Ok(host_quit) => teardown.teardown_after_host_quit(host_quit, slot, &mut shutdown),
+        Err(_error) => teardown.teardown_after_run_control_fault(slot, &mut shutdown),
+    };
+    if let Err(error) = result {
+        emit_control_worker_diagnostic(&format!("control teardown failed: {error}"));
+        std::process::abort();
+    }
+}
+
+#[cfg(unix)]
+struct LiveQemuShutdown {
+    request_shutdown: QemuRequestShutdownFn,
+    failure: bool,
+}
+
+#[cfg(unix)]
+impl crate::PluginQemuShutdown for LiveQemuShutdown {
+    fn initiate_orderly_qemu_shutdown(&mut self) -> Result<(), PluginQemuShutdownError> {
+        (self.request_shutdown)(i32::from(self.failure));
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn emit_control_worker_diagnostic(message: &str) {
+    use std::io::Write as _;
+
+    let _write_result = writeln!(std::io::stderr().lock(), "crucible-qemu-plugin: {message}");
 }
 
 /// QEMU functions needed by the live registration sequence.
@@ -416,6 +568,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     pub(crate) register_time_advance_cb: Option<crate::QemuRegisterTimeAdvanceCbFn>,
     pub(crate) register_wake_fd: QemuRegisterWakeFdFn,
+    pub(crate) request_shutdown: QemuRequestShutdownFn,
     pub(crate) basic_block_coverage: Option<QemuBasicBlockCoverageApis>,
     pub(crate) register_vcpu_init: Option<crate::QemuRegisterVcpuInitCbFn>,
     pub(crate) register_vcpu_idle_resume: Option<crate::QemuRegisterVcpuIdleResumeCbFn>,
@@ -637,15 +790,33 @@ impl OwnedCallbackRegistrar for FailClosedOwnedCallbackRegistrar {
 }
 
 /// Process-lifetime state retained after a successful plugin installation.
+///
+/// Production publication deliberately forgets this owner, so its mapping and
+/// callback allocations remain valid whether the control worker is blocked,
+/// running teardown, or has already returned after requesting QEMU shutdown.
+/// Non-published owners shut down and join the worker in [`Drop`] before Rust
+/// may release any mapped callback state.
 pub struct PluginRuntimeOwner {
     plugin_id: QemuPluginId,
     args: PluginArgs,
     state: PluginStatePartition,
-    _control_stream: UnixStream,
+    control_interrupt: UnixStream,
+    #[cfg(test)]
+    _retained_control: Option<ControlLifecycleStream<UnixStream>>,
+    control_worker: Option<std::thread::JoinHandle<()>>,
     _time_control: PluginTimeControlOwnership,
     _callbacks: RequiredOwnedCallbacksRegistered,
     _boot_release: BootBarrierRelease,
     _ready: PluginRegistrationReady,
+}
+
+impl Drop for PluginRuntimeOwner {
+    fn drop(&mut self) {
+        let _shutdown = self.control_interrupt.shutdown(Shutdown::Both);
+        if let Some(worker) = self.control_worker.take() {
+            let _joined = worker.join();
+        }
+    }
 }
 
 impl PluginRuntimeOwner {
@@ -691,6 +862,11 @@ impl PluginRuntimeReservation {
     }
 
     /// Retains the completed runtime and publishes the active state infallibly.
+    ///
+    /// Forgetting the owner is the production process-lifetime guarantee for
+    /// QEMU callback userdata and for any worker that has not yet returned.
+    /// The process exits after the worker's shutdown request, so neither the
+    /// completed nor active worker can outlive the retained mapping.
     pub(crate) fn publish(mut self, runtime: PluginRuntimeOwner) {
         std::mem::forget(runtime);
         RUNTIME_STATE.store(RUNTIME_ACTIVE, Ordering::Release);
@@ -791,26 +967,36 @@ where
         .preflight(&args)
         .map_err(|source| PluginRuntimeInstallError::OwnedCallbacks { source })?;
 
-    let mut control_stream =
-        crate::abi::duplicate_control_stream(args.sim_fd()).map_err(|source| {
-            PluginRuntimeInstallError::DuplicateControlFd {
-                fd: args.sim_fd(),
-                source,
-            }
-        })?;
+    let control_stream = crate::abi::duplicate_control_stream(args.sim_fd()).map_err(|source| {
+        PluginRuntimeInstallError::DuplicateControlFd {
+            fd: args.sim_fd(),
+            source,
+        }
+    })?;
+    let control_interrupt = control_stream.try_clone().map_err(|source| {
+        PluginRuntimeInstallError::DuplicateControlFd {
+            fd: args.sim_fd(),
+            source,
+        }
+    })?;
+    let mut control_stream = ControlLifecycleStream::connected_unix_stream(control_stream)
+        .map_err(|source| PluginRuntimeInstallError::ControlLifecycle { source })?;
     reservation.mark_irreversible();
     let handshake = sequence
-        .perform_control_handshake(&mut control_stream, &args)
+        .perform_control_handshake_lifecycle(&mut control_stream, &args)
         .map_err(registration_error)?;
     let time_control = sequence
         .request_time_control(capabilities.request_time_control)
         .map_err(registration_error)?;
     let setup = sequence
-        .receive_setup_with_descriptors(&mut control_stream)
+        .receive_setup_with_descriptors_lifecycle(&mut control_stream)
         .map_err(registration_error)?;
-    let setup = sequence
-        .prepare_setup_completion(&mut control_stream, setup, handshake)
-        .map_err(registration_error)?;
+    let setup = {
+        let mut setup_writer = PluginSetupWriter(&mut control_stream);
+        sequence
+            .prepare_setup_completion(&mut setup_writer, setup, handshake)
+            .map_err(registration_error)?
+    };
 
     let callback_state = OwnedCallbackRuntimeState::pin(setup);
     let mut post_registration_stage = PostRegistrationStage::RegisterCallbacks;
@@ -822,7 +1008,7 @@ where
         {
             Ok(registration_mask) => registration_mask,
             Err(source) => {
-                return Err(fail_owned_callback_registration(
+                return Err(fail_owned_callback_registration_lifecycle(
                     &mut sequence,
                     &mut control_stream,
                     source,
@@ -831,7 +1017,7 @@ where
             }
         };
         if let Err(source) = registration_mask.validate_for(&args) {
-            return Err(fail_owned_callback_registration(
+            return Err(fail_owned_callback_registration_lifecycle(
                 &mut sequence,
                 &mut control_stream,
                 source,
@@ -857,7 +1043,7 @@ where
         ) {
             Ok(capabilities) => capabilities,
             Err(source) => {
-                return Err(fail_post_registration_before_ready_ack(
+                return Err(fail_post_registration_before_ready_ack_lifecycle(
                     &mut control_stream,
                     registration_error(source),
                     &mut acknowledgement_state,
@@ -867,11 +1053,15 @@ where
 
         post_registration_stage = PostRegistrationStage::RegisterWakeFd;
         maybe_inject_post_registration_panic(post_registration_stage);
-        if let Err(source) = sequence.register_wake_fd_after_callbacks(
-            &mut control_stream,
-            retained.registered_mut(),
-            capabilities.register_wake_fd,
-        ) {
+        let wake_registration = {
+            let mut setup_writer = PluginSetupWriter(&mut control_stream);
+            sequence.register_wake_fd_after_callbacks(
+                &mut setup_writer,
+                retained.registered_mut(),
+                capabilities.register_wake_fd,
+            )
+        };
+        if let Err(source) = wake_registration {
             acknowledgement_state = PostRegistrationAckState::FailureAttempted;
             return Err(registration_error(source));
         }
@@ -879,13 +1069,19 @@ where
         post_registration_stage = PostRegistrationStage::SendReadyAck;
         maybe_inject_post_registration_panic(post_registration_stage);
         acknowledgement_state = PostRegistrationAckState::ReadyAttempted;
-        let setup_ack = sequence
-            .send_ready_setup_ack(
-                &mut control_stream,
-                &callback_capabilities,
-                retained.registered(),
-            )
-            .map_err(registration_error)?;
+        let setup_ack = {
+            let mut setup_writer = PluginSetupWriter(&mut control_stream);
+            sequence
+                .send_ready_setup_ack(
+                    &mut setup_writer,
+                    &callback_capabilities,
+                    retained.registered(),
+                )
+                .map_err(registration_error)?
+        };
+        control_stream
+            .plugin_commit_ready_setup_ack()
+            .map_err(|source| PluginRuntimeInstallError::ControlLifecycle { source })?;
         acknowledgement_state = PostRegistrationAckState::ReadySent;
 
         post_registration_stage = PostRegistrationStage::WaitBootBarrier;
@@ -907,19 +1103,48 @@ where
     }));
 
     match post_registration {
-        Ok(Ok((callbacks_registered, boot_release, ready))) => Ok(PluginRuntimeOwner {
-            plugin_id,
-            args,
-            state,
-            _control_stream: control_stream,
-            _time_control: time_control,
-            _callbacks: callbacks_registered,
-            _boot_release: boot_release,
-            _ready: ready,
-        }),
+        Ok(Ok((callbacks_registered, boot_release, ready))) => {
+            if let Err(source) = control_stream.enter_run_via_shared_memory() {
+                fatal_policy.terminate(PluginRuntimeInstallError::ControlLifecycle { source });
+            }
+            #[cfg(not(test))]
+            let control_worker = {
+                let teardown_handle =
+                    match callbacks_registered.control_teardown_handle(args.slot()) {
+                        Ok(handle) => handle,
+                        Err(error) => fatal_policy.terminate(error),
+                    };
+                let request_shutdown = capabilities.request_shutdown;
+                let control_worker = match std::thread::Builder::new()
+                    .name(String::from("crucible-run-control"))
+                    .spawn(move || {
+                        run_control_worker(control_stream, teardown_handle, request_shutdown);
+                    }) {
+                    Ok(worker) => worker,
+                    Err(source) => fatal_policy
+                        .terminate(PluginRuntimeInstallError::ControlWorkerSpawn { source }),
+                };
+                Some(control_worker)
+            };
+            #[cfg(test)]
+            let (retained_control, control_worker) = (Some(control_stream), None);
+            Ok(PluginRuntimeOwner {
+                plugin_id,
+                args,
+                state,
+                control_interrupt,
+                #[cfg(test)]
+                _retained_control: retained_control,
+                control_worker,
+                _time_control: time_control,
+                _callbacks: callbacks_registered,
+                _boot_release: boot_release,
+                _ready: ready,
+            })
+        }
         Ok(Err(error)) => fatal_policy.terminate(error),
         Err(_panic) => {
-            let error = post_registration_panic_error(
+            let error = post_registration_panic_error_lifecycle(
                 &mut control_stream,
                 post_registration_stage,
                 &mut acknowledgement_state,
@@ -956,6 +1181,20 @@ where
     }
 }
 
+#[cfg(unix)]
+fn fail_owned_callback_registration_lifecycle<S>(
+    sequence: &mut PluginRegistrationSequence,
+    control_stream: &mut ControlLifecycleStream<S>,
+    source: OwnedCallbackRegistrationError,
+    acknowledgement_state: &mut PostRegistrationAckState,
+) -> PluginRuntimeInstallError
+where
+    S: std::io::Write,
+{
+    let mut writer = PluginSetupWriter(control_stream);
+    fail_owned_callback_registration(sequence, &mut writer, source, acknowledgement_state)
+}
+
 fn fail_post_registration_before_ready_ack<W>(
     control_stream: &mut W,
     error: PluginRuntimeInstallError,
@@ -973,6 +1212,19 @@ where
             ack_source,
         },
     }
+}
+
+#[cfg(unix)]
+fn fail_post_registration_before_ready_ack_lifecycle<S>(
+    control_stream: &mut ControlLifecycleStream<S>,
+    error: PluginRuntimeInstallError,
+    acknowledgement_state: &mut PostRegistrationAckState,
+) -> PluginRuntimeInstallError
+where
+    S: std::io::Write,
+{
+    let mut writer = PluginSetupWriter(control_stream);
+    fail_post_registration_before_ready_ack(&mut writer, error, acknowledgement_state)
 }
 
 fn post_registration_panic_error<W>(
@@ -1007,6 +1259,19 @@ where
             ack_source,
         },
     }
+}
+
+#[cfg(unix)]
+fn post_registration_panic_error_lifecycle<S>(
+    control_stream: &mut ControlLifecycleStream<S>,
+    stage: PostRegistrationStage,
+    acknowledgement_state: &mut PostRegistrationAckState,
+) -> PluginRuntimeInstallError
+where
+    S: std::io::Write,
+{
+    let mut writer = PluginSetupWriter(control_stream);
+    post_registration_panic_error(&mut writer, stage, acknowledgement_state)
 }
 
 /// An error produced while registering plugin-owned callbacks.
@@ -1056,6 +1321,24 @@ pub enum PluginRuntimeInstallError {
         /// Rejected inherited descriptor.
         fd: i32,
         /// Underlying descriptor error.
+        source: std::io::Error,
+    },
+    /// The lifecycle-aware control stream could not be advanced safely.
+    #[error("plugin control lifecycle failed: {source}")]
+    ControlLifecycle {
+        /// Underlying control lifecycle or frame I/O error.
+        source: crucible_protocol::ControlLifecycleIoError,
+    },
+    /// The teardown worker could not bind its stable mapped node slot.
+    #[error("binding plugin teardown slot failed: {source}")]
+    TeardownSlot {
+        /// Underlying mapped-region access error.
+        source: crucible_shmem::MappedSetupRegionAccessError,
+    },
+    /// The lifecycle control worker thread could not be started.
+    #[error("spawning plugin run-control worker failed: {source}")]
+    ControlWorkerSpawn {
+        /// Underlying host thread-creation error.
         source: std::io::Error,
     },
     /// A typed registration step failed.
@@ -1123,973 +1406,4 @@ pub enum PluginRuntimeInstallError {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-
-    use std::cell::Cell;
-    use std::sync::Mutex;
-    use std::sync::atomic::AtomicU64;
-
-    use crucible_protocol::{SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED};
-
-    mod support;
-    use support::*;
-
-    struct PanickingPostRegistrationFatalPolicy;
-
-    struct TestFatalTermination(PluginRuntimeInstallError);
-
-    impl PostRegistrationFatalPolicy for PanickingPostRegistrationFatalPolicy {
-        fn terminate(&self, error: PluginRuntimeInstallError) -> ! {
-            std::panic::panic_any(TestFatalTermination(error));
-        }
-    }
-
-    struct TestPostRegistrationPanicGuard;
-
-    impl TestPostRegistrationPanicGuard {
-        fn install(stage: PostRegistrationStage) -> Self {
-            TEST_POST_REGISTRATION_PANIC_STAGE.store(stage as u8, Ordering::Relaxed);
-            Self
-        }
-    }
-
-    impl Drop for TestPostRegistrationPanicGuard {
-        fn drop(&mut self) {
-            TEST_POST_REGISTRATION_PANIC_STAGE.store(u8::MAX, Ordering::Relaxed);
-        }
-    }
-
-    fn install_expecting_post_registration_fatal<R>(
-        plugin_id: QemuPluginId,
-        fixture: &LiveInstallFixture,
-        capabilities: LiveInstallCapabilities,
-        callback_registrar: &R,
-        reservation: &mut PluginRuntimeReservation,
-    ) -> PluginRuntimeInstallError
-    where
-        R: OwnedCallbackRegistrar,
-    {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            install_live_runtime_with_fatal_policy(
-                plugin_id,
-                fixture.args(),
-                test_state(),
-                capabilities,
-                callback_registrar,
-                reservation,
-                &PanickingPostRegistrationFatalPolicy,
-            )
-        }));
-        match result {
-            Ok(Ok(_runtime)) => panic!("post-registration failure unexpectedly activated runtime"),
-            Ok(Err(error)) => {
-                panic!("post-registration failure returned to QEMU instead of terminating: {error}")
-            }
-            Err(payload) => match payload.downcast::<TestFatalTermination>() {
-                Ok(termination) => termination.0,
-                Err(payload) => std::panic::resume_unwind(payload),
-            },
-        }
-    }
-
-    struct SuccessfulCallbackRegistrar;
-
-    static CALLBACK_MODEL_REGISTERED_PLUGIN_ID: AtomicU64 = AtomicU64::new(0);
-
-    impl OwnedCallbackRegistrar for SuccessfulCallbackRegistrar {
-        fn preflight(&self, _args: &PluginArgs) -> Result<(), OwnedCallbackRegistrationError> {
-            Ok(())
-        }
-
-        fn register(
-            &self,
-            args: &PluginArgs,
-            _state: Pin<&mut OwnedCallbackRuntimeState>,
-        ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
-            Ok(OwnedCallbackRegistrationMask::required_for(args))
-        }
-    }
-
-    fn coverage_callback_model_apis() -> crate::QemuBasicBlockCoverageApis {
-        crate::QemuBasicBlockCoverageApis::new(
-            coverage_callback_model_register_tb_trans_cb,
-            coverage_callback_model_register_tb_exec_cb,
-            coverage_callback_model_tb_vaddr,
-            coverage_callback_model_tb_n_insns,
-            coverage_callback_model_tb_get_insn,
-            coverage_callback_model_insn_size,
-            coverage_callback_model_icount_at_tb_entry,
-            coverage_callback_model_register_flush_cb,
-        )
-    }
-
-    extern "C" fn coverage_callback_model_register_tb_trans_cb(
-        plugin_id: QemuPluginId,
-        callback: Option<crate::QemuVcpuTbTransCbFn>,
-    ) {
-        assert!(callback.is_some());
-        CALLBACK_MODEL_REGISTERED_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
-    }
-
-    extern "C" fn coverage_callback_model_register_tb_exec_cb(
-        _tb: *mut crate::QemuPluginTb,
-        _callback: Option<crate::QemuVcpuTbExecCbFn>,
-        _flags: std::os::raw::c_int,
-        _userdata: *mut std::os::raw::c_void,
-    ) {
-    }
-
-    extern "C" fn coverage_callback_model_tb_vaddr(_tb: *const crate::QemuPluginTb) -> u64 {
-        0
-    }
-
-    extern "C" fn coverage_callback_model_tb_n_insns(_tb: *const crate::QemuPluginTb) -> usize {
-        0
-    }
-
-    extern "C" fn coverage_callback_model_tb_get_insn(
-        _tb: *const crate::QemuPluginTb,
-        _index: usize,
-    ) -> *mut crate::QemuPluginInsn {
-        std::ptr::null_mut()
-    }
-
-    extern "C" fn coverage_callback_model_insn_size(_insn: *const crate::QemuPluginInsn) -> usize {
-        0
-    }
-
-    extern "C" fn coverage_callback_model_icount_at_tb_entry(
-        _tb_insns: u64,
-        entry_icount: *mut u64,
-    ) -> std::os::raw::c_int {
-        if entry_icount.is_null() {
-            return -1;
-        }
-        // SAFETY: this test stub just validated the output pointer.
-        unsafe { *entry_icount = 0 };
-        0
-    }
-
-    extern "C" fn coverage_callback_model_register_flush_cb(
-        _plugin_id: QemuPluginId,
-        _callback: crate::QemuPluginSimpleCbFn,
-    ) {
-    }
-
-    #[derive(Clone, Copy)]
-    struct RegisteredLiveVcpuTimeCallbacks {
-        publish: crate::QemuSimShmemPublishIcountCbFn,
-        ceiling: crate::QemuSimShmemMaxAdvanceIcountCbFn,
-        userdata: usize,
-    }
-
-    static REGISTERED_LIVE_VCPU_TIME_CALLBACKS: Mutex<Option<RegisteredLiveVcpuTimeCallbacks>> =
-        Mutex::new(None);
-    static LIVE_VCPU_INIT_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
-    static LIVE_IDLE_RESUME_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
-    static LIVE_SIM_DISPATCH_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
-    static LIVE_TIME_ADVANCE_COMPLETION_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
-    static LIVE_NETWORK_TX_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
-    static LIVE_BLOCK_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
-    static LIVE_NINEP_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
-
-    fn live_registration_counts() -> [u64; 7] {
-        [
-            LIVE_VCPU_INIT_REGISTRATIONS.load(Ordering::SeqCst),
-            LIVE_IDLE_RESUME_REGISTRATIONS.load(Ordering::SeqCst),
-            LIVE_SIM_DISPATCH_REGISTRATIONS.load(Ordering::SeqCst),
-            LIVE_TIME_ADVANCE_COMPLETION_REGISTRATIONS.load(Ordering::SeqCst),
-            LIVE_NETWORK_TX_REGISTRATIONS.load(Ordering::SeqCst),
-            LIVE_BLOCK_REGISTRATIONS.load(Ordering::SeqCst),
-            LIVE_NINEP_REGISTRATIONS.load(Ordering::SeqCst),
-        ]
-    }
-
-    struct LiveVcpuTimeThenTestCompletionRegistrar {
-        live: LiveVcpuTimeCallbackRegistrar,
-    }
-
-    impl OwnedCallbackRegistrar for LiveVcpuTimeThenTestCompletionRegistrar {
-        fn preflight(&self, args: &PluginArgs) -> Result<(), OwnedCallbackRegistrationError> {
-            self.live.preflight(args)
-        }
-
-        fn register(
-            &self,
-            args: &PluginArgs,
-            mut state: Pin<&mut OwnedCallbackRuntimeState>,
-        ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
-            let vcpu = self.live.register(args, state.as_mut())?;
-            assert_eq!(vcpu, OwnedCallbackRegistrationMask::base_required());
-            Ok(OwnedCallbackRegistrationMask::required_for(args))
-        }
-    }
-
-    extern "C" fn capture_vcpu_init_registration(
-        plugin_id: QemuPluginId,
-        callback: crate::QemuVcpuSimpleCbFn,
-    ) {
-        LIVE_VCPU_INIT_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-        callback(plugin_id, 0);
-    }
-
-    extern "C" fn capture_vcpu_idle_resume_registration(
-        idle_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
-        resume_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
-        userdata: *mut std::ffi::c_void,
-    ) {
-        assert!(idle_callback.is_some());
-        assert!(resume_callback.is_some());
-        assert!(!userdata.is_null());
-        LIVE_IDLE_RESUME_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    extern "C" fn capture_sim_dispatch_registration(
-        publish: Option<crate::QemuSimShmemPublishIcountCbFn>,
-        ceiling: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
-        userdata: *mut std::ffi::c_void,
-    ) {
-        let Some(publish) = publish else {
-            panic!("live registrar must install the sim publish callback");
-        };
-        let Some(ceiling) = ceiling else {
-            panic!("live registrar must install the sim ceiling callback");
-        };
-        LIVE_SIM_DISPATCH_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-        let mut capture = REGISTERED_LIVE_VCPU_TIME_CALLBACKS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let current = capture.get_or_insert(RegisteredLiveVcpuTimeCallbacks {
-            publish,
-            ceiling,
-            userdata: userdata as usize,
-        });
-        assert_eq!(current.userdata, userdata as usize);
-        current.publish = publish;
-        current.ceiling = ceiling;
-    }
-
-    extern "C" fn capture_time_advance_completion_registration(
-        callback: Option<crate::QemuTimeAdvanceCompletionCbFn>,
-        userdata: *mut std::ffi::c_void,
-    ) -> std::os::raw::c_int {
-        assert!(callback.is_some());
-        assert!(!userdata.is_null());
-        LIVE_TIME_ADVANCE_COMPLETION_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-        0
-    }
-
-    extern "C" fn capture_network_tx_registration(
-        callback: Option<crate::QemuNetTxCbFn>,
-        userdata: *mut std::ffi::c_void,
-    ) {
-        assert!(callback.is_some());
-        assert!(!userdata.is_null());
-        LIVE_NETWORK_TX_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    extern "C" fn capture_block_registration(
-        submit: Option<crate::QemuBlkSubmitCbFn>,
-        poll: Option<crate::QemuBlkPollCbFn>,
-        userdata: *mut std::ffi::c_void,
-    ) {
-        assert!(submit.is_some());
-        assert!(poll.is_some());
-        assert!(!userdata.is_null());
-        LIVE_BLOCK_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    extern "C" fn capture_ninep_registration(
-        burst_start: Option<crate::QemuNinePBurstCbFn>,
-        submit: Option<crate::QemuNinePSubmitCbFn>,
-        poll: Option<crate::QemuNinePPollCbFn>,
-        burst_done: Option<crate::QemuNinePBurstCbFn>,
-        userdata: *mut std::ffi::c_void,
-    ) {
-        assert!(burst_start.is_some());
-        assert!(submit.is_some());
-        assert!(poll.is_some());
-        assert!(burst_done.is_some());
-        assert!(!userdata.is_null());
-        LIVE_NINEP_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
-    }
-
-    extern "C" fn live_network_send_ok(
-        _payload: *const u8,
-        _payload_len: usize,
-    ) -> std::os::raw::c_int {
-        0
-    }
-
-    extern "C" fn live_network_flush_ok() -> std::os::raw::c_int {
-        0
-    }
-
-    struct RecordingSuccessfulCallbackRegistrar {
-        state_address: Cell<usize>,
-        wake_fd: Cell<i32>,
-    }
-
-    impl RecordingSuccessfulCallbackRegistrar {
-        const fn new() -> Self {
-            Self {
-                state_address: Cell::new(0),
-                wake_fd: Cell::new(-1),
-            }
-        }
-    }
-
-    impl OwnedCallbackRegistrar for RecordingSuccessfulCallbackRegistrar {
-        fn preflight(&self, _args: &PluginArgs) -> Result<(), OwnedCallbackRegistrationError> {
-            Ok(())
-        }
-
-        fn register(
-            &self,
-            args: &PluginArgs,
-            mut state: Pin<&mut OwnedCallbackRuntimeState>,
-        ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
-            let userdata = state.as_mut().userdata();
-            let state = state.as_ref().get_ref();
-            self.state_address.set(userdata as usize);
-            self.wake_fd.set(state.setup.wake_fd().as_raw_fd());
-            Ok(OwnedCallbackRegistrationMask::required_for(args))
-        }
-    }
-
-    struct LateFailingCallbackRegistrar;
-
-    impl OwnedCallbackRegistrar for LateFailingCallbackRegistrar {
-        fn preflight(&self, _args: &PluginArgs) -> Result<(), OwnedCallbackRegistrationError> {
-            Ok(())
-        }
-
-        fn register(
-            &self,
-            _args: &PluginArgs,
-            _state: Pin<&mut OwnedCallbackRuntimeState>,
-        ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
-            Err(OwnedCallbackRegistrationError::AdaptersUnavailable {
-                families: REQUIRED_OWNED_CALLBACK_FAMILIES,
-            })
-        }
-    }
-
-    struct PartiallyFailingCallbackRegistrar {
-        state_address: Cell<usize>,
-        wake_fd: Cell<i32>,
-    }
-
-    impl PartiallyFailingCallbackRegistrar {
-        const fn new() -> Self {
-            Self {
-                state_address: Cell::new(0),
-                wake_fd: Cell::new(-1),
-            }
-        }
-    }
-
-    impl OwnedCallbackRegistrar for PartiallyFailingCallbackRegistrar {
-        fn preflight(&self, _args: &PluginArgs) -> Result<(), OwnedCallbackRegistrationError> {
-            Ok(())
-        }
-
-        fn register(
-            &self,
-            _args: &PluginArgs,
-            mut state: Pin<&mut OwnedCallbackRuntimeState>,
-        ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
-            let userdata = state.as_mut().userdata();
-            let state = state.as_ref().get_ref();
-            self.state_address.set(userdata as usize);
-            assert_eq!(userdata.cast_const(), std::ptr::from_ref(state).cast());
-            self.wake_fd.set(state.setup.wake_fd().as_raw_fd());
-            Err(OwnedCallbackRegistrationError::AdaptersUnavailable {
-                families: REQUIRED_OWNED_CALLBACK_FAMILIES,
-            })
-        }
-    }
-
-    struct PartiallyPanickingCallbackRegistrar {
-        state_address: Cell<usize>,
-        wake_fd: Cell<i32>,
-    }
-
-    impl PartiallyPanickingCallbackRegistrar {
-        const fn new() -> Self {
-            Self {
-                state_address: Cell::new(0),
-                wake_fd: Cell::new(-1),
-            }
-        }
-    }
-
-    impl OwnedCallbackRegistrar for PartiallyPanickingCallbackRegistrar {
-        fn preflight(&self, _args: &PluginArgs) -> Result<(), OwnedCallbackRegistrationError> {
-            Ok(())
-        }
-
-        fn register(
-            &self,
-            _args: &PluginArgs,
-            mut state: Pin<&mut OwnedCallbackRuntimeState>,
-        ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
-            let userdata = state.as_mut().userdata();
-            let state = state.as_ref().get_ref();
-            self.state_address.set(userdata as usize);
-            self.wake_fd.set(state.setup.wake_fd().as_raw_fd());
-            panic!("injected panic after partial callback registration")
-        }
-    }
-
-    #[test]
-    fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-        let runtime = install_live_runtime(
-            41,
-            fixture.args(),
-            test_state(),
-            test_capabilities(),
-            &SuccessfulCallbackRegistrar,
-            &mut reservation,
-        )
-        .unwrap_or_else(|error| panic!("live install should complete: {error}"));
-
-        assert_eq!(runtime.plugin_id(), 41);
-        assert_eq!(runtime.args().slot(), 0);
-        assert_eq!(runtime.lifecycle_phase(), PluginLifecyclePhase::Active);
-        let callback_state_address = runtime._callbacks.state_address_for_test();
-        let runtime = (runtime,);
-        assert_eq!(
-            runtime.0._callbacks.state_address_for_test(),
-            callback_state_address
-        );
-        assert_eq!(
-            runtime.0._callbacks.registration_mask().bits(),
-            OwnedCallbackRegistrationMask::BASE_REQUIRED
-        );
-        reservation.publish(runtime.0);
-        assert!(active_runtime_is_published());
-        join_host(host);
-    }
-
-    #[test]
-    fn install_coverage_on_owns_callback_model_registration() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let _callback_model_guard = isolate_coverage_callback_model_for_test();
-        CALLBACK_MODEL_REGISTERED_PLUGIN_ID.store(0, Ordering::SeqCst);
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
-        let mut capabilities = test_capabilities();
-        capabilities.basic_block_coverage = Some(coverage_callback_model_apis());
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-
-        let runtime = install_live_runtime(
-            0xC0E0,
-            fixture.coverage_args(),
-            test_state(),
-            capabilities,
-            &SuccessfulCallbackRegistrar,
-            &mut reservation,
-        )
-        .unwrap_or_else(|error| panic!("coverage callback model should install: {error}"));
-
-        assert_eq!(
-            CALLBACK_MODEL_REGISTERED_PLUGIN_ID.load(Ordering::SeqCst),
-            0xC0E0
-        );
-        assert!(runtime._callbacks.coverage_is_registered_for_test());
-        drop(runtime);
-        join_host(host);
-    }
-
-    #[test]
-    fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        *REGISTERED_LIVE_VCPU_TIME_CALLBACKS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        LIVE_IDLE_RESUME_REGISTRATIONS.store(0, Ordering::SeqCst);
-        LIVE_TIME_ADVANCE_COMPLETION_REGISTRATIONS.store(0, Ordering::SeqCst);
-        LIVE_NETWORK_TX_REGISTRATIONS.store(0, Ordering::SeqCst);
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
-        let execution_model = crate::QemuPluginExecutionModel::validate(
-            1,
-            crate::QemuTcgThreading::SingleThreadedRoundRobin,
-        )
-        .unwrap_or_else(|error| panic!("test execution model should validate: {error}"));
-        let state = test_state();
-        let registrar = LiveVcpuTimeThenTestCompletionRegistrar {
-            live: LiveVcpuTimeCallbackRegistrar::new(
-                51,
-                execution_model,
-                LiveVcpuTimeCallbackCapabilities {
-                    icount_raw: test_icount_raw,
-                    clock_deadline_ns: Some(test_deadline),
-                    advance_time_ns: Some(test_direct_advance),
-                    register_vcpu_init: Some(capture_vcpu_init_registration),
-                    register_vcpu_idle_resume: Some(capture_vcpu_idle_resume_registration),
-                    register_sim_shmem_dispatch: Some(capture_sim_dispatch_registration),
-                    register_time_advance_cb: Some(capture_time_advance_completion_registration),
-                    register_net_tx: Some(capture_network_tx_registration),
-                    net_send: Some(live_network_send_ok),
-                    net_flush: Some(live_network_flush_ok),
-                    register_block: Some(capture_block_registration),
-                    register_ninep: Some(capture_ninep_registration),
-                },
-            ),
-        };
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-        let runtime = install_live_runtime(
-            51,
-            fixture.args(),
-            state,
-            test_capabilities(),
-            &registrar,
-            &mut reservation,
-        )
-        .unwrap_or_else(|error| panic!("live callback slice should install: {error}"));
-
-        let callbacks = REGISTERED_LIVE_VCPU_TIME_CALLBACKS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .unwrap_or_else(|| panic!("live callback registrations should be captured"));
-        let userdata = callbacks.userdata as *mut std::ffi::c_void;
-        assert_ne!(callbacks.userdata, 0);
-        assert_eq!((callbacks.ceiling)(userdata), 1);
-        (callbacks.publish)(1, userdata);
-        assert_eq!(LIVE_IDLE_RESUME_REGISTRATIONS.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            LIVE_TIME_ADVANCE_COMPLETION_REGISTRATIONS.load(Ordering::SeqCst),
-            1
-        );
-        assert_eq!(LIVE_NETWORK_TX_REGISTRATIONS.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            runtime._callbacks.registration_mask(),
-            OwnedCallbackRegistrationMask::required_for(&fixture.args())
-        );
-
-        drop(runtime);
-        join_host(host);
-    }
-
-    #[test]
-    fn late_callback_failure_sends_nonzero_setup_ack_then_invokes_fatal_policy() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_SETUP_FAILED);
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-        let error = install_expecting_post_registration_fatal(
-            42,
-            &fixture,
-            test_capabilities(),
-            &LateFailingCallbackRegistrar,
-            &mut reservation,
-        );
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::OwnedCallbacks { .. }
-        ));
-        join_host(host);
-    }
-
-    #[test]
-    fn partial_callback_failure_retains_the_pinned_userdata_owner() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_SETUP_FAILED);
-        let registrar = PartiallyFailingCallbackRegistrar::new();
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-        let error = install_expecting_post_registration_fatal(
-            44,
-            &fixture,
-            test_capabilities(),
-            &registrar,
-            &mut reservation,
-        );
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::OwnedCallbacks { .. }
-        ));
-        assert_ne!(registrar.state_address.get(), 0);
-        // SAFETY: `F_GETFD` only observes whether the registrar-recorded
-        // descriptor remains owned by the intentionally leaked pinned state.
-        assert!(unsafe { libc::fcntl(registrar.wake_fd.get(), libc::F_GETFD) } >= 0);
-        join_host(host);
-    }
-
-    #[test]
-    fn partial_callback_panic_retains_userdata_and_sends_one_failure_ack() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_SETUP_FAILED);
-        let registrar = PartiallyPanickingCallbackRegistrar::new();
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-        let error = install_expecting_post_registration_fatal(
-            45,
-            &fixture,
-            test_capabilities(),
-            &registrar,
-            &mut reservation,
-        );
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::CallbackRegistrationPanicked
-        ));
-        assert_ne!(registrar.state_address.get(), 0);
-        // SAFETY: `F_GETFD` observes that the panic path retained the pinned
-        // owner before invoking the fatal policy.
-        assert!(unsafe { libc::fcntl(registrar.wake_fd.get(), libc::F_GETFD) } >= 0);
-        join_host(host);
-    }
-
-    #[test]
-    fn callback_capability_failure_is_fatal_after_registration_begins() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_SETUP_FAILED);
-        let mut capabilities = test_capabilities();
-        capabilities.clock_deadline_ns = None;
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-
-        let error = install_expecting_post_registration_fatal(
-            46,
-            &fixture,
-            capabilities,
-            &SuccessfulCallbackRegistrar,
-            &mut reservation,
-        );
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::Registration { .. }
-        ));
-        join_host(host);
-    }
-
-    #[test]
-    fn finalize_panic_is_fatal_without_dropping_userdata_or_sending_a_second_ack() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let _panic_stage = TestPostRegistrationPanicGuard::install(PostRegistrationStage::Finalize);
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
-        let registrar = RecordingSuccessfulCallbackRegistrar::new();
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-
-        let error = install_expecting_post_registration_fatal(
-            47,
-            &fixture,
-            test_capabilities(),
-            &registrar,
-            &mut reservation,
-        );
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::PostRegistrationPanicked { stage: "Finalize" }
-        ));
-        assert_ne!(registrar.state_address.get(), 0);
-        // SAFETY: `F_GETFD` observes that the whole post-registration unwind
-        // scope retained the pinned owner before invoking the fatal policy.
-        assert!(unsafe { libc::fcntl(registrar.wake_fd.get(), libc::F_GETFD) } >= 0);
-        join_host(host);
-    }
-
-    #[test]
-    fn enabled_whitebox_without_live_abi_fails_before_control_or_qemu_side_effects() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        reset_capability_call_counts();
-        let registrations_before = live_registration_counts();
-        let fixture = LiveInstallFixture::new();
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-        let state = test_state();
-        let capabilities = test_capabilities();
-        let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
-            43,
-            state.lifecycle_core().execution_model(),
-            &capabilities,
-        );
-        let error = install_live_runtime(
-            43,
-            fixture.whitebox_args(),
-            state,
-            capabilities,
-            &callback_registrar,
-            &mut reservation,
-        )
-        .err()
-        .unwrap_or_else(|| panic!("missing white-box ABI must fail preflight"));
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::OwnedCallbacks {
-                source: OwnedCallbackRegistrationError::LiveVcpuTime {
-                    source: LiveVcpuTimeCallbackError::WhiteboxCallbackAbiUnavailable { .. },
-                },
-            }
-        ));
-        fixture.assert_control_silent();
-        assert_eq!(live_registration_counts(), registrations_before);
-        assert_eq!(time_control_request_count(), 0);
-        assert_eq!(wake_registration_count(), 0);
-        drop(reservation);
-        assert!(reserve_runtime().is_ok());
-    }
-
-    #[test]
-    fn production_registrar_installs_default_block_ninep_and_network_families() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        *REGISTERED_LIVE_VCPU_TIME_CALLBACKS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        let registrations_before = live_registration_counts();
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_host(SETUP_ACK_STATUS_READY);
-        let state = test_state();
-        let mut capabilities = test_capabilities();
-        capabilities.register_vcpu_init = Some(capture_vcpu_init_registration);
-        capabilities.register_vcpu_idle_resume = Some(capture_vcpu_idle_resume_registration);
-        capabilities.register_sim_shmem_dispatch = Some(capture_sim_dispatch_registration);
-        capabilities.register_time_advance_cb = Some(capture_time_advance_completion_registration);
-        capabilities.register_net_tx = Some(capture_network_tx_registration);
-        capabilities.net_send = Some(live_network_send_ok);
-        capabilities.net_flush = Some(live_network_flush_ok);
-        capabilities.register_block = Some(capture_block_registration);
-        capabilities.register_ninep = Some(capture_ninep_registration);
-        let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
-            54,
-            state.lifecycle_core().execution_model(),
-            &capabilities,
-        );
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-
-        let runtime = install_live_runtime(
-            54,
-            fixture.args(),
-            state,
-            capabilities,
-            &callback_registrar,
-            &mut reservation,
-        )
-        .unwrap_or_else(|error| panic!("default production callbacks should install: {error}"));
-
-        assert_eq!(
-            runtime._callbacks.registration_mask(),
-            OwnedCallbackRegistrationMask::base_required()
-        );
-        let registrations_after = live_registration_counts();
-        for (before, after) in registrations_before.into_iter().zip(registrations_after) {
-            assert_eq!(after, before + 1);
-        }
-        drop(runtime);
-        join_host(host);
-    }
-
-    #[test]
-    fn missing_live_vcpu_time_capability_fails_preflight_before_control_io() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        reset_capability_call_counts();
-        let fixture = LiveInstallFixture::new();
-        let state = test_state();
-        let mut capabilities = test_capabilities();
-        capabilities.register_sim_shmem_dispatch = None;
-        let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
-            52,
-            state.lifecycle_core().execution_model(),
-            &capabilities,
-        );
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-
-        let error = install_live_runtime(
-            52,
-            fixture.args(),
-            state,
-            capabilities,
-            &callback_registrar,
-            &mut reservation,
-        )
-        .err()
-        .unwrap_or_else(|| panic!("missing live callback capability must fail preflight"));
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::OwnedCallbacks {
-                source: OwnedCallbackRegistrationError::LiveVcpuTime {
-                    source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
-                        symbol: crate::QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
-                    },
-                },
-            }
-        ));
-        fixture.assert_control_silent();
-        assert_eq!(time_control_request_count(), 0);
-        assert_eq!(wake_registration_count(), 0);
-    }
-
-    #[test]
-    fn missing_live_network_capability_fails_preflight_before_control_io() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        reset_capability_call_counts();
-        let fixture = LiveInstallFixture::new();
-        let state = test_state();
-        let mut capabilities = test_capabilities();
-        capabilities.net_send = None;
-        let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
-            53,
-            state.lifecycle_core().execution_model(),
-            &capabilities,
-        );
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-
-        let error = install_live_runtime(
-            53,
-            fixture.args(),
-            state,
-            capabilities,
-            &callback_registrar,
-            &mut reservation,
-        )
-        .err()
-        .unwrap_or_else(|| panic!("missing live network capability must fail preflight"));
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::OwnedCallbacks {
-                source: OwnedCallbackRegistrationError::LiveVcpuTime {
-                    source: LiveVcpuTimeCallbackError::NetworkRx {
-                        source: crate::NetworkRxError::CapabilityUnavailable {
-                            symbol: crate::QEMU_PLUGIN_NET_SEND_SYMBOL,
-                        },
-                    },
-                },
-            }
-        ));
-        fixture.assert_control_silent();
-        assert_eq!(time_control_request_count(), 0);
-        assert_eq!(wake_registration_count(), 0);
-    }
-
-    #[test]
-    fn missing_live_ninep_capability_prevents_every_qemu_registration() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        reset_capability_call_counts();
-        let registrations_before = live_registration_counts();
-        let fixture = LiveInstallFixture::new();
-        let state = test_state();
-        let mut capabilities = test_capabilities();
-        capabilities.register_ninep = None;
-        let callback_registrar = FailClosedOwnedCallbackRegistrar::production(
-            55,
-            state.lifecycle_core().execution_model(),
-            &capabilities,
-        );
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-
-        let error = install_live_runtime(
-            55,
-            fixture.args(),
-            state,
-            capabilities,
-            &callback_registrar,
-            &mut reservation,
-        )
-        .err()
-        .unwrap_or_else(|| panic!("missing live 9p capability must fail preflight"));
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::OwnedCallbacks {
-                source: OwnedCallbackRegistrationError::LiveVcpuTime {
-                    source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
-                        symbol: crate::QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
-                    },
-                },
-            }
-        ));
-        fixture.assert_control_silent();
-        assert_eq!(live_registration_counts(), registrations_before);
-        assert_eq!(time_control_request_count(), 0);
-        assert_eq!(wake_registration_count(), 0);
-    }
-
-    #[test]
-    fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let fixture = LiveInstallFixture::new();
-        let host = fixture.spawn_mismatched_handshake_host();
-        let mut reservation = reserve_runtime()
-            .unwrap_or_else(|error| panic!("test runtime should reserve: {error}"));
-
-        let error = install_live_runtime(
-            48,
-            fixture.args(),
-            test_state(),
-            test_capabilities(),
-            &SuccessfulCallbackRegistrar,
-            &mut reservation,
-        )
-        .err()
-        .unwrap_or_else(|| panic!("mismatched handshake must fail install"));
-
-        assert!(matches!(
-            error,
-            PluginRuntimeInstallError::Registration { .. }
-        ));
-        drop(reservation);
-        assert_eq!(RUNTIME_STATE.load(Ordering::Acquire), RUNTIME_FAILED);
-        assert!(matches!(
-            reserve_runtime(),
-            Err(PluginRuntimeInstallError::RuntimeAlreadyReserved)
-        ));
-        join_host(host);
-    }
-
-    #[test]
-    fn duplicate_reservation_fails_before_protocol_io_can_begin() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        let _first = reserve_runtime()
-            .unwrap_or_else(|error| panic!("first runtime should reserve: {error}"));
-
-        assert!(matches!(
-            reserve_runtime(),
-            Err(PluginRuntimeInstallError::RuntimeAlreadyReserved)
-        ));
-    }
-
-    #[test]
-    fn irreversible_reservation_failure_blocks_second_install_attempt() {
-        let _runtime_state = isolate_runtime_state_for_test();
-        {
-            let mut reservation =
-                reserve_runtime().unwrap_or_else(|error| panic!("runtime should reserve: {error}"));
-            reservation.mark_irreversible();
-        }
-
-        assert_eq!(RUNTIME_STATE.load(Ordering::Acquire), RUNTIME_FAILED);
-        assert!(matches!(
-            reserve_runtime(),
-            Err(PluginRuntimeInstallError::RuntimeAlreadyReserved)
-        ));
-    }
-}
+mod tests;
