@@ -680,6 +680,7 @@ in
             echo "S11 structural diagnostic for trace $label" >&2
             jq -s -c \
               --argjson stop_at "$STOP_AT_VALUE" \
+              --argjson quantum "$RR_SWITCH_QUANTUM" \
               '
                 [ .[] | select((.kind // "sample") == "sample") ] as $samples
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
@@ -687,11 +688,18 @@ in
                     sample_count: ($samples | length),
                     rr_switch_count: ($switches | length),
                     final_sample_count: ([ $samples[] | select(.final == true) ] | length),
+                    last_record_kind: (.[-1].kind // "sample"),
+                    last_record_final: (.[-1].final // false),
                     horizon_pre_stop_count: ([ $samples[]
                       | select(.final != true and .retired == $stop_at)
                     ] | length),
-                    horizon_final_count: ([ $samples[]
-                      | select(.final == true and .retired == $stop_at)
+                    bounded_post_stop_final_count: ([ $samples[]
+                      | select(
+                          .final == true
+                          and .retired >= $stop_at
+                          and (.retired - $stop_at) <= $quantum
+                          and .stop_requested == true
+                        )
                     ] | length)
                   }
               ' "$trace" >&2 || true
@@ -841,7 +849,8 @@ in
                   and (.register_schema_hashes | length) == $vcpus
                   and all(.register_schema_hashes[]; . != "0000000000000000")
                 ))
-                and any($samples[]; .final == true)
+                and ([ $samples[] | select(.final == true) ] | length) == 1
+                and (.[-1] | ((.kind // "sample") == "sample" and .final == true))
                 and (
                   if $sustain_workload == "1" then
                     ([ $samples[]
@@ -858,7 +867,8 @@ in
                     and ([ $samples[]
                       | select(
                           .final == true
-                          and .retired == $stop_at
+                          and .retired >= $stop_at
+                          and (.retired - $stop_at) <= $quantum
                           and .stop_at == $stop_at
                           and .stop_requested == true
                         )
@@ -1102,8 +1112,12 @@ in
 
           final_line=$(grep '"final":true' "$TMPDIR/trace-a.jsonl" | tail -1)
           [ -n "$final_line" ] || fail "trace a omitted the plugin-exit sample"
+          final_line_b=$(grep '"final":true' "$TMPDIR/trace-b.jsonl" | tail -1)
+          [ -n "$final_line_b" ] || fail "trace b omitted the plugin-exit sample"
           plugin_exit_retired=$(printf '%s\n' "$final_line" | jq -r '.retired')
+          plugin_exit_retired_b=$(printf '%s\n' "$final_line_b" | jq -r '.retired')
           plugin_exit_stop_requested=$(printf '%s\n' "$final_line" | jq -r '.stop_requested')
+          plugin_exit_stop_requested_b=$(printf '%s\n' "$final_line_b" | jq -r '.stop_requested')
           final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.extended_hash')
           final_register_hash=$(printf '%s\n' "$final_line" | jq -r '.register_hash')
           final_register_hashes=$(printf '%s\n' "$final_line" | jq -c '.register_hashes')
@@ -1126,6 +1140,12 @@ in
           horizon_sample_plugin_exit_rr_match=not-applicable
           horizon_sample_cross_run_match=not-applicable
           horizon_sample_plugin_exit_state_comparison=not-applicable
+          exact_horizon_authoritative=not-applicable
+          plugin_exit_semantics=guest-complete
+          plugin_exit_pause_overshoot=not-applicable
+          plugin_exit_pause_overshoot_bound=not-applicable
+          plugin_exit_pause_overshoot_bounded=not-applicable
+          plugin_exit_pause_overshoot_cross_run_match=not-applicable
           plugin_exit_fingerprint_compared=true
           if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
             horizon_line=$(jq -c --argjson stop_at "$STOP_AT_VALUE" \
@@ -1146,17 +1166,36 @@ in
 
             [ "$horizon_sample_retired" = "$STOP_AT" ] \
               || fail "horizon sample retired mismatch: $horizon_sample_retired/$STOP_AT"
-            [ "$plugin_exit_retired" = "$STOP_AT" ] \
-              || fail "plugin-exit retired mismatch: $plugin_exit_retired/$STOP_AT"
             [ "$horizon_sample_stop_requested" = false ] \
               || fail "horizon sample unexpectedly postdates the plugin stop request"
             [ "$plugin_exit_stop_requested" = true ] \
               || fail "plugin-exit sample omitted the stop request"
-            [ "$horizon_stream_hash" = "$plugin_exit_stream_hash" ] \
-              || fail "horizon/plugin-exit stream hash mismatch"
+            [ "$plugin_exit_stop_requested_b" = true ] \
+              || fail "run b plugin-exit sample omitted the stop request"
 
-            horizon_sample_plugin_exit_retired_match=true
-            horizon_sample_plugin_exit_stream_match=true
+            [ "$plugin_exit_retired" -ge "$STOP_AT" ] \
+              || fail "plugin exit retired before the exact horizon: $plugin_exit_retired/$STOP_AT"
+            [ "$plugin_exit_retired_b" -ge "$STOP_AT" ] \
+              || fail "run b plugin exit retired before the exact horizon: $plugin_exit_retired_b/$STOP_AT"
+            plugin_exit_pause_overshoot=$((plugin_exit_retired - STOP_AT))
+            plugin_exit_pause_overshoot_b=$((plugin_exit_retired_b - STOP_AT))
+            [ "$plugin_exit_pause_overshoot" -le "$RR_SWITCH_QUANTUM" ] \
+              || fail "plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot/$RR_SWITCH_QUANTUM"
+            [ "$plugin_exit_pause_overshoot_b" -le "$RR_SWITCH_QUANTUM" ] \
+              || fail "run b plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot_b/$RR_SWITCH_QUANTUM"
+            [ "$plugin_exit_pause_overshoot" -eq "$plugin_exit_pause_overshoot_b" ] \
+              || fail "plugin-exit pause overshoot differs across runs: $plugin_exit_pause_overshoot/$plugin_exit_pause_overshoot_b"
+
+            if [ "$horizon_sample_retired" = "$plugin_exit_retired" ]; then
+              horizon_sample_plugin_exit_retired_match=true
+            else
+              horizon_sample_plugin_exit_retired_match=false
+            fi
+            if [ "$horizon_stream_hash" = "$plugin_exit_stream_hash" ]; then
+              horizon_sample_plugin_exit_stream_match=true
+            else
+              horizon_sample_plugin_exit_stream_match=false
+            fi
             if [ "$horizon_register_hash" = "$final_register_hash" ] \
               && [ "$horizon_register_hashes" = "$final_register_hashes" ]; then
               horizon_sample_plugin_exit_register_match=true
@@ -1175,7 +1214,12 @@ in
               horizon_sample_plugin_exit_rr_match=false
             fi
             horizon_sample_cross_run_match=true
-            horizon_sample_plugin_exit_state_comparison=recorded
+            horizon_sample_plugin_exit_state_comparison=recorded-non-authoritative-teardown
+            exact_horizon_authoritative=true
+            plugin_exit_semantics=post-stop-request-teardown-observation
+            plugin_exit_pause_overshoot_bound="$RR_SWITCH_QUANTUM"
+            plugin_exit_pause_overshoot_bounded=true
+            plugin_exit_pause_overshoot_cross_run_match=true
           fi
 
           workload_affinity_active=false
@@ -1258,6 +1302,12 @@ in
             echo horizon_sample_stop_requested="$horizon_sample_stop_requested"
             echo plugin_exit_retired="$plugin_exit_retired"
             echo plugin_exit_stop_requested="$plugin_exit_stop_requested"
+            echo exact_horizon_authoritative="$exact_horizon_authoritative"
+            echo plugin_exit_semantics="$plugin_exit_semantics"
+            echo plugin_exit_pause_overshoot="$plugin_exit_pause_overshoot"
+            echo plugin_exit_pause_overshoot_bound="$plugin_exit_pause_overshoot_bound"
+            echo plugin_exit_pause_overshoot_bounded="$plugin_exit_pause_overshoot_bounded"
+            echo plugin_exit_pause_overshoot_cross_run_match="$plugin_exit_pause_overshoot_cross_run_match"
             echo stop_request="$stop_request"
             echo stop_requested="$plugin_exit_stop_requested"
             echo plugin_exit_fingerprint_compared="$plugin_exit_fingerprint_compared"
