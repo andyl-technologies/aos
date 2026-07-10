@@ -8,6 +8,8 @@
 //!
 //! Entry point: [`SystemdClient::connect`].
 
+#![forbid(unsafe_code)]
+
 mod client;
 mod error;
 mod manager_proxy;

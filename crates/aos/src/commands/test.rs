@@ -272,25 +272,10 @@ fn run_fleet_interactive(
 
     printer.success(&format!("Launching fleet/{suite} (Ctrl-C to shut down)"));
 
-    // Reset SIGINT/SIGQUIT to SIG_DFL so the launcher's `trap cleanup INT`
-    // takes effect. Bash silently refuses to install a trap on a signal
-    // that was SIG_IGN at shell startup, and parent shells set SIG_IGN on
-    // SIGINT for backgrounded jobs (`cmd &`); without this reset, Ctrl-C
-    // (or `kill -INT`) on a backgrounded `aos test fleet --interactive`
-    // would not trigger graceful shutdown — only SIGTERM would. The reset
-    // is harmless in the foreground case where SIGINT is already SIG_DFL.
-    //
-    // SIGQUIT gets the same treatment since shells background-mask both.
-    // SAFETY: setting a process-wide signal disposition just before exec
-    // is the well-defined Unix idiom for this; the new disposition is
-    // inherited verbatim by the launcher.
-    unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_DFL);
-        libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-    }
-
-    // Replace the current process so signals reach the launcher directly,
-    // not us. `exec` only returns on failure.
+    // The launcher is a hermetically compiled trampoline that resets
+    // inherited SIGINT/SIGQUIT dispositions before starting its Bash payload.
+    // Replace this process so signals reach that launcher directly; `exec`
+    // only returns on failure.
     let err = std::process::Command::new(&script).exec();
     Err(anyhow::anyhow!("exec({}): {err}", script.display()))
 }

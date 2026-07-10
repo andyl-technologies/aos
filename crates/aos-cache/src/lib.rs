@@ -31,6 +31,8 @@
 //! - [`bandwidth`] provides a shared token-bucket limiter and
 //!   human-readable rate/size parsing for `--max-bandwidth`-style flags.
 
+#![forbid(unsafe_code)]
+
 pub mod backend;
 pub mod bandwidth;
 pub mod compress;

@@ -39,6 +39,8 @@
 //! - [`profile`] / [`store`] / [`download`] — profile generations, the local
 //!   store, and the NAR download engine.
 
+#![forbid(unsafe_code)]
+
 pub mod clean;
 pub mod config;
 pub mod deps;

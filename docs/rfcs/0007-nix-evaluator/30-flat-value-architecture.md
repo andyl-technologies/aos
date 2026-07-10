@@ -752,21 +752,43 @@ access; tagged-word encode/decode or compressed-index dereference) and
 new expected counts — per the documented update process, before any
 unsafe lands.
 
-Today's inventory (grep of `unsafe fn`/`unsafe {`/`unsafe impl`,
-2026-07-09, this worktree), to make the enforcement delta explicit:
+**Implementation resolution (2026-07-09):** `ratchet-cache` is the
+sanctioned fourth hand-written zone. Its new `src/safety.rs` manifest
+pins all 20 mmap/lock/lease operations by file and requires the local
+`# Safety`/`// SAFETY:` contracts. The oracle's region rewind moved
+behind `Arena::pop_caller_validated_region_to_mark`; the raw rewind is
+now value-crate-private and `ratchet-oracle` is `forbid(unsafe_code)`.
+`ratchet-core`'s workspace-policy test discovers every crate root and
+pins the four-zone set.
+
+One generator-owned scoped exception remains, using the directive's
+explicit `deny(unsafe_code)` + CI-lint branch: Buffa 0.3 generates 60
+unsafe default-instance witness implementations in `aos-proto` (and
+no unsafe blocks). They are confined to one private `generated` module;
+`aos-proto/src/safety.rs` pins the four generated files, counts, and
+three accepted trait families. This is not a sanctioned hand-written
+zone. All hand-written protocol code stays under `deny`, and every
+other non-sanctioned crate root uses `forbid`. The prior `aos` signal
+reset also left Rust entirely: the hermetic fleet launcher now builds a
+tiny C signal-reset trampoline before entering the AOS-built Bash
+payload, preserving background-job Ctrl-C cleanup while allowing the
+Rust binary to use `forbid`.
+
+Implemented inventory (reviewed source operations, not comment/string
+mentions; 2026-07-09):
 
 | Crate | Unsafe ops | Lint today | Under the decision |
 | --- | --- | --- | --- |
-| `ratchet-value` | 35 | `deny(unsafe_op_in_unsafe_fn)` | Sanctioned zone (grows by the §2/§3 sealed modules; token tables extended). |
-| `ratchet-runtime-ffi` | 81 | `deny(unsafe_op_in_unsafe_fn)` + token allowlist | Sanctioned zone (alloc-family FFI growth lands here). |
-| `ratchet-jit` | 55 | `deny(unsafe_op_in_unsafe_fn)` | Sanctioned zone. |
-| `ratchet-oracle` | 1 (`#[allow(unsafe_code)]` at `runtime/alloc.rs` region-pop hand-off) | `deny(unsafe_code)` | Must reach `forbid`: the one op moves behind a safe `ratchet-value` API (it already delegates to the arena's `pop_region_to_mark`). |
-| `ratchet-cache` | 19 (mmap packfile, file locks — per C-13) | `deny(unsafe_op_in_unsafe_fn)` | **Reconciliation required** (§11): either an explicitly sanctioned fourth zone with its own safety manifest, or the mapping moves behind a sealed module elsewhere. The directive's three-crate list does not account for it. |
-| `ratchet-core`, `ratchet-dialect`, `aos-nix`, `aos-nix-{syntax,compat,harness,dialect}` | 0 | `forbid(unsafe_code)` already | No change; CI asserts it stays. |
+| `ratchet-value` | 55 heap operations | `deny(unsafe_op_in_unsafe_fn)` + per-file count manifest | Sanctioned zone; flat object/tail operations and the private arena rewind are pinned. |
+| `ratchet-runtime-ffi` | wrapper-family allowlist | `deny(unsafe_op_in_unsafe_fn)` + token allowlist | Sanctioned zone (native ABI decoding/calls). |
+| `ratchet-jit` | native-entry allowlist | `deny(unsafe_op_in_unsafe_fn)` + token allowlist | Sanctioned zone (code-pointer/native-entry calls). |
+| `ratchet-cache` | 20 | `deny(unsafe_op_in_unsafe_fn)` + per-file count manifest | Sanctioned fourth zone (read-only mmap, advisory locks, immutable pack leases). |
+| `aos-proto` generated module | 60 generated unsafe trait impls, 0 unsafe blocks | crate `deny(unsafe_code)` + one private scoped allow + generated count manifest | Generator-owned exception, not a hand-written sanctioned zone. |
+| Every other workspace crate | 0 | `forbid(unsafe_code)` | Enforced by compilation and the workspace sanctioned-set test. |
 
 `forbid` is preferred over `deny` wherever no exception exists, because
-`forbid` cannot be `#[allow]`-overridden downstream; the oracle converts
-to `forbid` only after its single op is relocated.
+`forbid` cannot be `#[allow]`-overridden downstream. The only scoped
+`deny` exception is the count-pinned Buffa output described above.
 
 ---
 
@@ -966,13 +988,15 @@ they conflict.
    that, the 16-byte value is retained (doc 05's option 3) and §3 ships
    only the FORCED-bit tagging.
 4. **The §8 crate list vs. the workspace as it stands.** The directive
-   names three sanctioned crates; the tree has **five** crates with
-   unsafe: `ratchet-cache` (19 ops — the C-13 mmap packfile) and
-   `ratchet-oracle` (1 scoped `#[allow]`) are unaccounted for. Doc 27's
-   planned topology (`ratchet-gc`, `ratchet-parallel` as unsafe crates)
-   also never materialized — GC lives inside `ratchet-value`/`-oracle`,
-   parallelism inside `ratchet-oracle`. §8 records the reconciliation
-   options; choosing one is implementation work, not resolved here.
+   named three sanctioned crates while C-13 already required
+   `ratchet-cache`. *Resolved 2026-07-09:* cache is the audited fourth
+   hand-written zone with its own per-file manifest; the oracle rewind
+   moved behind a safe value-layer handoff and the oracle now forbids
+   unsafe. Buffa-generated protocol witness impls use the directive's
+   separately count-pinned scoped-exception path and do not expand the
+   hand-written zone set. Doc 27's planned `ratchet-gc` and
+   `ratchet-parallel` crates remain unnecessary: GC lives in
+   `ratchet-value`/safe oracle code and parallelism in the safe oracle.
 5. **Candidate C's arena prerequisite.** Compressed indices require a
    single contiguous reservation; the Tier-A arena is chunked mmap
    (`c11acc759`) and no prior doc commits to a reservation-based arena.
@@ -1488,12 +1512,20 @@ FV-0 columns rather than sketch estimates:**
 - [ ] Weak hash-cons tables (§7.4): daemon-mode residency bound;
       one-shot immortal fast path preserved. Gate: daemon soak
       (long-lived process, repeated evals) memory profile.
-- [ ] Unsafe-placement enforcement (§8): `#[forbid(unsafe_code)]`
+- [x] Unsafe-placement enforcement (§8): `#[forbid(unsafe_code)]`
       rollout (oracle's region-pop op relocated behind a safe
       `ratchet-value` API first; `ratchet-cache` reconciliation decided
       and recorded); CI lint asserting the sanctioned-zone set; safety
       manifests extended per audit process. Exit: every workspace crate
-      outside the sanctioned zones compiles under `forbid`.
+      outside the sanctioned zones compiles under `forbid`, except the
+      directive-authorized `deny` + scoped-CI path for Buffa-generated
+      `aos-proto` witnesses. Landed resolution: four hand-written zones
+      (`ratchet-value`, `ratchet-runtime-ffi`, `ratchet-jit`,
+      `ratchet-cache`); cache's 20 operations and proto's 60 generated
+      impls are count-pinned; oracle is `forbid`; workspace discovery
+      fails on any zone/lint drift. The `aos` interactive fleet signal
+      reset moved into its hermetically compiled launcher trampoline, so
+      the Rust binary also reaches `forbid` without losing Ctrl-C cleanup.
 
 ### Measure-gated dispatch items (not committed)
 

@@ -27,6 +27,7 @@ pub mod node_metadata;
 pub mod node_trace_log;
 pub mod owned_paths;
 pub mod root_locks;
+pub mod safety;
 pub mod schema;
 pub mod sidecar_index;
 pub mod store;

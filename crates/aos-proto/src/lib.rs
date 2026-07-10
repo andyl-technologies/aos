@@ -21,5 +21,17 @@
 //! server side.
 //!
 //! To change the API surface, edit the `.proto` files and rebuild; never
-//! edit the generated output.
-include!(concat!(env!("OUT_DIR"), "/_connectrpc.rs"));
+//! edit the generated output. Buffa's generated default-instance witness
+//! implementations are isolated in the private `generated` module and pinned
+//! by [`safety`]; all hand-written code remains under `deny(unsafe_code)`.
+
+#![deny(unsafe_code)]
+
+#[allow(unsafe_code)]
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/_connectrpc.rs"));
+}
+
+pub use generated::*;
+
+pub mod safety;

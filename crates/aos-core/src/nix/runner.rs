@@ -23,7 +23,7 @@ use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 #[cfg(test)]
 use std::sync::Arc;
 
@@ -756,6 +756,15 @@ impl NixRunner {
     /// stream stderr only at `verbose >= 2`; otherwise stderr is captured and
     /// shown on failure.
     fn run_nix(&self, cmd: &str, args: &[String]) -> Result<Output> {
+        self.run_nix_with_command(cmd, args, aos_nix_command(cmd))
+    }
+
+    fn run_nix_with_command(
+        &self,
+        cmd: &str,
+        args: &[String],
+        mut command: Command,
+    ) -> Result<Output> {
         let args = self.args_with_eval_options(cmd, args);
         if self.verbose >= 3 {
             eprintln!("+ {} {}", cmd, args.join(" "));
@@ -768,7 +777,6 @@ impl NixRunner {
             Stdio::piped()
         };
 
-        let mut command = aos_nix_command(cmd);
         self.eval_config.apply_cli_env(&mut command);
         let child = command
             .args(&args)
@@ -1238,71 +1246,16 @@ fn command_accepts_eval_options(cmd: &str) -> bool {
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::fs;
-    use std::os::unix::fs as unix_fs;
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex};
     use tracing::field::{Field, Visit};
     use tracing::{Event, Level, Metadata, Subscriber, span};
 
     const FAKE_NIX_CHILD_ENV: &str = "AOS_RUN_FAKE_NIX_CHILD";
 
-    struct EnvVarGuard {
-        key: &'static str,
-        saved_value: Option<OsString>,
-    }
-
-    impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let saved_value = std::env::var_os(key);
-            unsafe { std::env::set_var(key, value) };
-            Self { key, saved_value }
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.saved_value {
-                Some(value) => unsafe { std::env::set_var(self.key, value) },
-                None => unsafe { std::env::remove_var(self.key) },
-            }
-        }
-    }
-
-    struct PathEnvGuard {
-        saved_path: Option<OsString>,
-    }
-
-    impl PathEnvGuard {
-        fn prepend(path: &Path) -> Self {
-            let saved_path = std::env::var_os("PATH");
-            let mut paths = vec![path.to_path_buf()];
-            if let Some(saved_path) = &saved_path {
-                paths.extend(std::env::split_paths(saved_path));
-            }
-            let joined = std::env::join_paths(paths).expect("test PATH entries are valid");
-            unsafe { std::env::set_var("PATH", joined) };
-            Self { saved_path }
-        }
-    }
-
-    impl Drop for PathEnvGuard {
-        fn drop(&mut self) {
-            match &self.saved_path {
-                Some(path) => unsafe { std::env::set_var("PATH", path) },
-                None => unsafe { std::env::remove_var("PATH") },
-            }
-        }
-    }
-
     fn os_args_to_strings(args: Vec<OsString>) -> Vec<String> {
         args.into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
-    }
-
-    fn path_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
     }
 
     fn runner_with_config(eval_config: NixEvalConfig) -> NixRunner {
@@ -1539,12 +1492,6 @@ mod tests {
         }
     }
 
-    fn link_fake_nix_command(dir: &Path, name: &str) -> Result<()> {
-        let path = dir.join(name);
-        unix_fs::symlink(std::env::current_exe()?, path)?;
-        Ok(())
-    }
-
     #[test]
     fn fake_nix_instantiate_child() {
         if std::env::var_os(FAKE_NIX_CHILD_ENV).is_none() {
@@ -1681,24 +1628,16 @@ mod tests {
 
     #[test]
     fn run_nix_inherits_successful_eval_stderr_for_eval_commands() -> Result<()> {
-        let _lock = path_env_lock().lock().expect("PATH env test lock");
-        let temp = tempfile::tempdir()?;
-        let bin_dir = temp.path().join("bin");
-        fs::create_dir(&bin_dir)?;
-        link_fake_nix_command(&bin_dir, "nix-instantiate")?;
-        let _path_guard = PathEnvGuard::prepend(&bin_dir);
-        let _child_guard = EnvVarGuard::set(FAKE_NIX_CHILD_ENV, "1");
         let args = vec![
             "fake_nix_instantiate_child".to_string(),
             "--nocapture".to_string(),
             "--".to_string(),
         ];
 
-        let runner = NixRunner {
-            root: temp.path().to_path_buf(),
-            ..runner_with_config(NixEvalConfig::default())
-        };
-        let output = runner.run_nix("nix-instantiate", &args)?;
+        let runner = runner_with_config(NixEvalConfig::default());
+        let mut command = Command::new(std::env::current_exe()?);
+        command.env(FAKE_NIX_CHILD_ENV, "1");
+        let output = runner.run_nix_with_command("nix-instantiate", &args, command)?;
         assert!(
             output.stderr.is_empty(),
             "eval stderr should inherit instead of being captured"
@@ -1706,11 +1645,10 @@ mod tests {
 
         let mut config = NixEvalConfig::new();
         config.set_trace_verbose(true);
-        let runner = NixRunner {
-            root: temp.path().to_path_buf(),
-            ..runner_with_config(config)
-        };
-        let output = runner.run_nix("nix-instantiate", &args)?;
+        let runner = runner_with_config(config);
+        let mut command = Command::new(std::env::current_exe()?);
+        command.env(FAKE_NIX_CHILD_ENV, "1");
+        let output = runner.run_nix_with_command("nix-instantiate", &args, command)?;
         assert!(output.stderr.is_empty());
         Ok(())
     }

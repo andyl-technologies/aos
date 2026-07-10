@@ -114,8 +114,8 @@ impl ArenaStats {
 /// A LIFO marker for a future lexical allocation subregion.
 ///
 /// Markers are produced by [`BumpArena::region_mark`] and can be passed back to
-/// [`BumpArena::pop_region_to_mark`] once the caller has proven that every
-/// allocation above the marker is dead.
+/// [`BumpArena::pop_caller_validated_region_to_mark`] once the caller has
+/// proven that every allocation above the marker is dead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArenaRegionMark {
     chunk_count: usize,
@@ -452,6 +452,30 @@ impl BumpArena {
         }
     }
 
+    /// Rewinds to a region marker after the owning heap validated its suffix.
+    ///
+    /// This is the safe cross-crate handoff for runtimes that own the typed
+    /// record table layered over the arena. The arena exposes only opaque
+    /// pointer handles, so rewinding cannot itself dereference or alias a Rust
+    /// reference. Callers remain responsible for invalidating their logical
+    /// handles first; checked resolution must reject stale handles after the
+    /// pop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArenaError::InvalidRegionMark`] if `mark` cannot describe the
+    /// arena's current allocation prefix.
+    pub fn pop_caller_validated_region_to_mark(
+        &mut self,
+        mark: ArenaRegionMark,
+    ) -> Result<ArenaRegionPopReport, ArenaError> {
+        // SAFETY: `ArenaAllocation` exposes opaque pointer handles rather than
+        // Rust references. The runtime calling this handoff owns and has
+        // already invalidated its typed side table; any later pointer access
+        // remains behind the resolver's independent live-membership checks.
+        unsafe { self.pop_region_to_mark(mark) }
+    }
+
     /// Rewinds this arena to a previously captured lexical subregion marker.
     ///
     /// The retained chunk's newly-dead suffix receives
@@ -475,7 +499,7 @@ impl BumpArena {
     ///
     /// Returns [`ArenaError::InvalidRegionMark`] if the marker cannot describe
     /// the arena's current prefix.
-    pub unsafe fn pop_region_to_mark(
+    pub(super) unsafe fn pop_region_to_mark(
         &mut self,
         mark: ArenaRegionMark,
     ) -> Result<ArenaRegionPopReport, ArenaError> {

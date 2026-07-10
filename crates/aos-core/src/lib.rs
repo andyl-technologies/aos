@@ -22,6 +22,8 @@
 //! plumbing (process spawning, wire formats, terminal output) on top of
 //! which the porcelain crates are built.
 
+#![forbid(unsafe_code)]
+
 pub mod error;
 pub mod invocation;
 pub mod nar;

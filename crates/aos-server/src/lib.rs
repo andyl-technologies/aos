@@ -45,6 +45,8 @@
 //! The HTTP surface is assembled in [`routes::router`]; the equivalent
 //! ConnectRPC services live in [`services`].
 
+#![forbid(unsafe_code)]
+
 pub mod access;
 pub mod auth;
 pub mod bootstrap;

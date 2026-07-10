@@ -451,10 +451,11 @@
   # virtio-net NIC with `-netdev user,hostfwd=tcp:127.0.0.1:$PORT-:22`
   # so the host can reach each guest's sshd.
   #
-  # Build product is `bin/run-fleet-interactive` — a self-contained
-  # shell script with absolute store-path references for qemu, socat,
-  # coreutils. Designed to run **outside** the Nix sandbox; the aos
-  # CLI builds the derivation in-sandbox and `exec`s the script.
+  # Build product is `bin/run-fleet-interactive` — a tiny signal-reset
+  # trampoline plus a self-contained shell payload with absolute store-path
+  # references for bash, qemu, socat, and coreutils. Designed to run
+  # **outside** the Nix sandbox; the aos CLI builds the derivation in-sandbox
+  # and `exec`s the trampoline.
   #
   # No agent orchestration, no PING/SHUTDOWN. The user drives the VMs;
   # the launcher prints an SSH command table and `wait`s for SIGINT.
@@ -675,6 +676,37 @@
 
       echo "All QEMU instances have exited."
     '';
+
+    # Background-job shells start children with SIGINT and SIGQUIT ignored.
+    # Bash cannot install traps for signals inherited as SIG_IGN, so reset both
+    # dispositions before Bash starts. Keeping this in the generated launcher
+    # lets the Rust CLI remain `forbid(unsafe_code)` while retaining graceful
+    # Ctrl-C shutdown in foreground and background invocations.
+    launcherWrapperSource = ''
+      #include <signal.h>
+      #include <stdio.h>
+      #include <unistd.h>
+
+      int main(int argc, char **argv) {
+        if (signal(SIGINT, SIG_DFL) == SIG_ERR ||
+            signal(SIGQUIT, SIG_DFL) == SIG_ERR) {
+          perror("run-fleet-interactive: reset signal disposition");
+          return 126;
+        }
+
+        char *launcher_argv[argc + 2];
+        launcher_argv[0] = "bash";
+        launcher_argv[1] = LAUNCHER_SCRIPT;
+        for (int index = 1; index < argc; ++index) {
+          launcher_argv[index + 1] = argv[index];
+        }
+        launcher_argv[argc + 1] = NULL;
+
+        execv("${pkgs.bash}/bin/bash", launcher_argv);
+        perror("run-fleet-interactive: exec bash");
+        return 127;
+      }
+    '';
   in
     pkgs.mkDerivation {
       pname = "aos-fleet-interactive-${name}";
@@ -691,14 +723,19 @@
       dontNukeRefs = true;
 
       LAUNCHER_SCRIPT = launcherScript;
+      LAUNCHER_WRAPPER_SOURCE = launcherWrapperSource;
 
       phases = [
         {
           name = "build";
           script = ''
-            mkdir -p $out/bin
-            printf '%s\n' "$LAUNCHER_SCRIPT" > $out/bin/run-fleet-interactive
-            chmod +x $out/bin/run-fleet-interactive
+            mkdir -p $out/bin $out/libexec
+            printf '%s\n' "$LAUNCHER_SCRIPT" > $out/libexec/run-fleet-interactive.sh
+            printf '%s\n' "$LAUNCHER_WRAPPER_SOURCE" > $TMPDIR/run-fleet-interactive.c
+            cc -std=c99 -Wall -Wextra -Werror \
+              -DLAUNCHER_SCRIPT="\"$out/libexec/run-fleet-interactive.sh\"" \
+              $TMPDIR/run-fleet-interactive.c \
+              -o $out/bin/run-fleet-interactive
           '';
         }
       ];

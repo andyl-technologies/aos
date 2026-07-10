@@ -1613,19 +1613,14 @@ impl RuntimeAllocator {
     /// allocations above the marker. Successful pops also roll allocation
     /// safepoint accounting back to the marker so later collector polls cannot
     /// describe reclaimed allocations.
-    #[allow(unsafe_code)]
     pub(crate) fn pop_caller_validated_region(
         &mut self,
         mark: RuntimeAllocatorRegionMark,
         _reclaimed_records: usize,
     ) -> Result<ArenaRegionPopReport, ArenaError> {
-        // SAFETY: `EvalHeap::pop_worker_region_if_disconnected` is the only
-        // caller. It validates that `mark` belongs to the current heap and
-        // allocator lifetime, is the innermost active marker, reclaims only
-        // worker-domain suffix records, and has no retained precise edges into
-        // that suffix before reaching this allocator boundary.
-        let report =
-            unsafe { self.with_tier_a_arena_mut(|arena| arena.pop_region_to_mark(mark.arena()))? };
+        let report = self.with_tier_a_arena_mut(|arena| {
+            arena.pop_caller_validated_region_to_mark(mark.arena())
+        })?;
         self.safepoints = mark.safepoints();
         Ok(report)
     }
@@ -2145,7 +2140,6 @@ impl PermanentSharedAllocator {
             .record(tier, request, allocation, stats, gc_stress_policy);
     }
 }
-
 
 #[cfg(test)]
 mod tests {

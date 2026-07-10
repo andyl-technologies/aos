@@ -31,6 +31,8 @@
 //! error; `3` Nix not found — see `handle_error` and
 //! `aos_core::error::AosError::exit_code`.
 
+#![forbid(unsafe_code)]
+
 mod cli;
 mod commands;
 mod logging;

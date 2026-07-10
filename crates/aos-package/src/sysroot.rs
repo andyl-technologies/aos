@@ -45,10 +45,9 @@
 //! switch.
 
 use std::collections::HashSet;
-use std::fs::OpenOptions;
+use std::fs::{Metadata, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -1325,13 +1324,13 @@ fn read_validated_plan(path: &Path) -> Result<Plan> {
         .with_context(|| format!("opening plan {}", path.display()))?;
 
     let meta = fstat_file(&file).with_context(|| format!("stat plan {}", path.display()))?;
-    if (meta.st_mode & libc::S_IFMT) != libc::S_IFREG {
+    if !meta.is_file() {
         bail!("plan {} is not a regular file", path.display());
     }
-    if !root_owned_for_runtime(meta.st_uid) {
+    if !root_owned_for_runtime(meta.uid()) {
         bail!("plan {} is not owned by root", path.display());
     }
-    let mode = meta.st_mode & 0o777;
+    let mode = meta.mode() & 0o777;
     if mode != 0o600 {
         bail!("plan {} has mode {mode:o}, expected 600", path.display());
     }
@@ -1351,15 +1350,8 @@ fn read_validated_plan(path: &Path) -> Result<Plan> {
 
 /// `fstat(2)` the already-open file descriptor, so the metadata check cannot
 /// race against a path swap between open and stat.
-fn fstat_file(file: &std::fs::File) -> Result<libc::stat> {
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: `stat` points to valid writable storage and `file` owns a live fd.
-    let rc = unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error()).context("fstat");
-    }
-    // SAFETY: fstat returned success, so it initialized the struct.
-    Ok(unsafe { stat.assume_init() })
+fn fstat_file(file: &std::fs::File) -> Result<Metadata> {
+    file.metadata().context("fstat")
 }
 
 /// Whether `uid` counts as "root-owned" for the security checks. Relaxed

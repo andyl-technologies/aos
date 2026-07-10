@@ -38,15 +38,17 @@ use std::process::Command;
 /// `std::process::Command` without branching on the env-var presence
 /// themselves.
 pub fn aos_nix_env() -> Vec<(&'static str, String)> {
-    let Ok(root) = std::env::var("AOS_ROOT") else {
+    aos_nix_env_with(|key| std::env::var(key).ok())
+}
+
+fn aos_nix_env_with(mut lookup: impl FnMut(&str) -> Option<String>) -> Vec<(&'static str, String)> {
+    let Some(root) = lookup("AOS_ROOT") else {
         return Vec::new();
     };
     let root = root.trim_end_matches('/');
-    let store_dir = std::env::var("AOS_NIX_STORE_DIR").unwrap_or_else(|_| format!("{root}/store"));
-    let state_dir =
-        std::env::var("AOS_NIX_STATE_DIR").unwrap_or_else(|_| format!("{root}/var/nix"));
-    let log_dir =
-        std::env::var("AOS_NIX_LOG_DIR").unwrap_or_else(|_| format!("{root}/var/nix/log/nix"));
+    let store_dir = lookup("AOS_NIX_STORE_DIR").unwrap_or_else(|| format!("{root}/store"));
+    let state_dir = lookup("AOS_NIX_STATE_DIR").unwrap_or_else(|| format!("{root}/var/nix"));
+    let log_dir = lookup("AOS_NIX_LOG_DIR").unwrap_or_else(|| format!("{root}/var/nix/log/nix"));
     vec![
         ("NIX_STORE_DIR", store_dir),
         ("NIX_STATE_DIR", state_dir),
@@ -110,39 +112,11 @@ pub fn aos_tokio_nix_command(program: &str) -> tokio::process::Command {
 mod tests {
     use super::*;
 
-    // `AOS_ROOT` is process-global state, and cargo runs tests in
-    // parallel within one binary. Splitting the scenarios across
-    // separate `#[test]` functions made them race: one test's
-    // `set_var("AOS_ROOT", …)` could land between another's
-    // `remove_var` and its assertion, so the "unset" case observed a
-    // value set by a sibling and failed intermittently. The only
-    // race-free way to exercise multiple `AOS_ROOT` values is to drive
-    // them sequentially from a single test with one save/restore, so
-    // they are consolidated here. The other in-crate reader of
-    // `AOS_ROOT` (`nix::runner::find_project_root`, runtime-only) has
-    // no test that depends on a particular value, so it tolerates
-    // whichever value is transiently set while this test runs.
-
     #[test]
     fn aos_nix_env_from_root() {
-        // Snapshot whatever the ambient environment had; restore at the
-        // end so this test leaves `AOS_ROOT` exactly as it found it.
-        let saved_root = std::env::var("AOS_ROOT").ok();
-        let saved_store_dir = std::env::var("AOS_NIX_STORE_DIR").ok();
-        let saved_state_dir = std::env::var("AOS_NIX_STATE_DIR").ok();
-        let saved_log_dir = std::env::var("AOS_NIX_LOG_DIR").ok();
-
         // Unset → empty, so callers can chain `.envs(aos_nix_env())`
         // unconditionally.
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::remove_var("AOS_ROOT") };
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::remove_var("AOS_NIX_STORE_DIR") };
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::remove_var("AOS_NIX_STATE_DIR") };
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::remove_var("AOS_NIX_LOG_DIR") };
-        assert!(aos_nix_env().is_empty());
+        assert!(aos_nix_env_with(|_| None).is_empty());
         let command = aos_nix_command("nix-store");
         assert!(
             matches!(
@@ -162,9 +136,8 @@ mod tests {
         );
 
         // Set → both store and state dirs derived from the root.
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::set_var("AOS_ROOT", "/var/lib/aos-test") };
-        let env = aos_nix_env();
+        let env =
+            aos_nix_env_with(|key| (key == "AOS_ROOT").then(|| String::from("/var/lib/aos-test")));
         assert_eq!(env.len(), 3);
         assert_eq!(env[0].0, "NIX_STORE_DIR");
         assert_eq!(env[0].1, "/var/lib/aos-test/store");
@@ -174,46 +147,26 @@ mod tests {
         assert_eq!(env[2].1, "/var/lib/aos-test/var/nix/log/nix");
 
         // A trailing slash on the root is normalised away.
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::set_var("AOS_ROOT", "/var/lib/aos-test/") };
-        let env = aos_nix_env();
+        let env =
+            aos_nix_env_with(|key| (key == "AOS_ROOT").then(|| String::from("/var/lib/aos-test/")));
         assert_eq!(env[0].1, "/var/lib/aos-test/store");
         assert_eq!(env[1].1, "/var/lib/aos-test/var/nix");
         assert_eq!(env[2].1, "/var/lib/aos-test/var/nix/log/nix");
 
         // Explicit store/state/log overrides are respected while AOS_ROOT still
         // provides the default root context for callers that need it.
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::set_var("AOS_NIX_STORE_DIR", "/shared/aos/store") };
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::set_var("AOS_NIX_STATE_DIR", "/client/aos/var/nix") };
-        // SAFETY: see module-level note on parallelism.
-        unsafe { std::env::set_var("AOS_NIX_LOG_DIR", "/client/aos/log/nix") };
-        let env = aos_nix_env();
+        let env = aos_nix_env_with(|key| {
+            match key {
+                "AOS_ROOT" => Some("/var/lib/aos-test"),
+                "AOS_NIX_STORE_DIR" => Some("/shared/aos/store"),
+                "AOS_NIX_STATE_DIR" => Some("/client/aos/var/nix"),
+                "AOS_NIX_LOG_DIR" => Some("/client/aos/log/nix"),
+                _ => None,
+            }
+            .map(String::from)
+        });
         assert_eq!(env[0].1, "/shared/aos/store");
         assert_eq!(env[1].1, "/client/aos/var/nix");
         assert_eq!(env[2].1, "/client/aos/log/nix");
-
-        // Restore the ambient value.
-        match saved_root {
-            // SAFETY: see module-level note on parallelism.
-            Some(v) => unsafe { std::env::set_var("AOS_ROOT", v) },
-            None => unsafe { std::env::remove_var("AOS_ROOT") },
-        }
-        match saved_store_dir {
-            // SAFETY: see module-level note on parallelism.
-            Some(v) => unsafe { std::env::set_var("AOS_NIX_STORE_DIR", v) },
-            None => unsafe { std::env::remove_var("AOS_NIX_STORE_DIR") },
-        }
-        match saved_state_dir {
-            // SAFETY: see module-level note on parallelism.
-            Some(v) => unsafe { std::env::set_var("AOS_NIX_STATE_DIR", v) },
-            None => unsafe { std::env::remove_var("AOS_NIX_STATE_DIR") },
-        }
-        match saved_log_dir {
-            // SAFETY: see module-level note on parallelism.
-            Some(v) => unsafe { std::env::set_var("AOS_NIX_LOG_DIR", v) },
-            None => unsafe { std::env::remove_var("AOS_NIX_LOG_DIR") },
-        }
     }
 }

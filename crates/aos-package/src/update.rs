@@ -294,9 +294,7 @@ pub async fn run(
 /// Used only to decide whether to print the `--system` discoverability hint;
 /// it never gates behavior, so a stale value is harmless.
 fn running_as_root() -> bool {
-    // SAFETY: `geteuid` is always successful and takes no arguments — it has
-    // no preconditions and cannot produce undefined behavior.
-    unsafe { libc::geteuid() == 0 }
+    rustix::process::geteuid().is_root()
 }
 
 /// Resolve the config file that should receive updated registry state.

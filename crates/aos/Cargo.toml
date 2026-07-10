@@ -48,7 +48,6 @@ tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 hyper-util = { workspace = true }
 tower = { workspace = true }
-libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

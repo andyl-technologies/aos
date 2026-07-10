@@ -25,6 +25,8 @@
 //! the documentation source, loads or rebuilds the cached index, and
 //! dispatches to the TUI or one of the non-interactive output modes.
 
+#![forbid(unsafe_code)]
+
 pub mod cache;
 pub mod data;
 pub mod extract;

@@ -13,7 +13,7 @@
 //! re-exports these modules and adds the typed error taxonomy, diagnostics, and
 //! the `aos-core`-facing `native` handle.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 // The tree-walk evaluator intentionally threads rich `TreeWalkError` values
 // and source-span context through many internal helpers. Refactoring that API
 // shape is a separate design pass, not a mechanical clippy cleanup.

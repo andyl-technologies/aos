@@ -56,6 +56,8 @@
 //! let results = engine.execute_batch(requests, None).await;
 //! ```
 
+#![forbid(unsafe_code)]
+
 pub mod auth;
 pub mod bandwidth;
 pub mod hash;

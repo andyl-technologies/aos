@@ -2081,6 +2081,10 @@ alone (`M-1`/`Q-A`).
       `#![deny(unsafe_op_in_unsafe_fn)]`, and `store::ReadOnlyMmap` wraps Unix
       read-only `mmap` behind an explicitly unsafe constructor, documented file
       immutability contract, and `// SAFETY:` comments for every unsafe block.
+      `ratchet-cache::safety` now records the fourth sanctioned hand-written
+      zone and pins all 20 current mmap, advisory-lock, and immutable-lease
+      operations by source file; its test rejects new unsafe files/counts and
+      missing `# Safety`/`// SAFETY:` contracts.
       `ratchet-oracle` does not call this primitive directly. This is the
       unsafe fence and raw mapping substrate only; full durable lease protocol,
       LMDB/redb metadata, full mmap
@@ -8251,12 +8255,19 @@ and helps the oracle directly.
       `runtime::barrier` vtable first, selecting the one-shot disabled adapter
       or daemon heap-backed adapter from the configured tier. Mutable generation
       updates and Tier-B collector integration remain open under `heap/gc.rs`.
-- [x] Current unsafe-policy precursor: the oracle/frontend/glue layer keeps
-      `unsafe_code` denied by default, with the current exception limited to the
-      typed region-pop handoff into `BumpArena::pop_region_to_mark` after
-      `EvalHeap` side-table validation. Broader heap/GC unsafe code still
-      belongs behind explicit unsafe fences, documented `// SAFETY:` comments,
-      and dedicated tooling (`S-17`, [14](14-integration-with-aos.md) §10).
+- [x] Unsafe-policy boundary: the oracle/frontend/glue layer now uses
+      `#![forbid(unsafe_code)]`. Its former typed region-pop exception calls
+      safe `Arena::pop_caller_validated_region_to_mark` after `EvalHeap`
+      side-table validation; the raw rewind is private to `ratchet-value` and
+      count-pinned in `heap/safety.rs`. The workspace policy test pins exactly
+      four hand-written zones (`ratchet-value`, `ratchet-runtime-ffi`,
+      `ratchet-jit`, `ratchet-cache`) and requires every other crate root to
+      forbid unsafe, with one separately count-pinned generated-code exception:
+      Buffa's 60 default-instance witness impls in `aos-proto`. All other
+      `aos-*` crates were brought to `forbid`; the CLI's signal reset moved to
+      the hermetically compiled fleet-launcher trampoline so no behavior was
+      removed (`S-17`, [14](14-integration-with-aos.md) §10,
+      [30](30-flat-value-architecture.md) §8).
 - [ ] Future heap/GC unsafe policy and tooling remain: `heap/` or later unsafe
       crates under `#![deny(unsafe_op_in_unsafe_fn)]`, per-block `// SAFETY:`,
       GC fuzz target, and miri/ASan/UBSan/TSan/loom CI as applicable (`S-17`,
@@ -11544,12 +11555,15 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       first); per-kind arenas + size-class slabs; last-use capture
       shedding; weak hash-cons tables for daemon residency
       ([30](30-flat-value-architecture.md) §7).
-- [ ] Unsafe placement (recorded decision): the new `unsafe` stays in
+- [x] Unsafe placement (recorded decision): the new `unsafe` stays in
       sealed audited `ratchet-value` modules under the token-count
       discipline; `#[forbid(unsafe_code)]` rollout to every crate outside
-      `ratchet-value`/`ratchet-runtime-ffi`/`ratchet-jit`, with the
-      `ratchet-oracle` region-pop relocation and the `ratchet-cache`
-      reconciliation resolved first
+      the four hand-written zones (`ratchet-value`, `ratchet-runtime-ffi`,
+      `ratchet-jit`, `ratchet-cache`); the oracle region-pop relocation,
+      cache reconciliation/20-op manifest, workspace zone-set CI test, and
+      60-impl Buffa generated-code exception manifest are complete. Every
+      other crate root uses `forbid`; `aos-proto` uses the decision's explicit
+      `deny` + scoped-CI exception path only for its private generated module
       ([30](30-flat-value-architecture.md) §8, §11).
 - [ ] Measure-gated dispatch items (not committed): superinstructions
       for the profit-census shapes; flat bytecode + operand stack only if

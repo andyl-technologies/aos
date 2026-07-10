@@ -18,6 +18,8 @@
 //! Entry points: [`AosClient::connect`] (authenticate with a provisioning
 //! token) and [`AosClient::connect_with_token`] (reuse an existing JWT).
 
+#![forbid(unsafe_code)]
+
 /// ConnectRPC-based client for the AOS server.
 pub mod client;
 

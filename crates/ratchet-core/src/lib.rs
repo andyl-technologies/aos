@@ -26,6 +26,9 @@ pub mod ir;
 pub mod runtime_abi;
 pub mod scope;
 
+#[cfg(test)]
+mod workspace_safety;
+
 pub use analysis::{
     CaptureAnalysisError, CaptureAnalysisReport, CardinalityAnalysisError,
     CardinalityAnalysisReport, DeadBindingElimination,

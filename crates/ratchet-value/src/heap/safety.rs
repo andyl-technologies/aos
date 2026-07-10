@@ -270,6 +270,10 @@ mod tests {
         // both under the reviewed `ResidentMemoryProbe` innate operation.
         // advice.rs count 12 -> 13: the glibc `malloc_trim(0)` call under the
         // reviewed `AllocatorFreeMemoryRelease` innate operation.
+        // arena.rs count 12 -> 13 (doc 30 unsafe-placement enforcement): the
+        // safe cross-crate region-pop handoff delegates to the sealed unsafe
+        // rewind after the owning runtime invalidates its typed side table;
+        // opaque arena handles carry no Rust references across the handoff.
         // flat.rs count 0 -> 5 (RFC-0007 doc 30 stage FV-1): the flat-object
         // store's sealed in-place operations under the reviewed
         // `FlatObjectPayloadAccess` innate operation — one placement write
@@ -319,7 +323,7 @@ mod tests {
         // `FlatObjectPayloadAccess`.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
-            ("arena.rs", 12usize),
+            ("arena.rs", 13usize),
             ("flat.rs", 8usize),
             ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
@@ -403,7 +407,9 @@ mod tests {
 
     fn unsafe_operation_line_kind(code: &str) -> Option<UnsafeOperationLineKind> {
         let trimmed = code.trim_start();
-        if trimmed.starts_with("pub unsafe fn") || trimmed.starts_with("pub const unsafe fn") {
+        if trimmed.starts_with("unsafe fn")
+            || (trimmed.starts_with("pub") && trimmed.contains("unsafe fn"))
+        {
             return Some(UnsafeOperationLineKind::UnsafeFn);
         }
         if trimmed.starts_with("unsafe impl") {
