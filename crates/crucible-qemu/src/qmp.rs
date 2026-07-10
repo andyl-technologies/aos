@@ -1,7 +1,8 @@
 //! Minimal typed QMP client.
 //!
-//! RFC-0010 QEMU-19 limits QMP use to capability negotiation, VM snapshot
-//! save/load, snapshot job polling, and graceful quit. The client parses
+//! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
+//! status/topology observation, VM snapshot save/load, snapshot job polling,
+//! and graceful quit. The client parses
 //! JSON-line QMP responses internally, skips asynchronous event objects while
 //! waiting for a command response, and exposes no public arbitrary-command
 //! execution path.
@@ -34,6 +35,10 @@ pub const QMP_SNAPSHOT_SAVE_COMMAND: &str = "snapshot-save";
 pub const QMP_SNAPSHOT_LOAD_COMMAND: &str = "snapshot-load";
 /// QMP command name used for polling snapshot job completion.
 pub const QMP_QUERY_JOBS_COMMAND: &str = "query-jobs";
+/// QMP command name used for reading the VM run state.
+pub const QMP_QUERY_STATUS_COMMAND: &str = "query-status";
+/// QMP command name used for reading configured vCPU indexes.
+pub const QMP_QUERY_CPUS_FAST_COMMAND: &str = "query-cpus-fast";
 /// QMP command name used for graceful QEMU termination.
 pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
 /// QMP snapshot device name used for diskless VMState snapshots.
@@ -165,12 +170,6 @@ where
         self.greeting
     }
 
-    /// Returns the underlying stream, discarding any unread buffered bytes.
-    #[must_use]
-    pub fn into_inner(self) -> S {
-        self.stream.into_inner()
-    }
-
     /// Saves the VMState snapshot under a tag derived from a checkpoint address.
     ///
     /// # Errors
@@ -220,6 +219,70 @@ where
     /// cannot be read or decoded, or when QMP returns an error response.
     pub fn quit(&mut self) -> Result<QmpCommandComplete, QmpError> {
         self.send_command(QmpCommand::Quit)
+    }
+
+    /// Returns the current VM run state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, when QEMU omits
+    /// a required field, reports an unknown QEMU 10.0 run state, or contradicts
+    /// the typed relationship between `running` and `status`.
+    pub fn query_status(&mut self) -> Result<QmpRunState, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryStatus)?;
+        let running = response.value.get("running").and_then(Value::as_bool);
+        let status = response
+            .value
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(QmpRunStateKind::from_wire);
+        match (running, status) {
+            (Some(running), Some(status)) if running == (status == QmpRunStateKind::Running) => {
+                Ok(QmpRunState { running, status })
+            }
+            _ => Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryStatus,
+                response: response.value.to_string(),
+            }),
+        }
+    }
+
+    /// Returns the exact sorted set of configured vCPU indexes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, when QEMU does
+    /// not return an array, or when a CPU index is missing, negative, duplicate,
+    /// outside the unsigned 64-bit range, nonzero-start, or noncontiguous.
+    pub fn query_cpus_fast(&mut self) -> Result<QmpCpuTopology, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryCpusFast)?;
+        let Some(cpus) = response.value.as_array() else {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryCpusFast,
+                response: response.value.to_string(),
+            });
+        };
+        let mut cpu_indexes = cpus
+            .iter()
+            .map(|cpu| cpu.get("cpu-index").and_then(Value::as_u64))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryCpusFast,
+                response: response.value.to_string(),
+            })?;
+        cpu_indexes.sort_unstable();
+        if cpu_indexes.is_empty()
+            || cpu_indexes
+                .iter()
+                .enumerate()
+                .any(|(expected, actual)| *actual != expected as u64)
+        {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryCpusFast,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(QmpCpuTopology { cpu_indexes })
     }
 
     fn read_greeting(&mut self) -> Result<QmpGreeting, QmpError> {
@@ -587,6 +650,90 @@ pub struct QmpGreeting {
     pub capabilities_present: bool,
 }
 
+/// Current VM run state returned by typed `query-status`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpRunState {
+    /// Whether the VM is in QEMU's running state.
+    pub running: bool,
+    /// Exact typed QEMU run state.
+    pub status: QmpRunStateKind,
+}
+
+/// QEMU 10.0 run-state values admitted by typed `query-status`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QmpRunStateKind {
+    /// Execution stopped for debugger control.
+    Debug,
+    /// Execution stopped to finish migration.
+    FinishMigrate,
+    /// Waiting for incoming migration.
+    InMigrate,
+    /// Execution stopped by an internal error.
+    InternalError,
+    /// Execution stopped by a configured I/O error action.
+    IoError,
+    /// Execution explicitly paused.
+    Paused,
+    /// Execution stopped after migration.
+    PostMigrate,
+    /// VM started with `-S` and has not executed.
+    Prelaunch,
+    /// Restoring VM state.
+    RestoreVm,
+    /// Guest execution is running.
+    Running,
+    /// Saving VM state.
+    SaveVm,
+    /// Guest shut down under `-no-shutdown`.
+    Shutdown,
+    /// Guest entered hardware suspend.
+    Suspended,
+    /// Watchdog action paused execution.
+    Watchdog,
+    /// Guest panic paused execution.
+    GuestPanicked,
+    /// COLO checkpoint save or restore state.
+    Colo,
+}
+
+impl QmpRunStateKind {
+    fn from_wire(value: &str) -> Option<Self> {
+        Some(match value {
+            "debug" => Self::Debug,
+            "finish-migrate" => Self::FinishMigrate,
+            "inmigrate" => Self::InMigrate,
+            "internal-error" => Self::InternalError,
+            "io-error" => Self::IoError,
+            "paused" => Self::Paused,
+            "postmigrate" => Self::PostMigrate,
+            "prelaunch" => Self::Prelaunch,
+            "restore-vm" => Self::RestoreVm,
+            "running" => Self::Running,
+            "save-vm" => Self::SaveVm,
+            "shutdown" => Self::Shutdown,
+            "suspended" => Self::Suspended,
+            "watchdog" => Self::Watchdog,
+            "guest-panicked" => Self::GuestPanicked,
+            "colo" => Self::Colo,
+            _ => return None,
+        })
+    }
+}
+
+/// Exact contiguous `0..N` vCPU indexes returned by typed `query-cpus-fast`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpCpuTopology {
+    cpu_indexes: Vec<u64>,
+}
+
+impl QmpCpuTopology {
+    /// Returns the sorted configured vCPU indexes, exactly contiguous from zero.
+    #[must_use]
+    pub fn cpu_indexes(&self) -> &[u64] {
+        &self.cpu_indexes
+    }
+}
+
 /// Supported QMP command kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QmpCommandKind {
@@ -598,6 +745,10 @@ pub enum QmpCommandKind {
     LoadVm,
     /// Snapshot job status query.
     QueryJobs,
+    /// VM run-state query.
+    QueryStatus,
+    /// Configured vCPU topology query.
+    QueryCpusFast,
     /// Graceful QEMU quit.
     Quit,
 }
@@ -609,6 +760,8 @@ impl QmpCommandKind {
             Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
             Self::LoadVm => QMP_SNAPSHOT_LOAD_COMMAND,
             Self::QueryJobs => QMP_QUERY_JOBS_COMMAND,
+            Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
+            Self::QueryCpusFast => QMP_QUERY_CPUS_FAST_COMMAND,
             Self::Quit => QMP_QUIT_COMMAND_NAME,
         }
     }
@@ -688,6 +841,14 @@ pub enum QmpError {
         /// Snapshot command awaiting a job result.
         command: QmpCommandKind,
         /// Unexpected `query-jobs` return value.
+        response: String,
+    },
+    /// A typed query returned a structurally invalid payload.
+    #[error("malformed typed QMP response for {command:?}: {response}")]
+    MalformedTypedResponse {
+        /// Query whose response failed validation.
+        command: QmpCommandKind,
+        /// Unexpected return payload.
         response: String,
     },
     /// A QMP snapshot job reported an error.
@@ -778,6 +939,8 @@ enum QmpCommand<'a> {
         job_id: &'a str,
     },
     QueryJobs,
+    QueryStatus,
+    QueryCpusFast,
     Quit,
 }
 
@@ -788,6 +951,8 @@ impl QmpCommand<'_> {
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::LoadVm { .. } => QmpCommandKind::LoadVm,
             Self::QueryJobs => QmpCommandKind::QueryJobs,
+            Self::QueryStatus => QmpCommandKind::QueryStatus,
+            Self::QueryCpusFast => QmpCommandKind::QueryCpusFast,
             Self::Quit => QmpCommandKind::Quit,
         }
     }
@@ -805,6 +970,12 @@ impl QmpCommand<'_> {
             }
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
+            }),
+            Self::QueryStatus => json!({
+                "execute": QMP_QUERY_STATUS_COMMAND,
+            }),
+            Self::QueryCpusFast => json!({
+                "execute": QMP_QUERY_CPUS_FAST_COMMAND,
             }),
             Self::Quit => json!({
                 "execute": QMP_QUIT_COMMAND_NAME,

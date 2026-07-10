@@ -6,6 +6,7 @@
 
 use std::error::Error;
 use std::io::{self, Cursor, Read, Write};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
@@ -21,7 +22,7 @@ const HASH_AB_TAG: &str =
 
 #[test]
 fn vmstate_control_saves_and_restores_checkpoint_tags() -> Result<(), Box<dyn Error>> {
-    let mut control = QemuQmpVmStateControlChannel::connect(scripted_qmp([
+    let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
@@ -29,7 +30,9 @@ fn vmstate_control_saves_and_restores_checkpoint_tags() -> Result<(), Box<dyn Er
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
-    ]))?;
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
     let checkpoint = checkpoint_with_hash_byte(0xab);
 
     assert_eq!(
@@ -44,8 +47,12 @@ fn vmstate_control_saves_and_restores_checkpoint_tags() -> Result<(), Box<dyn Er
     );
     assert_eq!(control.quit()?.command, QmpCommandKind::Quit);
 
-    let stream = control.into_inner().into_inner();
-    let lines = written_json_lines(&stream)?;
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
     assert_eq!(
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)
@@ -105,14 +112,14 @@ fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {
     }
     ScriptedQmpStream {
         read: Cursor::new(input),
-        written: Vec::new(),
+        written: Arc::new(Mutex::new(Vec::new())),
         read_timeouts: Vec::new(),
         write_timeouts: Vec::new(),
     }
 }
 
-fn written_json_lines(stream: &ScriptedQmpStream) -> Result<Vec<Value>, serde_json::Error> {
-    String::from_utf8_lossy(&stream.written)
+fn written_json_lines(written: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
+    String::from_utf8_lossy(written)
         .lines()
         .map(serde_json::from_str)
         .collect()
@@ -144,7 +151,7 @@ fn content_hash_with_byte(byte: u8) -> ContentHash {
 #[derive(Debug)]
 struct ScriptedQmpStream {
     read: Cursor<Vec<u8>>,
-    written: Vec<u8>,
+    written: Arc<Mutex<Vec<u8>>>,
     read_timeouts: Vec<Duration>,
     write_timeouts: Vec<Duration>,
 }
@@ -157,7 +164,10 @@ impl Read for ScriptedQmpStream {
 
 impl Write for ScriptedQmpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.written.extend_from_slice(buf);
+        self.written
+            .lock()
+            .map_err(|_| io::Error::other("scripted QMP write audit lock poisoned"))?
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
 
