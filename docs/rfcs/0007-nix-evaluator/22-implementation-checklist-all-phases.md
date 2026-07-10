@@ -8265,6 +8265,16 @@ and helps the oracle directly.
       non-regressing: zlib cold/warm -2.5%/-2.1% and fib -2.9%/-0.7%, with
       exact 7.5 MiB/160 MiB arena peaks and slightly lower retained RSS. JIT
       stack maps for live runtime values remain open.
+- [x] Current JIT stack-map mutable-slot writer: minor-GC root plans can
+      transactionally apply only compiled `StackMap` writebacks to
+      caller-bound generation or typed-`Value` slots. Complete binding,
+      from-space identity, and typed replacements validate before mutation;
+      mixed tree-walk roots are filtered out. Cranelift user-stack-map
+      emission, physical live-frame/register binding, and automatic compiled
+      safepoint collector dispatch remain open. The landing is green across
+      3,032 oracle tests (34 ignored), 322 `aos-nix` tests, 38 pinned language
+      tests, 16 package legs, seven wide/shape modes, compute x8, cache
+      validation, and 648 strict-JSON seeds in serial/K4/JIT/sweep-zero.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now validates and

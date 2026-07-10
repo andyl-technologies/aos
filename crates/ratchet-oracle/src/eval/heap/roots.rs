@@ -7,11 +7,10 @@
 //! primops expose captured lazy arguments, and thunks expose either suspended
 //! work captures or their forced result depending on the thunk state.
 //!
-//! This is a tree-walk graph-reporting substrate. It intentionally returns
-//! copied [`Value`] handles, not mutable relocation slots. The production
-//! evaluator can build safepoint root sets for its explicit tree-walk state, but
-//! arbitrary Rust locals still need explicit safepoint registration before they
-//! are collector-visible.
+//! Scans return copied [`Value`] handles; commit plans can validate and rewrite
+//! explicitly bound caller-owned slots. The production evaluator can build
+//! safepoint root sets for its explicit tree-walk state, but arbitrary Rust
+//! locals still need explicit registration before they are collector-visible.
 
 use std::collections::{HashSet, VecDeque};
 use std::ptr::NonNull;
@@ -45,6 +44,8 @@ use crate::heap::{
 };
 use crate::runtime::alloc::{AllocationCollectorPoll, AllocationSafepointState};
 use thiserror::Error;
+
+mod stack_map_writeback;
 
 const ROOTS_TABLE: &str = "roots";
 const WORKLIST_TABLE: &str = "worklist";
@@ -3144,13 +3145,11 @@ fn validate_root_value_writeback_slots(
         let expected = writeback.expected_value()?;
         let actual = slot.value();
         if !actual.raw_eq(expected) {
-            return Err(EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
-                index: writeback.slot(),
-                expected_tag: expected.tag(),
-                expected_payload: expected.payload_bits(),
-                actual_tag: actual.tag(),
-                actual_payload: actual.payload_bits(),
-            });
+            return Err(root_value_writeback_slot_mismatch(
+                writeback.slot(),
+                expected,
+                actual,
+            ));
         }
         let _ = writeback.replacement_value()?;
     }
@@ -3166,6 +3165,20 @@ fn apply_root_value_writeback_slots(
         slot.value = writeback.replacement_value()?;
     }
     Ok(())
+}
+
+fn root_value_writeback_slot_mismatch(
+    index: usize,
+    expected: Value,
+    actual: Value,
+) -> EvalHeapError {
+    EvalHeapError::CollectorPollRootValueWritebackSlotMismatch {
+        index,
+        expected_tag: expected.tag(),
+        expected_payload: expected.payload_bits(),
+        actual_tag: actual.tag(),
+        actual_payload: actual.payload_bits(),
+    }
 }
 
 /// Caller-owned mutable storage for one root writeback.

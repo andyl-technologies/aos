@@ -3175,6 +3175,19 @@ GC must be observationally invisible (§8): every item is gated by the different
       non-regressing: zlib cold/warm -2.5%/-2.1% and fib -2.9%/-0.7%, with
       exact 7.5 MiB/160 MiB arena peaks and slightly lower retained RSS. JIT
       stack maps for live runtime values remain open.
+- [x] Current JIT stack-map mutable-slot writer:
+      minor-GC root plans can now transactionally apply only their compiled
+      `StackMap` entries to caller-bound generation or typed-`Value` slots.
+      The writer checks the complete physical-binding buffer, from-space
+      identity, and every typed replacement before publishing any relocation;
+      mixed tree-walk roots remain outside that filtered mutation. Cranelift
+      user-stack-map emission, live frame/register binding, and automatic
+      collector dispatch from compiled safepoints remain open. Final gates
+      passed 3,032 oracle tests (34 ignored), 322 `aos-nix` tests, 38 pinned
+      language tests, the 16 package legs, seven wide/shape modes, compute x8,
+      cache validation, and all 648 strict-JSON seeds in four modes. The new
+      246-line module is off the evaluation hot path; `roots.rs` remains eight
+      lines below its frozen baseline size.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now closes the
