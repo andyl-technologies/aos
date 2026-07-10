@@ -18,9 +18,9 @@ use crucible_protocol::{
     ControlLifecycleIoError, ControlLifecycleState, ControlLifecycleStream, ControlTag,
     HandshakeError, HostHandshakeConfig, HostMsg, NORMAL_CONTROL_LIFECYCLE, NegotiatedHandshake,
     PluginHandshakeConfig, PluginMsg, RUNTIME_DATA_PLANE_CONTRACT, RuntimeDataPlane,
-    SETUP_ACK_STATUS_READY, control_decode_host_msg, control_encode_host_msg,
-    control_encode_plugin_msg, read_control_frame, validate_complete_control_lifecycle,
-    validate_control_lifecycle_trace,
+    SETUP_ACK_STATUS_READY, SETUP_ACK_STATUS_SETUP_FAILED, control_decode_host_msg,
+    control_encode_host_msg, control_encode_plugin_msg, read_control_frame,
+    validate_complete_control_lifecycle, validate_control_lifecycle_trace,
 };
 #[cfg(unix)]
 use crucible_protocol::{ReceivedSetup, ReceivedSetupDescriptors, SetupDescriptorFds};
@@ -199,6 +199,76 @@ fn lifecycle_stream_does_not_advance_after_invalid_hello_ack() -> Result<(), Box
         })
     );
 
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_setup_io_is_bounded_to_setup_and_rejected_during_run() -> Result<(), Box<dyn Error>> {
+    let (peer_socket, plugin_socket) = UnixStream::pair()?;
+    let mut connected = ControlLifecycleStream::connected_unix_stream(plugin_socket)?;
+    assert!(matches!(
+        connected.plugin_setup_io_mut(),
+        Err(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::UnexpectedEvent {
+                state: ControlLifecycleState::Connected,
+                event: ControlLifecycleEvent::HostSetup,
+            },
+        })
+    ));
+    drop(peer_socket);
+
+    let (mut peer_socket, plugin_socket) = UnixStream::pair()?;
+    let mut setup = plugin_setup_lifecycle_stream(plugin_socket, &mut peer_socket)?;
+    setup.plugin_setup_io_mut()?.write_all(&[])?;
+    setup.plugin_send_ready_setup_ack()?;
+    let _ = read_control_frame(&mut peer_socket)?;
+    setup.enter_run_via_shared_memory()?;
+    assert!(matches!(
+        setup.plugin_setup_io_mut(),
+        Err(ControlLifecycleIoError::Lifecycle {
+            source: ControlLifecycleError::UnexpectedEvent {
+                state: ControlLifecycleState::RunningViaSharedMemory,
+                event: ControlLifecycleEvent::HostSetup,
+            },
+        })
+    ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_ready_commit_records_exact_setup_transition() -> Result<(), Box<dyn Error>> {
+    let (mut peer_socket, plugin_socket) = UnixStream::pair()?;
+    let mut plugin = plugin_setup_lifecycle_stream(plugin_socket, &mut peer_socket)?;
+
+    plugin
+        .plugin_setup_io_mut()?
+        .write_all(&control_encode_plugin_msg(&PluginMsg::SetupAck {
+            status: SETUP_ACK_STATUS_READY,
+        }))?;
+    plugin.plugin_commit_ready_setup_ack()?;
+    assert_eq!(plugin.state(), ControlLifecycleState::SetupAcknowledged);
+    assert!(plugin.plugin_commit_ready_setup_ack().is_err());
+    plugin.enter_run_via_shared_memory()?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn plugin_failure_ack_writes_nonready_bytes_without_entering_run() -> Result<(), Box<dyn Error>> {
+    let (mut peer_socket, plugin_socket) = UnixStream::pair()?;
+    let mut plugin = plugin_setup_lifecycle_stream(plugin_socket, &mut peer_socket)?;
+
+    plugin.plugin_send_setup_failure_ack()?;
+    assert_eq!(
+        crucible_protocol::control_decode_plugin_msg(&read_control_frame(&mut peer_socket)?)?,
+        PluginMsg::SetupAck {
+            status: SETUP_ACK_STATUS_SETUP_FAILED,
+        }
+    );
+    assert_eq!(plugin.state(), ControlLifecycleState::SetupSent);
+    assert!(plugin.enter_run_via_shared_memory().is_err());
     Ok(())
 }
 
@@ -407,6 +477,20 @@ fn plugin_running_lifecycle_stream(
     stream: UnixStream,
     peer: &mut UnixStream,
 ) -> Result<ControlLifecycleStream<UnixStream>, Box<dyn Error>> {
+    let mut plugin = plugin_setup_lifecycle_stream(stream, peer)?;
+
+    plugin.plugin_send_ready_setup_ack()?;
+    let _ = read_control_frame(peer)?;
+    plugin.enter_run_via_shared_memory()?;
+
+    Ok(plugin)
+}
+
+#[cfg(unix)]
+fn plugin_setup_lifecycle_stream(
+    stream: UnixStream,
+    peer: &mut UnixStream,
+) -> Result<ControlLifecycleStream<UnixStream>, Box<dyn Error>> {
     let mut plugin = ControlLifecycleStream::connected_unix_stream(stream)?;
 
     peer.write_all(&control_encode_host_msg(&HostMsg::HelloAck {
@@ -432,10 +516,6 @@ fn plugin_running_lifecycle_stream(
         },
     )?;
     let _ = plugin.plugin_recv_setup_with_descriptors()?;
-
-    plugin.plugin_send_ready_setup_ack()?;
-    let _ = read_control_frame(peer)?;
-    plugin.enter_run_via_shared_memory()?;
 
     Ok(plugin)
 }

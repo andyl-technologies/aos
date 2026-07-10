@@ -22,6 +22,8 @@ pub enum PluginTeardownTrigger {
     ShutdownRequested,
     /// The host sent `Quit` on the control channel after the run began.
     HostQuit,
+    /// The plugin rejected an unsolicited or malformed run-phase control frame.
+    RunControlFault,
 }
 
 /// Proof that the shared-memory header requested shutdown.
@@ -213,6 +215,23 @@ impl PluginTeardown {
         S: PluginQemuShutdown,
     {
         self.complete_teardown(PluginTeardownTrigger::HostQuit, slot, shutdown)
+    }
+
+    /// Teardown after rejecting run-phase control I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginTeardownError`] when teardown has already completed or
+    /// the fail-loud QEMU shutdown hook fails.
+    pub fn teardown_after_run_control_fault<S>(
+        &mut self,
+        slot: &NodeSlot,
+        shutdown: &mut S,
+    ) -> Result<PluginTeardownComplete, PluginTeardownError>
+    where
+        S: PluginQemuShutdown,
+    {
+        self.complete_teardown(PluginTeardownTrigger::RunControlFault, slot, shutdown)
     }
 
     fn complete_teardown<S>(

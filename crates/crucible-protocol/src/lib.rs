@@ -1175,6 +1175,60 @@ impl<S> ControlLifecycleStream<S> {
     pub fn into_inner(self) -> S {
         self.stream
     }
+
+    /// Borrows the setup-phase stream for plugin setup failure reporting.
+    ///
+    /// Descriptor mapping, wake-fd arming, and callback registration can fail
+    /// after the lifecycle has accepted `Setup` but before the ready
+    /// acknowledgement is committed. Those paths must send a nonzero
+    /// `SetupAck` through the same socket without pretending that the node
+    /// entered the run lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlLifecycleIoError`] unless the lifecycle is waiting for
+    /// `Setup` or has consumed it and is waiting for the plugin acknowledgement.
+    pub fn plugin_setup_io_mut(&mut self) -> Result<&mut S, ControlLifecycleIoError> {
+        match self.lifecycle.state() {
+            ControlLifecycleState::HelloAcknowledged | ControlLifecycleState::SetupSent => {
+                Ok(&mut self.stream)
+            }
+            state => Err(ControlLifecycleError::UnexpectedEvent {
+                state,
+                event: ControlLifecycleEvent::HostSetup,
+            }
+            .into()),
+        }
+    }
+
+    /// Records a ready `SetupAck` already written by plugin setup code.
+    ///
+    /// This is the lifecycle counterpart to [`Self::plugin_setup_io_mut`] for
+    /// setup code that must validate callback and wake-fd ownership before it
+    /// can choose between a ready or failure acknowledgement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlLifecycleIoError`] unless the lifecycle is waiting for
+    /// setup acknowledgement.
+    pub fn plugin_commit_ready_setup_ack(&mut self) -> Result<(), ControlLifecycleIoError> {
+        self.lifecycle
+            .observe(ControlLifecycleEvent::PluginSetupAck {
+                status: SETUP_ACK_STATUS_READY,
+            })
+            .map(|_state| ())
+            .map_err(ControlLifecycleIoError::from)
+    }
+}
+
+#[cfg(unix)]
+impl<S> AsRawFd for ControlLifecycleStream<S>
+where
+    S: AsRawFd,
+{
+    fn as_raw_fd(&self) -> RawFd {
+        self.stream.as_raw_fd()
+    }
 }
 
 impl<S> ControlLifecycleStream<S>
@@ -1323,6 +1377,29 @@ impl<S> ControlLifecycleStream<S>
 where
     S: Write,
 {
+    /// Sends a terminal non-ready `SetupAck` without entering the run lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlLifecycleIoError`] when setup has not begun or the
+    /// failure acknowledgement cannot be written.
+    pub fn plugin_send_setup_failure_ack(&mut self) -> Result<(), ControlLifecycleIoError> {
+        match self.lifecycle.state() {
+            ControlLifecycleState::HelloAcknowledged | ControlLifecycleState::SetupSent => {}
+            state => {
+                return Err(ControlLifecycleError::UnexpectedEvent {
+                    state,
+                    event: ControlLifecycleEvent::PluginSetupAck {
+                        status: SETUP_ACK_STATUS_SETUP_FAILED,
+                    },
+                }
+                .into());
+            }
+        }
+        plugin_send_setup_ack(&mut self.stream, SETUP_ACK_STATUS_SETUP_FAILED)?;
+        Ok(())
+    }
+
     /// Sends a ready `SetupAck` through the lifecycle.
     ///
     /// # Errors

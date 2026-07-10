@@ -1,0 +1,646 @@
+//! Live QEMU callback integration tests.
+
+use super::*;
+
+use std::cell::Cell;
+
+use crucible_shmem::{
+    KIND_VM, RegionConfig, RegionHeader, RegionLayout, STATUS_IDLE, STATUS_RUNNING,
+    authorize_advance_ceiling,
+};
+
+extern "C" fn test_icount_raw() -> u64 {
+    0
+}
+
+thread_local! {
+    static TEST_CLOCK_DEADLINE_NS: Cell<i64> = const { Cell::new(-1) };
+    static LAST_QUEUED_ADVANCE_NS: Cell<i64> = const { Cell::new(-1) };
+}
+static TEST_RX_SEND_COUNT: AtomicU64 = AtomicU64::new(0);
+static TEST_RX_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+static TEST_RX_LAST_LEN: AtomicU64 = AtomicU64::new(0);
+static TEST_RX_SEND_STATUS: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn test_clock_deadline_ns() -> i64 {
+    TEST_CLOCK_DEADLINE_NS.get()
+}
+
+fn test_live_state(
+    plugin_id: QemuPluginId,
+    vcpu_count: u32,
+    icount_shift: u8,
+    initial_raw_icount: u64,
+    slot: &NodeSlot,
+) -> Result<LiveVcpuTimeCallbackState, LiveVcpuTimeCallbackError> {
+    let layout = RegionLayout::for_config(RegionConfig::new(1, 2, u32::from(icount_shift)))
+        .unwrap_or_else(|error| panic!("test region layout should validate: {error}"));
+    let header = Box::leak(Box::new(RegionHeader::new(layout)));
+    let exact_deadline = ExactDeadlineReader::require(Some(test_clock_deadline_ns))
+        .unwrap_or_else(|error| panic!("test deadline capability should validate: {error}"));
+    let queued_idle_advance = QueuedIdleAdvance::require(Some(test_queue_idle_advance))
+        .unwrap_or_else(|error| panic!("test queued advance should validate: {error}"));
+    LiveVcpuTimeCallbackState::new(
+        plugin_id,
+        test_icount_raw,
+        vcpu_count,
+        icount_shift,
+        initial_raw_icount,
+        exact_deadline,
+        queued_idle_advance,
+        header,
+        slot,
+        Arc::new(LiveCallbackQuiescence::new()),
+    )
+}
+
+#[test]
+fn live_state_dispatches_vcpu_init_publish_and_ceiling() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(41, 2, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+
+    state
+        .on_vcpu_init(41, 0)
+        .unwrap_or_else(|error| panic!("vCPU 0 should initialize: {error}"));
+    state
+        .on_vcpu_init(41, 1)
+        .unwrap_or_else(|error| panic!("vCPU 1 should initialize: {error}"));
+    state
+        .publish_current_icount(5)
+        .unwrap_or_else(|error| panic!("sim icount should publish: {error}"));
+    assert_eq!(state.max_advance_icount(), 12);
+    assert_eq!(slot.snapshot().current_icount, 5);
+    assert!(state.initialized_vcpus[0].load(Ordering::Acquire));
+    assert!(state.initialized_vcpus[1].load(Ordering::Acquire));
+}
+
+#[test]
+fn every_live_callback_entry_rejects_work_after_quiescence() {
+    let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 12, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = Box::new(
+        test_live_state(71, 1, 0, 0, &slot)
+            .unwrap_or_else(|error| panic!("live callback state should build: {error}")),
+    );
+    let state_pointer = std::ptr::from_ref(state.as_ref()).cast_mut();
+    LIVE_VCPU_TIME_STATE.store(state_pointer, Ordering::Release);
+    state.quiescence.close();
+    let userdata = state_pointer.cast::<c_void>();
+    let before = slot.snapshot();
+
+    crucible_qemu_plugin_live_vcpu_init_cb(71, 0);
+    crucible_qemu_plugin_live_vcpu_idle_cb(0, 0, userdata);
+    crucible_qemu_plugin_live_vcpu_resume_cb(0, 0, userdata);
+    crucible_qemu_plugin_live_publish_icount_cb(9, userdata);
+    assert_eq!(crucible_qemu_plugin_live_max_advance_icount_cb(userdata), 0);
+    crucible_qemu_plugin_live_time_advance_completion_cb(0, 0, userdata);
+    assert_eq!(
+        crucible_qemu_plugin_live_network_tx_cb(std::ptr::null(), 0, userdata),
+        -1
+    );
+    assert_eq!(
+        devices::crucible_qemu_plugin_live_block_submit_cb(0, 0, 0, std::ptr::null(), 0, userdata,),
+        -1
+    );
+    assert_eq!(
+        devices::crucible_qemu_plugin_live_block_poll_cb(0, std::ptr::null_mut(), 0, userdata,),
+        -1
+    );
+    devices::crucible_qemu_plugin_live_ninep_burst_start_cb(userdata);
+    assert_eq!(
+        devices::crucible_qemu_plugin_live_ninep_submit_cb(0, std::ptr::null(), 0, 0, userdata,),
+        -1
+    );
+    assert_eq!(
+        devices::crucible_qemu_plugin_live_ninep_poll_cb(0, std::ptr::null_mut(), 0, userdata,),
+        -1
+    );
+    devices::crucible_qemu_plugin_live_ninep_burst_done_cb(userdata);
+
+    let after = slot.snapshot();
+    assert_eq!(after, before);
+    LIVE_VCPU_TIME_STATE.store(std::ptr::null_mut(), Ordering::Release);
+}
+
+#[test]
+fn live_time_completion_commits_logical_idle_offset_before_future_raw_progress() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(43, 1, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .publish_current_icount(4)
+        .unwrap_or_else(|error| panic!("raw progress should publish: {error}"));
+
+    let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
+        .unwrap_or_else(|error| panic!("queued advance should build: {error}"));
+    let pending = queued
+        .enqueue(20)
+        .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
+    state
+        .arm_idle_advance(4, 10, pending)
+        .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
+    state
+        .publish_current_icount(4)
+        .unwrap_or_else(|error| panic!("repeated raw boundary should be a no-op: {error}"));
+    assert!(matches!(
+        state.publish_current_icount(5),
+        Err(
+            LiveVcpuTimeCallbackError::GuestProgressWhileIdleAdvancePending {
+                expected_raw_icount: 4,
+                observed_raw_icount: 5,
+            }
+        )
+    ));
+    assert_eq!(slot.snapshot().current_icount, 4);
+
+    let committed = state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 20))
+        .unwrap_or_else(|error| panic!("matching completion should commit: {error}"));
+    assert_eq!(committed, 10);
+    assert_eq!(slot.snapshot().current_icount, 10);
+
+    state
+        .publish_current_icount(5)
+        .unwrap_or_else(|error| panic!("post-jump raw progress should publish: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 11);
+}
+
+#[test]
+fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 10, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(46, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(46, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+
+    state
+        .on_vcpu_idle(0, 0)
+        .unwrap_or_else(|error| panic!("idle callback should queue the jump: {error}"));
+    let pending_snapshot = slot.snapshot();
+    assert_eq!(pending_snapshot.current_icount, 0);
+    assert_eq!(pending_snapshot.status, STATUS_IDLE);
+
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 10))
+        .unwrap_or_else(|error| panic!("completion should commit the jump: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 10);
+    assert_eq!(slot.snapshot().status, STATUS_RUNNING);
+
+    state
+        .on_vcpu_resume(0, 0)
+        .unwrap_or_else(|error| panic!("resume should preserve logical time: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 10);
+}
+
+#[test]
+fn live_idle_callback_queues_the_exact_timer_deadline() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(47, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(47, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(7);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+
+    state
+        .on_vcpu_idle(0, 0)
+        .unwrap_or_else(|error| panic!("idle callback should queue exact timer: {error}"));
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 7);
+    assert_eq!(slot.snapshot().current_icount, 0);
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 7))
+        .unwrap_or_else(|error| panic!("exact timer completion should commit: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 7);
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+}
+
+#[test]
+fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let outbound_header = RingHeader::new();
+    let inbound_header = RingHeader::new();
+    let mut outbound_entries = vec![FrameEntry::default(); 4];
+    let mut inbound_entries = vec![FrameEntry::default(); 4];
+    let inbound_frame = FrameEntry::new(7, SLOT_NET_ROUTER as u32, 0, b"inbound")
+        .unwrap_or_else(|error| panic!("test inbound frame should build: {error}"));
+    inbound_header
+        .enqueue(&mut inbound_entries, &inbound_frame)
+        .unwrap_or_else(|error| panic!("test inbound frame should enqueue: {error}"));
+    let outbound = MappedDirectedRingMut {
+        descriptor: DirectedRing {
+            index: 0,
+            src_slot: 0,
+            dst_slot: SLOT_NET_ROUTER as u32,
+        },
+        header: &outbound_header,
+        entries: &mut outbound_entries,
+    };
+    let inbound = MappedDirectedRingMut {
+        descriptor: DirectedRing {
+            index: 1,
+            src_slot: SLOT_NET_ROUTER as u32,
+            dst_slot: 0,
+        },
+        header: &inbound_header,
+        entries: &mut inbound_entries,
+    };
+    let rx_queue = QemuLosslessNetworkRxQueue::require(Some(test_net_send), Some(test_net_flush))
+        .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
+    let state = test_live_state(49, 1, 0, 0, &slot)
+        .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue))
+        .unwrap_or_else(|error| panic!("live network callback state should build: {error}"));
+    state
+        .on_vcpu_init(49, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_CLOCK_DEADLINE_NS.set(-1);
+    LAST_QUEUED_ADVANCE_NS.set(-1);
+    TEST_RX_SEND_COUNT.store(0, Ordering::SeqCst);
+    TEST_RX_FLUSH_COUNT.store(0, Ordering::SeqCst);
+    TEST_RX_LAST_LEN.store(0, Ordering::SeqCst);
+    TEST_RX_SEND_STATUS.store(0, Ordering::SeqCst);
+
+    state
+        .on_vcpu_idle(0, 0)
+        .unwrap_or_else(|error| panic!("inbound-aware idle callback should queue: {error}"));
+    assert_eq!(LAST_QUEUED_ADVANCE_NS.get(), 7);
+    state
+        .on_network_tx(b"timer-tx")
+        .unwrap_or_else(|error| panic!("pending timer TX should buffer: {error}"));
+    assert_eq!(outbound_header.write_index(), 0);
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(slot.snapshot().current_icount, 0);
+    assert_eq!(TEST_RX_SEND_COUNT.load(Ordering::SeqCst), 0);
+
+    assert!(matches!(
+        state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 8)),
+        Err(LiveVcpuTimeCallbackError::IdleAdvanceCompletion { .. })
+    ));
+    assert_eq!(outbound_header.write_index(), 0);
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(slot.snapshot().current_icount, 0);
+    assert_eq!(TEST_RX_SEND_COUNT.load(Ordering::SeqCst), 0);
+
+    TEST_RX_SEND_STATUS.store(5, Ordering::SeqCst);
+    assert!(matches!(
+        state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 7)),
+        Err(LiveVcpuTimeCallbackError::NetworkRx { .. })
+    ));
+    assert_eq!(outbound_header.write_index(), 0);
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(slot.snapshot().current_icount, 0);
+    TEST_RX_SEND_STATUS.store(0, Ordering::SeqCst);
+
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 7))
+        .unwrap_or_else(|error| panic!("exact completion should commit network state: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 7);
+    assert_eq!(outbound_header.write_index(), 1);
+    assert_eq!(outbound_entries[0].delivery_icount, 7);
+    assert_eq!(outbound_entries[0].payload(), Ok(b"timer-tx".as_slice()));
+    assert_eq!(inbound_header.read_index(), 1);
+    assert_eq!(TEST_RX_SEND_COUNT.load(Ordering::SeqCst), 2);
+    assert_eq!(TEST_RX_LAST_LEN.load(Ordering::SeqCst), 7);
+    assert_eq!(TEST_RX_FLUSH_COUNT.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn live_time_completion_rejects_missing_or_mismatched_pending_state() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(44, 1, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+
+    assert!(matches!(
+        state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 20)),
+        Err(LiveVcpuTimeCallbackError::IdleAdvanceCompletionWithoutPending)
+    ));
+    let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
+        .unwrap_or_else(|error| panic!("queued advance should build: {error}"));
+    let pending = queued
+        .enqueue(20)
+        .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
+    assert!(matches!(
+        state.arm_idle_advance(0, 9, pending),
+        Err(LiveVcpuTimeCallbackError::IdleAdvancePendingTargetMismatch { .. })
+    ));
+    assert_eq!(slot.snapshot().current_icount, 0);
+
+    let pending = queued
+        .enqueue(16)
+        .unwrap_or_else(|error| panic!("matching idle advance should queue: {error}"));
+    state
+        .arm_idle_advance(0, 8, pending)
+        .unwrap_or_else(|error| panic!("matching idle advance should arm: {error}"));
+    assert!(matches!(
+        state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 14)),
+        Err(LiveVcpuTimeCallbackError::IdleAdvanceCompletion { .. })
+    ));
+    assert_eq!(slot.snapshot().current_icount, 0);
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 16))
+        .unwrap_or_else(|error| panic!("retained pending advance should still complete: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 8);
+}
+
+#[test]
+fn live_pending_advance_rejects_idle_resume_and_reentrant_publication() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(48, 1, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(48, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
+        .unwrap_or_else(|error| panic!("queued advance should build: {error}"));
+    let pending = queued
+        .enqueue(16)
+        .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
+    state
+        .arm_idle_advance(0, 8, pending)
+        .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
+    let pending_snapshot = slot.snapshot();
+
+    assert_eq!(
+        state.on_vcpu_resume(0, 0),
+        Err(LiveVcpuTimeCallbackError::ResumeWhileIdleAdvancePending)
+    );
+    assert_eq!(
+        state.on_vcpu_idle(0, 0),
+        Err(LiveVcpuTimeCallbackError::IdleAdvanceAlreadyPending)
+    );
+    let pending_guard = match state.pending_idle_advance.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    assert_eq!(
+        state.publish_current_icount(0),
+        Err(LiveVcpuTimeCallbackError::CallbackReentered)
+    );
+    drop(pending_guard);
+    assert_eq!(slot.snapshot(), pending_snapshot);
+
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 16))
+        .unwrap_or_else(|error| panic!("retained pending advance should complete: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 8);
+}
+
+#[test]
+fn live_state_calibrates_raw_progress_against_restored_logical_time() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 20, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    slot.publish_reached_icount(10, 0)
+        .unwrap_or_else(|error| panic!("restored logical time should publish: {error}"));
+
+    let state = test_live_state(45, 1, 0, 4, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should calibrate: {error}"));
+    state
+        .publish_current_icount(5)
+        .unwrap_or_else(|error| panic!("raw progress should preserve idle offset: {error}"));
+    assert_eq!(slot.snapshot().current_icount, 11);
+
+    assert!(matches!(
+        test_live_state(45, 1, 0, 12, &slot),
+        Err(LiveVcpuTimeCallbackError::InitialRawIcountBeyondLogical {
+            raw_icount: 12,
+            logical_icount: 11,
+        })
+    ));
+}
+
+#[test]
+fn live_state_rejects_bad_init_and_regressing_or_excess_progress() {
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 8, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(42, 2, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+
+    assert!(matches!(
+        state.on_vcpu_init(99, 0),
+        Err(LiveVcpuTimeCallbackError::PluginIdMismatch { .. })
+    ));
+    assert!(matches!(
+        state.on_vcpu_init(42, 2),
+        Err(LiveVcpuTimeCallbackError::VcpuOutOfRange {
+            vcpu_index: 2,
+            vcpu_count: 2,
+        })
+    ));
+    state
+        .on_vcpu_init(42, 0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    state
+        .publish_current_icount(4)
+        .unwrap_or_else(|error| panic!("progress should publish: {error}"));
+    assert!(matches!(
+        state.publish_current_icount(3),
+        Err(LiveVcpuTimeCallbackError::IcountRegressed {
+            previous_icount: 4,
+            current_icount: 3,
+        })
+    ));
+    assert!(matches!(
+        state.publish_current_icount(9),
+        Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+            current_icount: 9,
+            ceiling_icount: 8,
+        })
+    ));
+}
+
+#[test]
+fn live_registrar_preflight_names_each_missing_capability() {
+    let execution_model =
+        QemuPluginExecutionModel::validate(2, crate::QemuTcgThreading::SingleThreadedRoundRobin)
+            .unwrap_or_else(|error| panic!("test model should validate: {error}"));
+    let args = PluginArgs::parse("simfd=3,slot=0")
+        .unwrap_or_else(|error| panic!("test arguments should parse: {error}"));
+    let missing_init = LiveVcpuTimeCallbackRegistrar::new(
+        1,
+        execution_model,
+        LiveVcpuTimeCallbackCapabilities {
+            icount_raw: test_icount_raw,
+            clock_deadline_ns: Some(test_clock_deadline_ns),
+            advance_time_ns: Some(test_queue_idle_advance),
+            register_vcpu_init: None,
+            register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
+            register_time_advance_cb: Some(test_register_time_advance_cb),
+            register_net_tx: Some(test_register_net_tx),
+            net_send: Some(test_net_send),
+            net_flush: Some(test_net_flush),
+            register_block: Some(test_register_block),
+            register_ninep: Some(test_register_ninep),
+        },
+    );
+    assert!(matches!(
+        missing_init.preflight(&args),
+        Err(OwnedCallbackRegistrationError::LiveVcpuTime {
+            source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
+            }
+        })
+    ));
+
+    let missing_sim_dispatch = LiveVcpuTimeCallbackRegistrar::new(
+        1,
+        execution_model,
+        LiveVcpuTimeCallbackCapabilities {
+            icount_raw: test_icount_raw,
+            clock_deadline_ns: Some(test_clock_deadline_ns),
+            advance_time_ns: Some(test_queue_idle_advance),
+            register_vcpu_init: Some(test_register_vcpu_init),
+            register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_sim_shmem_dispatch: None,
+            register_time_advance_cb: Some(test_register_time_advance_cb),
+            register_net_tx: Some(test_register_net_tx),
+            net_send: Some(test_net_send),
+            net_flush: Some(test_net_flush),
+            register_block: Some(test_register_block),
+            register_ninep: Some(test_register_ninep),
+        },
+    );
+    assert!(matches!(
+        missing_sim_dispatch.preflight(&args),
+        Err(OwnedCallbackRegistrationError::LiveVcpuTime {
+            source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
+            },
+        })
+    ));
+
+    let missing_time_advance_completion = LiveVcpuTimeCallbackRegistrar::new(
+        1,
+        execution_model,
+        LiveVcpuTimeCallbackCapabilities {
+            icount_raw: test_icount_raw,
+            clock_deadline_ns: Some(test_clock_deadline_ns),
+            advance_time_ns: Some(test_queue_idle_advance),
+            register_vcpu_init: Some(test_register_vcpu_init),
+            register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
+            register_sim_shmem_dispatch: Some(test_register_sim_dispatch),
+            register_time_advance_cb: None,
+            register_net_tx: Some(test_register_net_tx),
+            net_send: Some(test_net_send),
+            net_flush: Some(test_net_flush),
+            register_block: Some(test_register_block),
+            register_ninep: Some(test_register_ninep),
+        },
+    );
+    assert!(matches!(
+        missing_time_advance_completion.preflight(&args),
+        Err(OwnedCallbackRegistrationError::LiveVcpuTime {
+            source: LiveVcpuTimeCallbackError::CapabilityUnavailable {
+                symbol: QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL,
+            },
+        })
+    ));
+}
+
+extern "C" fn test_register_vcpu_init(
+    _plugin_id: QemuPluginId,
+    _callback: crate::QemuVcpuSimpleCbFn,
+) {
+}
+
+extern "C" fn test_register_vcpu_idle_resume(
+    _idle_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
+    _resume_callback: Option<crate::QemuVcpuIdleResumeCbFn>,
+    _userdata: *mut c_void,
+) {
+}
+
+extern "C" fn test_register_sim_dispatch(
+    _publish: Option<crate::QemuSimShmemPublishIcountCbFn>,
+    _ceiling: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
+    _userdata: *mut c_void,
+) {
+}
+
+extern "C" fn test_register_time_advance_cb(
+    _callback: Option<crate::QemuTimeAdvanceCompletionCbFn>,
+    _userdata: *mut c_void,
+) -> std::os::raw::c_int {
+    0
+}
+
+extern "C" fn test_register_net_tx(
+    _callback: Option<crate::QemuNetTxCbFn>,
+    _userdata: *mut c_void,
+) {
+}
+
+extern "C" fn test_register_block(
+    _submit: Option<crate::QemuBlkSubmitCbFn>,
+    _poll: Option<crate::QemuBlkPollCbFn>,
+    _userdata: *mut c_void,
+) {
+}
+
+extern "C" fn test_register_ninep(
+    _burst_start: Option<crate::QemuNinePBurstCbFn>,
+    _submit: Option<crate::QemuNinePSubmitCbFn>,
+    _poll: Option<crate::QemuNinePPollCbFn>,
+    _burst_done: Option<crate::QemuNinePBurstCbFn>,
+    _userdata: *mut c_void,
+) {
+}
+
+extern "C" fn test_net_send(payload: *const u8, payload_len: usize) -> std::os::raw::c_int {
+    if payload.is_null() && payload_len != 0 {
+        return 1;
+    }
+    TEST_RX_SEND_COUNT.fetch_add(1, Ordering::SeqCst);
+    TEST_RX_LAST_LEN.store(payload_len as u64, Ordering::SeqCst);
+    TEST_RX_SEND_STATUS.load(Ordering::SeqCst) as std::os::raw::c_int
+}
+
+extern "C" fn test_net_flush() -> std::os::raw::c_int {
+    TEST_RX_FLUSH_COUNT.fetch_add(1, Ordering::SeqCst);
+    0
+}
+
+extern "C" fn test_queue_idle_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
+    LAST_QUEUED_ADVANCE_NS.set(target_virtual_ns);
+    0
+}

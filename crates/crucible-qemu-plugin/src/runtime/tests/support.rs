@@ -228,6 +228,7 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
         advance_time_ns: Some(test_direct_advance),
         register_time_advance_cb: Some(test_register_time_advance_cb),
         register_wake_fd: test_register_wake_fd,
+        request_shutdown: test_request_shutdown,
         basic_block_coverage: None,
         register_vcpu_init: Some(test_register_vcpu_init),
         register_vcpu_idle_resume: Some(test_register_vcpu_idle_resume),
@@ -317,6 +318,8 @@ extern "C" fn test_register_time_advance_cb(
 ) -> std::os::raw::c_int {
     0
 }
+
+extern "C" fn test_request_shutdown(_failure: std::os::raw::c_int) {}
 
 extern "C" fn test_inject_preemption(
     _at: u64,
