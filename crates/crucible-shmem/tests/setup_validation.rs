@@ -65,6 +65,19 @@ fn setup_region_header_validation_rejects_invalid_abi_marker() {
     assert_eq!(
         validate_setup_region_header(
             RegionHeaderSnapshot {
+                abi_version: ABI_VERSION - 1,
+                ..snapshot
+            },
+            layout.region_size,
+        ),
+        Err(RegionSetupValidationError::AbiVersionMismatch {
+            actual: ABI_VERSION - 1,
+            expected: ABI_VERSION,
+        })
+    );
+    assert_eq!(
+        validate_setup_region_header(
+            RegionHeaderSnapshot {
                 abi_version: ABI_VERSION + 1,
                 ..snapshot
             },
@@ -259,6 +272,25 @@ fn mmap_setup_region_rejects_lengths_smaller_than_header() {
         Err(SetupRegionMapError::RegionTooSmall {
             region_len,
             minimum_len: REGION_HEADER_SIZE as u64,
+        })
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn mmap_setup_region_rejects_short_backing_before_mapping() {
+    let temp = temp_region_file();
+    let region_len = REGION_HEADER_SIZE as u64;
+    let backing_len = region_len - 1;
+    if let Err(error) = temp.set_len(backing_len) {
+        panic!("failed to size short temporary setup region: {error}");
+    }
+
+    assert_eq!(
+        mmap_setup_region(temp.as_fd(), region_len).map(|mapped| mapped.region_len()),
+        Err(SetupRegionMapError::BackingTooShort {
+            backing_len,
+            region_len,
         })
     );
 }

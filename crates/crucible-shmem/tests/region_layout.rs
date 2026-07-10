@@ -3,11 +3,15 @@
 #![forbid(unsafe_code)]
 
 use crucible_shmem::{
-    ABI_VERSION, DEFAULT_QUEUE_CAPACITY, FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET,
-    FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_PAD_OFFSET,
-    FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET, KIND_9P, KIND_BLK,
-    KIND_NET, LAYOUT_TARGET_SUPPORTED, LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES,
-    NODE_SLOT_ALIGN, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
+    ABI_VERSION, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
+    COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
+    COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_RESERVED_OFFSET, COVERAGE_ENTRY_SIZE,
+    COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_QUEUE_CAPACITY,
+    FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
+    FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_PAD_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE,
+    FRAME_ENTRY_SRC_NODE_OFFSET, KIND_9P, KIND_BLK, KIND_NET, LAYOUT_TARGET_SUPPORTED,
+    LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES, NODE_SLOT_ALIGN,
+    NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
     NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PAD0_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET,
     NODE_SLOT_RESERVED_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
@@ -87,6 +91,15 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(RING_HEADER_PAD_WRITE_OFFSET, 72);
     assert_eq!(RING_HEADER_SIZE, 128);
     assert_eq!(RING_HEADER_ALIGN, 128);
+    assert_eq!(COVERAGE_QUEUE_CAPACITY, 65_536);
+    assert_eq!(COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, 0);
+    assert_eq!(COVERAGE_ENTRY_GUEST_PC_OFFSET, 8);
+    assert_eq!(COVERAGE_ENTRY_MAP_INDEX_OFFSET, 16);
+    assert_eq!(COVERAGE_ENTRY_VCPU_INDEX_OFFSET, 24);
+    assert_eq!(COVERAGE_ENTRY_BLOCK_LEN_OFFSET, 28);
+    assert_eq!(COVERAGE_ENTRY_RESERVED_OFFSET, 32);
+    assert_eq!(COVERAGE_ENTRY_SIZE, 64);
+    assert_eq!(COVERAGE_ENTRY_ALIGN, 64);
 }
 
 #[test]
@@ -107,9 +120,22 @@ fn region_layout_computes_offsets_and_directed_rings() {
         layout.ring_hdr_off + u64::from(layout.ring_count) * RING_HEADER_SIZE as u64
     );
     assert_eq!(layout.entry_stride, FRAME_ENTRY_SIZE as u64);
+    let frame_data_end =
+        layout.ring_data_off + layout.frame_entry_count() * FRAME_ENTRY_SIZE as u64;
+    let expected_coverage_ring_hdr_off =
+        frame_data_end.div_ceil(RING_HEADER_ALIGN as u64) * RING_HEADER_ALIGN as u64;
+    assert_eq!(layout.coverage_ring_count, layout.vm_node_count);
+    assert_eq!(layout.coverage_queue_capacity, COVERAGE_QUEUE_CAPACITY);
+    assert_eq!(layout.coverage_ring_hdr_off, expected_coverage_ring_hdr_off);
+    assert_eq!(
+        layout.coverage_ring_data_off,
+        layout.coverage_ring_hdr_off
+            + u64::from(layout.coverage_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(layout.coverage_entry_stride, COVERAGE_ENTRY_SIZE as u64);
     assert_eq!(
         layout.region_size,
-        layout.ring_data_off + layout.frame_entry_count() * FRAME_ENTRY_SIZE as u64
+        layout.coverage_ring_data_off + layout.coverage_entry_count() * COVERAGE_ENTRY_SIZE as u64
     );
     assert_eq!(
         layout.frame_entry_count(),
