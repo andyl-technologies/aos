@@ -8,7 +8,7 @@
 //!
 //! Sources, assembled by `TreeWalk::stats_snapshot`:
 //!
-//! - record-probe / flat-resolution / `Arc`-clone counts from the serial
+//! - record-probe / flat-resolution / payload and state `Arc`-clone counts from the serial
 //!   evaluator heap (`eval::heap`, per-heap `Cell` counters);
 //! - capture-copy and frame-allocation counts from the process-wide
 //!   `eval::env::capture_stats` atomics, as a delta from the evaluator's
@@ -54,8 +54,10 @@ pub struct CampaignCounters {
     pub flat_lambda_resolutions: u64,
     /// Partially-applied-builtin resolutions served by the flat closure store.
     pub flat_primop_resolutions: u64,
-    /// `Arc` payload-handle clones handed out by thunk/lambda/primop resolution.
+    /// Legacy payload-handle `Arc` clones; zero after FV-6.
     pub payload_arc_clones: u64,
+    /// Thunk force-state sidecar `Arc` clones retained across evaluator re-entry.
+    pub thunk_state_arc_clones: u64,
     /// Lexical frame-array capture copies (`EvalEnv::capture`).
     pub env_captures: u64,
     /// Frame handles copied across all lexical captures (8 bytes each).
@@ -151,6 +153,9 @@ impl CampaignCounters {
             payload_arc_clones: self
                 .payload_arc_clones
                 .saturating_add(other.payload_arc_clones),
+            thunk_state_arc_clones: self
+                .thunk_state_arc_clones
+                .saturating_add(other.thunk_state_arc_clones),
             env_captures: self.env_captures.saturating_add(other.env_captures),
             env_capture_frame_handles: self
                 .env_capture_frame_handles

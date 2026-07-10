@@ -3,6 +3,17 @@
 use super::*;
 
 impl EvalLambda {
+    /// Returns whether two payload snapshots retain the same closure backing.
+    pub(crate) fn raw_eq(&self, other: &Self) -> bool {
+        self.module == other.module
+            && self.pattern == other.pattern
+            && self.body == other.body
+            && self.frame == other.frame
+            && self.env.raw_eq(&other.env)
+            && self.with_env.raw_eq(&other.with_env)
+            && self.scoped_globals.raw_eq(&other.scoped_globals)
+    }
+
     /// Creates a lambda closure record.
     pub fn new(pattern: IrId, body: IrId, frame: FrameId, env: EvalEnv) -> Self {
         Self::with_captures(

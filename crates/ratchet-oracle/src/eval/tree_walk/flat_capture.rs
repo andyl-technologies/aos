@@ -62,9 +62,6 @@ impl TreeWalk {
         let Some(tail) = tail else {
             return;
         };
-        if value.as_heap_ptr().ok() != Some(tail.object_ptr()) {
-            return;
-        }
         self.pending_flat_captures.push(PendingFlatCapture::new(
             EvalNodeRef::new(self.current_module, id),
             value,

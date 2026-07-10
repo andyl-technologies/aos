@@ -198,6 +198,17 @@ impl<T> Default for PersistentEnvStack<T> {
     }
 }
 
+impl<T> PersistentEnvStack<T> {
+    /// Returns whether two snapshots share the same persistent head.
+    fn raw_eq(&self, other: &Self) -> bool {
+        match (&self.head, &other.head) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
 impl<T: Copy> PersistentEnvStack<T> {
     fn from_slice(values: &[T]) -> Self {
         let mut stack = Self::default();
@@ -259,6 +270,11 @@ pub struct EvalWithEnv {
 }
 
 impl EvalWithEnv {
+    /// Returns whether two captures share the same persistent stack.
+    pub(crate) fn raw_eq(&self, other: &Self) -> bool {
+        self.scopes.raw_eq(&other.scopes)
+    }
+
     /// Captures the active `with` scope stack.
     ///
     /// # Errors
@@ -328,6 +344,11 @@ pub struct EvalScopedGlobalEnv {
 }
 
 impl EvalScopedGlobalEnv {
+    /// Returns whether two captures share the same persistent stack.
+    pub(crate) fn raw_eq(&self, other: &Self) -> bool {
+        self.scopes.raw_eq(&other.scopes)
+    }
+
     /// Captures the active scoped-import global scope stack.
     ///
     /// # Errors

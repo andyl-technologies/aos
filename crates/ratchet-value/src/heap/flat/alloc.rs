@@ -321,7 +321,7 @@ impl<T> FlatObjectStore<T> {
             return Err(FlatObjectError::UnknownAddress { address });
         }
         entry.mark_value_tail();
-        let handle = FlatValueTailHandle::new(allocation.ptr, allocation.store_index, values.len());
+        let handle = FlatValueTailHandle::new(allocation.store_index, values.len());
         Ok(FlatValueTailAllocation { allocation, handle })
     }
 }

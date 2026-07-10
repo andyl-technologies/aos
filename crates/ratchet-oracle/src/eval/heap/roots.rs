@@ -8446,15 +8446,9 @@ fn heap_object_value_raw_eq(left: &HeapObjectValue, right: &HeapObjectValue) -> 
     match (left, right) {
         (HeapObjectValue::String(left), HeapObjectValue::String(right)) => left == right,
         (HeapObjectValue::List(left), HeapObjectValue::List(right)) => left.raw_eq(right),
-        (HeapObjectValue::Lambda(left), HeapObjectValue::Lambda(right)) => {
-            Arc::ptr_eq(left, right)
-        }
-        (HeapObjectValue::Primop(left), HeapObjectValue::Primop(right)) => {
-            Arc::ptr_eq(left, right)
-        }
-        (HeapObjectValue::Thunk(left), HeapObjectValue::Thunk(right)) => {
-            Arc::ptr_eq(left, right)
-        }
+        (HeapObjectValue::Lambda(left), HeapObjectValue::Lambda(right)) => left.raw_eq(right),
+        (HeapObjectValue::Primop(left), HeapObjectValue::Primop(right)) => left.raw_eq(right),
+        (HeapObjectValue::Thunk(left), HeapObjectValue::Thunk(right)) => left.raw_eq(right),
         _ => false,
     }
 }
@@ -8733,11 +8727,11 @@ fn record_owned_heap_field_write_object(
                 return Err(RecordOwnedHeapFieldWriteObjectError::UnsupportedSource);
             };
             *arg = EvalPrimOpArg::new_in_module(arg.module(), arg.id(), arg.span(), replacement);
-            Ok(HeapObjectValue::Primop(Arc::new(EvalPrimOp {
+            Ok(HeapObjectValue::Primop(EvalPrimOp {
                 builtin: primop.builtin(),
                 symbol: primop.symbol(),
                 args,
-            })))
+            }))
         }
         (
             HeapObjectValue::Lambda(lambda),
@@ -8753,7 +8747,7 @@ fn record_owned_heap_field_write_object(
             *scope = EvalWithScope::new(scope.module(), scope.scope(), replacement);
             let with_env = EvalWithEnv::capture(&scopes)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
-            Ok(HeapObjectValue::Lambda(Arc::new(EvalLambda::with_captures(
+            Ok(HeapObjectValue::Lambda(EvalLambda::with_captures(
                 lambda.module(),
                 lambda.pattern(),
                 lambda.body(),
@@ -8761,7 +8755,7 @@ fn record_owned_heap_field_write_object(
                 lambda.env().clone(),
                 with_env,
                 lambda.scoped_global_env().clone(),
-            ))))
+            )))
         }
         (
             HeapObjectValue::Lambda(lambda),
@@ -8777,7 +8771,7 @@ fn record_owned_heap_field_write_object(
             *scope = replacement;
             let scoped_globals = EvalScopedGlobalEnv::capture(&scopes)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?;
-            Ok(HeapObjectValue::Lambda(Arc::new(EvalLambda::with_captures(
+            Ok(HeapObjectValue::Lambda(EvalLambda::with_captures(
                 lambda.module(),
                 lambda.pattern(),
                 lambda.body(),
@@ -8785,7 +8779,7 @@ fn record_owned_heap_field_write_object(
                 lambda.env().clone(),
                 lambda.with_scope_env().clone(),
                 scoped_globals,
-            ))))
+            )))
         }
         (HeapObjectValue::Thunk(thunk), HeapEdgeSource::ThunkCachedResult) => {
             if thunk
@@ -8798,16 +8792,16 @@ fn record_owned_heap_field_write_object(
             }
             let parallel_cell = clone_parallel_thunk_cell_for_heap_field_write(thunk)?;
             if parallel_cell.is_none() {
-                return Ok(HeapObjectValue::Thunk(Arc::new(
+                return Ok(HeapObjectValue::Thunk(
                     EvalThunk::with_forced_cached_result_from(thunk, replacement),
-                )));
+                ));
             }
-            Ok(HeapObjectValue::Thunk(Arc::new(EvalThunk {
+            Ok(HeapObjectValue::Thunk(EvalThunk {
                 kind: thunk.kind().clone(),
-                cell: ThunkCell::forced(replacement),
+                cell: Arc::new(ThunkCell::forced(replacement)),
                 force_storage_mode: thunk.force_storage_mode(),
                 parallel_cell,
-            })))
+            }))
         }
         (HeapObjectValue::Thunk(thunk), HeapEdgeSource::ThunkParallelPayloadValue) => {
             let Some(parallel_cell) = thunk.parallel_payload_cell() else {
@@ -8823,13 +8817,15 @@ fn record_owned_heap_field_write_object(
             let parallel_cell = parallel_cell
                 .relocated_forced_value(replacement)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)?;
-            Ok(HeapObjectValue::Thunk(Arc::new(EvalThunk {
+            Ok(HeapObjectValue::Thunk(EvalThunk {
                 kind: thunk.kind().clone(),
-                cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
-                    .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
+                cell: Arc::new(
+                    clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
+                        .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
+                ),
                 force_storage_mode: thunk.force_storage_mode(),
-                parallel_cell: Some(Box::new(parallel_cell)),
-            })))
+                parallel_cell: Some(Arc::new(parallel_cell)),
+            }))
         }
         (HeapObjectValue::Thunk(thunk), source) => {
             rewrite_suspended_thunk_field(thunk, source, replacement)
@@ -8889,12 +8885,12 @@ fn clone_serial_thunk_cell_for_heap_field_write(cell: &ThunkCell) -> Result<Thun
 
 fn clone_parallel_thunk_cell_for_heap_field_write(
     thunk: &EvalThunk,
-) -> Result<Option<Box<TreeWalkParallelThunkCell>>, RecordOwnedHeapFieldWriteObjectError> {
+) -> Result<Option<Arc<TreeWalkParallelThunkCell>>, RecordOwnedHeapFieldWriteObjectError> {
     thunk
         .parallel_payload_cell()
         .map(|cell| {
             cell.clone_for_relocation()
-                .map(Box::new)
+                .map(Arc::new)
                 .map_err(RecordOwnedHeapFieldWriteObjectError::ParallelThunkPayload)
         })
         .transpose()
@@ -8904,13 +8900,15 @@ fn rebuild_thunk_for_heap_field_write(
     thunk: &EvalThunk,
     kind: EvalThunkKind,
 ) -> Result<HeapObjectValue, RecordOwnedHeapFieldWriteObjectError> {
-    Ok(HeapObjectValue::Thunk(Arc::new(EvalThunk {
+    Ok(HeapObjectValue::Thunk(EvalThunk {
         kind,
-        cell: clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
-            .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
+        cell: Arc::new(
+            clone_serial_thunk_cell_for_heap_field_write(thunk.cell())
+                .map_err(RecordOwnedHeapFieldWriteObjectError::Thunk)?,
+        ),
         force_storage_mode: thunk.force_storage_mode(),
         parallel_cell: clone_parallel_thunk_cell_for_heap_field_write(thunk)?,
-    })))
+    }))
 }
 
 fn thunk_supports_suspended_field_write(

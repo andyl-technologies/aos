@@ -1941,7 +1941,7 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            object: HeapObjectValue::Lambda(Arc::new(lambda)),
+            object: HeapObjectValue::Lambda(lambda),
         });
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
@@ -1980,7 +1980,7 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            object: HeapObjectValue::Primop(Arc::new(primop)),
+            object: HeapObjectValue::Primop(primop),
         });
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
@@ -2040,7 +2040,7 @@ impl EvalHeap {
             generation: initial_generation_for_allocation_domain(HeapAllocationDomain::Worker),
             minor_gc_forwarding: Cell::new(None),
             last_touch_epoch,
-            object: HeapObjectValue::Thunk(Arc::new(thunk)),
+            object: HeapObjectValue::Thunk(thunk),
         });
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
@@ -2095,20 +2095,20 @@ impl EvalHeap {
         let (value, object) = match tag {
             ValueTag::Lambda => (
                 Value::lambda(allocation.ptr),
-                HeapObjectValue::Lambda(Arc::new(EvalLambda::new(
+                HeapObjectValue::Lambda(EvalLambda::new(
                     IrId::new(0),
                     IrId::new(0),
                     FrameId::new(0),
                     EvalEnv::default(),
-                ))),
+                )),
             ),
             ValueTag::Primop => (
                 Value::primop(allocation.ptr),
-                HeapObjectValue::Primop(Arc::new(EvalPrimOp::new(Symbol::new(0)))),
+                HeapObjectValue::Primop(EvalPrimOp::new(Symbol::new(0))),
             ),
             ValueTag::Thunk => (
                 Value::thunk(allocation.ptr),
-                HeapObjectValue::Thunk(Arc::new(EvalThunk::new(IrId::new(0)))),
+                HeapObjectValue::Thunk(EvalThunk::new(IrId::new(0))),
             ),
             tag => {
                 return Err(
@@ -2442,7 +2442,7 @@ impl EvalHeap {
         }
         if let Some(payload) = self.flat_closure_probe(ValueTag::Lambda, FlatObjectKind::Lambda, ptr)? {
             return match payload {
-                FlatClosurePayload::Lambda(lambda) => Ok(lambda.as_ref()),
+                FlatClosurePayload::Lambda(lambda) => Ok(lambda),
                 payload => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Lambda,
                     payload.tag(),
@@ -2454,7 +2454,7 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Lambda(lambda) => {
                 self.touch_record(record);
-                Ok(lambda.as_ref())
+                Ok(lambda)
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Lambda,
@@ -2490,7 +2490,7 @@ impl EvalHeap {
         }
         if let Some(payload) = self.flat_closure_probe(ValueTag::Primop, FlatObjectKind::Primop, ptr)? {
             return match payload {
-                FlatClosurePayload::Primop(inner) => Ok(inner.as_ref()),
+                FlatClosurePayload::Primop(inner) => Ok(inner),
                 payload => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Primop,
                     payload.tag(),
@@ -2502,7 +2502,7 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Primop(primop) => {
                 self.touch_record(record);
-                Ok(primop.as_ref())
+                Ok(primop)
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Primop,
@@ -2538,7 +2538,7 @@ impl EvalHeap {
         }
         if let Some(payload) = self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)? {
             return match payload {
-                FlatClosurePayload::Thunk(inner) => Ok(inner.as_ref()),
+                FlatClosurePayload::Thunk(inner) => Ok(inner),
                 payload => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Thunk,
                     payload.tag(),
@@ -2550,7 +2550,7 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Thunk(thunk) => {
                 self.touch_record(record);
-                Ok(thunk.as_ref())
+                Ok(thunk)
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Thunk,
@@ -2560,18 +2560,22 @@ impl EvalHeap {
         }
     }
 
-    /// Clones the thunk handle so forcing can release the heap borrow before
-    /// re-entering evaluation.
-    pub(crate) fn clone_thunk(&self, value: Value) -> Result<Arc<EvalThunk>, EvalHeapError> {
+    /// Clones thunk metadata and its side-owned force-state handles so forcing
+    /// can release the heap borrow before re-entering evaluation.
+    pub(crate) fn clone_thunk(&self, value: Value) -> Result<EvalThunk, EvalHeapError> {
         let ptr = value.as_thunk_ptr().map_err(EvalHeapError::Value)?;
         if let Some(shared) = &self.shared {
-            return shared.clone_thunk_ptr(ptr);
+            let thunk = shared.clone_thunk_ptr(ptr)?;
+            self.deref_counters
+                .note_thunk_state_arc_clones(thunk.state_arc_clone_count());
+            return Ok(thunk);
         }
         if let Some(payload) = self.flat_closure_probe(ValueTag::Thunk, FlatObjectKind::Thunk, ptr)? {
             return match payload {
                 FlatClosurePayload::Thunk(inner) => {
-                    self.deref_counters.note_payload_arc_clone();
-                    Ok(Arc::clone(inner))
+                    self.deref_counters
+                        .note_thunk_state_arc_clones(inner.state_arc_clone_count());
+                    Ok(inner.clone())
                 }
                 payload => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Thunk,
@@ -2584,8 +2588,9 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Thunk(thunk) => {
                 self.touch_record(record);
-                self.deref_counters.note_payload_arc_clone();
-                Ok(Arc::clone(thunk))
+                self.deref_counters
+                    .note_thunk_state_arc_clones(thunk.state_arc_clone_count());
+                Ok(thunk.clone())
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Thunk,
@@ -2595,9 +2600,8 @@ impl EvalHeap {
         }
     }
 
-    /// Clones the lambda handle so application can release the heap borrow
-    /// before evaluating the body.
-    pub(crate) fn clone_lambda(&self, value: Value) -> Result<Arc<EvalLambda>, EvalHeapError> {
+    /// Clones lambda metadata so application can release the heap borrow before evaluating the body.
+    pub(crate) fn clone_lambda(&self, value: Value) -> Result<EvalLambda, EvalHeapError> {
         let ptr = value.as_lambda_ptr().map_err(EvalHeapError::Value)?;
         if let Some(shared) = &self.shared {
             return shared.clone_lambda_ptr(ptr);
@@ -2605,8 +2609,7 @@ impl EvalHeap {
         if let Some(payload) = self.flat_closure_probe(ValueTag::Lambda, FlatObjectKind::Lambda, ptr)? {
             return match payload {
                 FlatClosurePayload::Lambda(inner) => {
-                    self.deref_counters.note_payload_arc_clone();
-                    Ok(Arc::clone(inner))
+                    Ok(inner.clone())
                 }
                 payload => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Lambda,
@@ -2619,8 +2622,7 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Lambda(lambda) => {
                 self.touch_record(record);
-                self.deref_counters.note_payload_arc_clone();
-                Ok(Arc::clone(lambda))
+                Ok(lambda.clone())
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Lambda,
@@ -2630,9 +2632,9 @@ impl EvalHeap {
         }
     }
 
-    /// Clones the builtin handle so application can release the heap borrow
+    /// Clones builtin metadata so application can release the heap borrow
     /// before forcing captured arguments.
-    pub(crate) fn clone_primop(&self, value: Value) -> Result<Arc<EvalPrimOp>, EvalHeapError> {
+    pub(crate) fn clone_primop(&self, value: Value) -> Result<EvalPrimOp, EvalHeapError> {
         let ptr = value.as_primop_ptr().map_err(EvalHeapError::Value)?;
         if let Some(shared) = &self.shared {
             return shared.clone_primop_ptr(ptr);
@@ -2640,8 +2642,7 @@ impl EvalHeap {
         if let Some(payload) = self.flat_closure_probe(ValueTag::Primop, FlatObjectKind::Primop, ptr)? {
             return match payload {
                 FlatClosurePayload::Primop(inner) => {
-                    self.deref_counters.note_payload_arc_clone();
-                    Ok(Arc::clone(inner))
+                    Ok(inner.clone())
                 }
                 payload => Err(EvalHeapError::record_type_mismatch(
                     ValueTag::Primop,
@@ -2654,8 +2655,7 @@ impl EvalHeap {
         match &record.object {
             HeapObjectValue::Primop(primop) => {
                 self.touch_record(record);
-                self.deref_counters.note_payload_arc_clone();
-                Ok(Arc::clone(primop))
+                Ok(primop.clone())
             }
             object => Err(EvalHeapError::record_type_mismatch(
                 ValueTag::Primop,

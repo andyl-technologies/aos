@@ -40,7 +40,8 @@
 //!  "flat_list_resolutions":0,"flat_attrs_resolutions":0,
 //!  "flat_thunk_resolutions":0,"flat_lambda_resolutions":0,
 //!  "flat_primop_resolutions":0,
-//!  "payload_arc_clones":0,"env_captures":0,"env_capture_frame_handles":0,
+//!  "payload_arc_clones":0,"thunk_state_arc_clones":0,
+//!  "env_captures":0,"env_capture_frame_handles":0,
 //!  "flat_env_captures":0,"flat_env_capture_values":0,
 //!  "with_env_captures":0,"with_env_capture_scopes":0,
 //!  "scoped_global_env_captures":0,"scoped_global_env_capture_scopes":0,
@@ -51,8 +52,8 @@
 //!
 //! The nested `campaign` object carries the RFC-0007 doc 30 FV-0 flat-value
 //! campaign counters: record-table dereference probes by value kind, flat
-//! store resolutions, payload `Arc` clones, environment capture-copy and
-//! frame-allocation volume, and per-kind payload byte mass.
+//! store resolutions, payload/state `Arc` clones, environment capture-copy
+//! and frame-allocation volume, and per-kind payload byte mass.
 
 use super::*;
 
@@ -140,6 +141,7 @@ impl NixNative {
 \"flat_lambda_resolutions\":{},\
 \"flat_primop_resolutions\":{},\
 \"payload_arc_clones\":{},\
+\"thunk_state_arc_clones\":{},\
 \"env_captures\":{},\
 \"env_capture_frame_handles\":{},\
 \"flat_env_captures\":{},\
@@ -227,6 +229,7 @@ impl NixNative {
             stats.campaign().flat_lambda_resolutions,
             stats.campaign().flat_primop_resolutions,
             stats.campaign().payload_arc_clones,
+            stats.campaign().thunk_state_arc_clones,
             stats.campaign().env_captures,
             stats.campaign().env_capture_frame_handles,
             stats.campaign().flat_env_captures,

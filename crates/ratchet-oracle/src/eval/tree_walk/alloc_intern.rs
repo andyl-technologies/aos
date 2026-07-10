@@ -949,20 +949,19 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_thunk_allocation_safepoint(id, &thunk);
-        let previous_poll =
-            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
+        let previous_poll = self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
         let pending_env = capture
             .as_ref()
             .filter(|capture| !capture.is_ready())
             .and_then(|_| thunk.env().cloned());
         #[cfg(test)]
         let kind_is_node = matches!(thunk.kind(), EvalThunkKind::Node { .. });
-        let (value, pending_tail) = self
+        let (allocated_value, pending_tail) = self
             .heap
             .alloc_thunk_with_flat_capture(thunk, capture)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         #[cfg(test)]
-        self.capture_validation_record_alloc(id, value, kind_is_node);
+        self.capture_validation_record_alloc(id, allocated_value, kind_is_node);
         self.increment_thunks_allocated();
         let value = if dispatch_gc_stress_safepoint {
             self.apply_gc_stress_allocation_safepoint_to_just_allocated_value(
@@ -970,12 +969,13 @@ impl TreeWalk {
                 span,
                 RuntimeAllocatorTier::TierAOneShot,
                 previous_poll,
-                value,
+                allocated_value,
                 true,
             )?
         } else {
-            value
+            allocated_value
         };
+        let pending_tail = pending_tail.filter(|_| value.raw_eq(allocated_value));
         self.defer_flat_capture_if_assembling(id, value, pending_tail, pending_env);
         Ok(value)
     }
@@ -989,13 +989,12 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let dispatch_gc_stress_safepoint =
             self.can_dispatch_gc_stress_lambda_allocation_safepoint(id, &lambda);
-        let previous_poll =
-            self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
+        let previous_poll = self.last_allocation_collector_poll_for_tier(RuntimeAllocatorTier::TierAOneShot);
         let pending_env = capture
             .as_ref()
             .filter(|capture| !capture.is_ready())
             .map(|_| lambda.env().clone());
-        let (value, pending_tail) = self
+        let (allocated_value, pending_tail) = self
             .heap
             .alloc_lambda_with_flat_capture(lambda, capture)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
@@ -1005,12 +1004,13 @@ impl TreeWalk {
                 span,
                 RuntimeAllocatorTier::TierAOneShot,
                 previous_poll,
-                value,
+                allocated_value,
                 false,
             )?
         } else {
-            value
+            allocated_value
         };
+        let pending_tail = pending_tail.filter(|_| value.raw_eq(allocated_value));
         self.defer_flat_capture_if_assembling(id, value, pending_tail, pending_env);
         Ok(value)
     }

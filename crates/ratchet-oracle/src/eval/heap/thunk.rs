@@ -34,7 +34,7 @@ impl EvalThunk {
                 with_env,
                 scoped_globals,
             },
-            cell: ThunkCell::new(),
+            cell: Arc::new(ThunkCell::new()),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -52,7 +52,7 @@ impl EvalThunk {
     pub(crate) fn released_forced(result: Value) -> Self {
         Self {
             kind: EvalThunkKind::Released,
-            cell: ThunkCell::forced(result),
+            cell: Arc::new(ThunkCell::forced(result)),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -71,7 +71,7 @@ impl EvalThunk {
     }
 
     /// Creates a suspended function-application thunk record.
-    pub const fn apply(
+    pub fn apply(
         function_module: EvalModuleId,
         function_id: IrId,
         function_span: Span,
@@ -88,7 +88,7 @@ impl EvalThunk {
                 argument: EvalNodeRef::new(argument_module, argument_id),
                 argument_value,
             },
-            cell: ThunkCell::new(),
+            cell: Arc::new(ThunkCell::new()),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -96,7 +96,7 @@ impl EvalThunk {
 
     /// Creates a suspended two-argument function-application thunk record.
     #[allow(clippy::too_many_arguments)]
-    pub const fn apply2(
+    pub fn apply2(
         function_module: EvalModuleId,
         function_id: IrId,
         function_span: Span,
@@ -122,14 +122,14 @@ impl EvalThunk {
                 second_argument_span,
                 second_argument_value,
             },
-            cell: ThunkCell::new(),
+            cell: Arc::new(ThunkCell::new()),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
     }
 
     /// Creates a suspended static attribute selection thunk record.
-    pub const fn select(
+    pub fn select(
         module: EvalModuleId,
         select_id: IrId,
         receiver: Value,
@@ -141,17 +141,17 @@ impl EvalThunk {
                 receiver,
                 path,
             },
-            cell: ThunkCell::new(),
+            cell: Arc::new(ThunkCell::new()),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
     }
 
     /// Creates a suspended builtin attribute value thunk record.
-    pub(crate) const fn builtin_attr(symbol: Symbol, builtin: Builtin) -> Self {
+    pub(crate) fn builtin_attr(symbol: Symbol, builtin: Builtin) -> Self {
         Self {
             kind: EvalThunkKind::BuiltinAttr { symbol, builtin },
-            cell: ThunkCell::new(),
+            cell: Arc::new(ThunkCell::new()),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -161,7 +161,7 @@ impl EvalThunk {
     pub(crate) fn with_forced_cached_result_from(thunk: &Self, value: Value) -> Self {
         Self {
             kind: thunk.kind.clone(),
-            cell: ThunkCell::forced(value),
+            cell: Arc::new(ThunkCell::forced(value)),
             force_storage_mode: EvalThunkForceStorageMode::Serial,
             parallel_cell: None,
         }
@@ -185,7 +185,7 @@ impl EvalThunk {
     ) -> Self {
         if self.force_storage_mode == EvalThunkForceStorageMode::Serial {
             self.force_storage_mode = EvalThunkForceStorageMode::SerialWithParallelPayload;
-            self.parallel_cell = Some(Box::new(TreeWalkParallelThunkCell::with_cycle_registry(
+            self.parallel_cell = Some(Arc::new(TreeWalkParallelThunkCell::with_cycle_registry(
                 dropped_claim_error,
                 cycle_registry,
             )));
@@ -270,8 +270,31 @@ impl EvalThunk {
     }
 
     /// Returns the serial state/result cell for this thunk.
-    pub const fn cell(&self) -> &ThunkCell {
+    pub fn cell(&self) -> &ThunkCell {
         &self.cell
+    }
+
+    /// Returns whether two payload snapshots share the same force-state
+    /// identity and storage sidecars.
+    pub(crate) fn raw_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cell, &other.cell)
+            && self.force_storage_mode == other.force_storage_mode
+            && match (&self.parallel_cell, &other.parallel_cell) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
+    /// Returns the force-state sidecar `Arc` clones made by [`Clone`].
+    pub(crate) const fn state_arc_clone_count(&self) -> u64 {
+        if self.parallel_cell.is_some() { 2 } else { 1 }
+    }
+
+    /// Clones the serial force-state sidecar for reclamation tests.
+    #[cfg(test)]
+    pub(crate) fn test_clone_state_cell(&self) -> Arc<ThunkCell> {
+        Arc::clone(&self.cell)
     }
 
     /// Returns the currently attached force-storage mode.
@@ -434,11 +457,9 @@ mod tests {
 
     /// The graph-shared heap payload types must be [`Send`] and [`Sync`] so a
     /// later parallel scheduler can force thunks in one shared demand graph.
-    /// This covers every payload behind [`HeapObjectValue`]: the shared
-    /// `Arc<EvalThunk>` / `Arc<EvalLambda>` / `Arc<EvalPrimOp>` handles (with
-    /// their captured [`EvalEnv`] frames, serial [`ThunkCell`], and parallel
-    /// [`TreeWalkParallelThunkCell`]) plus the by-value string/path/list/attrs
-    /// payloads.
+    /// This covers every by-value payload behind [`HeapObjectValue`] plus the
+    /// side-owned serial [`ThunkCell`] and parallel
+    /// [`TreeWalkParallelThunkCell`] state held by an [`EvalThunk`].
     #[test]
     fn heap_payload_graph_types_are_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -455,9 +476,8 @@ mod tests {
         assert_send_sync::<EvalWithEnv>();
         assert_send_sync::<EvalScopedGlobalEnv>();
         assert_send_sync::<HeapObjectValue>();
-        assert_send_sync::<std::sync::Arc<EvalThunk>>();
-        assert_send_sync::<std::sync::Arc<EvalLambda>>();
-        assert_send_sync::<std::sync::Arc<EvalPrimOp>>();
+        assert_send_sync::<Arc<ThunkCell>>();
+        assert_send_sync::<Arc<TreeWalkParallelThunkCell>>();
     }
 
     #[test]

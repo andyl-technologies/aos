@@ -174,8 +174,8 @@ struct SharedHeapRecord {
 }
 
 // The record must be shareable across worker threads. `HeapObjectValue` is
-// `Send + Sync` after L2-P1 (Arc-shared thunk/lambda/primop payloads plus plain
-// string/list/attrs data); this static assertion pins that guarantee here so a
+// `Send + Sync` after L2-P1; FV-6 keeps direct closure payloads shareable by
+// side-owning only their force-state cells. This static assertion ensures a
 // future non-`Sync` payload breaks the build in this module.
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -216,7 +216,7 @@ pub struct SharedHeapShard {
     flat_attrs: SharedFlatObjectStore<FlatAttrsPayload>,
     /// Flat worker-closure objects (doc 30 FV-3, shared mode): thunks,
     /// lambdas, and partially applied builtins published at stable slot
-    /// addresses with the same release/acquire protocol. The payload handle
+    /// addresses with the same release/acquire protocol. The direct payload
     /// is never swapped after publication — capture shedding and the B1
     /// sweep are serial-only (GC is quiesced under parallel evaluation), so
     /// the `OnceLock` slot's write-once contract holds; thunk force state
@@ -590,8 +590,9 @@ impl SharedHeapShard {
 
 /// Estimates the resident payload bytes of one typed record.
 ///
-/// Used only for arena-fallback memory accounting; `Arc`-shared payloads count
-/// their handle size because their bodies are shared with the value graph.
+/// Used only for arena-fallback memory accounting. Direct closure payloads are
+/// already included in `SharedHeapRecord`; strings and lists add their owned
+/// out-of-line buffers.
 fn payload_size_estimate(object: &HeapObjectValue) -> usize {
     let inline = std::mem::size_of::<SharedHeapRecord>();
     let out_of_line = match object {

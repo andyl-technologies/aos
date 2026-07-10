@@ -169,7 +169,7 @@ impl TreeWalk {
     /// captured environment (a fold operator's pinned callees, a curried
     /// chain's root closure) without access to the crate-private heap API. A
     /// non-lambda value yields `None`.
-    pub fn tier2_clone_lambda(&self, value: Value) -> Option<std::sync::Arc<EvalLambda>> {
+    pub fn tier2_clone_lambda(&self, value: Value) -> Option<EvalLambda> {
         if value.tag() != ValueTag::Lambda {
             return None;
         }

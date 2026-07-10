@@ -3,24 +3,18 @@
 //! RFC-0007 doc 30 stage FV-3: thunks, lambdas, and partially applied
 //! builtins — the mutable, claim-carrying, region-popped worker kinds — move
 //! out of the record side table into one flat closure store. One allocation
-//! holds the flat header plus the payload handle at the value's address, so
+//! holds the flat header plus the direct payload at the value's address, so
 //! resolution is a membership check plus one header load with no address-hash
 //! probe and no record `Vec` load.
 //!
-//! # The interior-`Arc` payload (the recorded FV-3 mutability decision)
+//! # Arena-owned payloads and side-owned force state
 //!
-//! The stored payload is `Arc<EvalThunk>` (respectively `EvalLambda` /
-//! `EvalPrimOp`), not the closure struct in place. This is the honest cut
-//! doc 30 anticipates: resolution handles (`get_thunk` and its ~229 call
-//! sites return `&EvalThunk`; `clone_thunk` hands out `Arc` clones that the
-//! force paths hold across `eval_thunk_body` re-entry and that must survive
-//! the shed swap) outlive any single borrow of the store, and the payload
-//! swap sites — capture shedding to [`EvalThunkKind::Released`] and B1 sweep
-//! retirement — replace the whole handle exactly as the record table swapped
-//! `HeapObjectValue`. Keeping the interior `Arc` preserves every call-site
-//! contract while eliminating the record probe, which is FV-3's target; the
-//! `Arc` allocation itself is FV-6's arena-owned-payload stage, per the
-//! campaign staging (one representation variable per landing).
+//! FV-6 stores each `EvalThunk`, `EvalLambda`, and `EvalPrimOp` directly in
+//! its flat arena object. Owned resolver snapshots clone the immutable payload
+//! metadata while a thunk's serial force cell and optional parallel cell use
+//! independently reference-counted side ownership: those cells must remain
+//! live across evaluator re-entry, whereas the payload and its captured
+//! environments are reclaimed when the sweep installs the retired tombstone.
 //!
 //! # Placement and the Tier-B B2 relocation proving ground
 //!
@@ -70,7 +64,7 @@ pub enum WorkerClosurePlacement {
     Record,
 }
 
-/// The payload handle stored in one flat worker-closure object.
+/// The arena-owned payload stored in one flat worker-closure object.
 ///
 /// The variant always matches the flat header's kind word as allocated;
 /// retirement keeps the header intact and swaps only the payload, so a
@@ -79,12 +73,12 @@ pub enum WorkerClosurePlacement {
 #[derive(Debug)]
 pub(crate) enum FlatClosurePayload {
     /// A suspended (or forced, or shed) thunk handle.
-    Thunk(Arc<EvalThunk>),
+    Thunk(EvalThunk),
     /// A lambda closure handle.
-    Lambda(Arc<EvalLambda>),
+    Lambda(EvalLambda),
     /// A builtin or partially applied builtin handle.
-    Primop(Arc<EvalPrimOp>),
-    /// The object was reclaimed by the Tier-B sweep; the payload handle was
+    Primop(EvalPrimOp),
+    /// The object was reclaimed by the Tier-B sweep; the direct payload was
     /// dropped and the address is never reissued. `ValueTag` preserves the
     /// retired object's original type for diagnostics.
     Retired(ValueTag),
@@ -156,10 +150,10 @@ impl EvalHeap {
         value: Value,
         handle: FlatValueTailHandle,
     ) -> Result<Option<&[Value]>, EvalHeapError> {
-        let ptr = handle.object_ptr();
+        let ptr = value.as_heap_ptr().map_err(EvalHeapError::Value)?;
         let (object, values) = self
             .flat_closures
-            .resolve_value_tail_handle(handle)
+            .resolve_value_tail_handle(ptr, handle)
             .map_err(|error| self.closure_resolution_error(value.tag(), ptr, error))?;
         if object.payload().is_retired() {
             return Err(EvalHeapError::unknown(value.tag(), ptr));
@@ -175,17 +169,17 @@ impl EvalHeap {
         handle: FlatValueTailHandle,
         index: usize,
     ) -> Result<Option<Value>, EvalHeapError> {
-        let ptr = handle.object_ptr();
+        let ptr = value.as_heap_ptr().map_err(EvalHeapError::Value)?;
         let captured = self
             .flat_closures
-            .value_tail_get_handle(handle, index)
+            .value_tail_get_handle(ptr, handle, index)
             .map_err(|error| self.closure_resolution_error(value.tag(), ptr, error))?;
         Ok(captured)
     }
 
     /// Installs a flat lexical environment in one unique serial closure.
     ///
-    /// Returns `false` if another payload handle was published in the interim.
+    /// Returns `false` when the addressed payload cannot accept the environment.
     pub(in crate::eval) fn replace_unique_flat_closure_env(
         &mut self,
         value: Value,
@@ -215,12 +209,8 @@ impl EvalHeap {
             }
         };
         match payload {
-            FlatClosurePayload::Thunk(thunk) => Ok(Arc::get_mut(thunk)
-                .is_some_and(|thunk| thunk.replace_node_env(env))),
+            FlatClosurePayload::Thunk(thunk) => Ok(thunk.replace_node_env(env)),
             FlatClosurePayload::Lambda(lambda) => {
-                let Some(lambda) = Arc::get_mut(lambda) else {
-                    return Ok(false);
-                };
                 lambda.replace_env(env);
                 Ok(true)
             }
@@ -230,9 +220,8 @@ impl EvalHeap {
 
     /// Publishes final recursive-binding values into a reserved capture tail.
     ///
-    /// Returns `false` if the closure is no longer uniquely owned or its
-    /// reserved metadata disagrees with `buffer`; no bytes are written in
-    /// those cases.
+    /// Returns `false` if the closure kind or its reserved metadata disagrees
+    /// with `buffer`; no bytes are written in those cases.
     pub(in crate::eval) fn publish_unique_flat_closure_capture(
         &mut self,
         value: Value,
@@ -253,7 +242,7 @@ impl EvalHeap {
             ),
             _ => return Ok(false),
         };
-        if handle.object_ptr() != ptr || handle.len() != buffer.values().len() {
+        if handle.len() != buffer.values().len() {
             return Ok(false);
         }
         let env = EvalEnv::inline_flat(
@@ -264,7 +253,7 @@ impl EvalHeap {
         );
         let (payload, tail) = match self
             .flat_closures
-            .resolve_mut_with_value_tail_handle(handle, kind)
+            .resolve_mut_with_value_tail_handle(ptr, handle, kind)
         {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -276,16 +265,10 @@ impl EvalHeap {
                 if !matches!(thunk.kind(), EvalThunkKind::Node { .. }) {
                     return Ok(false);
                 }
-                let Some(thunk) = Arc::get_mut(thunk) else {
-                    return Ok(false);
-                };
                 tail.copy_from_slice(buffer.values());
                 Ok(thunk.replace_node_env(env))
             }
             FlatClosurePayload::Lambda(lambda) => {
-                let Some(lambda) = Arc::get_mut(lambda) else {
-                    return Ok(false);
-                };
                 tail.copy_from_slice(buffer.values());
                 lambda.replace_env(env);
                 Ok(true)
@@ -327,7 +310,7 @@ impl EvalHeap {
                         0,
                         epoch,
                         capture.values(),
-                        FlatClosurePayload::Thunk(Arc::new(thunk)),
+                        FlatClosurePayload::Thunk(thunk),
                     )
                     .map_err(flat_alloc_error)?;
                 let handle = tail_allocation.handle.ok_or_else(|| {
@@ -343,7 +326,7 @@ impl EvalHeap {
                         FlatObjectKind::Thunk,
                         0,
                         epoch,
-                        FlatClosurePayload::Thunk(Arc::new(thunk)),
+                        FlatClosurePayload::Thunk(thunk),
                     )
                     .map_err(flat_alloc_error)?,
                 None,
@@ -388,7 +371,7 @@ impl EvalHeap {
                         0,
                         epoch,
                         capture.values(),
-                        FlatClosurePayload::Lambda(Arc::new(lambda)),
+                        FlatClosurePayload::Lambda(lambda),
                     )
                     .map_err(flat_alloc_error)?;
                 let handle = tail_allocation.handle.ok_or_else(|| {
@@ -404,7 +387,7 @@ impl EvalHeap {
                         FlatObjectKind::Lambda,
                         0,
                         epoch,
-                        FlatClosurePayload::Lambda(Arc::new(lambda)),
+                        FlatClosurePayload::Lambda(lambda),
                     )
                     .map_err(flat_alloc_error)?,
                 None,
@@ -437,7 +420,7 @@ impl EvalHeap {
                 FlatObjectKind::Primop,
                 0,
                 epoch,
-                FlatClosurePayload::Primop(Arc::new(primop)),
+                FlatClosurePayload::Primop(primop),
             )
             .map_err(flat_alloc_error)?;
         self.allocator.record_flat_primop_allocation_safepoint(
@@ -525,14 +508,15 @@ impl EvalHeap {
         Some(payload.tag())
     }
 
-    /// Swaps a live flat thunk's thunk handle in place (capture shedding).
+    /// Swaps a live flat thunk's payload in place (capture shedding).
     ///
     /// The flat analog of the record table's `HeapObjectValue` swap at shed
     /// time: the header (address identity, kind) is untouched and only the
-    /// thunk handle is replaced, so outstanding `Arc` clones keep their
-    /// snapshot while later resolutions observe the released thunk. An inline
-    /// capture tail remains attached because conservative descendants may
-    /// inherit that tail through their flat-base owner edge.
+    /// thunk payload is replaced, so owned metadata snapshots keep their view
+    /// while later resolutions observe the released thunk. Shared force-state
+    /// cells remain live through those snapshots. An inline capture tail stays
+    /// attached because conservative descendants may inherit it through their
+    /// flat-base owner edge.
     ///
     /// # Errors
     ///
@@ -541,7 +525,7 @@ impl EvalHeap {
     pub(in crate::eval::heap) fn flat_swap_thunk_payload(
         &mut self,
         ptr: NonNull<HeapObject>,
-        thunk: Arc<EvalThunk>,
+        thunk: EvalThunk,
     ) -> Result<(), EvalHeapError> {
         match self.flat_closures.resolve_mut(ptr, FlatObjectKind::Thunk) {
             Ok(FlatClosurePayload::Thunk(payload)) => {
@@ -555,7 +539,7 @@ impl EvalHeap {
 
     /// Retires the flat closure at `ptr` in place (the B1 sweep door).
     ///
-    /// Drops the payload handle (releasing the closure graph), swaps in the
+    /// Drops the direct payload (releasing its side-owned graph), swaps in the
     /// [`FlatClosurePayload::Retired`] tombstone, clears the address's
     /// cutoff-cache hashes, and counts the retirement for the region-pop
     /// interlock. Returns the retired object's original tag, or `None` if
@@ -631,13 +615,13 @@ impl EvalHeap {
 
 #[cfg(test)]
 mod tests {
-    use super::FlatClosurePayload;
+    use super::{EvalThunk, FlatClosurePayload};
 
     #[test]
-    fn closure_payload_stays_two_words_with_registry_backed_capture_tails() {
-        assert_eq!(
-            std::mem::size_of::<FlatClosurePayload>(),
-            std::mem::size_of::<usize>() * 2,
+    fn closure_payload_owns_the_largest_migrated_payload_inline() {
+        assert!(
+            std::mem::size_of::<FlatClosurePayload>() >= std::mem::size_of::<EvalThunk>(),
+            "the flat closure payload must contain the migrated thunk by value",
         );
     }
 }

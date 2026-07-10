@@ -7,7 +7,6 @@
 //! that a closure allocation initialized one canonical `Value` run.
 
 use std::mem;
-use std::num::NonZeroUsize;
 use std::ptr::NonNull;
 
 use crate::value::{HeapObject, Value};
@@ -25,12 +24,11 @@ const VALUE_TAIL_HANDLE_LEN_MASK: usize = (1 << VALUE_TAIL_HANDLE_LEN_BITS) - 1;
 ///
 /// Resolution-based construction checks the exact registry entry, header
 /// length, and reserved extent once; the allocation door signs the coordinate
-/// while those facts are already exclusively known. Resolution still requires
-/// the owning store and exact object pointer, so a stale or cross-store handle
-/// fails before any tail read.
+/// while those facts are already exclusively known. Resolution requires the
+/// owning store and exact object pointer separately; the indexed registry
+/// entry checks that pointer before any tail read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FlatValueTailHandle {
-    address: NonZeroUsize,
     index_and_len: usize,
 }
 
@@ -45,14 +43,12 @@ pub struct FlatValueTailAllocation {
 }
 
 impl FlatValueTailHandle {
-    pub(super) fn new(ptr: NonNull<HeapObject>, store_index: usize, len: usize) -> Option<Self> {
+    pub(super) fn new(store_index: usize, len: usize) -> Option<Self> {
         if len > VALUE_TAIL_HANDLE_LEN_MASK {
             return None;
         }
-        let address = NonZeroUsize::new(ptr.as_ptr() as usize)?;
         let index = store_index.checked_shl(VALUE_TAIL_HANDLE_LEN_BITS)?;
         Some(Self {
-            address,
             index_and_len: index | len,
         })
     }
@@ -69,12 +65,6 @@ impl FlatValueTailHandle {
     /// Returns whether the tail is empty.
     pub const fn is_empty(self) -> bool {
         self.len() == 0
-    }
-
-    /// Returns the exact owning flat-object pointer signed by this handle.
-    #[inline]
-    pub fn object_ptr(self) -> NonNull<HeapObject> {
-        NonNull::with_exposed_provenance(self.address)
     }
 }
 
@@ -253,7 +243,7 @@ impl<T> FlatObjectStore<T> {
             return Err(FlatObjectError::UnknownAddress { address });
         }
         let _ = checked_value_tail::<T>(ptr, entry, expected_len)?;
-        FlatValueTailHandle::new(ptr, store_index, expected_len)
+        FlatValueTailHandle::new(store_index, expected_len)
             .ok_or(FlatObjectError::UnknownAddress { address })
     }
 
@@ -267,9 +257,9 @@ impl<T> FlatObjectStore<T> {
     #[inline]
     pub fn resolve_value_tail_handle(
         &self,
+        ptr: NonNull<HeapObject>,
         handle: FlatValueTailHandle,
     ) -> Result<(FlatObjectRef<'_, T>, &[Value]), FlatObjectError> {
-        let ptr = handle.object_ptr();
         let address = ptr.as_ptr() as usize;
         let (object, entry) = self.object_and_entry_at(handle.store_index(), ptr)?;
         if !entry.has_value_tail() || object.aux() as usize != handle.len() {
@@ -288,10 +278,10 @@ impl<T> FlatObjectStore<T> {
     #[inline]
     pub fn value_tail_get_handle(
         &self,
+        ptr: NonNull<HeapObject>,
         handle: FlatValueTailHandle,
         index: usize,
     ) -> Result<Option<Value>, FlatObjectError> {
-        let ptr = handle.object_ptr();
         let address = ptr.as_ptr() as usize;
         let Some(entry) = self.entries.get(handle.store_index()).copied() else {
             return Err(FlatObjectError::UnknownAddress { address });
@@ -376,10 +366,10 @@ impl<T> FlatObjectStore<T> {
     #[inline]
     pub fn resolve_mut_with_value_tail_handle(
         &mut self,
+        ptr: NonNull<HeapObject>,
         handle: FlatValueTailHandle,
         kind: FlatObjectKind,
     ) -> Result<(&mut T, &mut [Value]), FlatObjectError> {
-        let ptr = handle.object_ptr();
         let address = ptr.as_ptr() as usize;
         let (payload, values) =
             self.resolve_mut_with_value_tail_at(handle.store_index(), ptr, kind)?;

@@ -642,9 +642,24 @@ fn registry_backed_value_tail_resolves_and_mutates_exclusively() {
     let handle = tail_allocation.handle.expect("allocation signs a handle");
     assert_eq!(handle.len(), 2);
     let handle_value = store
-        .value_tail_get_handle(handle, 1)
+        .value_tail_get_handle(allocation.ptr, handle, 1)
         .expect("prevalidated handle resolves");
     assert!(handle_value.is_some_and(|value| value.raw_eq(Value::int(2))));
+    let other = store
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            0,
+            0,
+            &[Value::int(5), Value::int(6)],
+            payload("other-closure", &drops),
+        )
+        .expect("second allocation succeeds");
+    assert!(
+        store
+            .value_tail_get_handle(other.allocation.ptr, handle, 0)
+            .is_err(),
+        "the handle rejects another allocation's pointer"
+    );
     assert!(
         store
             .resolve_value_tail_at(allocation.store_index, allocation.ptr, 1)
@@ -653,7 +668,7 @@ fn registry_backed_value_tail_resolves_and_mutates_exclusively() {
     );
 
     let (payload, values) = store
-        .resolve_mut_with_value_tail_handle(handle, FlatObjectKind::Thunk)
+        .resolve_mut_with_value_tail_handle(allocation.ptr, handle, FlatObjectKind::Thunk)
         .expect("prevalidated exclusive resolution succeeds");
     assert_eq!(payload.text, "closure");
     values.copy_from_slice(&[Value::int(3), Value::int(4)]);
@@ -666,12 +681,14 @@ fn registry_backed_value_tail_resolves_and_mutates_exclusively() {
     assert!(values[1].raw_eq(Value::int(4)));
     assert!(store.retire_value_tail(allocation.ptr));
     assert!(
-        store.value_tail_get_handle(handle, 0).is_err(),
+        store
+            .value_tail_get_handle(allocation.ptr, handle, 0)
+            .is_err(),
         "retirement invalidates the prevalidated read handle"
     );
     assert!(
         store
-            .resolve_mut_with_value_tail_handle(handle, FlatObjectKind::Thunk)
+            .resolve_mut_with_value_tail_handle(allocation.ptr, handle, FlatObjectKind::Thunk)
             .is_err(),
         "retirement invalidates the prevalidated write handle"
     );

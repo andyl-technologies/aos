@@ -40,6 +40,20 @@ impl EvalPrimOpArg {
 }
 
 impl EvalPrimOp {
+    /// Returns whether two payload snapshots contain the same builtin state.
+    pub(crate) fn raw_eq(&self, other: &Self) -> bool {
+        self.builtin == other.builtin
+            && self.symbol == other.symbol
+            && self.args.len() == other.args.len()
+            && self.args.iter().zip(&other.args).all(|(left, right)| {
+                left.module == right.module
+                    && left.id == right.id
+                    && left.span == right.span
+                    && left.value.tag() == right.value.tag()
+                    && left.value.payload_bits() == right.value.payload_bits()
+            })
+    }
+
     /// Creates an unapplied first-class builtin record for `symbol`.
     pub const fn new(symbol: Symbol) -> Self {
         Self {

@@ -11436,14 +11436,23 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       cache (needs Chunk D) ([30](30-flat-value-architecture.md) §4).
       *Landed with `K = 2`: 87.9% static-site coverage, a 35.5 MiB wide
       arena peak versus 39.5 MiB at `K = 8`, zero lexical frame-array
-      captures (down from 156,581 / 620,967 copied handles), and persistent
+      captures (down from 156,584 / 620,980 copied handles), and persistent
       dynamic/scoped-global stacks copying zero entries. Shared-parallel and
       B2 record-stress placement use the one-head linked form; doc 30 §12
       records the representation boundary and full gate evidence.*
-- [ ] FV-6 — arena-owned payloads (payload `Arc` removal; the sweep owns
+- [x] FV-6 — arena-owned payloads (payload `Arc` removal; the sweep owns
       reclamation) — **closes the value-rep-flattening gate on Tier-B
       stage B2** ([06](06-memory-management-and-gc.md) §4,
       [30](30-flat-value-architecture.md) §5).
+      *Direct thunk/lambda/primop payloads now live in flat arena objects and
+      in the B2/shared fallback enum. Only thunk force-state and optional
+      parallel-cell sidecars remain `Arc`-owned across re-entry; sweep drops
+      the arena payload's sidecar owner. Wide-eval outer payload clones fall
+      845,467 -> 0 (691,617 state-sidecar clones remain), median post-run RSS
+      falls 172.7 -> 140.6 MiB cold and 189.2 -> 156.9 MiB warm, and six
+      balanced pairs improve by paired medians of ~5.9% cold and ~3.8% warm.
+      Threshold-zero sweep retires 135,872 closures with byte parity; doc 30
+      §12 carries the full gate record.*
 - [ ] Extensions, individually gated: closure/env hash-consing; the
       semantic-swap eviction ladder (memo-tier + module-IR eviction,
       drop-and-recompute; thunk serialization and in-process compression

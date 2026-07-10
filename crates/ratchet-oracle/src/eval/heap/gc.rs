@@ -181,7 +181,7 @@ impl EvalHeap {
             None
         };
         if let Some(result) = flat_result {
-            self.flat_swap_thunk_payload(ptr, Arc::new(EvalThunk::released_forced(result)))?;
+            self.flat_swap_thunk_payload(ptr, EvalThunk::released_forced(result))?;
             self.alloc_counters.note_thunk_shed();
             return Ok(true);
         }
@@ -220,7 +220,7 @@ impl EvalHeap {
         let Some(record) = self.records.get_mut(position) else {
             return Err(EvalHeapError::unknown(ValueTag::Thunk, ptr));
         };
-        record.object = HeapObjectValue::Thunk(Arc::new(EvalThunk::released_forced(result)));
+        record.object = HeapObjectValue::Thunk(EvalThunk::released_forced(result));
         self.alloc_counters.note_thunk_shed();
         Ok(true)
     }

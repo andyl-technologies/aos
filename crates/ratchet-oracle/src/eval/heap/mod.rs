@@ -196,10 +196,10 @@ pub(crate) enum EvalThunkKind {
 /// A suspended tree-walk thunk heap record.
 ///
 /// The record stores deferred tree-walk work and force-state storage.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EvalThunk {
     kind: EvalThunkKind,
-    cell: ThunkCell,
+    cell: Arc<ThunkCell>,
     force_storage_mode: EvalThunkForceStorageMode,
     /// The evaluator-native parallel payload cell, attached only when parallel
     /// thunk payloads are enabled. It is boxed because the cell is large (~648
@@ -207,7 +207,7 @@ pub struct EvalThunk {
     /// majority of thunks; keeping it out of line shrinks the common-case
     /// `EvalThunk` roughly six-fold and avoids paying for the cell per thunk.
     #[allow(dead_code)]
-    parallel_cell: Option<Box<TreeWalkParallelThunkCell>>,
+    parallel_cell: Option<Arc<TreeWalkParallelThunkCell>>,
 }
 
 /// The force-storage cells currently attached to an [`EvalThunk`].
@@ -228,7 +228,7 @@ pub(crate) enum EvalThunkForceStorageMode {
 /// The record stores the lowered parameter pattern and body, the resolver frame
 /// used for the call's argument slots, and the lexical and dynamic `with`
 /// environments captured when the lambda was constructed.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EvalLambda {
     module: EvalModuleId,
     pattern: IrId,
@@ -256,7 +256,7 @@ pub struct EvalPrimOpArg {
 /// stores the already supplied lazy arguments. A record with fewer captured
 /// arguments than the builtin's declared arity is a WHNF function value; the
 /// evaluator calls the builtin only after saturation.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EvalPrimOp {
     builtin: Option<Builtin>,
     symbol: Symbol,
@@ -321,12 +321,12 @@ pub struct EvalHeap {
     ///
     /// Thunks, lambdas, and partially applied builtins — the mutable,
     /// claim-carrying, region-popped worker kinds — live flat behind their
-    /// value addresses with interior `Arc` payload handles. One store hosts
-    /// all three kinds so a single registry mark covers a worker lexical
-    /// region across kinds. The store participates in region pops
-    /// (`FlatObjectStore::pop_region`) and the B1 sweep (payload retirement
-    /// in place); see `flat_values::closures` for the placement decision and
-    /// the reclamation contract.
+    /// value addresses as arena-owned payloads. Thunk force-state cells use
+    /// side-owned `Arc`s so claims survive evaluator re-entry, while one store
+    /// hosts all three kinds under a single worker-region mark. The store
+    /// participates in region pops (`FlatObjectStore::pop_region`) and the B1
+    /// sweep (payload retirement in place); see `flat_values::closures` for
+    /// the placement decision and the reclamation contract.
     flat_closures: FlatObjectStore<FlatClosurePayload>,
     /// Running total of flat closures retired by the Tier-B sweep.
     ///
@@ -662,9 +662,9 @@ enum HeapObjectValue {
     /// were retired by FV-3.
     String(NixString),
     List(NixList),
-    Lambda(Arc<EvalLambda>),
-    Primop(Arc<EvalPrimOp>),
-    Thunk(Arc<EvalThunk>),
+    Lambda(EvalLambda),
+    Primop(EvalPrimOp),
+    Thunk(EvalThunk),
     /// The record was reclaimed by the Tier-B non-moving sweep.
     ///
     /// A retired slot keeps its position in the record table (the slot is

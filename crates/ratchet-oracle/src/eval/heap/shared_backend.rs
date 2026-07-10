@@ -325,7 +325,7 @@ impl SharedHeapBackend {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<&EvalLambda, EvalHeapError> {
-        self.lambda_arc_ref(ptr).map(Arc::as_ref)
+        self.lambda_ref(ptr)
     }
 
     /// Returns the builtin record behind `ptr`.
@@ -338,7 +338,7 @@ impl SharedHeapBackend {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<&EvalPrimOp, EvalHeapError> {
-        self.primop_arc_ref(ptr).map(Arc::as_ref)
+        self.primop_ref(ptr)
     }
 
     /// Returns the suspended thunk behind `ptr`.
@@ -351,10 +351,10 @@ impl SharedHeapBackend {
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<&EvalThunk, EvalHeapError> {
-        self.thunk_arc_ref(ptr).map(Arc::as_ref)
+        self.thunk_ref(ptr)
     }
 
-    /// Clones the shared thunk handle behind `ptr`.
+    /// Clones the shared thunk metadata and force-state handles behind `ptr`.
     ///
     /// # Errors
     ///
@@ -363,11 +363,11 @@ impl SharedHeapBackend {
     pub(super) fn clone_thunk_ptr(
         &self,
         ptr: NonNull<HeapObject>,
-    ) -> Result<Arc<EvalThunk>, EvalHeapError> {
-        self.thunk_arc_ref(ptr).map(Arc::clone)
+    ) -> Result<EvalThunk, EvalHeapError> {
+        self.thunk_ref(ptr).cloned()
     }
 
-    /// Clones the shared lambda handle behind `ptr`.
+    /// Clones the shared lambda metadata behind `ptr`.
     ///
     /// # Errors
     ///
@@ -376,11 +376,11 @@ impl SharedHeapBackend {
     pub(super) fn clone_lambda_ptr(
         &self,
         ptr: NonNull<HeapObject>,
-    ) -> Result<Arc<EvalLambda>, EvalHeapError> {
-        self.lambda_arc_ref(ptr).map(Arc::clone)
+    ) -> Result<EvalLambda, EvalHeapError> {
+        self.lambda_ref(ptr).cloned()
     }
 
-    /// Clones the shared builtin handle behind `ptr`.
+    /// Clones the shared builtin metadata behind `ptr`.
     ///
     /// # Errors
     ///
@@ -389,11 +389,11 @@ impl SharedHeapBackend {
     pub(super) fn clone_primop_ptr(
         &self,
         ptr: NonNull<HeapObject>,
-    ) -> Result<Arc<EvalPrimOp>, EvalHeapError> {
-        self.primop_arc_ref(ptr).map(Arc::clone)
+    ) -> Result<EvalPrimOp, EvalHeapError> {
+        self.primop_ref(ptr).cloned()
     }
 
-    fn thunk_arc_ref(&self, ptr: NonNull<HeapObject>) -> Result<&Arc<EvalThunk>, EvalHeapError> {
+    fn thunk_ref(&self, ptr: NonNull<HeapObject>) -> Result<&EvalThunk, EvalHeapError> {
         if let Some(object) = self.resolve_flat_closure(ptr) {
             return match object.payload() {
                 FlatClosurePayload::Thunk(thunk) => Ok(thunk),
@@ -414,7 +414,7 @@ impl SharedHeapBackend {
         }
     }
 
-    fn lambda_arc_ref(&self, ptr: NonNull<HeapObject>) -> Result<&Arc<EvalLambda>, EvalHeapError> {
+    fn lambda_ref(&self, ptr: NonNull<HeapObject>) -> Result<&EvalLambda, EvalHeapError> {
         if let Some(object) = self.resolve_flat_closure(ptr) {
             return match object.payload() {
                 FlatClosurePayload::Lambda(lambda) => Ok(lambda),
@@ -435,7 +435,7 @@ impl SharedHeapBackend {
         }
     }
 
-    fn primop_arc_ref(&self, ptr: NonNull<HeapObject>) -> Result<&Arc<EvalPrimOp>, EvalHeapError> {
+    fn primop_ref(&self, ptr: NonNull<HeapObject>) -> Result<&EvalPrimOp, EvalHeapError> {
         if let Some(object) = self.resolve_flat_closure(ptr) {
             return match object.payload() {
                 FlatClosurePayload::Primop(primop) => Ok(primop),
@@ -873,7 +873,7 @@ impl EvalHeap {
     pub(super) fn shared_alloc_lambda(&mut self, lambda: EvalLambda) -> Result<Value, EvalHeapError> {
         self.shared_alloc_flat_closure(
             FlatObjectKind::Lambda,
-            FlatClosurePayload::Lambda(Arc::new(lambda)),
+            FlatClosurePayload::Lambda(lambda),
         )
     }
 
@@ -885,7 +885,7 @@ impl EvalHeap {
     pub(super) fn shared_alloc_primop(&mut self, primop: EvalPrimOp) -> Result<Value, EvalHeapError> {
         self.shared_alloc_flat_closure(
             FlatObjectKind::Primop,
-            FlatClosurePayload::Primop(Arc::new(primop)),
+            FlatClosurePayload::Primop(primop),
         )
     }
 
@@ -897,7 +897,7 @@ impl EvalHeap {
     pub(super) fn shared_alloc_thunk(&mut self, thunk: EvalThunk) -> Result<Value, EvalHeapError> {
         self.shared_alloc_flat_closure(
             FlatObjectKind::Thunk,
-            FlatClosurePayload::Thunk(Arc::new(thunk)),
+            FlatClosurePayload::Thunk(thunk),
         )
     }
 

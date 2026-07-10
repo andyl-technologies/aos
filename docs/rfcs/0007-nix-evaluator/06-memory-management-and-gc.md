@@ -419,13 +419,10 @@ across requests. That case is Tier B.
 
 ## 4. Tier B — precise generational copying GC (daemon)
 
-> **Implementation note (Stage B1, recorded 2026-07): the non-moving sweep IS
-> the Tier-B minor collector for the record-table-era value representation.**
-> The value representation as built resolves every `Value` through an opaque
-> address key into a typed record side table; object state lives in
-> malloc-backed payloads (`Arc`'d thunks/lambdas, `Rc`'d environment frames),
-> not in the bump arena a copying collector would compact. On that
-> architecture the memory win of §4 is captured by (a) *thunk capture
+> **Implementation note (Stages B1/FV-6, recorded 2026-07): the non-moving
+> sweep is the current Tier-B minor collector, and the copying gate is now
+> open.** B1 landed while closure object state still lived in malloc-backed
+> `Arc` payloads, so its immediate memory win came from (a) *thunk capture
 > shedding* at the §4.5 thunk-update site (the tree-walk analogue of GHC's
 > destructive update — the captured closure graph is dropped the moment the
 > WHNF result publishes) and (b) a *precise non-moving sweep* over
@@ -435,13 +432,12 @@ across requests. That case is Tier B.
 > silently resolving to a recycled object). Both ship behind
 > `AOS_NIX_GC=sweep` with Tier A as the default, and are pinned off under
 > parallel evaluation (per-worker/concurrent collection is Phase 8).
-> The copying nursery (Stage B2) remains mandated but is gated on: (1) the
-> B1 sweep running clean under stress across the full corpus, proving
-> precise-root completeness before anything moves; (2) an audit of every
-> `payload_bits` identity key (force caches, tier-1 slots, pointer-equality
-> fast paths) with rehash hooks; and (3) the value-representation flattening
-> that moves payload bytes into the collected space, where copying's
-> O(survivors) reset actually pays. This staging follows `S-8`'s
+> FV-6 now stores thunk/lambda/primop payloads directly in the flat arena and
+> leaves only independently live thunk-state/parallel cells side-owned with
+> sweep release. This closes the value-representation prerequisite. The
+> copying nursery remains mandated and unimplemented, and stays gated on a
+> full-corpus B1 stress proof plus the still-open checked-in `payload_bits`
+> identity classification table. This staging follows `S-8`'s
 > alloc-via-symbols swap-ability and `C-10`'s measure-gated daemon framing
 > (see [decision register](19-decision-register.md)).
 
@@ -2424,9 +2420,10 @@ GC must be observationally invisible (§8): every item is gated by the different
       dropped, index entries removed, slots recycled, addresses never
       reissued). Harness byte-green under Tier A and under `AOS_NIX_GC=sweep`
       (x4 packages serial + stress-threshold-0, K=4 parallel pin, compute
-      suite, `bench.wide`, cache-on cold/warm). The copying nursery remains
-      open in the row above, gated on B1 stress-proven root completeness, the
-      `payload_bits` identity audit, and value-rep flattening.
+      suite, `bench.wide`, cache-on cold/warm). FV-6 subsequently closed the
+      value-representation prerequisite. Full-corpus B1 stress and the FV-0
+      identity classification table remain open gates, along with the
+      copying-nursery implementation itself in the row above.
 - [x] Current minor-GC frontier precursor:
       `ratchet-value::heap::gc::MinorGcPlan` builds the future minor
       collection's initial young-object survivor frontier from precise roots

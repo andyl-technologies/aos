@@ -19,6 +19,7 @@ mod attr_path;
 mod cache_parity;
 mod expr_eval;
 mod fallback;
+mod fv6_payloads;
 mod ifd;
 mod instantiate_expr;
 mod memo_tiers;

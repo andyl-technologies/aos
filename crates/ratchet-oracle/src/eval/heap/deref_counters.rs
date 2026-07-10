@@ -2,8 +2,8 @@
 //!
 //! Every serial heap-value resolution currently funnels through the record
 //! side table ([`super::record_table::HeapRecordTable`]): an address-hash
-//! probe, a record load, and (for `Arc`-backed payloads) a refcounted handle
-//! clone. Doc 30 §1.1 identifies that chain as the evaluator's dominant
+//! probe, a record load, and (before FV-6) a refcounted payload-handle clone.
+//! Doc 30 §1.1 identifies that chain as the evaluator's dominant
 //! architectural unit cost; these counters make its volume observable from a
 //! stock build (`AOS_NIX_EVAL_STATS=1`) so the flat-value stages can claim
 //! their probe reductions against reproducible denominators.
@@ -39,6 +39,7 @@ pub(crate) struct EvalHeapDerefCounters {
     flat_lambda_resolutions: Cell<u64>,
     flat_primop_resolutions: Cell<u64>,
     payload_arc_clones: Cell<u64>,
+    thunk_state_arc_clones: Cell<u64>,
 }
 
 impl EvalHeapDerefCounters {
@@ -74,11 +75,11 @@ impl EvalHeapDerefCounters {
         counter.set(counter.get().saturating_add(1));
     }
 
-    /// Records one `Arc` payload-handle clone handed out by resolution.
+    /// Records thunk force-state sidecar `Arc` clones in an owned snapshot.
     #[inline]
-    pub(super) fn note_payload_arc_clone(&self) {
-        self.payload_arc_clones
-            .set(self.payload_arc_clones.get().saturating_add(1));
+    pub(super) fn note_thunk_state_arc_clones(&self, clones: u64) {
+        self.thunk_state_arc_clones
+            .set(self.thunk_state_arc_clones.get().saturating_add(clones));
     }
 
     /// Returns a plain-value copy of all counters.
@@ -100,6 +101,7 @@ impl EvalHeapDerefCounters {
             flat_lambda_resolutions: self.flat_lambda_resolutions.get(),
             flat_primop_resolutions: self.flat_primop_resolutions.get(),
             payload_arc_clones: self.payload_arc_clones.get(),
+            thunk_state_arc_clones: self.thunk_state_arc_clones.get(),
         }
     }
 }
@@ -137,6 +139,8 @@ pub(crate) struct EvalHeapDerefCountersSnapshot {
     pub(crate) flat_lambda_resolutions: u64,
     /// Partially-applied-builtin resolutions served by the flat store.
     pub(crate) flat_primop_resolutions: u64,
-    /// `Arc` payload-handle clones handed out by thunk/lambda/primop resolution.
+    /// Legacy payload-handle `Arc` clones; zero after FV-6.
     pub(crate) payload_arc_clones: u64,
+    /// Thunk force-state sidecar `Arc` clones retained across evaluator re-entry.
+    pub(crate) thunk_state_arc_clones: u64,
 }

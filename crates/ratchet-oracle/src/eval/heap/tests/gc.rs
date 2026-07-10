@@ -140,6 +140,11 @@ fn sweep_retires_unreachable_worker_records_and_fails_stale_handles_loudly() {
     let mut heap = EvalHeap::new();
     let (reachable, _frame_a) = alloc_capturing_thunk(&mut heap);
     let (unreachable, frame_b) = alloc_capturing_thunk(&mut heap);
+    let unreachable_state = heap
+        .get_thunk(unreachable)
+        .expect("unreachable thunk resolves before sweep")
+        .test_clone_state_cell();
+    assert_eq!(Arc::strong_count(&unreachable_state), 2);
     let records_before = heap.len();
 
     let mut roots = EvalRootSet::new();
@@ -160,6 +165,9 @@ fn sweep_retires_unreachable_worker_records_and_fails_stale_handles_loudly() {
     assert_eq!(report.free_slots, 0);
     // The retired payload dropped its captured frame.
     assert_eq!(Arc::strong_count(&frame_b), 1);
+    // Sweep dropped the arena-owned payload's sidecar owner; an independent
+    // in-flight state handle remains valid until its user releases it.
+    assert_eq!(Arc::strong_count(&unreachable_state), 1);
     // The survivor still resolves; the retired handle fails loudly.
     heap.get_thunk(reachable).expect("survivor resolves");
     let error = heap

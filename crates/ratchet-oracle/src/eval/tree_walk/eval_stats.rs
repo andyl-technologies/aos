@@ -137,6 +137,7 @@ impl TreeWalk {
             flat_lambda_resolutions: deref.flat_lambda_resolutions,
             flat_primop_resolutions: deref.flat_primop_resolutions,
             payload_arc_clones: deref.payload_arc_clones,
+            thunk_state_arc_clones: deref.thunk_state_arc_clones,
             env_captures: env.env_captures,
             env_capture_frame_handles: env.env_capture_frame_handles,
             flat_env_captures: env.flat_env_captures,

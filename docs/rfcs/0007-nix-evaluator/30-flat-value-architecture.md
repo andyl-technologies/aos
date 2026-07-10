@@ -28,7 +28,8 @@ changes per landing.
 ### 1.1 Anatomy of a native value dereference
 
 C++ Nix's `Value` carries a direct pointer: dereferencing a string, list,
-or attrset is one load from the pointed-to bytes. The native evaluator's
+or attrset is one load from the pointed-to bytes. At the campaign opening,
+the native evaluator's
 `Value` (`crates/ratchet-value/src/value.rs`) is a 16-byte tag+payload
 pair whose heap payload is a `NonNull<HeapObject>` — and `HeapObject` is
 deliberately opaque (`_private: [u8; 0]`): **nothing lives at the pointed-to
@@ -38,7 +39,7 @@ its own module header says it "deliberately avoids raw memory writes until
 concrete heap object layouts exist." The address is an identity, not a
 location.
 
-The typed payload lives elsewhere. Resolution funnels through the record
+The typed payload lived elsewhere. Resolution funneled through the record
 side table (`crates/ratchet-oracle/src/eval/heap/record_table.rs`):
 
 ```text
@@ -53,7 +54,7 @@ Value { tag, payload: NonNull<HeapObject> }
 Every `get_string`/`get_list`/`get_attrs`/`get_thunk`, every hash-cons
 collision confirmation, and every GC address lookup pays: **one hash, two
 dependent loads (map bucket, record), and then an `Arc`/owned-buffer chase
-to a third, unrelated allocation.** A single logical value costs three
+to a third, unrelated allocation.** A single logical value cost three
 allocations in three allocators — an arena address whose bytes are never
 written, a `HeapRecord` slot in the table `Vec`, and a malloc'd payload —
 with no locality between them. The spine work of package evaluation
@@ -503,7 +504,7 @@ which directly feeds the B1 sweep's mid-eval effectiveness and the
 
 ## 5. Arena-owned payloads
 
-Today every thunk, lambda, and primop payload is an `Arc` in
+Before FV-6 every thunk, lambda, and primop payload was an `Arc` in
 `HeapObjectValue` (`eval/heap/mod.rs`), and strings/lists own separate
 heap buffers. Reference counting is pure overhead in this heap: the
 object graph is owned by the arena+record table, lifetimes are decided
@@ -514,7 +515,7 @@ hands out an owned handle, and capture.
 Under §2 the payloads *are* the arena objects, so this section is mostly
 a consequence rather than a work item; it is stated separately because
 it has its own gate: **reclamation moves from `drop`-the-`Arc` to the
-sweep**. B1 currently reclaims by swapping the payload enum
+sweep**. Before FV-6 B1 reclaimed by swapping the payload enum
 (`HeapObjectValue::Retired`), letting Rust drop the `Arc` graph. Flat
 payload bytes have no drop glue; anything a payload *references outside
 the arena* (interned symbols, string-context elements — kept `Arc`-backed
@@ -1378,15 +1379,15 @@ FV-0 columns rather than sketch estimates:**
       *`K = 2` was selected from the repository census and an isolated A/B:
       it covers 87.9% of statically eligible sites and reduced
       `bench.wide-eval` arena peak from 39.5 MiB at `K = 8` to 35.5 MiB.
-      The ceiling is also a correctness boundary: at `K = 8`, the
-      `native_file_cache_parity_harness_covers_source_path_inputs` canary
-      flattened a wider context-bearing capture and failed
-      `derivationStrict` context parity; at `K = 2`, that site takes the
-      linked fallback and the canary passes.
-      Capture reads retain the complete module/allocation-site identity check.
-      A trial direct-base shortcut that skipped it failed the fresh
-      cache/full-analysis `bench.wide-eval` gate (`expected attrs, got Lambda`)
-      and was rejected before landing.
+      The ceiling is a memory-policy threshold, not a correctness boundary:
+      the sound site-qualified owner check passes the source-path parity canary
+      at both `K = 2` and `K = 8`. The observed `K = 8` failure was traced to
+      and fixed by removing an experimental read shortcut that omitted
+      allocation-site identity; wider captures take the linked fallback solely
+      to avoid trailing-storage cost. Capture reads retain the complete
+      module/allocation-site identity check. A trial direct-base shortcut that
+      skipped it also failed the fresh cache/full-analysis `bench.wide-eval`
+      gate (`expected attrs, got Lambda`) and was rejected before landing.
       Valid alternating compact-handle pairs split within noise (`K = 2`
       ~2.2% slower cold and ~1.9% faster warm by paired median), so no
       throughput win is claimed for the ceiling choice. Five valid interleaved
@@ -1404,13 +1405,41 @@ FV-0 columns rather than sketch estimates:**
 
 ### Stage FV-6 — arena-owned payloads
 
-- [ ] Remove the payload `Arc`s (`HeapObjectValue`) for migrated kinds;
+- [x] Remove the payload `Arc`s (`HeapObjectValue`) for migrated kinds;
       out-of-arena references (symbols, context elements, parallel
       cells) either migrated or side-owned with sweep notification
       (§5). Gate: standing battery + sweep-mode stress; refcount-traffic
       profile delta recorded. Exit: **Tier-B B2's flattening gate
       closed** — doc 06 §4's B2 row unblocks on B1-stress + the FV-0
       identity table.
+      *Landed with `EvalThunk`, `EvalLambda`, and `EvalPrimOp` stored by
+      value in both the production `FlatClosurePayload` and the B2/shared
+      `HeapObjectValue` fallback. Thunk force state is the only independently
+      live portion: `Arc<ThunkCell>` plus the optional parallel-cell `Arc`
+      survive evaluator re-entry, and replacing the direct payload at shed or
+      sweep drops the payload's sidecar owners and captured graph. Lambda and
+      primop snapshots carry no payload `Arc`. The flat capture handle is one
+      word after moving owner identity back to the existing `Value` field; the
+      store still validates the exact owner pointer and registry entry before
+      any tail access.*
+
+      *On the exact final wide workload, outer payload-handle clones move from
+      845,467 to zero; 691,617 thunk-state sidecar clones remain (one per
+      ordinary owned thunk snapshot). Threshold-zero sweep is byte-green with
+      one sweep retiring 135,872 closures and 203,794 forced-thunk payloads
+      shed. Six balanced fixed-executable-path pairs are byte-green with
+      paired-median candidate/baseline ratios of ~0.941 cold and ~0.962 warm;
+      separate medians are 0.392 versus 0.408 seconds cold and 0.378 versus
+      0.385 seconds warm. Median post-run RSS falls from 172.7 to 140.6 MiB
+      cold and from 189.2 to 156.9 MiB warm. Direct process peak is effectively
+      flat (208.8 versus 210.9 MiB): arena mapping rises from 35.5 to 67.5 MiB
+      because those payload bytes moved from separate malloc allocations into
+      the measured arena. A package-sized `pkgs.zlib` probe is flat on time
+      (~87.1 vs ~87.3 ms cold, ~79.7 vs ~80.5 ms warm) and RSS. Invalid probes
+      from a non-native baseline executable were discarded before the six-pair
+      run. The standing Rust/Miri gates cover direct
+      payload relocation, shared publication, region pop, and sweep-sidecar
+      release; the full parity battery is recorded at the campaign exit.*
 
 ### Extensions (each independently gated; order by measured yield)
 

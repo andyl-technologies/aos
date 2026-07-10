@@ -63,6 +63,15 @@ impl EvalFlatCapture {
     pub(crate) const fn tail_handle(&self) -> FlatValueTailHandle {
         self.tail
     }
+
+    /// Returns whether two capture handles name the same inline value run.
+    fn raw_eq(&self, other: &Self) -> bool {
+        self.allocation_site == other.allocation_site
+            && self.frame_count == other.frame_count
+            && self.owner.tag() == other.owner.tag()
+            && self.owner.payload_bits() == other.owner.payload_bits()
+            && self.tail == other.tail
+    }
 }
 
 /// Stack-owned capture values awaiting one flat closure allocation.
@@ -203,6 +212,31 @@ impl EvalEnvStorage {
             Self::Array(frames) => EvalEnvFrames::array(frames),
         }
     }
+
+    /// Returns whether two storage snapshots share the same captured backing.
+    fn raw_eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Chain {
+                    head: left,
+                    frames: left_frames,
+                },
+                Self::Chain {
+                    head: right,
+                    frames: right_frames,
+                },
+            ) => {
+                left_frames == right_frames
+                    && match (left, right) {
+                        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
+            (Self::Array(left), Self::Array(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
 }
 
 fn frames_are_linked(frames: &[Arc<EvalFrame>]) -> bool {
@@ -226,6 +260,16 @@ pub struct EvalEnv {
 }
 
 impl EvalEnv {
+    /// Returns whether two snapshots share the same lexical and flat backing.
+    pub(crate) fn raw_eq(&self, other: &Self) -> bool {
+        self.storage.raw_eq(&other.storage)
+            && match (&self.flat_base, &other.flat_base) {
+                (Some(left), Some(right)) => left.raw_eq(right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
     /// Captures the active frame stack.
     ///
     /// # Errors

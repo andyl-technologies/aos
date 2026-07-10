@@ -111,7 +111,7 @@ fn shared_thunk_handles_cross_threads_and_replay_terminal_results() {
         .expect("thunk force succeeds");
     assert_eq!(forced.as_int(), Ok(3));
 
-    let thunk: std::sync::Arc<EvalThunk> = evaluator
+    let thunk: EvalThunk = evaluator
         .heap
         .clone_thunk(thunk_value)
         .expect("attr value is a heap thunk");
