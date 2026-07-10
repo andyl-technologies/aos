@@ -602,7 +602,6 @@ impl TreeWalk {
         }
         self.eval_node(id)
     }
-
     pub(super) fn eval_nested_equality_operand(
         &mut self,
         id: IrId,
@@ -615,12 +614,14 @@ impl TreeWalk {
             _ => self.eval_node(id),
         }
     }
-
     pub(super) fn eval_thunk_alloc(
         &mut self,
         id: IrId,
         node: &IrNode,
     ) -> Result<Value, TreeWalkError> {
+        if let Some(value) = self.eval_call_summary_planned_thunk(id, node)? {
+            return Ok(value);
+        }
         let IrData::Node(_) = node.data else {
             return Err(self.invalid_payload(id, node, "thunk body"));
         };
@@ -661,7 +662,6 @@ impl TreeWalk {
             }
         }
     }
-
     fn thunk_allocation_context(&self) -> TreeWalkThunkAllocationContext {
         if self.order_sensitive_binding_depth > 0 {
             TreeWalkThunkAllocationContext::OrderSensitiveBindingAssembly
@@ -682,7 +682,7 @@ impl TreeWalk {
         Ok(value)
     }
 
-    fn alloc_single_entry_thunk_from_plan(
+    pub(super) fn alloc_single_entry_thunk_from_plan(
         &mut self,
         id: IrId,
         body: IrId,

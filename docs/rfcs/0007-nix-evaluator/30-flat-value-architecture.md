@@ -477,16 +477,19 @@ which matters because they are captured alongside *every* `Node` thunk
 The site classification runs on Phase-4 facts. Chunk A landed the real
 demand lattice and the intra-module fixpoint (`6ab65fbf8`); Chunk B
 landed totality-licensed eager derivation-attr assembly (`00c8ef665`).
-What closure conversion needs beyond them — per-def-site free-variable
-sets with escape/single-use refinement — is only partially present
-today: free-variable slot enumeration exists where the demand cache key
-needs it (C-1/C-2, `cache/key.rs`), and
-`ratchet-core/src/analysis/escape.rs` is by its own header a
-bottom-cases-only precursor. The campaign therefore names a **Chunk D**
-deliverable: per-site `|FV|`, capture-mutability proof (the §4.1
-publication boundary), and single-use facts (which also drive §7.4's
-last-use shedding). §4 cannot land before Chunk D; the checklist
-sequences it accordingly.
+Chunk D then landed per-site free-variable sets, capture-mutability and
+publication-boundary proofs, and single-use/escape refinement; FV-5 consumes
+those facts for inline captures and persistent frame chains. Chunk E now adds
+the next cross-module layer: analysis-version-7 lambda demand/escape summaries,
+structural totality, static exact/all-except attribute provenance through
+right-biased `//` and `removeAttrs`, persisted/remapped fact sidecars, and a
+tree-walk call-site consumer that can elide binding thunks during safe formal-set
+assembly. The same provenance seeds only surviving derivation-boundary values.
+The wide-eval arena peak moved from 71.5 to 67.5 MiB in the noisy local final
+A/B (-5.6%); median wall moved -1.3% cold/-2.4% warm, which is recorded as a
+non-regression rather than a stable speed claim. The remaining Phase-4 gap is
+the global memoized closed-world fixpoint and worker/wrapper rewrite, not fact
+transport or the current tree-walk consumer.
 
 ### 4.5 What dies
 
@@ -1028,8 +1031,10 @@ list only their *additional* gates.
       rec-forward-reference capture shapes. Exit: every lambda/thunk
       def-site carries `|FV|` + a capture plan or an explicit decline.
       *Landed in the P4 Chunk-D landing and extended for FV-5:
-      `IR_ANALYSIS_VERSION = 5` persists both the per-site
-      `CapturePlan` and constant-index `FlatCaptureAccess` facts. Dynamic
+      analysis version 5 introduced both the per-site `CapturePlan` and
+      constant-index `FlatCaptureAccess` facts; the current
+      `IR_ANALYSIS_VERSION = 7` additionally persists structural totality and
+      cross-module lambda demand/escape summaries. Dynamic
       scope, over-width, and conservative publication sites retain an
       explicit `SharedChainReason`; the recursive-assembly validation arms
       cover deferred publication after `__overrides` and forward-slot

@@ -14,7 +14,8 @@
 //!
 //! From that verified order this module seeds two kinds of facts onto the
 //! binding values of a statically-shaped (non-recursive, no dynamic keys)
-//! attrset literal reaching a derivation boundary:
+//! attrset literal, or a fully static chain of literal `//` updates, reaching
+//! a derivation boundary:
 //!
 //! - **Demand marks** (`derivationStrict` only): every attribute value is
 //!   forced on every normally-completing execution of the boundary, so each
@@ -39,6 +40,7 @@
 //! totals-only eager set and no demand marks.
 
 use crate::ir::{IrAttrPathSegment, IrData, IrDialectOp, IrId, IrKind, Strictness};
+use crate::syntax::{BinOpKind, Symbol};
 
 use super::collect::{CollectCtx, Sequence, SlotDemand, collect};
 use super::frames::{FrameScope, chase_attrset_literal};
@@ -70,13 +72,22 @@ pub(super) enum DerivationBoundary {
     Wrapper,
 }
 
-/// One resolved derivation-boundary argument literal.
-struct BoundaryLiteral {
-    /// The attrset literal node.
-    attrset: IrId,
-    /// Whether the literal *is* the argument expression (possibly behind
+/// One surviving binding in a statically resolved boundary shape.
+#[derive(Clone, Copy)]
+struct BoundaryBinding {
+    /// The static attribute key.
+    key: Symbol,
+    /// The binding value node allocated by the source literal.
+    value: IrId,
+}
+
+/// One resolved derivation-boundary argument shape.
+struct BoundaryShape {
+    /// The update result's surviving bindings after RHS shadowing.
+    bindings: Vec<BoundaryBinding>,
+    /// Whether the shape is the argument expression (possibly behind
     /// `ThunkAlloc` wrappers), rather than chased through variables. Only a
-    /// direct literal's assembly is tied to the boundary's execution.
+    /// direct shape's assembly is tied to the boundary's execution.
     direct: bool,
 }
 
@@ -97,40 +108,25 @@ pub(super) fn seed_derivation_boundary(
     stack: &[FrameScope],
     boundary: DerivationBoundary,
 ) -> Result<(), StrictnessAnalysisError> {
-    let Some(literal) = resolve_boundary_literal(analysis, stack, argument)? else {
-        return Ok(());
-    };
-    let node = analysis.node(literal.attrset)?;
-    let IrData::AttrSet {
-        bindings,
-        recursive,
-        has_dynamic,
-        ..
-    } = node.data
-    else {
-        return Ok(());
-    };
-    // Recursive literals risk eager reads of not-yet-initialized same-frame
-    // slots (and `__overrides` can replace slot values); dynamic keys force
-    // interleaved with slot population and can collide with static lookups.
-    // Both fail closed.
-    if recursive || has_dynamic {
-        return Ok(());
-    }
+    let shape = resolve_boundary_shape(analysis, stack, argument)?;
     // Only a direct `derivationStrict` literal proves the serializer's
     // name-first force order starts immediately after assembly.
     let strict = boundary == DerivationBoundary::Strict;
-    let strict_direct = strict && literal.direct;
-
-    let entries = analysis.bindings(literal.attrset, bindings)?;
-    let seeds: Vec<(IrId, bool)> = entries
-        .iter()
-        .filter_map(|binding| match binding.key {
-            IrAttrPathSegment::Static(key) => {
-                let is_name = analysis.ir.symbols.resolve(key) == Some(NAME_ATTR);
-                Some((binding.value, is_name))
-            }
-            IrAttrPathSegment::Dynamic(_) => None,
+    let strict_direct = strict && shape.as_ref().is_some_and(|shape| shape.direct);
+    let bindings: Vec<BoundaryBinding> = match shape {
+        Some(shape) => shape.bindings,
+        None => super::summary::boundary_values(analysis, argument, stack)?
+            .into_iter()
+            .map(|(value, key)| BoundaryBinding { key, value })
+            .collect(),
+    };
+    let seeds: Vec<(IrId, bool)> = bindings
+        .into_iter()
+        .map(|binding| {
+            (
+                binding.value,
+                analysis.ir.symbols.resolve(binding.key) == Some(NAME_ATTR),
+            )
         })
         .collect();
     for (value, is_name) in seeds {
@@ -172,29 +168,13 @@ pub(super) fn collect_derivation_strict_boundary(
     analysis: &mut Analysis<'_>,
     argument: IrId,
 ) -> Result<SlotDemand, StrictnessAnalysisError> {
-    let Some(literal) = resolve_direct_literal(analysis, argument)? else {
+    let Some(shape) = resolve_direct_shape(analysis, argument)? else {
         return Ok(SlotDemand::default());
     };
-    let node = analysis.node(literal)?;
-    let IrData::AttrSet {
-        bindings,
-        recursive,
-        has_dynamic,
-        ..
-    } = node.data
-    else {
-        return Ok(SlotDemand::default());
-    };
-    if recursive || has_dynamic {
-        return Ok(SlotDemand::default());
-    }
     let mut name_value = None;
     let mut rest = Vec::new();
-    for binding in analysis.bindings(literal, bindings)? {
-        let IrAttrPathSegment::Static(key) = binding.key else {
-            continue;
-        };
-        if name_value.is_none() && analysis.ir.symbols.resolve(key) == Some(NAME_ATTR) {
+    for binding in shape {
+        if name_value.is_none() && analysis.ir.symbols.resolve(binding.key) == Some(NAME_ATTR) {
             name_value = Some(binding.value);
         } else {
             rest.push(binding.value);
@@ -215,45 +195,104 @@ pub(super) fn collect_derivation_strict_boundary(
     Ok(sequence.finish())
 }
 
-/// Resolves a boundary argument to an attrset literal, syntactically or
+/// Resolves a boundary argument to a static attrset shape, syntactically or
 /// through the frame-stack chase.
-fn resolve_boundary_literal(
+fn resolve_boundary_shape(
     analysis: &Analysis<'_>,
     stack: &[FrameScope],
     argument: IrId,
-) -> Result<Option<BoundaryLiteral>, StrictnessAnalysisError> {
-    if let Some(attrset) = resolve_direct_literal(analysis, argument)? {
-        return Ok(Some(BoundaryLiteral {
-            attrset,
+) -> Result<Option<BoundaryShape>, StrictnessAnalysisError> {
+    if let Some(bindings) = resolve_direct_shape(analysis, argument)? {
+        return Ok(Some(BoundaryShape {
+            bindings,
             direct: true,
         }));
     }
     let mut chase_stack = stack.to_vec();
+    let Some(attrset) = chase_attrset_literal(analysis, &mut chase_stack, argument)? else {
+        return Ok(None);
+    };
     Ok(
-        chase_attrset_literal(analysis, &mut chase_stack, argument)?.map(|attrset| {
-            BoundaryLiteral {
-                attrset,
-                direct: false,
-            }
+        static_literal_bindings(analysis, attrset)?.map(|bindings| BoundaryShape {
+            bindings,
+            direct: false,
         }),
     )
 }
 
-/// Unwraps `ThunkAlloc` wrappers to a syntactically direct attrset literal.
-fn resolve_direct_literal(
+/// Resolves direct static literals and `//` chains, applying RHS shadowing.
+fn resolve_direct_shape(
     analysis: &Analysis<'_>,
     argument: IrId,
-) -> Result<Option<IrId>, StrictnessAnalysisError> {
-    let mut current = argument;
-    // Tree-validated IR cannot cycle through ThunkAlloc wrappers, but keep
-    // the unwrap bounded anyway.
-    for _ in 0..super::frames::CHASE_BUDGET {
-        let node = analysis.node(current)?;
-        match node.data {
-            IrData::AttrSet { .. } => return Ok(Some(current)),
-            IrData::Node(body) if node.kind == IrKind::ThunkAlloc => current = body,
-            _ => return Ok(None),
-        }
+) -> Result<Option<Vec<BoundaryBinding>>, StrictnessAnalysisError> {
+    resolve_direct_shape_inner(analysis, argument, 0)
+}
+
+fn resolve_direct_shape_inner(
+    analysis: &Analysis<'_>,
+    argument: IrId,
+    depth: usize,
+) -> Result<Option<Vec<BoundaryBinding>>, StrictnessAnalysisError> {
+    if depth >= super::frames::CHASE_BUDGET {
+        return Ok(None);
     }
-    Ok(None)
+    let node = analysis.node(argument)?;
+    match node.data {
+        IrData::AttrSet { .. } => static_literal_bindings(analysis, argument),
+        IrData::Node(body) if node.kind == IrKind::ThunkAlloc => {
+            resolve_direct_shape_inner(analysis, body, depth + 1)
+        }
+        IrData::Binary {
+            op: BinOpKind::Update,
+            lhs,
+            rhs,
+        } if node.kind == IrKind::BinOp => {
+            let Some(mut left) = resolve_direct_shape_inner(analysis, lhs, depth + 1)? else {
+                return Ok(None);
+            };
+            let Some(right) = resolve_direct_shape_inner(analysis, rhs, depth + 1)? else {
+                return Ok(None);
+            };
+            for binding in right {
+                left.retain(|entry| entry.key != binding.key);
+                left.push(binding);
+            }
+            Ok(Some(left))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Returns a literal's all-static bindings, declining recursive/dynamic sets.
+fn static_literal_bindings(
+    analysis: &Analysis<'_>,
+    attrset: IrId,
+) -> Result<Option<Vec<BoundaryBinding>>, StrictnessAnalysisError> {
+    let node = analysis.node(attrset)?;
+    let IrData::AttrSet {
+        bindings,
+        recursive,
+        has_dynamic,
+        ..
+    } = node.data
+    else {
+        return Ok(None);
+    };
+    // Recursive literals risk eager reads of not-yet-initialized same-frame
+    // slots (and `__overrides` can replace slot values); dynamic keys force
+    // interleaved with slot population and can collide with static lookups.
+    if recursive || has_dynamic {
+        return Ok(None);
+    }
+    let mut result = Vec::new();
+    for binding in analysis.bindings(attrset, bindings)? {
+        let IrAttrPathSegment::Static(key) = binding.key else {
+            return Ok(None);
+        };
+        result.push(BoundaryBinding {
+            key,
+            value: binding.value,
+        });
+    }
+    Ok(Some(result))
 }

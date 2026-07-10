@@ -2306,6 +2306,6 @@ fn escape_rejects_fact_table_length_mismatches() {
 mod dead_binding;
 mod escape_signature;
 mod scalar_replacement;
-mod strictness;
+mod chunk_e; mod strictness;
 mod thunk_sharing;
 mod worker_wrapper;

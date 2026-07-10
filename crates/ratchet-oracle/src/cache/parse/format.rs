@@ -21,11 +21,12 @@
 //!               <node_id plan_tag [reason | slot_count <depth slot>*]>
 //!               flat_capture_access_count
 //!               <read_node_id allocation_site_id capture_index>
+//!               lambda_summary_count <lambda summaries>
 //! ```
 //!
 //! The per-node `facts.bin` flag byte packs the boolean fact bits: bit 0 is
-//! the `tryEval` barrier and bit 1 the eager-assembly license (written by
-//! analysis version 3 producers; older sidecars only ever wrote bit 0).
+//! the `tryEval` barrier, bit 1 the eager-assembly license, and bit 2 the
+//! structural-totality proof (written by analysis version 7 producers).
 //!
 //! The capture-plan section exists only in sidecars whose `analysis_version`
 //! is 4 or newer. Each entry names an allocation-site node id, a plan tag
@@ -34,6 +35,7 @@
 //! after the per-node records and decode with no capture plans.
 //! Analysis version 5 appends the constant flat-capture access table; version
 //! 4 sidecars end after capture plans and decode with no rewritten accesses.
+//! Analysis version 7 appends the sparse lambda-summary table.
 //!
 //! Per-element encoders and the [`BinaryReader`] live in the sibling
 //! [`mod@codec`] module; structural validation of decoded artifacts lives in
@@ -267,6 +269,9 @@ pub(super) fn encode_ir_facts(
     if analysis_version >= 5 {
         encode_flat_capture_accesses(&mut out, facts)?;
     }
+    if analysis_version >= 7 {
+        encode_lambda_call_summaries(&mut out, facts)?;
+    }
     Ok(out)
 }
 
@@ -428,6 +433,9 @@ const FACT_FLAG_TRY_EVAL_BARRIER: u8 = 1 << 0;
 /// Bit 1 of the per-node flag byte: eager-assembly license.
 const FACT_FLAG_ASSEMBLY_EAGER: u8 = 1 << 1;
 
+/// Bit 2 of the per-node flag byte: structural-totality proof.
+const FACT_FLAG_STRUCTURALLY_TOTAL: u8 = 1 << 2;
+
 /// Packs one node's boolean fact bits into the per-node flag byte.
 ///
 /// Sidecars produced before analysis version 3 only ever wrote bit 0, so
@@ -439,6 +447,9 @@ fn node_fact_flags(facts: &IrFacts, id: IrId) -> u8 {
     }
     if facts.assembly_eager(id) {
         flags |= FACT_FLAG_ASSEMBLY_EAGER;
+    }
+    if facts.structurally_total(id) {
+        flags |= FACT_FLAG_STRUCTURALLY_TOTAL;
     }
     flags
 }
@@ -483,6 +494,7 @@ pub(super) fn decode_ir_facts(
         let flags = decode_node_fact_flags(reader.read_u8()?)?;
         facts.set_try_eval_barrier(id, flags & FACT_FLAG_TRY_EVAL_BARRIER != 0);
         facts.set_assembly_eager(id, flags & FACT_FLAG_ASSEMBLY_EAGER != 0);
+        facts.set_structurally_total(id, flags & FACT_FLAG_STRUCTURALLY_TOTAL != 0);
     }
     // The capture-plan section was introduced by analysis version 4; older
     // sidecars end after the per-node records and hydrate with no plans.
@@ -491,6 +503,9 @@ pub(super) fn decode_ir_facts(
     }
     if analysis_version >= 5 {
         decode_flat_capture_accesses(&mut reader, &mut facts, expected_node_count)?;
+    }
+    if analysis_version >= 7 {
+        decode_lambda_call_summaries(&mut reader, &mut facts, expected_node_count)?;
     }
     reader.expect_eof()?;
     Ok((facts, analysis_version))
@@ -528,10 +543,135 @@ fn decode_strictness(tag: u8) -> Result<Strictness, String> {
 }
 
 fn decode_node_fact_flags(flags: u8) -> Result<u8, String> {
-    if flags & !(FACT_FLAG_TRY_EVAL_BARRIER | FACT_FLAG_ASSEMBLY_EAGER) != 0 {
+    if flags
+        & !(FACT_FLAG_TRY_EVAL_BARRIER | FACT_FLAG_ASSEMBLY_EAGER | FACT_FLAG_STRUCTURALLY_TOTAL)
+        != 0
+    {
         return Err(format!("invalid node fact flag byte {flags}"));
     }
     Ok(flags)
+}
+
+fn encode_lambda_call_summaries(out: &mut Vec<u8>, facts: &IrFacts) -> Result<(), ParseCacheError> {
+    write_len(
+        out,
+        facts.lambda_call_summaries().len(),
+        "lambda call summary count",
+    )?;
+    for summary in facts.lambda_call_summaries() {
+        write_u32(out, summary.pattern.as_u32());
+        encode_lambda_demand(out, summary.argument_demand);
+        out.push(escape_tag(summary.argument_escape));
+        write_len(out, summary.formals.len(), "lambda formal summary count")?;
+        for formal in &summary.formals {
+            encode_lambda_demand(out, formal.demand);
+            out.push(escape_tag(formal.escape));
+        }
+        write_len(
+            out,
+            summary.attr_values.len(),
+            "lambda attribute-value summary count",
+        )?;
+        for attr in &summary.attr_values {
+            out.push(match attr.keys {
+                LambdaAttrKeys::Only(_) => 0,
+                LambdaAttrKeys::AllExcept(_) => 1,
+            });
+            write_len(out, attr.keys.symbols().len(), "lambda attribute key count")?;
+            for symbol in attr.keys.symbols() {
+                write_u32(out, symbol.as_u32());
+            }
+            encode_lambda_demand(out, attr.demand);
+            out.push(escape_tag(attr.escape));
+        }
+    }
+    Ok(())
+}
+
+fn encode_lambda_demand(out: &mut Vec<u8>, demand: LambdaDemand) {
+    let (mode, level) = match demand {
+        LambdaDemand::Unconditional(level) => (0, level),
+        LambdaDemand::IfResultForced(level) => (1, level),
+    };
+    out.push(mode);
+    out.push(strictness_tag(level));
+}
+
+fn decode_lambda_call_summaries(
+    reader: &mut BinaryReader<'_>,
+    facts: &mut IrFacts,
+    node_count: usize,
+) -> Result<(), String> {
+    let count = reader.read_len("lambda call summary count")?;
+    let mut summaries = Vec::new();
+    summaries
+        .try_reserve_exact(count)
+        .map_err(|_| format!("lambda call summary count {count} is too large"))?;
+    for _ in 0..count {
+        let pattern = IrId::new(reader.read_u32()?);
+        if pattern.index() >= node_count {
+            return Err(format!(
+                "lambda call summary pattern {pattern:?} is out of range"
+            ));
+        }
+        let argument_demand = decode_lambda_demand(reader)?;
+        let argument_escape = decode_escape(reader.read_u8()?)?;
+        let formal_count = reader.read_len("lambda formal summary count")?;
+        let mut formals = Vec::new();
+        formals
+            .try_reserve_exact(formal_count)
+            .map_err(|_| format!("lambda formal summary count {formal_count} is too large"))?;
+        for _ in 0..formal_count {
+            formals.push(LambdaFormalSummary {
+                demand: decode_lambda_demand(reader)?,
+                escape: decode_escape(reader.read_u8()?)?,
+            });
+        }
+        let attr_count = reader.read_len("lambda attribute-value summary count")?;
+        let mut attr_values = Vec::new();
+        attr_values
+            .try_reserve_exact(attr_count)
+            .map_err(|_| format!("lambda attribute-value count {attr_count} is too large"))?;
+        for _ in 0..attr_count {
+            let key_mode = reader.read_u8()?;
+            let key_count = reader.read_len("lambda attribute key count")?;
+            let mut keys = Vec::new();
+            keys.try_reserve_exact(key_count)
+                .map_err(|_| format!("lambda attribute key count {key_count} is too large"))?;
+            for _ in 0..key_count {
+                keys.push(Symbol::new(reader.read_u32()?));
+            }
+            let keys = match key_mode {
+                0 => LambdaAttrKeys::Only(keys.into_boxed_slice()),
+                1 => LambdaAttrKeys::AllExcept(keys.into_boxed_slice()),
+                tag => return Err(format!("invalid lambda attribute key-set tag {tag}")),
+            };
+            attr_values.push(LambdaAttrValueSummary {
+                keys,
+                demand: decode_lambda_demand(reader)?,
+                escape: decode_escape(reader.read_u8()?)?,
+            });
+        }
+        summaries.push(LambdaCallSummary {
+            pattern,
+            argument_demand,
+            argument_escape,
+            formals: formals.into_boxed_slice(),
+            attr_values: attr_values.into_boxed_slice(),
+        });
+    }
+    facts.set_lambda_call_summaries(summaries);
+    Ok(())
+}
+
+fn decode_lambda_demand(reader: &mut BinaryReader<'_>) -> Result<LambdaDemand, String> {
+    let mode = reader.read_u8()?;
+    let level = decode_strictness(reader.read_u8()?)?;
+    match mode {
+        0 => Ok(LambdaDemand::Unconditional(level)),
+        1 => Ok(LambdaDemand::IfResultForced(level)),
+        tag => Err(format!("invalid lambda demand mode tag {tag}")),
+    }
 }
 
 fn cardinality_tag(cardinality: Cardinality) -> u8 {

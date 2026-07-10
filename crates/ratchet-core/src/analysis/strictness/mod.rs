@@ -50,6 +50,7 @@
 mod collect;
 mod derivation;
 mod frames;
+mod summary;
 mod totality;
 mod walk;
 
@@ -190,6 +191,13 @@ pub fn annotate_strictness(
     let mut analysis = Analysis::new(ir);
     totality::compute(&mut analysis, ir.root, &mut Vec::new())?;
     walk::run(&mut analysis)?;
+    let lambda_call_summaries = summary::compute(&mut analysis)?;
+    let structurally_total: Vec<IrId> = analysis
+        .totality
+        .iter()
+        .enumerate()
+        .filter_map(|(index, total)| total.unwrap_or(false).then(|| IrId::new(index as u32)))
+        .collect();
     let Analysis {
         marks,
         barriers,
@@ -214,6 +222,10 @@ pub fn annotate_strictness(
     for id in assembly_eager {
         ir.facts.set_assembly_eager(id, true);
     }
+    for id in structurally_total {
+        ir.facts.set_structurally_total(id, true);
+    }
+    ir.facts.set_lambda_call_summaries(lambda_call_summaries);
     Ok(report)
 }
 
@@ -236,6 +248,8 @@ struct Analysis<'a> {
     /// Eager-assembly licenses (derivation-boundary seeding) to flag after
     /// the run completes.
     assembly_eager: Vec<IrId>,
+    /// Active cross-module trace nodes; recursive aliases fail closed.
+    summary_trace_active: Vec<(IrId, IrId, CollectCtx)>,
 }
 
 impl<'a> Analysis<'a> {
@@ -248,6 +262,7 @@ impl<'a> Analysis<'a> {
             marks: Vec::new(),
             barriers: Vec::new(),
             assembly_eager: Vec::new(),
+            summary_trace_active: Vec::new(),
         }
     }
 

@@ -887,6 +887,33 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       analysis pipeline, not imported-module scheduling beyond the configured
       import path, whole-program fixpoint scheduling, independent IR-hash fact
       persistence, or an analyzed-once cross-source fact index.
+- [x] Current cross-module call-summary and eager-assembly bridge (P4 Chunk E):
+      `IR_ANALYSIS_VERSION = 7` persists sparse per-lambda argument/formal
+      demand and escape summaries plus per-node structural-totality proofs.
+      Formal-set summaries describe demanded attribute values with exact-key or
+      all-except-key domains, following static literals, right-biased `//`
+      chains, conditionals, aliases, and static `builtins.removeAttrs` while
+      declining recursive, dynamic, cyclic, or otherwise unknown provenance.
+      Imported symbols and cached sidecars remap and validate the summaries
+      before use. At a statically shaped call, the tree-walk evaluator matches
+      the caller's actual attribute bindings to the callee summary and installs
+      a temporary assembly plan: proven-demanded structurally-total values can
+      be evaluated without a thunk, while demanded-before-effect or
+      once/no-escape cases use their narrower licensed forms. Pattern failures,
+      non-total values, unknown update operands, aggregate escape, and missing
+      or malformed facts fail closed to ordinary lazy allocation. The same
+      static provenance seeds derivation-boundary values through `//` with exact
+      RHS shadowing. Adversarial trace/error tests, fact-sidecar round trips and
+      corruption rejection, cache miss-to-hit remapping, the representative
+      byte-parity matrix, and the upstream language suite are green. A noisy
+      local three-sample `bench.wide-eval` A/B against pristine pre-Chunk-E HEAD
+      measured median native wall 1.391 -> 1.373 s cold and 1.338 -> 1.306 s
+      warm, while peak arena mapping fell 71.5 -> 67.5 MiB; the absolute times
+      are load-contaminated, so this landing claims the allocation reduction and
+      no regression rather than a stable throughput win. This closes the
+      scheduled Chunk-E transport/consumer slice, not the memoized closed-world
+      fixpoint, IR rewrite, worker generation, or independent IR-hash fact
+      index.
 
 ### Strictness / demand analysis + worker-wrapper (§4)
 

@@ -9557,6 +9557,37 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       `native_expression_eval_persists_refreshed_analysis_facts_without_source_path`,
       `native_instantiation_expr_refreshes_parse_cache_analysis_facts`,
       `native_file_root_persists_refreshed_analysis_facts`.
+- [x] P4 Chunk E - persisted cross-module demand/escape summaries and
+      statically-shaped eager-assembly seeding:
+      `ratchet-core` analysis version 7 emits sparse lambda summaries for whole
+      arguments, formal slots, and attribute-value provenance, carrying
+      unconditional versus result-demanded strictness, escape classification,
+      exact-key/all-except-key domains, and structural-totality bits. Static
+      provenance follows literals, right-biased `//`, aliases, conditionals,
+      and static `builtins.removeAttrs`; recursive/dynamic/cyclic/unknown shapes
+      decline. `facts.bin` encodes, decodes, remaps, and structurally validates
+      these contracts, and invalid sidecars are ignored and reanalyzed. The
+      tree-walk call boundary matches statically shaped actual arguments to
+      imported summaries and temporarily licenses eager or single-entry binding
+      storage only when demand, totality, error order, and no-escape proofs all
+      permit it. Static derivation-boundary `//` chains now seed only surviving
+      RHS-biased values. Gates cover pattern errors, non-total and shadowed
+      traces, unknown operands, recursive aliases, mixed mkDerivation-style
+      all-except provenance, parse-cache miss/hit symbol remapping, and
+      conservative-versus-analyzed output/trace identity. The full
+      representative serial/K=4/JIT/sweep byte matrix, compute x8, wide roots,
+      cache validation, shape modes, 3,010-test oracle suite, 321-test native
+      suite, and 38-test upstream-language suite are green. The checked-in
+      generated eval-json corpus is stale (109 source seeds point to a deleted
+      prior-session Nix tree) and the valid top-level derivation seed retains
+      its documented effectful-expression limitation; neither failure is new to
+      Chunk E. A load-contaminated local three-sample wide A/B shows median
+      native wall -1.3% cold/-2.4% warm and arena peak -5.6% (71.5 -> 67.5 MiB),
+      so the landing records a non-regression/allocation win but no stable
+      throughput claim. This completes Chunk E's summary transport and current
+      tree-walk consumer; the global memoized closed-world fixpoint,
+      worker/wrapper IR transform, and independent IR-hash analysis cache remain
+      open.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).

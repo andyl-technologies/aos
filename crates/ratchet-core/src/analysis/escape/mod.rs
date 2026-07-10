@@ -240,6 +240,21 @@ pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalys
         facts.escape = Escape::NoEscape;
         report.nodes_marked_no_escape += 1;
     }
+    let lambda_escapes = frame_local::lambda_frame_escapes(ir)?;
+    for lambda in lambda_escapes {
+        let Some(summary) = ir
+            .facts
+            .lambda_call_summaries_mut()
+            .iter_mut()
+            .find(|summary| summary.pattern == lambda.pattern)
+        else {
+            continue;
+        };
+        summary.argument_escape = lambda.argument;
+        for (formal, escape) in summary.formals.iter_mut().zip(lambda.slots) {
+            formal.escape = escape;
+        }
+    }
     Ok(report)
 }
 

@@ -108,8 +108,8 @@ use crate::cache::{
 use crate::compile::{
     CapturePlan, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
     IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind,
-    IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver,
-    annotate_capture_plans, dead_binding_elimination_plan, resolve,
+    IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, annotate_ir,
+    dead_binding_elimination_plan, resolve,
 };
 #[cfg(test)]
 use crate::compile::Strictness;
@@ -135,9 +135,7 @@ use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind, parse_byt
 use crate::value::{Value, ValueTag};
 use aos_nix_compat::drv_materialize::materialize_drv;
 use aos_nix_dialect::{nix_lower, nix_lower_with_options};
-
 mod builtins;
-
 const TO_STRING_ATTR: &[u8] = b"__toString";
 const OUT_PATH_ATTR: &[u8] = b"outPath";
 const DRV_PATH_ATTR: &[u8] = b"drvPath";
@@ -1367,6 +1365,7 @@ pub struct TreeWalk {
     ifd_realizer: Option<IfdRealizer>,
     call_depth: usize,
     order_sensitive_binding_depth: usize,
+    active_call_argument_plans: Vec<call_summary::CallArgumentPlan>,
     active_composite_accumulator_depth: usize,
     active_root_eval_node: Option<IrId>,
     active_gc_stress_accumulator_allocation_node: Option<IrId>,
@@ -1660,6 +1659,7 @@ impl StructuredAttrsJson {
 // Each submodule re-opens `impl TreeWalk` and shares this module's private
 // items via `use super::*;`.
 mod alloc_intern;
+mod call_summary;
 mod coerce_paths;
 mod tier1_dispatch;
 mod derivation_build;

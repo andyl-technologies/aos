@@ -201,6 +201,85 @@ pub(super) fn validate_lowered_ir_artifact(ir: &Ir) -> Result<(), String> {
             check_ir_symbol(ir, *key)?;
         }
     }
+    validate_lambda_call_summaries(ir)?;
+    Ok(())
+}
+
+fn validate_lambda_call_summaries(ir: &Ir) -> Result<(), String> {
+    let summaries = ir.facts.lambda_call_summaries();
+    if summaries
+        .windows(2)
+        .any(|pair| pair[0].pattern == pair[1].pattern)
+    {
+        return Err("duplicate lambda call-summary pattern".to_owned());
+    }
+    for summary in summaries {
+        let pattern = ir
+            .arena
+            .node(summary.pattern)
+            .ok_or_else(|| "lambda call-summary pattern out of range".to_owned())?;
+        let expected_slots = match pattern.data {
+            IrData::Formal { .. } if pattern.kind == IrKind::Formal => 1,
+            IrData::FormalSet { formals, alias, .. } if pattern.kind == IrKind::FormalSet => {
+                let children = ir
+                    .arena
+                    .child_slice(formals)
+                    .ok_or_else(|| "lambda call-summary formal slice is invalid".to_owned())?;
+                let mut names = Vec::new();
+                names
+                    .try_reserve_exact(children.len())
+                    .map_err(|_| "lambda call-summary formal count is too large".to_owned())?;
+                for formal in children {
+                    let Some(IrNode {
+                        kind: IrKind::Formal,
+                        data: IrData::Formal { name, .. },
+                        ..
+                    }) = ir.arena.node(*formal)
+                    else {
+                        return Err("lambda call-summary pattern has invalid formal".to_owned());
+                    };
+                    names.push(*name);
+                }
+                names.len() + usize::from(alias.is_some_and(|alias| !names.contains(&alias)))
+            }
+            _ => return Err("lambda call-summary key is not a formal pattern".to_owned()),
+        };
+        if summary.formals.len() != expected_slots {
+            return Err("lambda call-summary formal count does not match pattern".to_owned());
+        }
+        let frame_slots = ir
+            .arena
+            .nodes()
+            .iter()
+            .find_map(|node| match node.data {
+                IrData::Lambda {
+                    pattern,
+                    frame: Some(frame),
+                    ..
+                } if node.kind == IrKind::Lambda && pattern == summary.pattern => ir
+                    .frames
+                    .get(frame.index())
+                    .map(|frame| frame.slot_count as usize),
+                _ => None,
+            })
+            .ok_or_else(|| "lambda call-summary pattern has no lambda frame".to_owned())?;
+        if frame_slots != expected_slots {
+            return Err("lambda call-summary formal count does not match frame".to_owned());
+        }
+        if pattern.kind != IrKind::FormalSet && !summary.attr_values.is_empty() {
+            return Err("lambda call-summary attribute rules require a formal set".to_owned());
+        }
+        for attr in &summary.attr_values {
+            let mut previous = None;
+            for symbol in attr.keys.symbols() {
+                check_ir_symbol(ir, *symbol)?;
+                if previous.is_some_and(|previous| previous >= *symbol) {
+                    return Err("lambda call-summary keys are not strictly ordered".to_owned());
+                }
+                previous = Some(*symbol);
+            }
+        }
+    }
     Ok(())
 }
 

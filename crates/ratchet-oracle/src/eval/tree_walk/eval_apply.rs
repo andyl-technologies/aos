@@ -204,7 +204,8 @@ impl TreeWalk {
             function = self.force_demanded_value(function_id, function_span, function)?;
         }
         function = self.ensure_applicable_value(function_id, function_span, function)?;
-        let argument = self.eval_lazy_node(argument_id)?;
+        let argument =
+            self.eval_call_argument(id, function_id, function_span, function, argument_id)?;
         self.apply_lambda_value(
             id,
             span,

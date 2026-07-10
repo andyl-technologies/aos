@@ -38,6 +38,116 @@ use crate::ir::{Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrData, IrI
 
 use super::{EscapeAnalysisError, binding_values, child_ids, expected_payload, validate_node};
 
+/// Escape facts for one lambda parameter frame.
+pub(super) struct LambdaFrameEscapeSummary {
+    /// The lambda pattern used as the persisted-summary lookup key.
+    pub(super) pattern: IrId,
+    /// Whether the whole argument aggregate can escape.
+    pub(super) argument: crate::ir::Escape,
+    /// Escape facts for formal slots in frame order.
+    pub(super) slots: Vec<crate::ir::Escape>,
+}
+
+/// Classifies references to every lambda formal slot.
+pub(super) fn lambda_frame_escapes(
+    ir: &Ir,
+) -> Result<Vec<LambdaFrameEscapeSummary>, EscapeAnalysisError> {
+    use crate::ir::Escape::{Escapes, NoEscape};
+
+    let mut summaries = Vec::new();
+    for (index, node) in ir.arena.nodes().iter().copied().enumerate() {
+        if node.kind != IrKind::Lambda {
+            continue;
+        }
+        let lambda = IrId::new(index as u32);
+        let IrData::Lambda {
+            pattern,
+            body,
+            frame,
+        } = node.data
+        else {
+            return Err(EscapeAnalysisError::InvalidPayload {
+                id: lambda,
+                kind: node.kind,
+                expected: expected_payload(node.kind),
+            });
+        };
+        if ir.facts.lambda_call_summary(pattern).is_none() {
+            continue;
+        }
+        let Some(frame) = frame else {
+            continue;
+        };
+        let slots = ir
+            .frames
+            .get(frame.index())
+            .ok_or(EscapeAnalysisError::InvalidNode { id: lambda })?
+            .slot_count as usize;
+        let mut scan = FrameEscapeScan::new(ir, slots);
+        scan.visit(pattern, 0, Position::root())?;
+        scan.visit(body, 0, Position::root())?;
+        let slots: Vec<_> = (0..slots)
+            .map(|slot| {
+                if scan.escaped(slot) {
+                    Escapes
+                } else {
+                    NoEscape
+                }
+            })
+            .collect();
+        let argument = lambda_argument_escape(ir, pattern, &slots)?;
+        summaries.push(LambdaFrameEscapeSummary {
+            pattern,
+            argument,
+            slots,
+        });
+    }
+    Ok(summaries)
+}
+
+fn lambda_argument_escape(
+    ir: &Ir,
+    pattern: IrId,
+    slots: &[crate::ir::Escape],
+) -> Result<crate::ir::Escape, EscapeAnalysisError> {
+    use crate::ir::Escape::{Escapes, NoEscape};
+
+    let node = *ir
+        .arena
+        .node(pattern)
+        .ok_or(EscapeAnalysisError::InvalidNode { id: pattern })?;
+    match node.data {
+        IrData::Formal { .. } => Ok(slots.first().copied().unwrap_or(Escapes)),
+        IrData::FormalSet { formals, alias, .. } => {
+            let Some(alias) = alias else {
+                return Ok(NoEscape);
+            };
+            let formals = child_ids(ir, pattern, formals)?;
+            let mut names = Vec::new();
+            for formal in formals {
+                let formal_node = *ir
+                    .arena
+                    .node(*formal)
+                    .ok_or(EscapeAnalysisError::InvalidNode { id: *formal })?;
+                let IrData::Formal { name, .. } = formal_node.data else {
+                    return Err(EscapeAnalysisError::InvalidPayload {
+                        id: *formal,
+                        kind: formal_node.kind,
+                        expected: expected_payload(IrKind::Formal),
+                    });
+                };
+                names.push(name);
+            }
+            if names.contains(&alias) {
+                Ok(NoEscape)
+            } else {
+                Ok(slots.get(names.len()).copied().unwrap_or(Escapes))
+            }
+        }
+        _ => Ok(Escapes),
+    }
+}
+
 /// Returns every `let` binding thunk allocation proven frame-local.
 ///
 /// # Errors

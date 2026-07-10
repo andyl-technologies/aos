@@ -58,7 +58,6 @@ impl TreeWalk {
             ),
         }
     }
-
     pub(super) fn load_and_eval_text_store_import(
         &mut self,
         id: IrId,
@@ -100,7 +99,6 @@ impl TreeWalk {
             global_scope,
         )
     }
-
     pub(super) fn load_and_eval_import_bytes(
         &mut self,
         id: IrId,
@@ -176,15 +174,15 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
-        // Fresh uncached imports need FV-5 capture facts immediately. Durable
-        // parse-cache refresh owns the complete analysis pipeline.
-        let _ = annotate_capture_plans(&mut ir);
+        // Fresh imports need the same facts as durable-cache hits, including
+        // cross-module call summaries. Analysis failures leave conservative
+        // facts and therefore preserve evaluator semantics.
+        let _ = annotate_ir(&mut ir);
         // Adopt the freshly lowered symbol table as the live table without a
         // clone; the module keeps the emptied husk and reads `self.symbols`.
         self.symbols = std::mem::take(&mut ir.symbols);
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }
-
     /// Parallel-mode fresh import load: parse standalone, then remap.
     ///
     /// Under a shared demand pool the live symbol table is a prefix replica
@@ -254,11 +252,10 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
-        let _ = annotate_capture_plans(&mut ir);
+        let _ = annotate_ir(&mut ir);
         let ir = self.remap_cached_import_ir(argument, argument_span, path, ir)?;
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }
-
     pub(super) fn load_and_eval_import_ir(
         &mut self,
         id: IrId,
@@ -295,13 +292,12 @@ impl TreeWalk {
         }
         result
     }
-
     pub(super) fn remap_cached_import_ir(
         &mut self,
         argument: IrId,
         argument_span: Span,
         path: &[u8],
-        ir: Ir,
+        mut ir: Ir,
     ) -> Result<Ir, TreeWalkError> {
         let mut symbol_map = Vec::new();
         symbol_map
@@ -452,7 +448,13 @@ impl TreeWalk {
             }
             shapes.push(IrShape::new(keys.into_boxed_slice()));
         }
-
+        Self::remap_call_summary_symbols(
+            argument,
+            argument_span,
+            path,
+            &symbol_map,
+            &mut ir.facts,
+        )?;
         Ok(Ir {
             root: ir.root,
             arena: IrArena::from_raw_parts(nodes, ir.arena.child_pool().to_vec()),
@@ -467,7 +469,6 @@ impl TreeWalk {
             shapes: shapes.into_boxed_slice(),
         })
     }
-
     pub(super) fn remap_cached_ir_data(
         argument: IrId,
         argument_span: Span,
@@ -540,7 +541,6 @@ impl TreeWalk {
             other => Ok(other),
         }
     }
-
     pub(super) fn remap_cached_ir_attr_path_segment(
         argument: IrId,
         argument_span: Span,

@@ -48,7 +48,12 @@ use super::{Ir, IrFacts, IrId};
 /// - `5` — FV-5 closure conversion assigns constant flat-capture indices to
 ///   lexical reads ([`crate::ir::IrFacts::flat_capture_access`]) and persists
 ///   them beside the allocation-site plans.
-pub const IR_ANALYSIS_VERSION: u32 = 5;
+/// - `6` — Phase 4 Chunk E seeds derivation-boundary demand and eager-assembly
+///   facts through fully static literal `//` chains after applying RHS
+///   shadowing.
+/// - `7` — Phase 4 Chunk E persists structural totality and cross-module
+///   lambda demand/escape summaries, including derivation attribute-key flow.
+pub const IR_ANALYSIS_VERSION: u32 = 7;
 
 /// Summary of one complete IR fact annotation run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

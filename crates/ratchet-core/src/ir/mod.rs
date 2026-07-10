@@ -27,6 +27,7 @@ pub use annotate::{
 };
 pub use facts::{
     BindingLowering, CapturePlan, Cardinality, Escape, ExprFacts, FlatCaptureAccess, IrFacts,
+    LambdaAttrKeys, LambdaAttrValueSummary, LambdaCallSummary, LambdaDemand, LambdaFormalSummary,
     SharedChainReason, Strictness, ThunkSharing,
 };
 

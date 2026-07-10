@@ -229,6 +229,8 @@ mod builtins_list_2;
 mod builtins_list_3;
 mod builtins_list_4;
 mod builtins_list_5;
+mod call_summary;
+mod chunk_e;
 mod coercion;
 mod context_1;
 mod context_2;

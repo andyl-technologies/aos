@@ -12,7 +12,7 @@ use aos_nix_dialect::nix_lower;
 
 static TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
-mod artifact_bundle;
+mod artifact_bundle; mod chunk_e;
 mod artifact_validation;
 
 fn temp_root() -> PathBuf {
@@ -330,7 +330,7 @@ fn lowered_ir_fact_artifacts_reject_invalid_flag_bytes() {
         .expect("fact artifact encodes");
     // magic + artifact version + analysis version + fingerprint + count +
     // the three per-node fact tags put the flag byte last in the record.
-    encoded[FACTS_MAGIC.len() + 4 + 4 + 32 + 4 + 3] = 0b100;
+    encoded[FACTS_MAGIC.len() + 4 + 4 + 32 + 4 + 3] = 0b1000;
 
     let error = decode_ir_facts(&encoded, 1, fingerprint).expect_err("invalid flag byte errors");
 

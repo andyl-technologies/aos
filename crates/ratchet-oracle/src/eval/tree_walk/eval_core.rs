@@ -3,7 +3,6 @@
 use super::*;
 use crate::cache::hashing::ForceCapturedValueHash;
 use crate::eval::heap::{SharedHeapArena, SharedHeapShard};
-
 mod force_identity;
 mod force_payload;
 mod force_persistence;
@@ -454,6 +453,7 @@ impl TreeWalk {
             ifd_realizer: None,
             call_depth: 0,
             order_sensitive_binding_depth: 0,
+            active_call_argument_plans: Vec::new(),
             active_composite_accumulator_depth: 0,
             active_root_eval_node: None,
             active_gc_stress_accumulator_allocation_node: None,

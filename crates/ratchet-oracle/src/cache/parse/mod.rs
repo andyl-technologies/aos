@@ -31,13 +31,13 @@ use thiserror::Error;
 use crate::cache::hashing::ParseCacheSourceHash;
 use crate::cache::{DurableBlake3Hash, LoweredIrFingerprint, ParseFileContentHash};
 use crate::compile::{
-    CapturePlan, Cardinality, EffectClass, Escape, ExprFacts, FlatCaptureAccess, FrameId, FrameInfo,
-    IR_ANALYSIS_VERSION,
-    InheritGroupId, SharedChainReason,
-    InheritResolution, InheritSource, Ir, IrAnalysisError, IrAnalysisReport, IrArena, IrAttrPathId,
-    IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError,
-    IrFacts, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain,
-    ResolvedAst, ScopeError, ScopeTables, Strictness, Upvalue, WithChain, annotate_ir, resolve,
+    CapturePlan, Cardinality, EffectClass, Escape, ExprFacts, FlatCaptureAccess, FrameId,
+    FrameInfo, IR_ANALYSIS_VERSION, InheritGroupId, InheritResolution, InheritSource, Ir,
+    IrAnalysisError, IrAnalysisReport, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding,
+    IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrError, IrFacts, IrId, IrInlineCacheSiteId,
+    IrKind, IrNode, IrShape, IrShapeId, IrWithChain, LambdaAttrKeys, LambdaAttrValueSummary,
+    LambdaCallSummary, LambdaDemand, LambdaFormalSummary, ResolvedAst, ScopeError, ScopeTables,
+    SharedChainReason, Strictness, Upvalue, WithChain, annotate_ir, resolve,
 };
 use crate::runtime::builtins::{BuiltinDirect, direct_builtin};
 use crate::syntax::{

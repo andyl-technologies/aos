@@ -53,8 +53,9 @@ pub use ir::{
     IrAnalysisReport, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice,
     IrChildSlice, IrData, IrDependencyFootprint, IrDialectOp, IrError, IrErrorKind, IrFacts,
     IrFrameCaptureFootprint, IrId, IrInlineCacheSiteId, IrKind, IrLowerOptions, IrNode, IrShape,
-    IrShapeId, IrWithChain, Strictness, ThunkSharing, all_pure, all_pure_builtin, annotate_ir,
-    lower, lower_with_options,
+    IrShapeId, IrWithChain, LambdaAttrKeys, LambdaAttrValueSummary, LambdaCallSummary, LambdaDemand,
+    LambdaFormalSummary, Strictness, ThunkSharing, all_pure, all_pure_builtin, annotate_ir, lower,
+    lower_with_options,
 };
 pub use runtime_abi::{
     BUILTIN_SYMBOL_PREFIX, BuiltinRuntimeSymbol, MAX_RUNTIME_PRIMOP_ABI_ARITY,

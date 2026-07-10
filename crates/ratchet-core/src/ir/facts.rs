@@ -25,6 +25,7 @@
 //! license.
 
 use crate::scope::Upvalue;
+use crate::syntax::Symbol;
 
 use super::IrId;
 
@@ -80,6 +81,93 @@ pub enum Escape {
     /// The value may escape its allocating frame.
     #[default]
     Escapes,
+}
+
+/// When a lambda call demands an argument or one of its formal values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LambdaDemand {
+    /// The call itself demands the value at the recorded level.
+    Unconditional(Strictness),
+    /// The call demands the value only when its result reaches WHNF.
+    IfResultForced(Strictness),
+}
+
+impl LambdaDemand {
+    /// Returns the demand licensed at a call site with the given result demand.
+    pub fn at_call(self, result: Strictness) -> Strictness {
+        match self {
+            Self::Unconditional(level) => level,
+            Self::IfResultForced(level) => level.min(result),
+        }
+    }
+}
+
+/// A statically described set of attribute keys demanded through a formal alias.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum LambdaAttrKeys {
+    /// Exactly these keys are demanded.
+    Only(Box<[Symbol]>),
+    /// Every key except these keys is demanded.
+    AllExcept(Box<[Symbol]>),
+}
+
+impl LambdaAttrKeys {
+    /// Returns whether the key belongs to this demand set.
+    pub fn contains(&self, key: Symbol) -> bool {
+        match self {
+            Self::Only(keys) => keys.contains(&key),
+            Self::AllExcept(keys) => !keys.contains(&key),
+        }
+    }
+
+    /// Returns the symbols carried by this key-set encoding.
+    pub fn symbols(&self) -> &[Symbol] {
+        match self {
+            Self::Only(keys) | Self::AllExcept(keys) => keys,
+        }
+    }
+
+    /// Replaces the symbols carried by this key-set encoding.
+    pub fn replace_symbols(&mut self, symbols: Box<[Symbol]>) {
+        match self {
+            Self::Only(keys) | Self::AllExcept(keys) => *keys = symbols,
+        }
+    }
+}
+
+/// Demand and escape facts for one formal-set slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LambdaFormalSummary {
+    /// The value demand transferred to the caller's matching attribute.
+    pub demand: LambdaDemand,
+    /// Whether references through this formal slot can publish the value.
+    pub escape: Escape,
+}
+
+/// Demand transferred through an `@` alias into derivation attribute assembly.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LambdaAttrValueSummary {
+    /// The actual argument keys covered by this summary.
+    pub keys: LambdaAttrKeys,
+    /// The demand transferred to values stored under the covered keys.
+    pub demand: LambdaDemand,
+    /// Whether the aggregate alias can publish covered values.
+    pub escape: Escape,
+}
+
+/// Persisted call-site facts for one lambda parameter frame.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LambdaCallSummary {
+    /// The lambda's pattern node, used as the runtime closure lookup key.
+    pub pattern: IrId,
+    /// Demand placed on the whole argument value.
+    pub argument_demand: LambdaDemand,
+    /// Whether the whole argument can escape through the call.
+    pub argument_escape: Escape,
+    /// Per-slot demand and escape facts in formal-pattern order.
+    pub formals: Box<[LambdaFormalSummary]>,
+    /// Attribute-value demand transferred through a formal-set `@` alias.
+    pub attr_values: Box<[LambdaAttrValueSummary]>,
 }
 
 /// Per-expression optimization facts attached to one IR node.
@@ -236,7 +324,7 @@ pub enum SharedChainReason {
 ///
 /// Entries are indexed by [`IrId`] and are expected to stay in one-to-one order
 /// with the node arena. Alongside the per-node [`ExprFacts`] records the table
-/// carries two per-node bits and two sparse per-node capture tables:
+/// carries three per-node bits and three sparse side tables:
 ///
 /// - a `tryEval` barrier bit: nodes that root the argument subtree of a
 ///   `builtins.tryEval` application. No transform in the current pipeline
@@ -244,17 +332,23 @@ pub enum SharedChainReason {
 ///   computations must not be moved across a `tryEval` catch boundary).
 /// - an eager-assembly bit ([`Self::assembly_eager`]): binding-value thunk
 ///   allocations that a frame assembler may evaluate directly to WHNF.
+/// - a structural-totality bit ([`Self::structurally_total`]): nodes whose
+///   forced evaluation cannot produce an observable event.
 /// - a capture plan ([`Self::capture_plan`]): the free-variable capture plan
 ///   for lambda construction and thunk allocation sites (FV-5 input).
 /// - a flat-capture access ([`Self::flat_capture_access`]): the constant
 ///   capture index for a lexical read owned by a flat-planned site.
+/// - a lambda call summary ([`Self::lambda_call_summary`]): sparse demand and
+///   escape facts transferred from a closure's module to its caller.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IrFacts {
     nodes: Box<[ExprFacts]>,
     try_eval_barriers: Box<[bool]>,
     assembly_eager: Box<[bool]>,
+    structurally_total: Box<[bool]>,
     capture_plans: Box<[Option<CapturePlan>]>,
     flat_capture_accesses: Box<[Option<FlatCaptureAccess>]>,
+    lambda_call_summaries: Box<[LambdaCallSummary]>,
 }
 
 impl IrFacts {
@@ -264,8 +358,10 @@ impl IrFacts {
             nodes: vec![ExprFacts::conservative(); node_count].into_boxed_slice(),
             try_eval_barriers: vec![false; node_count].into_boxed_slice(),
             assembly_eager: vec![false; node_count].into_boxed_slice(),
+            structurally_total: vec![false; node_count].into_boxed_slice(),
             capture_plans: vec![None; node_count].into_boxed_slice(),
             flat_capture_accesses: vec![None; node_count].into_boxed_slice(),
+            lambda_call_summaries: Box::new([]),
         }
     }
 
@@ -363,6 +459,30 @@ impl IrFacts {
         &self.assembly_eager
     }
 
+    /// Returns whether forcing this node is structurally total.
+    ///
+    /// Total nodes cannot throw, diverge, trace, or otherwise emit an
+    /// observable event. Cross-module call planning combines this proof with
+    /// positive demand before evaluating an argument binding during assembly.
+    pub fn structurally_total(&self, id: IrId) -> bool {
+        self.structurally_total
+            .get(id.index())
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Marks a node as structurally total.
+    pub fn set_structurally_total(&mut self, id: IrId, total: bool) {
+        if let Some(slot) = self.structurally_total.get_mut(id.index()) {
+            *slot = total;
+        }
+    }
+
+    /// Returns all structural-totality bits in IR node order.
+    pub fn structurally_total_bits(&self) -> &[bool] {
+        &self.structurally_total
+    }
+
     /// Returns the capture plan computed for an allocation site, if any.
     ///
     /// Only lambda construction and thunk allocation nodes carry plans; every
@@ -411,5 +531,31 @@ impl IrFacts {
     /// Returns all flat-capture accesses in IR node order.
     pub fn flat_capture_accesses(&self) -> &[Option<FlatCaptureAccess>] {
         &self.flat_capture_accesses
+    }
+
+    /// Returns the call summary keyed by a runtime lambda's pattern node.
+    pub fn lambda_call_summary(&self, pattern: IrId) -> Option<&LambdaCallSummary> {
+        self.lambda_call_summaries
+            .binary_search_by_key(&pattern.as_u32(), |summary| summary.pattern.as_u32())
+            .ok()
+            .and_then(|index| self.lambda_call_summaries.get(index))
+    }
+
+    /// Replaces the sparse lambda call-summary table.
+    ///
+    /// Entries are sorted by pattern id so runtime closure lookup is logarithmic.
+    pub fn set_lambda_call_summaries(&mut self, mut summaries: Vec<LambdaCallSummary>) {
+        summaries.sort_unstable_by_key(|summary| summary.pattern.as_u32());
+        self.lambda_call_summaries = summaries.into_boxed_slice();
+    }
+
+    /// Returns all lambda call summaries in pattern-id order.
+    pub fn lambda_call_summaries(&self) -> &[LambdaCallSummary] {
+        &self.lambda_call_summaries
+    }
+
+    /// Returns mutable access to persisted lambda call summaries.
+    pub fn lambda_call_summaries_mut(&mut self) -> &mut [LambdaCallSummary] {
+        &mut self.lambda_call_summaries
     }
 }

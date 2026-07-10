@@ -404,8 +404,12 @@ impl ParseCacheEntry {
                 if let Ok((facts, analysis_version)) =
                     decode_ir_facts(&facts, ir.arena.nodes().len(), ir_fingerprint)
                 {
-                    ir.facts = facts;
-                    facts_current = analysis_version == IR_ANALYSIS_VERSION;
+                    let conservative = std::mem::replace(&mut ir.facts, facts);
+                    if validate_lowered_ir_artifact(&ir).is_ok() {
+                        facts_current = analysis_version == IR_ANALYSIS_VERSION;
+                    } else {
+                        ir.facts = conservative;
+                    }
                 }
             }
         }
@@ -428,8 +432,12 @@ fn valid_fact_sidecar(facts: &[u8], ir_bytes: &[u8], symbols_bytes: &[u8]) -> bo
     let Ok(symbols) = decode_symbols(symbols_bytes) else {
         return false;
     };
-    let Ok(ir) = decode_lowered_ir(ir_bytes, symbols) else {
+    let Ok(mut ir) = decode_lowered_ir(ir_bytes, symbols) else {
         return false;
     };
-    decode_ir_facts(facts, ir.arena.nodes().len(), ir_fingerprint).is_ok()
+    let Ok((facts, _)) = decode_ir_facts(facts, ir.arena.nodes().len(), ir_fingerprint) else {
+        return false;
+    };
+    ir.facts = facts;
+    validate_lowered_ir_artifact(&ir).is_ok()
 }
