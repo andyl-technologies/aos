@@ -555,6 +555,7 @@ pub(in crate::eval) fn eval_raw_bytes_with_evaluator_owned(
     ir: &Ir,
     mut evaluator: TreeWalk,
 ) -> Result<(Vec<u8>, TreeWalk), TreeWalkError> {
+    evaluator.heap.set_attrs_hash_cons_enabled(false);
     let pool = parallel_demand::ParallelDemandPool::spawn(&mut evaluator);
     let out = evaluator
         .eval_root()
@@ -582,6 +583,7 @@ pub(in crate::eval) fn eval_raw_bytes_with_post_render_tier_b_admission(
     TreeWalkError,
 > {
     let mut evaluator = TreeWalk::with_options(ir, options);
+    evaluator.heap.set_attrs_hash_cons_enabled(false);
     let value = evaluator.eval_root()?;
     let pre_admission = render_raw_value_with_evaluator(&mut evaluator, ir, value)?;
     let span = evaluator.node(ir.root)?.span;

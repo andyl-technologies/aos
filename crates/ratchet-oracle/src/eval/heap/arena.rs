@@ -613,6 +613,7 @@ impl EvalHeap {
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
+            attrs_hash_cons_enabled: true,
             alloc_counters: EvalHeapAllocationCounters::default(),
             deref_counters: EvalHeapDerefCounters::default(),
             flat: FlatObjectStore::with_shared_arena(
@@ -670,6 +671,7 @@ impl EvalHeap {
             path_cons: HashConsTable::new(),
             list_cons: HashConsTable::new(),
             attrs_cons: HashConsTable::new(),
+            attrs_hash_cons_enabled: true,
             alloc_counters: EvalHeapAllocationCounters::default(),
             deref_counters: EvalHeapDerefCounters::default(),
             flat: FlatObjectStore::with_shared_arena(
@@ -2692,14 +2694,6 @@ impl EvalHeap {
         );
     }
 
-    pub(super) fn push_attrs_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
-        let pushed = self.attrs_cons.push_reserved(slot, value);
-        debug_assert!(
-            pushed,
-            "cons-table slot should be reserved before allocation"
-        );
-    }
-
     pub(super) fn push_list_cons_value(&mut self, slot: HashConsSlot<HotXxh3Hash>, value: Value) {
         let pushed = self.list_cons.push_reserved(slot, value);
         debug_assert!(
@@ -2718,14 +2712,6 @@ impl EvalHeap {
 
     pub(super) fn cancel_path_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
         let canceled = self.path_cons.cancel_reserved(slot);
-        debug_assert!(
-            canceled,
-            "cons-table slot should be reserved before cancellation"
-        );
-    }
-
-    pub(super) fn cancel_attrs_cons_slot(&mut self, slot: HashConsSlot<HotXxh3Hash>) {
-        let canceled = self.attrs_cons.cancel_reserved(slot);
         debug_assert!(
             canceled,
             "cons-table slot should be reserved before cancellation"

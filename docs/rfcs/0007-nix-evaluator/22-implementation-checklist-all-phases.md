@@ -235,9 +235,10 @@ hold invariant.
       generated conformance corpus, while repeatable `--attr` renders focused
       package/conformance-shaped source seeds for generated-corpus smoke checks
       without enumerating the full package set. The configured pinned C++ oracle
-      recursion semantics check now runs on a fixed 32 MiB worker stack, so
-      recursive fixed-point regressions report as semantic test failures instead
-      of aborting the `ratchet-oracle cpp_nix` harness process. Covered by
+      recursion semantics check now relies on the evaluator's segmented-stack
+      guard, so recursive fixed-point regressions keep the production default
+      max-call-depth and report semantic failures instead of aborting the
+      `ratchet-oracle cpp_nix` harness process. Covered by
       `parser_acceptance_matches_rnix_oracle_on_p1_syntax_corpus`,
       `parser_acceptance_matches_rnix_oracle_on_local_fixtures_and_fuzz_seeds`,
       `parser_acceptance_matches_rnix_oracle_on_workspace_nix_sources`,
@@ -247,8 +248,10 @@ hold invariant.
       `gcc_toolchain_tier_components_name_derivation_roots`,
       `toolchain_attr_expr_absolutizes_and_filters_existing_derivations`,
       `system_attr_expr_absolutizes_relative_file_and_selects_toplevels`,
-      `conformance_corpus_generates_eval_okay_derivation_attrs`, and
-      `recursive_lambda_eval_fail_uses_stack_safe_max_call_depth`.
+      `conformance_corpus_generates_eval_okay_derivation_attrs`,
+      `recursive_lambda_eval_fail_preserves_the_default_max_call_depth`,
+      `deep_recursion_completes_beyond_the_native_stack`, and
+      `deep_recursion_reaches_the_configured_nix_depth_error`.
       This is a standing-harness robustness item, not the falsifiable byte-green
       gate, which is met.
 - [ ] Full parity-fuzzer budget/quiescence and post-change conformance
@@ -9591,6 +9594,34 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       (-2.7%). This completes Chunk E's summary transport and current tree-walk
       consumer; the global memoized closed-world fixpoint, worker/wrapper IR
       transform, and independent IR-hash analysis cache remain open.
+- [x] P4 post-Chunk E stack-safety and raw-render identity hardening:
+      every `eval_node` entry now uses a segmented-stack guard with a 256 KiB
+      red zone and 2 MiB growth segments. The conformance runner no longer
+      substitutes a reduced limit for the recursive-lambda case: a 512 KiB
+      worker thread evaluates terminating depth 1500, and infinite recursion
+      reaches the production `max-call-depth = 10000` boundary and returns the
+      structured error at call 10001 with `call_depth` unwound to zero. Raw
+      evaluation disables structural attrset hash-cons admission while keeping
+      it enabled for JSON, package, and derivation evaluation, so the C++ raw
+      printer's logical-sharing semantics are preserved: independent equal
+      attrsets print independently, shared non-empty attrsets print
+      `«repeated»`, and empty attrsets are not repeat-tracked. The final local
+      gates are 3,012 oracle tests passed plus 34 ignored and all doctests; 321
+      `aos-nix` unit tests; the 38-test harness with the pinned upstream corpus
+      at `208 passed, 1 skipped, 0 failed`; serial/K=4/JIT/sweep byte parity for
+      zlib/openssl/coreutils/bash, `bench.wide-eval`, deep recursion, compute x8,
+      all shape modes, and cold-cache validation; and 31 flat-object tests under
+      Miri. Every new source file is below 1,000 lines, and each changed
+      pre-existing oversized evaluator file is line-neutral or smaller; the
+      repository-wide source-cap test still reports only the frozen legacy
+      offender set. A five-sample release A/B on `compute.nix` `fib` measured candidate
+      means 2.8% faster cold and 5.5% faster warm, identical 160 MiB arena peaks,
+      and slightly lower RSS gauges. The single wide pair was host-noisy in
+      opposite directions (+20.5% cold, -12.3% warm), while its mapped-arena
+      peak remained exactly 79.5 MiB; no performance claim is based on that
+      pair. The Cargo vendor hash was reproduced with Cargo 1.93.1 and updated;
+      the Linux `pkgs.aos` derivation remains a scheduled CI gate because the
+      local Darwin host cannot build that x86_64-linux package.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).
@@ -9808,29 +9839,28 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       `eval-okay-redefine-builtin` needs the configured `NIX_PATH`
       angle-bracket lookup that only the dedicated runner models); seven
       seeds are eval-time-IFD-infeasible as above; and the run surfaced
-      **three genuine native divergences, all pre-existing at `38da57c37`
-      and owned by the evaluator (outside this chunk)**, excluded in the CI
-      check with `TODO(RFC-0007)` markers until fixed: (1)
-      `pkgs.gnu-efi`/`pkgs.go-1_4`/`pkgs.gcc-libs` fail native eval with
+      **three genuine native divergences, all pre-existing at `38da57c37`**:
+      (1)
+      `pkgs.gnu-efi`/`pkgs.go-1_4`/`pkgs.gcc-libs` failed native eval with
       "expected list, got Thunk" at `lib/hardening.nix:116`
-      (`builtins.concatStringsSep` does not force its list argument; also
-      breaks `nix-diff --mode=byte -A pkgs.gnu-efi`), (2) `builtins.match`
-      treats `\-` inside a bracket expression as an escaped dash where C++
+      (`builtins.concatStringsSep` did not force its list argument and also
+      broke `nix-diff --mode=byte -A pkgs.gnu-efi`), (2) `builtins.match`
+      treated `\-` inside a bracket expression as an escaped dash where C++
       Nix's POSIX-ERE keeps the backslash a literal member (minimal repro:
       `builtins.match "[a-zA-Z0-9@%:_.\\-]+[.](service|device)"
       "dev-disk-by\\x2dpartlabel-swap.device"` — oracle `["device"]`, native
-      `null`; this is what fails all three `systems.*.build.toplevel` module
+      `null`; this failed all three `systems.*.build.toplevel` module
       evals), and (3) `conformance.eval-okay-fromTOML` float rendering of
-      `5e22`: identical f64 bits, C++ nlohmann/Grisu2 prints the non-shortest
-      `4.9999999999999996e+22`, native prints the shortest `5e+22`.
-      Rollout groundwork for Phase D verify-sampling also landed:
+      `5e22`: identical f64 bits, C++ nlohmann/Grisu2 printed the non-shortest
+      `4.9999999999999996e+22`, while native printed the shortest `5e+22`.
+      All three were fixed in `bd80675ea` and their temporary evaluator-bug
+      exclusions were removed; only the explicit eval-time-IFD exclusions
+      remain. Rollout groundwork for Phase D verify-sampling also landed:
       `AOS_NIX_NATIVE_VERIFY` additionally accepts a fractional sample rate
       (`0.05` or `5%`), implemented as deterministic 1-in-N sampling (first
       verify-eligible operation always verifies) with the existing
       match/divergence/incomplete counters unchanged and default off. `C-4`
-      remains open until the three divergences above are fixed, their
-      exclusions removed, and the full-corpus check is green in scheduled
-      Linux CI.
+      remains open until the full-corpus check is green in scheduled Linux CI.
 - [x] Current annotated-IR JSON parity precursor:
       `ratchet-oracle` now has an internal tree-walk differential harness that
       lowers `builtins.toJSON` expressions twice, evaluates one copy with

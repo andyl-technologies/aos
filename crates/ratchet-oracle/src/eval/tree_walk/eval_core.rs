@@ -8,7 +8,7 @@ mod force_payload;
 mod force_persistence;
 mod memo;
 mod module_env;
-
+mod stack;
 const FORCE_EXPRESSION_IDENTITY_DOMAIN_VERSION: &[u8] = b"aos-nix-force-expression-identity-v1";
 const FORCE_CAPTURED_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-force-captured-value-hash-v1";
 const FORCE_FIRST_CLASS_PRIMOP_CALL_IDENTITY_DOMAIN_VERSION: &[u8] =
@@ -611,8 +611,7 @@ impl TreeWalk {
 
     /// Builds a parallel-mode heap over a fresh K-shard shared arena.
     ///
-    /// The evaluator allocates into shard 0; the remaining shards are reserved
-    /// for the P3b scheduler phase's worker `TreeWalk`s, which will adopt them
+    /// The evaluator uses shard 0; worker `TreeWalk`s adopt the remaining shards
     /// through [`TreeWalk::adopt_shared_heap_shard`].
     fn shared_parallel_heap(workers: std::num::NonZeroUsize) -> EvalHeap {
         /// Per-shard record capacity hint. Chunk levels grow geometrically, so
@@ -640,15 +639,14 @@ impl TreeWalk {
     /// Replaces this evaluator's heap with one allocating into `shard` of the
     /// caller's shared `arena`.
     ///
-    /// This is the multi-worker construction seam: the P3b scheduler (and the
-    /// in-crate K-worker harness today) builds one arena, then one `TreeWalk`
+    /// This is the multi-worker construction seam: the P3b scheduler and
+    /// K-worker harness build one arena, then one `TreeWalk`
     /// per worker, and hands worker `i` shard `i` so every worker can resolve
     /// every other worker's allocations. It must be called before evaluation
     /// begins - the freshly constructed heap it replaces must not have handed
     /// out any values yet.
     ///
-    /// GC-stress polling stays quiesced and the options' memory budget is
-    /// re-applied to the adopted heap.
+    /// GC-stress stays quiesced; the options' memory budget is re-applied.
     // Production multi-worker wiring is the P3b scheduler slice; the in-crate
     // K-worker harness exercises this today.
     #[allow(dead_code)]
@@ -661,7 +659,9 @@ impl TreeWalk {
             self.heap.is_empty(),
             "shared heap shard adopted after values were allocated"
         );
+        let attrs_hash_cons_enabled = self.heap.attrs_hash_cons_enabled();
         let mut heap = EvalHeap::with_shared_shard(arena, shard);
+        heap.set_attrs_hash_cons_enabled(attrs_hash_cons_enabled);
         heap.set_gc_stress_policy(GcStressPolicy::disabled());
         if let Some(heap_memory_budget) = self.options.heap_memory_budget() {
             heap.set_memory_budget(heap_memory_budget);
@@ -704,7 +704,7 @@ impl TreeWalk {
     /// the node payload does not match its kind, if a scalar type check fails,
     /// if thunk forcing fails, or if the node kind is not yet implemented by
     /// this evaluator slice.
-    pub fn eval_node(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
+    pub(super) fn eval_node_on_current_stack(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
         let node = *self
             .node(id)
             .map_err(|error| self.error_with_current_source(error))?;

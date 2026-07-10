@@ -555,18 +555,20 @@ shape-by-shape with a wall-time A/B per shape, never grammar-wide.
 
 **Flat bytecode + explicit operand stack — only if the residual says
 so.** Replacing the recursive tree walk with a flat bytecode loop over
-an explicit operand stack would (a) fix the deep-recursion native-stack
-crash class architecturally (goal-tracker item #49; the same structural
-limit shows up as tier-2's 1024-frame interpreter-headroom check in
-`8c0680193`), and (b) create the stable interior execution states that
-OSR needs ([08](08-execution-tiers-and-cranelift.md)). But it is a
+an explicit operand stack would (a) remove segmented-stack transitions
+from deeply recursive evaluation (goal-tracker item #49 is already closed
+correctly by 256 KiB-red-zone/2 MiB-segment stack growth, with the semantic
+default max-call-depth reached on a 512 KiB thread; tier-2's separate
+1024-frame interpreter-headroom check remains in `8c0680193`), and (b) create
+the stable interior execution states that OSR needs
+([08](08-execution-tiers-and-cranelift.md)). But it is a
 whole-interpreter rewrite with byte-parity risk everywhere, and the
 census does *not* yet show dispatch as the top cost — the deref path
 (§1) is. **Decision: measure-gated, not committed.** It is re-evaluated
 only from post-§2–§4 profiles, if interpreter dispatch is then the top
-residual. Until then the recursion-depth issue keeps its existing
-mitigations (depth checks reproducing C++ Nix's max-call-depth error
-byte-identically).
+residual. Until then segmented stacks plus the existing semantic depth
+check reproduce C++ Nix's max-call-depth error without a native-stack
+abort.
 
 ---
 

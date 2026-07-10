@@ -57,7 +57,7 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+      hash = "sha256-EJ/R+NfinB7azlZ3bGruKiAbboDN/ce4pekRk0S350Y=";
     };
 
     buildDeps = [perl pkg-config openssl protobuf];

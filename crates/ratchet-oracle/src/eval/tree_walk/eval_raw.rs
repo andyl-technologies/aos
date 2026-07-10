@@ -46,7 +46,24 @@ impl TreeWalk {
         let value = self.force_value(value_id, value_span, value)?;
         let tag = value.tag();
         let key = (tag, value.payload_bits());
-        let entered = if Self::raw_recursive_value_tag(tag) {
+        let tracks_repeated = match tag {
+            ValueTag::Attrs => !self
+                .heap
+                .get_attrs(value)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: value_id,
+                            source,
+                        },
+                        value_span,
+                    )
+                })?
+                .is_empty(),
+            ValueTag::List => true,
+            _ => false,
+        };
+        let entered = if tracks_repeated {
             if seen.contains(&key) {
                 return match tag {
                     ValueTag::List
@@ -163,10 +180,6 @@ impl TreeWalk {
             }
         }
         result
-    }
-
-    fn raw_recursive_value_tag(tag: ValueTag) -> bool {
-        matches!(tag, ValueTag::List | ValueTag::Attrs)
     }
 
     fn raw_active_value_contains(active: &[(ValueTag, u64)], key: (ValueTag, u64)) -> bool {

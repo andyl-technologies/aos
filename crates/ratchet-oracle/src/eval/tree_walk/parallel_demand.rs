@@ -110,10 +110,8 @@ const DEMAND_QUEUE_CAP: usize = 65536;
 
 /// Stack size for helper worker threads.
 ///
-/// Helper evaluation recurses as deeply as the main evaluator, whose
-/// `max_call_depth` guard is calibrated against a main-thread stack (8 MiB on
-/// the supported platforms), so helpers get double that rather than the 2 MiB
-/// Rust spawned-thread default, which overflows on deep package spines.
+/// Helper evaluation recurses as deeply as the main evaluator; segmented-stack
+/// growth protects semantics while this roomy base avoids ordinary switches.
 const HELPER_STACK_SIZE: usize = 16 << 20;
 
 /// Recovers a mutex guard, ignoring poisoning.
@@ -496,6 +494,7 @@ impl ParallelDemandPool {
         }
         let root_ir = main.modules.first().map(|module| module.ir.clone())?;
         let arena = main.heap.shared_arena()?.clone();
+        let attrs_hash_cons_enabled = main.heap.attrs_hash_cons_enabled();
         let registry = main.parallel_force_registry()?.clone();
         // Multi-worker shape projection is opt-in (see
         // `TreeWalkOptions::parallel_shape_projection`); the record shape
@@ -590,6 +589,7 @@ impl ParallelDemandPool {
                         ),
                         None => TreeWalk::with_options_and_eval_cache(&ir, options, eval_cache),
                     };
+                    walk.heap.set_attrs_hash_cons_enabled(attrs_hash_cons_enabled);
                     walk.adopt_shared_heap_shard(arena, shard);
                     walk.set_parallel_force_registry(registry);
                     if let Some(realizer) = realizer {

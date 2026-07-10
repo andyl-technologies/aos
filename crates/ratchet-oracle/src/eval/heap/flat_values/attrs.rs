@@ -62,6 +62,41 @@ pub(crate) struct FlatAttrsPayload {
 }
 
 impl EvalHeap {
+    /// Returns whether new attrset allocations use structural hash-consing.
+    pub(crate) const fn attrs_hash_cons_enabled(&self) -> bool {
+        self.attrs_hash_cons_enabled
+    }
+
+    /// Selects whether new attrset allocations use structural hash-consing.
+    ///
+    /// Callers change this only on an empty heap before evaluation starts.
+    pub(crate) fn set_attrs_hash_cons_enabled(&mut self, enabled: bool) {
+        self.attrs_hash_cons_enabled = enabled;
+    }
+
+    pub(in crate::eval::heap) fn push_attrs_cons_value(
+        &mut self,
+        slot: HashConsSlot<HotXxh3Hash>,
+        value: Value,
+    ) {
+        let pushed = self.attrs_cons.push_reserved(slot, value);
+        debug_assert!(
+            pushed,
+            "cons-table slot should be reserved before allocation"
+        );
+    }
+
+    pub(in crate::eval::heap) fn cancel_attrs_cons_slot(
+        &mut self,
+        slot: HashConsSlot<HotXxh3Hash>,
+    ) {
+        let canceled = self.attrs_cons.cancel_reserved(slot);
+        debug_assert!(
+            canceled,
+            "cons-table slot should be reserved before cancellation"
+        );
+    }
+
     /// Serial [`EvalHeap::alloc_attrs_with_projected_shape_metadata`]:
     /// hash-cons admission over the flat attrs store, then one flat
     /// allocation (no heap record).
@@ -73,16 +108,20 @@ impl EvalHeap {
         let hash = crate::eval::heap::arena::attrs_structural_hash(metadata, &attrs);
         let slots = u32::try_from(attrs.len())
             .map_err(|_| EvalHeapError::Arena(ArenaError::SizeOverflow))?;
-        let cons_slot = match self.admit_flat_attrs_cons(hash, metadata, &attrs)? {
-            HashConsReservation::Existing(value) => {
-                self.alloc_counters.note_hashcons(true);
-                self.touch_reusable_value(value)?;
-                return Ok(value);
+        let cons_slot = if self.attrs_hash_cons_enabled {
+            match self.admit_flat_attrs_cons(hash, metadata, &attrs)? {
+                HashConsReservation::Existing(value) => {
+                    self.alloc_counters.note_hashcons(true);
+                    self.touch_reusable_value(value)?;
+                    return Ok(value);
+                }
+                HashConsReservation::Vacant(slot) => {
+                    self.alloc_counters.note_hashcons(false);
+                    Some(slot)
+                }
             }
-            HashConsReservation::Vacant(slot) => {
-                self.alloc_counters.note_hashcons(false);
-                slot
-            }
+        } else {
+            None
         };
         let epoch = self.next_access_epoch();
         let shape = metadata.shape();
@@ -140,7 +179,9 @@ impl EvalHeap {
             match result {
                 Ok(allocation) => allocation,
                 Err(error) => {
-                    self.cancel_attrs_cons_slot(cons_slot);
+                    if let Some(cons_slot) = cons_slot {
+                        self.cancel_attrs_cons_slot(cons_slot);
+                    }
                     return Err(flat_alloc_error(error));
                 }
             }
@@ -150,11 +191,15 @@ impl EvalHeap {
         let value = match Value::attrs(allocation.ptr).map_err(EvalHeapError::Value) {
             Ok(value) => value,
             Err(error) => {
-                self.cancel_attrs_cons_slot(cons_slot);
+                if let Some(cons_slot) = cons_slot {
+                    self.cancel_attrs_cons_slot(cons_slot);
+                }
                 return Err(error);
             }
         };
-        self.push_attrs_cons_value(cons_slot, value);
+        if let Some(cons_slot) = cons_slot {
+            self.push_attrs_cons_value(cons_slot, value);
+        }
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)

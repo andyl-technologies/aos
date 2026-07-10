@@ -821,29 +821,34 @@ impl EvalHeap {
             None => EvalHeapAttrsMetadata::new(shape, repr),
         };
         let hash = attrs_structural_hash(metadata, &attrs);
-        let existing = {
-            let shared = self.shared_backend()?;
-            self.attrs_cons
-                .try_find(&hash, |value| {
-                    let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
-                    Ok::<bool, EvalHeapError>(matches!(
-                        shared.resolve_flat_attrs(ptr),
-                        Some(candidate) if candidate.structural_hash() == hash.raw()
-                            && candidate.payload().metadata == metadata
-                            && candidate.payload().attrs.raw_eq(&attrs)
-                    ))
-                })?
-                .copied()
+        let slot = if self.attrs_hash_cons_enabled {
+            let existing = {
+                let shared = self.shared_backend()?;
+                self.attrs_cons
+                    .try_find(&hash, |value| {
+                        let ptr = value.as_attrs_ptr().map_err(EvalHeapError::Value)?;
+                        Ok::<bool, EvalHeapError>(matches!(
+                            shared.resolve_flat_attrs(ptr),
+                            Some(candidate) if candidate.structural_hash() == hash.raw()
+                                && candidate.payload().metadata == metadata
+                                && candidate.payload().attrs.raw_eq(&attrs)
+                        ))
+                    })?
+                    .copied()
+            };
+            if let Some(value) = existing {
+                self.alloc_counters.note_hashcons(true);
+                return Ok(value);
+            }
+            self.alloc_counters.note_hashcons(false);
+            Some(
+                self.attrs_cons
+                    .reserve_slot(hash)
+                    .map_err(EvalHeapError::from)?,
+            )
+        } else {
+            None
         };
-        if let Some(value) = existing {
-            self.alloc_counters.note_hashcons(true);
-            return Ok(value);
-        }
-        self.alloc_counters.note_hashcons(false);
-        let slot = self
-            .attrs_cons
-            .reserve_slot(hash)
-            .map_err(EvalHeapError::from)?;
         let result = match self.shared.as_ref() {
             Some(shared) => shared
                 .shard
@@ -854,11 +859,15 @@ impl EvalHeap {
         let value = match result {
             Ok(value) => value,
             Err(error) => {
-                self.cancel_attrs_cons_slot(slot);
+                if let Some(slot) = slot {
+                    self.cancel_attrs_cons_slot(slot);
+                }
                 return Err(error);
             }
         };
-        self.push_attrs_cons_value(slot, value);
+        if let Some(slot) = slot {
+            self.push_attrs_cons_value(slot, value);
+        }
         self.alloc_counters.note_value_allocated();
         self.poll_memory_budget_after_allocation();
         Ok(value)

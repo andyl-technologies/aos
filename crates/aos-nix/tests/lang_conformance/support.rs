@@ -100,7 +100,6 @@ pub(super) const PINNED_LANG_2_24_12_PASS_COUNT: usize = 208;
 pub(super) const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 1;
 pub(super) const LANG_CURRENT_SYSTEM: &[u8] = b"x86_64-linux";
 pub(super) const LANG_CASE_STACK_SIZE: usize = 32 * 1024 * 1024;
-pub(super) const STACK_SAFE_RECURSION_LAMBDA_MAX_CALL_DEPTH: usize = 512;
 pub(super) const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
 
 impl LangVersion {
@@ -560,18 +559,7 @@ pub(super) fn lang_case_config_for_case(
     case: &LangCase,
     lang_dir: &Path,
 ) -> std::result::Result<LangEvalConfig, String> {
-    let mut config = lang_case_config(case.category, &case.flags, lang_dir)?;
-    if case.category == LangCategory::EvalFail
-        && case.name == "eval-fail-infinite-recursion-lambda"
-        && !has_max_call_depth_flag(&case.flags)
-    {
-        // This upstream case is intentionally non-terminating; cap it below the
-        // host stack limit so the evaluator reports the max-depth error.
-        config
-            .options
-            .set_max_call_depth(STACK_SAFE_RECURSION_LAMBDA_MAX_CALL_DEPTH);
-    }
-    Ok(config)
+    lang_case_config(case.category, &case.flags, lang_dir)
 }
 
 pub(super) fn eval_okay_options(
@@ -757,10 +745,6 @@ pub(super) fn parse_max_call_depth_flag(
     flags: &[String],
 ) -> std::result::Result<usize, String> {
     value.parse().map_err(|_| unsupported_flags_message(flags))
-}
-
-pub(super) fn has_max_call_depth_flag(flags: &[String]) -> bool {
-    flags.iter().any(|flag| flag == "--max-call-depth")
 }
 
 pub(super) fn validate_auto_arg_name(

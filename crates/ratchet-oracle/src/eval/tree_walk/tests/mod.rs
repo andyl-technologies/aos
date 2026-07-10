@@ -251,6 +251,7 @@ mod derivation_cache_hash_file;
 mod derivation_cache_read_file_stale;
 mod derivation_cache_support;
 mod escape_signature;
+mod eval_stack;
 mod fetch_git;
 mod fetch_git_reuse;
 mod fetch_tarball;

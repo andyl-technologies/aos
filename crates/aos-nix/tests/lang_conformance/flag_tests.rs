@@ -70,8 +70,11 @@ fn lang_sh_max_call_depth_flag_configures_eval() {
 }
 
 #[test]
-fn recursive_lambda_eval_fail_uses_stack_safe_max_call_depth() {
+fn recursive_lambda_eval_fail_preserves_the_default_max_call_depth() {
     let lang_dir = fixture_lang_dir();
+    let default_max_call_depth = base_eval_options(&lang_dir)
+        .expect("base options configure")
+        .max_call_depth();
     let case = LangCase {
         name: "eval-fail-infinite-recursion-lambda".to_owned(),
         category: LangCategory::EvalFail,
@@ -85,10 +88,7 @@ fn recursive_lambda_eval_fail_uses_stack_safe_max_call_depth() {
 
     let config =
         lang_case_config_for_case(&case, &lang_dir).expect("recursive lambda case configures");
-    assert_eq!(
-        config.options.max_call_depth(),
-        STACK_SAFE_RECURSION_LAMBDA_MAX_CALL_DEPTH
-    );
+    assert_eq!(config.options.max_call_depth(), default_max_call_depth);
 }
 
 #[test]

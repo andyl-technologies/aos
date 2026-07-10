@@ -283,6 +283,7 @@ pub struct EvalHeap {
     path_cons: HashConsTable<HotXxh3Hash, Value>,
     list_cons: HashConsTable<HotXxh3Hash, Value>,
     attrs_cons: HashConsTable<HotXxh3Hash, Value>,
+    attrs_hash_cons_enabled: bool,
     alloc_counters: EvalHeapAllocationCounters,
     /// Dereference-chain volume counters (RFC-0007 doc 30 FV-0).
     deref_counters: EvalHeapDerefCounters,
@@ -300,7 +301,6 @@ pub struct EvalHeap {
     /// `flat_values::lists` for the integration seam.
     flat_lists: FlatObjectStore<NixList>,
     /// Flat attribute-set objects (doc 30 FV-2, serial mode).
-    ///
     /// Attrsets are permanent-domain hash-consed values like lists, carry
     /// heap **edges** in their entry values, and additionally carry shape
     /// metadata in the payload (see [`FlatAttrsPayload`] for the placement

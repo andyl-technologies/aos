@@ -673,7 +673,12 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
       max-call-depth and whether AOS expressions hit it; match the error class if
       so. Pinned Nix config/source defaults `max-call-depth = 10000`; AOS exposes
       the same default and matches configured `--option max-call-depth` boundary
-      successes and failures in the oracle suite.
+      successes and failures in the oracle suite. Every tree-walk node enters
+      through a segmented-stack guard (256 KiB red zone, 2 MiB segments), so
+      recursion reaches that semantic limit instead of exhausting the native
+      thread stack. A 512 KiB-thread regression proves a terminating depth-1500
+      function succeeds and an unbounded function returns the exact default
+      depth error at call 10001 while unwinding the evaluator's depth counter.
 
 ---
 

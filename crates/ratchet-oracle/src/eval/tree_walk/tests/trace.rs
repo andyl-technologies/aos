@@ -449,7 +449,7 @@ fn trace_primop_renders_recursive_cached_thunks_shallowly() {
 }
 
 #[test]
-fn raw_renderer_repeats_shared_lists_but_marks_shared_attrs() {
+fn raw_renderer_tracks_logical_sharing_without_hash_cons_aliases() {
     let shared = lower("let empty = []; in [ empty empty ]");
     assert_eq!(
         eval_raw_bytes(&shared).expect("shared values render"),
@@ -459,7 +459,24 @@ fn raw_renderer_repeats_shared_lists_but_marks_shared_attrs() {
     let shared_attrs = lower("let empty = {}; in [ empty empty ]");
     assert_eq!(
         eval_raw_bytes(&shared_attrs).expect("shared attrsets render"),
-        "[ { } «repeated» ]".as_bytes()
+        b"[ { } { } ]"
+    );
+
+    let shared_attrs = lower("let value = { a = 1; }; in [ value value ]");
+    assert_eq!(
+        eval_raw_bytes(&shared_attrs).expect("shared non-empty attrsets render"),
+        "[ { a = 1; } «repeated» ]".as_bytes()
+    );
+
+    let independent_attrs =
+        lower(r#"[ (builtins.tryEval (throw "a")) (builtins.tryEval (throw "b")) ]"#);
+    assert_eq!(
+        eval_raw_bytes_with_options(
+            &independent_attrs,
+            TreeWalkOptions::with_parallel_workers(std::num::NonZeroUsize::new(4)),
+        )
+        .expect("parallel raw values preserve logical identity"),
+        b"[ { success = false; value = false; } { success = false; value = false; } ]"
     );
 
     let recursive = lower("let xs = [ xs ]; in xs");
