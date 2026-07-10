@@ -13,7 +13,7 @@
   patchRegenerationCheck = builtins.readFile ./phase2-qemu-patch-regeneration.nix;
   patchMicrotestsCheck = builtins.readFile ./phase2-patch-microtests.nix;
   cliHermeticDiscoveryCheck = builtins.readFile ./phase5-cli-hermetic-discovery.nix;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   shmemHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   shmemHeaderTest = builtins.readFile ../../crates/crucible-shmem/tests/generated_abi_header.rs;

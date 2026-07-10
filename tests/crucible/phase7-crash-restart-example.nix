@@ -15,7 +15,7 @@
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   exampleCorpus = builtins.readFile ../../crates/crucible/src/example_corpus.rs;
   exampleTest = builtins.readFile ../../crates/crucible/tests/example_corpus.rs;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;

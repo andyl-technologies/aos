@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.gates.schedulerLiveness",
-  taskIds ? ["T-PLAN-3" "T-HARN-14" "T-SCHED-4"],
+  taskIds ? ["T-HARN-14" "T-SCHED-4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -11,7 +11,7 @@
     sourceRoot = "source/crates";
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   schedulerGate = builtins.readFile ../../crates/crucible/tests/gate_scheduler_liveness.rs;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;

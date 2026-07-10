@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginHandshake",
-  taskIds ? ["T-PLUG-16"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-16"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,7 +15,7 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
   pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
-  pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
+  pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   shmem = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -22,6 +23,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -50,8 +52,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-16 checklist complete";
-        needle = "- [x] **T-PLUG-16**";
+        label = "T-PLUG-16 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-16**";
       }
       {
         label = "handshake wording";
@@ -97,7 +99,7 @@
     ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
       {
         label = "shmem ABI version constant";
-        needle = "pub const ABI_VERSION: u32 = 1;";
+        needle = "pub const ABI_VERSION: u32 = 2;";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/args.rs" pluginArgs [
@@ -164,6 +166,10 @@
       {
         label = "slot mismatch test";
         needle = "plugin_handshake_rejects_launch_slot_disagreement";
+      }
+      {
+        label = "v2 plugin rejects v1 and future host ABI";
+        needle = "for host_abi in [1, ABI_VERSION + 1]";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
@@ -264,6 +270,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             handshake=Hello-HelloAck
             version_check=protocol-and-shmem-abi
             slot_check=HelloAck-slot-equals-launch-slot

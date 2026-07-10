@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginFailLoud",
-  taskIds ? ["T-PLUG-22"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-22"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,11 +13,11 @@
   };
 
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
-  pluginSetup = builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs;
+  pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
-  pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
+  pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  pluginTimeControl = builtins.readFile ../../crates/crucible-qemu-plugin/src/time_control.rs;
+  pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginInbound = builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
@@ -29,6 +30,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -144,8 +146,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-22 checklist complete";
-        needle = "- [x] **T-PLUG-22**";
+        label = "T-PLUG-22 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-22**";
       }
       {
         label = "PLUG-48 wording";
@@ -182,12 +184,12 @@
         needle = "ExactDeadlineCapability";
       }
       {
-        label = "direct advance ABI capability diagnostic";
-        needle = "SynchronousIdleAdvanceCapability";
+        label = "queued advance ABI capability diagnostic";
+        needle = "QueuedIdleAdvanceCapability";
       }
       {
         label = "ABI missing-capability entrypoint test";
-        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_direct_advance_symbols";
+        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols";
       }
       {
         label = "ABI unsupported model test";
@@ -272,8 +274,8 @@
         needle = "fail_exact_deadline_capability";
       }
       {
-        label = "direct advance failure mapping";
-        needle = "fail_synchronous_idle_advance_capability";
+        label = "queued advance failure mapping";
+        needle = "fail_queued_idle_advance_capability";
       }
       {
         label = "coverage failure mapping";
@@ -288,12 +290,12 @@
         needle = "registration_order_fails_loud_when_exact_deadline_capability_missing";
       }
       {
-        label = "direct advance missing test";
-        needle = "registration_order_fails_loud_when_synchronous_idle_advance_missing";
+        label = "queued advance missing test";
+        needle = "registration_order_fails_loud_when_queued_idle_advance_missing";
       }
       {
         label = "coverage missing test";
-        needle = "registration_coverage_on_requires_tcg_exec_callback_capability";
+        needle = "registration_coverage_on_requires_basic_block_callback_capability";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
@@ -316,20 +318,20 @@
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
-        label = "direct advance capability error";
-        needle = "SynchronousIdleAdvanceError::CapabilityUnavailable";
+        label = "queued advance capability error";
+        needle = "QueuedIdleAdvanceError::CapabilityUnavailable";
       }
       {
         label = "direct advance range diagnostic";
         needle = "VirtualTimeOutOfRange";
       }
       {
-        label = "direct advance missing test";
-        needle = "synchronous_idle_advance_requires_qemu_direct_advance_symbol";
+        label = "queued advance missing test";
+        needle = "queued_idle_advance_requires_qemu_enqueue_symbol";
       }
       {
-        label = "direct advance range test";
-        needle = "synchronous_idle_advance_rejects_targets_outside_qemu_signed_range";
+        label = "queued advance range test";
+        needle = "queued_idle_advance_rejects_targets_outside_qemu_signed_range";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
@@ -356,8 +358,8 @@
         needle = "IdleHotLoopError::ReadExactDeadline";
       }
       {
-        label = "idle direct advance failure";
-        needle = "IdleHotLoopError::SynchronousIdleAdvance";
+        label = "idle queued advance failure";
+        needle = "IdleHotLoopError::QueuedIdleAdvance";
       }
       {
         label = "idle inbound failure";
@@ -365,7 +367,7 @@
       }
       {
         label = "idle RX failure";
-        needle = "IdleHotLoopError::NetworkRx";
+        needle = "IdleHotLoopError::NetworkRxInjection";
       }
       {
         label = "idle queue failure no commit test";
@@ -493,7 +495,7 @@
       }
       {
         label = "coverage capability test";
-        needle = "coverage_registration_on_mode_requires_tcg_exec_capability";
+        needle = "coverage_registration_on_mode_requires_basic_block_callback_capability";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -553,19 +555,19 @@ in
 
             target_dir="$TMPDIR/crucible-plugin-fail-loud-target"
             for filter in \
-              abi_install_entrypoint_fails_closed_without_exact_deadline_or_direct_advance_symbols \
+              abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols \
               abi_qemu_install_path_validates_execution_model_before_success \
               plugin_handshake_preserves_protocol_failures \
               receive_setup_sends_nonzero_ack_when_descriptor_count_is_wrong \
               prepare_setup_sends_nonzero_ack_when_region_validation_fails \
               registration_order_aborts_without_later_steps_after_failure \
               registration_order_fails_loud_when_exact_deadline_capability_missing \
-              registration_order_fails_loud_when_synchronous_idle_advance_missing \
-              registration_coverage_on_requires_tcg_exec_callback_capability \
+              registration_order_fails_loud_when_queued_idle_advance_missing \
+              registration_coverage_on_requires_basic_block_callback_capability \
               exact_deadline_fails_when_capability_is_missing \
               exact_deadline_rejects_overshoot_and_correct_fallback \
-              synchronous_idle_advance_requires_qemu_direct_advance_symbol \
-              synchronous_idle_advance_rejects_targets_outside_qemu_signed_range \
+              queued_idle_advance_requires_qemu_enqueue_symbol \
+              queued_idle_advance_rejects_targets_outside_qemu_signed_range \
               inbound_frame_drain_rejects_late_head_without_consuming \
               inbound_frame_select_rejects_late_candidate_frame \
               idle_loop_rejects_late_inbound_ring_before_direct_advance \
@@ -581,7 +583,7 @@ in
               ninep_poll_guest_completion_failure_still_releases_request_token \
               whitebox_guest_input_requires_qemu_guest_memory_write_capability \
               whitebox_guest_input_rejects_late_delivery \
-              coverage_registration_on_mode_requires_tcg_exec_capability
+              coverage_registration_on_mode_requires_basic_block_callback_capability
             do
               cargo test \
                 --frozen \
@@ -603,6 +605,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             broken_ipc=step-scoped-diagnostic
             missing_capability=distinct-errors
             abi_mismatch=unsupported-api-diagnostic

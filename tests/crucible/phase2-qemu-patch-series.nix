@@ -88,7 +88,7 @@
       catalogName = "crucible-plugin-time-advance";
       class = "D";
       enforces = "TIME-23,TIME-27,DET-1,INV-10";
-      capability = "plugin-owned synchronous virtual-time advance and BH/main-loop drains";
+      capability = "callback-safe queued virtual-time advance with ordered main-loop completion";
     }
     {
       file = "0011-crucible-plugin-icount-raw.patch";
@@ -109,7 +109,7 @@
       catalogName = "crucible-plugin-wake-fd";
       class = "F";
       enforces = "SHM-26,INV-8";
-      capability = "plugin wake fd registration and blocking main-loop wait";
+      capability = "plugin wake fd drain, device notification, and RR-vCPU kick";
     }
     {
       file = "0014-crucible-plugin-tcg-exec-cb.patch";
@@ -186,7 +186,7 @@
       catalogName = "crucible-sim-poll-immediate";
       class = "D";
       enforces = "PATCH-34,DET-13,E19";
-      capability = "sim-mode time-control-guarded shmem drain and one-shot re-poll before coroutine yield";
+      capability = "wake-generation-safe event-driven shmem completion through a coroutine queue";
     }
     {
       file = "0025-crucible-sim-idle-callbacks.patch";
@@ -206,7 +206,7 @@
       file = "0027-crucible-sim-batch-tcg-exec.patch";
       catalogName = "crucible-sim-batch-tcg-exec";
       class = "F";
-      enforces = "PATCH-35,DET-1,INV-10";
+      enforces = "PATCH-35,DET-1,INV-10,PERF";
       capability = "sim-mode fixed-count TCG exec batching with timer refresh and shmem ceiling discipline";
     }
     {
@@ -235,14 +235,14 @@
       catalogName = "crucible-det-rng-delivery";
       class = "D";
       enforces = "DET-1,E7,E9";
-      capability = "deterministic synchronous virtio-rng entropy completion at request icount";
+      capability = "sim-mode deterministic synchronous virtio-rng entropy completion at request icount";
     }
     {
       file = "0032-crucible-det-virtio-ioeventfd.patch";
       catalogName = "crucible-det-virtio-ioeventfd";
       class = "D";
       enforces = "DET-1,E7";
-      capability = "synchronous virtio-pci vq-kick dispatch under icount (ioeventfd disabled)";
+      capability = "sim-mode synchronous virtio-rng vq-kick dispatch under icount (ioeventfd disabled for rng)";
     }
   ];
 
@@ -362,10 +362,10 @@
     ++ lib.optionals (!(hasInfix "registration_order_fails_loud_when_exact_deadline_capability_missing" pluginFailLoudCheck)) [
       "tests/crucible/phase2-plugin-fail-loud.nix: exact-deadline capability failure is not covered"
     ]
-    ++ lib.optionals (!(hasInfix "registration_order_fails_loud_when_synchronous_idle_advance_missing" pluginFailLoudCheck)) [
-      "tests/crucible/phase2-plugin-fail-loud.nix: synchronous idle-advance capability failure is not covered"
+    ++ lib.optionals (!(hasInfix "registration_order_fails_loud_when_queued_idle_advance_missing" pluginFailLoudCheck)) [
+      "tests/crucible/phase2-plugin-fail-loud.nix: queued idle-advance capability failure is not covered"
     ]
-    ++ lib.optionals (!(hasInfix "registration_coverage_on_requires_tcg_exec_callback_capability" pluginFailLoudCheck)) [
+    ++ lib.optionals (!(hasInfix "registration_coverage_on_requires_basic_block_callback_capability" pluginFailLoudCheck)) [
       "tests/crucible/phase2-plugin-fail-loud.nix: coverage-on TCG exec capability failure is not covered"
     ];
 

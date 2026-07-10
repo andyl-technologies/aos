@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.readOnlyDebugInspection",
-  taskIds ? ["T-DBG-2"],
+  taskIds ? [],
+  openTaskIds ? ["T-DBG-2"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -13,12 +14,13 @@
   };
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   inspectionTest = builtins.readFile ../../crates/crucible/tests/gate_read_only_debug_inspection.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -56,12 +58,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
       {
-        label = "T-DBG-2 checked off";
-        needle = "- [x] **T-DBG-2**";
+        label = "T-DBG-2 remains open";
+        needle = "- [ ] **T-DBG-2**";
       }
       {
-        label = "T-DBG-2 completion note";
-        needle = "Completed by `checks.crucible.phase6.readOnlyDebugInspection`";
+        label = "T-DBG-2 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase6.readOnlyDebugInspection`";
       }
       {
         label = "canonical causal byte identity";
@@ -236,19 +238,19 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "green read-only debug inspection gate";
-        needle = "readOnlyDebugInspection = greenBeforeAdvance";
+        label = "red read-only debug inspection gate";
+        needle = "readOnlyDebugInspection = redBeforeAdvance";
       }
       {
         label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-2\"]";
+        needle = "openTaskIds = [\"T-DBG-2\"]";
       }
       {
         label = "debug attach raw dependency";
         needle = "phase6.debugAttach.rawGate";
       }
       {
-        label = "debug attach green dependency";
+        label = "debug attach blocker dependency";
         needle = "phase6.debugAttach";
       }
     ]
@@ -337,6 +339,9 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=read-only-debug-model
             gate=gate:read-only-debug-inspection
             causal_subsequence=byte-identical
             debugger_entries=observational

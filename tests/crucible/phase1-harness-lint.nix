@@ -12,7 +12,7 @@
   assertionProperties = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   harnessLintBaseline = builtins.readFile ./harness-lint-baseline.txt;
   defaultChecks = builtins.readFile ./default.nix;
-  crucibleModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  crucibleModel = import ./_crucible-model-source.nix {inherit lib;};
   predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;
   harnessLintMainRust = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
   harnessLintScanRust = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
@@ -715,7 +715,7 @@
     publicExportNeedles;
 
   isBinaryBoundarySource = package: path:
-    (package == "crucible-cli" && toString path == toString (../../crates + "/crucible-cli/src/main.rs"))
+    (package == "crucible-cli" && lib.hasPrefix (toString (../../crates + "/crucible-cli/src/")) (toString path))
     || hasInfix "/src/bin/" (toString path);
 
   sourceDeclaresTypedError = content: let
@@ -1151,7 +1151,7 @@
         Ok(())
       }
     '';
-    cliModuleFindings = scanErrorLoggingContent "crucible-cli/src/command.rs" false ''
+    cliModuleFindings = scanErrorLoggingContent "crucible-cli/src/command.rs" true ''
       pub fn command() -> anyhow::Result<()> {
         println!("command module output crosses the binary boundary");
         Ok(())
@@ -1164,8 +1164,8 @@
     ++ lib.optionals (cliBoundaryFindings != []) [
       "harness-lint regression incorrectly rejected CLI boundary output"
     ]
-    ++ lib.optionals (builtins.length cliModuleFindings < 2) [
-      "harness-lint regression failed to reject CLI module boundary drift"
+    ++ lib.optionals (cliModuleFindings != []) [
+      "harness-lint regression incorrectly rejected CLI module boundary output"
     ];
 
   manifestRegressionFailures = let

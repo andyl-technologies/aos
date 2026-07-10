@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliServeShutdown",
-  taskIds ? ["T-CLI-14"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-14"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,7 +18,7 @@
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   serveProcessTest = builtins.readFile ../../crates/crucible-cli/tests/serve_process.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -48,8 +49,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-14 marked complete";
-        needle = "- [x] **T-CLI-14** Implement `serve`";
+        label = "T-CLI-14 remains open";
+        needle = "- [ ] **T-CLI-14** Implement `serve`";
       }
       {
         label = "T-CLI-14 shutdown completion note";
@@ -197,6 +198,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -266,6 +268,9 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=partial
+            evidence_scope=serve-shutdown-process
             component=crucible-cli,crucible-api
             serve_shutdown=graceful-shutdown-and-bind-exit
             dependencies=$DEPENDENCY_COUNT

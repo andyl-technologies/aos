@@ -4,7 +4,7 @@ use std::mem::{align_of, offset_of, size_of};
 use std::path::Path;
 
 const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 2;
 const HEADER_SIZE: usize = 256;
 const HEADER_ALIGN: usize = 128;
 
@@ -316,7 +316,7 @@ fn write_c_populate_function(file: &mut File) -> io::Result<()> {
     )?;
     writeln!(file, "  memset(header, 0, sizeof(*header));")?;
     writeln!(file, "  header->magic = UINT64_C(0x314d485343555243);")?;
-    writeln!(file, "  header->abi_version = 1;")?;
+    writeln!(file, "  header->abi_version = {ABI_VERSION};")?;
     writeln!(file, "  header->node_count = 4;")?;
     writeln!(file, "  header->queue_capacity = 8;")?;
     writeln!(file, "  header->ring_count = 12;")?;

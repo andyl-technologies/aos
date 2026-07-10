@@ -11,9 +11,9 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
   decision = builtins.readFile ../../crates/crucible/src/decision.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   deviceFault = builtins.readFile ../../crates/crucible-device/src/fault.rs;
   netlinkFault = builtins.readFile ../../crates/crucible-device/src/netlink/fault.rs;

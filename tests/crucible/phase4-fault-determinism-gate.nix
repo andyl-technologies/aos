@@ -12,6 +12,7 @@
   };
 
   gateTest = builtins.readFile ../../crates/crucible/tests/fault_determinism_gate.rs;
+  sessionWorldIo = builtins.readFile ../../crates/crucible-session/tests/world_io_runtime.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -52,12 +53,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
       {
-        label = "T-FAULT-15 checked off";
-        needle = "- [x] **T-FAULT-15**";
+        label = "T-FAULT-15 remains open pending activation-icount and crash-discard proof";
+        needle = "- [ ] **T-FAULT-15**";
       }
       {
-        label = "T-FAULT-15 completion note";
-        needle = "Completed by `checks.crucible.phase4.faultDeterminismGate`";
+        label = "T-FAULT-15 partial evidence note";
+        needle = "Partial evidence is provided by `checks.crucible.phase4.faultDeterminismGate`";
       }
     ]
     ++ failuresFor "crates/crucible/tests/fault_determinism_gate.rs" gateTest [
@@ -74,8 +75,8 @@
         needle = "gate_fault_determinism_plan_covers_every_currently_plan_valid_fault_kind";
       }
       {
-        label = "device taxonomy boundary coverage";
-        needle = "gate_fault_determinism_documents_device_taxonomy_boundary";
+        label = "declared device taxonomy coverage";
+        needle = "gate_fault_determinism_accepts_declared_device_taxonomy";
       }
       {
         label = "activation fingerprint";
@@ -88,6 +89,18 @@
       {
         label = "live link effect probe";
         needle = "struct LinkEffectProbe";
+      }
+      {
+        label = "live concrete device effect probe";
+        needle = "struct DeviceEffectProbe";
+      }
+      {
+        label = "production World-backed scheduler";
+        needle = "SingleScheduler::from_world(";
+      }
+      {
+        label = "artifact-backed World fixture";
+        needle = "fn world_and_store() -> (World, MemoryDagStore)";
       }
       {
         label = "full emitted delivery capture";
@@ -186,12 +199,16 @@
         needle = "NodeFault::ClockSkew";
       }
       {
-        label = "block device taxonomy boundary";
-        needle = "PlanFaultUnknownDevice";
+        label = "block device live effect assertion";
+        needle = "block.faults.added_latency_ns";
       }
       {
-        label = "all device taxonomy boundary helper";
-        needle = "fn device_taxonomy_faults";
+        label = "9p device live effect assertion";
+        needle = "ninep.faults.added_latency_ns";
+      }
+      {
+        label = "all declared device taxonomy helper";
+        needle = "fn device_taxonomy_faults(world: &World)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -202,6 +219,20 @@
       {
         label = "phase4 fault determinism gate attr path";
         needle = "attrPath = \"checks.crucible.phase4.faultDeterminismGate\"";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/tests/world_io_runtime.rs" sessionWorldIo [
+      {
+        label = "live session World scheduler constructor";
+        needle = "Engine::from_world_scheduler(";
+      }
+      {
+        label = "session device fault command";
+        needle = "session_fault_command_reaches_artifact_backed_world_device";
+      }
+      {
+        label = "session fault reaches concrete table";
+        needle = "assert_eq!(disk.io_faults().added_latency_ns, 777)";
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/fault_determinism_gate.rs" gateTest [
@@ -277,6 +308,13 @@ in
               --target-dir "$TMPDIR/crucible-fault-determinism-gate-target" \
               -p crucible \
               --test fault_determinism_gate \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-fault-determinism-gate-target" \
+              -p crucible-session \
+              --test world_io_runtime \
               -- --test-threads=1
           '';
         }

@@ -13,7 +13,7 @@
   };
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
-  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   forkGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
   defaultChecks = builtins.readFile ./default.nix;
 

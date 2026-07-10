@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   defaultChecks = builtins.readFile ./default.nix;

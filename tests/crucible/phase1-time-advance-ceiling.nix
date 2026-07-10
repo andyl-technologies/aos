@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeAdvanceCeiling",
-  taskIds ? ["T-TIME-7"],
+  taskIds ? [],
+  openTaskIds ? ["T-TIME-7"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -13,7 +14,7 @@
 
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   handoffTest = builtins.readFile ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -225,8 +226,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-7 checklist complete";
-        needle = "- [x] **T-TIME-7**";
+        label = "T-TIME-7 remains open";
+        needle = "- [ ] **T-TIME-7**";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -301,6 +302,9 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
+            evidence_scope=shmem-ceiling-and-handoff-model
             gate=gate:layer0-determinism
             gate=gate:layer1-injection
             gate=gate:scheduler-liveness

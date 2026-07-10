@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliRunWorkflow",
-  taskIds ? ["T-CLI-6"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-6"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,8 +16,8 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliCargo = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
-  sessionCore = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
+  sessionCore = import ./_crucible-session-source.nix {inherit lib;};
   apiLifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
@@ -24,6 +25,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -61,18 +63,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-6 checked off";
-        needle = "- [x] **T-CLI-6**";
+        label = "T-CLI-6 remains open";
+        needle = "- [ ] **T-CLI-6**";
       }
       {
-        label = "T-CLI-6 completed note";
-        needle = "Completed by `checks.crucible.phase5.cliRunWorkflow`";
+        label = "T-CLI-6 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.cliRunWorkflow`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI run workflow green note";
-        needle = "`T-CLI-6` is green through `checks.crucible.phase5.cliRunWorkflow`";
+        needle = "`T-CLI-6` has partial evidence through `checks.crucible.phase5.cliRunWorkflow`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -541,10 +543,6 @@
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "stale T-CLI-6 open marker";
-        needle = "- [ ] **T-CLI-6**";
-      }
-      {
         label = "stale T-CLI-6 progress note";
         needle = "Work in progress under `checks.crucible.phase5.cliRunWorkflow`";
       }
@@ -612,6 +610,7 @@ in
     CRUCIBLE_T_CLI_6_FAILURES = failureText;
     ATTR_PATH = attrPath;
     TASK_IDS = taskList;
+    OPEN_TASK_IDS = openTaskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -666,12 +665,27 @@ in
             -- --test-threads=1
         '';
       }
+      {
+        name = "write-result";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+          cat > "$out/result" <<'RESULT'
+          PASS
+          check=$ATTR_PATH
+          tasks=$TASK_IDS
+          open_tasks=$OPEN_TASK_IDS
+          status=partial
+          evidence_scope=run-workflow-model-and-double
+          RESULT
+        '';
+      }
     ];
 
     meta = {
       description = "RFC-0010 phase 5 CLI run workflow gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds dependencies;
+        inherit attrPath taskIds openTaskIds dependencies;
         failureText = failureText;
       };
     };

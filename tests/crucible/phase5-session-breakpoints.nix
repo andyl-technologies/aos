@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionBreakpoints",
-  taskIds ? ["T-SESS-7"],
+  taskIds ? [],
+  openTaskIds ? ["T-SESS-7"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -12,14 +13,15 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
-  schedulerLib = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  triggerLib = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
+  schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
+  triggerLib = import ./_crucible-trigger-source.nix {inherit lib;};
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -48,18 +50,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
       {
-        label = "T-SESS-7 checked off";
-        needle = "- [x] **T-SESS-7**";
+        label = "T-SESS-7 remains open";
+        needle = "- [ ] **T-SESS-7**";
       }
       {
-        label = "T-SESS-7 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionBreakpoints`";
+        label = "T-SESS-7 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.sessionBreakpoints`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 breakpoint status note";
-        needle = "`T-SESS-7` is green through `checks.crucible.phase5.sessionBreakpoints`";
+        needle = "`T-SESS-7` has partial evidence through `checks.crucible.phase5.sessionBreakpoints`";
       }
     ]
     ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
@@ -339,6 +341,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             component=crucible-session
             breakpoints=shared-condition-vocabulary
             dispositions=suspend-trace-action

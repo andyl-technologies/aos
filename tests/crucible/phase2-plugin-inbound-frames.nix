@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginInboundFrames",
-  taskIds ? ["T-PLUG-8"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-8"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -19,6 +20,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -86,8 +88,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-8 checklist complete";
-        needle = "- [x] **T-PLUG-8**";
+        label = "T-PLUG-8 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-8**";
       }
       {
         label = "inbound frame polling wording";
@@ -375,6 +377,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             inbound_peek=non-consuming-min-head-delivery
             injection_order=delivery_icount,src_node,seq
             late_delivery=fails-before-direct-advance

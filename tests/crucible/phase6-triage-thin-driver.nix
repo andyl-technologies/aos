@@ -49,9 +49,9 @@
 
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  modelSource = builtins.readFile ../../crates/crucible/src/model.rs;
+  modelSource = import ./_crucible-model-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  cliSource = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliSource = import ./_cli-source.nix {inherit lib;};
   signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;

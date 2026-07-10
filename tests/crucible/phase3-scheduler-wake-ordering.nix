@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   shmem = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;

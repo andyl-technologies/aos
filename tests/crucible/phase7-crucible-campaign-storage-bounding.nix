@@ -9,7 +9,7 @@
   casSource = builtins.readFile ../../crates/crucible-cas/src/lib.rs;
   fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
   fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
-  crucibleModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  crucibleModel = import ./_crucible-model-source.nix {inherit lib;};
   crucibleLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   rootDefault = builtins.readFile ../../default.nix;
   defaultChecks = builtins.readFile ./default.nix;

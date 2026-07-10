@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugCliSurface",
-  taskIds ? ["T-DBG-8" "T-CLI-18"],
+  taskIds ? [],
+  openTaskIds ? ["T-DBG-8" "T-CLI-18"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,14 +16,15 @@
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   surfaceTest = builtins.readFile ../../crates/crucible/tests/gate_debug_cli_surface.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -60,12 +62,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
       {
-        label = "T-DBG-8 checked off";
-        needle = "- [x] **T-DBG-8**";
+        label = "T-DBG-8 remains open";
+        needle = "- [ ] **T-DBG-8**";
       }
       {
-        label = "T-DBG-8 completion note";
-        needle = "Completed by `checks.crucible.phase6.debugCliSurface`";
+        label = "T-DBG-8 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase6.debugCliSurface`";
       }
       {
         label = "no symbol server wording";
@@ -78,18 +80,18 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-18 checked off";
-        needle = "- [x] **T-CLI-18**";
+        label = "T-CLI-18 remains open";
+        needle = "- [ ] **T-CLI-18**";
       }
       {
-        label = "T-CLI-18 completion note";
-        needle = "Completed by `checks.crucible.phase6.debugCliSurface`";
+        label = "T-CLI-18 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase6.debugCliSurface`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "T-DBG-8 plan summary";
-        needle = "`T-DBG-8`/`T-CLI-18` are green through `checks.crucible.phase6.debugCliSurface`";
+        needle = "`T-DBG-8`/`T-CLI-18` have partial evidence through `checks.crucible.phase6.debugCliSurface`";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
@@ -316,12 +318,12 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "green debug cli gate";
-        needle = "debugCliSurface = greenBeforeAdvance";
+        label = "red debug cli gate";
+        needle = "debugCliSurface = redBeforeAdvance";
       }
       {
         label = "explicit task ids";
-        needle = "taskIds = [\"T-DBG-8\" \"T-CLI-18\"]";
+        needle = "openTaskIds = [\"T-DBG-8\" \"T-CLI-18\"]";
       }
       {
         label = "layer0 raw dependency";
@@ -455,6 +457,9 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=debug-cli-model-and-proxy
             gate=gate:debug-cli-surface
             surface=thin-session-wrapper,gdbstub-proxy,read-only-default,allow-mutate-non-canonical
             RESULT

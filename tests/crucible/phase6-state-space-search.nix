@@ -13,8 +13,8 @@
   };
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   stateSpaceGateTest = builtins.readFile ../../crates/crucible/tests/gate_state_space_search.rs;
   defaultChecks = builtins.readFile ./default.nix;

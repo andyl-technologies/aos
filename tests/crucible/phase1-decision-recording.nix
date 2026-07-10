@@ -2,11 +2,12 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.decisionRecording",
-  taskIds ? ["T-DET-16" "T-DET-31" "T-EXEC-19" "T-EXEC-20" "T-PAT-5"],
+  taskIds ? ["T-DET-16" "T-EXEC-19" "T-EXEC-20" "T-PAT-5"],
+  openTaskIds ? ["T-DET-31"],
 }: let
   root = ../..;
   decisionRust = builtins.readFile ../../crates/crucible/src/decision.rs;
-  modelRust = builtins.readFile ../../crates/crucible/src/model.rs;
+  modelRust = import ./_crucible-model-source.nix {inherit lib;};
   libRust = builtins.readFile ../../crates/crucible/src/lib.rs;
   manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
@@ -78,7 +79,9 @@
         relative: let
           content = builtins.readFile (root + "/${relative}");
         in
-          if relative == "crates/crucible/src/trigger.rs"
+          if
+            relative == "crates/crucible/src/trigger.rs"
+            || lib.hasPrefix "crates/crucible/src/trigger/" relative
           then scrubLintVocabulary content
           else content
       )
@@ -91,6 +94,7 @@
           relative:
             relative != "crates/crucible/src/decision.rs"
             && relative != "crates/crucible/src/model.rs"
+            && !(lib.hasPrefix "crates/crucible/src/model/" relative)
         )
         (rustFilesUnder "crates/crucible/src"))
     );
@@ -272,8 +276,8 @@
         needle = "- [x] **T-DET-16**";
       }
       {
-        label = "T-DET-31 checklist complete";
-        needle = "- [x] **T-DET-31**";
+        label = "T-DET-31 remains open";
+        needle = "- [ ] **T-DET-31**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
@@ -392,6 +396,9 @@ in
             check=${attrPath}
             gate=gate:layer0-determinism
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
+            evidence_scope=decision-recorder-model
             crate=crucible
             recorder=DecisionRecorder
             rng_source=crucible-sim::DecisionRng

@@ -14,7 +14,7 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalDoc = builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   reductionGateTest = builtins.readFile ../../crates/crucible/tests/gate_search_reductions.rs;
   contentAddressGateTest = builtins.readFile ../../crates/crucible/tests/gate_content_address.rs;
   defaultChecks = builtins.readFile ./default.nix;

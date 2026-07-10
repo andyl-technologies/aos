@@ -553,7 +553,9 @@ in
             cat >> "$out/result" <<'RESULT'
             check=checks.crucible.phase1.rrFingerprintHelpers
             gate=gate:patch-microtests
-            tasks=T-HARN-20
+            tasks=
+            open_tasks=T-HARN-20
+            status=partial
             patch=0002-crucible-rr-fingerprint-helpers.patch
             patched_fixture_exercised=true
             stock_negative_control=true

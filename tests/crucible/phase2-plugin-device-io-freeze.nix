@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginDeviceIoFreeze",
-  taskIds ? ["T-PLUG-9"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -20,6 +21,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -87,8 +89,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-9 checklist complete";
-        needle = "- [x] **T-PLUG-9**";
+        label = "T-PLUG-9 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-9**";
       }
       {
         label = "device-I/O freeze wording";
@@ -370,6 +372,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             device_io_active=published-before-submit
             pending_counter=one-to-one-submit-completion
             failure_path=releases-pending-request

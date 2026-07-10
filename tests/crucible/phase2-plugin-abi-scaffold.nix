@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginAbiScaffold",
-  taskIds ? ["T-PLUG-1"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -18,6 +19,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -52,8 +54,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-1 checklist complete";
-        needle = "- [x] **T-PLUG-1**";
+        label = "T-PLUG-1 remains open until the live callback registrar is complete";
+        needle = "- [ ] **T-PLUG-1**";
       }
       {
         label = "plugin owns callbacks";
@@ -120,11 +122,8 @@
         needle = "#[unsafe(no_mangle)]";
       }
       {
-        # The install entry point was safe-shimmed (unsafe-fence conformance):
-        # the signature is safe; raw-pointer work is confined to SAFETY-commented
-        # blocks inside the boundary helper it forwards to.
-        label = "C ABI install function";
-        needle = "pub extern \"C\" fn qemu_plugin_install";
+        label = "unsafe C ABI install function";
+        needle = "pub unsafe extern \"C\" fn qemu_plugin_install";
       }
       {
         label = "raw install boundary validation";
@@ -153,6 +152,10 @@
       {
         label = "MTTCG rejection";
         needle = "MultiThreadedTcg";
+      }
+      {
+        label = "live execution-mode proof symbol";
+        needle = "QEMU_PLUGIN_SINGLE_THREADED_RR_SYMBOL";
       }
       {
         label = "supports N vCPUs under RR";
@@ -292,6 +295,7 @@ in
             test -f "$qemu_header"
             grep -q '#define QEMU_PLUGIN_VERSION 4' "$qemu_header"
             grep -q 'extern QEMU_PLUGIN_EXPORT int qemu_plugin_version;' "$qemu_header"
+            grep -q 'qemu_plugin_crucible_single_threaded_rr' "$qemu_header"
             cargo test \
               --frozen \
               --offline \
@@ -322,12 +326,15 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             crate_type=cdylib
             qemu_plugin_api_version=4
             qemu_entrypoint=qemu_plugin_install
             qemu_version_symbol=qemu_plugin_version
             exported_symbols=qemu_plugin_install,qemu_plugin_version
-            install_scaffold=inert
+            install_scaffold=fail-closed-before-live-callback-adapters
+            live_execution_mode_proof=qemu_plugin_crucible_single_threaded_rr
             tcg_threading=single-threaded-round-robin
             smp_vcpus_supported=N>=1
             mttcg_rejected=true

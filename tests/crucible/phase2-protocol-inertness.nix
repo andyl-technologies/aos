@@ -76,6 +76,10 @@
         needle = "pub fn sim_off(profile: &DeterministicLaunchProfile) -> Self";
       }
       {
+        label = "sim-off stock TCG launch arguments";
+        needle = "profile.canonical_sim_off_qemu_args()";
+      }
+      {
         label = "sim-on protocol constructor";
         needle = "pub fn sim_on_protocol_contract() -> Self";
       }
@@ -152,6 +156,14 @@
       {
         label = "canonical launch profile proof";
         needle = "DeterministicLaunchProfile::conservative_default()";
+      }
+      {
+        label = "sim-off stock TCG assertion";
+        needle = ''window == ["-accel", "tcg,thread=single"]'';
+      }
+      {
+        label = "sim-off sim accelerator rejection assertion";
+        needle = ''String::from("sim,thread=single")'';
       }
       {
         label = "runtime shared memory proof";
@@ -246,9 +258,9 @@ in
             tasks=${taskList}
             gate=gate:qemu-inert,gate:abi-conformance
             rust_test=crucible-qemu::protocol_inertness
-            sim_off=no-control-socket,no-control-frames,no-plugin-args
+            sim_off=stock-tcg-thread-single,no-control-socket,no-control-frames,no-plugin-args,no-sim-accelerator
             sim_on=shared-memory-runtime,no-runtime-control-frames,no-delivery-icounts,run-silent
-            full_qemu_inert_gate=implemented-T-PATCH-3
+            full_qemu_inert_gate=pending-T-PATCH-3
             RESULT
           '';
         }

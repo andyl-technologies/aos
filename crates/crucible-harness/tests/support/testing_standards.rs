@@ -378,22 +378,12 @@ pub(super) fn testing_source_regression_failures() -> Vec<String> {
         r#"
             #[test]
             fn bad() {
-                retry_until_not_flaky();
+                retry_until_not_flaky("rerun is forbidden"); // Comments may discuss retry and flaky rejection.
             }
         "#,
     );
 
-    let inactive_findings = flaky_escape_failures(
-        "crucible",
-        "gate_replay_oracle",
-        r#"
-            // A comment can describe retry and flaky rejection semantics.
-            const DIAGNOSTIC: &str = "rerun is forbidden";
-            fn stable_test() {}
-        "#,
-    );
-
-    if findings.len() >= 2 && inactive_findings.is_empty() {
+    if findings.len() == 2 {
         Vec::new()
     } else {
         vec!["testing-standard regression failed to reject flaky/retry escapes".to_string()]

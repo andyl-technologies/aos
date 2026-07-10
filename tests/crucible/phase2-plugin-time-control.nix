@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginTimeControl",
-  taskIds ? ["T-PLUG-4"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,14 +15,15 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
-  pluginSetup = builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs;
-  pluginTimeControl = builtins.readFile ../../crates/crucible-qemu-plugin/src/time_control.rs;
+  pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
+  pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
+  pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -113,8 +115,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-4 checklist complete";
-        needle = "- [x] **T-PLUG-4**";
+        label = "T-PLUG-4 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-4**";
       }
       {
         label = "plugin clock ownership";
@@ -135,8 +137,12 @@
         needle = "qemu_plugin_request_time_control";
       }
       {
-        label = "direct virtual-time advance symbol spec";
-        needle = "qemu_plugin_advance_virtual_time_direct";
+        label = "queued virtual-time advance symbol spec";
+        needle = "qemu_plugin_advance_time_ns";
+      }
+      {
+        label = "time-advance completion registration symbol spec";
+        needle = "qemu_plugin_register_time_advance_cb";
       }
       {
         label = "time-control predicate spec";
@@ -173,8 +179,8 @@
         needle = "pub const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL: &str = \"qemu_plugin_request_time_control\";";
       }
       {
-        label = "direct advance symbol";
-        needle = "pub const QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL: &str =";
+        label = "queued advance symbol";
+        needle = "pub const QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL: &str =";
       }
       {
         label = "time-control predicate symbol";
@@ -332,9 +338,12 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             owner=PluginTimeControlOwnership
             request_symbol=qemu_plugin_request_time_control
-            advance_symbol=qemu_plugin_advance_virtual_time_direct
+            advance_symbol=qemu_plugin_advance_time_ns
+            completion_symbol=qemu_plugin_register_time_advance_cb
             predicate_symbol=qemu_plugin_has_time_control
             advance_sources=guest-instructions,scheduler-authorized-idle-jump
             scheduler_ceiling_enforced=true

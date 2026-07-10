@@ -11,9 +11,9 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   contentAddressTest = builtins.readFile ../../crates/crucible/tests/event_log_content_address.rs;
   gateContentAddressTest = builtins.readFile ../../crates/crucible/tests/gate_content_address.rs;
   schemaTest = builtins.readFile ../../crates/crucible/tests/event_log_schema.rs;

@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugAttach",
-  taskIds ? ["T-DBG-1"],
+  taskIds ? [],
+  openTaskIds ? ["T-DBG-1"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -13,7 +14,7 @@
   };
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   # The launch module was split into a `launch/` directory; concatenate the
   # control-channel submodule so gdbstub/QMP channel needles remain scannable.
@@ -23,12 +24,13 @@
   qemuProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   modelTest = builtins.readFile ../../crates/crucible/tests/gate_debug_attach.rs;
   qemuTest = builtins.readFile ../../crates/crucible-qemu/tests/debug_gdbstub.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -66,12 +68,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
       {
-        label = "T-DBG-1 checked off";
-        needle = "- [x] **T-DBG-1**";
+        label = "T-DBG-1 remains open";
+        needle = "- [ ] **T-DBG-1**";
       }
       {
-        label = "T-DBG-1 completion note";
-        needle = "Completed by `checks.crucible.phase6.debugAttach`";
+        label = "T-DBG-1 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase6.debugAttach`";
       }
       {
         label = "attach is instantiate";
@@ -290,12 +292,12 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "green debug attach gate";
-        needle = "debugAttach = greenBeforeAdvance";
+        label = "red debug attach gate";
+        needle = "debugAttach = redBeforeAdvance";
       }
       {
         label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-1\"]";
+        needle = "openTaskIds = [\"T-DBG-1\"]";
       }
       {
         label = "unifying view raw dependency";
@@ -409,6 +411,9 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=debug-attach-model-and-proxy
             gate=gate:debug-attach
             attach=instantiate-via-temporal-graph-resume
             channel=gdbstub-fourth-out-of-band

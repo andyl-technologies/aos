@@ -12,7 +12,7 @@
   };
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
-  engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   loadPatternTest = builtins.readFile ../../crates/crucible/tests/workload_load_patterns.rs;
   defaultChecks = builtins.readFile ./default.nix;

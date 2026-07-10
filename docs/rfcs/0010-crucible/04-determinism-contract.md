@@ -149,8 +149,9 @@ the cross-node machinery.
   at which each vCPU is preempted — MUST be a pure function of
   `(image, cmdline, seed, I, rr_switch_quantum, N)` and of the `Schedule`'s
   preemption decisions, not of host thread scheduling. The multi-vCPU node runs
-  under QEMU single-threaded round-robin TCG with `-icount` (NOT MTTCG; §4.6
-  E13), so the whole interleaving is a pure function of the inputs above. This
+  under QEMU's TCG-derived `sim` accelerator with `-accel sim,thread=single`
+  and `-icount` (NOT stock TCG, NOT MTTCG; §4.6 E13), so the whole interleaving
+  is a pure function of the inputs above. This
   MUST be testable in isolation, with `I` supplied from a recorded list rather
   than from live peers. *Gate:* `gate:layer0-determinism`,
   `gate:single-vm-fingerprint`. *Spec:* §4.2.1.
@@ -316,13 +317,13 @@ differ.
 | E5 | `gettimeofday`/`clock_gettime`/RTC reads | Guest reads wall-clock-derived time | RTC/wall-clock base is a fixed, configured epoch; the clock advances only via icount (4.3); no host time enters | launch + patch |
 | E6 | Emulated timer devices (LAPIC, PIT, RTC, HPET) | Timer fire ordering/timing relative to instructions | All are virtual-clock-driven; the virtual clock is icount-derived, so deadlines map to deterministic icounts | launch |
 | E7 | CPU/timer interrupt delivery timing | An interrupt taken one instruction earlier/later forks the path | TCG delivers CPU/timer interrupts at deterministic translation-block boundaries under icount; the virtual clock that schedules them is icount-derived | launch |
-| E7a | Asynchronous device-completion delivery timing | A virtio-rng entropy completion is serviced from a host-scheduled main-loop bottom half, so its completion interrupt lands at a host-timing-dependent instruction and forks the path — even when the completion payload (seeded entropy) is byte-pure. Inherent to upstream icount, which pins virtual *time* but not the *icount* of an async completion. (virtio-blk/9p completions do not share this hazard: their delivery icount is already pinned by the crucible blk/9p shmem substrate, patches 0015-0019.) | Deliver the virtio-rng completion synchronously on the requesting vCPU thread at the request icount: `crucible-det-virtio-ioeventfd` disables ioeventfd under icount for the virtio-rng device so its virtqueue kick dispatches synchronously (block/9p keep the stock async kick their shmem substrate assumes), and `crucible-det-rng-delivery` completes builtin-RNG entropy inline instead of via a bottom half. No QEMU record/replay (NG-6); modeled completion latency, if ever wanted, belongs in the IO sub-node (15), not here. Verified by S6/T-RISK-6 and guest-entropy-launch. | patch |
+| E7a | Asynchronous device-completion delivery timing | A virtio-rng entropy completion is serviced from a host-scheduled main-loop bottom half, so its completion interrupt lands at a host-timing-dependent instruction and forks the path — even when the completion payload (seeded entropy) is byte-pure. Inherent to upstream icount, which pins virtual *time* but not the *icount* of an async completion. (virtio-blk/9p completions do not share this hazard: their delivery icount is already pinned by the crucible blk/9p shmem substrate, patches 0015-0019.) | In sim mode, deliver the virtio-rng completion synchronously on the requesting vCPU thread at the request icount: `crucible-det-virtio-ioeventfd` disables ioeventfd under sim-mode icount for the virtio-rng device so its virtqueue kick dispatches synchronously (block/9p keep the stock async kick their shmem substrate assumes), and `crucible-det-rng-delivery` completes builtin-RNG entropy inline instead of via a bottom half. Plain TCG/icount remains upstream-identical. No QEMU record/replay (NG-6); modeled completion latency, if ever wanted, belongs in the IO sub-node (15), not here. Verified by S6/T-RISK-6 and guest-entropy-launch. | patch |
 | E8 | Guest entropy pool seeding (`getrandom`, `/dev/urandom`, `random.trust_cpu`) | Guest CSPRNG seeded from true entropy diverges | Seed the guest deterministically via firmware (`fw_cfg`) random-seed and/or controlled RDRAND; the seed is a pure function of the scenario seed (4.7) | launch |
 | E9 | QEMU-internal use of host RNG (`qemu_guest_getrandom`, glib `GRand`) | QEMU device models / MACs / IDs draw from host entropy, perturbing device state in `T` | Seed QEMU's guest-random and glib PRNG deterministically from the run seed (`qemu-deterministic-getrandom`, `qemu-deterministic-glib-prng`) | patch |
 | E10 | CPU model variation | Different host CPUs expose different feature bits / instruction semantics | Fixed `-cpu <model>` (never `-cpu host`); the model is part of the scenario hash | launch |
 | E11 | Kernel address-space randomization (KASLR) | Randomized kernel base changes addresses throughout `T` | KASLR stays **enabled** (stock guest cmdline). Its randomization is a pure function of the boot entropy, which is itself seeded deterministically host-side (E8/E9: `fw_cfg` random-seed, controlled RDRAND, no host-entropy passthrough), so the kernel base is reproducible across replays. S6/T-RISK-6 verified this bit-stability under fully seeded boot entropy. Crucible neither adds nor requires `nokaslr`. | launch |
 | E12 | Userspace ASLR (`norandmaps`) | Randomized mmap/stack/brk bases change `T` | ASLR stays **enabled** (stock guest cmdline). Userspace randomization derives from the same deterministically seeded boot entropy (E8/E9), so mmap/stack/brk bases are reproducible across replays. S6/T-RISK-6 verified this bit-stability under fully seeded boot entropy. Crucible neither adds nor requires `norandmaps`. | launch |
-| E13 | Multi-vCPU instruction interleaving (MTTCG excluded; multi-vCPU = single-threaded RR-TCG) | Concurrent vCPUs would interleave nondeterministically under MTTCG (`thread=multi`) | MTTCG is excluded; all `N` vCPUs time-share ONE host thread under single-threaded round-robin TCG with `-icount`, switching at a fixed content-addressed `rr_switch_quantum` in node-icount (never QEMU's adaptive `rr_quantum`, never realtime). The interleaving is then a pure function of `(image, cmdline, seed, I, rr_switch_quantum, N)` | launch + patch |
+| E13 | Multi-vCPU instruction interleaving (MTTCG excluded; multi-vCPU = single-threaded RR-TCG) | Concurrent vCPUs would interleave nondeterministically under MTTCG (`thread=multi`); stock `-accel tcg` also leaves Crucible's RR quantum, deterministic IPI, shmem dispatch, and preemption paths inactive | Select the TCG-derived `sim` accelerator explicitly as `-accel sim,thread=single`; stock TCG and MTTCG are excluded. All `N` vCPUs time-share ONE host thread under single-threaded round-robin TCG with `-icount`, switching at a fixed content-addressed `rr_switch_quantum` in node-icount (never QEMU's adaptive `rr_quantum`, never realtime). The interleaving is then a pure function of `(image, cmdline, seed, I, rr_switch_quantum, N)` | launch + patch |
 | E14 | Host thread scheduling of QEMU threads | Order of QEMU's own threads (vCPU, iothread, main loop) affects timing | Single vCPU plus icount makes guest progress independent of host thread order; the plugin's synchronous time-control handshake forces a defined order at idle/advance points | plugin + patch |
 | E15 | Floating-point nondeterminism | FP results vary by rounding mode / FMA contraction / library | Under a fixed `-cpu` and TCG soft-float, FP is a deterministic function of inputs; cross-host reproducibility holds because TCG emulates, not delegates to host FPU. No action beyond E10 | (covered by E10) |
 | E16 | Uninitialized memory / device reset values | Power-on memory and device registers differ run to run | Deterministic machine reset: RAM zeroed (or fixed-pattern), device reset values fixed; part of the genesis bake (05) | launch + patch |
@@ -645,7 +646,8 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 > foundation).
 
 - [x] **T-DET-1** Pin the launch configuration for intra-VM hermeticity: fixed
-  `-cpu <model>` (no RDRAND/RDSEED, never `-cpu host`), `-smp 1`, `-accel tcg`,
+  `-cpu <model>` (no RDRAND/RDSEED, never `-cpu host`), `-smp 1`,
+  `-accel sim,thread=single`,
   fixed `-icount shift=N` (never `auto`), deterministic machine reset, fixed RTC
   epoch; record all of it in the scenario hash; make a VM's notion of time its
   guest icount with virtual ns derived by the fixed `ns = icount << shift` mapping
@@ -676,10 +678,25 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-7** Implement Contract A in isolation: a single-VM driver that
   feeds an icount-stamped recorded input list `I` and runs `run` with no
   scheduler/transport. — satisfies [DET-5], [DET-1]; spec §4.2.1.
-- [x] **T-DET-8** Implement the execution fingerprint (periodic icount +
+- [ ] **T-DET-8** Implement the execution fingerprint (periodic icount +
   register/memory/device digest), computed black-box from the host, with a fixed
   content-addressed definition. — satisfies [DET-29], [DET-31], [DET-17]; spec
   §4.8.
+  - The provisional `crucible-qemu-fingerprint` importer converts versioned real
+    QEMU trace-plugin observations into a separately content-addressed periodic
+    stream. It binds both runs to distinct provenance records, identical launch
+    and QEMU/plugin build digests carried in every sample, the exact sorted QMP
+    CPU-index set, register descriptor schemas/byte counts, monotonic per-vCPU
+    retired counts whose sum equals aggregate icount, RAM byte coverage, an RR
+    cursor, and an exact terminal horizon. The register/RAM observation shape is
+    presently derived from run A and enforced against run B, not independently
+    pinned by the launch/build definition, so it is diagnostic evidence rather
+    than gate admission. Its definition deliberately advertises
+    periodic sampling only and names its device component
+    `ordered-cpu-mmio-read-write-history`; it does **not** masquerade as the canonical
+    current-device-state/event-boundary definition. Complete current emulated
+    device state, interaction-boundary sampling, and an integrated fixed-input
+    launch runner remain absent, so this task remains open.
 - [x] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a
   single VM, asserting identical fingerprint sequences. — satisfies [DET-1],
   [DET-2], [DET-30]; spec §4.8, §4.11.
@@ -747,11 +764,11 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   off/on contract proving black-box operation remains functional when that
   optional host/plugin channel is enabled but unused. This completion does not
   claim live any-guest white-box-on QEMU fingerprint equivalence.
-- [x] **T-DET-23** Implement `gate:qemu-inert`: prove every patch is inert out of
+- [ ] **T-DET-23** Implement `gate:qemu-inert`: prove every patch is inert out of
   sim mode (production QEMU behaviorally identical to upstream) and effective in
   sim mode, with a per-patch micro-test. — satisfies [DET-36], [DET-37], routes
   [INV-7]; spec §4.10.
-  - Completed by `checks.crucible.phase2.gates.qemuInert` plus
+  - Partial evidence under `checks.crucible.phase2.gates.qemuInert` plus
     `checks.crucible.phase2.gates.patchMicrotests`: the former compares
     unpatched pinned QEMU against patched sim-off QEMU over the real-QEMU corpus,
     and the latter requires each carried patch's focused micro-test.
@@ -822,18 +839,18 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   satisfies [DET-23], [DET-42]; spec §4.6 (E13, E21), §4.2.1.
   - Completed by `checks.crucible.phase2.qemuMultiVcpuLaunch`, consumed by
     `checks.crucible.phase1.gates.layer0Determinism`: the deterministic QEMU
-    launch profile emits `-accel tcg,thread=single`, fixed `-smp N`, fixed
+    launch profile emits `-accel sim,thread=single`, fixed `-smp N`, fixed
     `rr_switch_quantum` in node-icount units, and records ascending vCPU rotation
     plus `N`/quantum/rotation in scenario hash material. The pre-spawn validator
     rejects MTTCG, missing/duplicate RR quantum declarations, adaptive icount
     mode, realtime icount switching, and QEMU realtime launch flags before spawn.
-- [x] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
+- [ ] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
   uniform `-cpu` pin across all vCPUs, per-vCPU TSC/RNG derived from node icount
   (E23), inter-vCPU IPI delivered at a deterministic node-icount via a fixed
   modeled latency at the next RR switch (E22), and deterministic secondary-vCPU
   SIPI/INIT bringup with no runtime hotplug (E24). — satisfies [DET-18] (E22, E23,
   E24), [DET-43]; spec §4.6 (E22, E23, E24), §4.4.
-  - Completed by `checks.crucible.phase2.qemuMultiVcpuLaunch` and
+  - Partial model and launch evidence is provided by `checks.crucible.phase2.qemuMultiVcpuLaunch` and
     `checks.crucible.phase2.qemuPluginPreemption`, consumed by
     `checks.crucible.phase1.gates.layer0Determinism`: the launch profile hashes
     the uniform `-cpu` model, node-icount TSC source, scenario/run-seed-backed
@@ -843,13 +860,13 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     icount plus fixed modeled IPI latency, rounded to the next fixed RR switch
     boundary, and emits the resulting interrupt through the commanded-icount
     preemption path rather than a realtime callback.
-- [x] **T-DET-31** Implement app-requested randomness served from the single
+- [ ] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
   name-hash fork, each draw a recorded `Decision` delivered under the injection
   contract; assert the contract holds byte-identically with zero app-random
   requests and distinguish it from opaque ambient `fw_cfg` entropy. — satisfies
   [DET-44]; spec §4.7.
-  - Completed by `checks.crucible.phase1.decisionRecording` and
+  - Partial model and callback-core evidence is provided by `checks.crucible.phase1.decisionRecording` and
     `checks.crucible.phase2.qemuPluginAppRandomDoorbell`, consumed by
     `checks.crucible.phase1.gates.layer0Determinism`: `DecisionRecorder` owns
     the single seeded `DecisionRng`, forks streams by the canonical

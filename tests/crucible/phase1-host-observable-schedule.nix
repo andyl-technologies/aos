@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.hostObservableSchedule",
-  taskIds ? ["T-HARN-4"],
+  taskIds ? [],
+  openTaskIds ? ["T-HARN-4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,7 +18,7 @@
   pluginManifest = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
-  pluginTimeControl = builtins.readFile ../../crates/crucible-qemu-plugin/src/time_control.rs;
+  pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
@@ -48,12 +49,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-4 checked off";
-        needle = "- [x] **T-HARN-4**";
+        label = "T-HARN-4 remains open";
+        needle = "- [ ] **T-HARN-4**";
       }
       {
-        label = "T-HARN-4 completion note";
-        needle = "Completed by `checks.crucible.phase1.hostObservableSchedule`";
+        label = "T-HARN-4 partial-evidence note";
+        needle = "Partial callback-core evidence is provided by";
       }
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
@@ -133,7 +134,7 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
         label = "focused HARN-16 cross-check test";
-        needle = "host_observable_schedule_cross_checks_sim_double_against_real_plugin_path";
+        needle = "host_observable_schedule_cross_checks_sim_double_against_plugin_projection";
       }
       {
         label = "double schedule source";
@@ -144,23 +145,23 @@
         needle = "double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS)";
       }
       {
-        label = "real plugin schedule projection";
-        needle = "real_plugin_host_observable_schedule";
+        label = "plugin callback model schedule projection";
+        needle = "plugin_projection_host_observable_schedule";
       }
       {
-        label = "real plugin clock";
+        label = "plugin projection clock";
         needle = "PluginVirtualClock";
       }
       {
-        label = "real plugin clock source assertion";
+        label = "plugin projection clock source assertion";
         needle = "PluginClockAdvanceSource::GuestInstructions";
       }
       {
-        label = "real plugin idle hot-loop";
+        label = "plugin projection idle hot-loop";
         needle = "PluginIdleHotLoop";
       }
       {
-        label = "real plugin inbound ring surface";
+        label = "plugin projection inbound ring surface";
         needle = "InboundFrameRing::new";
       }
       {
@@ -180,19 +181,19 @@
         needle = "PluginClockAdvanceSource::SchedulerAuthorizedIdleJump";
       }
       {
-        label = "real plugin RX callback";
+        label = "plugin projection RX callback";
         needle = "handle_network_rx_idle_callback";
       }
       {
-        label = "real plugin RX state";
+        label = "plugin projection RX state";
         needle = "PluginNetworkRx::new()";
       }
       {
-        label = "real plugin TX callback";
+        label = "plugin projection TX callback";
         needle = "handle_network_tx_callback";
       }
       {
-        label = "real plugin TX state";
+        label = "plugin projection TX state";
         needle = "PluginNetworkTx::new";
       }
       {
@@ -289,7 +290,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
               --lib \
-              host_observable_schedule_cross_checks_sim_double_against_real_plugin_path \
+              host_observable_schedule_cross_checks_sim_double_against_plugin_projection \
               -- --test-threads=1
 
             cargo test \
@@ -308,10 +309,13 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
+            evidence_scope=callback-core-model-not-installed-production-plugin
             sim_double_schedule_trace=true
-            real_plugin_clock_cross_check=true
-            real_plugin_rx_cross_check=true
-            real_plugin_tx_cross_check=true
+            plugin_projection_clock_cross_check=true
+            plugin_projection_rx_cross_check=true
+            plugin_projection_tx_cross_check=true
             host_observable_schedule_identical=true
             RESULT
           '';

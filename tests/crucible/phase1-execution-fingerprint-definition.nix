@@ -216,8 +216,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
       {
-        label = "T-DET-8 checklist complete";
-        needle = "- [x] **T-DET-8**";
+        label = "T-DET-8 checklist entry";
+        needle = "**T-DET-8**";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -253,9 +253,10 @@ in
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'
             PASS
+            status=partial
             check=checks.crucible.phase1.executionFingerprintDefinition
             gate=gate:single-vm-fingerprint
-            tasks=T-DET-8
+            provisional_tasks=T-DET-8
             definition=crucible-execution-fingerprint-v1
             cadence=periodic-4096-icount-plus-event-boundaries
             period_icount=4096
@@ -268,6 +269,15 @@ in
             sample_fields=icount,registers,memory,device,rr-scheduler
             observation_boundary=host-black-box
             content_addressed=true
+            implementation_scope=definition-and-model-observer
+            provisional_trace_importer=crucible-qemu-fingerprint
+            provisional_trace_schema=crucible.qemu.trace-fingerprint.v2
+            provisional_device_component=ordered-cpu-mmio-read-write-history
+            provisional_event_boundary_sampling=false
+            provisional_observation_contract_source=first-run-baseline
+            independent_observation_contract=false
+            full_device_state_complete=false
+            task_completion=partial
             RESULT
           '';
         }

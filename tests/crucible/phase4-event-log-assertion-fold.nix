@@ -11,9 +11,9 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   assertionLogFoldTest = builtins.readFile ../../crates/crucible/tests/assertion_log_fold.rs;
   classCatalogTest = builtins.readFile ../../crates/crucible/tests/event_log_class_catalog.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;

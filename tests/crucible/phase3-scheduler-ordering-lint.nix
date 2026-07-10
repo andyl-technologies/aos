@@ -18,8 +18,8 @@
   harnessLintAnnotations = builtins.readFile ../../crates/crucible-harness/tests/harness_lint_annotations.rs;
   harnessLintCommon = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/common.rs;
   harnessLintScan = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  model = import ./_crucible-model-source.nix {inherit lib;};
   canonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   eventOrderTest = builtins.readFile ../../crates/crucible/tests/scheduler_event_order.rs;
 

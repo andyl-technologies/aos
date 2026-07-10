@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  session = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  session = import ./_crucible-session-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
 

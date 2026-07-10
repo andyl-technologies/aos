@@ -9,7 +9,7 @@
   e2e = builtins.readFile ../../crates/crucible-harness/src/e2e.rs;
   replayOracle = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
   replayOracleGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;

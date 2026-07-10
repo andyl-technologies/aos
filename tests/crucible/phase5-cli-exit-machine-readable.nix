@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliExitMachineReadable",
-  taskIds ? ["T-CLI-15"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-15"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,7 +15,7 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   cliProcessTest = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -54,12 +55,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-15 checklist complete";
-        needle = "- [x] **T-CLI-15** Implement and test the uniform exit-code mapping";
+        label = "T-CLI-15 remains open";
+        needle = "- [ ] **T-CLI-15** Implement and test the uniform exit-code mapping";
       }
       {
         label = "T-CLI-15 machine-readable completion note";
-        needle = "Completed by `checks.crucible.phase5.cliExitMachineReadable`";
+        needle = "Partial process-level evidence is provided by\n  `checks.crucible.phase5.cliExitMachineReadable`";
       }
       {
         label = "T-CLI-15 replay process coverage note";
@@ -70,8 +71,8 @@
         needle = "and `replay --to <SAVEPOINT>` JSONL output with parsed";
       }
       {
-        label = "T-CLI-15 certified gate range";
-        needle = "certified across the run-capable command-behavior gates (`T-CLI-10 … T-CLI-13`)";
+        label = "T-CLI-15 open live gate range";
+        needle = "remains open until `T-CLI-10 … T-CLI-13` execute their required live backend";
       }
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
@@ -86,12 +87,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 T-CLI-15 completion note";
-        needle = "`T-CLI-15` is green through `checks.crucible.phase5.cliExitMachineReadable`";
+        label = "phase5 T-CLI-15 partial note";
+        needle = "`T-CLI-15` has partial evidence through `checks.crucible.phase5.cliExitMachineReadable`";
       }
       {
-        label = "phase5 T-CLI-15 certified gate range";
-        needle = "command-behavior gates `T-CLI-10 … T-CLI-13` so the same contract is";
+        label = "phase5 T-CLI-15 open gate range";
+        needle = "remains open until the live behavior of\n  `T-CLI-10 … T-CLI-13` is complete";
       }
       {
         label = "phase5 T-CLI-15 qemu process coverage note";
@@ -345,6 +346,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -409,6 +411,9 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=partial
+            evidence_scope=process-format-and-exit-code-model-routes
             component=crucible-cli
             contract=exit-codes-and-machine-readable-final-outcome
             process_matrix=local-double-qemu-replay-jsonl

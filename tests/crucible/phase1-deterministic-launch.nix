@@ -3,7 +3,7 @@
   lib,
 }: let
   root = ../..;
-  engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineModelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
@@ -98,8 +98,8 @@
       needle = "const DEFAULT_CPU_MODEL: &str = \"qemu64,-rdrand,-rdseed\";";
     }
     {
-      label = "single-thread TCG accelerator";
-      needle = "const DEFAULT_ACCEL: &str = \"tcg,thread=single\";";
+      label = "single-thread TCG-derived sim accelerator";
+      needle = "const DEFAULT_ACCEL: &str = \"sim,thread=single\";";
     }
     {
       label = "fixed machine type";
@@ -469,8 +469,12 @@
       needle = "qemu64,-rdrand,-rdseed";
     }
     {
-      label = "TCG accelerator assertion";
-      needle = "tcg,thread=single";
+      label = "TCG-derived sim accelerator assertion";
+      needle = "sim,thread=single";
+    }
+    {
+      label = "stock TCG runtime rejection assertion";
+      needle = "QemuPreSpawnLaunchValidationError::NonSimAccelerator";
     }
     {
       label = "machine type assertion";
@@ -693,7 +697,10 @@ in
             cpu=qemu64,-rdrand,-rdseed
             machine=pc-q35-9.2
             memory=512M
-            accelerator=tcg,thread=single
+            accelerator=sim,thread=single
+            accelerator_family=tcg-derived-sim
+            simulation_mode=on
+            stock_tcg_crucible_runtime=forbidden
             smp=1
             smp_vcpus=1
             icount=shift=0,sleep=off,align=off,rr_switch_quantum=4096

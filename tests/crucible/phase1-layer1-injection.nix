@@ -272,10 +272,11 @@ in
             require_line ${qemuNetDeterministic} "qemu_net_rx_flush_fails_loudly_when_not_ready=true"
             require_line ${qemuNetDeterministic} "skewed_producer_observed_icount_identical=true"
             require_line ${pluginTimeAdvance} "gate.layer1=gate:layer1-injection"
-            require_line ${pluginTimeAdvance} "qemu_main_loop_drain_nonblocking=true"
-            require_line ${pluginTimeAdvance} "qemu_main_loop_drain_no_virtual_time_advance=true"
-            require_line ${pluginTimeAdvance} "qemu_main_loop_drain_completion_deterministic=true"
-            require_line ${pluginTimeAdvance} "completion_interrupt_request_visible=true"
+            require_line ${pluginTimeAdvance} "qemu_time_advance_callback_enqueue_only=true"
+            require_line ${pluginTimeAdvance} "qemu_time_advance_completion_bh=true"
+            require_line ${pluginTimeAdvance} "qemu_time_advance_two_stage_bh_barrier=true"
+            require_line ${pluginTimeAdvance} "qemu_main_loop_reentry_from_callback=false"
+            require_line ${pluginTimeAdvance} "completion_kicks_first_vcpu=true"
             require_line ${sameIcountTieBreak} "shmem_projection=delivery_icount,src_node,seq"
             require_line ${sameIcountTieBreak} "arrival_order_visible=false"
 
@@ -295,8 +296,8 @@ in
             qemu_net_rx_flush_at_delivery_icount=true
             qemu_net_rx_send_deferred_when_ready=true
             qemu_net_rx_flush_fails_loudly_when_not_ready=true
-            qemu_main_loop_drain_completion_deterministic=true
-            completion_interrupt_request_visible=true
+            qemu_queued_advance_completion_deterministic=true
+            completion_kicks_first_vcpu=true
             producer_timing_negative_control_failed=true
             RESULT
           '';

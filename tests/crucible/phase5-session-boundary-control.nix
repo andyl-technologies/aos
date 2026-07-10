@@ -12,11 +12,11 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   gateControlResponsive = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
   apiGateControlResponsive = builtins.readFile ../../crates/crucible-api/tests/gate_control_responsive.rs;
   daemonGateControlResponsive = builtins.readFile ../../crates/crucible-daemon/tests/gate_control_responsive.rs;
-  schedulerLib = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -129,7 +129,7 @@
     ++ failuresFor "crates/crucible/src/scheduler.rs" schedulerLib [
       {
         label = "quantum loop shutdown hook";
-        needle = "fn shutdown(&mut self) -> Result<(), SchedulerError>";
+        needle = "fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError>";
       }
       {
         label = "quantum loop boundary control hook";

@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginSetupCompletion",
-  taskIds ? ["T-PLUG-17"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-17"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -12,8 +13,8 @@
   };
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginSetup = builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs;
-  pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
+  pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
+  pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   # The setup-region mmap surface was split out of lib.rs into
@@ -26,6 +27,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -60,8 +62,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-17 checklist complete";
-        needle = "- [x] **T-PLUG-17**";
+        label = "T-PLUG-17 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-17**";
       }
       {
         label = "descriptor setup wording";
@@ -213,11 +215,11 @@
       }
       {
         label = "ready ack token constructed after write";
-        needle = "Ok(PluginReadySetupAck::acknowledged())";
+        needle = "Ok(PluginReadySetupAck::acknowledged(owned_callbacks))";
       }
       {
         label = "ready ack production constructor is private";
-        needle = "const fn acknowledged() -> Self";
+        needle = "const fn acknowledged(_owned_callbacks: &RequiredOwnedCallbacksRegistered) -> Self";
       }
       {
         label = "failure setup ack";
@@ -271,7 +273,7 @@
       }
       {
         label = "registration passes callback token to setup ack";
-        needle = "plugin_send_ready_setup_ack(writer, completion, callbacks)";
+        needle = "plugin_send_ready_setup_ack(writer, callbacks, owned_callbacks)";
       }
       {
         label = "registration returns ready ack token";
@@ -358,6 +360,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             gates=gate:abi-conformance,gate:control-responsive
             rust_tests=crucible-qemu-plugin::setup
             setup_descriptors=exactly-two-SCM_RIGHTS

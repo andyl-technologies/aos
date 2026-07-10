@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliServeMaxSessions",
-  taskIds ? ["T-CLI-14"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-14"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -16,7 +17,7 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -46,8 +47,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-14 marked complete";
-        needle = "- [x] **T-CLI-14** Implement `serve`";
+        label = "T-CLI-14 remains open";
+        needle = "- [ ] **T-CLI-14** Implement `serve`";
       }
       {
         label = "T-CLI-14 max-sessions completion note";
@@ -133,6 +134,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -202,6 +204,9 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=partial
+            evidence_scope=serve-session-cap
             component=crucible-cli,crucible-api
             serve_max_sessions=live-session-cap
             dependencies=$DEPENDENCY_COUNT

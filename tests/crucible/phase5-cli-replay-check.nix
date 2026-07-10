@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliReplayCheck",
-  taskIds ? ["T-CLI-12"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-12"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,7 +15,7 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -46,12 +47,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-12 checklist complete";
-        needle = "- [x] **T-CLI-12** Implement `replay`";
+        label = "T-CLI-12 remains open";
+        needle = "- [ ] **T-CLI-12** Implement `replay`";
       }
       {
-        label = "T-CLI-12 replay check completion note";
-        needle = "Completed by `checks.crucible.phase5.cliReplayCheck`";
+        label = "T-CLI-12 replay check partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.cliReplayCheck`";
       }
       {
         label = "replay bisect progress";
@@ -85,7 +86,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI replay check completion note";
-        needle = "`T-CLI-12` is green through `checks.crucible.phase5.cliReplayCheck`";
+        needle = "`T-CLI-12` has partial coverage through `checks.crucible.phase5.cliReplayCheck`";
       }
       {
         label = "phase5 process replay check progress";
@@ -409,6 +410,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -493,6 +495,9 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=partial
+            evidence_scope=replay-model-and-process-validation
             component=crucible-cli
             replay_check=byte-identical-canonical-log
             replay_to_schedule_prefix=typed-payload-backed

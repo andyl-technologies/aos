@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostDoorbellCollisionInertness",
-  taskIds ? ["T-GHC-6"],
+  taskIds ? [],
+  openTaskIds ? ["T-GHC-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -50,15 +51,16 @@
     requirements;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-6 checked off";
-        needle = "- [x] **T-GHC-6**";
+        label = "T-GHC-6 remains open";
+        needle = "- [ ] **T-GHC-6**";
       }
       {
-        label = "T-GHC-6 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostDoorbellCollisionInertness`";
+        label = "T-GHC-6 partial-evidence note";
+        needle = "Partial callback-core evidence is provided by";
       }
       {
         label = "collision setup error";
@@ -192,7 +194,7 @@
       }
       {
         label = "phase4 collision inertness task id";
-        needle = "taskIds = [\"T-GHC-6\"]";
+        needle = "openTaskIds = [\"T-GHC-6\"]";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
@@ -275,6 +277,9 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=doorbell-collision-plan-model
             gate=gate:any-guest,gate:abi-conformance
             setup_collision=validated-before-trap-install
             off_mode=disabled-plan-installs-no-trap

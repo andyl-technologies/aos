@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostChannelGateWiring",
-  taskIds ? ["T-GHC-15"],
+  taskIds ? [],
+  openTaskIds ? ["T-GHC-15"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,18 +15,19 @@
   phase2SingleVmFingerprintDefinition = import ./phase1-single-vm-fingerprint-gate.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
-    taskIds = ["T-PLAN-3" "T-HARN-7"];
+    taskIds = [];
   };
   phase2AnyGuestDefinition = import ./phase2-any-guest.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase2.gates.anyGuest";
-    taskIds = ["T-PLAN-3" "T-DET-22" "T-HARN-16"];
+    taskIds = ["T-DET-22" "T-HARN-16"];
     dependencies = [phase2SingleVmFingerprintDefinition];
   };
   phase4ChannelDeterminismDefinition = import ./phase4-guest-host-channel-determinism.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase4.guestHostChannelDeterminism";
-    taskIds = ["T-GHC-12"];
+    taskIds = [];
+    openTaskIds = ["T-GHC-12"];
   };
   phase4EmitterAbsenceDefinition = import ./phase4-guest-host-emitter-absence.nix {
     inherit pkgs lib;
@@ -78,16 +80,17 @@
     requirements;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
   canonicalGate = "checks.crucible.phase4.guestHostChannelGateWiring";
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-15 checked off";
-        needle = "- [x] **T-GHC-15**";
+        label = "T-GHC-15 remains open";
+        needle = "- [ ] **T-GHC-15**";
       }
       {
-        label = "T-GHC-15 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostChannelGateWiring`";
+        label = "T-GHC-15 partial-evidence note";
+        needle = "Partial structural evidence is provided by";
       }
       {
         label = "canonical channel wiring no longer deferred";
@@ -259,7 +262,7 @@
       }
       {
         label = "phase4 channel gate wiring task id";
-        needle = "taskIds = [\"T-GHC-15\"]";
+        needle = "openTaskIds = [\"T-GHC-15\"]";
       }
       {
         label = "phase2 single-VM fingerprint canonical gate attr";
@@ -477,6 +480,9 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=structural-gate-binding-without-live-whitebox-run
             gate=gate:any-guest,gate:single-vm-fingerprint
             black_box_sufficiency=gate:any-guest:no-agent-no-content
             opt_in_additivity=whitebox-host-plugin-switch-no-guest-content
@@ -484,7 +490,7 @@ in
             real_qemu_fingerprint_axis=gate:single-vm-fingerprint:icount-registers-ram
             real_qemu_whitebox_off_on_fingerprint=not_claimed
             fingerprint_equality=host-plugin-off-on-gate-target-and-scheduler-marker-neutral
-            canonical_gate_wiring=complete
+            canonical_gate_wiring=partial-live-whitebox-pending
             lazy_gate_definitions=passthru.lazyGateDefinitions.anyGuest,passthru.lazyGateDefinitions.singleVmFingerprint,passthru.lazyGateDefinitions.channelDeterminism,passthru.lazyGateDefinitions.emitterAbsence
             source_gates=checks.crucible.phase2.gates.anyGuest,checks.crucible.phase2.gates.singleVmFingerprint,checks.crucible.phase4.guestHostChannelDeterminism,checks.crucible.phase4.guestHostEmitterAbsence
             RESULT

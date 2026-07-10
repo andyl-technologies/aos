@@ -260,8 +260,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
       {
-        label = "T-PROTO-6 checklist complete";
-        needle = "- [x] **T-PROTO-6**";
+        label = "T-PROTO-6 checklist remains open until the live plugin is integrated";
+        needle = "- [ ] **T-PROTO-6**";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -275,7 +275,7 @@
       }
       {
         label = "canonical ABI conformance task list";
-        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
+        needle = "taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
       }
     ];
 in

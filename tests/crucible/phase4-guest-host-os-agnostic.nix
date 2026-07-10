@@ -12,7 +12,7 @@
   };
 
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   osAgnosticTest = builtins.readFile ../../crates/crucible/tests/guest_host_os_agnostic.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;

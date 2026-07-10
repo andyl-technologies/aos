@@ -208,6 +208,15 @@ in
             coverage_tb_execs=$(get_value "$coverage_file" tb_execs)
             coverage_entries=$(get_value "$coverage_file" unique_coverage_entries)
             coverage_overflow=$(get_value "$coverage_file" coverage_overflow)
+            disabled_icount_failures=$(get_value "$disabled_file" exact_icount_failures)
+            hook_icount_failures=$(get_value "$hook_file" exact_icount_failures)
+            coverage_icount_failures=$(get_value "$coverage_file" exact_icount_failures)
+            hook_icount_regressions=$(get_value "$hook_file" icount_regressions)
+            coverage_icount_regressions=$(get_value "$coverage_file" icount_regressions)
+            hook_first_entry=$(get_value "$hook_file" first_entry_icount)
+            coverage_first_entry=$(get_value "$coverage_file" first_entry_icount)
+            hook_last_entry=$(get_value "$hook_file" last_entry_icount)
+            coverage_last_entry=$(get_value "$coverage_file" last_entry_icount)
             baseline_wall=$(get_wall baseline_"$rep")
             disabled_wall=$(get_wall disabled_"$rep")
             hook_wall=$(get_wall hook_"$rep")
@@ -222,6 +231,13 @@ in
             [ "$coverage_tb_execs" -gt 0 ]
             [ "$coverage_entries" -gt 0 ]
             [ "$coverage_overflow" = 0 ]
+            [ "$disabled_icount_failures" = 0 ]
+            [ "$hook_icount_failures" = 0 ]
+            [ "$coverage_icount_failures" = 0 ]
+            [ "$hook_icount_regressions" = 0 ]
+            [ "$coverage_icount_regressions" = 0 ]
+            [ "$hook_first_entry" = "$coverage_first_entry" ]
+            [ "$hook_last_entry" = "$coverage_last_entry" ]
 
             awk \
               -v rep="$rep" \
@@ -322,6 +338,10 @@ in
                print "repetitions=" reps;
                print "baseline_retired_reference=hook_off_retired_instructions";
                print "coverage_representation=translated_tb_id_set";
+               print "guest_output_across_coverage_modes=identical";
+               print "exact_tb_entry_icount=nonmutating-helper-no-failures-or-regressions";
+               print "coverage_plugin_scope=c-abi-probe-not-production-rust-plugin";
+               print "canonical_st_fingerprint_compared=false";
                printf "baseline_wall_ns_avg=%.0f\n", baseline_wall_sum / reps;
                printf "disabled_wall_ns_avg=%.0f\n", disabled_wall_sum / reps;
                printf "hook_off_wall_ns_avg=%.0f\n", hook_wall_sum / reps;

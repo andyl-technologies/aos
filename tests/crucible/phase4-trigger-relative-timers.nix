@@ -11,8 +11,8 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   relativeTimerTest = builtins.readFile ../../crates/crucible/tests/trigger_relative_timers.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;

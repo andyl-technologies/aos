@@ -13,8 +13,8 @@
   };
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
   coverageFeedbackTest = builtins.readFile ../../crates/crucible/tests/gate_coverage_feedback.rs;
   eventLogCoverageGate = builtins.readFile ./phase4-event-log-coverage.nix;

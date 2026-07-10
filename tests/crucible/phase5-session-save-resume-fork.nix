@@ -12,9 +12,9 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  modelLib = builtins.readFile ../../crates/crucible/src/model.rs;
+  modelLib = import ./_crucible-model-source.nix {inherit lib;};
   crucibleLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   forkGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;

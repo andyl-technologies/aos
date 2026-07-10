@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.gates.controlResponsive",
-  taskIds ? ["T-PLAN-3" "T-HARN-15"],
+  taskIds ? ["T-HARN-15"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};

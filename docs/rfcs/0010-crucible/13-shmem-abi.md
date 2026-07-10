@@ -136,12 +136,12 @@ fixture, catching any disagreement the compile-time checks miss.
 ## 13.3 The layout
 
 The region is laid out as a fixed-size header followed by a fixed-size array of
-per-node slots, followed by a computed array of SPSC ring headers, followed by a
-computed array of frame-entry backing storage. The header and slots are
-fixed-size so their offsets are compile-time constants; the ring headers and
-entry storage are at offsets computed from the configured node count and queue
-capacity, which are themselves recorded in the header so any mapper can locate
-them without out-of-band knowledge.
+per-node slots, followed by the directed-frame SPSC rings and their frame-entry
+storage, then one fixed-capacity plugin-to-host coverage ring per VM. The header
+and slots are fixed-size so their offsets are compile-time constants. Frame-ring
+geometry is recorded in the header; ABI v2 derives the trailing coverage-ring
+geometry from that frame extent, the VM count, and the ABI-fixed coverage-map
+cardinality, so no process-local pointer or host-layout fact crosses the ABI.
 
 ```text
   +--------------------------------------------------+  offset 0
@@ -157,6 +157,11 @@ them without out-of-band knowledge.
   +--------------------------------------------------+  header.ring_data_off
   | FrameEntry[ ... ]  (entry_stride bytes each)     |   = capacity entries per ring
   | ...                                              |
+  +--------------------------------------------------+  align_up(frame data end, 128)
+  | Coverage RingHeader[vm_node_count]               |   = one SPSC ring per VM
+  +--------------------------------------------------+
+  | CoverageEntry[vm_node_count][65536]              |   = one slot per map index
+  | ...                                              |
   +--------------------------------------------------+  header.region_size
 ```
 
@@ -164,9 +169,11 @@ them without out-of-band knowledge.
 
 The region header carries the identity and shape of the region: a magic number,
 the ABI version, the configured node count and queue capacity, the computed
-sub-region offsets, and the global pause flag. It is the first thing a mapper
-reads and the thing the handshake ([`14-protocol.md`](14-protocol.md)) validates
-before any node touches a slot.
+frame sub-region offsets, and the global pause flag. ABI v2 mappers derive the
+coverage tail from that validated frame extent, the VM count, and fixed v2
+coverage constants. The header is the first thing a mapper reads and the thing
+the handshake ([`14-protocol.md`](14-protocol.md)) validates before any node
+touches a slot.
 
 ```rust
 /// Eight-byte ASCII magic identifying a Crucible shared-memory region.
@@ -174,7 +181,7 @@ before any node touches a slot.
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 
 /// Current ABI version. Bumped on any layout or semantics change (§13.6).
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// Compile-time maximum number of node slots in the region.
 /// An ABI detail (§13.5); the engine's topology model MUST NOT depend on it.
@@ -482,9 +489,53 @@ The discipline is the standard seqlock idiom:
   NOT consume a slot read whose bracketing generation is odd or unequal. *Gate:*
   `gate:abi-conformance`, `gate:layer1-injection`. *Spec:* §13.3.4.
 
+### 13.3.5 Plugin-to-host coverage rings
+
+ABI v2 allocates one additional SPSC ring per logical VM. The QEMU plugin is
+the sole producer; the host adapter is the sole consumer. `CoverageEntry` is a
+fixed 64-byte record containing the raw icount immediately before the covered
+TB's first instruction, the guest PC, the fixed-map index, the vCPU index, and
+the translated block length. The plugin writes the complete record before a
+release store to `write_idx`; the host acquire-loads `write_idx` before reading
+and release-stores `read_idx` only after copying the record.
+
+The ring capacity and coverage-map cardinality are both 65,536. The callback
+enqueues only the first transition of a map byte from zero, so a conforming
+producer can publish at most 65,536 records over its process lifetime. It never
+allocates, locks, blocks, performs I/O, evicts an older record, or writes a
+second output stream in the TB callback. `QueueFull` is therefore an invariant
+failure and aborts the run loudly; it is not routine backpressure.
+
+The host drains only after a completed quantum boundary (and once more before
+coverage-aware teardown). It validates every entry, requires FIFO icounts to be
+nondecreasing and no later than the published boundary, rejects a repeated map
+index, and appends the complete batch to the scheduler's unified observational
+event log before another backend step. A final teardown drain is returned from
+the backend quantum loop, admitted with the same dense event-log sequence
+validation, and published by the session actor before shutdown completes. No
+host-side coverage collection is a persistent record parallel to that log.
+
+- **[SHM-38]** Each logical VM MUST own exactly one ABI-v2 coverage ring with the
+  QEMU plugin as sole producer and host adapter as sole consumer. Publication
+  and reclamation MUST use the same release/acquire SPSC ordering as frame
+  rings. *Gate:* `gate:abi-conformance`, `gate:layer1-injection`. *Spec:*
+  §13.3.5, §13.4.
+
+- **[SHM-39]** Coverage capacity MUST equal the fixed coverage-map cardinality
+  (65,536), and the producer MUST enqueue only a map index's first hit. A full
+  queue or duplicate novelty MUST fail the run without eviction, overwrite, or
+  blocking in the callback. *Gate:* `gate:layer1-injection`,
+  `gate:basic-block-coverage`. *Spec:* §13.3.5.
+
+- **[SHM-40]** The host MUST drain coverage only at a published completion
+  boundary, reject invalid/future/regressing/duplicate entries, and append the
+  FIFO batch to the unified event log before the next step or teardown. *Gate:*
+  `gate:basic-block-coverage`. *Spec:* §13.3.5, forward-ref
+  [`19-observability-event-log.md`](19-observability-event-log.md).
+
 ## 13.4 Normative offset and size table
 
-The following constants are the binding ABI for `ABI_VERSION = 1` on
+The following constants are the binding ABI for `ABI_VERSION = 2` on
 `x86_64-unknown-linux-gnu`. The generated C header ([SHM-4]) and the Rust static
 assertions ([SHM-5]) MUST both reproduce these exactly. The golden-vector test
 (§13.8) checks the runtime bytes against a fixture built from this table.
@@ -532,28 +583,42 @@ FrameEntry    (size 24 + MAX_FRAME_DATA, align 8)
   @ 18  _pad[6]
   @ 24  data[MAX_FRAME_DATA]
 
+CoverageEntry (size 64, align 64)
+  @  0  current_icount     u64
+  @  8  guest_pc           u64
+  @ 16  map_index          u64
+  @ 24  vcpu_index         u32
+  @ 28  block_len          u32
+  @ 32  _reserved[32]
+
 Constants
   REGION_MAGIC            = "CRUCSHM1" (LE u64)
-  ABI_VERSION             = 1
+  ABI_VERSION             = 2
   MAX_NODES               = 32
   RESERVED_SLOTS          = 3
   MAX_FRAME_DATA          = 4608
   DEFAULT_QUEUE_CAPACITY  = 64
+  COVERAGE_QUEUE_CAPACITY = 65536
 ```
 
 - **[SHM-14]** The offsets, sizes, and alignments in the §13.4 table are the
-  normative ABI for `ABI_VERSION = 1`. The build MUST verify, on both the Rust and
+  normative ABI for `ABI_VERSION = 2`. The build MUST verify, on both the Rust and
   C sides, that the compiled layout matches this table; any deviation MUST fail the
-  build. The header offsets and slot offsets MUST be compile-time constants (the
-  header and slot are fixed-size); the ring-header and frame-entry offsets MUST be
-  computed from `node_count` and `queue_capacity` and recorded in the header.
+  build. Header and slot offsets MUST be compile-time constants. Directed-ring and
+  frame-entry offsets MUST be computed from the header geometry. Coverage-ring
+  offsets MUST be derived deterministically from the frame-data end and the v2
+  constants, with one ring per VM and capacity equal to the coverage-map
+  cardinality.
   *Gate:* `gate:abi-conformance`. *Spec:* §13.4.
 
 - **[SHM-15]** Reserved bytes (`RegionHeader::_reserved`, `NodeSlot::_reserved`,
-  the ring-header pad regions, and `FrameEntry::_pad`) MUST be zero-initialized at
-  region creation and MUST be ignored on read at `ABI_VERSION = 1`. Reserved
-  space exists so a future minor version can add fields without moving existing
-  offsets (§13.6); a non-zero reserved byte MUST NOT change behavior. *Gate:*
+  the ring-header pad regions, `FrameEntry::_pad`, and
+  `CoverageEntry::_reserved`) MUST be zero-initialized at region creation.
+  Existing control/frame reserved space MUST be ignored on read at
+  `ABI_VERSION = 2`; coverage entries MUST reject non-zero reserved bytes because
+  each entry is untrusted plugin output validated before event-log admission.
+  Reserved space exists so a future version can add fields without moving
+  existing offsets (§13.6). *Gate:*
   `gate:abi-conformance`. *Spec:* §13.4, §13.6.
 
 ## 13.5 Decoupling logical topology from physical layout
@@ -794,13 +859,17 @@ word no longer equals `v`.
 
 The region carries an ABI version in its header. The handshake
 ([`14-protocol.md`](14-protocol.md)) validates it before any node trusts a byte of
-the region. Golden vectors pin the layout so an accidental change is caught.
+the region. ABI v2 is intentionally incompatible with v1 because v2 adds the
+coverage tail: a v2 host rejects a v1 plugin/region, and a v2 plugin rejects a
+v1 host acknowledgement/region. There is no legacy-tail inference or partial
+mapping. Golden vectors pin the layout so an accidental change is caught.
 
 - **[SHM-30]** The `RegionHeader` MUST carry `abi_version`, and the
   handshake ([`14-protocol.md`](14-protocol.md)) MUST reject a region whose
   `magic != REGION_MAGIC` or whose `abi_version != ABI_VERSION` compiled into the
   mapping process, before any slot or ring is accessed. A version mismatch MUST be
-  a hard, loud failure, never a best-effort partial map. *Gate:*
+  a hard, loud failure, never a best-effort partial map; this includes both
+  v2-to-v1 mismatch directions. *Gate:*
   `gate:abi-conformance`, `gate:qemu-inert`. *Spec:* §13.8, forward-ref
   [`14-protocol.md`](14-protocol.md).
 
@@ -926,3 +995,9 @@ by when the producer's store landed in shared memory.
   keep per-vCPU icount/state out of the ABI so `ABI_VERSION` is unchanged for
   N-vCPU nodes; route per-vCPU fingerprint state over QMP/plugin introspection,
   not shmem. — satisfies [SHM-37]; spec §13.3.2.
+- [x] **T-SHM-17** Add one ABI-v2 coverage SPSC ring per logical VM, fix its
+  capacity to the coverage-map cardinality, publish only first-hit entries, and
+  make the host validate and append each completion-boundary batch to the
+  unified event log before the next step or teardown. Treat overflow,
+  regression, future icounts, and duplicate novelty as fatal invariant errors.
+  — satisfies [SHM-38], [SHM-39], [SHM-40]; spec §13.3.5, §13.4, §13.6.

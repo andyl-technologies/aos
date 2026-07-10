@@ -1127,7 +1127,7 @@ pub enum SessionError {
     later pause/stop/fork cannot drop them, rejects stopped-state mutators during
     terminal drain, and that `pause`/`stop` take effect at the boundary check
     without driving an extra quantum while `stop` invokes scheduler shutdown.
-- [x] **T-SESS-7** Implement breakpoints as the shared 17a `Condition` predicate
+- [ ] **T-SESS-7** Implement breakpoints as the shared 17a `Condition` predicate
   vocabulary (§17a.2, including `NodeState` and `AssertionState` leaves and
   `AllOf`/`AnyOf`/`Once`/`Not`) evaluated at the same deterministic evaluation
   points as triggers/assertions, with dispositions Suspend/Trace/Action and a
@@ -1135,7 +1135,7 @@ pub enum SessionError {
   matching evaluation point's quantum boundary, observation-only for Suspend/Trace
   and control-logged for mutating Actions. — satisfies [SESS-15], [SESS-16],
   [SESS-17], [SESS-30], [SESS-31]; spec §6; cross-ref 17a §17a.2.
-  - Completed by `checks.crucible.phase5.sessionBreakpoints`:
+  - Partial evidence under `checks.crucible.phase5.sessionBreakpoints`:
     `crucible-session` now evaluates actor-owned breakpoints through the shared
     17a `ConditionEventLogPrefix`/`ConditionEvaluationPass` path, including
     scheduler-owned quiescence evidence from `QuantumOutcome` even at no-entry
@@ -1207,12 +1207,12 @@ pub enum SessionError {
     `gate_control_responsive` tests cover lock-free status reads, mirror-backed
     state/event-log-length queries, event-log cursor streams, state-transition
     streams, and observation-only subscriptions.
-- [x] **T-SESS-11** Define and implement the pluggable `SimulationBackend` trait
+- [ ] **T-SESS-11** Define and implement the pluggable `SimulationBackend` trait
   (step_to/apply/snapshot/restore/now/fingerprint/shutdown) with the QEMU
   backend, the `SimDouble`, and a mock satisfying it interchangeably; keep the
   scheduler the single source of timing truth. — satisfies [SESS-26], [SESS-27];
   spec §10; cross-ref 24 [HARN-14].
-  - Completed by `checks.crucible.phase5.sessionSimulationBackend`:
+  - Partial evidence under `checks.crucible.phase5.sessionSimulationBackend`:
     `SimulationBackend` is the shared backend boundary for scheduler-supplied
     `step_to`, boundary-applied effects, backend snapshots/restores,
     scheduler-mirrored `now`, fingerprint sampling, and shutdown. The pure
@@ -1222,11 +1222,11 @@ pub enum SessionError {
     rejection of trait-level SimDouble outbound sends without scheduler
     authorization, and QEMU channel routing plus restore-time mirror updates
     without introducing a backend-owned timing source.
-- [x] **T-SESS-12** Run the full session/lifecycle/command suite and
+- [ ] **T-SESS-12** Run the full session/lifecycle/command suite and
   `gate:control-responsive` / `gate:scheduler-liveness` against the in-process
   `SimDouble` (no real QEMU), asserting only fidelity properties require the QEMU
   backend. — satisfies [SESS-28]; spec §10; cross-ref 24 §2, §3.
-  - Completed by `checks.crucible.phase5.sessionSimDoubleSuite`: the aggregate
+  - Partial evidence under `checks.crucible.phase5.sessionSimDoubleSuite`: the aggregate
     runs the full `crucible-session` suite, the API and daemon
     `gate_control_responsive` targets, and `gate:scheduler-liveness` under the
     `test-double` feature with an initialized and stepped `crucible::SimDouble`

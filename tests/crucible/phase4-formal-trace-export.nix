@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   crateManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   formalTraceExportTest = builtins.readFile ../../crates/crucible/tests/formal_trace_export.rs;

@@ -14,8 +14,8 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
-  session = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
+  session = import ./_crucible-session-source.nix {inherit lib;};
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   defaultChecks = builtins.readFile ./default.nix;
 

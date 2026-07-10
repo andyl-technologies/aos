@@ -54,9 +54,7 @@ pkgs.mkDerivation {
           printf '%s\n' T-RISK-14
           printf '%s\n' T-RISK-15
           printf '%s\n' T-RISK-16
-          printf '%s\n' T-RISK-17
           printf '%s\n' T-RISK-18
-          printf '%s\n' T-RISK-19
           printf '%s\n' T-RISK-20
         } > expected-checked-tasks.txt
 
@@ -70,7 +68,7 @@ pkgs.mkDerivation {
 
         sort expected-checked-tasks.txt > expected-checked-tasks.sorted
         checked_count=$(wc -l < checked-tasks.txt)
-        [ "$checked_count" -eq 20 ] || fail "expected 20 checked risk tasks, found $checked_count"
+        [ "$checked_count" -eq 18 ] || fail "expected 18 checked risk tasks, found $checked_count"
         while read -r task; do
           grep -F -x -q -- "$task" checked-tasks.txt || fail "missing checked task $task"
         done < expected-checked-tasks.sorted
@@ -110,13 +108,13 @@ pkgs.mkDerivation {
         require_fixed "$risk_doc" "**RISK-21** is retired by \`T-RISK-14\`"
         require_fixed "$risk_doc" "**RISK-22** is retired by \`T-RISK-15\`"
         require_fixed "$risk_doc" "**RISK-23 / RISK-24** are enforced as a Phase-0 checklist guard by \`T-RISK-16\`"
-        require_fixed "$risk_doc" "**RISK-25** is retired by \`T-RISK-17\`"
-        require_fixed "$risk_doc" "**RISK-26** is resolved by \`T-RISK-18\` with the preemption-injection patch surface landed"
+        require_fixed "$risk_doc" "**RISK-25** remains open under \`T-RISK-17\`"
+        require_fixed "$risk_doc" "**RISK-26** uses the \`T-RISK-18\` default-only fallback while live preemption"
         require_fixed "$risk_doc" "\`preemption_injection_api_available=qemu_plugin_inject_preemption\`"
         require_fixed "$risk_doc" "\`known_preemption_injection_surface_found=true\`"
-        require_fixed "$risk_doc" "\`default_determinism_prereqs_green=true\`"
+        require_fixed "$risk_doc" "\`default_determinism_prereqs_green=false\`"
         require_fixed "$risk_doc" "\`fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending\`"
-        require_fixed "$risk_doc" "**RISK-27** is resolved by \`T-RISK-19\` with the modeled-throughput default-only fallback"
+        require_fixed "$risk_doc" "**RISK-27** remains open under \`T-RISK-19\`"
         require_fixed "$risk_doc" "\`selected_phase0_default_rr_switch_quantum=4096\`"
         require_fixed "$risk_doc" "\`race_yield_tested=false\`"
         require_fixed "$risk_doc" "\`d25_status=open_until_preemption_explorer_enabled\`"
@@ -180,8 +178,9 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "checks.crucible.phase0.searchTreeGrowth"
         require_fixed "$decision_doc" "checks.crucible.phase0.multiVmParallelism"
         require_fixed "$decision_doc" "checks.crucible.phase0.riskRegisterGate"
-        require_fixed "$decision_doc" "checked_risk_tasks=20"
-        require_fixed "$decision_doc" "retired_decision_entries=20"
+        require_fixed "$decision_doc" "checked_risk_tasks=18"
+        require_fixed "$decision_doc" "retired_decision_entries=18"
+        require_fixed "$decision_doc" "phase0_foundational_blockers_open=1"
         require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
         require_fixed "$decision_doc" "checks.crucible.phase0.s12PreemptionDecision"
         require_fixed "$decision_doc" "decision_preemption_exploration_enabled=false"
@@ -198,12 +197,12 @@ pkgs.mkDerivation {
 
         mkdir -p "$out"
         {
-          echo PASS
+          echo PASS_REGISTER_CONSISTENCY
           echo spike=risk-register-checklist-guard
-          echo checked_risk_tasks=20
+          echo checked_risk_tasks=18
           echo checked_task_scope=T-RISK-only
-          echo retired_decision_entries=20
-          echo phase0_foundational_blockers_open=0
+          echo retired_decision_entries=18
+          echo phase0_foundational_blockers_open=1
         } > "$out/result"
         cp "$risk_doc" "$out/30-risks-spikes.md"
         cp "$decision_doc" "$out/31-decision-register.md"

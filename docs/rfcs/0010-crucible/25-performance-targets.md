@@ -778,7 +778,7 @@ run ahead on its own core.
 > sequenced **after** the determinism gates of their phase ([G-5]): performance is
 > measured only once the correctness it is measured against exists.
 
-Completed by `checks.crucible.phase7.gates.perfBench`: the perf-bench regression
+Partial modeled evidence is provided by `checks.crucible.phase7.gates.perfBench`: the perf-bench regression
 gate runs the harness cost-model substrate (`crucible-harness`'s `perf` module and
 the `gate_perf_bench` test target) over a hermetic reference corpus with no QEMU
 present. It evaluates the §25.1 cost model `wall_clock ≈ (Σ busy_i) / (IPS_tcg × P)
@@ -827,90 +827,93 @@ the real-QEMU launch path and `gate:fleet-equivalence`. The modeled gate holds t
 contract's shape and its regression ratchets; the fleet check supplies the
 real reference-host numbers the ratchet compares against.
 
-- [x] **T-PERF-1** Implement the cost-model instrumentation: measure and attribute
+- [ ] **T-PERF-1** Implement the cost-model instrumentation: measure and attribute
   wall-clock to busy-instruction execution (TCG IPS), idle fast-forward, sync
   overhead, and amortized boot as separate terms. — satisfies [PERF-1], [PERF-2];
   spec §25.1.
-- [x] **T-PERF-2** Implement the idle-compression check: assert wall-clock is flat
+- [ ] **T-PERF-2** Implement the idle-compression check: assert wall-clock is flat
   in idle virtual duration (a 60s idle gap costs the same as a 60ms one). —
   satisfies [PERF-2]; spec §25.1.2.
-- [x] **T-PERF-3** Implement realized-parallelism measurement (`P`) and the
+- [ ] **T-PERF-3** Implement realized-parallelism measurement (`P`) and the
   multi-VM speedup benchmark (k nodes on N cores → approaches min(k,N)×, attenuated
   by critical path). — satisfies [PERF-3]; spec §25.2.
-- [x] **T-PERF-4** Implement the latency sweep: vary minimum link latency and
+- [ ] **T-PERF-4** Implement the latency sweep: vary minimum link latency and
   confirm realized parallelism scales with it down to the floor (the
   latency-is-the-budget identity). — satisfies [PERF-4]; spec §25.2.1.
-- [x] **T-PERF-5** Add the serial-vs-parallel bit-identity cross-check to the perf
+- [ ] **T-PERF-5** Add the serial-vs-parallel bit-identity cross-check to the perf
   corpus (P=1 and P=max produce identical S/T/canonical log). — satisfies
   [PERF-5]; spec §25.2.
-- [x] **T-PERF-6** Add a sub-millisecond-latency scenario and assert it stays
+- [ ] **T-PERF-6** Add a sub-millisecond-latency scenario and assert it stays
   deterministic while exhibiting the predicted parallelism reduction (the explicit
   trade). — satisfies [PERF-6], [PERF-25]; spec §25.2.3, §25.10.2.
-- [x] **T-PERF-7** Implement the sync-overhead budget measurement and the
+- [ ] **T-PERF-7** Implement the sync-overhead budget measurement and the
   warn-5%/fail-10% thresholds against guest busy-execution wall-clock. — satisfies
   [PERF-7]; spec §25.3.
-- [x] **T-PERF-8** Implement the no-per-quantum-syscall assertion (syscall count
+- [ ] **T-PERF-8** Implement the no-per-quantum-syscall assertion (syscall count
   over a fixed advance workload is the futex park/wake only; zero IPC round-trips).
   — satisfies [PERF-8]; spec §25.3.1.
-- [x] **T-PERF-9** Implement per-TB plugin-overhead measurement and assert it is a
+- [ ] **T-PERF-9** Implement per-TB plugin-overhead measurement and assert it is a
   small constant independent of node count. — satisfies [PERF-9]; spec §25.3.1.
-- [x] **T-PERF-10** Implement the rendezvous-frequency sweep: bit-identical across
+- [ ] **T-PERF-10** Implement the rendezvous-frequency sweep: bit-identical across
   the sweep, with the overhead-versus-frequency curve recorded for the operating
   point. — satisfies [PERF-10]; spec §25.3.3.
-- [x] **T-PERF-11** Implement the boot-amortization check: cold boots over an
+- [ ] **T-PERF-11** Implement the boot-amortization check: cold boots over an
   M-scenario campaign sharing one World is independent of M (≈1 per VM per World).
   — satisfies [PERF-11]; spec §25.4.
-- [x] **T-PERF-12** Implement restore-to-runnable latency measurement (loadvm and
+- [ ] **T-PERF-12** Implement restore-to-runnable latency measurement (loadvm and
   the replay fallback), tracked against the sub-second target. — satisfies
   [PERF-12]; spec §25.4.
-- [x] **T-PERF-13** Establish the fuzzing-throughput baseline (scenarios/core/hour)
+- [ ] **T-PERF-13** Establish the fuzzing-throughput baseline (scenarios/core/hour)
   and the no-regression ratchet. — satisfies [PERF-13]; spec §25.5.1.
-- [x] **T-PERF-14** Implement coverage-on-vs-off guest-IPS measurement and assert
+- [ ] **T-PERF-14** Implement coverage-on-vs-off guest-IPS measurement and assert
   off-cost ≈ no-hook and on-cost within budget (≥ ~70% of off-IPS). — satisfies
   [PERF-14]; spec §25.5.2.
-- [x] **T-PERF-15** Assert coverage extraction is observation-only (no fingerprint
+- [ ] **T-PERF-15** Assert coverage extraction is observation-only (no fingerprint
   or canonical-log change with coverage on). — satisfies [PERF-15]; spec §25.5.2.
-- [x] **T-PERF-16** Implement fork-cost measurement (time + bytes vs delta size)
+  The production callback and modeled fingerprint evidence exist, but closure
+  requires a real loaded-QEMU coverage-on/off fingerprint and canonical-log run
+  through the callback owned by T-PLUG-15/T-ADV-10.
+- [ ] **T-PERF-16** Implement fork-cost measurement (time + bytes vs delta size)
   and confirm independence of absolute state size (CoW). — satisfies [PERF-16];
   spec §25.6.
-- [x] **T-PERF-17** Implement snapshot capture/restore latency tracking over the
+- [ ] **T-PERF-17** Implement snapshot capture/restore latency tracking over the
   checkpoint corpus (incremental capture, byte-deterministic serialization). —
   satisfies [PERF-17]; spec §25.6.
-- [x] **T-PERF-18** Implement replay-cost measurement (vs suffix length) and
+- [ ] **T-PERF-18** Implement replay-cost measurement (vs suffix length) and
   confirm checkpoint density keeps the suffix bounded. — satisfies [PERF-18]; spec
   §25.6.
-- [x] **T-PERF-19** Implement `gate:perf-bench` as a regression gate over the
+- [ ] **T-PERF-19** Implement `gate:perf-bench` as a regression gate over the
   §25.7.1 metric set with stored, reviewed baselines and per-metric thresholds. —
   satisfies [PERF-19]; spec §25.7.
-- [x] **T-PERF-20** Make the perf gate gate-able: pin the host profile, prefer
+- [ ] **T-PERF-20** Make the perf gate gate-able: pin the host profile, prefer
   host-independent metrics, tolerance-band the unavoidable wall-clock ones, and
   keep it strictly separate from the determinism gates. — satisfies [PERF-20];
   spec §25.7.2.
-- [x] **T-PERF-21** Content-address and version the perf corpus + baselines
+- [ ] **T-PERF-21** Content-address and version the perf corpus + baselines
   alongside the determinism golden vectors; make a perf regression reproducible
   from scenario + host profile. — satisfies [PERF-21]; spec §25.7.2.
-- [x] **T-PERF-22** Derive and document the recommended operating point (link
+- [ ] **T-PERF-22** Derive and document the recommended operating point (link
   latency + rendezvous frequency) from the [PERF-4]/[PERF-10] sweeps and default
   new scenarios toward it. — satisfies [PERF-22]; spec §25.8.
-- [x] **T-PERF-23** Implement peak-RSS tracking over a representative search and
+- [ ] **T-PERF-23** Implement peak-RSS tracking over a representative search and
   confirm footprint scales with guest RAM + active rings + Σ deltas, not with fork
   count. — satisfies [PERF-23]; spec §25.9.
-- [x] **T-PERF-24** Wire perf-bench to run after (never instead of) the determinism
+- [ ] **T-PERF-24** Wire perf-bench to run after (never instead of) the determinism
   gates, and require any speed optimization to demonstrate determinism-neutrality
   before acceptance. — satisfies [PERF-24]; spec §25.10.1.
-- [x] **T-PERF-25** Document and measure the granularity-vs-parallelism trade (the
+- [ ] **T-PERF-25** Document and measure the granularity-vs-parallelism trade (the
   [PERF-4] sweep) so an author can predict the parallelism cost of a latency
   choice. — satisfies [PERF-25]; spec §25.10.2.
 - [x] **T-PERF-26** Add `gate:perf-bench` to the canonical gate catalog (24 §1.1)
   verbatim and wire it into the phase plan after the same-phase determinism gates;
   satisfy the referenced-gate doc-lint. — satisfies [PERF-26]; spec §25.11.
-- [x] **T-PERF-27** Implement the fleet throughput sweep (1..N explorer hosts):
+- [ ] **T-PERF-27** Implement the fleet throughput sweep (1..N explorer hosts):
   report aggregate scenarios/core/hour and per-host store-I/O overhead, assert
   near-linear scaling to shared-store-bandwidth saturation (total parallelism ≈
   hosts × per-host P), binding `gate:perf-bench` + `gate:campaign-continuity`. —
   satisfies [PERF-27]; spec §25.5.3; cross-ref
   [`35-distributed-exploration.md`](35-distributed-exploration.md).
-- [x] **T-PERF-28** Implement the cumulative-coverage ratchet: track campaign
+- [ ] **T-PERF-28** Implement the cumulative-coverage ratchet: track campaign
   coverage vs run count, flag a decrease as a regression (flat is legitimate),
   require an explicit recorded baseline event for a fresh campaign lineage,
   binding `gate:perf-bench` + `gate:campaign-continuity`. — satisfies [PERF-28];

@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginPreemption",
-  taskIds ? ["T-PLUG-25" "T-DET-30"],
+  taskIds ? [],
+  openTaskIds ? ["T-DET-30" "T-PLUG-25"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -22,6 +23,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -50,8 +52,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
       {
-        label = "T-DET-30 checklist complete";
-        needle = "- [x] **T-DET-30**";
+        label = "T-DET-30 remains open";
+        needle = "- [ ] **T-DET-30**";
       }
       {
         label = "T-DET-30 completion note names preemption check";
@@ -64,8 +66,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-25 checklist complete";
-        needle = "- [x] **T-PLUG-25**";
+        label = "T-PLUG-25 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-25**";
       }
       {
         label = "Decision::Preemption obligation";
@@ -389,6 +391,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             gate=gate:layer0-determinism
             preemption_capability=qemu_plugin_inject_preemption
             command_window=[deadline,ceiling]

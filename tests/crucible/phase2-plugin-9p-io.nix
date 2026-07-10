@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginNinePIo",
-  taskIds ? ["T-PLUG-13"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-13"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -18,6 +19,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -73,8 +75,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-13 checklist complete";
-        needle = "- [x] **T-PLUG-13**";
+        label = "T-PLUG-13 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-13**";
       }
       {
         label = "9p callback wording";
@@ -416,6 +418,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             ninep_rings=vm-slot-to-9p-io-and-return
             submit_icount=stamped-in-request-frame
             request_payload=raw-9p-message

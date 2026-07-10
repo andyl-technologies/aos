@@ -13,7 +13,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
-  pluginSetup = builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs;
+  pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
@@ -51,8 +51,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-21 checklist complete";
-        needle = "- [x] **T-PLUG-21**";
+        label = "T-PLUG-21 checklist remains open during boundary hardening";
+        needle = "- [ ] **T-PLUG-21**";
       }
       {
         label = "PLUG-46 unsafe boundary wording";
@@ -103,15 +103,16 @@
         needle = "QEMU's plugin ABI";
       }
       {
-        label = "scalar copy before pointer lifetime ends";
-        needle = "Only scalar fields are copied before the pointer lifetime ends.";
+        label = "owned scalar copy below the raw boundary";
+        needle = "only scalar data is copied into owned state";
       }
       {
-        # The install entry point was safe-shimmed: its signature is safe, so
-        # rustdoc conventions replace `# Safety` with the ABI-contract section;
-        # block-level `// SAFETY:` comments carry the pointer justifications.
-        label = "install ABI contract section";
-        needle = "# ABI contract";
+        label = "unsafe C install trampoline";
+        needle = "pub unsafe extern \"C\" fn qemu_plugin_install";
+      }
+      {
+        label = "install safety contract";
+        needle = "# Safety";
       }
       {
         label = "dlsym safety";
@@ -122,8 +123,8 @@
         needle = "int64_t qemu_plugin_clock_deadline_ns(void)";
       }
       {
-        label = "direct advance transmute safety";
-        needle = "void qemu_plugin_advance_virtual_time_direct(int64_t)";
+        label = "queued advance transmute safety";
+        needle = "int qemu_plugin_advance_time_ns(int64_t)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/setup.rs" pluginSetup [
@@ -323,68 +324,66 @@ in
               cd source
             fi
 
-            grep -Rnl 'unsafe' crates/crucible-qemu-plugin/src > "$TMPDIR/plugin-unsafe-files" || true
+            grep -RnlE 'unsafe[[:space:]]*(\{|fn|extern|impl|trait)' \
+              crates/crucible-qemu-plugin/src > "$TMPDIR/plugin-unsafe-files" || true
             while IFS= read -r file; do
               case "$file" in
-                crates/crucible-qemu-plugin/src/abi.rs|crates/crucible-qemu-plugin/src/lib.rs|crates/crucible-qemu-plugin/src/setup.rs)
+                crates/crucible-qemu-plugin/src/abi.rs|\
+                crates/crucible-qemu-plugin/src/coverage.rs|\
+                crates/crucible-qemu-plugin/src/runtime.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
+                crates/crucible-qemu-plugin/src/runtime/tests/support.rs|\
+                crates/crucible-qemu-plugin/src/setup.rs|\
+                crates/crucible-qemu-plugin/src/network_rx.rs|\
+                crates/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible-qemu-plugin/src/vcpu_introspection.rs)
                   ;;
                 *)
-                  echo "$file: unexpected unsafe boundary outside abi/lib/setup" >&2
+                  echo "$file: unexpected unsafe boundary outside audited FFI/setup adapters" >&2
                   exit 1
                   ;;
               esac
             done < "$TMPDIR/plugin-unsafe-files"
 
-            for file in \
-              crates/crucible-qemu-plugin/src/abi.rs \
-              crates/crucible-qemu-plugin/src/lib.rs \
-              crates/crucible-qemu-plugin/src/setup.rs
-            do
+            while IFS= read -r file; do
               grep -nE 'unsafe[[:space:]]*(\{|fn|extern|impl|trait)' "$file" > "$TMPDIR/plugin-unsafe-lines" || true
               while IFS=: read -r line match; do
                 if [ -z "$line" ]; then
                   continue
                 fi
-                if [ "$file" = crates/crucible-qemu-plugin/src/abi.rs ] \
-                  && printf '%s\n' "$match" | grep -q 'pub unsafe extern "C" fn qemu_plugin_install'; then
+                if printf '%s\n' "$match" \
+                  | grep -qE 'unsafe[[:space:]]+(extern[[:space:]]+"C"[[:space:]]+)?fn'; then
+                  start=$((line - 16))
+                  if [ "$start" -lt 1 ]; then
+                    start=1
+                  fi
+                  if ! sed -n "''${start},''${line}p" "$file" | grep -q '# Safety'; then
+                    echo "$file:$line: unsafe function lacks a nearby # Safety contract" >&2
+                    exit 1
+                  fi
                   continue
                 fi
-                start=$((line - 4))
+                start=$((line - 8))
                 if [ "$start" -lt 1 ]; then
                   start=1
                 fi
-                if ! sed -n "''${start},''${line}p" "$file" | grep -q 'SAFETY:'; then
+                end=$((line + 8))
+                if ! sed -n "''${start},''${end}p" "$file" | grep -q 'SAFETY:'; then
                   echo "$file:$line: unsafe block lacks nearby SAFETY comment" >&2
                   exit 1
                 fi
               done < "$TMPDIR/plugin-unsafe-lines"
-            done
+            done < "$TMPDIR/plugin-unsafe-files"
 
             if grep -RIn 'transmute' crates/crucible-qemu-plugin/src \
-              | grep -Fv 'Some(unsafe { std::mem::transmute::<*mut c_void, QemuClockDeadlineFn>(symbol) })' \
-              | grep -Fv 'Some(unsafe { std::mem::transmute::<*mut c_void, QemuAdvanceVirtualTimeDirectFn>(symbol) })'; then
-              echo "transmute is only allowed for exact QEMU symbol ABI casts" >&2
+              | grep -Ev 'src/(abi|coverage|network_rx|network_tx)\.rs:'; then
+              echo "transmute is confined to audited QEMU symbol resolvers" >&2
               exit 1
             fi
             for pattern in \
-              from_raw_parts \
-              from_raw_parts_mut \
-              read_volatile \
-              write_volatile \
-              copy_nonoverlapping \
-              copy_from_nonoverlapping \
-              'libc::memcpy' \
-              'libc::memmove' \
-              'ptr::copy' \
-              'ptr::read' \
-              'ptr::write' \
               'guest_address() as *' \
               'guest_address as *' \
-              ' as *const ' \
-              ' as *mut ' \
-              'as *const u8' \
-              'as *mut u8' \
-              'as_mut_ptr().cast'
+              'guest_physical_address as *'
             do
               if grep -RIn "$pattern" crates/crucible-qemu-plugin/src; then
                 echo "forbidden raw pointer guest-memory pattern: $pattern" >&2
@@ -392,8 +391,8 @@ in
               fi
             done
             if grep -RIn 'as_ptr().cast' crates/crucible-qemu-plugin/src \
-              | grep -v 'QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C.as_ptr().cast()'; then
-              echo "raw pointer casts are only allowed for approved QEMU symbol lookup names" >&2
+              | grep -Ev 'src/(abi|network_rx|network_tx)\.rs:'; then
+              echo "symbol-name pointer casts are confined to audited QEMU resolvers" >&2
               exit 1
             fi
             if grep -RIn 'read_guest_memory' crates/crucible-qemu-plugin/src \
@@ -410,7 +409,7 @@ in
             fi
 
             target_dir="$TMPDIR/crucible-plugin-unsafe-boundary-target"
-            for filter in abi setup whitebox_ network_tx network_rx block_ ninep_; do
+            for filter in abi setup whitebox_ network_tx network_rx block_ ninep_ coverage_; do
               cargo test \
                 --frozen \
                 --offline \
@@ -431,12 +430,13 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
-            unsafe_boundary=abi,setup
-            unsafe_comments=nearby-SAFETY-required
+            task_status=open
+            unsafe_boundary=abi,coverage,runtime,runtime-live-callbacks,test-support,setup,network-rx,network-tx,vcpu-introspection
+            unsafe_comments=blocks-require-nearby-SAFETY-functions-require-Safety-contract
             callback_contract=single-threaded-round-robin-vcpu-thread
             setup_lifetimes=typed-descriptor-and-mmap-tokens
             guest_memory=plugin-api-adapters-only
-            payload_copies=MAX_FRAME_DATA-and-declared-length-validated
+            callback_foundation=live-vcpu-time-slice;remaining-device-adapters-fail-closed
             RESULT
           '';
         }

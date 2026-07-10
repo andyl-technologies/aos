@@ -11,9 +11,9 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
   canonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   tableTest = builtins.readFile ../../crates/crucible/tests/active_fault_table.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;
   defaultChecks = builtins.readFile ./default.nix;

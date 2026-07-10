@@ -16,7 +16,7 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
-  session = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  session = import ./_crucible-session-source.nix {inherit lib;};
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
   rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;

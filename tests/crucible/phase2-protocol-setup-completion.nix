@@ -21,8 +21,8 @@
   shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/setup_validation.rs;
   pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginSetup = builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs;
-  pluginTimeControl = builtins.readFile ../../crates/crucible-qemu-plugin/src/time_control.rs;
+  pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
+  pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -298,7 +298,7 @@
       }
       {
         label = "canonical ABI conformance task list";
-        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
+        needle = "taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
       }
     ];
 in

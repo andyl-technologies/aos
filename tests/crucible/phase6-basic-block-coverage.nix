@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.basicBlockCoverage",
-  taskIds ? ["T-ADV-10"],
+  taskIds ? [],
+  openTaskIds ? ["T-ADV-10" "T-PLUG-15"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,21 +15,59 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   pluginDoc = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
   basicBlockGateTest = builtins.readFile ../../crates/crucible/tests/gate_basic_block_coverage.rs;
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   pluginCoverage = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs;
   qemuCoverage = builtins.readFile ../../crates/crucible-qemu/src/coverage.rs;
+  qemuLiveCoverageGate = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate.rs;
+  qemuLiveCoverageTrace = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate/trace.rs;
+  qemuLiveCoverageGateCli = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-coverage.rs;
+  guestSource = builtins.readFile ./phase6-basic-block-coverage-guest.nix;
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuCoverageTest = builtins.readFile ../../crates/crucible-qemu/tests/gate_basic_block_coverage.rs;
+  qemuMappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
+  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  qemuAsyncDriver = builtins.readFile ../../crates/crucible-qemu/src/async_driver.rs;
+  mappedQuantumTest = builtins.readFile ../../crates/crucible-qemu/tests/mapped_quantum.rs;
+  backendBoundary = builtins.readFile ../../crates/crucible/src/backend.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  session = import ./_crucible-session-source.nix {inherit lib;};
   pluginCoverageGate = builtins.readFile ./phase2-plugin-coverage.nix;
   anyGuestGate = builtins.readFile ./phase2-any-guest.nix;
   eventLogCoverageGate = builtins.readFile ./phase4-event-log-coverage.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
+  rootImage = pkgs.mkDerivation {
+    pname = "crucible-loaded-qemu-coverage-root-image";
+    version = "0";
+    src = null;
+
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.qemu-crucible
+    ];
+
+    phases = [
+      {
+        name = "build-empty-qcow2";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+          qemu-img create -q -f qcow2 "$out/root.qcow2" 64M
+          qemu-img create -q -f qcow2 -F qcow2 \
+            -b "$out/root.qcow2" "$out/overlay.qcow2"
+        '';
+      }
+    ];
+  };
+
+  guestImage = import ./phase6-basic-block-coverage-guest.nix {inherit pkgs;};
+
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -80,7 +119,7 @@
   defaultBasicBlockCoverageBlock =
     sliceFromUntil
     defaultChecks
-    "    basicBlockCoverage = greenBeforeAdvance {"
+    "    basicBlockCoverage = redBeforeAdvance {"
     "    gates = {";
 
   failuresFor = fileLabel: content: requirements:
@@ -104,12 +143,20 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
       {
-        label = "T-ADV-10 checked off";
-        needle = "- [x] **T-ADV-10**";
+        label = "T-ADV-10 remains open until real loaded-QEMU callback evidence";
+        needle = "- [ ] **T-ADV-10**";
       }
       {
-        label = "T-ADV-10 completion note";
-        needle = "Completed by `checks.crucible.phase6.basicBlockCoverage`";
+        label = "T-ADV-10 partial-evidence note";
+        needle = "Partial evidence is provided by `checks.crucible.phase6.basicBlockCoverage`";
+      }
+      {
+        label = "T-ADV-10 names the missing real-QEMU evidence";
+        needle = "real loaded-QEMU run must still prove";
+      }
+      {
+        label = "T-ADV-10 records the completed host event-stream handoff";
+        needle = "ABI-v2 per-VM";
       }
       {
         label = "ADV-21 TCG exec hook";
@@ -122,8 +169,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginDoc [
       {
-        label = "T-PLUG-15 already complete";
-        needle = "- [x] **T-PLUG-15**";
+        label = "T-PLUG-15 remains open";
+        needle = "- [ ] **T-PLUG-15**";
       }
       {
         label = "plugin coverage opt-in";
@@ -132,8 +179,12 @@
     ]
     ++ failuresFor "tests/crucible/phase2-plugin-coverage.nix" pluginCoverageGate [
       {
-        label = "plugin hook gate";
-        needle = "qemu_plugin_register_tcg_exec_cb";
+        label = "plugin exact-entry callback gate";
+        needle = "qemu_plugin_icount_at_tb_entry";
+      }
+      {
+        label = "plugin fixed-capacity overflow/FIFO gate";
+        needle = "assert_coverage_ring_fifo_and_fails_loud_at_fixed_capacity";
       }
     ]
     ++ failuresFor "tests/crucible/phase2-any-guest.nix" anyGuestGate [
@@ -237,6 +288,10 @@
         label = "plugin protocol payload constructor";
         needle = "PluginBasicBlockCoverageObservation::new";
       }
+      {
+        label = "coverage callback teardown lifecycle test";
+        needle = "coverage_owner_unpublishes_callbacks_before_state_is_freed_and_can_reinstall";
+      }
     ]
     ++ forbiddenFailuresFor "crates/crucible-qemu-plugin/src/coverage.rs" pluginCoverage [
       {
@@ -300,6 +355,170 @@
       {
         label = "QEMU coverage fingerprint comparison export";
         needle = "compare_coverage_opt_in_fingerprint_streams";
+      }
+      {
+        label = "loaded-QEMU coverage runner export";
+        needle = "run_loaded_qemu_coverage_gate";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/live_coverage_gate.rs" qemuLiveCoverageGate [
+      {
+        label = "production loaded-QEMU off/on runner";
+        needle = "pub fn run_loaded_qemu_coverage_gate(";
+      }
+      {
+        label = "real fixed-descriptor QEMU spawn";
+        needle = "spawn_qemu_child_with_fds_in_directory(";
+      }
+      {
+        label = "real host/plugin setup";
+        needle = "complete_qemu_host_plugin_setup(";
+      }
+      {
+        label = "real shared-memory coverage drain";
+        needle = "drain live coverage observations";
+      }
+      {
+        label = "coverage-on observation requirement";
+        needle = "LoadedQemuCoverageGateError::CoverageOnEmpty";
+      }
+      {
+        label = "real off/on fingerprint equivalence";
+        needle = "off.fingerprint != on.fingerprint";
+      }
+      {
+        label = "independent full-state fingerprint equivalence";
+        needle = "off.trace_sample != on.trace_sample";
+      }
+      {
+        label = "independent trace plugin launch";
+        needle = ".with_observation_plugin(trace_argument)";
+      }
+      {
+        label = "exact instruction-count boundary";
+        needle = "completed_icount != config.horizon_icount";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/live_coverage_gate/trace.rs" qemuLiveCoverageTrace [
+      {
+        label = "independent trace plugin arguments";
+        needle = "extended=on,mem_events=on,rr_switch_events=on";
+      }
+      {
+        label = "independent trace completeness validation";
+        needle = "validate_trace_sample(&sample, mode)?";
+      }
+      {
+        label = "full fingerprint component requirement";
+        needle = ''"extended_hash",'';
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/examples/crucible-qemu-live-coverage.rs" qemuLiveCoverageGateCli [
+      {
+        label = "loaded-QEMU runner invocation";
+        needle = "run_loaded_qemu_coverage_gate(&config)";
+      }
+      {
+        label = "uninstrumented guest evidence";
+        needle = "guest_instrumentation=none";
+      }
+      {
+        label = "live callback evidence";
+        needle = "loaded_qemu_callback_evidence=present";
+      }
+      {
+        label = "live fingerprint evidence";
+        needle = "coverage_on_off_fingerprint_match=true";
+      }
+      {
+        label = "independent full-state fingerprint evidence";
+        needle = "independent_trace_fingerprint_match=true";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase6-basic-block-coverage-guest.nix" guestSource [
+      {
+        label = "standalone Multiboot guest";
+        needle = ".long 0x1badb002";
+      }
+      {
+        label = "guest has no Crucible cooperation";
+        needle = "guest_interface=none";
+      }
+      {
+        label = "guest RX and RW segment separation";
+        needle = "text PT_LOAD FLAGS(5)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/mapped_quantum.rs" qemuMappedQuantum [
+      {
+        label = "quantum-boundary coverage drain";
+        needle = "fn drain_coverage_at_quantum_boundary(";
+      }
+      {
+        label = "coverage transport boundary drain";
+        needle = "fn drain_observable_events(&mut self)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+      {
+        label = "unified event-log coverage admission";
+        needle = "pub fn advance_to_ceiling_with_event_log(";
+      }
+      {
+        label = "generic QEMU backend coverage drain test";
+        needle = "qemu_node_generic_backend_drains_coverage_without_a_local_side_record";
+      }
+    ]
+    ++ forbiddenFailuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+      {
+        label = "parallel QEMU-local coverage collection";
+        needle = "pending_observable_events";
+      }
+      {
+        label = "coverage carried in the QEMU async report";
+        needle = "coverage_events";
+      }
+    ]
+    ++ forbiddenFailuresFor "crates/crucible-qemu/src/async_driver.rs" qemuAsyncDriver [
+      {
+        label = "coverage carried in the QEMU async completion";
+        needle = "coverage_events";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/backend.rs" backendBoundary [
+      {
+        label = "generic backend observation drain hook";
+        needle = "fn drain_observable_events(&mut self)";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+      {
+        label = "canonical scheduler observation append";
+        needle = "append_backend_observable_events(observations)";
+      }
+      {
+        label = "shutdown returns final canonical entries to the session";
+        needle = "entries.extend(loop_result?)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/src/lib.rs" session [
+      {
+        label = "session canonical coverage publication test";
+        needle = "actor_publishes_backend_coverage_from_the_canonical_event_log";
+      }
+      {
+        label = "session final coverage publication test";
+        needle = "actor_publishes_final_backend_coverage_before_shutdown_completes";
+      }
+      {
+        label = "session final coverage dense-sequence rejection test";
+        needle = "engine_rejects_non_dense_final_shutdown_entries";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/tests/mapped_quantum.rs" mappedQuantumTest [
+      {
+        label = "mapped coverage handoff test";
+        needle = "mapped_quantum_drains_coverage_into_the_unified_event_log";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/tests/gate_basic_block_coverage.rs" qemuCoverageTest [
@@ -396,8 +615,8 @@
     ]
     ++ failuresFor "tests/crucible/default.nix basicBlockCoverage block" defaultBasicBlockCoverageBlock [
       {
-        label = "phase6 basic block coverage green wrapper";
-        needle = "basicBlockCoverage = greenBeforeAdvance";
+        label = "phase6 basic block coverage red wrapper";
+        needle = "basicBlockCoverage = redBeforeAdvance";
       }
       {
         label = "phase6 basic block coverage import";
@@ -408,8 +627,8 @@
         needle = "checks.crucible.phase6.basicBlockCoverage";
       }
       {
-        label = "phase6 basic block coverage task id";
-        needle = ''taskIds = ["T-ADV-10"]'';
+        label = "phase6 basic block coverage open task ids";
+        needle = ''openTaskIds = ["T-ADV-10" "T-PLUG-15"]'';
       }
       {
         label = "phase2 single VM fingerprint raw dependency";
@@ -471,6 +690,9 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.crucible-qemu-plugin
+        pkgs.crucible-qemu-trace-plugin
+        pkgs.qemu-crucible
         pkgs.rust
         pkgs.sed
       ];
@@ -536,6 +758,57 @@ in
               -p crucible-qemu \
               --test gate_basic_block_coverage \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-basic-block-coverage-qemu-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --test mapped_quantum \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-basic-block-coverage-session-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-session \
+              actor_publishes_ \
+              -- --test-threads=1
+
+            off_run="$TMPDIR/loaded-qemu-coverage-off"
+            on_run="$TMPDIR/loaded-qemu-coverage-on"
+            mkdir -p "$off_run" "$on_run"
+            cp ${rootImage}/overlay.qcow2 "$off_run/crucible-root-overlay.qcow2"
+            cp ${rootImage}/overlay.qcow2 "$on_run/crucible-root-overlay.qcow2"
+            timeout 180 cargo run \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-loaded-qemu-coverage-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
+              --example crucible-qemu-live-coverage \
+              -- \
+              ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+              ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+              ${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so \
+              ${guestImage}/coverage-guest.elf \
+              ${rootImage}/root.qcow2 \
+              "$off_run" \
+              "$on_run" \
+              > "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^PASS$' "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^loaded_qemu_callback_evidence=present$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^guest_instrumentation=none$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^coverage_on_off_fingerprint_match=true$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^independent_trace_fingerprint_match=true$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^trace_components=instruction-stream,all-vcpu-registers,rr-cursor,ram,device-io$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -Eq '^coverage_observation_count=[1-9][0-9]*$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
           '';
         }
         {
@@ -547,8 +820,15 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             gate=gate:basic-block-coverage
-            hook=tcg-exec
+            hook=live-tcg-exec-to-shmem-observation
+            loaded_qemu_callback_evidence=present
+            loaded_qemu_guest=uninstrumented-standalone-multiboot-elf
+            loaded_qemu_fingerprint_equivalence=coverage-off-equals-coverage-on
+            loaded_qemu_independent_fingerprint=instruction-stream,all-vcpu-registers,rr-cursor,ram,device-io
+            host_observation_handoff=abi-v2-per-vm-spsc-to-unified-event-log
             registration=opt-in
             fingerprint_effect=none
             rust_test=crucible::gate_basic_block_coverage

@@ -276,14 +276,15 @@ in
           require_fixed "$PATCH_0009_NAME" 'qemu_net_queue_flush'
           require_fixed "$PATCH_0009_NAME" 'qemu_notify_event'
           require_fixed "$PATCH_0010_NAME" 'qemu_plugin_has_time_control'
-          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_advance_virtual_time_direct'
-          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_drain_main_loop'
-          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_time_control_call_permitted'
-          require_fixed "$PATCH_0010_NAME" 'bql_locked()'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_register_time_advance_cb'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_advance_time_ns'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_advance_time__async'
+          require_fixed "$PATCH_0010_NAME" 'async_run_on_cpu(first_cpu'
           require_fixed "$PATCH_0010_NAME" 'qemu_clock_advance_virtual_time(new_time)'
           require_fixed "$PATCH_0010_NAME" 'qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)'
-          require_fixed "$PATCH_0010_NAME" 'while (aio_bh_poll(aio_context))'
-          require_fixed "$PATCH_0010_NAME" 'main_loop_wait(true)'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_time_advance_barrier_bh'
+          require_fixed "$PATCH_0010_NAME" 'qemu_plugin_time_advance_complete_bh'
+          require_fixed "$PATCH_0010_NAME" 'qemu_cpu_kick(first_cpu)'
           require_fixed "$PATCH_0011_NAME" 'qemu_plugin_icount_raw'
           require_fixed "$PATCH_0011_NAME" 'icount_get_raw()'
           require_fixed "$PATCH_0011_NAME" '#include "system/cpu-timers.h"'
@@ -291,14 +292,16 @@ in
           require_fixed "$PATCH_0012_NAME" 'current_cpu->exit_request'
           require_fixed "$PATCH_0012_NAME" 'qatomic_set_mb'
           require_fixed "$PATCH_0013_NAME" 'qemu_plugin_register_wake_fd'
-          require_fixed "$PATCH_0013_NAME" 'qemu_plugin_main_loop_wait'
+          require_fixed "$PATCH_0013_NAME" 'qemu_plugin_crucible_single_threaded_rr'
+          require_fixed "$PATCH_0013_NAME" '!qemu_tcg_mttcg_enabled()'
           require_fixed "$PATCH_0013_NAME" 'qemu_set_fd_handler'
-          require_fixed "$PATCH_0013_NAME" 'main_loop_wait(false)'
-          require_fixed "$PATCH_0013_NAME" 'bql_locked()'
           require_fixed "$PATCH_0014_NAME" 'qemu_plugin_register_tcg_exec_cb'
           require_fixed "$PATCH_0014_NAME" 'qemu_plugin_tcg_exec_cb_t'
           require_fixed "$PATCH_0014_NAME" 'qemu_plugin_maybe_fire_tcg_exec_cb(cpu)'
           require_fixed "$PATCH_0014_NAME" 'qemu_plugin_icount_raw()'
+          require_fixed "$PATCH_0014_NAME" 'qemu_plugin_icount_at_tb_entry'
+          require_fixed "$PATCH_0014_NAME" 'icount_get_raw_observed'
+          require_fixed "$PATCH_0014_NAME" '*entry_icount = (uint64_t)observed_icount - tb_insns'
           require_fixed "$PATCH_0015_NAME" 'block/crucible-shmem.c'
           require_fixed "$PATCH_0015_NAME" '.format_name            = "crucible-shmem"'
           require_fixed "$PATCH_0015_NAME" "'crucible-shmem.c',"
@@ -461,6 +464,7 @@ in
           qemu_plugin_vcpu_exit_patch_present=true
           qemu_plugin_wake_fd_patch_present=true
           qemu_plugin_tcg_exec_cb_patch_present=true
+          qemu_plugin_tb_entry_icount_patch_present=true
           qemu_block_shmem_patch_present=true
           qemu_block_shmem_io_fixes_patch_present=true
           qemu_block_write_sentinel_patch_present=true
@@ -563,6 +567,7 @@ in
             echo qemu_plugin_vcpu_exit_patch_present="$qemu_plugin_vcpu_exit_patch_present"
             echo qemu_plugin_wake_fd_patch_present="$qemu_plugin_wake_fd_patch_present"
             echo qemu_plugin_tcg_exec_cb_patch_present="$qemu_plugin_tcg_exec_cb_patch_present"
+            echo qemu_plugin_tb_entry_icount_patch_present="$qemu_plugin_tb_entry_icount_patch_present"
             echo qemu_block_shmem_patch_present="$qemu_block_shmem_patch_present"
             echo qemu_block_shmem_io_fixes_patch_present="$qemu_block_shmem_io_fixes_patch_present"
             echo qemu_block_write_sentinel_patch_present="$qemu_block_write_sentinel_patch_present"

@@ -4,7 +4,7 @@
 }: let
   phase0S4 = import ./phase0-s4.nix {inherit pkgs;};
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   engineTest = builtins.readFile ../../crates/crucible/tests/same_icount_tie_break.rs;
   shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/icount_stamped_injection.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;

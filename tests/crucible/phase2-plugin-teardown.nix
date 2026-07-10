@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginTeardown",
-  taskIds ? ["T-PLUG-19"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -21,6 +22,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -73,8 +75,8 @@
       forbiddenTeardownApis)
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-19 checklist complete";
-        needle = "- [x] **T-PLUG-19**";
+        label = "T-PLUG-19 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-19**";
       }
       {
         label = "PLUG-43 teardown requirement";
@@ -301,6 +303,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             gates=gate:control-responsive
             rust_tests=crucible-qemu-plugin::teardown
             triggers=shutdown_requested,control-Quit

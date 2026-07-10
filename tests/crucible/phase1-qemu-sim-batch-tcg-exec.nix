@@ -112,6 +112,13 @@
         label = "shmem dispatch registration guard";
         needle = "crucible_sim_shmem_dispatch_registered()";
       }
+      {
+        label = "BQL-releasing vCPU ceiling wait";
+        needle = "qemu_cond_wait_bql(first_cpu->halt_cond)";
+      }
+    ]
+    ++ lib.optionals (hasInfix "qemu_plugin_main_loop_wait()" patchSource) [
+      "pkgs/emulation/qemu-patches/${patchName}: vCPU ceiling path must not run the QEMU main loop"
     ]
     ++ map (needle: "pkgs/emulation/qemu-patches/${patchName}: pure perf patch must not use wall-clock needle `${needle}`")
     (builtins.filter (needle: hasInfix needle patchSource) forbiddenPatchNeedles)
@@ -189,6 +196,8 @@ in
               grep -F -q 'qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'crucible_sim_shmem_clamp_cpu_budget' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'crucible_sim_shmem_dispatch_registered()' accel/tcg/tcg-accel-ops-rr.c
+              grep -F -q 'qemu_cond_wait_bql(first_cpu->halt_cond)' accel/tcg/tcg-accel-ops-rr.c
+              ! grep -F -q 'qemu_plugin_main_loop_wait()' accel/tcg/tcg-accel-ops-rr.c
             )
 
             cp "$microtestSourcePath" phase1-qemu-sim-batch-tcg-exec.c
@@ -204,6 +213,7 @@ in
             grep -q '^sim_batch_tcg_exec_breaks_on_debug_atomic=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
             grep -q '^sim_batch_tcg_exec_timer_between_slots=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
             grep -q '^sim_batch_tcg_exec_shmem_ceiling_guard=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
+            grep -q '^sim_batch_tcg_exec_ceiling_wait_releases_bql=true$' "$out/qemu-sim-batch-tcg-exec-microtest"
 
             cp "${simAccelCheck}/result" "$out/sim-accel.result"
             grep -q '^PASS$' "$out/sim-accel.result"

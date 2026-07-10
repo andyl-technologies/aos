@@ -13,6 +13,7 @@
 
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   shmemGate = builtins.readFile ../../crates/crucible-shmem/tests/gate_abi_conformance.rs;
+  setupValidation = builtins.readFile ../../crates/crucible-shmem/tests/setup_validation.rs;
   goldenFixture = builtins.readFile ../../crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture;
   generatedHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
@@ -174,6 +175,34 @@
         needle = "const _: () = assert!(FRAME_ENTRY_ALIGN == 8);";
       }
       {
+        label = "coverage entry exact-icount Rust static assertion";
+        needle = "const _: () = assert!(COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET == 0);";
+      }
+      {
+        label = "coverage entry map-index Rust static assertion";
+        needle = "const _: () = assert!(COVERAGE_ENTRY_MAP_INDEX_OFFSET == 16);";
+      }
+      {
+        label = "coverage entry vCPU Rust static assertion";
+        needle = "const _: () = assert!(COVERAGE_ENTRY_VCPU_INDEX_OFFSET == 24);";
+      }
+      {
+        label = "coverage entry block-length Rust static assertion";
+        needle = "const _: () = assert!(COVERAGE_ENTRY_BLOCK_LEN_OFFSET == 28);";
+      }
+      {
+        label = "coverage entry reserved Rust static assertion";
+        needle = "const _: () = assert!(COVERAGE_ENTRY_RESERVED_OFFSET == 32);";
+      }
+      {
+        label = "coverage entry size Rust static assertion";
+        needle = "const _: () = assert!(COVERAGE_ENTRY_SIZE == 64);";
+      }
+      {
+        label = "coverage entry alignment Rust static assertion";
+        needle = "const _: () = assert!(COVERAGE_ENTRY_ALIGN == 64);";
+      }
+      {
         label = "node slot current icount Rust static assertion";
         needle = "const _: () = assert!(NODE_SLOT_CURRENT_ICOUNT_OFFSET == 0);";
       }
@@ -284,6 +313,16 @@
         needle = "include_str!(\"fixtures/shmem_abi_golden.fixture\")";
       }
     ]
+    ++ failuresFor "crates/crucible-shmem/tests/setup_validation.rs" setupValidation [
+      {
+        label = "ABI v2 explicitly rejects a v1 region header";
+        needle = "abi_version: ABI_VERSION - 1";
+      }
+      {
+        label = "ABI v2 also rejects future region headers";
+        needle = "abi_version: ABI_VERSION + 1";
+      }
+    ]
     ++ forbiddenFor "crates/crucible-shmem/tests/gate_abi_conformance.rs" shmemGate [
       {
         label = "ignored ABI conformance test";
@@ -301,11 +340,11 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=1";
+        needle = "abi_version=2";
       }
       {
         label = "total serialized length";
-        needle = "total_len=5144";
+        needle = "total_len=5208";
       }
       {
         label = "region magic";
@@ -314,6 +353,14 @@
       {
         label = "payload marker";
         needle = "536=50494e47";
+      }
+      {
+        label = "coverage entry exact-icount marker";
+        needle = "5144=8503000000000000";
+      }
+      {
+        label = "coverage entry block marker";
+        needle = "5172=04000000";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/include/crucible_shmem_abi.h" generatedHeader [
@@ -484,6 +531,26 @@
       {
         label = "frame payload offset static assert";
         needle = "offsetof(crucible_shmem_frame_entry, data) == CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET";
+      }
+      {
+        label = "coverage entry static assert";
+        needle = "sizeof(crucible_shmem_coverage_entry) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_SIZE";
+      }
+      {
+        label = "coverage entry alignment static assert";
+        needle = "_Alignof(crucible_shmem_coverage_entry) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_ALIGN";
+      }
+      {
+        label = "coverage current icount offset static assert";
+        needle = "offsetof(crucible_shmem_coverage_entry, current_icount) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET";
+      }
+      {
+        label = "coverage map index offset static assert";
+        needle = "offsetof(crucible_shmem_coverage_entry, map_index) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_MAP_INDEX_OFFSET";
+      }
+      {
+        label = "coverage reserved offset static assert";
+        needle = "offsetof(crucible_shmem_coverage_entry, reserved) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_OFFSET";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [

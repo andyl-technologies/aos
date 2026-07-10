@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   validatorTest = builtins.readFile ../../crates/crucible/tests/trigger_graph_validator.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;

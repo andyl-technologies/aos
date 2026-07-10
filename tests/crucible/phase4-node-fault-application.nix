@@ -12,7 +12,7 @@
   };
 
   nodeFault = builtins.readFile ../../crates/crucible/src/node_fault.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   faultTest = builtins.readFile ../../crates/crucible/tests/node_fault_application.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;

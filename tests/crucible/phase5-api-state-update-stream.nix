@@ -18,7 +18,7 @@
   streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
   lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  session = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  session = import ./_crucible-session-source.nix {inherit lib;};
   streamingEquivalenceTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_equivalence.rs;
   controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
   defaultChecks = builtins.readFile ./default.nix;

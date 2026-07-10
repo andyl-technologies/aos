@@ -11,9 +11,9 @@
   decisionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
   defaultChecks = builtins.readFile ./default.nix;
   backend = builtins.readFile ../../crates/crucible/src/backend.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
-  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
   qemuGdbstubProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
 

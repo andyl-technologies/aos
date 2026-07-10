@@ -533,7 +533,7 @@
     {
       id = "scheduler-quantum-loop";
       sourcePath = "crates/crucible/src/scheduler.rs";
-      testPath = "crates/crucible/src/scheduler.rs";
+      testPath = "crates/crucible/src/scheduler";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -547,7 +547,7 @@
     {
       id = "scheduler-ordering-keys";
       sourcePath = "crates/crucible/src/scheduler.rs";
-      testPath = "crates/crucible/src/scheduler.rs";
+      testPath = "crates/crucible/src/scheduler";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -560,7 +560,7 @@
     {
       id = "error-variant-floor";
       sourcePath = "crates/crucible/src/model.rs";
-      testPath = "crates/crucible/src/lib.rs";
+      testPath = "crates/crucible/src/tests";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -573,7 +573,7 @@
     {
       id = "instantiate-recursion";
       sourcePath = "crates/crucible/src/model.rs";
-      testPath = "crates/crucible/src/lib.rs";
+      testPath = "crates/crucible/src/tests";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -772,7 +772,13 @@
       "${surface.id}: missing determinism-core coverage test ${surface.testPath}"
     ]
     else let
-      code = scrubCommentsAndStrings (builtins.readFile (root + "/${surface.testPath}"));
+      testFiles =
+        if builtins.readFileType (root + "/${surface.testPath}") == "directory"
+        then rustFilesUnder surface.testPath
+        else [surface.testPath];
+      code = scrubCommentsAndStrings (builtins.concatStringsSep "\n" (
+        map (relative: builtins.readFile (root + "/${relative}")) testFiles
+      ));
     in
       lib.concatMap (
         marker:

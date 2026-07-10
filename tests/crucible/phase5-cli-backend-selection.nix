@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliBackendSelection",
-  taskIds ? ["T-CLI-3"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-3"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,10 +15,11 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -55,18 +57,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-3 checked off";
-        needle = "- [x] **T-CLI-3**";
+        label = "T-CLI-3 remains open";
+        needle = "- [ ] **T-CLI-3**";
       }
       {
-        label = "T-CLI-3 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliBackendSelection`";
+        label = "T-CLI-3 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.cliBackendSelection`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI backend-selection status note";
-        needle = "`T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`";
+        needle = "`T-CLI-3` has partial evidence through `checks.crucible.phase5.cliBackendSelection`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -260,6 +262,7 @@ in
     CRUCIBLE_T_CLI_3_FAILURES = failureText;
     ATTR_PATH = attrPath;
     TASK_IDS = taskList;
+    OPEN_TASK_IDS = openTaskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -314,12 +317,27 @@ in
             -- --test-threads=1
         '';
       }
+      {
+        name = "write-result";
+        script = ''
+          set -eu
+          mkdir -p "$out"
+          cat > "$out/result" <<'RESULT'
+          PASS
+          check=$ATTR_PATH
+          tasks=$TASK_IDS
+          open_tasks=$OPEN_TASK_IDS
+          status=partial
+          evidence_scope=backend-routing-model
+          RESULT
+        '';
+      }
     ];
 
     meta = {
       description = "RFC-0010 phase 5 CLI backend-selection gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds dependencies;
+        inherit attrPath taskIds openTaskIds dependencies;
         failureText = failureText;
       };
     };

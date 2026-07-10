@@ -183,8 +183,8 @@
         needle = "gate_qemu_inert_plugin_half_is_backed_by_phase_check";
       }
       {
-        label = "full gate implementation is wired";
-        needle = "full_real_qemu_corpus=implemented-T-PATCH-3";
+        label = "full gate remains pending live corpus closure";
+        needle = "full_real_qemu_corpus=pending-T-PATCH-3";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -306,8 +306,8 @@ in
             tasks=${taskList}
             gate=gate:qemu-inert
             plugin_half=contributes-to-PLUG-49-sim-off-no-plugin-arg-no-load-no-effects
-            full_PLUG49_gate=implemented-T-PATCH-3
-            full_real_qemu_corpus=implemented-T-PATCH-3
+            full_PLUG49_gate=partial-plugin-half
+            full_real_qemu_corpus=pending-T-PATCH-3
             RESULT
           '';
         }

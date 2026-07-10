@@ -50,6 +50,18 @@ guest instructions. Each I/O sub-node has:
   for any probabilistic behavior, whose position is part of `MaterializedState`
   ([TEMP-7]).
 
+The logical World declaration carries the I/O node id, owning VM, clock shift,
+content-addressed immutable artifact, and deterministic latency parameters. It
+does **not** carry a completion-order source number or request/response ring
+capacity: those are physical transport layout. `WorldIoInstantiationLayout`
+derives unique source numbers from canonical logical node order and applies a
+`WorldIoLayoutPolicy` only while the live session resolves artifacts and builds
+concrete scheduling sub-nodes. Changing that physical policy cannot change the
+World, `DeviceId`, scenario, or scheduler configuration identity ([SPAT-14],
+[SPAT-15]). Each logical `LinkDef` likewise has one deterministic `Network`
+scheduling identity in `WorldStaticTopology`; the production scheduler consumes
+that complete VM/device/link projection.
+
 The flow of a single disk read, end to end, is the canonical illustration of
 "completion is a scheduled event, not a freeze":
 
@@ -336,7 +348,7 @@ into the guest.
 Three sources of host-filesystem nondeterminism are eliminated at the source:
 
 1. **QIDs are path-hashed, not inode numbers.** A 9p QID's `path` field (the
-   unique file identifier the guest caches) is derived from a fixed hash of the
+   64-bit file identifier the guest caches) is derived from a fixed hash of the
    file's path within the served tree, **not** from the host's inode number
    (which varies across hosts and mounts). The QID `version` is a fixed constant.
 2. **Directory enumeration is sorted.** `readdir` returns entries in a fixed
@@ -346,6 +358,27 @@ Three sources of host-filesystem nondeterminism are eliminated at the source:
    fixed epoch for all timestamps, root uid/gid, a fixed block size, and a
    deterministic block count derived from the file size — never the host's atime/
    mtime/ctime, uid/gid, or device-specific block accounting.
+
+The component-vector encoding fed to BLAKE3 is length-delimited and injective,
+but the QID is a 64-bit truncation and therefore is described as
+collision-resistant, not mathematically collision-free. Stored tree components
+reject empty names, `/`, NUL, `.` and `..`; the latter two remain traversal tokens
+on the wire and cannot masquerade as unreachable stored children.
+
+The immutable tree itself is an artifact with an explicit canonical format:
+
+```text
+magic = "crucible.device.ninep.fs-tree.v1\0"
+node  = tag:u8 payload
+tag 0 = child_count:u64le { name_len:u64le name:utf8 node }*
+tag 1 = content_len:u64le content:bytes
+tag 2 = target_len:u64le target:utf8
+```
+
+Directory entries must already be strictly sorted. The artifact resolver rejects
+wrong versions, truncation, overflow, excessive nesting, illegal/duplicate/
+unsorted names, invalid UTF-8, unknown tags, and trailing bytes before building a
+concrete 9p device; it then rechecks the canonical bytes against the World hash.
 
 ```text
   qid.path    = stable_hash(path_within_served_tree)   // NOT host inode
@@ -756,7 +789,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   truncating or extending the device.
   Summary: the base image is never mutated; all guest writes land only in the
   in-memory overlay.
-- [x] **T-IO-3** Implement the block wire ABI (versioned request/response codec,
+- [ ] **T-IO-3** Implement the block wire ABI (versioned request/response codec,
   fixed field order/endianness, reserved-byte rules, bounds-checked decode) and
   carry it over the `SLOT_BLK_IO` shmem rings with `delivery_icount` set to the
   computed completion. — satisfies [IO-8], [IO-9]; spec §15.2.2.
@@ -807,7 +840,10 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   QID `path` values derived from a stable hash of the path within the served
   tree, fixed `NINEP_FIXED_QID_VERSION`, and no host inode, filesystem metadata, timestamp, uid/gid, or directory iteration input. `readdir` sorts child names lexicographically and assigns offsets after sorting; repeated enumeration is
   byte-identical. `getattr` and `statfs` return fixed or content-derived
-  attributes, including fixed epoch/root uid/root gid/block size, no advertised write permission bits, and 512-byte size-derived block counts. `statfs.fsid` derives from served-tree content and ignores negotiation msize. Version negotiation accepts only `9P2000.L` and deterministically
+  attributes, including fixed epoch/root uid/root gid/block size, no advertised
+  write permission bits, and 512-byte size-derived block counts. `statfs.fsid` is
+  the fixed synthetic zero value and ignores negotiation msize. Version
+  negotiation accepts only `9P2000.L` and deterministically
   chooses `msize = min(client_msize, server_maximum_msize)`.
 - [x] **T-IO-7** Implement the 9p read/traverse message set, the EROFS boundary
   for all mutating messages, ENOSYS/EINVAL handling, msize enforcement, and
@@ -935,7 +971,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   exact delivery.
   Summary: exact completion visibility is independent of whether the consumer
   idles or polls; busy-poll remains a performance issue, not a correctness input.
-- [x] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
+- [ ] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
   split (host access decoupled from virtual-time visibility), an in-flight
   response queue ordered by `delivery_icount` exposed as the sub-node's
   `next_exact_local_event`, and deterministic full-ring backpressure (block-and-

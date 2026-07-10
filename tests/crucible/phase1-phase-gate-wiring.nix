@@ -142,6 +142,12 @@
       gate = "gate:replay-oracle";
     }
     {
+      phase = "phase6";
+      attr = "basicBlockCoverage";
+      attrPath = "checks.crucible.phase6.basicBlockCoverage";
+      gate = "gate:basic-block-coverage";
+    }
+    {
       phase = "phase7";
       attr = "perfBench";
       gate = "gate:perf-bench";
@@ -163,7 +169,10 @@
     }
   ];
 
-  targetAttrPath = target: "checks.crucible.${target.phase}.gates.${target.attr}";
+  targetAttrPath = target:
+    if target ? attrPath
+    then target.attrPath
+    else "checks.crucible.${target.phase}.gates.${target.attr}";
   targetName = target:
     if target ? gate
     then target.gate
@@ -227,7 +236,8 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.phaseGateWiring
-            tasks=T-PLAN-3
+            tasks=
+            status=diagnostic
             phase_gate_targets=${toString (builtins.length phaseGateTargets)}
             canonical_gates=${toString (builtins.length catalogGates)}
             RESULT

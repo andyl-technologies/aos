@@ -26,7 +26,7 @@
   qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {inherit pkgs lib;};
   simS11 = import ./phase0-s11.nix {
     inherit pkgs lib;
-    accelerator = "sim";
+    accelerator = "sim,thread=single";
     cadence = 4096;
     requireGuestPass = false;
     stopAt = 16384;
@@ -113,8 +113,8 @@
     ]
     ++ failuresFor "tests/crucible/phase0-s11.nix" phase0S11 [
       {
-        label = "S11 accelerator parameter";
-        needle = ''accelerator ? "tcg,thread=single"'';
+        label = "S11 production sim accelerator parameter";
+        needle = ''accelerator ? "sim,thread=single"'';
       }
       {
         label = "S11 sim accelerator override";
@@ -171,6 +171,18 @@
       {
         label = "S11 bounded sim stop_at support";
         needle = ''run_horizon="$run_horizon"'';
+      }
+      {
+        label = "S11 default uses the fixed predeclared horizon";
+        needle = "stopAt ? 3300000000";
+      }
+      {
+        label = "S11 numeric stop_at sustains the validated workload";
+        needle = "smp-contended --sustain";
+      }
+      {
+        label = "S11 explicit null stop_at retains reboot completion";
+        needle = ''if stopAt == null'';
       }
     ]
     ++ failuresFor "tests/crucible/phase1-rr-fingerprint-helpers.nix" rrFingerprintHelpersSource [
@@ -303,7 +315,7 @@ in
 
             s11_result="${simS11}/result"
             require_line "$s11_result" "PASS"
-            require_line "$s11_result" "accelerator=sim"
+            require_line "$s11_result" "accelerator=sim,thread=single"
             require_line "$s11_result" "vcpus=2"
             require_line "$s11_result" "rr_switch_quantum=4096"
             require_line "$s11_result" "cadence=4096"
@@ -325,14 +337,14 @@ in
             gate=gate:patch-microtests
             gate=gate:single-vm-fingerprint
             patch=${patchName}
-            accelerator=sim
+            accelerator=sim,thread=single
             vcpus=2
             rr_switch_quantum=4096
             rr_switch_boundary=node-icount
             rr_vcpu_rotation=ascending-vcpu-id
             cross_run_switch_icount_trace_match=true
             cross_run_per_vcpu_delta_trace_match=true
-            sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,stop_at=16384)
+            sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=16384)
             rr_budget_pinned=true
             rr_switch_trace_pinned_under_host_jitter=true
             adaptive_realtime_quantum_negative_control=red

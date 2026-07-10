@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginDeadlineIntrospection",
-  taskIds ? ["T-PLUG-6"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,12 +15,13 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
+  pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -70,8 +72,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-6 checklist complete";
-        needle = "- [x] **T-PLUG-6**";
+        label = "T-PLUG-6 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-6**";
       }
       {
         label = "required plugin export wording";
@@ -130,11 +132,11 @@
         # boundary scaffold, which resolves the clock-deadline symbol as a
         # required capability.
         label = "install boundary requires deadline";
-        needle = "resolve_qemu_clock_deadline_symbol(),";
+        needle = "let clock_deadline_ns = resolve_qemu_clock_deadline_symbol();";
       }
       {
         label = "qemu install uses required deadline path";
-        needle = "install_required_runtime_api_scaffold_from_boundary(info, argc, argv)";
+        needle = "let runtime = install_owned_boundary(id, boundary, &mut reservation)?;";
       }
       {
         label = "ABI error carries deadline failure";
@@ -146,7 +148,7 @@
       }
       {
         label = "install path missing symbol test";
-        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_direct_advance_symbols";
+        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
@@ -336,6 +338,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             deadline_symbol=qemu_plugin_clock_deadline_ns
             clock_source=QEMU_CLOCK_VIRTUAL
             required_export=true

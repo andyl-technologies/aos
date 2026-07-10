@@ -57,23 +57,23 @@
         needle = "qemu_plugin_has_time_control";
       }
       {
-        label = "direct advance export";
-        needle = "qemu_plugin_advance_virtual_time_direct";
+        label = "callback-safe advance export";
+        needle = "qemu_plugin_advance_time_ns";
       }
       {
-        label = "main-loop drain export";
-        needle = "qemu_plugin_drain_main_loop";
+        label = "completion callback registration";
+        needle = "qemu_plugin_register_time_advance_cb";
       }
       {
-        label = "fail-closed owner guard";
-        needle = "qemu_plugin_time_control_call_permitted";
+        label = "exclusive pending guard";
+        needle = "qatomic_cmpxchg(&qemu_plugin_time_advance_pending, 0, 1)";
       }
       {
-        label = "BQL context guard";
-        needle = "bql_locked()";
+        label = "CPU-work handoff";
+        needle = "async_run_on_cpu(first_cpu, qemu_plugin_advance_time__async";
       }
       {
-        label = "synchronous virtual clock advance";
+        label = "queued virtual clock advance";
         needle = "qemu_clock_advance_virtual_time(new_time)";
       }
       {
@@ -81,13 +81,33 @@
         needle = "qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)";
       }
       {
-        label = "bottom-half drain loop";
-        needle = "while (aio_bh_poll(aio_context))";
+        label = "normal main-loop completion handoff";
+        needle = "aio_bh_schedule_oneshot(qemu_get_aio_context()";
       }
       {
-        label = "nonblocking main-loop pass";
-        needle = "main_loop_wait(true)";
+        label = "two-stage BH ordering barrier";
+        needle = "qemu_plugin_time_advance_barrier_bh";
       }
+      {
+        label = "completion clears pending before callback";
+        needle = "qatomic_store_release(&qemu_plugin_time_advance_pending, 0)";
+      }
+      {
+        label = "RR-loop pending predicate";
+        needle = "qemu_plugin_time_advance_is_pending";
+      }
+    ]
+    ++ lib.optionals (hasInfix "main_loop_wait(true" patchSource
+      || hasInfix "main_loop_wait(false" patchSource) [
+      "pkgs/emulation/qemu-patches/${patchName}: callback path re-enters main_loop_wait"
+    ]
+    ++ lib.optionals (hasInfix "aio_poll(aio_context" patchSource
+      || hasInfix "aio_poll(qemu_get_aio_context" patchSource) [
+      "pkgs/emulation/qemu-patches/${patchName}: callback path re-enters aio_poll"
+    ]
+    ++ lib.optionals (hasInfix "aio_bh_poll(aio_context" patchSource
+      || hasInfix "aio_bh_poll(qemu_get_aio_context" patchSource) [
+      "pkgs/emulation/qemu-patches/${patchName}: callback path re-enters aio_bh_poll"
     ]
     ++ failuresFor "tests/crucible/phase1-plugin-time-advance.c" microtestSource [
       {
@@ -95,52 +115,56 @@
         needle = "#include \"plugins/api-system.c\"";
       }
       {
-        label = "direct advance exercised";
-        needle = "qemu_plugin_advance_virtual_time_direct(1000)";
+        label = "enqueue-only advance exercised";
+        needle = "qemu_plugin_advance_time_ns(1000)";
       }
       {
-        label = "main-loop drain exercised";
-        needle = "qemu_plugin_drain_main_loop()";
+        label = "normal completion BH exercised";
+        needle = "run_normal_main_loop_bottom_halves()";
       }
       {
         label = "exclusive owner assertion";
         needle = "single_time_control_owner=true";
       }
       {
-        label = "bottom-half before return assertion";
-        needle = "timer_bh_visible_before_direct_advance_return=true";
+        label = "timer BH ordering assertion";
+        needle = "timer_bh_precedes_plugin_completion=true";
       }
       {
-        label = "timer interrupt-request assertion";
-        needle = "timer_bh_interrupt_request_visible=true";
+        label = "enqueue-only assertion";
+        needle = "callback_entry_is_enqueue_only=true";
       }
       {
-        label = "deterministic propagation assertion";
-        needle = "deterministic_propagation_icount_identical=true";
+        label = "overlap rejection assertion";
+        needle = "overlapping_advance_rejected=true";
       }
       {
-        label = "BQL direct advance guard assertion";
-        needle = "direct_advance_fails_closed_outside_bql_context=true";
+        label = "pending registration guard assertion";
+        needle = "callback_reconfiguration_while_pending_rejected=true";
       }
       {
-        label = "no-BH no-op assertion";
-        needle = "no_pending_bh_drain_noop=true";
+        label = "pending lifetime assertion";
+        needle = "pending_predicate_tracks_completion_barrier=true";
       }
       {
-        label = "nonblocking main-loop assertion";
-        needle = "qemu_main_loop_drain_nonblocking=true";
+        label = "negative target assertion";
+        needle = "negative_target_rejected_before_queue=true";
       }
       {
-        label = "no virtual-time advance assertion";
-        needle = "qemu_main_loop_drain_no_virtual_time_advance=true";
+        label = "backward target completion assertion";
+        needle = "backward_target_reports_completion_failure=true";
       }
       {
-        label = "completion interrupt-request assertion";
-        needle = "completion_interrupt_request_visible=true";
+        label = "queued timer dispatch assertion";
+        needle = "queued_worker_runs_virtual_timers=true";
       }
       {
-        label = "stock negative control";
-        needle = "stock_negative_control_bh_drift_without_drain=true";
+        label = "main-loop BH handoff assertion";
+        needle = "completion_uses_normal_main_loop_bh=true";
+      }
+      {
+        label = "main-loop reentry negative assertion";
+        needle = "callback_path_main_loop_reentry_absent=true";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -459,6 +483,7 @@ in
             PLUGIN_API_FIXTURE
 
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
+            ! grep -Eq 'main_loop_wait[[:space:]]*\(|aio_poll[[:space:]]*\(|aio_bh_poll[[:space:]]*\(' plugins/api-system.c
             cp "$microtestSourcePath" phase1-plugin-time-advance.c
             cc -std=c11 -O2 -Wall -Wextra -Werror \
               -I. -Iinclude \
@@ -470,25 +495,21 @@ in
             grep -q '^PASS$' "$out/result"
             grep -q '^patched_qemu_plugin_time_advance_fixture=true$' "$out/result"
             grep -q '^time_control_predicate_symbol=qemu_plugin_has_time_control$' "$out/result"
-            grep -q '^direct_advance_symbol=qemu_plugin_advance_virtual_time_direct$' "$out/result"
-            grep -q '^main_loop_drain_symbol=qemu_plugin_drain_main_loop$' "$out/result"
+            grep -q '^advance_symbol=qemu_plugin_advance_time_ns$' "$out/result"
+            grep -q '^completion_symbol=qemu_plugin_register_time_advance_cb$' "$out/result"
             grep -q '^single_time_control_owner=true$' "$out/result"
-            grep -q '^direct_advance_fails_closed_without_owner=true$' "$out/result"
-            grep -q '^main_loop_drain_fails_closed_without_owner=true$' "$out/result"
-            grep -q '^direct_advance_fails_closed_outside_bql_context=true$' "$out/result"
-            grep -q '^main_loop_drain_fails_closed_outside_bql_context=true$' "$out/result"
-            grep -q '^qemu_time_advance_synchronous=true$' "$out/result"
-            grep -q '^qemu_time_advance_runs_virtual_timers=true$' "$out/result"
-            grep -q '^qemu_time_advance_bh_drain=true$' "$out/result"
-            grep -q '^timer_bh_interrupt_request_visible=true$' "$out/result"
-            grep -q '^timer_bh_visible_before_direct_advance_return=true$' "$out/result"
-            grep -q '^deterministic_propagation_icount_identical=true$' "$out/result"
-            grep -q '^no_pending_bh_drain_noop=true$' "$out/result"
-            grep -q '^qemu_main_loop_drain_nonblocking=true$' "$out/result"
-            grep -q '^qemu_main_loop_drain_no_virtual_time_advance=true$' "$out/result"
-            grep -q '^qemu_main_loop_drain_completion_deterministic=true$' "$out/result"
-            grep -q '^completion_interrupt_request_visible=true$' "$out/result"
-            grep -q '^stock_negative_control_bh_drift_without_drain=true$' "$out/result"
+            grep -q '^callback_entry_is_enqueue_only=true$' "$out/result"
+            grep -q '^overlapping_advance_rejected=true$' "$out/result"
+            grep -q '^callback_reconfiguration_while_pending_rejected=true$' "$out/result"
+            grep -q '^pending_predicate_tracks_completion_barrier=true$' "$out/result"
+            grep -q '^negative_target_rejected_before_queue=true$' "$out/result"
+            grep -q '^backward_target_reports_completion_failure=true$' "$out/result"
+            grep -q '^queued_worker_runs_virtual_timers=true$' "$out/result"
+            grep -q '^completion_uses_normal_main_loop_bh=true$' "$out/result"
+            grep -q '^completion_uses_two_stage_bh_barrier=true$' "$out/result"
+            grep -q '^timer_bh_precedes_plugin_completion=true$' "$out/result"
+            grep -q '^completion_kicks_first_vcpu=true$' "$out/result"
+            grep -q '^callback_path_main_loop_reentry_absent=true$' "$out/result"
 
             cp "$patchSourcePath" "$out/${patchName}"
             cp include/qemu/qemu-plugin.h "$out/qemu-plugin.h.patched"
@@ -502,24 +523,21 @@ in
             tasks=T-PATCH-9
             patch=0010-crucible-plugin-time-advance.patch
             patched_fixture_exercised=true
-            stock_negative_control=true
+            stock_negative_control=callback-return-before-queued-work
             ${qemuPackageResultLines}
             qemu_time_control_public_predicate=true
             qemu_time_control_single_owner=true
-            qemu_time_advance_synchronous=true
+            qemu_time_advance_callback_enqueue_only=true
+            qemu_time_advance_cpu_work_handoff=true
             qemu_time_advance_runs_virtual_timers=true
-            qemu_time_advance_bh_drain=true
-            qemu_time_advance_bql_context_guard=true
-            timer_bh_interrupt_request_visible=true
-            deterministic_propagation_icount_identical=true
-            qemu_main_loop_drain_nonblocking=true
-            qemu_main_loop_drain_no_virtual_time_advance=true
-            qemu_main_loop_drain_completion_deterministic=true
-            completion_interrupt_request_visible=true
-            direct_advance_fails_closed_without_owner=true
-            main_loop_drain_fails_closed_without_owner=true
-            direct_advance_fails_closed_outside_bql_context=true
-            main_loop_drain_fails_closed_outside_bql_context=true
+            qemu_time_advance_completion_bh=true
+            qemu_time_advance_two_stage_bh_barrier=true
+            qemu_time_advance_overlap_rejected=true
+            qemu_time_advance_pending_lifetime_observed=true
+            qemu_time_advance_backward_failure_reported=true
+            qemu_main_loop_reentry_from_callback=false
+            aio_poll_from_callback=false
+            aio_bh_poll_from_callback=false
             RESULT
           '';
         }

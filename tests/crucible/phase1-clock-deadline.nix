@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.clockDeadline",
-  taskIds ? ["T-TIME-6" "T-PATCH-10"],
+  taskIds ? ["T-PATCH-10"],
+  openTaskIds ? ["T-TIME-6"],
   qemuPackage ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -19,7 +20,7 @@
   pluginRoot = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
@@ -286,8 +287,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-6 checklist complete";
-        needle = "- [x] **T-TIME-6**";
+        label = "T-TIME-6 remains open";
+        needle = "- [ ] **T-TIME-6**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
@@ -572,6 +573,9 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
+            evidence_scope=qemu-export-microtest-and-plugin-reader-model
             gate=gate:layer0-determinism
             gate=gate:scheduler-liveness
             gate=gate:patch-microtests

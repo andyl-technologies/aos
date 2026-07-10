@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.campaignContinuity",
-  taskIds ? ["T-PLAN-3" "T-DCE-9"],
+  taskIds ? ["T-DCE-9"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};

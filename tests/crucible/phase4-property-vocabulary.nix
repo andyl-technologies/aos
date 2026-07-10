@@ -12,8 +12,8 @@
   };
 
   crucibleSourceRoot = ../../crates/crucible/src;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   propertyTest = builtins.readFile ../../crates/crucible/tests/property_vocabulary.rs;
   conditionTest = builtins.readFile ../../crates/crucible/tests/condition_vocabulary_shared.rs;

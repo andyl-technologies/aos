@@ -18,7 +18,7 @@
   lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  session = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  session = import ./_crucible-session-source.nix {inherit lib;};
   reproductionTest = builtins.readFile ../../crates/crucible-api/tests/gate_reproduction_context.rs;
   controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
   defaultChecks = builtins.readFile ./default.nix;

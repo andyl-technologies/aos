@@ -16,7 +16,7 @@
   harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
   reproduction = builtins.readFile ../../crates/crucible-harness/src/reproduction.rs;
   reproductionTest = builtins.readFile ../../crates/crucible-harness/tests/reproduction_artifact.rs;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
