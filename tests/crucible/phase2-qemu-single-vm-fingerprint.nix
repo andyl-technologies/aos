@@ -21,8 +21,9 @@
   qemuGateRoot = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint.rs;
   qemuGateCompare = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/compare.rs;
   qemuGateRun = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/run.rs;
+  qemuGateTrace = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/trace.rs;
   qemuGateTypes = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/types.rs;
-  qemuGateHook = qemuGateRoot + qemuGateCompare + qemuGateRun + qemuGateTypes;
+  qemuGateHook = qemuGateRoot + qemuGateCompare + qemuGateRun + qemuGateTrace + qemuGateTypes;
   qemuGateTest = builtins.readFile ../../crates/crucible-qemu/tests/gate_single_vm_fingerprint.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -194,8 +195,8 @@ in
             grep -q '^real_qemu_adversary=second-run-host-cpu-load$' "$real_qemu_result"
             grep -q '^real_qemu_comparison=canonical-rust-stream$' "$real_qemu_result"
             grep -q '^real_qemu_gate_hook=run_single_vm_fingerprint_gate$' "$real_qemu_result"
-            grep -q '^postprocessing_negative_controls=register,rr,retired,ram,device,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology$' "$real_qemu_result"
-            grep -q '^fingerprint_definition=canonical-periodic-and-event-boundary-trace-v3$' "$real_qemu_result"
+            grep -q '^postprocessing_negative_controls=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology$' "$real_qemu_result"
+            grep -q '^fingerprint_definition=canonical-periodic-and-event-boundary-trace-v4$' "$real_qemu_result"
             grep -q '^independent_observation_contract=true$' "$real_qemu_result"
             grep -q '^full_device_state_complete=true$' "$real_qemu_result"
 
@@ -215,7 +216,7 @@ in
             real_qemu_source=checks.crucible.phase0.s1Fingerprint
             provisional_importer=crucible-qemu-fingerprint
             production_real_qemu_runs=two-under-host-load
-            postprocessing_mismatch_negatives=register,rr,retired,ram,device
+            postprocessing_mismatch_negatives=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
             live_perturbation_controls=second-run-host-cpu-load
             device_component_scope=current-non-ram-qemu-vmstate
             event_boundary_sampling=horizon-advance-live;frame-and-fault-model-only

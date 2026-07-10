@@ -304,7 +304,7 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg exec hw/boards include/qemu include/system io \
+            mkdir -p accel/tcg exec hw/boards hw/i386 include/qemu include/system io \
               migration plugins qapi qemu sysemu system tcg
             for header in \
               exec/cpu-common.h \
@@ -461,6 +461,21 @@ in
             }
             QEMU_FIXTURE
 
+            cat > hw/i386/multiboot.c <<'QEMU_FIXTURE'
+            int load_multiboot(X86MachineState *x86ms,
+                               FWCfgState *fw_cfg,
+                               FILE *f)
+            {
+                mbs.mb_buf_phys = mh_load_addr;
+
+                mbs.mb_buf_size = TARGET_PAGE_ALIGN(mb_kernel_size);
+                mbs.offset_mbinfo = mbs.mb_buf_size;
+
+                /* Calculate space for cmdlines, bootloader name, and mb_mods */
+                return 0;
+            }
+            QEMU_FIXTURE
+
             cat > system/cpu-timers.c <<'QEMU_FIXTURE'
             #include "qemu/osdep.h"
             #include "qemu/cutils.h"
@@ -567,6 +582,7 @@ in
 
             static SaveStateEntry *find_se(const char *idstr, uint32_t instance_id)
             {
+                SaveStateEntry *se;
                 return NULL;
             }
             QEMU_FIXTURE
