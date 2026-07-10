@@ -14,6 +14,9 @@
   memoryMib ? 256,
   vcpuCount ? 4,
   detIpiProbe ? false,
+  # This bounds host wall time only. The deterministic proof horizon remains
+  # the content-addressed stopAt node-icount under all host load conditions.
+  runTimeoutSeconds ? 2400,
 }: let
   rrSwitchQuantum = 4096;
 
@@ -327,6 +330,7 @@
       };
     };
 in
+  assert runTimeoutSeconds > 60;
   pkgs.mkDerivation {
     pname = "crucible-phase0-s11-multi-vcpu-fingerprint";
     version = "0";
@@ -354,6 +358,8 @@ in
     VCPU_COUNT = builtins.toString vcpuCount;
     MEMORY_MIB = builtins.toString memoryMib;
     ACCELERATOR = accelerator;
+    RUN_TIMEOUT_SECONDS = builtins.toString runTimeoutSeconds;
+    PAUSE_WAIT_SECONDS = builtins.toString (runTimeoutSeconds - 60);
     REQUIRE_GUEST_PASS =
       if requireGuestPass
       then "1"
@@ -560,7 +566,7 @@ in
             label="$2"
             waited=0
             qmp_failures=0
-            while [ "$waited" -lt 800 ]; do
+            while [ "$waited" -lt "$PAUSE_WAIT_SECONDS" ]; do
               if trace_reached_stop_at "$label"; then
                 if qmp_cmd "$socket" '{"execute":"query-status"}' "$TMPDIR/qmp-status-$label.json"; then
                   qmp_failures=0
@@ -651,7 +657,7 @@ in
             fi
 
             if [ -n "$STOP_AT" ]; then
-              timeout 900 "$@" &
+              timeout "$RUN_TIMEOUT_SECONDS" "$@" &
               active_qemu_pid="$!"
               wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for guest $label"
               wait_for_stop_at_pause "$qmp_socket" "$label" || fail "QEMU did not pause at stop_at for guest $label"
@@ -1129,6 +1135,7 @@ in
             echo cadence="$CADENCE"
             echo run_horizon="$run_horizon"
             echo horizon_icount="$result_horizon_icount"
+            echo wall_timeout_seconds="$RUN_TIMEOUT_SECONDS"
             echo require_guest_pass="$REQUIRE_GUEST_PASS"
             echo sustain_workload="$SUSTAIN_WORKLOAD"
             echo sustained_workload_active="$sustained_workload_active"
