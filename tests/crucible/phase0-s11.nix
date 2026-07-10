@@ -680,12 +680,17 @@ in
             echo "S11 structural diagnostic for trace $label" >&2
             jq -s -c \
               --argjson stop_at "$STOP_AT_VALUE" \
+              --argjson cadence "$CADENCE" \
               --argjson quantum "$RR_SWITCH_QUANTUM" \
               '
                 [ .[] | select((.kind // "sample") == "sample") ] as $samples
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
                 | {
                     sample_count: ($samples | length),
+                    non_final_sample_count: ([ $samples[]
+                      | select(.final != true)
+                    ] | length),
+                    expected_non_final_sample_count: (($stop_at / $cadence) | ceil),
                     rr_switch_count: ($switches | length),
                     final_sample_count: ([ $samples[] | select(.final == true) ] | length),
                     last_record_kind: (.[-1].kind // "sample"),
@@ -791,6 +796,7 @@ in
               --argjson vcpus "$VCPU_COUNT" \
               --argjson quantum "$RR_SWITCH_QUANTUM" \
               --argjson stop_at "$STOP_AT_VALUE" \
+              --argjson cadence "$CADENCE" \
               --arg expect_rr_cursor "$EXPECT_RR_CURSOR" \
               --arg sustain_workload "$SUSTAIN_WORKLOAD" \
               --arg launch_definition_digest "$launch_definition_digest" \
@@ -853,7 +859,9 @@ in
                 and (.[-1] | ((.kind // "sample") == "sample" and .final == true))
                 and (
                   if $sustain_workload == "1" then
-                    ([ $samples[]
+                    ([ $samples[] | select(.final != true) ] | length)
+                      == (($stop_at / $cadence) | ceil)
+                    and ([ $samples[]
                       | select(.final != true and .retired == $stop_at)
                     ] | length) == 1
                     and ([ $samples[]
@@ -1146,6 +1154,8 @@ in
           plugin_exit_pause_overshoot_bound=not-applicable
           plugin_exit_pause_overshoot_bounded=not-applicable
           plugin_exit_pause_overshoot_cross_run_match=not-applicable
+          periodic_samples_expected=not-applicable
+          periodic_samples_observed=not-applicable
           plugin_exit_fingerprint_compared=true
           if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
             horizon_line=$(jq -c --argjson stop_at "$STOP_AT_VALUE" \
@@ -1179,6 +1189,10 @@ in
               || fail "run b plugin exit retired before the exact horizon: $plugin_exit_retired_b/$STOP_AT"
             plugin_exit_pause_overshoot=$((plugin_exit_retired - STOP_AT))
             plugin_exit_pause_overshoot_b=$((plugin_exit_retired_b - STOP_AT))
+            periodic_samples_expected=$(((STOP_AT + CADENCE - 1) / CADENCE))
+            periodic_samples_observed=$((samples_a - 1))
+            [ "$periodic_samples_observed" -eq "$periodic_samples_expected" ] \
+              || fail "non-final periodic sample count mismatch: $periodic_samples_observed/$periodic_samples_expected"
             [ "$plugin_exit_pause_overshoot" -le "$RR_SWITCH_QUANTUM" ] \
               || fail "plugin-exit pause overshoot exceeds one RR quantum: $plugin_exit_pause_overshoot/$RR_SWITCH_QUANTUM"
             [ "$plugin_exit_pause_overshoot_b" -le "$RR_SWITCH_QUANTUM" ] \
@@ -1308,6 +1322,8 @@ in
             echo plugin_exit_pause_overshoot_bound="$plugin_exit_pause_overshoot_bound"
             echo plugin_exit_pause_overshoot_bounded="$plugin_exit_pause_overshoot_bounded"
             echo plugin_exit_pause_overshoot_cross_run_match="$plugin_exit_pause_overshoot_cross_run_match"
+            echo periodic_samples_expected="$periodic_samples_expected"
+            echo periodic_samples_observed="$periodic_samples_observed"
             echo stop_request="$stop_request"
             echo stop_requested="$plugin_exit_stop_requested"
             echo plugin_exit_fingerprint_compared="$plugin_exit_fingerprint_compared"
