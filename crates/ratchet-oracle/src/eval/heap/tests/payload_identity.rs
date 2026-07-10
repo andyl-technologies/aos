@@ -59,7 +59,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         raw_representation: 0,
         address_identity_only: 0,
         relocation_sensitive: 1,
-        b2_disposition: "rewrite the active force identity before evaluation resumes",
+        b2_disposition: "derive removal keys from the relocated active force root",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/capture_validation.rs",
@@ -87,7 +87,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         raw_representation: 0,
         address_identity_only: 0,
         relocation_sensitive: 6,
-        b2_disposition: "rekey lazy-identity and fold-initial thunk sets in the live commit",
+        b2_disposition: "rekey thunk sets and derive active-force removals after root relocation",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_core/force_identity.rs",
@@ -128,8 +128,8 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         path: "ratchet-oracle/src/eval/tree_walk/eval_raw.rs",
         raw_representation: 2,
         address_identity_only: 0,
-        relocation_sensitive: 3,
-        b2_disposition: "rewrite active and expanded raw-render traversal identities",
+        relocation_sensitive: 0,
+        b2_disposition: "publish raw-render traversal Values as writable transient roots",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_source.rs",
@@ -142,8 +142,8 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         path: "ratchet-oracle/src/eval/tree_walk/eval_trace.rs",
         raw_representation: 2,
         address_identity_only: 0,
-        relocation_sensitive: 1,
-        b2_disposition: "rewrite the visited traversal stack before mid-trace collection",
+        relocation_sensitive: 0,
+        b2_disposition: "publish trace traversal Values as writable transient roots",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/outcome.rs",
@@ -285,7 +285,7 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .iter()
             .map(|row| row.relocation_sensitive)
             .sum::<usize>(),
-        24
+        20
     );
     let production_rows = PAYLOAD_IDENTITY_AUDIT
         .iter()
@@ -303,6 +303,6 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .fold((0, 0, 0), |left, right| {
                 (left.0 + right.0, left.1 + right.1, left.2 + right.2)
             }),
-        (40, 4, 22)
+        (40, 4, 18)
     );
 }

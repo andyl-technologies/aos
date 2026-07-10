@@ -505,6 +505,43 @@ fn raw_renderer_tracks_logical_sharing_without_hash_cons_aliases() {
 }
 
 #[test]
+fn moving_gc_rewrites_raw_render_traversal_identities() {
+    let options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    for (source, expected) in [
+        ("let xs = [ xs ]; in xs", "[ [ «repeated» ] ]"),
+        (
+            "let xs = [ xs xs ]; in xs",
+            "[ [ «repeated» «repeated» ] «repeated» ]",
+        ),
+        (
+            "let value = { a = 1; }; in [ value value ]",
+            "[ { a = 1; } «repeated» ]",
+        ),
+    ] {
+        let rendered = eval_raw_bytes_with_options(&lower(source), options.clone())
+            .expect("moving-GC raw traversal renders");
+        assert_eq!(rendered, expected.as_bytes());
+    }
+}
+
+#[test]
+fn moving_gc_unmarks_the_relocated_active_force_identity() {
+    let ir = lower("builtins.break (builtins.head [ (x: x) ])");
+    let options = TreeWalkOptions::with_gc_stress_policy(GcStressPolicy::every_safepoint());
+    let evaluator = TreeWalk::with_options(&ir, options);
+
+    let (rendered, evaluator) = eval_raw_bytes_with_evaluator_owned(&ir, evaluator)
+        .expect("moving-GC break identity renders");
+
+    assert_eq!(rendered, b"<LAMBDA>");
+    assert!(
+        evaluator.lazy_identity_thunks.is_empty(),
+        "the relocated active force key is removed after forcing"
+    );
+    assert!(evaluator.active_force_roots.is_empty());
+}
+
+#[test]
 fn trace_primop_renders_whnf_values() {
     for (source, expected) in [
         (r#"builtins.trace "a\n\"b" 1"#, b"a\n\"b".as_slice()),

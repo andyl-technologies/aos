@@ -11,7 +11,7 @@ impl TreeWalk {
         value_span: Span,
         value: Value,
         out: &mut Vec<u8>,
-        visited: &mut Vec<(ValueTag, u64)>,
+        visited: &mut Vec<Value>,
     ) -> Result<(), TreeWalkError> {
         let mut active = Vec::new();
         let mut expanded_active_lists = Vec::new();
@@ -38,14 +38,20 @@ impl TreeWalk {
         value_span: Span,
         value: Value,
         out: &mut Vec<u8>,
-        seen: &mut Vec<(ValueTag, u64)>,
-        active: &mut Vec<(ValueTag, u64)>,
-        expanded_active_lists: &mut Vec<u64>,
+        seen: &mut Vec<Value>,
+        active: &mut Vec<Value>,
+        expanded_active_lists: &mut Vec<Value>,
         active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
-        let value = self.force_value(value_id, value_span, value)?;
+        let value = self.with_raw_render_identity_roots(
+            value_id,
+            value_span,
+            seen,
+            active,
+            expanded_active_lists,
+            |eval| eval.force_value(value_id, value_span, value),
+        )?;
         let tag = value.tag();
-        let key = (tag, value.relocation_sensitive_identity_bits());
         let tracks_repeated = match tag {
             ValueTag::Attrs => !self
                 .heap
@@ -64,13 +70,12 @@ impl TreeWalk {
             _ => false,
         };
         let entered = if tracks_repeated {
-            if seen.contains(&key) {
+            if Self::raw_identity_contains(seen, value) {
                 return match tag {
                     ValueTag::List
-                        if Self::raw_active_value_contains(active, key)
+                        if Self::raw_identity_contains(active, value)
                             && *active_list_expansion_depth == 0
-                            && !expanded_active_lists
-                                .contains(&value.relocation_sensitive_identity_bits())
+                            && !Self::raw_identity_contains(expanded_active_lists, value)
                             && self
                                 .raw_repeated_list_can_expand(value_id, value_span, value)? =>
                     {
@@ -81,7 +86,7 @@ impl TreeWalk {
                                 span,
                             )
                         })?;
-                        expanded_active_lists.push(value.relocation_sensitive_identity_bits());
+                        expanded_active_lists.push(value);
                         *active_list_expansion_depth += 1;
                         let result = self.write_raw_list(
                             id,
@@ -105,12 +110,12 @@ impl TreeWalk {
             seen.try_reserve_exact(1).map_err(|_| {
                 TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
             })?;
-            seen.push(key);
+            seen.push(value);
             let len = active.len() + 1;
             active.try_reserve_exact(1).map_err(|_| {
                 TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
             })?;
-            active.push(key);
+            active.push(value);
             true
         } else {
             false
@@ -183,8 +188,53 @@ impl TreeWalk {
         result
     }
 
-    fn raw_active_value_contains(active: &[(ValueTag, u64)], key: (ValueTag, u64)) -> bool {
-        active.contains(&key)
+    fn with_raw_render_identity_roots<T>(
+        &mut self,
+        id: IrId,
+        span: Span,
+        seen: &mut Vec<Value>,
+        active: &mut Vec<Value>,
+        expanded_active_lists: &mut Vec<Value>,
+        body: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        let seen_end = seen.len();
+        let active_end = seen_end.checked_add(active.len()).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed { id, len: usize::MAX },
+                span,
+            )
+        })?;
+        let roots_len = active_end
+            .checked_add(expanded_active_lists.len())
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed { id, len: usize::MAX },
+                    span,
+                )
+            })?;
+        if roots_len == 0 {
+            return body(self);
+        }
+
+        let mut roots = Vec::new();
+        roots.try_reserve_exact(roots_len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed { id, len: roots_len },
+                span,
+            )
+        })?;
+        roots.extend_from_slice(seen);
+        roots.extend_from_slice(active);
+        roots.extend_from_slice(expanded_active_lists);
+        let result = self.with_transient_value_stack_roots(id, span, &mut roots, body);
+        seen.copy_from_slice(&roots[..seen_end]);
+        active.copy_from_slice(&roots[seen_end..active_end]);
+        expanded_active_lists.copy_from_slice(&roots[active_end..]);
+        result
+    }
+
+    fn raw_identity_contains(identities: &[Value], value: Value) -> bool {
+        identities.iter().any(|identity| identity.raw_eq(value))
     }
 
     fn raw_repeated_list_can_expand(
@@ -259,9 +309,9 @@ impl TreeWalk {
         list_span: Span,
         value: Value,
         out: &mut Vec<u8>,
-        seen: &mut Vec<(ValueTag, u64)>,
-        active: &mut Vec<(ValueTag, u64)>,
-        expanded_active_lists: &mut Vec<u64>,
+        seen: &mut Vec<Value>,
+        active: &mut Vec<Value>,
+        expanded_active_lists: &mut Vec<Value>,
         active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let mut elements = {
@@ -347,9 +397,9 @@ impl TreeWalk {
         attrs_span: Span,
         value: Value,
         out: &mut Vec<u8>,
-        seen: &mut Vec<(ValueTag, u64)>,
-        active: &mut Vec<(ValueTag, u64)>,
-        expanded_active_lists: &mut Vec<u64>,
+        seen: &mut Vec<Value>,
+        active: &mut Vec<Value>,
+        expanded_active_lists: &mut Vec<Value>,
         active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
         let entries = {

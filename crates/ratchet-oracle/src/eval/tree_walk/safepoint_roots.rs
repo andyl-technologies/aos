@@ -3495,12 +3495,11 @@ impl TreeWalk {
         self.suspended_env_roots.pop()
     }
 
-    pub(in crate::eval::tree_walk) fn pop_active_force_root(&mut self, value: Value) {
-        let popped = self.active_force_roots.pop();
-        debug_assert!(
-            popped.is_some_and(|popped| popped.raw_eq(value)),
-            "active force root stack is unbalanced"
-        );
+    pub(in crate::eval::tree_walk) fn pop_active_force_root(&mut self) -> Value {
+        let Some(value) = self.active_force_roots.pop() else {
+            unreachable!("active force root stack is unbalanced");
+        };
+        value
     }
 
     pub(in crate::eval::tree_walk) fn push_active_primop_arg_roots(

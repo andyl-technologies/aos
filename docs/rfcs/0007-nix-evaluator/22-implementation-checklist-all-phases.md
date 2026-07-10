@@ -8249,8 +8249,8 @@ and helps the oracle directly.
       and clears the advisory unhashable-value memo. The commit half is
       allocation-free. Tests cover survivor rekeying, dead-young pruning,
       metadata preservation, and memo clearing on a real `TreeWalk`. Active
-      force/render traversal identities, structural hashes, and shape
-      fingerprints remain open in the same mechanically enforced worklist.
+      Structural hashes and shape fingerprints remain open in the same
+      mechanically enforced worklist.
 - [x] Current JIT embedded-constant relocation repair:
       `ratchet-jit::lower::error::validate_embedded_constant` rejects every
       heap-backed `Value` before the constant-thunk or static-select-default
@@ -8284,6 +8284,26 @@ and helps the oracle directly.
       peaks were exactly unchanged at 7.5/67.5/160 MiB. A separate five-sample
       wide memory pass measured candidate retained-RSS medians 6.0% lower cold
       and 3.9% lower warm.
+- [x] Current force/render traversal relocation repair:
+      successful claimed forces derive lazy-identity removal keys from the
+      relocated active-force root instead of carrying a copied address across
+      safepoints. Raw-render `seen`, active, and expanded-list identities and
+      trace visited identities retain full `Value`s and are published through
+      writable transient root storage around recursive evaluation. Moving-GC
+      stress tests cover recursive/shared rendering and relocated
+      `builtins.break` identity removal. This closes five more
+      production-sensitive callers (19 of 22 total); only list/attr structural
+      hashes and shaped-attr fingerprints remain. The landing battery is
+      byte-green across the 16-leg package matrix, compute x8 under JIT,
+      `bench.wide-eval` in four modes, cache validation, the pinned upstream
+      language aggregate, and all 645 generated strict-JSON seed expressions
+      (646 corpus files) in serial/K4/JIT/sweep-zero. The serial oracle suite
+      reports 3,028 pass / 34 ignored, and the other Rust suites are green
+      except the unchanged frozen source-size offender set. Five interleaved
+      release A/B rounds against pristine `a91f2ae31` measured zlib cold/warm
+      at -1.4%/-3.4%, wide at +4.0%/+3.4%, and JIT fib at +0.4%/-3.0%.
+      Retained-RSS medians were lower in all six comparisons, and arena peaks
+      were exactly unchanged at 7.5/67.5/160 MiB.
 - [x] Current tree-walk transient value-stack registration precursor:
       `TreeWalk` owns scoped transient value-stack root storage for evaluator
       paths that keep heap values in Rust locals across allocation safepoints.

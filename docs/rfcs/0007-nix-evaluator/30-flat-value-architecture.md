@@ -256,7 +256,7 @@ key/reference that B2 must repair. The checked-in table at
 `ratchet-value`, `ratchet-oracle`, and `ratchet-jit`, pins per-file counts,
 and gives every relocation-sensitive family a concrete B2 disposition.
 Any new or reclassified production caller fails the audit until reviewed.
-The first three B2 repair slices now close 14 of the 22 production-sensitive
+The first four B2 repair slices now close 19 of the 22 production-sensitive
 callers. `relocation_identity.rs` stages the live survivor mapping before any
 root or heap mutation, rekeys the lazy-identity/fold and tier-1 publish tables
 after a successful live writeback commit, prunes dead young keys before nursery
@@ -265,15 +265,23 @@ rejects heap-backed constants before either embedding site emits constant CLIF
 words, leaving no compiled address word to patch. Active, suspended, and
 heap-captured lexical frames enumerate their `AtomicValueCell` payloads as
 writable roots; the heap-field stage validates shared lambda/thunk capture
-targets and defers their stores until the allocation-free live commit. The
+targets and defers their stores until the allocation-free live commit. Active
+forces derive their side-table removal key from the relocated force root, and
+raw/trace traversal state retains full `Value`s in writable transient roots
+rather than copying address words across recursive evaluation. The
 16-leg package matrix, compute x8, `bench.wide`, and all 646 current canonical
 strict-JSON seeds in four execution modes stayed byte-green. Five interleaved
 release A/B rounds against pristine `e613b5b19` measured zlib cold/warm at
 -1.4%/-5.6%, wide at -0.6%/-2.3%, and JIT fib at +0.3%/+0.3%, with exact
 7.5/67.5/160 MiB arena peaks; five-sample wide retained-RSS medians were 6.0%
-lower cold and 3.9% lower warm. The remaining eight callers are the
-active-force/render traversal identities, structural hashes, and shape
-fingerprints enumerated by the same table.
+lower cold and 3.9% lower warm. The remaining three callers are the list/attr
+structural hashes and shaped-attr fingerprints enumerated by the same table.
+The force/render landing's full battery remained byte-green, including all 645
+generated strict-JSON seed expressions in four modes. Five interleaved release
+A/B rounds against pristine `a91f2ae31` measured zlib cold/warm at
+-1.4%/-3.4%, wide at +4.0%/+3.4%, and JIT fib at +0.4%/-3.0%; retained-RSS
+medians were lower in every comparison and the 7.5/67.5/160 MiB arena peaks
+were unchanged.
 
 ### 2.5 GC integration: header-resident marks
 

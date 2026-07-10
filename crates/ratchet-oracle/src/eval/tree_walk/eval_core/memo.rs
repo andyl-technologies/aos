@@ -131,7 +131,6 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         source_thunk: Value,
-        forced_payload: u64,
         thunk: &EvalThunk,
         guard: ForceGuard<'_>,
     ) -> Result<Value, TreeWalkError> {
@@ -139,28 +138,26 @@ impl TreeWalk {
         let stats_enabled = self.options.memo_options().stats_enabled;
         if !tiers_active && !stats_enabled {
             return self
-                .force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard);
+                .force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
         let key_started = stats_enabled.then(Instant::now);
         let candidate = self.memo_candidate_for_thunk(thunk);
         self.record_memo_key_timing(key_started);
         let Some(candidate) = candidate else {
             return self
-                .force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard);
+                .force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         };
         self.observe_memo_potential_hit(&candidate);
         if !tiers_active {
             return self
-                .force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard);
+                .force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard);
         }
         if let Some(value) = self.memo_probe(id, span, thunk, &candidate)? {
             let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
-            self.unmark_lazy_identity_thunk_payload(forced_payload);
             return Ok(value);
         }
         let cursor = self.impure_input_trace_cursor();
-        let value =
-            self.force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard)?;
+        let value = self.force_memoized_claimed_thunk(id, span, source_thunk, thunk, guard)?;
         let record_started = stats_enabled.then(Instant::now);
         self.memo_admit(&candidate, value, cursor);
         self.record_memo_record_timing(record_started);

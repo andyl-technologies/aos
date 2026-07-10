@@ -1639,22 +1639,14 @@ impl TreeWalk {
             WhnfTagFastPath::AlreadyWhnf(value) => return Ok(value),
             WhnfTagFastPath::RequiresThunkProtocol(value) => value,
         };
-        let forced_payload = value.relocation_sensitive_identity_bits();
         let thunk = self
             .heap
             .clone_thunk(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
         if let Some(parallel_cell) = thunk.parallel_payload_cell() {
-            return self.force_parallel_payload_thunk(
-                id,
-                span,
-                value,
-                forced_payload,
-                &thunk,
-                parallel_cell,
-            );
+            return self.force_parallel_payload_thunk(id, span, value, &thunk, parallel_cell);
         }
-        self.force_serial_thunk_value(id, span, value, forced_payload, &thunk)
+        self.force_serial_thunk_value(id, span, value, &thunk)
     }
 
     fn force_parallel_payload_thunk(
@@ -1662,7 +1654,6 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         source_thunk: Value,
-        forced_payload: u64,
         thunk: &EvalThunk,
         parallel_cell: &TreeWalkParallelThunkCell,
     ) -> Result<Value, TreeWalkError> {
@@ -1678,12 +1669,12 @@ impl TreeWalk {
         if let Some(value) = thunk.cell().cached_value().map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
         })? {
-            return self.replay_parallel_payload_terminal_result(forced_payload, Ok(value));
+            return self.replay_parallel_payload_terminal_result(source_thunk, Ok(value));
         }
         if let Some(result) = parallel_cell.checked_terminal_result().map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
         })? {
-            return self.replay_parallel_payload_terminal_result(forced_payload, result);
+            return self.replay_parallel_payload_terminal_result(source_thunk, result);
         }
 
         let worker = self.options.parallel_thunk_worker_id();
@@ -1697,7 +1688,7 @@ impl TreeWalk {
         let outcome = parallel_cell
             .force_or_wait_with(worker, || {
                 body_ran.set(true);
-                self.force_serial_thunk_value(id, span, source_thunk, forced_payload, thunk)
+                self.force_serial_thunk_value(id, span, source_thunk, thunk)
             })
             .map_err(|source| {
                 TreeWalkError::new(TreeWalkErrorKind::ParallelThunkPayload { id, source }, span)
@@ -1713,7 +1704,7 @@ impl TreeWalk {
                 if body_ran.get() {
                     result
                 } else {
-                    self.replay_parallel_payload_terminal_result(forced_payload, result)
+                    self.replay_parallel_payload_terminal_result(source_thunk, result)
                 }
             }
             TreeWalkParallelThunkForceOutcome::SelfCycle { .. } => Err(TreeWalkError::new(
@@ -1728,7 +1719,7 @@ impl TreeWalk {
 
     fn replay_parallel_payload_terminal_result(
         &mut self,
-        forced_payload: u64,
+        source_thunk: Value,
         result: Result<Value, TreeWalkError>,
     ) -> Result<Value, TreeWalkError> {
         // Replaying a result another worker published is a foreign-value
@@ -1740,7 +1731,7 @@ impl TreeWalk {
         self.sync_shared_context();
         match result {
             Ok(value) => {
-                self.unmark_lazy_identity_thunk_payload(forced_payload);
+                self.unmark_relocated_lazy_identity_thunk(source_thunk);
                 self.increment_thunk_cache_hits();
                 Ok(value)
             }
@@ -1753,7 +1744,6 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         source_thunk: Value,
-        forced_payload: u64,
         thunk: &EvalThunk,
     ) -> Result<Value, TreeWalkError> {
         if thunk.is_single_entry_force_storage() {
@@ -1765,15 +1755,13 @@ impl TreeWalk {
                     id,
                     span,
                     source_thunk,
-                    forced_payload,
                     thunk,
                 );
                 self.capture_validation_disarm();
                 result
             };
             #[cfg(not(test))]
-            let result =
-                self.force_single_entry_thunk_value(id, span, source_thunk, forced_payload, thunk);
+            let result = self.force_single_entry_thunk_value(id, span, source_thunk, thunk);
             return result;
         }
         match thunk
@@ -1782,7 +1770,7 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?
         {
             ForceClaim::AlreadyForced(value) => {
-                self.unmark_lazy_identity_thunk_payload(forced_payload);
+                self.unmark_relocated_lazy_identity_thunk(source_thunk);
                 self.increment_thunk_cache_hits();
                 Ok(value)
             }
@@ -1794,13 +1782,15 @@ impl TreeWalk {
                     id,
                     span,
                     source_thunk,
-                    forced_payload,
                     thunk,
                     guard,
                 );
-                self.pop_active_force_root(source_thunk);
+                let relocated_source_thunk = self.pop_active_force_root();
                 #[cfg(test)]
                 self.capture_validation_disarm();
+                if result.is_ok() {
+                    self.unmark_relocated_lazy_identity_thunk(relocated_source_thunk);
+                }
                 result
             }
         }
@@ -1821,7 +1811,6 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         source_thunk: Value,
-        forced_payload: u64,
         thunk: &EvalThunk,
         guard: ForceGuard<'_>,
     ) -> Result<Value, TreeWalkError> {
@@ -1844,7 +1833,6 @@ impl TreeWalk {
                         self.increment_tier1_dispatched();
                         let value =
                             self.finish_forced_value(id, span, source_thunk, guard, value)?;
-                        self.unmark_lazy_identity_thunk_payload(forced_payload);
                         return Ok(value);
                     }
                     Tier1ForceHook::Deopted => self.increment_tier1_deopted(),
@@ -1866,7 +1854,7 @@ impl TreeWalk {
                 }
             }
         }
-        self.force_claimed_thunk_with_memo(id, span, source_thunk, forced_payload, thunk, guard)
+        self.force_claimed_thunk_with_memo(id, span, source_thunk, thunk, guard)
     }
 
     fn force_single_entry_thunk_value(
@@ -1874,7 +1862,6 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         source_thunk: Value,
-        forced_payload: u64,
         thunk: &EvalThunk,
     ) -> Result<Value, TreeWalkError> {
         self.push_active_force_root(id, span, source_thunk)?;
@@ -1883,10 +1870,14 @@ impl TreeWalk {
             self.increment_single_entry_thunks_forced();
             self.eval_thunk_body(id, span, thunk)
         })();
-        self.pop_active_force_root(source_thunk);
+        let source_thunk = self.pop_active_force_root();
         let value = result?;
-        self.unmark_lazy_identity_thunk_payload(forced_payload);
+        self.unmark_relocated_lazy_identity_thunk(source_thunk);
         Ok(value)
+    }
+
+    fn unmark_relocated_lazy_identity_thunk(&mut self, value: Value) {
+        self.unmark_lazy_identity_thunk_payload(value.relocation_sensitive_identity_bits());
     }
 
     pub(super) fn force_memoized_claimed_thunk(
@@ -1894,7 +1885,6 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         source_thunk: Value,
-        forced_payload: u64,
         thunk: &EvalThunk,
         guard: ForceGuard<'_>,
     ) -> Result<Value, TreeWalkError> {
@@ -1908,7 +1898,6 @@ impl TreeWalk {
             self.increment_thunks_forced();
             let value = self.eval_thunk_body(id, span, thunk)?;
             let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
-            self.unmark_lazy_identity_thunk_payload(forced_payload);
             return Ok(value);
         }
         let cache_subject =
@@ -1922,7 +1911,6 @@ impl TreeWalk {
             && let Some(value) = self.lookup_forced_inline_expression_result(cache_subject.clone())
         {
             let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
-            self.unmark_lazy_identity_thunk_payload(forced_payload);
             return Ok(value);
         }
 
@@ -1956,7 +1944,6 @@ impl TreeWalk {
             self.replace_active_memo_reads(active_force_cache_node);
             self.record_enclosing_memo_read(dependency);
         }
-        self.unmark_lazy_identity_thunk_payload(forced_payload);
         if let Some(subject) = &cache_subject {
             self.record_forced_expression_demand(subject);
         }

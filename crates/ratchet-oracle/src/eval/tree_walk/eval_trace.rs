@@ -4,27 +4,43 @@ use super::*;
 
 impl TreeWalk {
     pub(super) fn write_trace_value(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         value_id: IrId,
         value_span: Span,
         value: Value,
         out: &mut Vec<u8>,
-        visited: &mut Vec<(ValueTag, u64)>,
+        visited: &mut Vec<Value>,
+        top_level: bool,
+    ) -> Result<(), TreeWalkError> {
+        self.with_deep_force_visited_roots(id, span, visited, |eval, visited| {
+            eval.write_trace_value_inner(
+                id, span, value_id, value_span, value, out, visited, top_level,
+            )
+        })
+    }
+    fn write_trace_value_inner(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        visited: &mut Vec<Value>,
         top_level: bool,
     ) -> Result<(), TreeWalkError> {
         let tag = value.tag();
         let entered = if Self::trace_recursive_value_tag(tag) {
-            let key = (tag, value.relocation_sensitive_identity_bits());
-            if visited.contains(&key) {
+            if Self::deep_force_visited_contains(visited, value) {
                 return Self::extend_bytes_for_node(id, span, out, "«repeated»".as_bytes());
             }
             let len = visited.len() + 1;
             visited.try_reserve_exact(1).map_err(|_| {
                 TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
             })?;
-            visited.push(key);
+            visited.push(value);
             true
         } else {
             false
@@ -78,14 +94,14 @@ impl TreeWalk {
     }
 
     pub(super) fn write_trace_thunk(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         value_id: IrId,
         value_span: Span,
         value: Value,
         out: &mut Vec<u8>,
-        visited: &mut Vec<(ValueTag, u64)>,
+        visited: &mut Vec<Value>,
         top_level: bool,
     ) -> Result<(), TreeWalkError> {
         let thunk = self.heap.get_thunk(value).map_err(|source| {
@@ -251,14 +267,14 @@ impl TreeWalk {
     }
 
     pub(super) fn write_trace_list(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         list_id: IrId,
         list_span: Span,
         value: Value,
         out: &mut Vec<u8>,
-        visited: &mut Vec<(ValueTag, u64)>,
+        visited: &mut Vec<Value>,
     ) -> Result<(), TreeWalkError> {
         let elements = {
             let list = self.heap.get_list(value).map_err(|source| {
@@ -299,14 +315,14 @@ impl TreeWalk {
     }
 
     pub(super) fn write_trace_attrs(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         attrs_id: IrId,
         attrs_span: Span,
         value: Value,
         out: &mut Vec<u8>,
-        visited: &mut Vec<(ValueTag, u64)>,
+        visited: &mut Vec<Value>,
     ) -> Result<(), TreeWalkError> {
         let entries = {
             let attrs = self.heap.get_attrs(value).map_err(|source| {
