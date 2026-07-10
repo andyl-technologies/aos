@@ -141,24 +141,21 @@ pub(super) fn flaky_escape_failures(
     let lower = scrub_comments_and_strings(content).to_ascii_lowercase();
     FLAKY_ESCAPE_PATTERNS
         .iter()
-        .filter(|pattern| contains_flaky_escape_pattern(&lower, pattern))
+        .filter(|pattern| {
+            if pattern.contains("::") {
+                return lower.contains(**pattern);
+            }
+            lower.match_indices(**pattern).any(|(start, _)| {
+                let before = lower[..start].chars().next_back();
+                let after = lower[start + pattern.len()..].chars().next();
+                before.is_none_or(|character| !character.is_ascii_alphanumeric())
+                    && after.is_none_or(|character| !character.is_ascii_alphanumeric())
+            })
+        })
         .map(|pattern| {
             format!("{package}:{test_target} contains flaky-test escape pattern `{pattern}`")
         })
         .collect()
-}
-
-fn contains_flaky_escape_pattern(source: &str, pattern: &str) -> bool {
-    if pattern.contains("::") {
-        return source.contains(pattern);
-    }
-
-    source.match_indices(pattern).any(|(start, _)| {
-        let before = source[..start].chars().next_back();
-        let after = source[start + pattern.len()..].chars().next();
-        before.is_none_or(|character| !character.is_ascii_alphanumeric())
-            && after.is_none_or(|character| !character.is_ascii_alphanumeric())
-    })
 }
 
 pub(super) fn source_shape_failures(
