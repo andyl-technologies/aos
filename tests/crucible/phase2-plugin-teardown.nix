@@ -15,14 +15,10 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginTeardown = builtins.readFile ../../crates/crucible-qemu-plugin/src/teardown.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
-  pluginRuntime = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/tests.rs)
-  ];
-  pluginLiveCallbacks = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs)
-  ];
+  pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs;
+  pluginRuntimeTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
+  pluginLiveCallbacks = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+  pluginLiveCallbacksTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   shmemRegion = builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
   shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
@@ -264,16 +260,22 @@
         needle = "self.quiescence.wait_until_drained();";
       }
       {
+        label = "worker panic fail-loud boundary";
+        needle = "run_runtime_thread_fail_loud";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/tests.rs" pluginRuntimeTests [
+      {
         label = "shared shutdown worker drain proof";
         needle = "shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_drain";
       }
       {
         label = "Quit/shared race single-shot proof";
-        needle = "concurrent_quit_and_shared_shutdown_select_one_teardown_after_inflight_drain";
+        needle = "quit_selected_first_keeps_receiver_live_for_admitted_callback_shutdown_signal";
       }
       {
-        label = "worker panic fail-loud boundary";
-        needle = "run_runtime_thread_fail_loud";
+        label = "shared shutdown wins before the lifecycle reader delivers Quit";
+        needle = "shared_selected_first_keeps_receiver_live_for_subsequent_quit_delivery";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
@@ -285,6 +287,8 @@
         label = "shared shutdown callback bridge";
         needle = "signal_shared_shutdown";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs" pluginLiveCallbacksTests [
       {
         label = "busy exact-ceiling shutdown observation proof";
         needle = "busy_at_ceiling_publish_callback_signals_shared_shutdown_without_publication";

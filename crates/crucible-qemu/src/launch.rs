@@ -679,11 +679,11 @@ impl QemuVmLaunchConfig {
             self.kernel.path.clone(),
             "-drive".to_owned(),
             format!(
-                "id={ROOT_DRIVE_ID},file={},backing.file={},backing.format=qcow2,if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
+                "id={ROOT_DRIVE_ID},file={},backing.driver=qcow2,backing.file.driver=file,backing.file.filename={},if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
                 self.root_overlay_file_name, self.root_image.path
             ),
             "-device".to_owned(),
-            format!("virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID},bootindex=0"),
+            format!("virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID}"),
         ];
         if let Some(initrd) = &self.initrd {
             args.extend(["-initrd".to_owned(), initrd.path.clone()]);

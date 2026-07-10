@@ -246,35 +246,14 @@ hash_registers_for_vcpu(
   }
 
   const struct register_set *set = &register_sets[vcpu_index];
-  GByteArray *buffer = g_byte_array_new();
-  if (buffer == NULL) {
-    *failures += 1;
-    return fnv1a_u64(hash, UINT64_MAX - 1U);
-  }
-
   hash = fnv1a_u64(hash, vcpu_index);
   hash = fnv1a_u64(hash, set->count);
 
-  for (size_t i = 0; i < set->count; i++) {
-    const qemu_plugin_reg_descriptor *reg = &set->registers[i];
-    g_byte_array_set_size(buffer, 0);
-    const int size =
-        qemu_plugin_crucible_read_vcpu_register(vcpu_index, reg->handle, buffer);
-
-    hash = fnv1a_cstr(hash, reg->name);
-    hash = fnv1a_cstr(hash, reg->feature);
-    if (size < 0) {
-      *failures += 1;
-      hash = fnv1a_u64(hash, UINT64_MAX);
-      continue;
-    }
-
-    hash = fnv1a_u64(hash, (uint64_t)size);
-    hash = fnv1a_bytes(hash, buffer->data, buffer->len);
-  }
-
-  g_byte_array_free(buffer, true);
-
+  /*
+   * The batched export already canonicalizes every register name, feature,
+   * width, and value. Hash it once instead of reading the same register file
+   * a second time through the descriptor-at-a-time compatibility API.
+   */
   const int canonical_status = qemu_plugin_read_vcpu_regs(
       vcpu_index,
       canonical_registers,
@@ -414,7 +393,7 @@ record_sample(unsigned int vcpu_index, bool final)
 
   const struct register_hash_summary register_hashes = compute_register_hash();
   uint64_t ram_bytes = 0;
-  const uint64_t ram_hash = qemu_plugin_crucible_ram_hash(&ram_bytes);
+  const uint64_t ram_hash = qemu_plugin_crucible_guest_ram_hash(&ram_bytes);
   uint64_t rr_current_vcpu;
   uint64_t rr_cursor_position;
   uint64_t rr_switch_quantum;
@@ -802,7 +781,7 @@ on_insn(unsigned int vcpu_index, void *userdata)
   }
   record_rr_switch_event();
 
-  if (post_boundary_samples) {
+  if (post_boundary_samples && required_pc_seen) {
     const struct register_hash_summary register_hashes = compute_register_hash();
     const bool rr_cursor_valid = rr_current_vcpu != UINT64_MAX;
     fold_trajectory_state(
@@ -844,7 +823,7 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
 
   const struct register_hash_summary register_hashes = compute_register_hash();
   uint64_t ram_bytes = 0;
-  const uint64_t ram_hash = qemu_plugin_crucible_ram_hash(&ram_bytes);
+  const uint64_t ram_hash = qemu_plugin_crucible_guest_ram_hash(&ram_bytes);
   uint64_t rr_current_vcpu;
   uint64_t rr_cursor_position;
   uint64_t rr_switch_quantum;

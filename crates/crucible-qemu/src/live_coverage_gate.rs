@@ -48,11 +48,11 @@ const GATE_NODE: &str = "coverage-gate-vm";
 const GATE_ROUTER: &str = "coverage-gate-router";
 const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
-const DEFAULT_HORIZON_ICOUNT: u64 = 32_768;
+const DEFAULT_HORIZON_ICOUNT: u64 = 16_000_000;
 const GUEST_TEXT_START: u64 = 0x0010_0000;
 const GUEST_TEXT_END_EXCLUSIVE: u64 = 0x0010_1000;
 const GUEST_POST_IO_PC: u64 = 0x0010_0800;
-const DEFAULT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Inputs for a production loaded-QEMU coverage equivalence run.
@@ -234,6 +234,16 @@ pub enum LoadedQemuCoverageGateError {
         last_icount: u64,
         /// Host-side diagnostic timeout.
         timeout: Duration,
+    },
+    /// QEMU exited before publishing the requested exact boundary.
+    #[error("{mode} QEMU exited before reaching icount {horizon_icount}: {status}")]
+    ChildExitBeforeBoundary {
+        /// Coverage mode being exercised.
+        mode: &'static str,
+        /// Required exact boundary.
+        horizon_icount: u64,
+        /// Exact platform exit-status diagnostic.
+        status: String,
     },
     /// The plugin did not publish `Done` after consuming control `Quit`.
     #[error("{mode} plugin did not publish teardown Done within {timeout:?}")]
@@ -520,7 +530,7 @@ fn run_loaded_qemu_once(
         },
     )
     .map_err(|source| channel_error(mode, "start exact quantum", source))?;
-    wait_for_exact_boundary(&mut hot_path, config, mode)?;
+    wait_for_exact_boundary(&mut hot_path, &mut child, config, mode)?;
     QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)
         .map_err(|source| channel_error(mode, "finish exact quantum", source))?;
     let completed_icount = QemuShmemHotPathChannel::current_icount(&mut hot_path)
@@ -710,6 +720,7 @@ fn guest_coverage_observation_count(
 #[allow(clippy::disallowed_methods)]
 fn wait_for_exact_boundary(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
+    child: &mut crate::QemuNodeChild,
     config: &LoadedQemuCoverageGateConfig,
     mode: &'static str,
 ) -> Result<(), LoadedQemuCoverageGateError> {
@@ -720,6 +731,16 @@ fn wait_for_exact_boundary(
             .retired;
         if current >= config.horizon_icount {
             return Ok(());
+        }
+        if let Some(status) = child
+            .try_wait_natural_exit()
+            .map_err(|source| LoadedQemuCoverageGateError::ChildWait { mode, source })?
+        {
+            return Err(LoadedQemuCoverageGateError::ChildExitBeforeBoundary {
+                mode,
+                horizon_icount: config.horizon_icount,
+                status: status.to_string(),
+            });
         }
         if started.elapsed() >= config.completion_timeout {
             return Err(LoadedQemuCoverageGateError::CompletionTimeout {

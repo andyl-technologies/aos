@@ -868,11 +868,14 @@ real reference-host numbers the ratchet compares against.
 - [ ] **T-PERF-14** Implement coverage-on-vs-off guest-IPS measurement and assert
   off-cost ≈ no-hook and on-cost within budget (≥ ~70% of off-IPS). — satisfies
   [PERF-14]; spec §25.5.2.
-- [ ] **T-PERF-15** Assert coverage extraction is observation-only (no fingerprint
+- [x] **T-PERF-15** Assert coverage extraction is observation-only (no fingerprint
   or canonical-log change with coverage on). — satisfies [PERF-15]; spec §25.5.2.
-  The production callback and modeled fingerprint evidence exist, but closure
-  requires a real loaded-QEMU coverage-on/off fingerprint and canonical-log run
-  through the callback owned by T-PLUG-15/T-ADV-10.
+  Completed by `checks.crucible.phase6.basicBlockCoverage`: a production
+  loaded-QEMU coverage-on/off run reaches the same exact icount and proves an
+  identical execution fingerprint, canonical causal log, and independent
+  instruction/register/RR-cursor/writable-RAM/device-I/O trajectory. The
+  coverage-on run still publishes live guest blocks through the callback owned
+  by T-PLUG-15/T-ADV-10.
 - [ ] **T-PERF-16** Implement fork-cost measurement (time + bytes vs delta size)
   and confirm independence of absolute state size (CoW). — satisfies [PERF-16];
   spec §25.6.

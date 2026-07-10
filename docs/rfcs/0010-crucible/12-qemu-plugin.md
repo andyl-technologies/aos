@@ -965,11 +965,12 @@ component that makes that purity true *inside* the QEMU process.
   marker with the exact icount; ensure off-mode installs nothing and black-box is
   fully functional; route white-box inputs through the injection contract. —
   satisfies [PLUG-32], [PLUG-33], [PLUG-34]; spec §12.7.
-- [ ] **T-PLUG-15** Implement the optional coverage hook: a registration-time
+- [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],
   [PLUG-36], [PLUG-37]; spec §12.8.
-  Partial implementation registers QEMU's stock TB translation, execution, and
+  Completed by `checks.crucible.phase6.basicBlockCoverage`. The production
+  plugin registers QEMU's stock TB translation, execution, and
   flush callbacks only when coverage is enabled. It derives guest PC and block
   length at translation, observes exact TB-entry icount without committing timer
   state, bounds pending observations, and reclaims callback userdata after QEMU
@@ -982,9 +983,14 @@ component that makes that purity true *inside* the QEMU process.
   resulting observations through the generic backend boundary into the
   scheduler's unified event log before session publication, including a final
   drain returned through shutdown before the actor publishes its stopped state.
-  No QEMU-local coverage vector is retained as a second record. Real loaded-QEMU
-  coverage-on/off fingerprint evidence is still absent, so this task remains
-  open.
+  No QEMU-local coverage vector is retained as a second record. The loaded-QEMU
+  gate runs the production hook off and on against an uninstrumented standalone
+  multiboot guest at the same exact icount. Coverage-on publishes live guest
+  blocks, while the execution fingerprint, canonical causal log, and an
+  independent instruction/register/RR-cursor/writable-RAM/device-I/O trajectory
+  are identical. Coverage-off installs no TB callback. Both the busy-boundary
+  shared-shutdown path and control-channel `Quit` path drain admitted callbacks
+  and exit cleanly.
 - [ ] **T-PLUG-16** Implement the handshake and slot cross-check
   (`Hello`/`HelloAck`, exact ABI match, `slot_index < node_count`, launch-arg
   agreement). — satisfies [PLUG-38], [PLUG-39]; spec §12.9.1.

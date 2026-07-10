@@ -143,7 +143,7 @@ fn shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_dra
 }
 
 #[test]
-fn concurrent_quit_and_shared_shutdown_select_one_teardown_after_inflight_drain() {
+fn quit_selected_first_keeps_receiver_live_for_admitted_callback_shutdown_signal() {
     let _test_lock = CONTROL_WORKER_TEST_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -170,32 +170,82 @@ fn concurrent_quit_and_shared_shutdown_select_one_teardown_after_inflight_drain(
     });
     let reader_sender = sender.clone();
     let reader = std::thread::spawn(move || run_control_reader(plugin, reader_sender));
-    let start = Arc::new(std::sync::Barrier::new(3));
-    let shared_start = Arc::clone(&start);
-    let shared_sender = sender.clone();
-    let shared = std::thread::spawn(move || {
-        shared_start.wait();
-        let _sent = shared_sender.send(LiveRuntimeTeardownTrigger::SharedShutdown(shared_proof));
-    });
-    let quit_start = Arc::clone(&start);
-    let quit = std::thread::spawn(move || {
-        quit_start.wait();
-        host.write_all(&control_encode_host_msg(&HostMsg::Quit))
-            .unwrap_or_else(|error| panic!("host Quit should write: {error}"));
-    });
-    start.wait();
-    shared
+    host.write_all(&control_encode_host_msg(&HostMsg::Quit))
+        .unwrap_or_else(|error| panic!("host Quit should write: {error}"));
+    let quit_delivered = reader
         .join()
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-    quit.join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-    reader
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    assert!(quit_delivered);
 
+    // Quit is the only trigger delivered before admission closes, so it must
+    // be the worker's selected trigger. The receiver must remain connected
+    // while that worker drains this already-admitted callback.
     wait_until_callback_admission_closed(&quiescence);
     assert!(quiescence.enter().is_none());
     assert_ne!(slot.snapshot().status, STATUS_DONE);
+    sender
+        .send(LiveRuntimeTeardownTrigger::SharedShutdown(shared_proof))
+        .unwrap_or_else(|_error| {
+            panic!("admitted callback shutdown signal should reach the draining worker")
+        });
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_CALLS.load(Ordering::SeqCst), 0);
+
+    drop(in_flight);
+    worker
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+
+    assert_eq!(slot.snapshot().status, STATUS_DONE);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_FAILURE.load(Ordering::SeqCst), 0);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_CALLS.load(Ordering::SeqCst), 1);
+    assert!(CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.load(Ordering::SeqCst));
+}
+
+#[test]
+fn shared_selected_first_keeps_receiver_live_for_subsequent_quit_delivery() {
+    let _test_lock = CONTROL_WORKER_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (mut host, plugin) = running_plugin_control_pair();
+    let (handle, header, slot, _wake_owner, _wake_peer) = control_worker_teardown_handle();
+    let quiescence = Arc::clone(&handle.quiescence);
+    let in_flight = quiescence
+        .enter()
+        .unwrap_or_else(|| panic!("callback admission should begin open"));
+    header
+        .request_shutdown([slot.as_ref()])
+        .unwrap_or_else(|error| panic!("shared shutdown should publish: {error}"));
+    let shared_proof = PluginShutdownRequested::from_region_header(&header)
+        .unwrap_or_else(|error| panic!("shared shutdown proof should build: {error}"));
+    let (sender, receiver) = mpsc::channel();
+
+    CONTROL_WORKER_SLOT_ADDRESS.store(std::ptr::from_ref(slot.as_ref()) as usize, Ordering::SeqCst);
+    CONTROL_WORKER_SHUTDOWN_FAILURE.store(-1, Ordering::SeqCst);
+    CONTROL_WORKER_SHUTDOWN_CALLS.store(0, Ordering::SeqCst);
+    CONTROL_WORKER_DONE_BEFORE_SHUTDOWN.store(false, Ordering::SeqCst);
+
+    sender
+        .send(LiveRuntimeTeardownTrigger::SharedShutdown(shared_proof))
+        .unwrap_or_else(|_error| panic!("shared shutdown should reach worker"));
+    let worker = std::thread::spawn(move || {
+        run_teardown_worker(receiver, handle, record_control_worker_shutdown);
+    });
+    let reader_sender = sender.clone();
+    let reader = std::thread::spawn(move || run_control_reader(plugin, reader_sender));
+
+    // Shared shutdown is queued before the worker starts, so admission closure
+    // proves that it was selected. The lifecycle reader must still deliver a
+    // later Quit without observing a disconnected teardown receiver.
+    wait_until_callback_admission_closed(&quiescence);
+    assert!(quiescence.enter().is_none());
+    assert_ne!(slot.snapshot().status, STATUS_DONE);
+    host.write_all(&control_encode_host_msg(&HostMsg::Quit))
+        .unwrap_or_else(|error| panic!("host Quit should write: {error}"));
+    let quit_delivered = reader
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    assert!(quit_delivered);
+    assert_eq!(CONTROL_WORKER_SHUTDOWN_CALLS.load(Ordering::SeqCst), 0);
 
     drop(in_flight);
     worker
@@ -219,9 +269,10 @@ fn closing_run_control_unblocks_reader_and_delivers_fail_loud_trigger() {
     let trigger = receiver
         .recv()
         .unwrap_or_else(|error| panic!("reader should deliver a control fault: {error}"));
-    reader
+    let delivered = reader
         .join()
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    assert!(delivered);
 
     assert!(matches!(
         trigger,

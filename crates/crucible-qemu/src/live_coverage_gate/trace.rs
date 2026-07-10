@@ -136,7 +136,6 @@ fn validate_trace_sample(
         || u64_field(sample, "stop_at") != Some(0)
         || u64_field(sample, "retired") != Some(config.horizon_icount)
         || u64_field(sample, "observer_icount") != Some(config.horizon_icount)
-        || u64_field(sample, "trajectory_steps") != config.horizon_icount.checked_add(1)
     {
         return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
             mode,
@@ -152,6 +151,17 @@ fn validate_trace_sample(
         return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
             mode,
             reason: "the standalone guest did not reach its known post-I/O basic block",
+        });
+    }
+    // Count the inclusive guest instruction range and the exact-boundary state sample.
+    let expected_trajectory_steps = config
+        .horizon_icount
+        .checked_sub(required_pc_first_retired)
+        .and_then(|steps| steps.checked_add(2));
+    if u64_field(sample, "trajectory_steps") != expected_trajectory_steps {
+        return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
+            mode,
+            reason: "the per-instruction guest trajectory did not cover every instruction after the post-I/O boundary",
         });
     }
     for field in ["sample_register_failures", "register_read_failures"] {
@@ -178,10 +188,10 @@ fn validate_trace_sample(
             reason: "RAM byte coverage is absent",
         },
     )?;
-    if ram_bytes < EXPECTED_GUEST_RAM_BYTES {
+    if ram_bytes != EXPECTED_GUEST_RAM_BYTES {
         return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
             mode,
-            reason: "RAM hashing omitted part of the configured 64 MiB guest memory",
+            reason: "RAM hashing did not cover exactly the configured 64 MiB guest memory",
         });
     }
     let memory_events = u64_field(sample, "memory_events").unwrap_or(0);

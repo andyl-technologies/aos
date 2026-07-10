@@ -152,10 +152,27 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
          qemu_cond_wait_bql(first_cpu->halt_cond);
      }
  
+diff --git a/hw/i386/multiboot.c b/hw/i386/multiboot.c
+--- a/hw/i386/multiboot.c
++++ b/hw/i386/multiboot.c
+@@ -308,6 +308,13 @@ int load_multiboot(X86MachineState *x86ms,
+     mbs.mb_buf_phys = mh_load_addr;
+ 
+     mbs.mb_buf_size = TARGET_PAGE_ALIGN(mb_kernel_size);
++    /*
++     * FW_CFG_KERNEL_DATA exposes the full aligned buffer to the guest. Do not
++     * leak allocator contents through the padding after the final ELF segment.
++     */
++    mbs.mb_buf = g_realloc(mbs.mb_buf, mbs.mb_buf_size);
++    memset((char *)mbs.mb_buf + mb_kernel_size, 0,
++           mbs.mb_buf_size - mb_kernel_size);
+     mbs.offset_mbinfo = mbs.mb_buf_size;
+ 
+     /* Calculate space for cmdlines, bootloader name, and mb_mods */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -931,6 +931,92 @@ QEMU_PLUGIN_API
+@@ -931,6 +931,105 @@ QEMU_PLUGIN_API
  int qemu_plugin_read_register(struct qemu_plugin_register *handle,
                                GByteArray *buf);
  
@@ -234,6 +251,19 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 +uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
 +
 +/**
++ * qemu_plugin_crucible_guest_ram_hash() - hash writable guest RAM
++ * @bytes_out: optional output for the guest RAM bytes included in the hash
++ *
++ * Returns an FNV-1a hash over writable, non-device RAM blocks. ROM and
++ * device-owned RAM are excluded so plugin or firmware implementation state
++ * cannot be mistaken for guest architectural memory.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_guest_ram_hash(uint64_t *bytes_out);
++
++/**
 + * qemu_plugin_crucible_pause_vm() - request a VM stop at the current icount
 + *
 + * This lets a fingerprint plugin request a stop after recording a fixed-horizon
@@ -264,7 +294,7 @@ diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
 diff --git a/plugins/api.c b/plugins/api.c
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -39,8 +39,13 @@
+@@ -39,8 +39,14 @@
  #include "qemu/main-loop.h"
  #include "qemu/plugin.h"
  #include "qemu/log.h"
@@ -273,12 +303,13 @@ diff --git a/plugins/api.c b/plugins/api.c
  #include "tcg/tcg.h"
 +#include "exec/cpu-common.h"
  #include "exec/gdbstub.h"
++#include "exec/memory.h"
 +#include "exec/ramblock.h"
 +#include "exec/ramlist.h"
  #include "exec/target_page.h"
  #include "exec/translation-block.h"
  #include "exec/translator.h"
-@@ -462,6 +467,114 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -462,6 +468,139 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
      return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
  
@@ -378,6 +409,31 @@ diff --git a/plugins/api.c b/plugins/api.c
 +    };
 +
 +    qemu_ram_foreach_block(crucible_hash_ram_block, &state);
++    if (bytes_out) {
++        *bytes_out = state.bytes;
++    }
++    return state.hash;
++}
++
++static int crucible_hash_guest_ram_block(RAMBlock *block, void *opaque)
++{
++    if (!block->mr || !memory_region_is_ram(block->mr) ||
++        memory_region_is_rom(block->mr) ||
++        memory_region_is_ram_device(block->mr)) {
++        return 0;
++    }
++
++    return crucible_hash_ram_block(block, opaque);
++}
++
++uint64_t qemu_plugin_crucible_guest_ram_hash(uint64_t *bytes_out)
++{
++    struct CrucibleRamHash state = {
++        .hash = 1469598103934665603ULL,
++        .bytes = 0,
++    };
++
++    qemu_ram_foreach_block(crucible_hash_guest_ram_block, &state);
 +    if (bytes_out) {
 +        *bytes_out = state.bytes;
 +    }

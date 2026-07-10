@@ -14,6 +14,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -246,6 +247,8 @@
         label = "safe guest input callback body";
         needle = "pub fn handle_whitebox_guest_input_callback";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxDoorbellTests [
       {
         label = "off-mode test";
         needle = "whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box";

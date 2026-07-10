@@ -4,7 +4,10 @@
 }: let
   phase0S4 = import ./phase0-s4.nix {inherit pkgs;};
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemSource = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs)
+  ];
   lookaheadTest = builtins.readFile ../../crates/crucible-shmem/tests/lookahead_gate.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -43,7 +46,7 @@
     requirements;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
       {
         label = "opaque advance ceiling type";
         needle = "pub struct AdvanceCeiling";
@@ -117,7 +120,7 @@
         needle = "#[ignore";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs + shmem/delivery_errors.rs" shmemSource [
       {
         label = "public current icount field bypass";
         needle = "pub struct AdvanceCeiling {\n    pub current_icount: u64";

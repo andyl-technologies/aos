@@ -14,6 +14,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+  pluginWhiteboxTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   protocolDoorbellFrame = builtins.readFile ../../crates/crucible-protocol/src/doorbell_frame.rs;
   protocolDoorbellMarker = builtins.readFile ../../crates/crucible-protocol/src/doorbell_marker.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
@@ -224,6 +225,8 @@
         label = "request id mismatch rejected";
         needle = "DecisionRequestIdMismatch";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxTests [
       {
         label = "happy path exact test";
         needle = "whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount";

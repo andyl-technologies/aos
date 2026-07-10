@@ -18,7 +18,7 @@
   patchSource = builtins.readFile (../../pkgs/emulation/qemu-patches + "/${patchName}");
   microtestSource = builtins.readFile ./phase1-clock-deadline.c;
   pluginRoot = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
@@ -193,14 +193,14 @@
         needle = "QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "isolated missing deadline capability test";
         needle = "abi_install_full_capability_scaffold_fails_closed_without_exact_deadline";
       }
       {
         label = "missing deadline before later capability resolution";
-        needle = "install_required_vcpu_introspection_scaffold_from_qemu_info(\n                &valid_info,\n                QemuTcgThreading::SingleThreadedRoundRobin,\n                None,";
+        needle = "install_required_vcpu_introspection_scaffold_from_qemu_info(\n            &valid_info,\n            QemuTcgThreading::SingleThreadedRoundRobin,\n            None,";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [

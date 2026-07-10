@@ -16,6 +16,7 @@
   pluginPreemption = builtins.readFile ../../crates/crucible-qemu-plugin/src/preemption.rs;
   pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
   pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginAbiTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs;
   pluginInertness = builtins.readFile ../../crates/crucible-qemu-plugin/src/inertness.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -255,6 +256,8 @@
         label = "state partition stores preemption injector";
         needle = "preemption_injector";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "ABI preemption capability test";
         needle = "abi_install_requires_preemption_injection_symbol";

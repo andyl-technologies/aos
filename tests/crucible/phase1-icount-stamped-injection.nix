@@ -4,7 +4,11 @@
 }: let
   phase0S4 = import ./phase0-s4.nix {inherit pkgs;};
 
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemSource = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs)
+  ];
   shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/icount_stamped_injection.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -43,7 +47,7 @@
     requirements;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible-shmem/src/lib.rs + shmem/frame_node.rs + shmem/delivery_errors.rs" shmemSource [
       {
         label = "frame payload capacity";
         needle = "pub const MAX_FRAME_DATA: usize = 4608;";

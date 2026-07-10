@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginCoverage",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-15"],
+  taskIds ? ["T-PLUG-15"],
+  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,14 +14,15 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
-  pluginCoverage = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs)
-  ];
+  pluginCoverage = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs;
+  pluginCoverageTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
+  liveCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
   coverageAbiModel = builtins.readFile ./phase2-plugin-coverage-abi.c;
   qemuCoveragePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch;
-  pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
-  pluginRuntime = import ./_qemu-plugin-runtime-source.nix {inherit lib;};
+  pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
+  pluginRegistrationTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration/tests.rs;
+  pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs;
+  pluginRuntimeTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
   shmemLib = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
@@ -97,10 +98,9 @@
     )
     forbiddenCallbackApis;
 
-  mutatingIcountFailure =
-    lib.optionals (hasInfix "state.apis.icount_raw" pluginCoverage) [
-      "crates/crucible-qemu-plugin/src/coverage.rs: execution callback must not call the state-mutating raw-icount API"
-    ];
+  mutatingIcountFailure = lib.optionals (hasInfix "state.apis.icount_raw" pluginCoverage) [
+    "crates/crucible-qemu-plugin/src/coverage.rs: execution callback must not call the state-mutating raw-icount API"
+  ];
 
   misleadingTestEvidenceFailures =
     lib.concatMap (
@@ -117,12 +117,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-15 remains open until a real loaded-QEMU fingerprint run";
-        needle = "- [ ] **T-PLUG-15**";
+        label = "T-PLUG-15 is complete after the loaded-QEMU fingerprint run";
+        needle = "- [x] **T-PLUG-15**";
       }
       {
-        label = "T-PLUG-15 names the missing real-QEMU evidence";
-        needle = "coverage-on/off fingerprint evidence is still absent";
+        label = "T-PLUG-15 records the loaded-QEMU equivalence evidence";
+        needle = "independent instruction/register/RR-cursor/writable-RAM/device-I/O trajectory";
       }
       {
         label = "T-PLUG-15 records the ABI-v2 host observation handoff";
@@ -139,6 +139,16 @@
       {
         label = "observational wording";
         needle = "emit coverage as observational output";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase6-basic-block-coverage.nix" liveCoverageGate [
+      {
+        label = "production loaded-QEMU coverage proof";
+        needle = "loaded_qemu_fingerprint_equivalence=coverage-off-equals-coverage-on";
+      }
+      {
+        label = "production loaded-QEMU canonical-log proof";
+        needle = "canonical_event_log_effect=none";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" patchSpec [
@@ -401,22 +411,6 @@
         needle = "CoverageSinkError::from_static";
       }
       {
-        label = "callback ABI model test";
-        needle = "coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount";
-      }
-      {
-        label = "flush and retranslation model test";
-        needle = "coverage_flush_reclaims_metadata_before_retranslation";
-      }
-      {
-        label = "novel coverage output retention test";
-        needle = "live_coverage_sink_retains_each_novelty_without_silent_eviction";
-      }
-      {
-        label = "coverage teardown unpublishes callback state and permits reinstall";
-        needle = "coverage_owner_unpublishes_callbacks_before_state_is_freed_and_can_reinstall";
-      }
-      {
         label = "coverage map";
         needle = "pub struct CoverageMap";
       }
@@ -467,6 +461,24 @@
       {
         label = "disabled callback failure";
         needle = "CallbackWhileDisabled";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/coverage/tests.rs" pluginCoverageTests [
+      {
+        label = "callback ABI model test";
+        needle = "coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount";
+      }
+      {
+        label = "flush and retranslation model test";
+        needle = "coverage_flush_reclaims_metadata_before_retranslation";
+      }
+      {
+        label = "novel coverage output retention test";
+        needle = "live_coverage_sink_retains_each_novelty_without_silent_eviction";
+      }
+      {
+        label = "coverage teardown unpublishes callback state and permits reinstall";
+        needle = "coverage_owner_unpublishes_callbacks_before_state_is_freed_and_can_reinstall";
       }
       {
         label = "off-mode test";
@@ -593,6 +605,12 @@
         needle = "fail_coverage_capability";
       }
       {
+        label = "registration installs live owned coverage";
+        needle = "register_basic_block_coverage(plugin_id, args.slot(), callback, apis)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/registration/tests.rs" pluginRegistrationTests [
+      {
         label = "registration off coverage test";
         needle = "registration_coverage_off_installs_no_callback_without_capability";
       }
@@ -604,10 +622,6 @@
         label = "registration on callback token test";
         needle = "registration_coverage_on_builds_basic_block_callback_token";
       }
-      {
-        label = "registration installs live owned coverage";
-        needle = "register_basic_block_coverage(plugin_id, args.slot(), callback, apis)";
-      }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
       {
@@ -618,6 +632,8 @@
         label = "runtime coverage registration owner";
         needle = "fn register_basic_block_coverage(";
       }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/tests.rs" pluginRuntimeTests [
       {
         label = "install ownership callback model test";
         needle = "install_coverage_on_owns_callback_model_registration";
@@ -821,7 +837,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=partial
+            status=pass
             off_mode=disabled-plan-installs-no-tcg-exec-callback
             coverage_signal=guest-pc-folded-into-fixed-map
             callback_api=stock-qemu-tb-translation-execution-and-flush-plus-exact-entry-helper
@@ -830,7 +846,7 @@ in
             qemu10_flush_context=serialized-or-async-exclusive
             exact_entry_math=committed-plus-budget-minus-remaining-minus-tb-insns
             exact_entry_edge_evidence=first-chained-post-refill-next-rr-vcpu-model-plus-early-exit-source-order
-            live_qemu_proof=absent-t-plug-15-open
+            live_qemu_proof=checks.crucible.phase6.basicBlockCoverage
             host_observation_handoff=abi-v2-per-vm-spsc-quantum-boundary-unified-event-log
             callback_state=pinned-atomic-singleton-no-locks
             output=bounded-lossless-observation-admitted-to-unified-event-log
