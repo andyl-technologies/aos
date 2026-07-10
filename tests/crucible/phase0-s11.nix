@@ -700,36 +700,38 @@ in
               --arg qemu_build_digest "$qemu_build_digest" \
               --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
               '
-                inputs
-                | select((.kind // "sample") == "sample")
-                | {
-                    retired,
-                    final,
-                    stop_at,
-                    stop_requested,
-                    schema,
-                    tracked_vcpus,
-                    launch_digest_match: (.launch_definition_digest == $launch_definition_digest),
-                    qemu_digest_match: (.qemu_build_digest == $qemu_build_digest),
-                    plugin_digest_match: (.trace_plugin_build_digest == $trace_plugin_build_digest),
-                    rr_current_vcpu,
-                    rr_cursor_position,
-                    rr_switch_quantum,
-                    rr_cursor_valid,
-                    rr_cursor_source,
-                    sample_register_failures,
-                    register_read_failures,
-                    ram_bytes,
-                    ram_hash,
-                    memory_events_enabled,
-                    device_event_capture,
-                    device_event_hash,
-                    register_hash,
-                    register_hashes,
-                    register_counts,
-                    register_file_bytes,
-                    register_schema_hashes
-                  }
+                limit(10;
+                  inputs
+                  | select((.kind // "sample") == "sample")
+                  | {
+                      retired,
+                      final,
+                      stop_at,
+                      stop_requested,
+                      schema,
+                      tracked_vcpus,
+                      launch_digest_match: (.launch_definition_digest == $launch_definition_digest),
+                      qemu_digest_match: (.qemu_build_digest == $qemu_build_digest),
+                      plugin_digest_match: (.trace_plugin_build_digest == $trace_plugin_build_digest),
+                      rr_current_vcpu,
+                      rr_cursor_position,
+                      rr_switch_quantum,
+                      rr_cursor_valid,
+                      rr_cursor_source,
+                      sample_register_failures,
+                      register_read_failures,
+                      ram_bytes,
+                      ram_hash,
+                      memory_events_enabled,
+                      device_event_capture,
+                      device_event_hash,
+                      register_hash,
+                      register_hashes,
+                      register_counts,
+                      register_file_bytes,
+                      register_schema_hashes
+                    }
+                )
               ' "$trace" >&2 || true
             jq -n -c \
               --argjson vcpus "$VCPU_COUNT" \
