@@ -2176,7 +2176,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn abi_install_trampoline_contains_panics_and_blocks_irreversible_retry() {
+    fn abi_install_trampoline_contains_panics_and_blocks_second_install_attempt() {
         let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
         let status =
             run_install_trampoline(|| -> Result<_, crate::runtime::PluginLiveBoundaryError> {
