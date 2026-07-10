@@ -10,7 +10,7 @@ use crucible_qemu::{
     QemuLaunchArtifact, QemuLaunchCommand, QemuLaunchCommandBuilder, QemuLaunchPluginConfig,
     QemuLaunchPluginSwitch, QemuVmLaunchConfig, SINGLE_VM_FINGERPRINT_DIGEST_BYTES,
     SingleVmFingerprintBisectionError, SingleVmFingerprintBisectionReport,
-    SingleVmFingerprintBisectionRequest, SingleVmFingerprintRunError,
+    SingleVmFingerprintBisectionRequest, SingleVmFingerprintRunError, SingleVmFingerprintRunInputs,
     SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
     SingleVmFingerprintSample, SingleVmFingerprintSampleMaterial, SingleVmFingerprintScenario,
     SingleVmFingerprintStream, SingleVmFingerprintTrigger, SingleVmHostProfile,
@@ -49,6 +49,14 @@ fn gate_any_guest_whitebox_switch_is_host_plugin_configuration_without_agent_con
         "any-guest-stock-linux",
         definition_digest.clone(),
         12_288,
+        SingleVmFingerprintRunInputs::new(
+            digest(0x20),
+            "console=ttyS0",
+            digest(0x30),
+            digest(0x40),
+            digest(0x50),
+        )
+        .unwrap_or_else(|error| panic!("run inputs should be valid: {error}")),
         SingleVmHostProfile::new(
             "any-guest-host-jitter",
             [

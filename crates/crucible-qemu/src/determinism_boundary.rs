@@ -18,8 +18,8 @@ use crate::{
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, QEMU_PLUGIN_CONTROL_FD,
     QEMU_PLUGIN_SHMEM_FD, QEMU_PLUGIN_WAKE_FD, QemuControlPlaneInertnessError,
     QemuControlPlaneInertnessReport, QemuControlPlaneObservation, QemuSimulationMode,
-    SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintScenario,
-    SingleVmHostProfile, assert_qemu_control_plane_inert,
+    SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintRunInputs,
+    SingleVmFingerprintScenario, SingleVmHostProfile, assert_qemu_control_plane_inert,
 };
 
 /// Default fixed icount cadence for QEMU execution-fingerprint samples.
@@ -216,12 +216,14 @@ impl QemuExecutionFingerprintDefinition {
         &self,
         id: impl Into<String>,
         run_horizon_icount: u64,
+        run_inputs: SingleVmFingerprintRunInputs,
         host_profile: SingleVmHostProfile,
     ) -> Result<SingleVmFingerprintScenario, QemuDeterminismBoundaryError> {
         SingleVmFingerprintScenario::new(
             id,
             self.definition_digest().to_vec(),
             run_horizon_icount,
+            run_inputs,
             host_profile,
         )
         .map_err(|source| QemuDeterminismBoundaryError::FingerprintScenario { source })
@@ -1173,6 +1175,14 @@ mod tests {
         let scenario = definition.single_vm_scenario(
             "qemu-boundary-smoke",
             8192,
+            SingleVmFingerprintRunInputs::new(
+                [0x10; 32],
+                "console=ttyS0",
+                [0x20; 32],
+                [0x30; 32],
+                [0x40; 32],
+            )
+            .unwrap_or_else(|error| panic!("test run inputs should validate: {error}")),
             SingleVmHostProfile::phase1_adversarial(),
         );
 

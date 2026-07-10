@@ -918,18 +918,20 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [ ] **T-HARN-6** Implement the execution fingerprint (icount + register +
   memory-region rolling hash) with icount-driven, observation-only sampling via
   plugin/QMP. — satisfies [HARN-4], [HARN-7]; spec §4.
-  - A provisional periodic trace importer now covers aggregate icount, all-vCPU
-    registers, RR cursor, full-RAM helper output, and ordered CPU-observed MMIO
-    history. Its register/RAM shape is still bound from the first run rather than
-    an independent launch/build contract, and it lacks complete current device
-    state and interaction-boundary samples; therefore this task remains open.
+  - The trace importer now covers aggregate icount, all-vCPU registers, the RR
+    cursor, full-RAM helper output, and serialized current non-RAM VMState. A
+    definition-only QEMU preflight pins that shape independently of both runs,
+    and the live acceptance path samples the exact horizon event. Live
+    frame-delivery and fault-activation boundary hooks and the integrated
+    fixed-input runner remain absent; therefore this task remains open.
 - [ ] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
   unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
   bisection result). — satisfies [HARN-5]; spec §4.3.
-  - The model comparator and a provenance-bound real-QEMU diagnostic comparison
-    exist, but trace mutations provide only coarse post-processing localization;
-    there is no integrated rerun hook for instruction-exact refinement or
-    both-sides state dumps. `greenBeforeAdvance` and `gate:any-guest` therefore
+  - The model comparator, provenance-bound real-QEMU comparison, exact
+    bisection-report invariants, and typed both-side state-dump schema exist, but
+    trace mutations provide only coarse post-processing localization. There is
+    no live runner hook for instruction-exact restart/checkpoint refinement or
+    real both-side dumps. `greenBeforeAdvance` and `gate:any-guest` therefore
     remain blocked on this task.
 - [x] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical
   observed-injection-icount vectors across host interleavings, against the

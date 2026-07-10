@@ -981,10 +981,10 @@ determinism contract (04).
   the typed QMP control-boundary check, runs the same bounded real-QEMU `-smp 4`
   sim/RR-TCG workload twice with second-run host load, checks exact sorted QMP
   CPU indexes on both runs, binds register schemas/bytes and retired-count sums,
-  imports both plugin traces through the provisional Rust path, and executes
+  uses a definition-only QEMU preflight to pin the observation shape before
+  importing both plugin traces through the Rust path, and executes
   register/RR/retired post-processing mismatch-localization plus structural red controls. It
-  uses run A as the baseline register/RAM observation shape rather than an
-  independent launch/build contract. It remains open pending a realized green
-  gate for a non-self-derived path and the
-  integrated hook owned with [T-QEMU-11]/[T-DET-8]; the provisional device
-  component remains CPU-observed MMIO history, not complete current device state.
+  binds current serialized non-RAM VMState in addition to keeping MMIO history
+  as a diagnostic. It remains open pending a realized green gate with live
+  frame/fault boundary hooks and the integrated launch/rerun adapter owned with
+  [T-QEMU-11]/[T-DET-8].

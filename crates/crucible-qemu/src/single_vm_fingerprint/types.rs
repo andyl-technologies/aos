@@ -4,7 +4,9 @@ use crucible::ContentHash;
 use crucible_protocol::PluginNvcpuFingerprintSnapshot;
 use thiserror::Error;
 
-use super::compare::SingleVmFingerprintMismatch;
+use super::{
+    compare::SingleVmFingerprintMismatch, state_dump::SingleVmFingerprintDivergenceStateDump,
+};
 
 /// The byte length of canonical execution-fingerprint digests.
 pub const SINGLE_VM_FINGERPRINT_DIGEST_BYTES: usize = 32;
@@ -12,6 +14,7 @@ pub const SINGLE_VM_FINGERPRINT_DIGEST_BYTES: usize = 32;
 const SINGLE_VM_FINGERPRINT_STREAM_SEED_DOMAIN: &str =
     "crucible.qemu.single-vm-fingerprint-stream-seed.v1";
 const SINGLE_VM_FINGERPRINT_SAMPLE_DOMAIN: &str = "crucible.qemu.single-vm-fingerprint-sample.v1";
+const SINGLE_VM_RUN_INPUTS_DOMAIN: &str = "crucible.qemu.single-vm-run-inputs.v1";
 
 /// The deterministic reason a single-VM fingerprint sample exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -568,12 +571,119 @@ impl SingleVmHostProfile {
     }
 }
 
+/// Exact content identities for one fixed single-VM gate configuration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SingleVmFingerprintRunInputs {
+    guest_image_digest: Vec<u8>,
+    kernel_cmdline: String,
+    seed_digest: Vec<u8>,
+    injected_input_sequence_digest: Vec<u8>,
+    launch_definition_digest: Vec<u8>,
+}
+
+impl SingleVmFingerprintRunInputs {
+    /// Builds the exact guest-visible inputs shared by both gate runs.
+    ///
+    /// `guest_image_digest` covers the immutable kernel, initramfs, firmware,
+    /// and disk backing manifest. `injected_input_sequence_digest` covers the
+    /// complete ordered input sequence, including an explicitly empty one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when any digest is not the
+    /// canonical fingerprint width.
+    pub fn new(
+        guest_image_digest: impl Into<Vec<u8>>,
+        kernel_cmdline: impl Into<String>,
+        seed_digest: impl Into<Vec<u8>>,
+        injected_input_sequence_digest: impl Into<Vec<u8>>,
+        launch_definition_digest: impl Into<Vec<u8>>,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        let inputs = Self {
+            guest_image_digest: guest_image_digest.into(),
+            kernel_cmdline: kernel_cmdline.into(),
+            seed_digest: seed_digest.into(),
+            injected_input_sequence_digest: injected_input_sequence_digest.into(),
+            launch_definition_digest: launch_definition_digest.into(),
+        };
+        validate_digest_len("guest_image_digest", &inputs.guest_image_digest)?;
+        validate_digest_len("seed_digest", &inputs.seed_digest)?;
+        validate_digest_len(
+            "injected_input_sequence_digest",
+            &inputs.injected_input_sequence_digest,
+        )?;
+        validate_digest_len("launch_definition_digest", &inputs.launch_definition_digest)?;
+        Ok(inputs)
+    }
+
+    /// Returns the immutable guest image-manifest digest.
+    #[must_use]
+    pub fn guest_image_digest(&self) -> &[u8] {
+        &self.guest_image_digest
+    }
+
+    /// Returns the exact kernel command line.
+    #[must_use]
+    pub fn kernel_cmdline(&self) -> &str {
+        &self.kernel_cmdline
+    }
+
+    /// Returns the deterministic run-seed digest.
+    #[must_use]
+    pub fn seed_digest(&self) -> &[u8] {
+        &self.seed_digest
+    }
+
+    /// Returns the content digest of the exact ordered injected-input sequence.
+    #[must_use]
+    pub fn injected_input_sequence_digest(&self) -> &[u8] {
+        &self.injected_input_sequence_digest
+    }
+
+    /// Returns the digest of the complete concrete launch definition.
+    #[must_use]
+    pub fn launch_definition_digest(&self) -> &[u8] {
+        &self.launch_definition_digest
+    }
+
+    /// Returns canonical material for the run-input identity.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        [
+            "crucible.qemu.single-vm-run-inputs.v1".to_owned(),
+            format!("guest_image_digest={}", lower_hex(&self.guest_image_digest)),
+            format!("kernel_cmdline={}", self.kernel_cmdline),
+            format!("seed_digest={}", lower_hex(&self.seed_digest)),
+            format!(
+                "injected_input_sequence_digest={}",
+                lower_hex(&self.injected_input_sequence_digest)
+            ),
+            format!(
+                "launch_definition_digest={}",
+                lower_hex(&self.launch_definition_digest)
+            ),
+        ]
+        .join("\n")
+    }
+
+    /// Returns the content address of the complete fixed run-input tuple.
+    #[must_use]
+    pub fn content_digest(&self) -> [u8; 32] {
+        ContentHash::from_canonical_material(
+            SINGLE_VM_RUN_INPUTS_DOMAIN,
+            &self.canonical_material(),
+        )
+        .bytes
+    }
+}
+
 /// A fixed single-VM scenario for `gate:single-vm-fingerprint`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SingleVmFingerprintScenario {
     pub(super) id: String,
     pub(super) fingerprint_definition_digest: Vec<u8>,
     pub(super) run_horizon_icount: u64,
+    run_inputs: SingleVmFingerprintRunInputs,
     nvcpu_contract: SingleVmNvcpuFingerprintContract,
     host_profile: SingleVmHostProfile,
 }
@@ -590,6 +700,7 @@ impl SingleVmFingerprintScenario {
         id: impl Into<String>,
         fingerprint_definition_digest: impl Into<Vec<u8>>,
         run_horizon_icount: u64,
+        run_inputs: SingleVmFingerprintRunInputs,
         host_profile: SingleVmHostProfile,
     ) -> Result<Self, SingleVmFingerprintGateError> {
         Self::new_with_nvcpu_contract(
@@ -597,6 +708,7 @@ impl SingleVmFingerprintScenario {
             fingerprint_definition_digest,
             run_horizon_icount,
             SingleVmNvcpuFingerprintContract::new(1, 1)?,
+            run_inputs,
             host_profile,
         )
     }
@@ -613,6 +725,7 @@ impl SingleVmFingerprintScenario {
         fingerprint_definition_digest: impl Into<Vec<u8>>,
         run_horizon_icount: u64,
         nvcpu_contract: SingleVmNvcpuFingerprintContract,
+        run_inputs: SingleVmFingerprintRunInputs,
         host_profile: SingleVmHostProfile,
     ) -> Result<Self, SingleVmFingerprintGateError> {
         let id = id.into();
@@ -636,6 +749,7 @@ impl SingleVmFingerprintScenario {
             id,
             fingerprint_definition_digest,
             run_horizon_icount,
+            run_inputs,
             nvcpu_contract,
             host_profile,
         })
@@ -657,6 +771,12 @@ impl SingleVmFingerprintScenario {
     #[must_use]
     pub fn run_horizon_icount(&self) -> u64 {
         self.run_horizon_icount
+    }
+
+    /// Returns the exact image, command line, seed, input, and launch tuple.
+    #[must_use]
+    pub const fn run_inputs(&self) -> &SingleVmFingerprintRunInputs {
+        &self.run_inputs
     }
 
     /// Returns the scenario's launch-derived N-vCPU fingerprint contract.
@@ -782,6 +902,8 @@ pub struct SingleVmFingerprintBisectionReport {
     first_different_sample_icount: u64,
     last_matching_icount: u64,
     first_different_icount: u64,
+    responsible_node: String,
+    state_dump: SingleVmFingerprintDivergenceStateDump,
     state_dump_artifact: String,
 }
 
@@ -799,6 +921,7 @@ impl SingleVmFingerprintBisectionReport {
         first_different_sample_icount: u64,
         last_matching_icount: u64,
         first_different_icount: u64,
+        state_dump: SingleVmFingerprintDivergenceStateDump,
         state_dump_artifact: impl Into<String>,
     ) -> Result<Self, SingleVmFingerprintGateError> {
         if first_different_icount > first_different_sample_icount {
@@ -817,6 +940,13 @@ impl SingleVmFingerprintBisectionReport {
                 reason: "last matching icount must be before the first differing icount",
             });
         }
+        if first_different_icount != 0
+            && last_matching_icount.checked_add(1) != Some(first_different_icount)
+        {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "instruction-exact bisection must leave a one-instruction interval",
+            });
+        }
         if previous_matching_icount.is_some_and(|previous| {
             previous > last_matching_icount || previous >= first_different_sample_icount
         }) {
@@ -825,6 +955,14 @@ impl SingleVmFingerprintBisectionReport {
             });
         }
 
+        if state_dump.first().icount() != first_different_icount
+            || state_dump.second().icount() != first_different_icount
+        {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "state dump icount must equal the first differing instruction",
+            });
+        }
+        let responsible_node = state_dump.first().node().to_owned();
         let state_dump_artifact = state_dump_artifact.into();
         if state_dump_artifact.is_empty() {
             return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
@@ -838,6 +976,8 @@ impl SingleVmFingerprintBisectionReport {
             first_different_sample_icount,
             last_matching_icount,
             first_different_icount,
+            responsible_node,
+            state_dump,
             state_dump_artifact,
         })
     }
@@ -870,6 +1010,18 @@ impl SingleVmFingerprintBisectionReport {
     #[must_use]
     pub fn first_different_icount(&self) -> u64 {
         self.first_different_icount
+    }
+
+    /// Returns the node whose architectural state first diverged.
+    #[must_use]
+    pub fn responsible_node(&self) -> &str {
+        &self.responsible_node
+    }
+
+    /// Returns the validated both-sides architectural state dump.
+    #[must_use]
+    pub const fn state_dump(&self) -> &SingleVmFingerprintDivergenceStateDump {
+        &self.state_dump
     }
 
     /// Returns the artifact path or id containing both-sides state dumps.

@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -69,9 +70,18 @@ typedef struct RAMBlock {
   uint8_t *host;
 } RAMBlock;
 
+typedef struct QIOChannelBuffer {
+  uint8_t *data;
+  size_t usage;
+} QIOChannelBuffer;
+
+#define QIO_CHANNEL(channel) (channel)
+#define OBJECT(object) (object)
+
 typedef struct QEMUFile {
   int64_t input;
   int64_t output;
+  QIOChannelBuffer *buffer;
 } QEMUFile;
 
 typedef struct VMStateField {
@@ -132,6 +142,12 @@ static unsigned int gdb_read_register_cpu_index;
 static int gdb_read_register_index = -1;
 static unsigned int qemu_ram_foreach_block_calls;
 static int64_t qemu_file_last_put_value;
+static int qemu_save_device_state_status;
+static int qemu_file_close_status;
+static unsigned int qemu_save_device_state_calls;
+static uint8_t serialized_device_state[] = {0x51, 0x45, 0x56, 0x4d, 0x01};
+static QIOChannelBuffer device_state_buffer;
+static QEMUFile device_state_file;
 static GArray cpu0_registers = {.cpu_index = 0, .len = 2};
 static GArray cpu1_registers = {.cpu_index = 7, .len = 4};
 static uint8_t ram0[] = {0x10, 0x20, 0x30};
@@ -339,6 +355,59 @@ qemu_put_sbe64s(QEMUFile *file, int64_t *value)
 {
   file->output = *value;
   qemu_file_last_put_value = *value;
+}
+
+static QIOChannelBuffer *
+qio_channel_buffer_new(size_t capacity)
+{
+  (void)capacity;
+  device_state_buffer.data = serialized_device_state;
+  device_state_buffer.usage = 0;
+  return &device_state_buffer;
+}
+
+static QEMUFile *
+qemu_file_new_output(QIOChannelBuffer *buffer)
+{
+  device_state_file.buffer = buffer;
+  return &device_state_file;
+}
+
+static int
+qemu_save_device_state(QEMUFile *file)
+{
+  qemu_save_device_state_calls++;
+  if (qemu_save_device_state_status == 0) {
+    file->buffer->usage = sizeof(serialized_device_state);
+  }
+  return qemu_save_device_state_status;
+}
+
+static int
+qemu_fflush(QEMUFile *file)
+{
+  (void)file;
+  return 0;
+}
+
+static int
+qemu_file_get_error(QEMUFile *file)
+{
+  (void)file;
+  return 0;
+}
+
+static int
+qemu_fclose(QEMUFile *file)
+{
+  (void)file;
+  return qemu_file_close_status;
+}
+
+static void
+object_unref(void *object)
+{
+  (void)object;
 }
 
 static void
@@ -647,7 +716,13 @@ test_plugin_fingerprint_exports(void)
 {
   GByteArray bytes = {0};
   uint64_t ram_bytes = 0;
+  uint64_t device_hash = 0;
+  uint64_t device_bytes = 0;
   const uint64_t expected_hash = expected_ram_hash();
+  const uint64_t expected_device_hash = expected_fnv1a_bytes(
+      14695981039346656037ULL,
+      serialized_device_state,
+      sizeof(serialized_device_state));
 
   current_cpu = &cpu1;
   if (qemu_plugin_crucible_rr_current_vcpu() != cpu1.cpu_index) {
@@ -696,6 +771,43 @@ test_plugin_fingerprint_exports(void)
           stderr);
     return 1;
   }
+
+  qemu_save_device_state_status = 0;
+  qemu_file_close_status = 0;
+  qemu_save_device_state_calls = 0;
+  if (qemu_plugin_crucible_device_state_hash(
+          &device_hash, &device_bytes) != 0 ||
+      device_hash != expected_device_hash ||
+      device_bytes != sizeof(serialized_device_state) ||
+      qemu_save_device_state_calls != 1) {
+    fputs("device-state export did not hash the serialized non-RAM VMState\n",
+          stderr);
+    return 1;
+  }
+
+  device_hash = UINT64_MAX;
+  device_bytes = UINT64_MAX;
+  qemu_save_device_state_status = -EIO;
+  if (qemu_plugin_crucible_device_state_hash(
+          &device_hash, &device_bytes) != -EIO ||
+      device_hash != 0 || device_bytes != 0) {
+    fputs("device-state export did not clear outputs after save failure\n",
+          stderr);
+    return 1;
+  }
+
+  device_hash = UINT64_MAX;
+  device_bytes = UINT64_MAX;
+  qemu_save_device_state_status = 0;
+  qemu_file_close_status = -EIO;
+  if (qemu_plugin_crucible_device_state_hash(
+          &device_hash, &device_bytes) != -EIO ||
+      device_hash != 0 || device_bytes != 0) {
+    fputs("device-state export did not clear outputs after close failure\n",
+          stderr);
+    return 1;
+  }
+  qemu_file_close_status = 0;
 
   qemu_plugin_crucible_pause_vm();
   if (vm_stop_calls != 1 || vm_stop_run_state != RUN_STATE_PAUSED) {
@@ -770,6 +882,8 @@ main(void)
   puts("vcpu_register_read_requested_by_index=true");
   puts("rr_current_vcpu_sentinel=UINT64_MAX");
   puts("ram_hash_includes_block_id_length_and_bytes=true");
+  puts("device_state_hash_covers_serialized_non_ram_vmstate=true");
+  puts("device_state_error_status_clears_outputs=true");
   puts("pause_vm_requests_run_state_paused=true");
   puts("migration_host_timer_zeroed_under_icount=true");
   puts("migration_host_timer_preserved_without_icount=true");

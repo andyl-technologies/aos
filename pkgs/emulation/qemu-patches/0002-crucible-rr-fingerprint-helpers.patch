@@ -172,7 +172,7 @@ diff --git a/hw/i386/multiboot.c b/hw/i386/multiboot.c
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -931,6 +931,105 @@ QEMU_PLUGIN_API
+@@ -931,6 +931,124 @@ QEMU_PLUGIN_API
  int qemu_plugin_read_register(struct qemu_plugin_register *handle,
                                GByteArray *buf);
  
@@ -264,6 +264,25 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 +uint64_t qemu_plugin_crucible_guest_ram_hash(uint64_t *bytes_out);
 +
 +/**
++ * qemu_plugin_crucible_device_state_hash() - serialize and hash non-RAM VMState
++ * @hash_out: output for the FNV-1a hash of the serialized device state
++ * @bytes_out: output for the exact serialized byte count
++ *
++ * Serializes the current non-RAM VMState with qemu_save_device_state() into an
++ * in-memory QIOChannelBuffer, then hashes the exact bytes without creating a
++ * migration stream or changing run state. Both outputs are cleared on error.
++ *
++ * Returns 0 on success or a negative QEMU file/save error. Callers must invoke
++ * this observation-only helper at a deterministic plugin callback boundary
++ * while the BQL is held.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
++                                            uint64_t *bytes_out);
++
++/**
 + * qemu_plugin_crucible_pause_vm() - request a VM stop at the current icount
 + *
 + * This lets a fingerprint plugin request a stop after recording a fixed-horizon
@@ -294,10 +313,13 @@ diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
 diff --git a/plugins/api.c b/plugins/api.c
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -39,8 +39,14 @@
+@@ -39,8 +39,17 @@
  #include "qemu/main-loop.h"
  #include "qemu/plugin.h"
  #include "qemu/log.h"
++#include "io/channel-buffer.h"
++#include "migration/qemu-file.h"
++#include "migration/savevm.h"
 +#include "system/cpu-timers.h"
 +#include "system/runstate.h"
  #include "tcg/tcg.h"
@@ -309,7 +331,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  #include "exec/target_page.h"
  #include "exec/translation-block.h"
  #include "exec/translator.h"
-@@ -462,6 +468,139 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -462,6 +471,178 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
      return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
  
@@ -438,6 +460,45 @@ diff --git a/plugins/api.c b/plugins/api.c
 +        *bytes_out = state.bytes;
 +    }
 +    return state.hash;
++}
++
++int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
++                                            uint64_t *bytes_out)
++{
++    QIOChannelBuffer *buffer;
++    QEMUFile *file;
++    int status;
++    int close_status;
++
++    if (!hash_out || !bytes_out) {
++        return -EINVAL;
++    }
++    *hash_out = 0;
++    *bytes_out = 0;
++
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state(file);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    if (status == 0) {
++        *hash_out = crucible_fnv1a_bytes(14695981039346656037ULL,
++                                          buffer->data, buffer->usage);
++        *bytes_out = buffer->usage;
++    }
++
++    close_status = qemu_fclose(file);
++    object_unref(OBJECT(buffer));
++    if (status == 0 && close_status != 0) {
++        *hash_out = 0;
++        *bytes_out = 0;
++        status = close_status;
++    }
++    return status;
 +}
 +
 +void qemu_plugin_crucible_pause_vm(void)

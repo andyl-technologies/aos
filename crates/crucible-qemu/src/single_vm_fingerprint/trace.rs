@@ -1,11 +1,13 @@
 //! Real QEMU trace-plugin import for execution fingerprints.
 //!
-//! The diagnostic QEMU plugin writes one JSON object per periodic sample. This
-//! module validates that host-observed wire form and converts it into the same
-//! canonical [`SingleVmFingerprintStream`] used by the run-twice gate. It
-//! rejects missing vCPUs, incomplete register reads, a mismatched QMP topology,
-//! RR-cursor drift, missing full-RAM observation, and disabled device-event
-//! observation instead of silently manufacturing fingerprint components.
+//! The QEMU observation plugin writes one JSON object per icount-driven sample.
+//! An independent preflight pins the exact register, RAM, device-state, and
+//! build shape before either comparison run starts. This module validates that
+//! host-observed wire form and converts it into the same canonical
+//! [`SingleVmFingerprintStream`] used by the run-twice gate. It rejects missing
+//! vCPUs, incomplete register reads, a mismatched QMP topology, RR-cursor drift,
+//! missing guest RAM or current VMState, and definition drift instead of
+//! silently manufacturing fingerprint components.
 
 use std::io::{self, BufRead};
 
@@ -14,34 +16,33 @@ use serde_json::Value;
 use thiserror::Error;
 
 use super::{
-    SingleVmFingerprintGateError, SingleVmFingerprintSample, SingleVmFingerprintSampleMaterial,
-    SingleVmFingerprintStream, SingleVmFingerprintTrigger, SingleVmNvcpuFingerprintContract,
-    SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor,
-    SingleVmVcpuRegisterDigest, initial_single_vm_rolling_fingerprint,
+    SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintSample,
+    SingleVmFingerprintSampleMaterial, SingleVmFingerprintStream, SingleVmFingerprintTrigger,
+    SingleVmNvcpuFingerprintContract, SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology,
+    SingleVmRoundRobinCursor, SingleVmVcpuRegisterDigest, initial_single_vm_rolling_fingerprint,
 };
 
 const REGISTER_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-register-component.v1";
 const MEMORY_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-memory-component.v1";
-const DEVICE_EVENT_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-device-event-component.v1";
-const PROVISIONAL_DEFINITION_DOMAIN: &str =
-    "crucible.qemu.provisional-trace-fingerprint-definition.v1";
+const DEVICE_STATE_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-device-state-component.v1";
+const DEFINITION_DOMAIN: &str = "crucible.qemu.trace-fingerprint-definition.v2";
 
-/// Wire-schema identifier emitted by the provisional QEMU trace plugin.
-pub const QEMU_TRACE_FINGERPRINT_SCHEMA: &str = "crucible.qemu.trace-fingerprint.v2";
+/// Wire-schema identifier emitted by the canonical QEMU observation plugin.
+pub const QEMU_TRACE_FINGERPRINT_SCHEMA: &str = "crucible.qemu.trace-fingerprint.v3";
 
-/// Provisional fingerprint definition implemented by the diagnostic trace path.
+/// Canonical fingerprint definition pinned by an independent QEMU preflight.
 ///
-/// Unlike [`crate::QemuExecutionFingerprintDefinition`], this definition does
-/// not claim event-boundary sampling or complete current device state. Its
-/// device component is explicitly the cumulative history of CPU-observed MMIO
-/// events, and its only trigger is the periodic aggregate-icount cadence.
+/// The preflight is distinct from both comparison runs. It fixes the exact
+/// register descriptor schemas and byte widths, guest-RAM coverage, serialized
+/// non-RAM VMState coverage, QMP topology, RR quantum, launch identity, and
+/// observation-plugin build identity before either run is admitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuTraceFingerprintDefinition {
     canonical_material: String,
 }
 
 impl QemuTraceFingerprintDefinition {
-    /// Builds the provisional trace definition for one periodic cadence.
+    /// Builds the canonical trace definition for one periodic cadence.
     ///
     /// # Errors
     ///
@@ -57,44 +58,41 @@ impl QemuTraceFingerprintDefinition {
             });
         }
         Ok(Self {
-            canonical_material: provisional_definition_material(cadence_icount, observation),
+            canonical_material: definition_material(cadence_icount, observation),
         })
     }
 
-    /// Returns the canonical material describing the provisional observation.
+    /// Returns the canonical material describing the pinned observation set.
     #[must_use]
     pub fn canonical_material(&self) -> &str {
         &self.canonical_material
     }
 
-    /// Returns the content-addressed provisional definition digest.
+    /// Returns the content-addressed production definition digest.
     #[must_use]
     pub fn definition_digest(&self) -> [u8; 32] {
-        ContentHash::from_canonical_material(
-            PROVISIONAL_DEFINITION_DOMAIN,
-            self.canonical_material(),
-        )
-        .bytes
+        ContentHash::from_canonical_material(DEFINITION_DOMAIN, self.canonical_material()).bytes
     }
 }
 
-fn provisional_definition_material(
-    cadence_icount: u64,
-    observation: &QemuTraceObservationContract,
-) -> String {
+fn definition_material(cadence_icount: u64, observation: &QemuTraceObservationContract) -> String {
     let mut lines = vec![
         QEMU_TRACE_FINGERPRINT_SCHEMA.to_owned(),
-        "status=provisional".to_owned(),
+        "status=canonical".to_owned(),
         format!("cadence_icount={cadence_icount}"),
-        "trigger=periodic-aggregate-icount-only".to_owned(),
+        "trigger[0]=periodic-aggregate-icount".to_owned(),
+        "trigger[1]=horizon-advance".to_owned(),
+        "trigger[2]=frame-delivery".to_owned(),
+        "trigger[3]=fault-activation".to_owned(),
         "component[0]=aggregate-icount".to_owned(),
         "component[1]=all-vcpu-register-files-fnv1a64-standard-v2".to_owned(),
         "component[2]=full-guest-ram-aos-legacy-fnv-offset-v1".to_owned(),
-        "component[3]=ordered-cpu-mmio-read-write-history-fnv1a64-standard-v2".to_owned(),
-        "complete_current_device_state=false".to_owned(),
-        "event_boundary_sampling=false".to_owned(),
+        "component[3]=qemu-non-ram-vmstate-fnv1a64-standard-v1".to_owned(),
+        "complete_current_device_state=true".to_owned(),
+        "event_boundary_sampling=true".to_owned(),
         format!("rr_switch_quantum={}", observation.rr_switch_quantum),
-        format!("baseline_ram_bytes={}", observation.baseline_ram_bytes),
+        format!("guest_ram_bytes={}", observation.guest_ram_bytes),
+        format!("device_state_bytes={}", observation.device_state_bytes),
         format!(
             "launch_definition_digest={}",
             observation.identity.launch_definition_digest
@@ -112,15 +110,15 @@ fn provisional_definition_material(
         let contract = observation.vcpu_contracts[index];
         lines.push(format!("vcpu[{index}].cpu_id={cpu_id}"));
         lines.push(format!(
-            "vcpu[{index}].baseline_register_count={}",
+            "vcpu[{index}].register_count={}",
             contract.register_count
         ));
         lines.push(format!(
-            "vcpu[{index}].baseline_register_file_bytes={}",
+            "vcpu[{index}].register_file_bytes={}",
             contract.register_file_bytes
         ));
         lines.push(format!(
-            "vcpu[{index}].baseline_register_schema_hash={:016x}",
+            "vcpu[{index}].register_schema_hash={:016x}",
             contract.register_schema_hash
         ));
     }
@@ -162,9 +160,27 @@ impl QemuTraceIdentityContract {
         }
         Ok(identity)
     }
+
+    /// Returns the content digest of the complete launch definition.
+    #[must_use]
+    pub fn launch_definition_digest(&self) -> &str {
+        &self.launch_definition_digest
+    }
+
+    /// Returns the digest of the exact QEMU executable build.
+    #[must_use]
+    pub fn qemu_build_digest(&self) -> &str {
+        &self.qemu_build_digest
+    }
+
+    /// Returns the digest of the exact observation-plugin build.
+    #[must_use]
+    pub fn trace_plugin_build_digest(&self) -> &str {
+        &self.trace_plugin_build_digest
+    }
 }
 
-/// Caller-supplied baseline register observation for one QMP vCPU.
+/// Preflight-pinned register observation for one QMP vCPU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QemuTraceVcpuContract {
     cpu_id: u64,
@@ -215,14 +231,33 @@ impl QemuTraceVcpuContract {
     pub const fn cpu_id(self) -> u64 {
         self.cpu_id
     }
+
+    /// Returns the exact register descriptor count pinned by preflight.
+    #[must_use]
+    pub const fn register_count(self) -> u64 {
+        self.register_count
+    }
+
+    /// Returns the exact canonical register-file byte width pinned by preflight.
+    #[must_use]
+    pub const fn register_file_bytes(self) -> u64 {
+        self.register_file_bytes
+    }
+
+    /// Returns the exact register descriptor-schema hash pinned by preflight.
+    #[must_use]
+    pub const fn register_schema_hash(self) -> u64 {
+        self.register_schema_hash
+    }
 }
 
-/// Exact comparison-baseline and QMP-bound shape for one trace import.
+/// Exact preflight and QMP-bound shape for one trace import.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuTraceObservationContract {
     qmp_cpu_ids: Vec<u64>,
     rr_switch_quantum: u64,
-    baseline_ram_bytes: u64,
+    guest_ram_bytes: u64,
+    device_state_bytes: u64,
     vcpu_contracts: Vec<QemuTraceVcpuContract>,
     identity: QemuTraceIdentityContract,
 }
@@ -238,7 +273,8 @@ impl QemuTraceObservationContract {
     pub fn new(
         qmp_cpu_ids: Vec<u64>,
         rr_switch_quantum: u64,
-        baseline_ram_bytes: u64,
+        guest_ram_bytes: u64,
+        device_state_bytes: u64,
         vcpu_contracts: Vec<QemuTraceVcpuContract>,
         identity: QemuTraceIdentityContract,
     ) -> Result<Self, QemuTraceFingerprintImportError> {
@@ -248,9 +284,14 @@ impl QemuTraceObservationContract {
                 reason: "trace observation contract requires a non-zero RR quantum",
             });
         }
-        if baseline_ram_bytes == 0 {
+        if guest_ram_bytes == 0 {
             return Err(QemuTraceFingerprintImportError::InvalidContract {
                 reason: "trace fingerprint contract requires exact non-zero RAM bytes",
+            });
+        }
+        if device_state_bytes == 0 {
+            return Err(QemuTraceFingerprintImportError::InvalidContract {
+                reason: "trace fingerprint contract requires exact non-zero device-state bytes",
             });
         }
         if vcpu_contracts.len() != qmp_cpu_ids.len()
@@ -266,10 +307,152 @@ impl QemuTraceObservationContract {
         Ok(Self {
             qmp_cpu_ids,
             rr_switch_quantum,
-            baseline_ram_bytes,
+            guest_ram_bytes,
+            device_state_bytes,
             vcpu_contracts,
             identity,
         })
+    }
+
+    /// Returns the exact sorted QMP CPU-index set pinned by preflight.
+    #[must_use]
+    pub fn qmp_cpu_ids(&self) -> &[u64] {
+        &self.qmp_cpu_ids
+    }
+
+    /// Returns the launch-pinned round-robin switch quantum.
+    #[must_use]
+    pub const fn rr_switch_quantum(&self) -> u64 {
+        self.rr_switch_quantum
+    }
+
+    /// Returns the exact writable guest-RAM byte coverage.
+    #[must_use]
+    pub const fn guest_ram_bytes(&self) -> u64 {
+        self.guest_ram_bytes
+    }
+
+    /// Returns the exact serialized non-RAM VMState byte coverage.
+    #[must_use]
+    pub const fn device_state_bytes(&self) -> u64 {
+        self.device_state_bytes
+    }
+
+    /// Returns the per-vCPU register shape pinned by preflight.
+    #[must_use]
+    pub fn vcpu_contracts(&self) -> &[QemuTraceVcpuContract] {
+        &self.vcpu_contracts
+    }
+
+    /// Returns the launch and build identity pinned by preflight.
+    #[must_use]
+    pub const fn identity(&self) -> &QemuTraceIdentityContract {
+        &self.identity
+    }
+}
+
+/// Independently captured fingerprint-definition preflight.
+///
+/// A preflight is produced by a dedicated QEMU launch that pauses before guest
+/// execution. Comparison run A and run B must both conform to this exact shape;
+/// neither comparison run is allowed to define the observation set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuTraceDefinitionPreflight {
+    observation: QemuTraceObservationContract,
+}
+
+impl QemuTraceDefinitionPreflight {
+    /// Imports one definition-only trace record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuTraceFingerprintImportError`] when the input is not
+    /// exactly one definition record, any identity or observation field is
+    /// malformed, VMState coverage is incomplete, or the preflight retired a
+    /// guest instruction.
+    pub fn import<R: BufRead>(reader: R) -> Result<Self, QemuTraceFingerprintImportError> {
+        let mut records = reader.lines();
+        let line = records
+            .next()
+            .ok_or(QemuTraceFingerprintImportError::IncompleteTrace {
+                reason: "definition preflight record is absent",
+            })?
+            .map_err(|source| QemuTraceFingerprintImportError::Io { line: 1, source })?;
+        if line.trim().is_empty() {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line: 1,
+                reason: "blank definition preflight record".to_owned(),
+            });
+        }
+        if records.next().is_some() {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line: 2,
+                reason: "definition preflight must contain exactly one record".to_owned(),
+            });
+        }
+        let value: Value = serde_json::from_str(&line)
+            .map_err(|source| QemuTraceFingerprintImportError::Json { line: 1, source })?;
+        require_str(&value, "kind", "definition", 1)?;
+        require_str(&value, "schema", QEMU_TRACE_FINGERPRINT_SCHEMA, 1)?;
+        require_true(&value, "definition_only", 1)?;
+        require_true(&value, "paused_before_guest_execution", 1)?;
+        require_true(&value, "device_state_complete", 1)?;
+        require_zero(&value, "retired", 1)?;
+        require_zero(&value, "sample_register_failures", 1)?;
+        require_zero(&value, "register_read_failures", 1)?;
+        require_zero(&value, "device_state_failures", 1)?;
+
+        let tracked_vcpus = usize_field(&value, "tracked_vcpus", 1)?;
+        if tracked_vcpus == 0 {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line: 1,
+                reason: "definition preflight must cover at least one vCPU".to_owned(),
+            });
+        }
+        let qmp_cpu_ids = (0..tracked_vcpus as u64).collect::<Vec<_>>();
+        let register_counts = array_field(&value, "register_counts", 1)?;
+        let register_file_bytes = array_field(&value, "register_file_bytes", 1)?;
+        let register_schema_hashes = array_field(&value, "register_schema_hashes", 1)?;
+        if register_counts.len() != tracked_vcpus
+            || register_file_bytes.len() != tracked_vcpus
+            || register_schema_hashes.len() != tracked_vcpus
+        {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line: 1,
+                reason: "definition register arrays must cover exactly the configured vCPUs"
+                    .to_owned(),
+            });
+        }
+        let vcpu_contracts = (0..tracked_vcpus)
+            .map(|vcpu| {
+                QemuTraceVcpuContract::new(
+                    vcpu as u64,
+                    u64_array_item(register_counts, vcpu, "register_counts", 1)?,
+                    u64_array_item(register_file_bytes, vcpu, "register_file_bytes", 1)?,
+                    hex_u64_array_item(register_schema_hashes, vcpu, "register_schema_hashes", 1)?,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let identity = QemuTraceIdentityContract::new(
+            text_field(&value, "launch_definition_digest", 1)?,
+            text_field(&value, "qemu_build_digest", 1)?,
+            text_field(&value, "trace_plugin_build_digest", 1)?,
+        )?;
+        let observation = QemuTraceObservationContract::new(
+            qmp_cpu_ids,
+            u64_field(&value, "rr_switch_quantum", 1)?,
+            u64_field(&value, "ram_bytes", 1)?,
+            u64_field(&value, "device_state_bytes", 1)?,
+            vcpu_contracts,
+            identity,
+        )?;
+        Ok(Self { observation })
+    }
+
+    /// Returns the exact observation contract pinned before the two gate runs.
+    #[must_use]
+    pub const fn observation(&self) -> &QemuTraceObservationContract {
+        &self.observation
     }
 }
 
@@ -282,7 +465,8 @@ pub struct QemuTraceFingerprintImport {
     run_horizon_icount: u64,
     qmp_cpu_ids: Vec<u64>,
     nvcpu_contract: SingleVmNvcpuFingerprintContract,
-    baseline_ram_bytes: u64,
+    guest_ram_bytes: u64,
+    device_state_bytes: u64,
     vcpu_contracts: Vec<QemuTraceVcpuContract>,
     identity: QemuTraceIdentityContract,
 }
@@ -341,7 +525,8 @@ impl QemuTraceFingerprintImport {
             run_horizon_icount,
             qmp_cpu_ids: observation.qmp_cpu_ids,
             nvcpu_contract,
-            baseline_ram_bytes: observation.baseline_ram_bytes,
+            guest_ram_bytes: observation.guest_ram_bytes,
+            device_state_bytes: observation.device_state_bytes,
             vcpu_contracts: observation.vcpu_contracts,
             identity: observation.identity,
         })
@@ -375,6 +560,8 @@ impl QemuTraceFingerprintImport {
             })?;
         let mut terminal_stop_seen = false;
         let mut previous_retired: Option<Vec<u64>> = None;
+        let mut periodic_sample_count = 0_u64;
+        let mut horizon_boundary_seen = false;
 
         for (line_index, line) in reader.lines().enumerate() {
             let line_number = line_index.saturating_add(1);
@@ -476,26 +663,55 @@ impl QemuTraceFingerprintImport {
                 continue;
             }
             require_u64(&value, "stop_at", self.run_horizon_icount, line_number)?;
-            let expected_icount = self
-                .cadence_icount
-                .checked_mul((samples.len() as u64).saturating_add(1))
-                .ok_or(QemuTraceFingerprintImportError::MalformedTrace {
-                    line: line_number,
-                    reason: "periodic sample icount overflow".to_owned(),
-                })?;
             let observed_icount = u64_field(&value, "retired", line_number)?;
-            if observed_icount != expected_icount || observed_icount > self.run_horizon_icount {
+            let trigger = sample_trigger(&value, line_number)?;
+            if observed_icount > self.run_horizon_icount {
                 return Err(QemuTraceFingerprintImportError::MalformedTrace {
                     line: line_number,
-                    reason: format!(
-                        "periodic sample icount {observed_icount} does not match expected {expected_icount}"
-                    ),
+                    reason: format!("sample icount {observed_icount} exceeds the run horizon"),
                 });
+            }
+            let next_periodic_count = periodic_sample_count.checked_add(1).ok_or(
+                QemuTraceFingerprintImportError::MalformedTrace {
+                    line: line_number,
+                    reason: "periodic sample count overflow".to_owned(),
+                },
+            )?;
+            let next_periodic_icount = self.cadence_icount.checked_mul(next_periodic_count).ok_or(
+                QemuTraceFingerprintImportError::MalformedTrace {
+                    line: line_number,
+                    reason: "periodic sample icount overflow".to_owned(),
+                },
+            )?;
+            if trigger == SingleVmFingerprintTrigger::Periodic {
+                if observed_icount != next_periodic_icount {
+                    return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                        line: line_number,
+                        reason: format!(
+                            "periodic sample icount {observed_icount} does not match expected {next_periodic_icount}"
+                        ),
+                    });
+                }
+                periodic_sample_count = next_periodic_count;
+            } else if observed_icount == next_periodic_icount {
+                // A deterministic boundary that lands exactly on the periodic
+                // cadence satisfies both required observations with one state
+                // read; the event trigger remains explicit in the digest.
+                periodic_sample_count = next_periodic_count;
+            }
+            if trigger
+                == SingleVmFingerprintTrigger::Event(
+                    SingleVmFingerprintEventBoundary::HorizonAdvance,
+                )
+                && observed_icount == self.run_horizon_icount
+            {
+                horizon_boundary_seen = true;
             }
             let (material, retired_counts) = self.sample_material(
                 &value,
                 line_number,
                 samples.len() as u64,
+                trigger,
                 previous_retired.as_deref(),
             )?;
             let sample = SingleVmFingerprintSample::from_material(
@@ -512,9 +728,14 @@ impl QemuTraceFingerprintImport {
             samples.push(sample);
         }
 
-        if samples.last().map(|sample| sample.icount) != Some(self.run_horizon_icount) {
+        if periodic_sample_count.checked_mul(self.cadence_icount) != Some(self.run_horizon_icount) {
             return Err(QemuTraceFingerprintImportError::IncompleteTrace {
                 reason: "periodic samples do not reach the configured horizon",
+            });
+        }
+        if !horizon_boundary_seen {
+            return Err(QemuTraceFingerprintImportError::IncompleteTrace {
+                reason: "the configured horizon-advance boundary sample is absent",
             });
         }
         if !terminal_stop_seen {
@@ -563,15 +784,16 @@ impl QemuTraceFingerprintImport {
         value: &Value,
         line: usize,
         seq: u64,
+        trigger: SingleVmFingerprintTrigger,
         previous_retired: Option<&[u64]>,
     ) -> Result<(SingleVmFingerprintSampleMaterial, Vec<u64>), QemuTraceFingerprintImportError>
     {
         require_true(value, "rr_cursor_valid", line)?;
         require_str(value, "rr_cursor_source", "live_instruction", line)?;
-        require_true(value, "memory_events_enabled", line)?;
-        require_true(value, "device_event_capture", line)?;
+        require_true(value, "device_state_complete", line)?;
         require_zero(value, "sample_register_failures", line)?;
         require_zero(value, "register_read_failures", line)?;
+        require_zero(value, "device_state_failures", line)?;
 
         let tracked_vcpus = usize_field(value, "tracked_vcpus", line)?;
         if tracked_vcpus != self.qmp_cpu_ids.len()
@@ -645,7 +867,7 @@ impl QemuTraceFingerprintImport {
                 return Err(QemuTraceFingerprintImportError::MalformedTrace {
                     line,
                     reason: format!(
-                        "register_schema_hashes[{vcpu_id}] differs from the run-A baseline schema"
+                        "register_schema_hashes[{vcpu_id}] differs from the independent preflight schema"
                     ),
                 });
             }
@@ -725,27 +947,37 @@ impl QemuTraceFingerprintImport {
         }
 
         let ram_bytes = u64_field(value, "ram_bytes", line)?;
-        if ram_bytes != self.baseline_ram_bytes {
+        if ram_bytes != self.guest_ram_bytes {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
                 line,
                 reason: format!(
-                    "guest RAM observation differs from the run-A baseline of {} bytes, got {ram_bytes}",
-                    self.baseline_ram_bytes
+                    "guest RAM observation differs from the independent preflight of {} bytes, got {ram_bytes}",
+                    self.guest_ram_bytes
                 ),
             });
         }
         let ram_hash = hex_u64_field(value, "ram_hash", line)?;
-        let device_event_hash = hex_u64_field(value, "device_event_hash", line)?;
+        let device_state_bytes = u64_field(value, "device_state_bytes", line)?;
+        if device_state_bytes != self.device_state_bytes {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line,
+                reason: format!(
+                    "device-state observation differs from the independent preflight of {} bytes, got {device_state_bytes}",
+                    self.device_state_bytes
+                ),
+            });
+        }
+        let device_state_hash = hex_u64_field(value, "device_state_hash", line)?;
         if ram_hash == 0 {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
                 line,
                 reason: "field `ram_hash` must be non-zero".to_owned(),
             });
         }
-        if device_event_hash == 0 {
+        if device_state_hash == 0 {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
                 line,
-                reason: "field `device_event_hash` must be non-zero".to_owned(),
+                reason: "field `device_state_hash` must be non-zero".to_owned(),
             });
         }
         let memory_digest = component_digest(
@@ -753,8 +985,8 @@ impl QemuTraceFingerprintImport {
             &format!("ram_bytes={ram_bytes}\nfnv1a64={ram_hash:016x}"),
         );
         let device_digest = component_digest(
-            DEVICE_EVENT_COMPONENT_DOMAIN,
-            &format!("fnv1a64={device_event_hash:016x}"),
+            DEVICE_STATE_COMPONENT_DOMAIN,
+            &format!("device_state_bytes={device_state_bytes}\nfnv1a64={device_state_hash:016x}"),
         );
         let nvcpu_fingerprint = SingleVmNvcpuFingerprintMaterial::new(
             registers,
@@ -772,7 +1004,7 @@ impl QemuTraceFingerprintImport {
             seq,
             self.node.clone(),
             aggregate_retired,
-            SingleVmFingerprintTrigger::Periodic,
+            trigger,
             nvcpu_fingerprint,
         )
         .map_err(|source| QemuTraceFingerprintImportError::CanonicalStream { line, source })?;
@@ -885,6 +1117,58 @@ fn bool_field(
     })
 }
 
+fn sample_trigger(
+    value: &Value,
+    line: usize,
+) -> Result<SingleVmFingerprintTrigger, QemuTraceFingerprintImportError> {
+    let trigger = value
+        .get("trigger")
+        .and_then(Value::as_str)
+        .ok_or_else(|| QemuTraceFingerprintImportError::MalformedTrace {
+            line,
+            reason: "field `trigger` must be text".to_owned(),
+        })?;
+    match trigger {
+        "periodic" => {
+            if value
+                .get("event_boundary")
+                .is_some_and(|boundary| !boundary.is_null())
+            {
+                return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                    line,
+                    reason: "periodic samples must not name an event boundary".to_owned(),
+                });
+            }
+            Ok(SingleVmFingerprintTrigger::Periodic)
+        }
+        "event" => {
+            let boundary = value
+                .get("event_boundary")
+                .and_then(Value::as_str)
+                .ok_or_else(|| QemuTraceFingerprintImportError::MalformedTrace {
+                    line,
+                    reason: "event samples must name `event_boundary`".to_owned(),
+                })?;
+            let boundary = match boundary {
+                "horizon-advance" => SingleVmFingerprintEventBoundary::HorizonAdvance,
+                "frame-delivery" => SingleVmFingerprintEventBoundary::FrameDelivery,
+                "fault-activation" => SingleVmFingerprintEventBoundary::FaultActivation,
+                other => {
+                    return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                        line,
+                        reason: format!("unknown fingerprint event boundary `{other}`"),
+                    });
+                }
+            };
+            Ok(SingleVmFingerprintTrigger::Event(boundary))
+        }
+        other => Err(QemuTraceFingerprintImportError::MalformedTrace {
+            line,
+            reason: format!("unknown fingerprint sample trigger `{other}`"),
+        }),
+    }
+}
+
 fn require_str(
     value: &Value,
     field: &str,
@@ -905,6 +1189,21 @@ fn require_str(
             reason: format!("field `{field}` must be `{expected}`, got `{actual}`"),
         })
     }
+}
+
+fn text_field(
+    value: &Value,
+    field: &str,
+    line: usize,
+) -> Result<String, QemuTraceFingerprintImportError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| QemuTraceFingerprintImportError::MalformedTrace {
+            line,
+            reason: format!("field `{field}` must be text"),
+        })
 }
 
 fn u64_field(

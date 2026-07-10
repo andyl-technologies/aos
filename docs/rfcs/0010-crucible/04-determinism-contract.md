@@ -682,21 +682,19 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   register/memory/device digest), computed black-box from the host, with a fixed
   content-addressed definition. — satisfies [DET-29], [DET-31], [DET-17]; spec
   §4.8.
-  - The provisional `crucible-qemu-fingerprint` importer converts versioned real
-    QEMU trace-plugin observations into a separately content-addressed periodic
-    stream. It binds both runs to distinct provenance records, identical launch
-    and QEMU/plugin build digests carried in every sample, the exact sorted QMP
-    CPU-index set, register descriptor schemas/byte counts, monotonic per-vCPU
-    retired counts whose sum equals aggregate icount, RAM byte coverage, an RR
-    cursor, and an exact terminal horizon. The register/RAM observation shape is
-    presently derived from run A and enforced against run B, not independently
-    pinned by the launch/build definition, so it is diagnostic evidence rather
-    than gate admission. Its definition deliberately advertises
-    periodic sampling only and names its device component
-    `ordered-cpu-mmio-read-write-history`; it does **not** masquerade as the canonical
-    current-device-state/event-boundary definition. Complete current emulated
-    device state, interaction-boundary sampling, and an integrated fixed-input
-    launch runner remain absent, so this task remains open.
+  - The `crucible-qemu-fingerprint` importer converts versioned real-QEMU
+    trace-plugin observations into a separately content-addressed stream. A
+    definition-only QEMU preflight pauses before guest execution and pins the
+    exact QMP CPU set, register schemas and byte counts, RAM coverage,
+    serialized non-RAM VMState coverage, RR quantum, and launch/QEMU/plugin
+    identities independently of both comparison runs. Each run then validates
+    monotonic per-vCPU retired counts, current registers, RAM, non-RAM VMState,
+    the RR cursor, periodic cadence, and the exact horizon boundary. The
+    scenario also content-addresses the exact guest image, command line, seed,
+    injected-input sequence, and launch definition. The live path still samples
+    only the horizon interaction boundary; frame-delivery and fault-activation
+    sampling and an integrated launcher/rerun adapter for instruction-exact
+    bisection and both-side state dumps remain absent, so this task remains open.
 - [x] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a
   single VM, asserting identical fingerprint sequences. — satisfies [DET-1],
   [DET-2], [DET-30]; spec §4.8, §4.11.

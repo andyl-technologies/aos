@@ -108,7 +108,7 @@ fn validate_trace_sample(
     mode: &'static str,
 ) -> Result<(), LoadedQemuCoverageGateError> {
     for (field, expected) in [
-        ("schema", "crucible.qemu.trace-fingerprint.v2"),
+        ("schema", "crucible.qemu.trace-fingerprint.v3"),
         ("rr_cursor_source", "live_instruction"),
     ] {
         if sample.get(field).and_then(Value::as_str) != Some(expected) {
@@ -120,6 +120,7 @@ fn validate_trace_sample(
     }
     for field in [
         "rr_cursor_valid",
+        "device_state_complete",
         "device_event_capture",
         "memory_events_enabled",
         "post_boundary_sample",
@@ -164,11 +165,16 @@ fn validate_trace_sample(
             reason: "the per-instruction guest trajectory did not cover every instruction after the post-I/O boundary",
         });
     }
-    for field in ["sample_register_failures", "register_read_failures"] {
+    for field in [
+        "sample_register_failures",
+        "register_read_failures",
+        "device_state_failures",
+        "device_state_status",
+    ] {
         if u64_field(sample, field) != Some(0) {
             return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
                 mode,
-                reason: "one or more vCPU register reads failed",
+                reason: "one or more register or device-state observations failed",
             });
         }
     }
@@ -194,6 +200,12 @@ fn validate_trace_sample(
             reason: "RAM hashing did not cover exactly the configured 64 MiB guest memory",
         });
     }
+    if u64_field(sample, "device_state_bytes").is_none_or(|bytes| bytes == 0) {
+        return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
+            mode,
+            reason: "serialized non-RAM VMState byte coverage is absent",
+        });
+    }
     let memory_events = u64_field(sample, "memory_events").unwrap_or(0);
     let io_events = u64_field(sample, "io_events").unwrap_or(0);
     if memory_events == 0 || io_events == 0 || io_events > memory_events {
@@ -208,6 +220,7 @@ fn validate_trace_sample(
         "trajectory_hash",
         "memory_event_hash",
         "ram_hash",
+        "device_state_hash",
         "device_event_hash",
         "extended_hash",
     ] {
@@ -301,6 +314,9 @@ fn validate_extended_hash(
         parsed_hex_field(sample, "stream_hash"),
         parsed_hex_field(sample, "register_hash"),
         parsed_hex_field(sample, "ram_hash"),
+        parsed_hex_field(sample, "device_state_hash"),
+        u64_field(sample, "device_state_bytes"),
+        u64_field(sample, "device_state_status"),
         Some(1),
         parsed_hex_field(sample, "device_event_hash"),
         u64_field(sample, "rr_current_vcpu"),
@@ -408,6 +424,9 @@ mod tests {
             "stream_hash": "0000000000000001",
             "register_hash": "0000000000000002",
             "ram_hash": "0000000000000003",
+            "device_state_hash": "0000000000000008",
+            "device_state_bytes": 4096,
+            "device_state_status": 0,
             "device_event_hash": "0000000000000004",
             "rr_current_vcpu": 0,
             "rr_cursor_position": 1,

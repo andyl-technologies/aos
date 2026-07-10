@@ -434,7 +434,11 @@
       }
       {
         label = "stop-at horizon icount trigger";
-        needle = "if (stop_at != 0 && retired >= stop_at";
+        needle = "reached_stop = stop_at != 0 && retired >= stop_at && !stop_requested;";
+      }
+      {
+        label = "stop-at horizon event sample";
+        needle = "if (reached_stop)";
       }
       {
         label = "architectural register hash summary";
@@ -455,6 +459,14 @@
       {
         label = "RAM hash folded into rolling fingerprint";
         needle = "extended_hash = fnv1a_u64(extended_hash, ram_hash);";
+      }
+      {
+        label = "current device-state hash folded into rolling fingerprint";
+        needle = "extended_hash = fnv1a_u64(extended_hash, device_state.hash);";
+      }
+      {
+        label = "current device-state byte count folded into rolling fingerprint";
+        needle = "extended_hash = fnv1a_u64(extended_hash, device_state.bytes);";
       }
       {
         label = "per-vCPU register hashes in samples";
