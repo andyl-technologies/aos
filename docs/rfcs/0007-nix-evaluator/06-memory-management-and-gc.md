@@ -3160,8 +3160,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       allocation-free. Tests cover survivor rekeying, dead-young pruning,
       metadata preservation, and memo clearing on a real `TreeWalk`. Active
       force/render traversal identities, atomic environment cells, structural
-      hashes/shape fingerprints, and JIT constants remain open in the same
-      mechanically enforced worklist.
+      hashes, and shape fingerprints remain open in the same mechanically
+      enforced worklist.
+- [x] Current JIT embedded-constant relocation repair:
+      `ratchet-jit::lower::error::validate_embedded_constant` rejects every
+      heap-backed `Value` before the constant-thunk or static-select-default
+      sites emit constant CLIF words. Both sites return the typed
+      `JitLowerError::UnsupportedHeapConstant`; inline literals retain their
+      existing two-word lowering. The regression test covers all eight heap
+      tags and proves rejection before payload emission. This closes two more
+      production-sensitive callers (12 of 22 total) without a compiled-code
+      patch table. The landing gate is byte-green across the 16-leg
+      serial/K=4/JIT/sweep0 package matrix, compute x8, `bench.wide`, and the
+      647-seed JIT strict-JSON corpus. Five-sample release A/Bs were
+      non-regressing: zlib cold/warm -2.5%/-2.1% and fib -2.9%/-0.7%, with
+      exact 7.5 MiB/160 MiB arena peaks and slightly lower retained RSS. JIT
+      stack maps for live runtime values remain open.
 - [x] Current tree-walk transient value-stack registration precursor:
       `TreeWalk` owns scoped transient value-stack root storage for evaluator
       paths that keep heap values in Rust locals across allocation safepoints.

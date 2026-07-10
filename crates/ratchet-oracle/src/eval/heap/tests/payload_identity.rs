@@ -31,7 +31,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         raw_representation: 0,
         address_identity_only: 0,
         relocation_sensitive: 2,
-        b2_disposition: "reject heap constants or patch compiled constant words",
+        b2_disposition: "reject heap constants before CLIF payload emission",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/env.rs",

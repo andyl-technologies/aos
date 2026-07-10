@@ -8,6 +8,7 @@ use std::{error::Error, fmt};
 
 use cranelift_codegen::verifier::VerifierErrors;
 use ratchet_core::{IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, syntax::BinOpKind};
+use ratchet_value::value::{Value, ValueTag};
 
 use crate::abi::JitClifSignatureError;
 
@@ -23,6 +24,11 @@ pub enum JitLowerError {
     },
     /// Cranelift rejected the generated CLIF function body.
     Verifier(VerifierErrors),
+    /// A compiled constant would embed a relocatable heap address.
+    UnsupportedHeapConstant {
+        /// The heap-backed value tag rejected before constant-word emission.
+        tag: ValueTag,
+    },
     /// The generated thunk function did not have the expected entry parameter.
     MissingEntryBlockParameter {
         /// The expected entry-block parameter index.
@@ -236,6 +242,10 @@ impl fmt::Display for JitLowerError {
             Self::Verifier(error) => {
                 write!(formatter, "generated CLIF failed verification: {error}")
             }
+            Self::UnsupportedHeapConstant { tag } => write!(
+                formatter,
+                "heap-backed {tag:?} values cannot be embedded as JIT constants"
+            ),
             Self::MissingEntryBlockParameter { index } => write!(
                 formatter,
                 "generated thunk function is missing entry-block parameter {index}"
@@ -439,7 +449,8 @@ impl Error for JitLowerError {
         match self {
             Self::Abi(error) => Some(error),
             Self::Verifier(error) => Some(error),
-            Self::MissingRuntimeHelperSignature { .. }
+            Self::UnsupportedHeapConstant { .. }
+            | Self::MissingRuntimeHelperSignature { .. }
             | Self::MissingEntryBlockParameter { .. }
             | Self::InvalidRuntimeCallResultArity { .. }
             | Self::MissingIrNode { .. }
@@ -478,8 +489,56 @@ impl Error for JitLowerError {
     }
 }
 
+/// Rejects values whose embedded payload word could move after compilation.
+///
+/// # Errors
+///
+/// Returns [`JitLowerError::UnsupportedHeapConstant`] for every heap-backed
+/// value. Inline scalars are safe to embed directly in CLIF.
+pub(super) fn validate_embedded_constant(value: Value) -> Result<(), JitLowerError> {
+    let tag = value.tag();
+    if tag.is_heap() {
+        return Err(JitLowerError::UnsupportedHeapConstant { tag });
+    }
+    Ok(())
+}
+
 impl From<JitClifSignatureError> for JitLowerError {
     fn from(error: JitClifSignatureError) -> Self {
         Self::Abi(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr::NonNull;
+
+    use ratchet_value::value::HeapObject;
+
+    use super::super::lower_constant_thunk_body;
+    use super::*;
+
+    #[test]
+    fn constant_lowering_rejects_every_heap_tag_before_clif_payload_emission() {
+        let pointer = NonNull::<HeapObject>::dangling();
+        for tag in [
+            ValueTag::String,
+            ValueTag::Path,
+            ValueTag::List,
+            ValueTag::Attrs,
+            ValueTag::Lambda,
+            ValueTag::Primop,
+            ValueTag::External,
+            ValueTag::Thunk,
+        ] {
+            let value = Value::heap(tag, pointer).expect("dangling test pointer is aligned");
+            let error = lower_constant_thunk_body(value)
+                .expect_err("heap-backed constants must not enter compiled code");
+
+            assert!(matches!(
+                error,
+                JitLowerError::UnsupportedHeapConstant { tag: actual } if actual == tag
+            ));
+        }
     }
 }

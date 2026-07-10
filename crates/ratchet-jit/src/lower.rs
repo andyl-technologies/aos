@@ -378,9 +378,9 @@ pub fn jit_tier1_thunk_fact_plan(
 ///
 /// # Errors
 ///
-/// Returns [`JitLowerError::Abi`] if the runtime thunk signature cannot be
-/// lowered to a CLIF signature. Returns [`JitLowerError::Verifier`] if Cranelift
-/// rejects the generated single-block function.
+/// Returns [`JitLowerError::UnsupportedHeapConstant`] for a heap-backed value,
+/// [`JitLowerError::Abi`] for an invalid runtime signature, or
+/// [`JitLowerError::Verifier`] when Cranelift rejects the generated function.
 pub fn lower_constant_thunk_body(value: Value) -> Result<Function, JitLowerError> {
     lower_constant_thunk_body_with_name(value, UserFuncName::default())
 }
@@ -392,9 +392,9 @@ pub fn lower_constant_thunk_body(value: Value) -> Result<Function, JitLowerError
 ///
 /// # Errors
 ///
-/// Returns [`JitLowerError::Abi`] if the runtime thunk signature cannot be
-/// lowered to a CLIF signature. Returns [`JitLowerError::Verifier`] if Cranelift
-/// rejects the generated single-block function.
+/// Returns [`JitLowerError::UnsupportedHeapConstant`] for a heap-backed value,
+/// [`JitLowerError::Abi`] for an invalid runtime signature, or
+/// [`JitLowerError::Verifier`] when Cranelift rejects the generated function.
 pub fn lower_constant_thunk_body_artifact(value: Value) -> Result<JitClifArtifact, JitLowerError> {
     let function = lower_constant_thunk_body(value)?;
     Ok(thunk_body_artifact(
@@ -407,6 +407,7 @@ fn lower_constant_thunk_body_with_name(
     value: Value,
     name: UserFuncName,
 ) -> Result<Function, JitLowerError> {
+    error::validate_embedded_constant(value)?;
     let signature = clif_signature_for_runtime_call(runtime_thunk_call_signature())?;
     let mut function = Function::with_name_signature(name, signature);
     let entry_block = append_entry_block_params(&mut function);
@@ -2439,7 +2440,6 @@ fn emit_value_return(
     let payload = cursor.ins().iconst(types::I64, payload_word as i64);
     cursor.ins().return_(&[tag, payload]);
 }
-
 fn emit_env_get_return(
     function: &mut Function,
     entry_block: cranelift_codegen::ir::Block,
@@ -2953,6 +2953,7 @@ fn emit_attr_select_default_local_slot_return(
     lookup: AttrLookup,
     default_value: Value,
 ) -> Result<(), JitLowerError> {
+    error::validate_embedded_constant(default_value)?;
     let select_block = function.dfg.make_block();
     let default_block = function.dfg.make_block();
     let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
@@ -3041,7 +3042,6 @@ fn emit_attr_select_default_local_slot_return(
 
     Ok(())
 }
-
 fn verify_clif_function(function: &Function) -> Result<(), JitLowerError> {
     let flags = settings::Flags::new(settings::builder());
     verify_function(function, &flags).map_err(JitLowerError::Verifier)
