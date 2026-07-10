@@ -8,6 +8,8 @@
 //! leaks into the delivery icount or any payload byte ([IO-4], [IO-31]).
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test fixture construction must fail loudly.
+#![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -128,7 +130,7 @@ fn sample_tree() -> FsTree {
             content: b"alpha".to_vec(),
         },
     );
-    FsTree::new(Node::Directory { children: root })
+    FsTree::try_new(Node::Directory { children: root }).expect("test 9p tree components are valid")
 }
 
 fn ninep_frame(msg_type: u8, tag: u16, body: &[u8]) -> Vec<u8> {

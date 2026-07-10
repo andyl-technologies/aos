@@ -54,12 +54,16 @@ pub use codec::{
 };
 pub use device::{NinepDevice, NinepLatency, NinepSnapshot};
 pub use server::{FidEntry, FidState, MAX_MSIZE, MIN_MSIZE, NinepServer, NinepServerSnapshot};
-pub use tree::{BadComponent, DirEntry, FsTree, Node, qid_path, validate_component};
+pub use tree::{
+    BadComponent, DirEntry, FsTree, FsTreeDecodeError, Node, qid_path, validate_component,
+};
 
 #[cfg(test)]
 mod golden;
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- unit-test fixtures and assertions fail loudly.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::subnode::IoCore;
@@ -110,7 +114,8 @@ mod tests {
                 target: "alpha".to_string(),
             },
         );
-        FsTree::new(Node::Directory { children: root })
+        FsTree::try_new(Node::Directory { children: root })
+            .expect("test 9p tree components are valid")
     }
 
     /// Builds a 9p device over the sample tree with a default latency model.
@@ -709,10 +714,10 @@ mod tests {
         }
     }
 
-    // ---- regression: MAJOR #2 — qid_path is injective --------------------
+    // ---- regression: structured QID paths have no delimiter ambiguity ----
 
     #[test]
-    fn regression_qid_path_is_injective_no_collisions() {
+    fn regression_qid_path_distinguishes_adversarial_structured_samples() {
         // Before the fix, qid_path joined components with '/', so distinct
         // component vectors collided: ["a","b"] == ["a/b"] and [] == [""].
         // The length-prefixed encoding makes these distinct ([IO-13]).
@@ -726,7 +731,8 @@ mod tests {
             qid_path(&[String::new()]),
             "root vs empty-named child must not collide"
         );
-        // A broader injectivity sweep: many distinct vectors, all distinct hashes.
+        // A broader fixed regression sample also remains pairwise distinct. This
+        // is not a claim that a 64-bit truncated hash is mathematically injective.
         let vectors: Vec<Vec<String>> = vec![
             vec![],
             vec!["a".to_string()],
@@ -739,7 +745,10 @@ mod tests {
         ];
         let mut seen = std::collections::BTreeSet::new();
         for v in &vectors {
-            assert!(seen.insert(qid_path(v)), "qid_path collision on {v:?}");
+            assert!(
+                seen.insert(qid_path(v)),
+                "fixed qid_path regression sample collided on {v:?}"
+            );
         }
         // Illegal components are rejected at tree construction.
         let mut bad_children = BTreeMap::new();
@@ -798,7 +807,8 @@ mod tests {
                 content: b"data".to_vec(),
             },
         );
-        let tree = FsTree::new(Node::Directory { children });
+        let tree = FsTree::try_new(Node::Directory { children })
+            .expect("test 9p tree components are valid");
         let src = crucible_shmem::SLOT_9P_IO as u32;
         let core = ok(IoCore::new(8, src, 16, 16));
         let mut dev = NinepDevice::new(core, tree, NinepLatency::default());

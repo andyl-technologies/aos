@@ -1740,7 +1740,7 @@ fn scenario_run_time_limit(steps: &[ExampleReplayStep]) -> u64 {
 
 fn example_scheduler_nodes(world: &World) -> Vec<SchedulerScenarioNode> {
     world
-        .nodes()
+        .vm_nodes()
         .iter()
         .map(|node| SchedulerScenarioNode {
             id: example_scheduler_node(&node.id),

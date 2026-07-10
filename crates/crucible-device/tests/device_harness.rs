@@ -17,6 +17,8 @@
 //! [`BUSY_POLL_SPIKE`] constant ([IO-30]).
 
 #![forbid(unsafe_code)]
+// crucible-lint: allow panic-shortcut -- test fixture construction must fail loudly.
+#![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -251,7 +253,7 @@ fn ninep_tree() -> FsTree {
             content: b"z".to_vec(),
         },
     );
-    FsTree::new(Node::Directory { children: root })
+    FsTree::try_new(Node::Directory { children: root }).expect("test 9p tree components are valid")
 }
 
 /// Builds a fresh 9p harness over the sample tree with a default latency.
