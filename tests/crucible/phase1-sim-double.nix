@@ -14,7 +14,12 @@
   simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
-  shmem = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmem = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
+  ];
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -197,7 +202,7 @@
         needle = "sim_double_delivers_inbound_frames_by_canonical_key";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible-shmem split modules" shmem [
       {
         label = "shmem ABI region";
         needle = "pub struct RegionHeader";

@@ -427,7 +427,7 @@
       }
       {
         label = "icount cadence sample trigger";
-        needle = "if (retired >= next_sample)";
+        needle = "if (!post_boundary_samples && retired >= next_sample)";
       }
       {
         label = "cadence advances by instruction period";
