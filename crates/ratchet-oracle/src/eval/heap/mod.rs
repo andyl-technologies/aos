@@ -51,20 +51,20 @@ use crate::runtime::builtins::Builtin;
 use crate::string::NixString;
 use crate::syntax::{Span, Symbol};
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
-
 mod alloc_counters;
 mod arena;
 mod deref_counters;
+mod environment_writeback;
 mod flat_values;
 mod gc;
 mod lambda;
 mod primop;
 mod record_table;
+mod root_scan;
 mod roots;
 mod shared_arena;
 mod shared_backend;
 mod thunk;
-
 pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};
 use flat_values::FlatColdHashStore;

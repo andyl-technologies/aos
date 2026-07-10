@@ -38,7 +38,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         raw_representation: 0,
         address_identity_only: 0,
         relocation_sensitive: 2,
-        b2_disposition: "enumerate AtomicValueCell payloads as writable roots",
+        b2_disposition: "rewrite active, suspended, and captured AtomicValueCell roots",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/heap/arena.rs",

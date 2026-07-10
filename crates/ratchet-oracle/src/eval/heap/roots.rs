@@ -18,6 +18,13 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use super::*;
+use super::environment_writeback::{
+    EnvironmentWritebackStage, validate_captured_environment_source,
+};
+use super::root_scan::{
+    heap_ptr, is_scannable_eval_heap_value, push_heap_edge, push_object_scan, push_visited,
+    push_worklist,
+};
 use crate::eval::EvalWithScope;
 use crate::eval::thunk::{ForceError, ThunkResolveBarrier, ThunkState};
 use crate::eval::thunk_payload::{ParallelThunkPayloadError, TreeWalkParallelThunkCell};
@@ -40,9 +47,6 @@ use thiserror::Error;
 
 const ROOTS_TABLE: &str = "roots";
 const WORKLIST_TABLE: &str = "worklist";
-const VISITED_TABLE: &str = "visited";
-const OBJECTS_TABLE: &str = "objects";
-const EDGES_TABLE: &str = "edges";
 const MINOR_GC_ROOTS_TABLE: &str = "minor-GC roots";
 const MINOR_GC_NURSERY_OBJECTS_TABLE: &str = "minor-GC nursery objects";
 const MINOR_GC_NURSERY_FIELDS_TABLE: &str = "minor-GC nursery fields";
@@ -804,7 +808,7 @@ pub struct HeapEdge {
 }
 
 impl HeapEdge {
-    fn new(source: HeapEdgeSource, value: Value) -> Self {
+    pub(super) fn new(source: HeapEdgeSource, value: Value) -> Self {
         Self { source, value }
     }
 
@@ -2432,6 +2436,7 @@ pub(crate) struct AllocationCollectorPollLiveHeapFieldWriteStage {
     staged_heap_field_writes: Vec<(usize, HeapObjectValue)>,
     staged_flat_list_writes: Vec<(NonNull<HeapObject>, NixList)>,
     staged_flat_attrs_writes: Vec<(NonNull<HeapObject>, FlatAttrs)>,
+    staged_environment_writes: EnvironmentWritebackStage,
     staged_barriers: Option<(RememberedSet, GcCardTable)>,
     object_body_and_generation_write_report:
         AllocationCollectorPollObjectBodyAndGenerationWriteReport,
@@ -4943,8 +4948,10 @@ impl EvalHeap {
     ) -> Result<AllocationCollectorPollCopiedHeapFieldWriteReport, EvalHeapError> {
         let (planned, report) =
             self.plan_collector_poll_minor_gc_copied_heap_field_writes(writes)?;
-        let staged = self.stage_collector_poll_minor_gc_copied_heap_field_writes(&planned)?;
+        let (staged, staged_environment) =
+            self.stage_collector_poll_minor_gc_copied_heap_field_writes(&planned)?;
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
+        staged_environment.commit();
 
         Ok(report)
     }
@@ -5171,7 +5178,7 @@ impl EvalHeap {
     fn stage_collector_poll_minor_gc_copied_heap_field_writes(
         &self,
         writes: &[CollectorPollCopiedHeapFieldWrite],
-    ) -> Result<Vec<(usize, HeapObjectValue)>, EvalHeapError> {
+    ) -> Result<(Vec<(usize, HeapObjectValue)>, EnvironmentWritebackStage), EvalHeapError> {
         let mut staged: Vec<(usize, HeapObjectValue)> = Vec::new();
         staged.try_reserve_exact(writes.len()).map_err(|_| {
             EvalHeapError::RootScanAllocationFailed {
@@ -5179,20 +5186,28 @@ impl EvalHeap {
                 entries: writes.len(),
             }
         })?;
+        let mut staged_environment = EnvironmentWritebackStage::try_new(writes.len()).map_err(
+            |_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_COPIED_HEAP_FIELD_WRITES_TABLE,
+                entries: writes.len(),
+            },
+        )?;
 
         self.stage_collector_poll_minor_gc_copied_heap_field_writes_into(
             writes,
             &mut staged,
+            &mut staged_environment,
             writes.len(),
         )?;
 
-        Ok(staged)
+        Ok((staged, staged_environment))
     }
 
     fn stage_collector_poll_minor_gc_copied_heap_field_writes_into(
         &self,
         writes: &[CollectorPollCopiedHeapFieldWrite],
         staged: &mut Vec<(usize, HeapObjectValue)>,
+        staged_environment: &mut EnvironmentWritebackStage,
         entries: usize,
     ) -> Result<(), EvalHeapError> {
         for write in writes {
@@ -5204,9 +5219,13 @@ impl EvalHeap {
                     MINOR_GC_COPIED_HEAP_FIELD_WRITES_TABLE,
                     entries,
                 )?;
-            *object =
-                record_owned_heap_field_write_object(object, &write.source, write.replacement)
-                    .map_err(|error| copied_heap_field_write_object_error(write, error))?;
+            stage_record_owned_heap_field_write(
+                object,
+                &write.source,
+                write.replacement,
+                staged_environment,
+            )
+            .map_err(|error| copied_heap_field_write_object_error(write, error))?;
         }
 
         Ok(())
@@ -5348,11 +5367,12 @@ impl EvalHeap {
     ) -> Result<AllocationCollectorPollDirectHeapFieldWriteReport, EvalHeapError> {
         let (planned, report) =
             self.plan_collector_poll_minor_gc_direct_heap_field_writes(writes, false)?;
-        let (staged, staged_flat_lists, staged_flat_attrs) =
+        let (staged, staged_flat_lists, staged_flat_attrs, staged_environment) =
             self.stage_collector_poll_minor_gc_direct_heap_field_writes(&planned)?;
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
         self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_lists);
         self.commit_collector_poll_minor_gc_staged_flat_attrs_writes(staged_flat_attrs);
+        staged_environment.commit();
 
         Ok(report)
     }
@@ -5505,9 +5525,16 @@ impl EvalHeap {
             })?;
         let mut staged_flat_lists: Vec<(NonNull<HeapObject>, NixList)> = Vec::new();
         let mut staged_flat_attrs: Vec<(NonNull<HeapObject>, FlatAttrs)> = Vec::new();
+        let mut staged_environment = EnvironmentWritebackStage::try_new(entries).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+                entries,
+            }
+        })?;
         self.stage_collector_poll_minor_gc_copied_heap_field_writes_into(
             &planned_copied,
             &mut staged,
+            &mut staged_environment,
             entries,
         )?;
         self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
@@ -5515,6 +5542,7 @@ impl EvalHeap {
             &mut staged,
             &mut staged_flat_lists,
             &mut staged_flat_attrs,
+            &mut staged_environment,
             entries,
         )?;
         let staged_barriers = self.stage_collector_poll_minor_gc_direct_heap_field_write_barriers(
@@ -5529,6 +5557,7 @@ impl EvalHeap {
             staged_heap_field_writes: staged,
             staged_flat_list_writes: staged_flat_lists,
             staged_flat_attrs_writes: staged_flat_attrs,
+            staged_environment_writes: staged_environment,
             staged_barriers,
             object_body_and_generation_write_report:
                 AllocationCollectorPollObjectBodyAndGenerationWriteReport::new(
@@ -5557,6 +5586,7 @@ impl EvalHeap {
             staged_heap_field_writes,
             staged_flat_list_writes,
             staged_flat_attrs_writes,
+            staged_environment_writes,
             staged_barriers,
             object_body_and_generation_write_report,
             copied_report,
@@ -5572,6 +5602,7 @@ impl EvalHeap {
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged_heap_field_writes);
         self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_list_writes);
         self.commit_collector_poll_minor_gc_staged_flat_attrs_writes(staged_flat_attrs_writes);
+        staged_environment_writes.commit();
 
         (
             object_body_and_generation_write_report,
@@ -5619,9 +5650,16 @@ impl EvalHeap {
             })?;
         let mut staged_flat_lists: Vec<(NonNull<HeapObject>, NixList)> = Vec::new();
         let mut staged_flat_attrs: Vec<(NonNull<HeapObject>, FlatAttrs)> = Vec::new();
+        let mut staged_environment = EnvironmentWritebackStage::try_new(entries).map_err(|_| {
+            EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_HEAP_FIELD_WRITEBACKS_TABLE,
+                entries,
+            }
+        })?;
         self.stage_collector_poll_minor_gc_copied_heap_field_writes_into(
             &planned_copied,
             &mut staged,
+            &mut staged_environment,
             entries,
         )?;
         self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
@@ -5629,6 +5667,7 @@ impl EvalHeap {
             &mut staged,
             &mut staged_flat_lists,
             &mut staged_flat_attrs,
+            &mut staged_environment,
             entries,
         )?;
 
@@ -5642,6 +5681,7 @@ impl EvalHeap {
         self.commit_collector_poll_minor_gc_staged_heap_field_writes(staged);
         self.commit_collector_poll_minor_gc_staged_flat_list_writes(staged_flat_lists);
         self.commit_collector_poll_minor_gc_staged_flat_attrs_writes(staged_flat_attrs);
+        staged_environment.commit();
 
         Ok((copied_report, direct_report))
     }
@@ -5988,6 +6028,7 @@ impl EvalHeap {
             Vec<(usize, HeapObjectValue)>,
             Vec<(NonNull<HeapObject>, NixList)>,
             Vec<(NonNull<HeapObject>, FlatAttrs)>,
+            EnvironmentWritebackStage,
         ),
         EvalHeapError,
     > {
@@ -6000,16 +6041,28 @@ impl EvalHeap {
         })?;
         let mut staged_flat_lists: Vec<(NonNull<HeapObject>, NixList)> = Vec::new();
         let mut staged_flat_attrs: Vec<(NonNull<HeapObject>, FlatAttrs)> = Vec::new();
+        let mut staged_environment = EnvironmentWritebackStage::try_new(writes.len()).map_err(
+            |_| EvalHeapError::RootScanAllocationFailed {
+                table: MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
+                entries: writes.len(),
+            },
+        )?;
 
         self.stage_collector_poll_minor_gc_direct_heap_field_writes_into(
             writes,
             &mut staged,
             &mut staged_flat_lists,
             &mut staged_flat_attrs,
+            &mut staged_environment,
             writes.len(),
         )?;
 
-        Ok((staged, staged_flat_lists, staged_flat_attrs))
+        Ok((
+            staged,
+            staged_flat_lists,
+            staged_flat_attrs,
+            staged_environment,
+        ))
     }
 
     fn stage_collector_poll_minor_gc_direct_heap_field_writes_into(
@@ -6018,6 +6071,7 @@ impl EvalHeap {
         staged: &mut Vec<(usize, HeapObjectValue)>,
         staged_flat_lists: &mut Vec<(NonNull<HeapObject>, NixList)>,
         staged_flat_attrs: &mut Vec<(NonNull<HeapObject>, FlatAttrs)>,
+        staged_environment: &mut EnvironmentWritebackStage,
         entries: usize,
     ) -> Result<(), EvalHeapError> {
         for write in writes {
@@ -6029,10 +6083,11 @@ impl EvalHeap {
                         MINOR_GC_DIRECT_HEAP_FIELD_WRITES_TABLE,
                         entries,
                     )?;
-                    *object = record_owned_heap_field_write_object(
+                    stage_record_owned_heap_field_write(
                         object,
                         &write.source,
                         write.replacement,
+                        staged_environment,
                     )
                     .map_err(|error| direct_heap_field_write_object_error(write, error))?;
                 }
@@ -8478,6 +8533,11 @@ fn validate_copied_heap_field_write_object_source(
     object: &HeapObjectValue,
     write: &AllocationCollectorPollCopiedHeapFieldWrite,
 ) -> Result<(), EvalHeapError> {
+    if validate_captured_environment_source(object, write.source())
+        .map_err(EvalHeapError::Environment)?
+    {
+        return Ok(());
+    }
     match (object, write.source()) {
         (HeapObjectValue::List(_), HeapEdgeSource::ListElement { .. }) => Ok(()),
         (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index })
@@ -8615,6 +8675,11 @@ fn validate_direct_heap_field_write_object_source(
     object: &HeapObjectValue,
     write: &AllocationCollectorPollDirectHeapFieldWrite,
 ) -> Result<(), EvalHeapError> {
+    if validate_captured_environment_source(object, write.source())
+        .map_err(EvalHeapError::Environment)?
+    {
+        return Ok(());
+    }
     match (object, write.source()) {
         (HeapObjectValue::List(_), HeapEdgeSource::ListElement { .. }) => Ok(()),
         (HeapObjectValue::Primop(primop), HeapEdgeSource::PrimopArgument { index })
@@ -8705,6 +8770,22 @@ fn direct_heap_field_write_object_error(
             EvalHeapError::ParallelThunkPayload(source)
         }
     }
+}
+
+fn stage_record_owned_heap_field_write(
+    object: &mut HeapObjectValue,
+    source: &HeapEdgeSource,
+    replacement: Value,
+    environment_writebacks: &mut EnvironmentWritebackStage,
+) -> Result<(), RecordOwnedHeapFieldWriteObjectError> {
+    if environment_writebacks
+        .stage(object, source, replacement)
+        .map_err(RecordOwnedHeapFieldWriteObjectError::Environment)?
+    {
+        return Ok(());
+    }
+    *object = record_owned_heap_field_write_object(object, source, replacement)?;
+    Ok(())
 }
 
 fn record_owned_heap_field_write_object(
@@ -9281,101 +9362,4 @@ fn push_capture_edges(
     }
 
     Ok(())
-}
-
-fn push_heap_edge(
-    edges: &mut Vec<HeapEdge>,
-    source: HeapEdgeSource,
-    value: Value,
-) -> Result<(), EvalHeapError> {
-    if !is_scannable_eval_heap_value(value) {
-        return Ok(());
-    }
-    let entries = edges
-        .len()
-        .checked_add(1)
-        .ok_or(EvalHeapError::RootScanLengthOverflow { table: EDGES_TABLE })?;
-    edges
-        .try_reserve_exact(1)
-        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
-            table: EDGES_TABLE,
-            entries,
-        })?;
-    edges.push(HeapEdge::new(source, value));
-    Ok(())
-}
-
-fn push_worklist(worklist: &mut VecDeque<Value>, value: Value) -> Result<(), EvalHeapError> {
-    let entries = worklist
-        .len()
-        .checked_add(1)
-        .ok_or(EvalHeapError::RootScanLengthOverflow {
-            table: WORKLIST_TABLE,
-        })?;
-    worklist
-        .try_reserve(1)
-        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
-            table: WORKLIST_TABLE,
-            entries,
-        })?;
-    worklist.push_back(value);
-    Ok(())
-}
-
-fn push_visited(visited: &mut HashSet<usize>, address: usize) -> Result<bool, EvalHeapError> {
-    if visited.contains(&address) {
-        return Ok(false);
-    }
-    let entries = visited
-        .len()
-        .checked_add(1)
-        .ok_or(EvalHeapError::RootScanLengthOverflow {
-            table: VISITED_TABLE,
-        })?;
-    visited
-        .try_reserve(1)
-        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
-            table: VISITED_TABLE,
-            entries,
-        })?;
-    Ok(visited.insert(address))
-}
-
-fn push_object_scan(
-    objects: &mut Vec<HeapObjectScan>,
-    object: HeapObjectScan,
-) -> Result<(), EvalHeapError> {
-    let entries = objects
-        .len()
-        .checked_add(1)
-        .ok_or(EvalHeapError::RootScanLengthOverflow {
-            table: OBJECTS_TABLE,
-        })?;
-    objects
-        .try_reserve_exact(1)
-        .map_err(|_| EvalHeapError::RootScanAllocationFailed {
-            table: OBJECTS_TABLE,
-            entries,
-        })?;
-    objects.push(object);
-    Ok(())
-}
-
-pub(super) const fn is_scannable_eval_heap_value(value: Value) -> bool {
-    matches!(
-        value.tag(),
-        ValueTag::String
-            | ValueTag::Path
-            | ValueTag::List
-            | ValueTag::Attrs
-            | ValueTag::Lambda
-            | ValueTag::Primop
-            | ValueTag::Thunk
-    )
-}
-
-fn heap_ptr(value: Value) -> Result<(ValueTag, NonNull<HeapObject>), EvalHeapError> {
-    let tag = value.tag();
-    let ptr = value.as_heap_ptr().map_err(EvalHeapError::Value)?;
-    Ok((tag, ptr))
 }

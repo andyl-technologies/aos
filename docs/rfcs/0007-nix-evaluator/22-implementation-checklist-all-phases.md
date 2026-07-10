@@ -6654,8 +6654,8 @@ and helps the oracle directly.
       tables, or the outcome value, and stale direct-field rejection without
       mutating the original destination. This still requires destination records
       to already exist as unaliased collector-owned scratch records, does not
-      allocate synthetic destinations, and does not cover shared lexical frame
-      slots, blackholed thunk deferred-work/capture fields, ABI object headers,
+      allocate synthetic destinations, and does not cover blackholed thunk
+      deferred-work/capture fields, ABI object headers,
       semispace storage, or Tier-B dispatch.
 - [x] Current boundary live heap-field writeback bridge:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_heap_field_writebacks`
@@ -6673,8 +6673,8 @@ and helps the oracle directly.
       is changed, and direct owner / destination alias rejection before mutation.
       This still requires destination records to already exist as
       unaliased collector-owned scratch records, does not allocate synthetic
-      destinations, and does not cover shared lexical frame slots, blackholed
-      thunk deferred-work/capture fields, ABI object headers, semispace storage,
+      destinations, and does not cover blackholed thunk deferred-work/capture
+      fields, ABI object headers, semispace storage,
       or Tier-B dispatch.
 - [x] Current boundary live reference writeback validation bridge:
       `EvalOutcome::validate_gc_stress_boundary_minor_gc_live_reference_writebacks`
@@ -6692,7 +6692,7 @@ and helps the oracle directly.
       requires destination records to already exist as unaliased collector-owned
       scratch records, does not allocate synthetic destinations, and does not
       rewrite active evaluator frames, import caches, arbitrary value-stack
-      roots, JIT stack maps, shared lexical frame slots, blackholed thunk
+      roots, JIT stack maps, blackholed thunk
       deferred-work/capture fields, ABI object headers, semispace storage, or
       Tier-B dispatch.
 - [x] Current boundary existing-destination live commit validation bridge:
@@ -6714,8 +6714,8 @@ and helps the oracle directly.
       This still requires destination records and metadata to already exist,
       does not allocate synthetic destinations, does not write ABI object
       headers, and does not cover active evaluator frames, import caches,
-      arbitrary value-stack roots, JIT stack maps, shared lexical frame slots,
-      blackholed thunk deferred-work/capture fields, semispace storage, or
+      arbitrary value-stack roots, JIT stack maps, blackholed thunk
+      deferred-work/capture fields, semispace storage, or
       Tier-B dispatch.
 - [x] Current boundary existing-destination live commit applicator:
       `EvalOutcome::apply_gc_stress_boundary_minor_gc_live_existing_destination_commit`
@@ -6740,8 +6740,8 @@ and helps the oracle directly.
       destination records and metadata to already exist, validates but does not
       write ABI object headers, does not allocate synthetic destinations or own
       semispace storage, and does not cover active evaluator frames, import
-      caches, arbitrary value-stack roots, JIT stack maps, shared lexical frame
-      slots, blackholed thunk deferred-work/capture fields, or Tier-B dispatch.
+      caches, arbitrary value-stack roots, JIT stack maps, blackholed thunk
+      deferred-work/capture fields, or Tier-B dispatch.
 - [x] Current boundary existing-destination live commit orchestration bridge:
       `EvalOutcome::gc_stress_boundary_minor_gc_commit_dry_run_with_existing_destination_live_commit`
       runs the strict existing-destination metadata installer and the
@@ -6782,7 +6782,7 @@ and helps the oracle directly.
       destination records to already exist as unaliased collector-owned scratch
       records, does not allocate synthetic destinations, and does not rewrite
       active evaluator frames, import caches, arbitrary value-stack roots, JIT
-      stack maps, shared lexical frame slots, blackholed thunk deferred-work/
+      stack maps, blackholed thunk deferred-work/
       capture fields, ABI object headers, semispace storage, or Tier-B
       dispatch.
 - [x] Current allocation-poll reference-slot precursor:
@@ -8174,8 +8174,8 @@ and helps the oracle directly.
       The
       live reference bridges still require destination heap records to pre-exist,
       do not allocate synthetic destinations, do not rewrite active evaluator
-      root storage, and do not cover shared lexical frame slots, blackholed
-      thunk deferred-work/capture fields,
+      root storage, and do not cover blackholed thunk deferred-work/capture
+      fields,
       real ABI object-header forwarding storage, semispace storage, or Tier-B
       dispatch.
       `TreeWalk::apply_root_value_writebacks_to_safepoint_roots` separately
@@ -8249,9 +8249,8 @@ and helps the oracle directly.
       and clears the advisory unhashable-value memo. The commit half is
       allocation-free. Tests cover survivor rekeying, dead-young pruning,
       metadata preservation, and memo clearing on a real `TreeWalk`. Active
-      force/render traversal identities, atomic environment cells, structural
-      hashes, and shape fingerprints remain open in the same mechanically
-      enforced worklist.
+      force/render traversal identities, structural hashes, and shape
+      fingerprints remain open in the same mechanically enforced worklist.
 - [x] Current JIT embedded-constant relocation repair:
       `ratchet-jit::lower::error::validate_embedded_constant` rejects every
       heap-backed `Value` before the constant-thunk or static-select-default
@@ -8266,6 +8265,25 @@ and helps the oracle directly.
       non-regressing: zlib cold/warm -2.5%/-2.1% and fib -2.9%/-0.7%, with
       exact 7.5 MiB/160 MiB arena peaks and slightly lower retained RSS. JIT
       stack maps for live runtime values remain open.
+- [x] Current atomic environment-cell relocation repair:
+      active and suspended lexical frame slots were already explicit mutable
+      safepoint roots; `eval/heap/environment_writeback.rs` now validates and
+      stages heap-captured lambda/thunk `EvalFrame` slots, then rewrites their
+      shared `AtomicValueCell` values only in the allocation-free commit. Tests
+      cover copied and direct-old fields, shared aliases, suspended/blackholed
+      thunk captures, and borrow-conflict rejection before mutation. This closes two
+      more production-sensitive callers (14 of 22 total); force/render
+      traversal identities, structural hashes, and shape fingerprints remain.
+      The landing battery is byte-green across the 16-leg package matrix,
+      compute x8 under JIT, `bench.wide-eval`, all 646 canonical strict-JSON
+      seeds in serial/K4/JIT/sweep-zero, cache validation, and the pinned
+      upstream language aggregate. The Rust suites are green except the frozen
+      legacy source-size offender set, which did not grow. Five interleaved
+      release A/B rounds against pristine `e613b5b19` measured zlib cold/warm
+      at -1.4%/-5.6%, wide at -0.6%/-2.3%, and JIT fib at +0.3%/+0.3%; arena
+      peaks were exactly unchanged at 7.5/67.5/160 MiB. A separate five-sample
+      wide memory pass measured candidate retained-RSS medians 6.0% lower cold
+      and 3.9% lower warm.
 - [x] Current tree-walk transient value-stack registration precursor:
       `TreeWalk` owns scoped transient value-stack root storage for evaluator
       paths that keep heap values in Rust locals across allocation safepoints.

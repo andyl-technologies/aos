@@ -12045,7 +12045,7 @@ impl EvalOutcome {
     /// records. It validates forwarding-header metadata but does not write ABI
     /// object headers, allocate synthetic destinations, reserve semispace
     /// storage, mutate active evaluator frames or import caches, update JIT
-    /// stack maps, rewrite shared lexical frame slots, blackholed thunk
+    /// stack maps, rewrite blackholed thunk
     /// deferred-work/capture fields, or invoke Tier B.
     ///
     /// # Errors
