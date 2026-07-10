@@ -24,9 +24,11 @@
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
   qemuGateRoot = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint.rs;
   qemuGateCompare = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/compare.rs;
+  qemuGateProbe = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/probe.rs;
   qemuGateRun = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/run.rs;
+  qemuGateStateDump = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/state_dump.rs;
   qemuGateTypes = builtins.readFile ../../crates/crucible-qemu/src/single_vm_fingerprint/types.rs;
-  qemuGateHook = qemuGateRoot + qemuGateCompare + qemuGateRun + qemuGateTypes;
+  qemuGateHook = qemuGateRoot + qemuGateCompare + qemuGateProbe + qemuGateRun + qemuGateStateDump + qemuGateTypes;
   qemuGateTest = builtins.readFile ../../crates/crucible-qemu/tests/gate_single_vm_fingerprint.rs;
   qemuTracePlugin = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
   gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
@@ -313,12 +315,64 @@
         needle = "pub struct SingleVmFingerprintBisectionReport";
       }
       {
-        label = "private bisection report constructor";
-        needle = "pub fn state_dump_artifact(&self) -> &str";
+        label = "content-addressed state dump report";
+        needle = "pub fn state_dump_content_address(&self) -> &str";
       }
       {
         label = "backend bisection hook";
         needle = "fn bisect_single_vm_fingerprint_mismatch";
+      }
+      {
+        label = "fallible exact-icount probe backend";
+        needle = "pub trait SingleVmFingerprintProbeRunner";
+      }
+      {
+        label = "instruction-exact probe bisection";
+        needle = "pub fn bisect_single_vm_fingerprint_with_probes";
+      }
+      {
+        label = "one-instruction refinement invariant";
+        needle = "while high - low > 1";
+      }
+      {
+        label = "cumulative prefix probe witness";
+        needle = "prefix_fingerprint";
+      }
+      {
+        label = "pre-execution genesis equality probe";
+        needle = "let mut low_pair = probe_pair(runner, request.scenario(), low";
+      }
+      {
+        label = "provenance-bound state dump probe";
+        needle = "pub struct SingleVmFingerprintStateDumpProbe";
+      }
+      {
+        label = "scheduler-causal retained events";
+        needle = "from_causal_projection_entry";
+      }
+      {
+        label = "complete retained scheduler entries";
+        needle = "scheduler_entry: SchedulerEventLogEntry";
+      }
+      {
+        label = "fixed last-N event retention";
+        needle = "SINGLE_VM_FINGERPRINT_STATE_DUMP_EVENT_LIMIT: u64 = 64";
+      }
+      {
+        label = "custom runner report scenario revalidation";
+        needle = "bisection state dump must match the scenario definition, inputs, and vCPU topology";
+      }
+      {
+        label = "report constructor topology validation";
+        needle = "state dump vCPU topology must match the report scenario";
+      }
+      {
+        label = "strictly lower coarse boundary";
+        needle = "find(|sample| sample.icount < first_different_icount)";
+      }
+      {
+        label = "content-addressed both-side state dump";
+        needle = "state_dump.content_digest()";
       }
       {
         label = "bisection failure error";
@@ -399,12 +453,12 @@
     ]
     ++ failuresFor "tests/crucible/phase0-s1.nix" phase0S1 [
       {
-        label = "real-QEMU mismatch bisection result";
-        needle = "bisection_result=trace-sample-bisection";
+        label = "real-QEMU coarse mismatch localization";
+        needle = "localization_result=coarse-trace-sample-window";
       }
       {
         label = "real-QEMU first differing sample icount";
-        needle = "first_different_sample_icount=";
+        needle = "coarse_first_different_sample_icount=";
       }
       {
         label = "real-QEMU left stream emitted on mismatch";
@@ -415,8 +469,8 @@
         needle = "cat \"$TMPDIR/trace-b-cadence.jsonl\" >&2";
       }
       {
-        label = "real-QEMU state dump artifact";
-        needle = "state_dump_artifact=trace-a-cadence.jsonl,trace-b-cadence.jsonl";
+        label = "real-QEMU coarse trace evidence";
+        needle = "coarse_trace_evidence=trace-a-cadence.jsonl,trace-b-cadence.jsonl";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-trace-plugin.c" qemuTracePlugin [

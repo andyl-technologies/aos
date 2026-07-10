@@ -6,11 +6,68 @@
 //! instruction. The content digest makes the diagnostic artifact independently
 //! verifiable instead of trusting an arbitrary path label.
 
-use crucible::ContentHash;
+use crucible::{
+    ContentHash, EventLogCausalProjectionEntry, SchedulerEventLogClass, SchedulerEventLogEntry,
+};
 
 use super::SingleVmFingerprintGateError;
 
 const STATE_DUMP_DOMAIN: &str = "crucible.qemu.single-vm-divergence-state-dump.v1";
+/// Number of final scheduler-causal events retained on each dump side.
+pub const SINGLE_VM_FINGERPRINT_STATE_DUMP_EVENT_LIMIT: u64 = 64;
+
+/// One typed canonical event retained before the divergence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SingleVmFingerprintCanonicalEvent {
+    scheduler_entry: SchedulerEventLogEntry,
+}
+
+impl SingleVmFingerprintCanonicalEvent {
+    /// Retains one verified scheduler causal-projection entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleVmFingerprintGateError`] when the supplied entry is not
+    /// causal or its canonical scheduler content hash is invalid.
+    pub fn from_causal_projection_entry(
+        entry: &EventLogCausalProjectionEntry,
+    ) -> Result<Self, SingleVmFingerprintGateError> {
+        if entry.entry.class() != SchedulerEventLogClass::Causal
+            || !entry.entry.has_valid_content_hash()
+        {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "state dump event must be a valid scheduler causal-projection entry",
+            });
+        }
+        Ok(Self {
+            scheduler_entry: entry.entry.clone(),
+        })
+    }
+
+    /// Returns the zero-based sequence in the complete canonical event log.
+    #[must_use]
+    pub fn sequence(&self) -> u64 {
+        self.scheduler_entry.sequence()
+    }
+
+    /// Returns the event's retired-instruction coordinate.
+    #[must_use]
+    pub fn icount(&self) -> u64 {
+        self.scheduler_entry.time().icount.icount.retired
+    }
+
+    /// Returns the canonical scheduler-entry content hash.
+    #[must_use]
+    pub fn scheduler_entry_content_hash(&self) -> [u8; 32] {
+        self.scheduler_entry.content_hash().bytes
+    }
+
+    /// Returns the complete verified canonical scheduler entry.
+    #[must_use]
+    pub const fn scheduler_entry(&self) -> &SchedulerEventLogEntry {
+        &self.scheduler_entry
+    }
+}
 
 /// One vCPU's complete architectural register-file bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,7 +176,8 @@ pub struct SingleVmFingerprintRunStateDump {
     vcpu_registers: Vec<SingleVmFingerprintVcpuState>,
     differing_memory_regions: Vec<SingleVmFingerprintMemoryRegionState>,
     device_state: Vec<u8>,
-    canonical_events: Vec<String>,
+    canonical_event_total_count: u64,
+    canonical_events: Vec<SingleVmFingerprintCanonicalEvent>,
 }
 
 impl SingleVmFingerprintRunStateDump {
@@ -129,15 +187,17 @@ impl SingleVmFingerprintRunStateDump {
     ///
     /// Returns [`SingleVmFingerprintGateError`] when the node is empty, icount
     /// is zero, vCPU states are not exactly `0..N`, memory regions overlap or
-    /// are out of order, the device VMState is empty, or no canonical event is
-    /// retained.
+    /// are out of order, the device VMState is empty, or `canonical_events` is
+    /// not the exact final `min(canonical_event_total_count, 64)` suffix of
+    /// verified scheduler-causal entries at or before `icount`.
     pub fn new(
         node: impl Into<String>,
         icount: u64,
         vcpu_registers: Vec<SingleVmFingerprintVcpuState>,
         differing_memory_regions: Vec<SingleVmFingerprintMemoryRegionState>,
         device_state: impl Into<Vec<u8>>,
-        canonical_events: Vec<String>,
+        canonical_event_total_count: u64,
+        canonical_events: Vec<SingleVmFingerprintCanonicalEvent>,
     ) -> Result<Self, SingleVmFingerprintGateError> {
         let node = node.into();
         if node.is_empty() {
@@ -174,9 +234,35 @@ impl SingleVmFingerprintRunStateDump {
                 reason: "state dump device VMState must be non-empty",
             });
         }
-        if canonical_events.is_empty() || canonical_events.iter().any(String::is_empty) {
+        let retained_count = u64::try_from(canonical_events.len()).map_err(|_error| {
+            SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "state dump retained event count does not fit u64",
+            }
+        })?;
+        if retained_count
+            != canonical_event_total_count.min(SINGLE_VM_FINGERPRINT_STATE_DUMP_EVENT_LIMIT)
+        {
             return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
-                reason: "state dump must retain non-empty canonical events",
+                reason: "state dump must retain the configured last-N canonical event suffix",
+            });
+        }
+        let expected_first = canonical_event_total_count
+            .checked_sub(retained_count)
+            .ok_or(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "state dump cannot retain more events than the complete event log",
+            })?;
+        if canonical_events
+            .iter()
+            .enumerate()
+            .any(|(index, event)| event.sequence() != expected_first + index as u64)
+        {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "state dump events must be the contiguous last-N canonical event suffix",
+            });
+        }
+        if canonical_events.iter().any(|event| event.icount() > icount) {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "state dump canonical events must not follow the dump icount",
             });
         }
         Ok(Self {
@@ -185,6 +271,7 @@ impl SingleVmFingerprintRunStateDump {
             vcpu_registers,
             differing_memory_regions,
             device_state,
+            canonical_event_total_count,
             canonical_events,
         })
     }
@@ -219,9 +306,15 @@ impl SingleVmFingerprintRunStateDump {
         &self.device_state
     }
 
+    /// Returns the complete canonical event-log length before suffix retention.
+    #[must_use]
+    pub const fn canonical_event_total_count(&self) -> u64 {
+        self.canonical_event_total_count
+    }
+
     /// Returns the retained canonical events leading to the divergence.
     #[must_use]
-    pub fn canonical_events(&self) -> &[String] {
+    pub fn canonical_events(&self) -> &[SingleVmFingerprintCanonicalEvent] {
         &self.canonical_events
     }
 }
@@ -253,6 +346,21 @@ impl SingleVmFingerprintDivergenceStateDump {
         if first.vcpu_registers().len() != second.vcpu_registers().len() {
             return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
                 reason: "both state-dump sides must cover the same vCPU set",
+            });
+        }
+        if first.differing_memory_regions().len() != second.differing_memory_regions().len()
+            || first
+                .differing_memory_regions()
+                .iter()
+                .zip(second.differing_memory_regions())
+                .any(|(first_region, second_region)| {
+                    first_region.guest_physical_start() != second_region.guest_physical_start()
+                        || first_region.bytes().len() != second_region.bytes().len()
+                        || first_region.bytes() == second_region.bytes()
+                })
+        {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "both state-dump sides must pair identical differing memory ranges",
             });
         }
         let registers_differ = first.vcpu_registers() != second.vcpu_registers();
@@ -293,28 +401,54 @@ impl SingleVmFingerprintDivergenceStateDump {
 }
 
 fn append_run_material(output: &mut String, side: &str, state: &SingleVmFingerprintRunStateDump) {
-    output.push_str(&format!("{side}.node={}\n", state.node()));
+    output.push_str(&format!(
+        "{side}.node.len={}\n{side}.node.hex={}\n",
+        state.node().len(),
+        lower_hex(state.node().as_bytes())
+    ));
     output.push_str(&format!("{side}.icount={}\n", state.icount()));
+    output.push_str(&format!(
+        "{side}.vcpu_register_count={}\n",
+        state.vcpu_registers().len()
+    ));
     for register in state.vcpu_registers() {
         output.push_str(&format!(
-            "{side}.vcpu[{}]={}\n",
+            "{side}.vcpu[{}].len={}\n{side}.vcpu[{}].hex={}\n",
+            register.vcpu_id(),
+            register.register_file().len(),
             register.vcpu_id(),
             lower_hex(register.register_file())
         ));
     }
+    output.push_str(&format!(
+        "{side}.memory_region_count={}\n",
+        state.differing_memory_regions().len()
+    ));
     for (index, region) in state.differing_memory_regions().iter().enumerate() {
         output.push_str(&format!(
-            "{side}.memory[{index}].start={}\n{side}.memory[{index}].bytes={}\n",
+            "{side}.memory[{index}].start={}\n{side}.memory[{index}].len={}\n{side}.memory[{index}].hex={}\n",
             region.guest_physical_start(),
+            region.bytes().len(),
             lower_hex(region.bytes())
         ));
     }
     output.push_str(&format!(
-        "{side}.device_state={}\n",
+        "{side}.device_state.len={}\n{side}.device_state.hex={}\n",
+        state.device_state().len(),
         lower_hex(state.device_state())
     ));
+    output.push_str(&format!(
+        "{side}.canonical_event_total_count={}\n{side}.canonical_event_retained_count={}\n",
+        state.canonical_event_total_count(),
+        state.canonical_events().len()
+    ));
     for (index, event) in state.canonical_events().iter().enumerate() {
-        output.push_str(&format!("{side}.event[{index}]={event}\n"));
+        output.push_str(&format!(
+            "{side}.event[{index}].sequence={}\n{side}.event[{index}].icount={}\n{side}.event[{index}].scheduler_entry_content_hash={}\n",
+            event.sequence(),
+            event.icount(),
+            lower_hex(&event.scheduler_entry_content_hash())
+        ));
     }
 }
 

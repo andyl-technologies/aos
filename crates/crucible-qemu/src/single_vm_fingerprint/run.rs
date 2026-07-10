@@ -50,6 +50,7 @@ where
                 &mismatch,
                 &first_stream,
                 &second_stream,
+                scenario,
             )?;
             return Err(SingleVmFingerprintGateError::Mismatch {
                 mismatch: Box::new(mismatch),
@@ -90,6 +91,7 @@ fn validate_bisection_report_for_mismatch(
     mismatch: &super::compare::SingleVmFingerprintMismatch,
     first_stream: &SingleVmFingerprintStream,
     second_stream: &SingleVmFingerprintStream,
+    scenario: &SingleVmFingerprintScenario,
 ) -> Result<(), SingleVmFingerprintGateError> {
     if bisection.sample_index() != mismatch.sample_index {
         return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
@@ -121,6 +123,15 @@ fn validate_bisection_report_for_mismatch(
     if first_node != second_node || first_node != Some(bisection.responsible_node()) {
         return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
             reason: "bisection responsible node must match both differing samples",
+        });
+    }
+    if bisection.definition_digest() != scenario.fingerprint_definition_digest()
+        || bisection.run_inputs_digest() != &scenario.run_inputs().content_digest()
+        || bisection.state_dump().first().vcpu_registers().len() != scenario.expected_vcpu_count()
+        || bisection.state_dump().second().vcpu_registers().len() != scenario.expected_vcpu_count()
+    {
+        return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+            reason: "bisection state dump must match the scenario definition, inputs, and vCPU topology",
         });
     }
 

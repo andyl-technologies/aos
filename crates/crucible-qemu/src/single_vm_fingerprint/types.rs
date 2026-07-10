@@ -903,8 +903,10 @@ pub struct SingleVmFingerprintBisectionReport {
     last_matching_icount: u64,
     first_different_icount: u64,
     responsible_node: String,
+    definition_digest: [u8; SINGLE_VM_FINGERPRINT_DIGEST_BYTES],
+    run_inputs_digest: [u8; SINGLE_VM_FINGERPRINT_DIGEST_BYTES],
     state_dump: SingleVmFingerprintDivergenceStateDump,
-    state_dump_artifact: String,
+    state_dump_content_address: String,
 }
 
 impl SingleVmFingerprintBisectionReport {
@@ -913,16 +915,16 @@ impl SingleVmFingerprintBisectionReport {
     /// # Errors
     ///
     /// Returns [`SingleVmFingerprintGateError::InvalidBisectionReport`] when
-    /// the report has an impossible icount window or omits the state-dump
-    /// artifact that carries both sides of the divergence.
+    /// the report has an impossible icount window or the state dump does not
+    /// describe the exact first differing instruction.
     pub fn new(
         sample_index: usize,
         previous_matching_icount: Option<u64>,
         first_different_sample_icount: u64,
         last_matching_icount: u64,
         first_different_icount: u64,
+        scenario: &SingleVmFingerprintScenario,
         state_dump: SingleVmFingerprintDivergenceStateDump,
-        state_dump_artifact: impl Into<String>,
     ) -> Result<Self, SingleVmFingerprintGateError> {
         if first_different_icount > first_different_sample_icount {
             return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
@@ -930,12 +932,11 @@ impl SingleVmFingerprintBisectionReport {
             });
         }
         if first_different_icount == 0 {
-            if last_matching_icount != 0 {
-                return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
-                    reason: "zero-icount divergence cannot have a positive last matching icount",
-                });
-            }
-        } else if last_matching_icount >= first_different_icount {
+            return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
+                reason: "instruction divergence must follow at least one retired instruction",
+            });
+        }
+        if last_matching_icount >= first_different_icount {
             return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
                 reason: "last matching icount must be before the first differing icount",
             });
@@ -962,13 +963,25 @@ impl SingleVmFingerprintBisectionReport {
                 reason: "state dump icount must equal the first differing instruction",
             });
         }
-        let responsible_node = state_dump.first().node().to_owned();
-        let state_dump_artifact = state_dump_artifact.into();
-        if state_dump_artifact.is_empty() {
+        if state_dump.first().vcpu_registers().len() != scenario.expected_vcpu_count()
+            || state_dump.second().vcpu_registers().len() != scenario.expected_vcpu_count()
+        {
             return Err(SingleVmFingerprintGateError::InvalidBisectionReport {
-                reason: "state dump artifact must be non-empty",
+                reason: "state dump vCPU topology must match the report scenario",
             });
         }
+        let responsible_node = state_dump.first().node().to_owned();
+        let definition_digest = scenario
+            .fingerprint_definition_digest()
+            .try_into()
+            .map_err(
+                |_error| SingleVmFingerprintGateError::InvalidBisectionReport {
+                    reason: "scenario definition digest lost its fixed width",
+                },
+            )?;
+        let run_inputs_digest = scenario.run_inputs().content_digest();
+        let state_dump_content_address =
+            format!("blake3:{}", lower_hex(&state_dump.content_digest()));
 
         Ok(Self {
             sample_index,
@@ -977,8 +990,10 @@ impl SingleVmFingerprintBisectionReport {
             last_matching_icount,
             first_different_icount,
             responsible_node,
+            definition_digest,
+            run_inputs_digest,
             state_dump,
-            state_dump_artifact,
+            state_dump_content_address,
         })
     }
 
@@ -1018,16 +1033,28 @@ impl SingleVmFingerprintBisectionReport {
         &self.responsible_node
     }
 
+    /// Returns the observation-definition digest used by both dump runs.
+    #[must_use]
+    pub const fn definition_digest(&self) -> &[u8; SINGLE_VM_FINGERPRINT_DIGEST_BYTES] {
+        &self.definition_digest
+    }
+
+    /// Returns the exact run-input tuple digest used by both dump runs.
+    #[must_use]
+    pub const fn run_inputs_digest(&self) -> &[u8; SINGLE_VM_FINGERPRINT_DIGEST_BYTES] {
+        &self.run_inputs_digest
+    }
+
     /// Returns the validated both-sides architectural state dump.
     #[must_use]
     pub const fn state_dump(&self) -> &SingleVmFingerprintDivergenceStateDump {
         &self.state_dump
     }
 
-    /// Returns the artifact path or id containing both-sides state dumps.
+    /// Returns the BLAKE3 content address of the in-memory both-side state dump.
     #[must_use]
-    pub fn state_dump_artifact(&self) -> &str {
-        &self.state_dump_artifact
+    pub fn state_dump_content_address(&self) -> &str {
+        &self.state_dump_content_address
     }
 }
 
