@@ -14,7 +14,10 @@
   guestNonModification = import ./phase1-guest-non-modification.nix {inherit pkgs lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible/src/lib.rs)
+    (builtins.readFile ../../crates/crucible/src/tests/model_core.rs)
+  ];
   cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   replayGate = builtins.readFile ../../crates/crucible/tests/gate_replay_oracle.rs;
   replayOracleHarness = builtins.readFile ../../crates/crucible-harness/src/replay_oracle.rs;
@@ -274,7 +277,7 @@
         needle = "operation: \"reduce\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/src/lib.rs and src/tests/model_core.rs" libSource [
       {
         label = "reduce purity test";
         needle = "reduce_is_pure_over_scenario_and_schedule";
