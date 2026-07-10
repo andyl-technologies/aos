@@ -179,7 +179,8 @@ impl QemuTraceVcpuContract {
     /// # Errors
     ///
     /// Returns [`QemuTraceFingerprintImportError::InvalidContract`] when the
-    /// descriptor count or canonical register byte count is zero.
+    /// descriptor count, canonical register byte count, or register-schema
+    /// hash is zero.
     pub fn new(
         cpu_id: u64,
         register_count: u64,
@@ -194,6 +195,11 @@ impl QemuTraceVcpuContract {
         if register_file_bytes == 0 {
             return Err(QemuTraceFingerprintImportError::InvalidContract {
                 reason: "trace canonical register byte count must be non-zero",
+            });
+        }
+        if register_schema_hash == 0 {
+            return Err(QemuTraceFingerprintImportError::InvalidContract {
+                reason: "trace register-schema hash must be non-zero",
             });
         }
         Ok(Self {
@@ -347,8 +353,10 @@ impl QemuTraceFingerprintImport {
     /// records, are ignored. Periodic sample records must cover every cadence
     /// point through the configured horizon exactly once. The terminal plugin
     /// exit record is required as evidence that QEMU reached its requested
-    /// stop, but is not fingerprinted because teardown no longer exposes a
-    /// valid live RR cursor.
+    /// stop, but is not fingerprinted because it is a bounded post-stop-request
+    /// teardown observation rather than the authoritative horizon state. It
+    /// must be the final JSON-lines record and may retire at most one RR
+    /// quantum beyond the horizon sample.
     ///
     /// # Errors
     ///
@@ -386,6 +394,12 @@ impl QemuTraceFingerprintImport {
                     source,
                 }
             })?;
+            if terminal_stop_seen {
+                return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                    line: line_number,
+                    reason: "record appeared after the terminal plugin stop record".to_owned(),
+                });
+            }
             if let Some(kind) = value.get("kind").and_then(Value::as_str) {
                 match kind {
                     "rr_switch" | "det_ipi" => continue,
@@ -408,12 +422,21 @@ impl QemuTraceFingerprintImport {
                 }
                 require_true(&value, "stop_requested", line_number)?;
                 require_u64(&value, "stop_at", self.run_horizon_icount, line_number)?;
-                if u64_field(&value, "retired", line_number)? != self.run_horizon_icount {
+                let terminal_retired = u64_field(&value, "retired", line_number)?;
+                let terminal_overshoot = terminal_retired
+                    .checked_sub(self.run_horizon_icount)
+                    .ok_or_else(|| QemuTraceFingerprintImportError::MalformedTrace {
+                        line: line_number,
+                        reason: "terminal plugin record retired before the configured horizon"
+                            .to_owned(),
+                    })?;
+                if terminal_overshoot > self.nvcpu_contract.rr_switch_quantum() {
                     return Err(QemuTraceFingerprintImportError::MalformedTrace {
                         line: line_number,
-                        reason:
-                            "terminal plugin record must retire at the exact configured horizon"
-                                .to_owned(),
+                        reason: format!(
+                            "terminal plugin record pause overshoot {terminal_overshoot} exceeds one RR quantum {}",
+                            self.nvcpu_contract.rr_switch_quantum()
+                        ),
                     });
                 }
                 if samples.last().map(|sample| sample.icount) != Some(self.run_horizon_icount) {
@@ -437,7 +460,7 @@ impl QemuTraceFingerprintImport {
                             .to_owned(),
                     });
                 }
-                let terminal_cursor = SingleVmRoundRobinCursor::new(
+                SingleVmRoundRobinCursor::new(
                     u64_field(&value, "rr_current_vcpu", line_number)?,
                     u64_field(&value, "rr_cursor_position", line_number)?,
                     terminal_quantum,
@@ -449,25 +472,8 @@ impl QemuTraceFingerprintImport {
                         source,
                     }
                 })?;
-                if samples
-                    .last()
-                    .map(|sample| sample.nvcpu_fingerprint.rr_cursor())
-                    != Some(terminal_cursor)
-                {
-                    return Err(QemuTraceFingerprintImportError::MalformedTrace {
-                        line: line_number,
-                        reason: "terminal RR cursor must equal the last horizon sample cursor"
-                            .to_owned(),
-                    });
-                }
                 terminal_stop_seen = true;
                 continue;
-            }
-            if terminal_stop_seen {
-                return Err(QemuTraceFingerprintImportError::MalformedTrace {
-                    line: line_number,
-                    reason: "periodic sample appeared after the terminal plugin record".to_owned(),
-                });
             }
             require_u64(&value, "stop_at", self.run_horizon_icount, line_number)?;
             let expected_icount = self
@@ -613,6 +619,12 @@ impl QemuTraceFingerprintImport {
                 });
             }
             let raw_hash = hex_u64_array_item(register_hashes, vcpu_id, "register_hashes", line)?;
+            if raw_hash == 0 {
+                return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                    line,
+                    reason: format!("register_hashes[{vcpu_id}] must be non-zero"),
+                });
+            }
             let bytes = u64_array_item(register_file_bytes, vcpu_id, "register_file_bytes", line)?;
             if bytes != expected.register_file_bytes {
                 return Err(QemuTraceFingerprintImportError::MalformedTrace {
@@ -724,6 +736,18 @@ impl QemuTraceFingerprintImport {
         }
         let ram_hash = hex_u64_field(value, "ram_hash", line)?;
         let device_event_hash = hex_u64_field(value, "device_event_hash", line)?;
+        if ram_hash == 0 {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line,
+                reason: "field `ram_hash` must be non-zero".to_owned(),
+            });
+        }
+        if device_event_hash == 0 {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line,
+                reason: "field `device_event_hash` must be non-zero".to_owned(),
+            });
+        }
         let memory_digest = component_digest(
             MEMORY_COMPONENT_DOMAIN,
             &format!("ram_bytes={ram_bytes}\nfnv1a64={ram_hash:016x}"),
