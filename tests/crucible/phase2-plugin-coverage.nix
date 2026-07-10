@@ -14,12 +14,18 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
-  pluginCoverage = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs;
+  pluginCoverage = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs)
+  ];
   coverageAbiModel = builtins.readFile ./phase2-plugin-coverage-abi.c;
   qemuCoveragePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginRuntime = import ./_qemu-plugin-runtime-source.nix {inherit lib;};
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemLib = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-shmem/src/lib.rs)
+    (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
+  ];
   shmemSpscTest = builtins.readFile ../../crates/crucible-shmem/tests/gate_layer1_injection.rs;
   mappedSetupRegion = builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs;
   qemuMappedQuantum = builtins.readFile ../../crates/crucible-qemu/src/mapped_quantum.rs;
@@ -197,7 +203,7 @@
         needle = "QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible-shmem split modules" shmemLib [
       {
         label = "coverage transport ABI version";
         needle = "pub const ABI_VERSION: u32 = 2;";
@@ -305,7 +311,7 @@
         needle = "pub const fn coverage(&self) -> PluginSwitch";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/coverage.rs" pluginCoverage [
+    ++ failuresFor "crates/crucible-qemu-plugin/src/coverage split modules" pluginCoverage [
       {
         label = "coverage state";
         needle = "pub struct PluginCoverage";
