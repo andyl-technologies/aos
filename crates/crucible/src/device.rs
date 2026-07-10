@@ -125,7 +125,7 @@ pub struct NetworkFaultApplication {
 }
 
 /// The orientation of one directed [`NetLink`] relative to a declared logical link.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NetworkLinkDirection {
     /// The directed link carries frames from endpoint A to endpoint B.
     EndpointAToEndpointB,
@@ -169,22 +169,85 @@ pub fn emit_link_frame_with_recorded_faults(
     frame: &Frame,
     policy: PastDeliveryPolicy,
 ) -> Result<LinkEmitDecisionRecord, DeviceError> {
+    emit_link_frame_with_recorded_stream(
+        seed,
+        &device_stream_id(link_id),
+        link_id,
+        link,
+        frame,
+        policy,
+    )
+}
+
+/// Emits one network-link frame from an explicit canonical RNG stream.
+///
+/// World-backed schedulers use this entry point so adapters cannot substitute
+/// an identity-external device label for the link stream declared by the World.
+/// `fault_id` names the recorded derived fault outcomes; `stream` alone selects
+/// the raw draw sequence.
+///
+/// # Errors
+///
+/// Returns [`DeviceError`] when the link cannot emit the frame, including clock
+/// overflow or fail-loud past-delivery guards.
+pub fn emit_link_frame_with_recorded_stream(
+    seed: Seed,
+    stream: &RngStreamId,
+    fault_id: &DeviceId,
+    link: &mut NetLink,
+    frame: &Frame,
+    policy: PastDeliveryPolicy,
+) -> Result<LinkEmitDecisionRecord, DeviceError> {
+    emit_link_frame_with_recorded_stream_at_position(
+        seed,
+        stream,
+        fault_id,
+        link.rng_position(),
+        link,
+        frame,
+        policy,
+    )
+}
+
+/// Emits one network-link frame from an explicit canonical RNG stream cursor.
+///
+/// A logical World link uses one stream across both directed runtime edges.
+/// The scheduler therefore owns the shared cursor and supplies it here rather
+/// than allowing either concrete [`NetLink`] to restart from its local cursor.
+///
+/// # Errors
+///
+/// Returns [`DeviceError`] when the link cannot emit the frame, including clock
+/// overflow or fail-loud past-delivery guards.
+pub fn emit_link_frame_with_recorded_stream_at_position(
+    seed: Seed,
+    stream: &RngStreamId,
+    fault_id: &DeviceId,
+    rng_position: u64,
+    link: &mut NetLink,
+    frame: &Frame,
+    policy: PastDeliveryPolicy,
+) -> Result<LinkEmitDecisionRecord, DeviceError> {
     let fault_table = link.faults().clone();
-    let mut rng = device_rng(seed, link_id, link.rng_position());
+    let mut rng = DeviceRng::restore(
+        seed.decision_rng().root_seed(),
+        &stream.domain,
+        &stream.name,
+        rng_position,
+    );
     let (outcome, draws) = link.emit_with_rng_draws(frame, &mut rng, policy)?;
-    let stream = device_stream_id(link_id);
     let at = VirtualTime {
         ticks: frame.emit_icount,
     };
-    let mut decisions = link_rng_draw_decisions(&stream, &draws);
+    let mut decisions = link_rng_draw_decisions(stream, &draws);
     let partitioned = fault_table.partitioned;
     let loss_fired = !partitioned && fault_table.loss_fires(draws.loss, &draws.additional_loss);
     let duplicate_fired =
         !partitioned && !loss_fired && fault_table.duplicate.fires(draws.duplicate);
     let corrupt_fired = !partitioned && !loss_fired && fault_table.corrupt.fires(draws.corrupt);
-    push_link_fault_outcome(&mut decisions, at, link_id, "loss", loss_fired);
-    push_link_fault_outcome(&mut decisions, at, link_id, "duplicate", duplicate_fired);
-    push_link_fault_outcome(&mut decisions, at, link_id, "corrupt", corrupt_fired);
+    push_link_fault_outcome(&mut decisions, at, fault_id, "loss", loss_fired);
+    push_link_fault_outcome(&mut decisions, at, fault_id, "duplicate", duplicate_fired);
+    push_link_fault_outcome(&mut decisions, at, fault_id, "corrupt", corrupt_fired);
     Ok(LinkEmitDecisionRecord { outcome, decisions })
 }
 
