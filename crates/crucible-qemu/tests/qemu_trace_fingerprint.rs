@@ -309,6 +309,38 @@ fn real_qemu_trace_import_accepts_bounded_post_horizon_teardown() {
     }
 }
 
+#[test]
+fn real_qemu_trace_import_accepts_instruction_probe_between_periodic_samples() {
+    let observation = observation(2);
+    let definition = QemuTraceFingerprintDefinition::new(4096, &observation)
+        .expect("probe definition should validate");
+    let importer = QemuTraceFingerprintImport::new(
+        "node-a",
+        definition.definition_digest().to_vec(),
+        4096,
+        6145,
+        observation,
+    )
+    .expect("instruction probe importer should validate");
+    let mut values = vec![sample(4096, 0, 2), sample(6145, 1, 2), terminal(2)];
+    values[0]["stop_at"] = Value::from(6145);
+    values[1]["stop_at"] = Value::from(6145);
+    values[1]["stop_requested"] = Value::Bool(true);
+    values[1]["trigger"] = Value::String("event".to_owned());
+    values[1]["event_boundary"] = Value::String("horizon-advance".to_owned());
+    values[2]["stop_at"] = Value::from(6145);
+    values[2]["retired"] = Value::from(6145);
+
+    let stream = importer
+        .import(Cursor::new(json_lines(&values)))
+        .expect("an exact instruction probe need not align to periodic cadence");
+
+    assert_eq!(stream.samples.len(), 2);
+    assert_eq!(stream.samples[0].icount, 4096);
+    assert_eq!(stream.samples[1].icount, 6145);
+    assert_eq!(stream.final_icount, 6145);
+}
+
 fn importer(vcpus: usize) -> QemuTraceFingerprintImport {
     let observation = observation(vcpus);
     let definition = QemuTraceFingerprintDefinition::new(4096, &observation)
