@@ -176,6 +176,38 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  int qemu_plugin_read_register(struct qemu_plugin_register *handle,
                                GByteArray *buf);
  
++/** Legacy FNV digest of writable guest RAM for non-canonical diagnostics. */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_guest_ram_hash(uint64_t *bytes_out);
++
++/** Legacy FNV digest of serialized VMState for non-canonical diagnostics. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
++                                            uint64_t *bytes_out);
++
++/** Digest length-framed writable guest RAM with SHA-256. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
++                                          uint64_t *bytes_out);
++
++/** Digest length-framed serialized non-RAM VMState with SHA-256. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
++                                             uint64_t *bytes_out);
++
++/** Digest registered non-RAM VMState schema descriptions recursively. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_device_state_schema_sha256(
++    uint8_t digest_out[32], uint64_t *sections_out);
++
++/** Return the observed aggregate instruction count, or zero if unavailable. */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_icount(void);
++
++/** Return whether QEMU currently observes a non-running VM runstate. */
++QEMU_PLUGIN_API
++bool qemu_plugin_crucible_vm_non_running(void);
++
 +/**
 + * qemu_plugin_crucible_get_vcpu_registers() - return register list for a vCPU
 + * @vcpu_index: the vCPU index whose register descriptors should be returned
@@ -251,38 +283,6 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 +uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
 +
 +/**
-+ * qemu_plugin_crucible_guest_ram_hash() - hash writable guest RAM
-+ * @bytes_out: optional output for the guest RAM bytes included in the hash
-+ *
-+ * Returns an FNV-1a hash over writable, non-device RAM blocks. ROM and
-+ * device-owned RAM are excluded so plugin or firmware implementation state
-+ * cannot be mistaken for guest architectural memory.
-+ *
-+ * This AOS Crucible extension is available only in system emulation.
-+ */
-+QEMU_PLUGIN_API
-+uint64_t qemu_plugin_crucible_guest_ram_hash(uint64_t *bytes_out);
-+
-+/**
-+ * qemu_plugin_crucible_device_state_hash() - serialize and hash non-RAM VMState
-+ * @hash_out: output for the FNV-1a hash of the serialized device state
-+ * @bytes_out: output for the exact serialized byte count
-+ *
-+ * Serializes the current non-RAM VMState with qemu_save_device_state() into an
-+ * in-memory QIOChannelBuffer, then hashes the exact bytes without creating a
-+ * migration stream or changing run state. Both outputs are cleared on error.
-+ *
-+ * Returns 0 on success or a negative QEMU file/save error. Callers must invoke
-+ * this observation-only helper at a deterministic plugin callback boundary
-+ * while the BQL is held.
-+ *
-+ * This AOS Crucible extension is available only in system emulation.
-+ */
-+QEMU_PLUGIN_API
-+int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
-+                                            uint64_t *bytes_out);
-+
-+/**
 + * qemu_plugin_crucible_pause_vm() - request a VM stop at the current icount
 + *
 + * This lets a fingerprint plugin request a stop after recording a fixed-horizon
@@ -331,7 +331,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  #include "exec/target_page.h"
  #include "exec/translation-block.h"
  #include "exec/translator.h"
-@@ -462,6 +471,178 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -462,6 +471,321 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
      return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
  
@@ -505,11 +505,297 @@ diff --git a/plugins/api.c b/plugins/api.c
 +{
 +    (void)vm_stop(RUN_STATE_PAUSED);
 +}
++
++struct CrucibleSha256Ram {
++    GChecksum *checksum;
++    uint64_t bytes;
++};
++
++static void crucible_checksum_u64(GChecksum *checksum, uint64_t value)
++{
++    uint8_t encoded[8];
++
++    for (size_t i = 0; i < sizeof(encoded); i++) {
++        encoded[sizeof(encoded) - i - 1] = value & 0xff;
++        value >>= 8;
++    }
++    g_checksum_update(checksum, encoded, sizeof(encoded));
++}
++
++static void crucible_checksum_bytes(GChecksum *checksum,
++                                    const void *bytes, size_t length)
++{
++    crucible_checksum_u64(checksum, length);
++    if (length != 0) {
++        g_checksum_update(checksum, bytes, length);
++    }
++}
++
++static int crucible_sha256_guest_ram_block(RAMBlock *block, void *opaque)
++{
++    struct CrucibleSha256Ram *state = opaque;
++
++    if (!block->host || !block->mr || !memory_region_is_ram(block->mr) ||
++        memory_region_is_rom(block->mr) ||
++        memory_region_is_ram_device(block->mr)) {
++        return 0;
++    }
++    crucible_checksum_bytes(state->checksum, block->idstr,
++                            strlen(block->idstr));
++    crucible_checksum_u64(state->checksum, block->used_length);
++    crucible_checksum_bytes(state->checksum, block->host,
++                            block->used_length);
++    state->bytes += block->used_length;
++    return 0;
++}
++
++int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
++                                          uint64_t *bytes_out)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    struct CrucibleSha256Ram state;
++    gsize digest_length = 32;
++
++    if (!digest_out || !bytes_out) {
++        return -EINVAL;
++    }
++    memset(digest_out, 0, 32);
++    *bytes_out = 0;
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    if (!checksum) {
++        return -ENOMEM;
++    }
++    state.checksum = checksum;
++    state.bytes = 0;
++    crucible_checksum_bytes(checksum, "crucible.qemu.guest-ram.v1",
++                            strlen("crucible.qemu.guest-ram.v1"));
++    qemu_ram_foreach_block(crucible_sha256_guest_ram_block, &state);
++    g_checksum_get_digest(checksum, digest_out, &digest_length);
++    if (digest_length != 32) {
++        memset(digest_out, 0, 32);
++        return -EIO;
++    }
++    *bytes_out = state.bytes;
++    return 0;
++}
++
++int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
++                                             uint64_t *bytes_out)
++{
++    QIOChannelBuffer *buffer;
++    QEMUFile *file;
++    GChecksum *checksum;
++    gsize digest_length = 32;
++    int status;
++    int close_status;
++
++    if (!digest_out || !bytes_out) {
++        return -EINVAL;
++    }
++    memset(digest_out, 0, 32);
++    *bytes_out = 0;
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state(file);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    checksum = status == 0 ? g_checksum_new(G_CHECKSUM_SHA256) : NULL;
++    if (status == 0 && !checksum) {
++        status = -ENOMEM;
++    }
++    if (status == 0) {
++        crucible_checksum_bytes(checksum,
++                                "crucible.qemu.device-vmstate.v1",
++                                strlen("crucible.qemu.device-vmstate.v1"));
++        crucible_checksum_bytes(checksum, buffer->data, buffer->usage);
++        g_checksum_get_digest(checksum, digest_out, &digest_length);
++        if (digest_length != 32) {
++            memset(digest_out, 0, 32);
++            status = -EIO;
++        } else {
++            *bytes_out = buffer->usage;
++        }
++    }
++    if (checksum) {
++        g_checksum_free(checksum);
++    }
++    close_status = qemu_fclose(file);
++    object_unref(OBJECT(buffer));
++    if (status == 0 && close_status != 0) {
++        memset(digest_out, 0, 32);
++        *bytes_out = 0;
++        status = close_status;
++    }
++    return status;
++}
++
++int qemu_plugin_crucible_device_state_schema_sha256(
++    uint8_t digest_out[32], uint64_t *sections_out)
++{
++    return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
++}
++
++uint64_t qemu_plugin_crucible_icount(void)
++{
++    return qemu_plugin_icount_raw();
++}
++
++bool qemu_plugin_crucible_vm_non_running(void)
++{
++    return !runstate_is_running();
++}
 +#endif
 +
  struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
  {
      return plugin_scoreboard_new(element_size);
+diff --git a/migration/savevm.h b/migration/savevm.h
+--- a/migration/savevm.h
++++ b/migration/savevm.h
+@@ -62,6 +62,8 @@ void qemu_savevm_send_colo_enable(QEMUFile *f);
+ void qemu_savevm_send_colo_enable(QEMUFile *f);
+ void qemu_savevm_live_state(QEMUFile *f);
+ int qemu_save_device_state(QEMUFile *f);
++int qemu_savevm_crucible_schema_sha256(uint8_t digest[32],
++                                       uint64_t *sections_out);
+ 
+ int qemu_loadvm_state(QEMUFile *f);
+ void qemu_loadvm_state_cleanup(MigrationIncomingState *mis);
+diff --git a/migration/savevm.c b/migration/savevm.c
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -1832,6 +1832,127 @@ int qemu_save_device_state(QEMUFile *f)
+     return qemu_file_get_error(f);
+ }
+ 
++static void crucible_checksum_u64(GChecksum *checksum, uint64_t value)
++{
++    uint8_t encoded[8];
++
++    for (size_t i = 0; i < sizeof(encoded); i++) {
++        encoded[sizeof(encoded) - i - 1] = value & 0xff;
++        value >>= 8;
++    }
++    g_checksum_update(checksum, encoded, sizeof(encoded));
++}
++
++static void crucible_checksum_bytes(GChecksum *checksum, const void *data,
++                                    size_t length)
++{
++    crucible_checksum_u64(checksum, length);
++    if (length != 0) {
++        g_checksum_update(checksum, data, length);
++    }
++}
++
++static void crucible_checksum_string(GChecksum *checksum, const char *value)
++{
++    if (value) {
++        crucible_checksum_bytes(checksum, value, strlen(value));
++    } else {
++        crucible_checksum_u64(checksum, UINT64_MAX);
++    }
++}
++
++static void crucible_checksum_vmsd(GChecksum *checksum,
++                                   const VMStateDescription *vmsd)
++{
++    const VMStateField *field;
++    const VMStateDescription * const *subsection;
++
++    crucible_checksum_string(checksum, vmsd->name);
++    crucible_checksum_u64(checksum, vmsd->version_id);
++    crucible_checksum_u64(checksum, vmsd->minimum_version_id);
++    crucible_checksum_u64(checksum, vmsd->priority);
++    crucible_checksum_u64(checksum, vmsd->early_setup);
++    crucible_checksum_u64(checksum, vmsd->unmigratable);
++    crucible_checksum_u64(checksum, vmsd->pre_load != NULL);
++    crucible_checksum_u64(checksum, vmsd->post_load != NULL);
++    crucible_checksum_u64(checksum, vmsd->pre_save != NULL);
++    crucible_checksum_u64(checksum, vmsd->post_save != NULL);
++    crucible_checksum_u64(checksum, vmsd->needed != NULL);
++    crucible_checksum_u64(checksum, vmsd->dev_unplug_pending != NULL);
++
++    for (field = vmsd->fields; field && field->name; field++) {
++        crucible_checksum_string(checksum, "field");
++        crucible_checksum_string(checksum, field->name);
++        crucible_checksum_u64(checksum, field->offset);
++        crucible_checksum_u64(checksum, field->size);
++        crucible_checksum_u64(checksum, field->start);
++        crucible_checksum_u64(checksum, field->num);
++        crucible_checksum_u64(checksum, field->num_offset);
++        crucible_checksum_u64(checksum, field->size_offset);
++        crucible_checksum_u64(checksum, field->flags);
++        crucible_checksum_u64(checksum, field->version_id);
++        crucible_checksum_u64(checksum, field->struct_version_id);
++        crucible_checksum_u64(checksum, field->field_exists != NULL);
++        crucible_checksum_string(checksum,
++                                 field->info ? field->info->name : NULL);
++        if (field->vmsd) {
++            crucible_checksum_vmsd(checksum, field->vmsd);
++        }
++    }
++    crucible_checksum_string(checksum, "fields-end");
++
++    for (subsection = vmsd->subsections;
++         subsection && *subsection; subsection++) {
++        crucible_checksum_string(checksum, "subsection");
++        crucible_checksum_vmsd(checksum, *subsection);
++    }
++    crucible_checksum_string(checksum, "subsections-end");
++}
++
++int qemu_savevm_crucible_schema_sha256(uint8_t digest[32],
++                                       uint64_t *sections_out)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    SaveStateEntry *se;
++    gsize digest_length = 32;
++    uint64_t sections = 0;
++
++    if (!digest || !sections_out) {
++        return -EINVAL;
++    }
++    memset(digest, 0, 32);
++    *sections_out = 0;
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    if (!checksum) {
++        return -ENOMEM;
++    }
++    crucible_checksum_string(checksum,
++                             "crucible.qemu.device-vmstate-schema.v1");
++    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
++        if (se->is_ram) {
++            continue;
++        }
++        sections++;
++        crucible_checksum_string(checksum, "section");
++        crucible_checksum_string(checksum, se->idstr);
++        crucible_checksum_u64(checksum, se->instance_id);
++        crucible_checksum_u64(checksum, se->version_id);
++        if (se->vmsd) {
++            crucible_checksum_vmsd(checksum, se->vmsd);
++        } else {
++            crucible_checksum_string(checksum, "legacy-savevm-handlers");
++        }
++    }
++    crucible_checksum_string(checksum, "sections-end");
++    g_checksum_get_digest(checksum, digest, &digest_length);
++    if (digest_length != 32) {
++        memset(digest, 0, 32);
++        return -EIO;
++    }
++    *sections_out = sections;
++    return 0;
++}
++
+ static SaveStateEntry *find_se(const char *idstr, uint32_t instance_id)
+ {
+     SaveStateEntry *se;
 diff --git a/qemu-options.hx b/qemu-options.hx
 --- a/qemu-options.hx
 +++ b/qemu-options.hx

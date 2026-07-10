@@ -22,13 +22,13 @@ use super::{
     SingleVmRoundRobinCursor, SingleVmVcpuRegisterDigest, initial_single_vm_rolling_fingerprint,
 };
 
-const REGISTER_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-register-component.v1";
-const MEMORY_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-memory-component.v1";
-const DEVICE_STATE_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-device-state-component.v1";
+const REGISTER_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-register-component.v2";
+const MEMORY_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-memory-component.v2";
+const DEVICE_STATE_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-device-state-component.v2";
 const DEFINITION_DOMAIN: &str = "crucible.qemu.trace-fingerprint-definition.v2";
 
 /// Wire-schema identifier emitted by the canonical QEMU observation plugin.
-pub const QEMU_TRACE_FINGERPRINT_SCHEMA: &str = "crucible.qemu.trace-fingerprint.v3";
+pub const QEMU_TRACE_FINGERPRINT_SCHEMA: &str = "crucible.qemu.trace-fingerprint.v4";
 
 /// Canonical fingerprint definition pinned by an independent QEMU preflight.
 ///
@@ -85,14 +85,21 @@ fn definition_material(cadence_icount: u64, observation: &QemuTraceObservationCo
         "trigger[2]=frame-delivery".to_owned(),
         "trigger[3]=fault-activation".to_owned(),
         "component[0]=aggregate-icount".to_owned(),
-        "component[1]=all-vcpu-register-files-fnv1a64-standard-v2".to_owned(),
-        "component[2]=full-guest-ram-aos-legacy-fnv-offset-v1".to_owned(),
-        "component[3]=qemu-non-ram-vmstate-fnv1a64-standard-v1".to_owned(),
+        "component[1]=all-vcpu-register-files-sha256-v1".to_owned(),
+        "component[2]=full-guest-ram-sha256-v1".to_owned(),
+        "component[3]=qemu-non-ram-vmstate-sha256-v1".to_owned(),
         "complete_current_device_state=true".to_owned(),
         "event_boundary_sampling=true".to_owned(),
         format!("rr_switch_quantum={}", observation.rr_switch_quantum),
         format!("guest_ram_bytes={}", observation.guest_ram_bytes),
-        format!("device_state_bytes={}", observation.device_state_bytes),
+        format!(
+            "device_state_sections={}",
+            observation.device_state_sections
+        ),
+        format!(
+            "device_state_schema_digest={}",
+            lower_hex(&observation.device_state_schema_digest)
+        ),
         format!(
             "launch_definition_digest={}",
             observation.identity.launch_definition_digest
@@ -118,8 +125,8 @@ fn definition_material(cadence_icount: u64, observation: &QemuTraceObservationCo
             contract.register_file_bytes
         ));
         lines.push(format!(
-            "vcpu[{index}].register_schema_hash={:016x}",
-            contract.register_schema_hash
+            "vcpu[{index}].register_schema_digest={}",
+            lower_hex(&contract.register_schema_digest)
         ));
     }
     lines.join("\n")
@@ -186,7 +193,7 @@ pub struct QemuTraceVcpuContract {
     cpu_id: u64,
     register_count: u64,
     register_file_bytes: u64,
-    register_schema_hash: u64,
+    register_schema_digest: [u8; 32],
 }
 
 impl QemuTraceVcpuContract {
@@ -196,12 +203,12 @@ impl QemuTraceVcpuContract {
     ///
     /// Returns [`QemuTraceFingerprintImportError::InvalidContract`] when the
     /// descriptor count, canonical register byte count, or register-schema
-    /// hash is zero.
+    /// digest is zero.
     pub fn new(
         cpu_id: u64,
         register_count: u64,
         register_file_bytes: u64,
-        register_schema_hash: u64,
+        register_schema_digest: [u8; 32],
     ) -> Result<Self, QemuTraceFingerprintImportError> {
         if register_count == 0 {
             return Err(QemuTraceFingerprintImportError::InvalidContract {
@@ -213,16 +220,16 @@ impl QemuTraceVcpuContract {
                 reason: "trace canonical register byte count must be non-zero",
             });
         }
-        if register_schema_hash == 0 {
+        if digest_is_zero(&register_schema_digest) {
             return Err(QemuTraceFingerprintImportError::InvalidContract {
-                reason: "trace register-schema hash must be non-zero",
+                reason: "trace register-schema digest must be non-zero",
             });
         }
         Ok(Self {
             cpu_id,
             register_count,
             register_file_bytes,
-            register_schema_hash,
+            register_schema_digest,
         })
     }
 
@@ -244,10 +251,10 @@ impl QemuTraceVcpuContract {
         self.register_file_bytes
     }
 
-    /// Returns the exact register descriptor-schema hash pinned by preflight.
+    /// Returns the exact register descriptor-schema digest pinned by preflight.
     #[must_use]
-    pub const fn register_schema_hash(self) -> u64 {
-        self.register_schema_hash
+    pub const fn register_schema_digest(self) -> [u8; 32] {
+        self.register_schema_digest
     }
 }
 
@@ -257,7 +264,8 @@ pub struct QemuTraceObservationContract {
     qmp_cpu_ids: Vec<u64>,
     rr_switch_quantum: u64,
     guest_ram_bytes: u64,
-    device_state_bytes: u64,
+    device_state_sections: u64,
+    device_state_schema_digest: [u8; 32],
     vcpu_contracts: Vec<QemuTraceVcpuContract>,
     identity: QemuTraceIdentityContract,
 }
@@ -274,7 +282,8 @@ impl QemuTraceObservationContract {
         qmp_cpu_ids: Vec<u64>,
         rr_switch_quantum: u64,
         guest_ram_bytes: u64,
-        device_state_bytes: u64,
+        device_state_sections: u64,
+        device_state_schema_digest: [u8; 32],
         vcpu_contracts: Vec<QemuTraceVcpuContract>,
         identity: QemuTraceIdentityContract,
     ) -> Result<Self, QemuTraceFingerprintImportError> {
@@ -289,9 +298,9 @@ impl QemuTraceObservationContract {
                 reason: "trace fingerprint contract requires exact non-zero RAM bytes",
             });
         }
-        if device_state_bytes == 0 {
+        if device_state_sections == 0 || digest_is_zero(&device_state_schema_digest) {
             return Err(QemuTraceFingerprintImportError::InvalidContract {
-                reason: "trace fingerprint contract requires exact non-zero device-state bytes",
+                reason: "trace fingerprint contract requires non-zero device-state schema coverage",
             });
         }
         if vcpu_contracts.len() != qmp_cpu_ids.len()
@@ -308,7 +317,8 @@ impl QemuTraceObservationContract {
             qmp_cpu_ids,
             rr_switch_quantum,
             guest_ram_bytes,
-            device_state_bytes,
+            device_state_sections,
+            device_state_schema_digest,
             vcpu_contracts,
             identity,
         })
@@ -332,10 +342,16 @@ impl QemuTraceObservationContract {
         self.guest_ram_bytes
     }
 
-    /// Returns the exact serialized non-RAM VMState byte coverage.
+    /// Returns the exact non-RAM VMState section count.
     #[must_use]
-    pub const fn device_state_bytes(&self) -> u64 {
-        self.device_state_bytes
+    pub const fn device_state_sections(&self) -> u64 {
+        self.device_state_sections
+    }
+
+    /// Returns the preflight-pinned non-RAM VMState schema digest.
+    #[must_use]
+    pub const fn device_state_schema_digest(&self) -> [u8; 32] {
+        self.device_state_schema_digest
     }
 
     /// Returns the per-vCPU register shape pinned by preflight.
@@ -395,9 +411,13 @@ impl QemuTraceDefinitionPreflight {
         require_str(&value, "kind", "definition", 1)?;
         require_str(&value, "schema", QEMU_TRACE_FINGERPRINT_SCHEMA, 1)?;
         require_true(&value, "definition_only", 1)?;
-        require_true(&value, "paused_before_guest_execution", 1)?;
+        require_true(&value, "observed_non_running", 1)?;
         require_true(&value, "device_state_complete", 1)?;
         require_zero(&value, "retired", 1)?;
+        require_zero(&value, "observed_icount", 1)?;
+        require_zero(&value, "ram_status", 1)?;
+        require_zero(&value, "device_state_status", 1)?;
+        require_zero(&value, "device_state_schema_status", 1)?;
         require_zero(&value, "sample_register_failures", 1)?;
         require_zero(&value, "register_read_failures", 1)?;
         require_zero(&value, "device_state_failures", 1)?;
@@ -412,10 +432,12 @@ impl QemuTraceDefinitionPreflight {
         let qmp_cpu_ids = (0..tracked_vcpus as u64).collect::<Vec<_>>();
         let register_counts = array_field(&value, "register_counts", 1)?;
         let register_file_bytes = array_field(&value, "register_file_bytes", 1)?;
-        let register_schema_hashes = array_field(&value, "register_schema_hashes", 1)?;
+        let register_digests = array_field(&value, "register_digests", 1)?;
+        let register_schema_digests = array_field(&value, "register_schema_digests", 1)?;
         if register_counts.len() != tracked_vcpus
             || register_file_bytes.len() != tracked_vcpus
-            || register_schema_hashes.len() != tracked_vcpus
+            || register_digests.len() != tracked_vcpus
+            || register_schema_digests.len() != tracked_vcpus
         {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
                 line: 1,
@@ -425,14 +447,23 @@ impl QemuTraceDefinitionPreflight {
         }
         let vcpu_contracts = (0..tracked_vcpus)
             .map(|vcpu| {
+                sha256_array_item(register_digests, vcpu, "register_digests", 1)?;
                 QemuTraceVcpuContract::new(
                     vcpu as u64,
                     u64_array_item(register_counts, vcpu, "register_counts", 1)?,
                     u64_array_item(register_file_bytes, vcpu, "register_file_bytes", 1)?,
-                    hex_u64_array_item(register_schema_hashes, vcpu, "register_schema_hashes", 1)?,
+                    sha256_array_item(register_schema_digests, vcpu, "register_schema_digests", 1)?,
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
+        sha256_field(&value, "ram_digest", 1)?;
+        sha256_field(&value, "device_state_digest", 1)?;
+        if u64_field(&value, "device_state_bytes", 1)? == 0 {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line: 1,
+                reason: "definition device-state serialized byte count must be non-zero".to_owned(),
+            });
+        }
         let identity = QemuTraceIdentityContract::new(
             text_field(&value, "launch_definition_digest", 1)?,
             text_field(&value, "qemu_build_digest", 1)?,
@@ -442,7 +473,8 @@ impl QemuTraceDefinitionPreflight {
             qmp_cpu_ids,
             u64_field(&value, "rr_switch_quantum", 1)?,
             u64_field(&value, "ram_bytes", 1)?,
-            u64_field(&value, "device_state_bytes", 1)?,
+            u64_field(&value, "device_state_sections", 1)?,
+            sha256_field(&value, "device_state_schema_digest", 1)?,
             vcpu_contracts,
             identity,
         )?;
@@ -466,7 +498,8 @@ pub struct QemuTraceFingerprintImport {
     qmp_cpu_ids: Vec<u64>,
     nvcpu_contract: SingleVmNvcpuFingerprintContract,
     guest_ram_bytes: u64,
-    device_state_bytes: u64,
+    device_state_sections: u64,
+    device_state_schema_digest: [u8; 32],
     vcpu_contracts: Vec<QemuTraceVcpuContract>,
     identity: QemuTraceIdentityContract,
 }
@@ -526,7 +559,8 @@ impl QemuTraceFingerprintImport {
             qmp_cpu_ids: observation.qmp_cpu_ids,
             nvcpu_contract,
             guest_ram_bytes: observation.guest_ram_bytes,
-            device_state_bytes: observation.device_state_bytes,
+            device_state_sections: observation.device_state_sections,
+            device_state_schema_digest: observation.device_state_schema_digest,
             vcpu_contracts: observation.vcpu_contracts,
             identity: observation.identity,
         })
@@ -794,6 +828,9 @@ impl QemuTraceFingerprintImport {
         require_true(value, "rr_cursor_valid", line)?;
         require_str(value, "rr_cursor_source", "live_instruction", line)?;
         require_true(value, "device_state_complete", line)?;
+        require_zero(value, "ram_status", line)?;
+        require_zero(value, "device_state_status", line)?;
+        require_zero(value, "device_state_schema_status", line)?;
         require_zero(value, "sample_register_failures", line)?;
         require_zero(value, "register_read_failures", line)?;
         require_zero(value, "device_state_failures", line)?;
@@ -811,15 +848,15 @@ impl QemuTraceFingerprintImport {
             });
         }
 
-        let register_hashes = array_field(value, "register_hashes", line)?;
+        let register_digests = array_field(value, "register_digests", line)?;
         let register_counts = array_field(value, "register_counts", line)?;
         let register_file_bytes = array_field(value, "register_file_bytes", line)?;
-        let register_schema_hashes = array_field(value, "register_schema_hashes", line)?;
+        let register_schema_digests = array_field(value, "register_schema_digests", line)?;
         let register_retired = array_field(value, "register_retired", line)?;
-        if register_hashes.len() != tracked_vcpus
+        if register_digests.len() != tracked_vcpus
             || register_counts.len() != tracked_vcpus
             || register_file_bytes.len() != tracked_vcpus
-            || register_schema_hashes.len() != tracked_vcpus
+            || register_schema_digests.len() != tracked_vcpus
             || register_retired.len() != tracked_vcpus
         {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
@@ -843,13 +880,8 @@ impl QemuTraceFingerprintImport {
                     ),
                 });
             }
-            let raw_hash = hex_u64_array_item(register_hashes, vcpu_id, "register_hashes", line)?;
-            if raw_hash == 0 {
-                return Err(QemuTraceFingerprintImportError::MalformedTrace {
-                    line,
-                    reason: format!("register_hashes[{vcpu_id}] must be non-zero"),
-                });
-            }
+            let raw_digest =
+                sha256_array_item(register_digests, vcpu_id, "register_digests", line)?;
             let bytes = u64_array_item(register_file_bytes, vcpu_id, "register_file_bytes", line)?;
             if bytes != expected.register_file_bytes {
                 return Err(QemuTraceFingerprintImportError::MalformedTrace {
@@ -860,17 +892,17 @@ impl QemuTraceFingerprintImport {
                     ),
                 });
             }
-            let schema_hash = hex_u64_array_item(
-                register_schema_hashes,
+            let schema_digest = sha256_array_item(
+                register_schema_digests,
                 vcpu_id,
-                "register_schema_hashes",
+                "register_schema_digests",
                 line,
             )?;
-            if schema_hash != expected.register_schema_hash {
+            if schema_digest != expected.register_schema_digest {
                 return Err(QemuTraceFingerprintImportError::MalformedTrace {
                     line,
                     reason: format!(
-                        "register_schema_hashes[{vcpu_id}] differs from the independent preflight schema"
+                        "register_schema_digests[{vcpu_id}] differs from the independent preflight schema"
                     ),
                 });
             }
@@ -896,7 +928,7 @@ impl QemuTraceFingerprintImport {
             retired_counts.push(retired);
             let digest = component_digest(
                 REGISTER_COMPONENT_DOMAIN,
-                &format!("vcpu={vcpu_id}\nfnv1a64={raw_hash:016x}"),
+                &format!("vcpu={vcpu_id}\nsha256={}", lower_hex(&raw_digest)),
             );
             registers.push(
                 SingleVmVcpuRegisterDigest::new(vcpu_id as u64, digest, bytes, retired).map_err(
@@ -905,6 +937,7 @@ impl QemuTraceFingerprintImport {
             );
         }
         let aggregate_retired = u64_field(value, "retired", line)?;
+        require_u64(value, "observed_icount", aggregate_retired, line)?;
         if retired_sum != aggregate_retired {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
                 line,
@@ -959,37 +992,38 @@ impl QemuTraceFingerprintImport {
                 ),
             });
         }
-        let ram_hash = hex_u64_field(value, "ram_hash", line)?;
+        let ram_digest = sha256_field(value, "ram_digest", line)?;
         let device_state_bytes = u64_field(value, "device_state_bytes", line)?;
-        if device_state_bytes != self.device_state_bytes {
+        if device_state_bytes == 0 {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
                 line,
-                reason: format!(
-                    "device-state observation differs from the independent preflight of {} bytes, got {device_state_bytes}",
-                    self.device_state_bytes
-                ),
+                reason: "device-state serialized byte count must be non-zero".to_owned(),
             });
         }
-        let device_state_hash = hex_u64_field(value, "device_state_hash", line)?;
-        if ram_hash == 0 {
+        let device_state_digest = sha256_field(value, "device_state_digest", line)?;
+        let device_state_sections = u64_field(value, "device_state_sections", line)?;
+        let device_state_schema_digest = sha256_field(value, "device_state_schema_digest", line)?;
+        if device_state_sections != self.device_state_sections
+            || device_state_schema_digest != self.device_state_schema_digest
+        {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
                 line,
-                reason: "field `ram_hash` must be non-zero".to_owned(),
-            });
-        }
-        if device_state_hash == 0 {
-            return Err(QemuTraceFingerprintImportError::MalformedTrace {
-                line,
-                reason: "field `device_state_hash` must be non-zero".to_owned(),
+                reason:
+                    "device-state section/schema coverage differs from the independent preflight"
+                        .to_owned(),
             });
         }
         let memory_digest = component_digest(
             MEMORY_COMPONENT_DOMAIN,
-            &format!("ram_bytes={ram_bytes}\nfnv1a64={ram_hash:016x}"),
+            &format!("ram_bytes={ram_bytes}\nsha256={}", lower_hex(&ram_digest)),
         );
         let device_digest = component_digest(
             DEVICE_STATE_COMPONENT_DOMAIN,
-            &format!("device_state_bytes={device_state_bytes}\nfnv1a64={device_state_hash:016x}"),
+            &format!(
+                "device_state_bytes={device_state_bytes}\ndevice_state_sections={device_state_sections}\nschema_sha256={}\nstate_sha256={}",
+                lower_hex(&device_state_schema_digest),
+                lower_hex(&device_state_digest)
+            ),
         );
         let nvcpu_fingerprint = SingleVmNvcpuFingerprintMaterial::new(
             registers,
@@ -1234,33 +1268,33 @@ fn usize_field(
     })
 }
 
-fn hex_u64_field(
+fn sha256_field(
     value: &Value,
     field: &str,
     line: usize,
-) -> Result<u64, QemuTraceFingerprintImportError> {
+) -> Result<[u8; 32], QemuTraceFingerprintImportError> {
     let text = value.get(field).and_then(Value::as_str).ok_or_else(|| {
         QemuTraceFingerprintImportError::MalformedTrace {
             line,
-            reason: format!("field `{field}` must be a 16-digit hexadecimal string"),
+            reason: format!("field `{field}` must be a SHA-256 hexadecimal string"),
         }
     })?;
-    parse_hex_u64(text, field, line)
+    parse_sha256(text, field, line)
 }
 
-fn hex_u64_array_item(
+fn sha256_array_item(
     values: &[Value],
     index: usize,
     field: &str,
     line: usize,
-) -> Result<u64, QemuTraceFingerprintImportError> {
+) -> Result<[u8; 32], QemuTraceFingerprintImportError> {
     let text = values.get(index).and_then(Value::as_str).ok_or_else(|| {
         QemuTraceFingerprintImportError::MalformedTrace {
             line,
-            reason: format!("field `{field}[{index}]` must be hexadecimal text"),
+            reason: format!("field `{field}[{index}]` must be SHA-256 hexadecimal text"),
         }
     })?;
-    parse_hex_u64(text, field, line)
+    parse_sha256(text, &format!("{field}[{index}]"), line)
 }
 
 fn u64_array_item(
@@ -1277,21 +1311,54 @@ fn u64_array_item(
     })
 }
 
-fn parse_hex_u64(
+fn parse_sha256(
     text: &str,
     field: &str,
     line: usize,
-) -> Result<u64, QemuTraceFingerprintImportError> {
-    if text.len() != 16 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+) -> Result<[u8; 32], QemuTraceFingerprintImportError> {
+    if text.len() != 64
+        || !text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err(QemuTraceFingerprintImportError::MalformedTrace {
             line,
-            reason: format!("field `{field}` must contain exactly 16 hexadecimal digits"),
+            reason: format!("field `{field}` must contain exactly 64 lowercase hexadecimal digits"),
         });
     }
-    u64::from_str_radix(text, 16).map_err(|_| QemuTraceFingerprintImportError::MalformedTrace {
-        line,
-        reason: format!("field `{field}` is outside the u64 hexadecimal range"),
-    })
+    let mut digest = [0_u8; 32];
+    for (index, pair) in text.as_bytes().chunks_exact(2).enumerate() {
+        digest[index] = (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]);
+    }
+    if digest_is_zero(&digest) {
+        return Err(QemuTraceFingerprintImportError::MalformedTrace {
+            line,
+            reason: format!("field `{field}` must be non-zero"),
+        });
+    }
+    Ok(digest)
+}
+
+fn hex_nibble(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        _ => 0,
+    }
+}
+
+fn digest_is_zero(digest: &[u8; 32]) -> bool {
+    digest.iter().all(|byte| *byte == 0)
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn require_true(

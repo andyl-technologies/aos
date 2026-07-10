@@ -495,40 +495,40 @@
         needle = "if (reached_stop)";
       }
       {
-        label = "architectural register hash summary";
-        needle = "struct register_hash_summary";
+        label = "architectural register digest summary";
+        needle = "struct register_digest_summary";
       }
       {
         label = "canonical batched vCPU register reader";
         needle = "qemu_plugin_read_vcpu_regs(";
       }
       {
-        label = "writable guest RAM hash";
-        needle = "qemu_plugin_crucible_guest_ram_hash(&ram_bytes)";
+        label = "writable guest RAM cryptographic digest";
+        needle = "qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes)";
       }
       {
-        label = "register hash folded into rolling fingerprint";
-        needle = "extended_hash = fnv1a_u64(extended_hash, register_hashes.aggregate);";
+        label = "register digests folded into diagnostic fingerprint";
+        needle = "diagnostic_register_fnv(&register_digests)";
       }
       {
-        label = "RAM hash folded into rolling fingerprint";
-        needle = "extended_hash = fnv1a_u64(extended_hash, ram_hash);";
+        label = "RAM digest folded into diagnostic fingerprint";
+        needle = "fnv1a_bytes(diagnostic_extended_fnv, ram_digest, 32)";
       }
       {
-        label = "current device-state hash folded into rolling fingerprint";
-        needle = "extended_hash = fnv1a_u64(extended_hash, device_state.hash);";
+        label = "current device-state digest folded into diagnostic fingerprint";
+        needle = "fnv1a_bytes(diagnostic_extended_fnv, device_state.digest, 32)";
       }
       {
-        label = "current device-state byte count folded into rolling fingerprint";
-        needle = "extended_hash = fnv1a_u64(extended_hash, device_state.bytes);";
+        label = "current device-state byte count folded into diagnostic fingerprint";
+        needle = "fnv1a_u64(diagnostic_extended_fnv, device_state.bytes)";
       }
       {
-        label = "per-vCPU register hashes in samples";
-        needle = "register_hashes";
+        label = "per-vCPU register digests in samples";
+        needle = "register_digests";
       }
       {
-        label = "RAM hash in samples";
-        needle = "ram_hash";
+        label = "RAM digest in samples";
+        needle = "ram_digest";
       }
       {
         label = "memory event callback";

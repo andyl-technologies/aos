@@ -13,7 +13,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define FNV1A64_OFFSET 14695981039346656037ULL
 #define FNV1A64_PRIME 1099511628211ULL
 #define MAX_TRACKED_VCPUS 256U
-#define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v3"
+#define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v4"
 #define ZERO_SHA256_HEX \
   "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -29,20 +29,22 @@ struct register_set {
   bool initialized;
 };
 
-struct register_hash_summary {
-  uint64_t aggregate;
-  uint64_t per_vcpu[MAX_TRACKED_VCPUS];
+struct register_digest_summary {
+  unsigned char per_vcpu[MAX_TRACKED_VCPUS][32];
+  unsigned char register_schema[MAX_TRACKED_VCPUS][32];
   uint64_t register_counts[MAX_TRACKED_VCPUS];
   uint64_t register_file_bytes[MAX_TRACKED_VCPUS];
-  uint64_t register_schema_hashes[MAX_TRACKED_VCPUS];
   uint64_t register_retired[MAX_TRACKED_VCPUS];
   uint64_t sample_failures;
 };
 
 struct device_state_summary {
-  uint64_t hash;
+  unsigned char digest[32];
+  unsigned char schema_digest[32];
   uint64_t bytes;
+  uint64_t sections;
   int status;
+  int schema_status;
 };
 
 static FILE *trace_file;
@@ -54,10 +56,14 @@ static uint64_t stream_hash = FNV1A64_OFFSET;
 static uint64_t device_event_hash = FNV1A64_OFFSET;
 static uint64_t memory_event_hash = FNV1A64_OFFSET;
 static uint64_t trajectory_hash = FNV1A64_OFFSET;
+static unsigned char trajectory_digest[32];
+static unsigned char memory_event_digest[32];
+static unsigned char device_event_digest[32];
 static uint64_t memory_events;
 static uint64_t io_events;
 static uint64_t register_read_failures;
 static uint64_t device_state_failures;
+static uint64_t trajectory_digest_failures;
 static bool extended_fingerprint;
 static bool capture_memory_events;
 static bool definition_only;
@@ -80,7 +86,6 @@ static uint64_t last_valid_rr_switch_quantum;
 static bool last_valid_rr_cursor_available;
 static uint64_t rr_switch_events;
 static uint64_t det_ipi_events;
-static uint64_t observer_icount;
 static uint64_t trajectory_steps;
 static uint64_t required_pc = UINT64_MAX;
 static uint64_t required_pc_first_retired = UINT64_MAX;
@@ -124,27 +129,79 @@ fnv1a_bytes(uint64_t hash, const unsigned char *bytes, size_t len)
   return hash;
 }
 
-static uint64_t
-fnv1a_cstr(uint64_t hash, const char *text)
+static void
+checksum_u64(GChecksum *checksum, uint64_t value)
 {
-  if (text == NULL) {
-    return fnv1a_u64(hash, UINT64_MAX);
+  unsigned char encoded[8];
+
+  for (size_t i = 0; i < sizeof(encoded); i++) {
+    encoded[sizeof(encoded) - i - 1] = value & 0xffU;
+    value >>= 8;
   }
-  hash = fnv1a_bytes(hash, (const unsigned char *)text, strlen(text));
-  return fnv1a_u64(hash, 0xffU);
+  g_checksum_update(checksum, encoded, sizeof(encoded));
 }
 
-static uint64_t
-register_schema_hash(const struct register_set *set)
+static void
+checksum_bytes(GChecksum *checksum, const void *bytes, size_t length)
 {
-  uint64_t hash = FNV1A64_OFFSET;
-
-  hash = fnv1a_u64(hash, set->count);
-  for (size_t i = 0; i < set->count; i++) {
-    hash = fnv1a_cstr(hash, set->registers[i].name);
-    hash = fnv1a_cstr(hash, set->registers[i].feature);
+  checksum_u64(checksum, length);
+  if (length != 0) {
+    g_checksum_update(checksum, bytes, length);
   }
-  return hash;
+}
+
+static void
+checksum_string(GChecksum *checksum, const char *text)
+{
+  if (text == NULL) {
+    checksum_u64(checksum, UINT64_MAX);
+  } else {
+    checksum_bytes(checksum, text, strlen(text));
+  }
+}
+
+static bool
+checksum_finish(GChecksum *checksum, unsigned char digest[32])
+{
+  gsize length = 32;
+
+  g_checksum_get_digest(checksum, digest, &length);
+  return length == 32;
+}
+
+static void
+digest_hex(const unsigned char digest[32], char output[65])
+{
+  static const char hexadecimal[] = "0123456789abcdef";
+
+  for (size_t i = 0; i < 32; i++) {
+    output[i * 2] = hexadecimal[digest[i] >> 4];
+    output[i * 2 + 1] = hexadecimal[digest[i] & 0x0fU];
+  }
+  output[64] = '\0';
+}
+
+static bool
+register_schema_digest(
+    const struct register_set *set,
+    unsigned int vcpu_index,
+    unsigned char digest[32])
+{
+  GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+
+  if (checksum == NULL) {
+    return false;
+  }
+  checksum_string(checksum, "crucible.qemu.register-schema.v1");
+  checksum_u64(checksum, vcpu_index);
+  checksum_u64(checksum, set->count);
+  for (size_t i = 0; i < set->count; i++) {
+    checksum_string(checksum, set->registers[i].name);
+    checksum_string(checksum, set->registers[i].feature);
+  }
+  const bool ok = checksum_finish(checksum, digest);
+  g_checksum_free(checksum);
+  return ok;
 }
 
 static uint64_t
@@ -170,6 +227,70 @@ hash_mem_value(uint64_t hash, qemu_plugin_mem_value value)
     break;
   }
   return hash;
+}
+
+static void
+checksum_mem_value(GChecksum *checksum, qemu_plugin_mem_value value)
+{
+  checksum_u64(checksum, (uint64_t)value.type);
+  switch (value.type) {
+  case QEMU_PLUGIN_MEM_VALUE_U8:
+    checksum_u64(checksum, value.data.u8);
+    break;
+  case QEMU_PLUGIN_MEM_VALUE_U16:
+    checksum_u64(checksum, value.data.u16);
+    break;
+  case QEMU_PLUGIN_MEM_VALUE_U32:
+    checksum_u64(checksum, value.data.u32);
+    break;
+  case QEMU_PLUGIN_MEM_VALUE_U64:
+    checksum_u64(checksum, value.data.u64);
+    break;
+  case QEMU_PLUGIN_MEM_VALUE_U128:
+    checksum_u64(checksum, value.data.u128.low);
+    checksum_u64(checksum, value.data.u128.high);
+    break;
+  }
+}
+
+static bool
+advance_memory_event_digest(
+    unsigned char digest[32],
+    const char *domain,
+    uint64_t sequence,
+    unsigned int vcpu_index,
+    uint64_t vaddr,
+    uint64_t phys_addr,
+    qemu_plugin_meminfo_t info,
+    bool is_store,
+    bool is_io,
+    qemu_plugin_mem_value value)
+{
+  GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  unsigned char next[32] = {0};
+
+  if (checksum == NULL) {
+    memset(digest, 0, 32);
+    return false;
+  }
+  checksum_string(checksum, domain);
+  checksum_bytes(checksum, digest, 32);
+  checksum_u64(checksum, sequence);
+  checksum_u64(checksum, vcpu_index);
+  checksum_u64(checksum, vaddr);
+  checksum_u64(checksum, phys_addr);
+  checksum_u64(checksum, qemu_plugin_mem_size_shift(info));
+  checksum_u64(checksum, is_store ? 1U : 0U);
+  checksum_u64(checksum, is_io ? 1U : 0U);
+  checksum_mem_value(checksum, value);
+  const bool ok = checksum_finish(checksum, next);
+  g_checksum_free(checksum);
+  if (!ok) {
+    memset(digest, 0, 32);
+    return false;
+  }
+  memcpy(digest, next, 32);
+  return true;
 }
 
 static uint64_t
@@ -236,27 +357,28 @@ init_register_set(unsigned int vcpu_index)
   return true;
 }
 
-static uint64_t
-hash_registers_for_vcpu(
-    uint64_t hash,
+static bool
+digest_registers_for_vcpu(
     unsigned int vcpu_index,
     uint64_t *failures,
-    uint64_t *register_file_bytes)
+    uint64_t *register_file_bytes,
+    uint64_t *canonical_retired_out,
+    unsigned char digest[32])
 {
   unsigned char canonical_registers[4096];
   size_t canonical_register_len = 0;
   uint64_t canonical_retired = 0;
 
   *register_file_bytes = 0;
+  *canonical_retired_out = 0;
+  memset(digest, 0, 32);
 
   if (!init_register_set(vcpu_index)) {
     *failures += 1;
-    return fnv1a_u64(hash, UINT64_MAX);
+    return false;
   }
 
   const struct register_set *set = &register_sets[vcpu_index];
-  hash = fnv1a_u64(hash, vcpu_index);
-  hash = fnv1a_u64(hash, set->count);
 
   /*
    * The batched export already canonicalizes every register name, feature,
@@ -273,15 +395,29 @@ hash_registers_for_vcpu(
       canonical_register_len > sizeof(canonical_registers)) {
     *failures += 1;
     *register_file_bytes = 0;
-    hash = fnv1a_u64(hash, UINT64_MAX - 2U);
+    return false;
   } else {
+    GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+
+    if (checksum == NULL) {
+      *failures += 1;
+      return false;
+    }
     *register_file_bytes = canonical_register_len;
-    hash = fnv1a_u64(hash, canonical_register_len);
-    hash = fnv1a_bytes(hash, canonical_registers, canonical_register_len);
-    hash = fnv1a_u64(hash, canonical_retired);
+    *canonical_retired_out = canonical_retired;
+    checksum_string(checksum, "crucible.qemu.register-file.v1");
+    checksum_u64(checksum, vcpu_index);
+    checksum_bytes(checksum, canonical_registers, canonical_register_len);
+    const bool ok = checksum_finish(checksum, digest);
+    g_checksum_free(checksum);
+    if (!ok) {
+      *failures += 1;
+      memset(digest, 0, 32);
+      return false;
+    }
   }
 
-  return hash;
+  return true;
 }
 
 static bool
@@ -311,38 +447,48 @@ read_rr_cursor_snapshot(
   return true;
 }
 
-static struct register_hash_summary
-compute_register_hash(void)
+static struct register_digest_summary
+compute_register_digests(void)
 {
-  struct register_hash_summary summary = {
-      .aggregate = FNV1A64_OFFSET,
+  struct register_digest_summary summary = {
       .sample_failures = 0,
   };
 
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
     uint64_t failures = 0;
-    const uint64_t per_vcpu_hash =
-        hash_registers_for_vcpu(
-            FNV1A64_OFFSET,
-            vcpu,
-            &failures,
-            &summary.register_file_bytes[vcpu]);
+    uint64_t canonical_retired = 0;
 
-    summary.per_vcpu[vcpu] = per_vcpu_hash;
+    (void)digest_registers_for_vcpu(
+        vcpu,
+        &failures,
+        &summary.register_file_bytes[vcpu],
+        &canonical_retired,
+        summary.per_vcpu[vcpu]);
     summary.register_counts[vcpu] =
         register_sets[vcpu].initialized ? register_sets[vcpu].count : 0;
-    summary.register_schema_hashes[vcpu] =
-        register_sets[vcpu].initialized
-            ? register_schema_hash(&register_sets[vcpu])
-            : 0;
-    summary.register_retired[vcpu] = per_vcpu_retired[vcpu];
+    if (!register_sets[vcpu].initialized ||
+        !register_schema_digest(
+            &register_sets[vcpu], vcpu, summary.register_schema[vcpu])) {
+      failures++;
+      memset(summary.register_schema[vcpu], 0, 32);
+    }
+    summary.register_retired[vcpu] = canonical_retired;
     summary.sample_failures += failures;
-    summary.aggregate = fnv1a_u64(summary.aggregate, vcpu);
-    summary.aggregate = fnv1a_u64(summary.aggregate, per_vcpu_hash);
   }
 
   register_read_failures += summary.sample_failures;
   return summary;
+}
+
+static uint64_t
+diagnostic_register_fnv(const struct register_digest_summary *summary)
+{
+  uint64_t hash = FNV1A64_OFFSET;
+
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    hash = fnv1a_bytes(hash, summary->per_vcpu[vcpu], 32);
+  }
+  return hash;
 }
 
 static struct device_state_summary
@@ -350,9 +496,12 @@ capture_device_state(void)
 {
   struct device_state_summary summary = {0};
 
-  summary.status = qemu_plugin_crucible_device_state_hash(
-      &summary.hash, &summary.bytes);
-  if (summary.status != 0 || summary.bytes == 0) {
+  summary.status = qemu_plugin_crucible_device_state_sha256(
+      summary.digest, &summary.bytes);
+  summary.schema_status = qemu_plugin_crucible_device_state_schema_sha256(
+      summary.schema_digest, &summary.sections);
+  if (summary.status != 0 || summary.bytes == 0 ||
+      summary.schema_status != 0 || summary.sections == 0) {
     device_state_failures++;
   }
   return summary;
@@ -377,24 +526,39 @@ record_definition(void)
     return;
   }
 
-  const struct register_hash_summary register_hashes = compute_register_hash();
+  const struct register_digest_summary register_digests =
+      compute_register_digests();
   const struct device_state_summary device_state = capture_device_state();
+  unsigned char ram_digest[32] = {0};
   uint64_t ram_bytes = 0;
-  const uint64_t ram_hash = qemu_plugin_crucible_guest_ram_hash(&ram_bytes);
+  const int ram_status =
+      qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes);
   const uint64_t rr_switch_quantum =
       qemu_plugin_crucible_rr_switch_quantum();
   const bool device_state_complete =
-      device_state.status == 0 && device_state.bytes != 0;
+      device_state.status == 0 && device_state.bytes != 0 &&
+      device_state.schema_status == 0 && device_state.sections != 0;
+  char ram_digest_hex[65];
+  char device_state_digest_hex[65];
+  char device_state_schema_digest_hex[65];
 
   definition_emitted = true;
   stop_requested = true;
+  qemu_plugin_crucible_pause_vm();
+  const uint64_t observed_icount = qemu_plugin_crucible_icount();
+  const bool observed_non_running =
+      qemu_plugin_crucible_vm_non_running();
+  digest_hex(ram_digest, ram_digest_hex);
+  digest_hex(device_state.digest, device_state_digest_hex);
+  digest_hex(device_state.schema_digest, device_state_schema_digest_hex);
   fprintf(
       trace_file,
       "{\"kind\":\"definition\""
       ",\"schema\":\"" TRACE_FINGERPRINT_SCHEMA "\""
       ",\"definition_only\":true"
-      ",\"paused_before_guest_execution\":true"
       ",\"retired\":%" PRIu64
+      ",\"observed_icount\":%" PRIu64
+      ",\"observed_non_running\":%s"
       ",\"tracked_vcpus\":%u"
       ",\"rr_switch_quantum\":%" PRIu64
       ",\"launch_definition_digest\":\"%s\""
@@ -402,6 +566,8 @@ record_definition(void)
       ",\"trace_plugin_build_digest\":\"%s\""
       ",\"register_counts\":[",
       retired,
+      observed_icount,
+      observed_non_running ? "true" : "false",
       tracked_vcpus,
       rr_switch_quantum,
       launch_definition_digest,
@@ -413,7 +579,7 @@ record_definition(void)
         trace_file,
         "%s%" PRIu64,
         vcpu == 0 ? "" : ",",
-        register_hashes.register_counts[vcpu]);
+        register_digests.register_counts[vcpu]);
   }
   fprintf(trace_file, "],\"register_file_bytes\":[");
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
@@ -421,59 +587,78 @@ record_definition(void)
         trace_file,
         "%s%" PRIu64,
         vcpu == 0 ? "" : ",",
-        register_hashes.register_file_bytes[vcpu]);
+        register_digests.register_file_bytes[vcpu]);
   }
-  fprintf(trace_file, "],\"register_schema_hashes\":[");
+  fprintf(trace_file, "],\"register_digests\":[");
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
-    fprintf(
-        trace_file,
-        "%s\"%016" PRIx64 "\"",
-        vcpu == 0 ? "" : ",",
-        register_hashes.register_schema_hashes[vcpu]);
+    char encoded[65];
+    digest_hex(register_digests.per_vcpu[vcpu], encoded);
+    fprintf(trace_file, "%s\"%s\"", vcpu == 0 ? "" : ",", encoded);
+  }
+  fprintf(trace_file, "],\"register_schema_digests\":[");
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    char encoded[65];
+    digest_hex(register_digests.register_schema[vcpu], encoded);
+    fprintf(trace_file, "%s\"%s\"", vcpu == 0 ? "" : ",", encoded);
   }
   fprintf(
       trace_file,
       "]"
-      ",\"ram_hash\":\"%016" PRIx64 "\""
+      ",\"ram_digest\":\"%s\""
       ",\"ram_bytes\":%" PRIu64
-      ",\"device_state_hash\":\"%016" PRIx64 "\""
+      ",\"ram_status\":%d"
+      ",\"device_state_digest\":\"%s\""
+      ",\"device_state_schema_digest\":\"%s\""
+      ",\"device_state_sections\":%" PRIu64
       ",\"device_state_bytes\":%" PRIu64
       ",\"device_state_status\":%d"
+      ",\"device_state_schema_status\":%d"
       ",\"device_state_complete\":%s"
       ",\"sample_register_failures\":%" PRIu64
       ",\"register_read_failures\":%" PRIu64
       ",\"device_state_failures\":%" PRIu64
       "}\n",
-      ram_hash,
+      ram_digest_hex,
       ram_bytes,
-      device_state.hash,
+      ram_status,
+      device_state_digest_hex,
+      device_state_schema_digest_hex,
+      device_state.sections,
       device_state.bytes,
       device_state.status,
+      device_state.schema_status,
       device_state_complete ? "true" : "false",
-      register_hashes.sample_failures,
+      register_digests.sample_failures,
       register_read_failures,
       device_state_failures);
   fflush(trace_file);
-  qemu_plugin_crucible_pause_vm();
 }
 
 static void
 fold_trajectory_state(
     uint64_t boundary_icount,
     unsigned int vcpu_index,
-    uint64_t register_hash,
-    uint64_t ram_hash,
+    const struct register_digest_summary *register_digests,
+    const unsigned char *ram_digest,
+    const struct traced_insn *insn,
     uint64_t rr_current_vcpu,
     uint64_t rr_cursor_position,
     uint64_t rr_switch_quantum,
     bool rr_cursor_valid,
     bool post_boundary)
 {
+  const uint64_t register_diagnostic_fnv =
+      diagnostic_register_fnv(register_digests);
+  const uint64_t ram_diagnostic_fnv =
+      ram_digest == NULL ? 0 : fnv1a_bytes(FNV1A64_OFFSET, ram_digest, 32);
+  GChecksum *checksum;
+  unsigned char next_digest[32] = {0};
+
   trajectory_steps++;
   trajectory_hash = fnv1a_u64(trajectory_hash, boundary_icount);
   trajectory_hash = fnv1a_u64(trajectory_hash, vcpu_index);
   trajectory_hash = fnv1a_u64(trajectory_hash, stream_hash);
-  trajectory_hash = fnv1a_u64(trajectory_hash, register_hash);
+  trajectory_hash = fnv1a_u64(trajectory_hash, register_diagnostic_fnv);
   trajectory_hash = fnv1a_u64(trajectory_hash, memory_event_hash);
   trajectory_hash = fnv1a_u64(trajectory_hash, current_device_event_hash());
   trajectory_hash = fnv1a_u64(trajectory_hash, memory_events);
@@ -483,7 +668,57 @@ fold_trajectory_state(
   trajectory_hash = fnv1a_u64(trajectory_hash, rr_switch_quantum);
   trajectory_hash = fnv1a_u64(trajectory_hash, rr_cursor_valid ? 1U : 0U);
   trajectory_hash = fnv1a_u64(trajectory_hash, post_boundary ? 1U : 0U);
-  trajectory_hash = fnv1a_u64(trajectory_hash, ram_hash);
+  trajectory_hash = fnv1a_u64(trajectory_hash, ram_diagnostic_fnv);
+
+  if (trajectory_digest_failures != 0) {
+    return;
+  }
+  checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  if (checksum == NULL) {
+    memset(trajectory_digest, 0, 32);
+    trajectory_digest_failures++;
+    return;
+  }
+  checksum_string(checksum, "crucible.qemu.execution-trajectory.v1");
+  checksum_bytes(checksum, trajectory_digest, 32);
+  checksum_u64(checksum, trajectory_steps);
+  checksum_u64(checksum, boundary_icount);
+  checksum_u64(checksum, vcpu_index);
+  checksum_u64(checksum, post_boundary ? 1U : 0U);
+  if (insn == NULL) {
+    checksum_u64(checksum, 0);
+  } else {
+    checksum_u64(checksum, 1);
+    checksum_u64(checksum, insn->vaddr);
+    checksum_bytes(checksum, insn->bytes, insn->size);
+  }
+  checksum_u64(checksum, tracked_vcpus);
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    checksum_bytes(checksum, register_digests->per_vcpu[vcpu], 32);
+    checksum_u64(checksum, register_digests->register_retired[vcpu]);
+  }
+  if (ram_digest == NULL) {
+    checksum_u64(checksum, 0);
+  } else {
+    checksum_u64(checksum, 1);
+    checksum_bytes(checksum, ram_digest, 32);
+  }
+  checksum_bytes(checksum, memory_event_digest, 32);
+  checksum_bytes(checksum, device_event_digest, 32);
+  checksum_u64(checksum, memory_events);
+  checksum_u64(checksum, io_events);
+  checksum_u64(checksum, rr_current_vcpu);
+  checksum_u64(checksum, rr_cursor_position);
+  checksum_u64(checksum, rr_switch_quantum);
+  checksum_u64(checksum, rr_cursor_valid ? 1U : 0U);
+  const bool ok = checksum_finish(checksum, next_digest);
+  g_checksum_free(checksum);
+  if (!ok) {
+    memset(trajectory_digest, 0, 32);
+    trajectory_digest_failures++;
+    return;
+  }
+  memcpy(trajectory_digest, next_digest, 32);
 }
 
 static void
@@ -512,17 +747,32 @@ record_sample(unsigned int vcpu_index, bool final)
     return;
   }
 
-  const struct register_hash_summary register_hashes = compute_register_hash();
+  const struct register_digest_summary register_digests =
+      compute_register_digests();
   const struct device_state_summary device_state = capture_device_state();
+  unsigned char ram_digest[32] = {0};
   uint64_t ram_bytes = 0;
-  const uint64_t ram_hash = qemu_plugin_crucible_guest_ram_hash(&ram_bytes);
+  const int ram_status =
+      qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes);
   uint64_t rr_current_vcpu;
   uint64_t rr_cursor_position;
   uint64_t rr_switch_quantum;
   const uint64_t device_event_component_hash =
       capture_memory_events ? current_device_event_hash() : 0;
-  uint64_t extended_hash = FNV1A64_OFFSET;
+  uint64_t register_diagnostic_fnv = FNV1A64_OFFSET;
+  uint64_t diagnostic_extended_fnv = FNV1A64_OFFSET;
   const bool horizon_boundary = !final && stop_at != 0 && retired >= stop_at;
+  const uint64_t observed_icount = qemu_plugin_crucible_icount();
+  char ram_digest_hex[65];
+  char device_state_digest_hex[65];
+  char device_state_schema_digest_hex[65];
+  char trajectory_digest_hex[65];
+
+  register_diagnostic_fnv = diagnostic_register_fnv(&register_digests);
+  digest_hex(ram_digest, ram_digest_hex);
+  digest_hex(device_state.digest, device_state_digest_hex);
+  digest_hex(device_state.schema_digest, device_state_schema_digest_hex);
+  digest_hex(trajectory_digest, trajectory_digest_hex);
 
   const bool rr_cursor_valid = read_rr_cursor_snapshot(
       &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum);
@@ -537,29 +787,47 @@ record_sample(unsigned int vcpu_index, bool final)
     rr_cursor_from_last_instruction = true;
   }
 
-  extended_hash = fnv1a_u64(extended_hash, stream_hash);
-  extended_hash = fnv1a_u64(extended_hash, register_hashes.aggregate);
-  extended_hash = fnv1a_u64(extended_hash, ram_hash);
-  extended_hash = fnv1a_u64(extended_hash, device_state.hash);
-  extended_hash = fnv1a_u64(extended_hash, device_state.bytes);
-  extended_hash = fnv1a_u64(
-      extended_hash, (uint64_t)(int64_t)device_state.status);
-  extended_hash = fnv1a_u64(extended_hash, capture_memory_events ? 1U : 0U);
-  extended_hash = fnv1a_u64(extended_hash, device_event_component_hash);
-  extended_hash = fnv1a_u64(extended_hash, rr_current_vcpu);
-  extended_hash = fnv1a_u64(extended_hash, rr_cursor_position);
-  extended_hash = fnv1a_u64(extended_hash, rr_switch_quantum);
-  extended_hash = fnv1a_u64(extended_hash, emitted_rr_cursor_valid ? 1U : 0U);
-  extended_hash = fnv1a_u64(extended_hash, rr_cursor_from_last_instruction ? 1U : 0U);
-  extended_hash = fnv1a_u64(extended_hash, tracked_vcpus);
-  extended_hash = fnv1a_u64(extended_hash, stop_at);
-  extended_hash = fnv1a_u64(extended_hash, trajectory_hash);
-  extended_hash = fnv1a_u64(extended_hash, memory_event_hash);
-  extended_hash = fnv1a_u64(extended_hash, post_boundary_samples ? 1U : 0U);
-  extended_hash = fnv1a_u64(extended_hash, observer_icount);
-  extended_hash = fnv1a_u64(extended_hash, required_pc);
-  extended_hash = fnv1a_u64(extended_hash, required_pc_seen ? 1U : 0U);
-  extended_hash = fnv1a_u64(extended_hash, required_pc_first_retired);
+  diagnostic_extended_fnv = fnv1a_u64(diagnostic_extended_fnv, stream_hash);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, register_diagnostic_fnv);
+  diagnostic_extended_fnv =
+      fnv1a_bytes(diagnostic_extended_fnv, ram_digest, 32);
+  diagnostic_extended_fnv =
+      fnv1a_bytes(diagnostic_extended_fnv, device_state.digest, 32);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, device_state.bytes);
+  diagnostic_extended_fnv = fnv1a_u64(
+      diagnostic_extended_fnv, (uint64_t)(int64_t)device_state.status);
+  diagnostic_extended_fnv = fnv1a_u64(
+      diagnostic_extended_fnv, capture_memory_events ? 1U : 0U);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, device_event_component_hash);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, rr_current_vcpu);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, rr_cursor_position);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, rr_switch_quantum);
+  diagnostic_extended_fnv = fnv1a_u64(
+      diagnostic_extended_fnv, emitted_rr_cursor_valid ? 1U : 0U);
+  diagnostic_extended_fnv = fnv1a_u64(
+      diagnostic_extended_fnv, rr_cursor_from_last_instruction ? 1U : 0U);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, tracked_vcpus);
+  diagnostic_extended_fnv = fnv1a_u64(diagnostic_extended_fnv, stop_at);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, trajectory_hash);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, memory_event_hash);
+  diagnostic_extended_fnv = fnv1a_u64(
+      diagnostic_extended_fnv, post_boundary_samples ? 1U : 0U);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, observed_icount);
+  diagnostic_extended_fnv = fnv1a_u64(diagnostic_extended_fnv, required_pc);
+  diagnostic_extended_fnv = fnv1a_u64(
+      diagnostic_extended_fnv, required_pc_seen ? 1U : 0U);
+  diagnostic_extended_fnv =
+      fnv1a_u64(diagnostic_extended_fnv, required_pc_first_retired);
 
   fprintf(
       trace_file,
@@ -572,7 +840,7 @@ record_sample(unsigned int vcpu_index, bool final)
       ",\"stop_requested\":%s"
       ",\"trigger\":\"%s\""
       ",\"event_boundary\":%s"
-      ",\"observer_icount\":%" PRIu64
+      ",\"observed_icount\":%" PRIu64
       ",\"post_boundary_sample\":%s"
       ",\"trajectory_steps\":%" PRIu64
       ",\"required_pc\":%" PRIu64
@@ -587,8 +855,7 @@ record_sample(unsigned int vcpu_index, bool final)
       ",\"qemu_build_digest\":\"%s\""
       ",\"trace_plugin_build_digest\":\"%s\""
       ",\"stream_hash\":\"%016" PRIx64 "\""
-      ",\"register_hash\":\"%016" PRIx64 "\""
-      ",\"register_hashes\":[",
+      ",\"register_digests\":[",
       retired,
       vcpu_index,
       final ? "true" : "false",
@@ -597,7 +864,7 @@ record_sample(unsigned int vcpu_index, bool final)
       stop_requested ? "true" : "false",
       horizon_boundary ? "event" : "periodic",
       horizon_boundary ? "\"horizon-advance\"" : "null",
-      observer_icount,
+      observed_icount,
       post_boundary_samples ? "true" : "false",
       trajectory_steps,
       required_pc,
@@ -611,15 +878,12 @@ record_sample(unsigned int vcpu_index, bool final)
       launch_definition_digest,
       qemu_build_digest,
       trace_plugin_build_digest,
-      stream_hash,
-      register_hashes.aggregate);
+      stream_hash);
 
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
-    fprintf(
-        trace_file,
-        "%s\"%016" PRIx64 "\"",
-        vcpu == 0 ? "" : ",",
-        register_hashes.per_vcpu[vcpu]);
+    char encoded[65];
+    digest_hex(register_digests.per_vcpu[vcpu], encoded);
+    fprintf(trace_file, "%s\"%s\"", vcpu == 0 ? "" : ",", encoded);
   }
 
   fprintf(
@@ -631,7 +895,7 @@ record_sample(unsigned int vcpu_index, bool final)
         trace_file,
         "%s%" PRIu64,
         vcpu == 0 ? "" : ",",
-        register_hashes.register_counts[vcpu]);
+        register_digests.register_counts[vcpu]);
   }
 
   fprintf(trace_file, "]" ",\"register_file_bytes\":[");
@@ -640,16 +904,14 @@ record_sample(unsigned int vcpu_index, bool final)
         trace_file,
         "%s%" PRIu64,
         vcpu == 0 ? "" : ",",
-        register_hashes.register_file_bytes[vcpu]);
+        register_digests.register_file_bytes[vcpu]);
   }
 
-  fprintf(trace_file, "]" ",\"register_schema_hashes\":[");
+  fprintf(trace_file, "]" ",\"register_schema_digests\":[");
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
-    fprintf(
-        trace_file,
-        "%s\"%016" PRIx64 "\"",
-        vcpu == 0 ? "" : ",",
-        register_hashes.register_schema_hashes[vcpu]);
+    char encoded[65];
+    digest_hex(register_digests.register_schema[vcpu], encoded);
+    fprintf(trace_file, "%s\"%s\"", vcpu == 0 ? "" : ",", encoded);
   }
 
   fprintf(trace_file, "]" ",\"register_retired\":[");
@@ -658,26 +920,39 @@ record_sample(unsigned int vcpu_index, bool final)
         trace_file,
         "%s%" PRIu64,
         vcpu == 0 ? "" : ",",
-        register_hashes.register_retired[vcpu]);
+        register_digests.register_retired[vcpu]);
   }
 
   fprintf(
       trace_file,
       "]"
       ",\"trajectory_hash\":\"%016" PRIx64 "\""
+      ",\"trajectory_digest\":\"%s\""
       ",\"memory_event_hash\":\"%016" PRIx64 "\""
-      ",\"ram_hash\":\"%016" PRIx64 "\""
-      ",\"device_state_hash\":\"%016" PRIx64 "\""
+      ",\"ram_digest\":\"%s\""
+      ",\"ram_status\":%d"
+      ",\"device_state_digest\":\"%s\""
+      ",\"device_state_schema_digest\":\"%s\""
+      ",\"device_state_sections\":%" PRIu64
       ",\"device_state_bytes\":%" PRIu64
       ",\"device_state_status\":%d"
+      ",\"device_state_schema_status\":%d"
       ",\"device_state_complete\":%s",
       trajectory_hash,
+      trajectory_digest_hex,
       memory_event_hash,
-      ram_hash,
-      device_state.hash,
+      ram_digest_hex,
+      ram_status,
+      device_state_digest_hex,
+      device_state_schema_digest_hex,
+      device_state.sections,
       device_state.bytes,
       device_state.status,
-      device_state.status == 0 && device_state.bytes != 0 ? "true" : "false");
+      device_state.schema_status,
+      device_state.status == 0 && device_state.bytes != 0 &&
+              device_state.schema_status == 0 && device_state.sections != 0
+          ? "true"
+          : "false");
   if (capture_memory_events) {
     fprintf(
         trace_file,
@@ -689,7 +964,7 @@ record_sample(unsigned int vcpu_index, bool final)
   fprintf(
       trace_file,
       ",\"device_event_capture\":%s"
-      ",\"extended_hash\":\"%016" PRIx64 "\""
+      ",\"diagnostic_extended_fnv\":\"%016" PRIx64 "\""
       ",\"ram_bytes\":%" PRIu64
       ",\"memory_events\":%" PRIu64
       ",\"io_events\":%" PRIu64
@@ -697,16 +972,18 @@ record_sample(unsigned int vcpu_index, bool final)
       ",\"sample_register_failures\":%" PRIu64
       ",\"register_read_failures\":%" PRIu64
       ",\"device_state_failures\":%" PRIu64
+      ",\"trajectory_digest_failures\":%" PRIu64
       "}\n",
       capture_memory_events ? "true" : "false",
-      extended_hash,
+      diagnostic_extended_fnv,
       ram_bytes,
       memory_events,
       io_events,
       capture_memory_events ? "true" : "false",
-      register_hashes.sample_failures,
+      register_digests.sample_failures,
       register_read_failures,
-      device_state_failures);
+      device_state_failures,
+      trajectory_digest_failures);
   fflush(trace_file);
 }
 
@@ -882,6 +1159,20 @@ on_mem(unsigned int vcpu_index, qemu_plugin_meminfo_t info, uint64_t vaddr, void
   if (post_boundary_samples) {
     memory_event_hash = fnv1a_u64(memory_event_hash, memory_events);
     memory_event_hash = fnv1a_u64(memory_event_hash, event_hash);
+    if (required_pc_seen && trajectory_digest_failures == 0 &&
+        !advance_memory_event_digest(
+          memory_event_digest,
+          "crucible.qemu.memory-event-trajectory.v1",
+          memory_events,
+          vcpu_index,
+          vaddr,
+          phys_addr,
+          info,
+          is_store,
+          is_io,
+          value)) {
+      trajectory_digest_failures++;
+    }
   }
   if (!is_io) {
     return;
@@ -890,6 +1181,21 @@ on_mem(unsigned int vcpu_index, qemu_plugin_meminfo_t info, uint64_t vaddr, void
   io_events++;
   device_event_hash = fnv1a_u64(device_event_hash, io_events);
   device_event_hash = fnv1a_u64(device_event_hash, event_hash);
+  if (post_boundary_samples && required_pc_seen &&
+      trajectory_digest_failures == 0 &&
+      !advance_memory_event_digest(
+        device_event_digest,
+        "crucible.qemu.device-event-trajectory.v1",
+        io_events,
+        vcpu_index,
+        vaddr,
+        phys_addr,
+        info,
+        is_store,
+        true,
+        value)) {
+    trajectory_digest_failures++;
+  }
 }
 
 static void
@@ -924,13 +1230,15 @@ on_insn(unsigned int vcpu_index, void *userdata)
   record_rr_switch_event();
 
   if (post_boundary_samples && required_pc_seen) {
-    const struct register_hash_summary register_hashes = compute_register_hash();
+    const struct register_digest_summary register_digests =
+        compute_register_digests();
     const bool rr_cursor_valid = rr_current_vcpu != UINT64_MAX;
     fold_trajectory_state(
         retired,
         vcpu_index,
-        register_hashes.aggregate,
-        0,
+        &register_digests,
+        NULL,
+        insn,
         rr_current_vcpu,
         rr_cursor_position,
         rr_switch_quantum,
@@ -962,14 +1270,16 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
 {
   (void)userdata;
 
-  observer_icount = current_icount;
   if (!post_boundary_samples || current_icount < next_sample) {
     return;
   }
 
-  const struct register_hash_summary register_hashes = compute_register_hash();
+  const struct register_digest_summary register_digests =
+      compute_register_digests();
+  unsigned char ram_digest[32] = {0};
   uint64_t ram_bytes = 0;
-  const uint64_t ram_hash = qemu_plugin_crucible_guest_ram_hash(&ram_bytes);
+  const int ram_status =
+      qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes);
   uint64_t rr_current_vcpu;
   uint64_t rr_cursor_position;
   uint64_t rr_switch_quantum;
@@ -979,8 +1289,9 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
   fold_trajectory_state(
       current_icount,
       UINT_MAX,
-      register_hashes.aggregate,
-      ram_hash,
+      &register_digests,
+      ram_status == 0 ? ram_digest : NULL,
+      NULL,
       rr_current_vcpu,
       rr_cursor_position,
       rr_switch_quantum,

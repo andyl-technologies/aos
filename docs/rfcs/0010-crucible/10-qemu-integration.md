@@ -871,22 +871,21 @@ determinism contract (04).
   conditions with first-mismatch icount-window localization and a fixed,
   content-addressed fingerprint definition. — satisfies [QEMU-34]; spec §10.7,
   §24.
-  **Implemented provisional slice:** `crucible-qemu-fingerprint` imports two
-  versioned real-QEMU trace-plugin streams into the canonical Rust stream
-  representation under a separate provisional definition. The definition
-  advertises periodic sampling and `ordered-cpu-mmio-read-write-history`
-  exactly; it does not
-  claim the canonical current-device-state or event-boundary semantics. The
-  Phase 2 gate runs the same bounded VM twice, adds host CPU load around the
-  second run, validates distinct run provenance plus identical launch/QEMU/plugin
-  digests and exact QMP CPU indexes, and routes post-processing
-  register/RR/retired/RAM/device mutations through the run-twice hook for coarse
-  sample-window localization. Those mutations are parser/comparator red controls,
-  not live guest perturbations, and no state-dump or exact-bisection artifact is
-  claimed. The observation shape is derived from run A rather than independently
-  pinned. The task remains open because complete current device state,
-  interaction-boundary samples, instruction-exact bisection, and an integrated
-  fixed `(image, cmdline, seed, I)` launcher remain absent.
+  **Implemented partial slice:** `crucible-qemu-fingerprint` imports two
+  versioned real-QEMU trace-plugin streams into the canonical Rust stream under
+  a separately content-addressed definition. An independent, stopped,
+  zero-icount preflight pins exact QMP topology, register layout, writable-RAM
+  coverage, non-RAM VMState section schema, RR quantum, and build/launch
+  identities. Samples carry SHA-256 register, RAM, and current serialized
+  non-RAM VMState digests; the 64-bit rolling composition is diagnostic only.
+  The Phase 2 gate runs the same bounded VM twice with second-run host load,
+  validates exact provenance and topology, and exercises parser/comparator red
+  controls for every component and VMState-schema drift. Exact probe and
+  both-side dump contracts now exist, but the shell still owns the live QEMU
+  launches and its mutations are post-processing controls. The task remains
+  open until a production Rust runner performs fresh exact-input launches,
+  instruction-exact refinement, real dumps, and all required interaction
+  boundaries.
 - [x] **T-QEMU-12** Implement the per-quantum data flow at the QEMU level (run to
   ceiling-or-idle → report icount/idle-deadline → scheduler ceiling store →
   futex wake → advance → frame inject/emit / I/O), entirely over shmem with no

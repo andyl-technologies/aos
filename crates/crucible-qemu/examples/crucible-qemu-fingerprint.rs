@@ -119,7 +119,7 @@ fn run() -> Result<(), String> {
             println!("horizon_icount={}", contract.horizon_icount);
             println!("vcpu_count={}", contract.vcpu_contracts.len());
             println!("rr_switch_quantum={}", contract.rr_switch_quantum);
-            println!("fingerprint_source=real-qemu-trace-plugin-v3");
+            println!("fingerprint_source=real-qemu-trace-plugin-v4");
             println!("device_component=current-non-ram-qemu-vmstate");
             println!("event_boundary_sampling=true");
             println!("comparison=canonical-rust-stream");
@@ -155,7 +155,8 @@ struct ComparisonContract {
     horizon_icount: u64,
     rr_switch_quantum: u64,
     baseline_ram_bytes: u64,
-    device_state_bytes: u64,
+    device_state_sections: u64,
+    device_state_schema_digest: [u8; 32],
     vcpu_contracts: Vec<QemuTraceVcpuContract>,
     launch_definition_digest: String,
     guest_image_digest: String,
@@ -172,10 +173,10 @@ impl ComparisonContract {
         require_text(&value, "schema", CONTRACT_SCHEMA, path)?;
         let register_counts = u64_array(&value, "register_counts", path)?;
         let register_file_bytes = u64_array(&value, "register_file_bytes", path)?;
-        let register_schema_hashes = hex_u64_array(&value, "register_schema_hashes", path)?;
+        let register_schema_digests = digest_array(&value, "register_schema_digests", path)?;
         if register_counts.is_empty()
             || register_counts.len() != register_file_bytes.len()
-            || register_counts.len() != register_schema_hashes.len()
+            || register_counts.len() != register_schema_digests.len()
         {
             return Err(format!(
                 "comparison contract {} has inconsistent register contract arrays",
@@ -185,10 +186,10 @@ impl ComparisonContract {
         let vcpu_contracts = register_counts
             .into_iter()
             .zip(register_file_bytes)
-            .zip(register_schema_hashes)
+            .zip(register_schema_digests)
             .enumerate()
-            .map(|(cpu_id, ((count, bytes), schema_hash))| {
-                QemuTraceVcpuContract::new(cpu_id as u64, count, bytes, schema_hash)
+            .map(|(cpu_id, ((count, bytes), schema_digest))| {
+                QemuTraceVcpuContract::new(cpu_id as u64, count, bytes, schema_digest)
                     .map_err(|error| format!("invalid vCPU contract {cpu_id}: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -200,7 +201,12 @@ impl ComparisonContract {
             horizon_icount: u64_field(&value, "horizon_icount", path)?,
             rr_switch_quantum: u64_field(&value, "rr_switch_quantum", path)?,
             baseline_ram_bytes: u64_field(&value, "baseline_ram_bytes", path)?,
-            device_state_bytes: u64_field(&value, "device_state_bytes", path)?,
+            device_state_sections: u64_field(&value, "device_state_sections", path)?,
+            device_state_schema_digest: digest_array_item(
+                &value,
+                "device_state_schema_digest",
+                path,
+            )?,
             vcpu_contracts,
             launch_definition_digest,
             guest_image_digest: digest_text(&value, "guest_image_digest", path)?,
@@ -221,7 +227,8 @@ impl ComparisonContract {
         if preflight.qmp_cpu_ids().len() != self.vcpu_contracts.len()
             || preflight.rr_switch_quantum() != self.rr_switch_quantum
             || preflight.guest_ram_bytes() != self.baseline_ram_bytes
-            || preflight.device_state_bytes() != self.device_state_bytes
+            || preflight.device_state_sections() != self.device_state_sections
+            || preflight.device_state_schema_digest() != self.device_state_schema_digest
             || preflight.vcpu_contracts() != self.vcpu_contracts
             || identity.launch_definition_digest() != self.launch_definition_digest
             || identity.qemu_build_digest() != self.qemu_build_digest
@@ -511,7 +518,7 @@ fn u64_array(value: &Value, field: &str, path: &Path) -> Result<Vec<u64>, String
         .collect()
 }
 
-fn hex_u64_array(value: &Value, field: &str, path: &Path) -> Result<Vec<u64>, String> {
+fn digest_array(value: &Value, field: &str, path: &Path) -> Result<Vec<[u8; 32]>, String> {
     value
         .get(field)
         .and_then(Value::as_array)
@@ -525,22 +532,29 @@ fn hex_u64_array(value: &Value, field: &str, path: &Path) -> Result<Vec<u64>, St
                     path.display()
                 )
             })?;
-            parse_hex_u64(text, &format!("{field}[{index}]"))
+            decode_digest_array(&format!("{field}[{index}]"), text)
         })
         .collect()
 }
 
-fn parse_hex_u64(text: &str, label: &str) -> Result<u64, String> {
-    if text.len() != 16 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(
-            "{label} must contain exactly 16 hexadecimal digits"
-        ));
-    }
-    u64::from_str_radix(text, 16).map_err(|error| format!("invalid {label}: {error}"))
+fn digest_array_item(value: &Value, field: &str, path: &Path) -> Result<[u8; 32], String> {
+    let text = text_field(value, field, path)?;
+    decode_digest_array(field, &text)
+}
+
+fn decode_digest_array(label: &str, text: &str) -> Result<[u8; 32], String> {
+    let bytes = decode_digest(label, text)?;
+    bytes
+        .try_into()
+        .map_err(|_| format!("{label} did not decode to 32 bytes"))
 }
 
 fn validate_digest_text(label: &str, text: &str) -> Result<(), String> {
-    if text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if text.len() == 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         Ok(())
     } else {
         Err(format!(

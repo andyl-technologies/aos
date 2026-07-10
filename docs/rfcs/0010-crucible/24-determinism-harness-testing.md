@@ -198,8 +198,11 @@ are likewise canonical.
   through the versioned coverage ring, and consumes that stream in the engine.
 - **Pass/fail:** the observed stream matches the fixed execution corpus, off mode
   registers no callback, and enabling coverage changes neither canonical state nor
-  any execution fingerprint. Model-only or callback-stub evidence cannot turn the
-  gate green.
+  any execution fingerprint. The acceptance projection includes a chained
+  SHA-256 execution trajectory over instruction, all-vCPU register, memory/device
+  event, RAM-boundary, and RR state; 64-bit rolling hashes remain diagnostics and
+  are excluded from acceptance and content addressing. Model-only or
+  callback-stub evidence cannot turn the gate green.
 - **Guards:** the L2 plugin-to-L3 exploration boundary. **Enforces:** INV-4,
   INV-7, ADV-21, and PLUG-35..PLUG-37.
 
@@ -919,9 +922,11 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   memory-region rolling hash) with icount-driven, observation-only sampling via
   plugin/QMP. — satisfies [HARN-4], [HARN-7]; spec §4.
   - The trace importer now covers aggregate icount, all-vCPU registers, the RR
-    cursor, full-RAM helper output, and serialized current non-RAM VMState. A
-    definition-only QEMU preflight pins that shape independently of both runs,
-    and the live acceptance path samples the exact horizon event. Live
+    cursor, SHA-256 writable-RAM output, and SHA-256 serialized current non-RAM
+    VMState. A stopped, zero-icount definition-only QEMU preflight pins the
+    register and non-RAM VMState schemas independently of both runs, while
+    allowing serialized VMState value length to vary. The live acceptance path
+    samples the exact horizon event. Live
     frame-delivery and fault-activation boundary hooks and the integrated
     fixed-input runner remain absent; therefore this task remains open.
 - [ ] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
