@@ -29,6 +29,8 @@
           mkdir -p "$out/bin"
 
           cat > smp-contended.c <<'SMP_C'
+          #define _GNU_SOURCE
+
           #include <pthread.h>
           #include <sched.h>
           #include <stdint.h>
@@ -46,7 +48,16 @@
           static volatile unsigned int finite_ready;
           static volatile unsigned int sustain_ready;
           static volatile unsigned int sustain_release;
+          static volatile unsigned int affinity_failures;
           static int sustain_mode;
+
+          static int pin_to_vcpu(uintptr_t id) {
+            cpu_set_t set;
+
+            CPU_ZERO(&set);
+            CPU_SET(id, &set);
+            return sched_setaffinity(0, sizeof(set), &set);
+          }
 
           static void lock_spin(void) {
             while (__sync_lock_test_and_set(&spinlock, 1) != 0) {
@@ -78,6 +89,10 @@
             const uintptr_t id = (uintptr_t)arg;
             uint64_t local = 0x9e3779b97f4a7c15ULL ^ id;
 
+            if (pin_to_vcpu(id) != 0) {
+              __sync_fetch_and_add(&affinity_failures, 1);
+            }
+
             for (uint64_t i = 0; i < ITERS; i++) {
               contention_step(id, i, &local);
             }
@@ -89,6 +104,10 @@
             __sync_fetch_and_add(&finite_ready, 1);
             while (__atomic_load_n(&sustain_release, __ATOMIC_ACQUIRE) == 0) {
               sched_yield();
+            }
+
+            if (__atomic_load_n(&sustain_release, __ATOMIC_ACQUIRE) != 1) {
+              return 0;
             }
 
             for (uint64_t i = ITERS;; i++) {
@@ -130,6 +149,14 @@
               while (__atomic_load_n(&finite_ready, __ATOMIC_ACQUIRE) != THREADS) {
                 sched_yield();
               }
+              if (__atomic_load_n(&affinity_failures, __ATOMIC_ACQUIRE) != 0) {
+                puts("CRUCIBLE_S11_AFFINITY_FAIL");
+                __atomic_store_n(&sustain_release, 2, __ATOMIC_RELEASE);
+                for (int i = 0; i < THREADS; i++) {
+                  (void)pthread_join(threads[i], 0);
+                }
+                return 1;
+              }
               print_finite_result();
               puts("TEST_RESULT:PASS");
               fflush(stdout);
@@ -137,6 +164,7 @@
               while (__atomic_load_n(&sustain_ready, __ATOMIC_ACQUIRE) != THREADS) {
                 sched_yield();
               }
+              puts("CRUCIBLE_S11_AFFINITY_ACTIVE vcpus=0,1,2,3");
               puts("CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock");
               fflush(stdout);
             }
@@ -146,6 +174,11 @@
                 puts("CRUCIBLE_S11_PTHREAD_JOIN_FAIL");
                 return 1;
               }
+            }
+
+            if (__atomic_load_n(&affinity_failures, __ATOMIC_ACQUIRE) != 0) {
+              puts("CRUCIBLE_S11_AFFINITY_FAIL");
+              return 1;
             }
 
             print_finite_result();
@@ -642,9 +675,15 @@ in
               grep -q "CRUCIBLE_S11_DONE" "$TMPDIR/serial-$label.log" \
                 || fail "guest $label did not run the SMP workload"
               if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
+                grep -q "CRUCIBLE_S11_AFFINITY_ACTIVE vcpus=0,1,2,3" \
+                  "$TMPDIR/serial-$label.log" \
+                  || fail "guest $label did not bind contention workers to vCPUs 0-3"
                 grep -q "CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock" \
                   "$TMPDIR/serial-$label.log" \
                   || fail "guest $label did not sustain four-thread contention"
+              fi
+              if grep -q "CRUCIBLE_S11_AFFINITY_FAIL" "$TMPDIR/serial-$label.log"; then
+                fail "guest $label failed to bind a contention worker to its vCPU"
               fi
             fi
             jq -e -s \
@@ -768,15 +807,12 @@ in
           rr_switch_events_a=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-a.jsonl")
           rr_switch_events_b=$(jq -s '[.[] | select(.kind == "rr_switch")] | length' "$TMPDIR/trace-b.jsonl")
           [ "$samples_a" -ge 4 ] || fail "expected at least 4 samples in run a"
-          [ "$samples_a" -eq "$samples_b" ] || fail "sample count mismatch: $samples_a/$samples_b"
           if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
             [ "$rr_switch_events_a" -gt 0 ] || fail "expected RR switch events in run a"
           else
             [ "$rr_switch_events_a" -eq 0 ] \
               || fail "unexpected RR switch events under non-sim accelerator in run a"
           fi
-          [ "$rr_switch_events_a" -eq "$rr_switch_events_b" ] \
-            || fail "RR switch event count mismatch: $rr_switch_events_a/$rr_switch_events_b"
 
           mkdir -p "$out"
           for label in a b; do
@@ -802,22 +838,33 @@ in
               | @tsv
             ' "$TMPDIR/trace-$label.jsonl" > "$TMPDIR/per-vcpu-delta-trace-$label.tsv"
           done
-          if ! diff -u "$TMPDIR/rr-switch-trace-a.tsv" "$TMPDIR/rr-switch-trace-b.tsv" > "$out/rr-switch-trace.diff"; then
-            cat "$out/rr-switch-trace.diff" >&2
-            fail "RR switch trace mismatch"
-          fi
-          if ! diff -u "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$TMPDIR/per-vcpu-delta-trace-b.tsv" > "$out/per-vcpu-delta-trace.diff"; then
-            cat "$out/per-vcpu-delta-trace.diff" >&2
-            fail "per-vCPU icount-delta trace mismatch"
-          fi
-          if ! diff -u "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-b.jsonl" > "$out/trace.diff"; then
+          localize_first_difference() {
+            left_trace="$1"
+            right_trace="$2"
+            localization_output="$3"
             gawk '
-              NR == FNR { left[FNR] = $0; next }
-              left[FNR] != $0 {
-                print FNR "\t" left[FNR] "\t" $0
+              NR == FNR {
+                left[FNR] = $0
+                left_count = FNR
+                next
+              }
+              {
+                right_count = FNR
+              }
+              !(FNR in left) || left[FNR] != $0 {
+                print FNR "\t" ((FNR in left) ? left[FNR] : "null") "\t" $0
+                found = 1
                 exit 0
               }
-            ' "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-b.jsonl" > "$TMPDIR/first-difference.tsv"
+              END {
+                if (!found && left_count > right_count) {
+                  line = right_count + 1
+                  print line "\t" left[line] "\tnull"
+                }
+              }
+            ' "$left_trace" "$right_trace" > "$TMPDIR/first-difference.tsv"
+            [ -s "$TMPDIR/first-difference.tsv" ] \
+              || fail "mismatched traces did not yield a localizable JSON record"
             first_differing_line=$(cut -f1 "$TMPDIR/first-difference.tsv")
             left_json=$(cut -f2 "$TMPDIR/first-difference.tsv")
             right_json=$(cut -f3 "$TMPDIR/first-difference.tsv")
@@ -829,10 +876,12 @@ in
                 --slurpfile right "$TMPDIR/first-right.json" \
                 '
                   def component:
-                    if ($left[0].kind // "sample") != ($right[0].kind // "sample") then "kind"
+                    if $left[0] == null then "missing_left_trace_record"
+                    elif $right[0] == null then "missing_right_trace_record"
+                    elif ($left[0].kind // "sample") != ($right[0].kind // "sample") then "kind"
                     elif ($left[0].kind // "sample") == "rr_switch" then
                       if $left[0].rr_switch_event != $right[0].rr_switch_event then "rr_switch_event"
-                      elif $left[0].retired != $right[0].retired then "retired"
+                      elif $left[0].retired != $right[0].retired then "node_icount"
                       elif $left[0].from_vcpu != $right[0].from_vcpu then "from_vcpu"
                       elif $left[0].to_vcpu != $right[0].to_vcpu then "to_vcpu"
                       elif $left[0].rr_cursor_position != $right[0].rr_cursor_position then "rr_cursor_position"
@@ -847,39 +896,114 @@ in
                         | if $idx == null then "per_vcpu_retired" else "per_vcpu_retired[" + ($idx | tostring) + "]" end
                       else "unknown"
                       end
-                    elif $left[0].retired != $right[0].retired then "retired"
+                    elif $left[0].retired != $right[0].retired then "node_icount"
                     elif $left[0].vcpu != $right[0].vcpu then "vcpu"
                     elif $left[0].rr_current_vcpu != $right[0].rr_current_vcpu then "rr_current_vcpu"
                     elif $left[0].rr_cursor_position != $right[0].rr_cursor_position then "rr_cursor_position"
                     elif $left[0].launch_definition_digest != $right[0].launch_definition_digest then "launch_definition_digest"
                     elif $left[0].qemu_build_digest != $right[0].qemu_build_digest then "qemu_build_digest"
                     elif $left[0].trace_plugin_build_digest != $right[0].trace_plugin_build_digest then "trace_plugin_build_digest"
-                    elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
+                    elif $left[0].register_hashes != $right[0].register_hashes then
+                      ([range(0; ($left[0].register_hashes | length)) | select($left[0].register_hashes[.] != $right[0].register_hashes[.])]) as $diffs
+                      | ($diffs[0] // null) as $idx
+                      | if $idx == null then "register_hashes" else "register_hashes[" + ($idx | tostring) + "]" end
                     elif $left[0].register_counts != $right[0].register_counts then
                       ([range(0; ($left[0].register_counts | length)) | select($left[0].register_counts[.] != $right[0].register_counts[.])]) as $diffs
                       | ($diffs[0] // null) as $idx
                       | if $idx == null then "register_counts" else "register_counts[" + ($idx | tostring) + "]" end
-                    elif $left[0].register_hash != $right[0].register_hash then
-                      ([range(0; ($left[0].register_hashes | length)) | select($left[0].register_hashes[.] != $right[0].register_hashes[.])]) as $diffs
+                    elif $left[0].register_file_bytes != $right[0].register_file_bytes then
+                      ([range(0; ($left[0].register_file_bytes | length)) | select($left[0].register_file_bytes[.] != $right[0].register_file_bytes[.])]) as $diffs
                       | ($diffs[0] // null) as $idx
-                      | if $idx == null then "register_hash" else "register_hashes[" + ($idx | tostring) + "]" end
+                      | if $idx == null then "register_file_bytes" else "register_file_bytes[" + ($idx | tostring) + "]" end
+                    elif $left[0].register_schema_hashes != $right[0].register_schema_hashes then
+                      ([range(0; ($left[0].register_schema_hashes | length)) | select($left[0].register_schema_hashes[.] != $right[0].register_schema_hashes[.])]) as $diffs
+                      | ($diffs[0] // null) as $idx
+                      | if $idx == null then "register_schema_hashes" else "register_schema_hashes[" + ($idx | tostring) + "]" end
+                    elif $left[0].register_hash != $right[0].register_hash then "register_hash"
                     elif $left[0].ram_hash != $right[0].ram_hash then "ram_hash"
                     elif $left[0].device_event_hash != $right[0].device_event_hash then "device_event_hash"
+                    elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
                     elif $left[0].extended_hash != $right[0].extended_hash then "extended_hash"
                     else "unknown"
                     end;
                   component
                 '
             )
+            first_differing_node_icount=$(
+              jq -n -r \
+                --slurpfile left "$TMPDIR/first-left.json" \
+                --slurpfile right "$TMPDIR/first-right.json" \
+                '[ $left[0].retired, $right[0].retired ]
+                 | map(select(type == "number"))
+                 | min // "unknown"'
+            )
             {
               echo "first_differing_line=$first_differing_line"
+              echo "first_differing_node_icount=$first_differing_node_icount"
               echo "first_differing_component=$first_differing_component"
               echo "left=$left_json"
               echo "right=$right_json"
-            } > "$out/first-difference.txt"
+            } > "$localization_output"
+          }
+
+          rr_switch_trace_match=true
+          if ! diff -u "$TMPDIR/rr-switch-trace-a.tsv" "$TMPDIR/rr-switch-trace-b.tsv" > "$out/rr-switch-trace.diff"; then
+            rr_switch_trace_match=false
+          fi
+          per_vcpu_delta_trace_match=true
+          if ! diff -u "$TMPDIR/per-vcpu-delta-trace-a.tsv" "$TMPDIR/per-vcpu-delta-trace-b.tsv" > "$out/per-vcpu-delta-trace.diff"; then
+            per_vcpu_delta_trace_match=false
+          fi
+          if ! diff -u "$TMPDIR/trace-a.jsonl" "$TMPDIR/trace-b.jsonl" > "$out/trace.diff"; then
+            localize_first_difference \
+              "$TMPDIR/trace-a.jsonl" \
+              "$TMPDIR/trace-b.jsonl" \
+              "$out/first-difference.txt"
             cat "$out/first-difference.txt" >&2
             fail "extended fingerprint mismatch"
           fi
+          [ "$rr_switch_trace_match" = true ] \
+            || fail "RR switch projection differs despite equal raw traces"
+          [ "$per_vcpu_delta_trace_match" = true ] \
+            || fail "per-vCPU icount projection differs despite equal raw traces"
+          [ "$samples_a" -eq "$samples_b" ] \
+            || fail "sample count differs despite equal raw traces: $samples_a/$samples_b"
+          [ "$rr_switch_events_a" -eq "$rr_switch_events_b" ] \
+            || fail "RR switch event count differs despite equal raw traces: $rr_switch_events_a/$rr_switch_events_b"
+
+          jq -s -c \
+            '[.[] | select((.kind // "sample") == "sample" and .final != true)][0]' \
+            "$TMPDIR/trace-a.jsonl" > "$TMPDIR/localization-base.jsonl"
+          [ -s "$TMPDIR/localization-base.jsonl" ] \
+            || fail "trace omitted a sample for mismatch-localization testing"
+          localization_expected_icount=$(jq -r '.retired' "$TMPDIR/localization-base.jsonl")
+          localization_vcpu_index=$((VCPU_COUNT - 1))
+          jq -c --argjson index "$localization_vcpu_index" \
+            '.register_hashes[$index] = (if .register_hashes[$index] == "ffffffffffffffff" then "0000000000000000" else "ffffffffffffffff" end)' \
+            "$TMPDIR/localization-base.jsonl" > "$TMPDIR/localization-vcpu.jsonl"
+          localize_first_difference \
+            "$TMPDIR/localization-base.jsonl" \
+            "$TMPDIR/localization-vcpu.jsonl" \
+            "$out/localization-vcpu.txt"
+          grep -q "^first_differing_node_icount=$localization_expected_icount$" \
+            "$out/localization-vcpu.txt" \
+            || fail "vCPU mismatch localizer reported the wrong node-icount"
+          grep -F -q "first_differing_component=register_hashes[$localization_vcpu_index]" \
+            "$out/localization-vcpu.txt" \
+            || fail "vCPU mismatch localizer did not identify vCPU $localization_vcpu_index"
+
+          jq -c '.rr_cursor_position += 1' \
+            "$TMPDIR/localization-base.jsonl" > "$TMPDIR/localization-rr-cursor.jsonl"
+          localize_first_difference \
+            "$TMPDIR/localization-base.jsonl" \
+            "$TMPDIR/localization-rr-cursor.jsonl" \
+            "$out/localization-rr-cursor.txt"
+          grep -q "^first_differing_node_icount=$localization_expected_icount$" \
+            "$out/localization-rr-cursor.txt" \
+            || fail "RR cursor mismatch localizer reported the wrong node-icount"
+          grep -q '^first_differing_component=rr_cursor_position$' \
+            "$out/localization-rr-cursor.txt" \
+            || fail "RR cursor mismatch localizer did not identify the cursor"
 
           final_line=$(grep '"final":true' "$TMPDIR/trace-a.jsonl" | tail -1)
           [ -n "$final_line" ] || fail "trace a omitted the plugin-exit sample"
@@ -961,6 +1085,8 @@ in
 
           sustained_workload_active=false
           if [ "$SUSTAIN_WORKLOAD" -eq 1 ] \
+            && grep -q "CRUCIBLE_S11_AFFINITY_ACTIVE vcpus=0,1,2,3" "$TMPDIR/serial-a.log" \
+            && grep -q "CRUCIBLE_S11_AFFINITY_ACTIVE vcpus=0,1,2,3" "$TMPDIR/serial-b.log" \
             && grep -q "CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock" "$TMPDIR/serial-a.log" \
             && grep -q "CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock" "$TMPDIR/serial-b.log"; then
             sustained_workload_active=true
@@ -1003,6 +1129,8 @@ in
             echo sustain_workload="$SUSTAIN_WORKLOAD"
             echo sustained_workload_active="$sustained_workload_active"
             echo sustained_workload_marker=CRUCIBLE_S11_SUSTAIN_ACTIVE
+            echo workload_affinity_active=true
+            echo workload_affinity_vcpus=0,1,2,3
             if [ "$DET_IPI_PROBE" -eq 1 ]; then
               echo det_ipi_probe=enabled
             else
@@ -1074,7 +1202,10 @@ in
             echo block_device_assertion=launch_argv_scan
             echo mismatch_localization=component
             echo first_differing_line=none
+            echo first_differing_node_icount=none
             echo first_differing_component=none
+            echo mismatch_localization_vcpu_negative_test=true
+            echo mismatch_localization_rr_cursor_negative_test=true
             echo fallback=smp1_not_needed
           } > "$out/result"
         '';
