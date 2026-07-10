@@ -1454,6 +1454,18 @@ FV-0 columns rather than sketch estimates:**
 
 ### Extensions (each independently gated; order by measured yield)
 
+- [x] Registered-root strict raw-traversal sweep checkpoints (first #52
+      slice): post-root list/attr rendering registers every pending child and
+      nested ancestor in the transient root stack, then applies B1's configured
+      allocation cadence between children. Threshold-zero stress proves four
+      mid-render collections are byte-invisible and reclaim dead captures. This
+      deliberately does not claim a general evaluator safepoint: JSON used by
+      structured derivations can run with unregistered Rust evaluator locals,
+      and the wide fail-loud gate rejected that broader placement. Record-table
+      segmentation is also not a production lever after FV-3: production keeps
+      the table at zero records, while only the B2 relocation proving ground
+      opts into it. Reconsider segmentation with B2 measurements rather than
+      adding an idle production structure.
 - [ ] Closure/env hash-consing (§7.1): intern flat closures whose
       captured words are all canonical; declined-admission otherwise.
       Gated on FV-5; sized by FV-0 counters *after* FV-5 banks its win.

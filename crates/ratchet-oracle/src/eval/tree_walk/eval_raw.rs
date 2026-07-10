@@ -263,7 +263,7 @@ impl TreeWalk {
         expanded_active_lists: &mut Vec<u64>,
         active_list_expansion_depth: &mut usize,
     ) -> Result<(), TreeWalkError> {
-        let elements = {
+        let mut elements = {
             let list = self.heap.get_list(value).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Heap {
@@ -281,22 +281,59 @@ impl TreeWalk {
         }
 
         Self::extend_bytes_for_node(id, span, out, b"[ ")?;
-        for (index, element) in elements.into_iter().enumerate() {
-            if index > 0 {
-                Self::extend_bytes_for_node(id, span, out, b" ")?;
-            }
-            self.write_raw_value_inner(
-                id,
-                span,
+        if self.gc_mode.is_enabled() {
+            self.with_indexed_transient_value_stack_roots(
                 list_id,
                 list_span,
-                element,
-                out,
-                seen,
-                active,
-                expanded_active_lists,
-                active_list_expansion_depth,
+                &mut elements,
+                |eval, slots| {
+                    for index in 0..slots.len() {
+                        if index > 0 {
+                            Self::extend_bytes_for_node(id, span, out, b" ")?;
+                        }
+                        let root_slot = slots.start + index;
+                        let Some(element) = eval.current_transient_value_stack_root(root_slot)
+                        else {
+                            return Err(TreeWalkError::new(
+                                TreeWalkErrorKind::SafepointRootStackLengthOverflow { id: list_id },
+                                list_span,
+                            ));
+                        };
+                        eval.write_raw_value_inner(
+                            id,
+                            span,
+                            list_id,
+                            list_span,
+                            element,
+                            out,
+                            seen,
+                            active,
+                            expanded_active_lists,
+                            active_list_expansion_depth,
+                        )?;
+                        eval.maybe_sweep_heap_at_registered_safepoint()?;
+                    }
+                    Ok(())
+                },
             )?;
+        } else {
+            for (index, element) in elements.into_iter().enumerate() {
+                if index > 0 {
+                    Self::extend_bytes_for_node(id, span, out, b" ")?;
+                }
+                self.write_raw_value_inner(
+                    id,
+                    span,
+                    list_id,
+                    list_span,
+                    element,
+                    out,
+                    seen,
+                    active,
+                    expanded_active_lists,
+                    active_list_expansion_depth,
+                )?;
+            }
         }
         Self::extend_bytes_for_node(id, span, out, b" ]")
     }
@@ -357,22 +394,75 @@ impl TreeWalk {
         }
 
         Self::extend_bytes_for_node(id, span, out, b"{ ")?;
-        for (key, value) in entries {
-            Self::write_trace_attr_key(id, span, &key, out)?;
-            Self::extend_bytes_for_node(id, span, out, b" = ")?;
-            self.write_raw_value_inner(
-                id,
-                span,
+        if self.gc_mode.is_enabled() {
+            let mut roots = Vec::new();
+            roots.try_reserve_exact(entries.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: entries.len(),
+                        },
+                    },
+                    span,
+                )
+            })?;
+            for (_, value) in &entries {
+                roots.push(*value);
+            }
+            self.with_indexed_transient_value_stack_roots(
                 attrs_id,
                 attrs_span,
-                value,
-                out,
-                seen,
-                active,
-                expanded_active_lists,
-                active_list_expansion_depth,
+                &mut roots,
+                |eval, slots| {
+                    for (index, (key, _)) in entries.iter().enumerate() {
+                        Self::write_trace_attr_key(id, span, key, out)?;
+                        Self::extend_bytes_for_node(id, span, out, b" = ")?;
+                        let root_slot = slots.start + index;
+                        let Some(value) = eval.current_transient_value_stack_root(root_slot) else {
+                            return Err(TreeWalkError::new(
+                                TreeWalkErrorKind::SafepointRootStackLengthOverflow {
+                                    id: attrs_id,
+                                },
+                                attrs_span,
+                            ));
+                        };
+                        eval.write_raw_value_inner(
+                            id,
+                            span,
+                            attrs_id,
+                            attrs_span,
+                            value,
+                            out,
+                            seen,
+                            active,
+                            expanded_active_lists,
+                            active_list_expansion_depth,
+                        )?;
+                        Self::extend_bytes_for_node(id, span, out, b"; ")?;
+                        eval.maybe_sweep_heap_at_registered_safepoint()?;
+                    }
+                    Ok(())
+                },
             )?;
-            Self::extend_bytes_for_node(id, span, out, b"; ")?;
+        } else {
+            for (key, value) in entries {
+                Self::write_trace_attr_key(id, span, &key, out)?;
+                Self::extend_bytes_for_node(id, span, out, b" = ")?;
+                self.write_raw_value_inner(
+                    id,
+                    span,
+                    attrs_id,
+                    attrs_span,
+                    value,
+                    out,
+                    seen,
+                    active,
+                    expanded_active_lists,
+                    active_list_expansion_depth,
+                )?;
+                Self::extend_bytes_for_node(id, span, out, b"; ")?;
+            }
         }
         Self::extend_bytes_for_node(id, span, out, b"}")
     }

@@ -5099,6 +5099,26 @@ and helps the oracle directly.
       scheduled as the flat-value campaign
       ([30](30-flat-value-architecture.md); stages FV-1..FV-6, with the
       `payload_bits` classification table as deliverable FV-0).**
+- [x] Current #52 registered-root mid-operation sweep precursor:
+      strict raw rendering now publishes every pending list element and attr
+      value through the transient safepoint root stack, including nested
+      ancestor traversals, and runs the existing allocation-threshold cadence
+      after each rendered child. This is a true post-`eval_root` boundary: the
+      recursive evaluator has fully unwound, while the renderer explicitly
+      owns and registers its complete live traversal state. Threshold-zero
+      tests perform four mid-render sweeps over nested attrs/lists, preserve
+      exact bytes, retire dead branch captures, and leave the root stack
+      balanced. An attempted equivalent checkpoint inside `write_json_value`
+      was rejected before landing: structured-attrs JSON can execute inside
+      derivation evaluation, and the standing wide threshold-zero gate failed
+      loudly on an unregistered lambda exactly as B1's root-safety contract
+      requires. The final local gates are 3,013 oracle tests plus 34 ignored and
+      all doctests, 321 `aos-nix` unit tests, pinned language conformance at
+      `208 passed, 1 skipped, 0 failed`, zlib serial/K=4/JIT parity, threshold-zero
+      byte parity for zlib/openssl/coreutils/bash, and threshold-zero
+      `bench.wide-eval`. General evaluator-stack safepoints and mid-evaluation
+      JSON/derivation sweeps remain open until their Rust locals are made
+      explicit roots.
 - [x] Current minor-GC frontier precursor:
       `ratchet-value::heap::gc::MinorGcPlan` builds the initial young-object
       frontier for a future Tier-B minor collection from precise roots plus a

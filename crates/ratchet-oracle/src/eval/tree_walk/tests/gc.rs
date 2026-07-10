@@ -277,6 +277,33 @@ fn sweep_mode_evaluation_is_byte_identical_and_sheds_captures() {
 }
 
 #[test]
+fn raw_traversal_sweeps_between_registered_aggregate_elements() {
+    let source = "let pick = n: let heavy = (x: x * x) n; in if n > 0 then n + 1 else heavy; in [ { a = pick 1; b = pick 2; } (pick 3) ]";
+    let ir = lower(source);
+    let baseline = eval_raw_bytes(&ir).expect("baseline raw traversal evaluates");
+
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_gc_sweep_threshold(0);
+    let evaluator = TreeWalk::with_options(&ir, options);
+    let (swept, evaluator) = eval_raw_bytes_with_evaluator_owned(&ir, evaluator)
+        .expect("registered raw traversal sweeps safely");
+
+    assert_eq!(swept, baseline);
+    assert_eq!(swept, b"[ { a = 2; b = 3; } 4 ]");
+    assert_eq!(
+        evaluator.stats().gc_sweeps(),
+        4,
+        "nested attr/list traversal sweeps after every registered child"
+    );
+    assert!(
+        evaluator.stats().gc_records_swept() > 0,
+        "mid-traversal sweeps retire dead branch captures"
+    );
+    assert_eq!(evaluator.stats().gc_sweeps_skipped_nonquiescent(), 0);
+}
+
+#[test]
 fn sweep_mode_off_by_default_keeps_counters_zero() {
     let outcome = eval_whnf_owned(&lower(SWEEP_FIXTURE)).expect("expression evaluates");
     let stats = outcome.stats();

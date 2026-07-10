@@ -56,17 +56,41 @@ impl TreeWalk {
         &mut self,
         extra_roots: &[Value],
     ) -> Result<Option<EvalHeapSweepReport>, TreeWalkError> {
-        if !self.gc_mode.is_enabled() {
-            return Ok(None);
-        }
-        let allocated_since_last_sweep = self
-            .stats
-            .thunks_allocated
-            .saturating_sub(self.gc_records_at_last_sweep);
-        if allocated_since_last_sweep < self.options.gc_sweep_threshold() {
+        if !self.heap_sweep_threshold_reached() {
             return Ok(None);
         }
         self.sweep_heap_at_quiescence(extra_roots)
+    }
+
+    /// Sweeps at a caller-proven safepoint with live locals already registered.
+    ///
+    /// Unlike the driver-level quiescent point, this boundary may run while a
+    /// strict traversal is active. The caller must publish every heap-backed
+    /// Rust local through the evaluator's safepoint root structures before
+    /// calling. The raw renderer does this for every pending list element and
+    /// attribute value, including the corresponding roots of ancestor
+    /// traversals. The sweep remains non-moving, so traversal-side copies of
+    /// those registered words do not require writeback.
+    ///
+    /// Returns the cycle report when the configured allocation threshold was
+    /// reached and a sweep ran.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkErrorKind::GcQuiescentSweep`] if root collection or
+    /// the heap sweep fails.
+    pub(super) fn maybe_sweep_heap_at_registered_safepoint(
+        &mut self,
+    ) -> Result<Option<EvalHeapSweepReport>, TreeWalkError> {
+        if !self.heap_sweep_threshold_reached() {
+            return Ok(None);
+        }
+        if !self.is_registered_post_root_traversal_safepoint() {
+            self.gc_sweeps_skipped_nonquiescent =
+                self.gc_sweeps_skipped_nonquiescent.saturating_add(1);
+            return Ok(None);
+        }
+        self.sweep_heap_for_validation(&[]).map(Some)
     }
 
     /// Sweeps unreachable worker records at an evaluator quiescent point.
@@ -157,5 +181,35 @@ impl TreeWalk {
             && self.active_memo_read_nodes.is_empty()
             && self.call_depth == 0
             && self.shared.is_none()
+    }
+
+    /// Returns whether only a registered post-root traversal remains active.
+    fn is_registered_post_root_traversal_safepoint(&self) -> bool {
+        self.active_root_eval_node.is_none()
+            && self.active_env_is_empty()
+            && self.with_scopes.is_empty()
+            && self.scoped_globals.is_empty()
+            && self.order_sensitive_binding_depth == 0
+            && self.active_call_argument_plans.is_empty()
+            && self.active_composite_accumulator_depth == 0
+            && self.active_force_roots.is_empty()
+            && self.active_primop_arg_frames.is_empty()
+            && self.active_primop_arg_roots.is_empty()
+            && self.suspended_env_roots.is_empty()
+            && self.active_memo_read_nodes.is_empty()
+            && self.call_depth == 0
+            && self.shared.is_none()
+    }
+
+    /// Returns whether sweep mode has crossed its allocation cadence.
+    fn heap_sweep_threshold_reached(&self) -> bool {
+        if !self.gc_mode.is_enabled() {
+            return false;
+        }
+        let allocated_since_last_sweep = self
+            .stats
+            .thunks_allocated
+            .saturating_sub(self.gc_records_at_last_sweep);
+        allocated_since_last_sweep >= self.options.gc_sweep_threshold()
     }
 }
