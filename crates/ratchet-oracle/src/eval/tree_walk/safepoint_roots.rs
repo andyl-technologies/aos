@@ -2552,8 +2552,7 @@ impl TreeWalk {
                 plan.object_body_plan(),
                 plan.writebacks().heap_field_writebacks(),
             )?;
-        let planned_live_heap_field_writebacks =
-            copied_writes.len().saturating_add(direct_writes.len());
+        let planned_live_heap_field_writebacks = copied_writes.len().saturating_add(direct_writes.len());
         validate_live_heap_field_writeback_count(
             planned_live_heap_field_writebacks,
             application.applied_heap_field_writebacks(),
@@ -2568,6 +2567,7 @@ impl TreeWalk {
                 &self.thunk_resolve_card_table,
             )?;
         let live_heap_field_writebacks = staged_live_heap_field_writes.live_heap_field_writebacks();
+        let relocation_identity_repair = self.stage_relocation_identity_repair(plan.forwarding_slots())?;
         debug_assert_eq!(
             live_heap_field_writebacks,
             preflight_live_heap_field_writebacks
@@ -2641,7 +2641,7 @@ impl TreeWalk {
         );
         self.thunk_resolve_remembered_set = next_remembered_set;
         let card_table_clear_report = self.thunk_resolve_card_table.clear_dirty_cards();
-
+        self.commit_relocation_identity_repair(relocation_identity_repair);
         Ok((
             TreeWalkSafepointMinorGcLiveReferenceWritebackApplication::new(
                 TreeWalkSafepointMinorGcReferenceWritebackRootStorageApplication::new(application),

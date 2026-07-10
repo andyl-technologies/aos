@@ -115,7 +115,7 @@ use crate::compile::{
 use crate::compile::Strictness;
 use crate::heap::{
     AllocationRegionFacts, GcCardTable, GcCardTableClearReport, GcDirtyCard, GcHeapAddress,
-    GenerationalGcError, GenerationalGcTier, HeapMemoryBudget, MinorGcCommitReport,
+    GenerationalGcError, GenerationalGcTier, HeapGeneration, HeapMemoryBudget, MinorGcCommitReport,
     MinorGcDestinationBases, MinorGcDestinationPlacementPlan, MinorGcForwardingSlot,
     MinorGcObjectByteCopyBuffer, MinorGcObjectCopyPlan, MinorGcOwnedDestinationStorage,
     MinorGcOwnedDestinationStorageCopyReport, MinorGcPlan, MinorGcPromotionPolicy,
@@ -1705,6 +1705,7 @@ mod flake_git;
 mod flake_ref;
 mod gc_sweep;
 mod region;
+mod relocation_identity;
 mod safepoint_roots;
 mod select_cache_hash;
 use select_cache_hash::SelectCacheMap;
@@ -1717,7 +1718,6 @@ pub use tier1_publish::{
     OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook, Tier2FilterHook, Tier2FoldHook,
 };
 mod tier2_apply;
-
 pub use eval_impure_inputs::{
     canonicalize_cacheable_input_trace, revalidate_cacheable_input_trace,
 };

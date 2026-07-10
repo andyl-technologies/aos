@@ -256,6 +256,14 @@ key/reference that B2 must repair. The checked-in table at
 `ratchet-value`, `ratchet-oracle`, and `ratchet-jit`, pins per-file counts,
 and gives every relocation-sensitive family a concrete B2 disposition.
 Any new or reclassified production caller fails the audit until reviewed.
+The first B2 repair slice now closes ten of the 22 production-sensitive
+callers: `relocation_identity.rs` stages the live survivor mapping before any
+root or heap mutation, rekeys the lazy-identity/fold and tier-1 publish tables
+after a successful live writeback commit, prunes dead young keys before nursery
+address reuse, and clears the advisory unhashable-value memo. The remaining 12
+callers are the active-force/render traversal identities, atomic environment
+cells, structural hashes, shape fingerprints, and JIT constants enumerated by
+the same table.
 
 ### 2.5 GC integration: header-resident marks
 

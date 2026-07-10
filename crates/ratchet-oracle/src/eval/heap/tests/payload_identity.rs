@@ -87,7 +87,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         raw_representation: 0,
         address_identity_only: 0,
         relocation_sensitive: 6,
-        b2_disposition: "rekey lazy-identity and fold-initial thunk sets",
+        b2_disposition: "rekey lazy-identity and fold-initial thunk sets in the live commit",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_core/force_identity.rs",
@@ -108,7 +108,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         raw_representation: 0,
         address_identity_only: 0,
         relocation_sensitive: 1,
-        b2_disposition: "clear or rekey the advisory unhashable-value set",
+        b2_disposition: "clear the advisory unhashable-value set in the live commit",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_list_map.rs",
@@ -164,7 +164,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         raw_representation: 0,
         address_identity_only: 0,
         relocation_sensitive: 3,
-        b2_disposition: "rekey tier-1 publish slots after thunk forwarding",
+        b2_disposition: "rekey tier-1 publish slots in the live commit after forwarding",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-value/src/attrs/shape/instance.rs",

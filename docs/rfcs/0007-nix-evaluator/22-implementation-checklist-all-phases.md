@@ -8216,6 +8216,19 @@ and helps the oracle directly.
       precursor: arbitrary Rust locals still need explicit caller
       registration, and mutable relocation slots, collector invocation, and JIT
       stack maps remain open in the full precise-root row above.
+- [x] Current TreeWalk relocation-identity repair hook:
+      `eval/tree_walk/relocation_identity.rs` closes ten of the 22 production
+      relocation-sensitive identity callers from doc 30's executable audit.
+      The live reference applicator stages the forwarding map and validates
+      every retained thunk identity before root or heap mutation, then rekeys
+      lazy-identity/fold sets and tier-1 publish slots after successful
+      writeback, prunes unforwarded young keys before nursery address reuse,
+      and clears the advisory unhashable-value memo. The commit half is
+      allocation-free. Tests cover survivor rekeying, dead-young pruning,
+      metadata preservation, and memo clearing on a real `TreeWalk`. Active
+      force/render traversal identities, atomic environment cells, structural
+      hashes/shape fingerprints, and JIT constants remain open in the same
+      mechanically enforced worklist.
 - [x] Current tree-walk transient value-stack registration precursor:
       `TreeWalk` owns scoped transient value-stack root storage for evaluator
       paths that keep heap values in Rust locals across allocation safepoints.
