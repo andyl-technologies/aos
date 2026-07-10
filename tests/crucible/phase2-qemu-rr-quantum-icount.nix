@@ -341,7 +341,15 @@ in
             nvcpu_result="${qemuNvcpuFingerprint}/result"
             require_line "$nvcpu_result" "PASS"
             require_line "$nvcpu_result" "rr_cursor=current-vcpu-position-and-quantum"
-            require_line "$nvcpu_result" "real_qemu_smoke=bounded-sim-smp4-stop_at-trace"
+            require_line "$nvcpu_result" "guest_fixture=phase0-s11-reusable-real-smp-guest"
+            require_line "$nvcpu_result" "real_qemu_runs=two-bounded-sim-smp4-stop-at-traces"
+            require_line "$nvcpu_result" "real_qemu_comparison=canonical-rust-stream"
+            require_line "$nvcpu_result" "real_qemu_adversary=second-run-host-cpu-load"
+            require_line "$nvcpu_result" "live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum"
+            require_line "$nvcpu_result" "all_vcpus_retired_at_horizon=true"
+            require_line "$nvcpu_result" "live_device_io_observed=true"
+            require_line "$nvcpu_result" "exact_horizon_authoritative=true"
+            require_line "$nvcpu_result" "plugin_exit_pause_overshoot_bound=one-rr-quantum"
             cp "$nvcpu_result" "$out/qemu-nvcpu-fingerprint.result"
 
             s11_result="${simS11}/result"
@@ -392,6 +400,9 @@ in
             rejects_mttcg=true
             rejects_unpinned_rr_switch_quantum=true
             nvcpu_fingerprint_rr_cursor=covered
+            nvcpu_live_smp_guest=covered
+            nvcpu_live_device_io=covered
+            nvcpu_exact_horizon=covered
             RESULT
           '';
         }
