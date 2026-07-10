@@ -11237,6 +11237,35 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       exported-symbol admission in `aos-nix`, trap/error transfer, evaluator
       thunk publication, thunk-state CAS, remaining helper-family coverage, and
       `.drv` parity remain open.
+- [x] FV-5 hybrid-capture integration for the live tier-2 JIT: every tier-2
+      self/pinned-callee guard and argument extraction now resolves conceptual
+      captured coordinates through the tree walk, so linked frame chains and
+      inline flat capture tails share one path. Curried-chain entries guard the
+      recursive root def-site and read captures from the currently dispatched
+      hybrid environment instead of relying on the pre-FV-5 frame-prefix
+      relation. `RuntimeJitContext` carries the dispatched
+      `EvalEnv`; the frozen opaque environment ABI slot points to that pinned
+      context, allowing `aos_env_get`, `aos_upval_get`, and the primop
+      trampoline to resolve flat captures without exposing raw tail storage or
+      bypassing the heap registry. The runtime-FFI unsafe allowlist count-pins
+      both context pointers. Tier-2 tests now annotate capture plans before
+      evaluation, covering unary recursion, fused curried chains, folds,
+      filters, and fold/genList under the production closure representation.
+      The release `bench.compute.fib` witness moved from the discovered
+      no-promotion regression (about 2.11 seconds) to byte-identical medians of
+      6.07 ms cold and 5.24 ms warm versus C++ Nix 2.24.12 at 150.25 ms and
+      153.06 ms: 24.8x and 29.2x faster. Telemetry records one promotion, nine
+      dispatches, zero deopts, and 17 allocated thunks instead of about 1.03
+      million. Five-sample byte-parity medians also measure `tak` at 20.3x/20.1x
+      and `sum-fold` at 28.0x/25.4x faster cold/warm. This repairs the live P7
+      seams. The landing gate passed 3,032 oracle tests (34 ignored), 77
+      runtime-FFI tests (26 ignored), 322 `aos-nix` tests, doctests, the 38-test
+      pinned language wrapper, all 16 package legs, all seven wide/shape modes,
+      compute x8, zlib and wide cache validation, and all 648 strict-JSON seeds
+      in serial/K=4/JIT/sweep-zero. The frozen source-size offender set remains
+      unchanged. Cranelift user-stack-map emission, live compiled-frame binding,
+      allocation-capable bodies, OSR, and the persistent compiled-body cache
+      remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling

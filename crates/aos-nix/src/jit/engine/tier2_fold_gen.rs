@@ -267,7 +267,9 @@ mod tests {
     fn lower(source: &str) -> Ir {
         let parsed = parse_str(source).expect("source parses");
         let resolved = ratchet_oracle::compile::resolve(parsed).expect("source resolves");
-        aos_nix_dialect::nix_lower(resolved).expect("source lowers")
+        let mut ir = aos_nix_dialect::nix_lower(resolved).expect("source lowers");
+        ratchet_core::annotate_capture_plans(&mut ir).expect("capture plans annotate");
+        ir
     }
 
     /// Evaluates `source` to WHNF through the tree-walk oracle (no JIT engine).

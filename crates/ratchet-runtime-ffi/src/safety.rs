@@ -110,13 +110,8 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_env_get(env: *mut c_void, slot: u32) -> Value {"
     );
-    const ENV_GET_DECODER_CALL_LINE: &str = concat!("uns", "afe {");
-    const ENV_FRAME_DECODER_LINE: &str = concat!(
-        "uns",
-        "afe fn with_native_env<R>(env: *mut c_void, call: impl FnOnce(&EvalEnv) -> R) -> R {"
-    );
-    const ENV_FRAME_CAST_LINE: &str =
-        concat!("call(", "uns", "afe { env.cast::<EvalEnv>().as_ref() })");
+    const ENV_GET_DECODER_CALL_LINE: &str =
+        concat!("uns", "afe { // aos_env_get runtime-environment decode");
     const DIRECT_TEST_CALL_LINE: &str =
         concat!("let actual = ", "uns", "afe { aos_env_get(env_ptr, 1) };");
     const BINDING_TEST_CALL_LINE: &str = concat!(
@@ -138,10 +133,8 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_upval_get(env: *mut c_void, depth: u32, slot: u32) -> Value {"
     );
-    const UPVAL_GET_DECODER_CALL_LINE: &str = concat!(
-        "uns",
-        "afe { with_native_env(env, |env| upval_frame_slot(env, depth, slot)) }"
-    );
+    const UPVAL_GET_DECODER_CALL_LINE: &str =
+        concat!("uns", "afe { // aos_upval_get runtime-environment decode");
     const UPVAL_INNERMOST_TEST_CALL_LINE: &str = concat!(
         "let innermost = ",
         "uns",
@@ -172,13 +165,27 @@ mod tests {
         "uns",
         "afe fn with_native_runtime_context<R>("
     );
+    const RUNTIME_ENV_CONTEXT_DECODER_LINE: &str = concat!(
+        "pub(crate) ",
+        "uns",
+        "afe fn with_native_runtime_env_context<R>("
+    );
     const RUNTIME_CONTEXT_CAST_LINE: &str = concat!(
         "let context = ",
         "uns",
         "afe { rt.cast::<RuntimeJitContext<'static>>().as_mut() };"
     );
+    const RUNTIME_ENV_CONTEXT_CAST_LINE: &str = concat!(
+        "let env_context = ",
+        "uns",
+        "afe { rt.cast::<RuntimeJitContext<'static>>().as_mut() };"
+    );
     const RUNTIME_CONTEXT_EVAL_LINE: &str =
         concat!("call(", "uns", "afe { context.eval.as_mut() }, id, span)");
+    const RUNTIME_ENV_CONTEXT_EVAL_LINE: &str =
+        concat!("uns", "afe { env_context.eval.as_mut() },");
+    const RUNTIME_ENV_CONTEXT_ENV_LINE: &str =
+        concat!("uns", "afe { env.as_ref() },");
     const ALLOC_CODE_ENV_FN_TYPE_LINE: &str = concat!(
         "uns",
         "afe ",
@@ -586,10 +593,6 @@ mod tests {
         "ern \"C\" fn aos_primop_call("
     );
     const PRIMOP_CALL_DECODER_CALL_LINE: &str = concat!("uns", "afe {");
-    const PRIMOP_CALL_SUCCESS_PATH_FN_LINE: &str =
-        concat!("uns", "afe fn primop_call_success_path(");
-    const PRIMOP_ENV_CAST_LINE: &str =
-        concat!("let env = ", "uns", "afe { env.cast::<EvalEnv>().as_ref() };");
     const STRING_LENGTH_FN_TYPE_LINE: &str = concat!(
         "pub type RuntimeStringLengthNativeFn = ",
         "uns",
@@ -737,8 +740,6 @@ mod tests {
                 || trimmed == ENV_GET_EXPORT_ATTR_LINE
                 || trimmed == ENV_GET_FN_LINE
                 || trimmed == ENV_GET_DECODER_CALL_LINE
-                || trimmed == ENV_FRAME_DECODER_LINE
-                || trimmed == ENV_FRAME_CAST_LINE
                 || trimmed == DIRECT_TEST_CALL_LINE
                 || trimmed == BINDING_TEST_CALL_LINE
                 || trimmed == UPVAL_GET_FN_TYPE_LINE
@@ -832,8 +833,12 @@ mod tests {
         let trimmed = line.trim_start();
         if token == UNSAFE_TOKEN {
             trimmed == RUNTIME_CONTEXT_DECODER_LINE
+                || trimmed == RUNTIME_ENV_CONTEXT_DECODER_LINE
                 || trimmed == RUNTIME_CONTEXT_CAST_LINE
+                || trimmed == RUNTIME_ENV_CONTEXT_CAST_LINE
                 || trimmed == RUNTIME_CONTEXT_EVAL_LINE
+                || trimmed == RUNTIME_ENV_CONTEXT_EVAL_LINE
+                || trimmed == RUNTIME_ENV_CONTEXT_ENV_LINE
         } else {
             false
         }
@@ -859,8 +864,6 @@ mod tests {
                 || trimmed == PRIMOP_CALL_EXPORT_ATTR_LINE
                 || trimmed == PRIMOP_CALL_FN_LINE
                 || trimmed == PRIMOP_CALL_DECODER_CALL_LINE
-                || trimmed == PRIMOP_CALL_SUCCESS_PATH_FN_LINE
-                || trimmed == PRIMOP_ENV_CAST_LINE
         } else if token == EXTERN_TOKEN {
             trimmed == PRIMOP_CALL_FN_TYPE_LINE || trimmed == PRIMOP_CALL_FN_LINE
         } else if token == NO_MANGLE_TOKEN {
@@ -1451,16 +1454,6 @@ mod unchecked_cfg;
             "aos_upval_get wrapper call to the decoder must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&env, ENV_FRAME_DECODER_LINE),
-            1,
-            "raw EvalFrame pointer decoder must stay singly reviewed"
-        );
-        assert_eq!(
-            trimmed_line_occurrences(&env, ENV_FRAME_CAST_LINE),
-            1,
-            "raw EvalFrame pointer cast must stay singly reviewed"
-        );
-        assert_eq!(
             trimmed_line_occurrences(&env, DIRECT_TEST_CALL_LINE),
             1,
             "direct test call of aos_env_get must stay singly reviewed"
@@ -1476,14 +1469,34 @@ mod unchecked_cfg;
             "raw shared runtime context decoder must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&context, RUNTIME_ENV_CONTEXT_DECODER_LINE),
+            1,
+            "raw shared runtime environment decoder must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&context, RUNTIME_CONTEXT_CAST_LINE),
             1,
             "raw shared runtime context cast must stay singly reviewed"
         );
         assert_eq!(
+            trimmed_line_occurrences(&context, RUNTIME_ENV_CONTEXT_CAST_LINE),
+            1,
+            "raw shared runtime environment context cast must stay singly reviewed"
+        );
+        assert_eq!(
             trimmed_line_occurrences(&context, RUNTIME_CONTEXT_EVAL_LINE),
             1,
             "raw shared runtime TreeWalk pointer cast must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&context, RUNTIME_ENV_CONTEXT_EVAL_LINE),
+            1,
+            "raw shared runtime evaluator pointer must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&context, RUNTIME_ENV_CONTEXT_ENV_LINE),
+            1,
+            "raw shared runtime environment pointer must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&alloc, ALLOC_CODE_ENV_FN_TYPE_LINE),
@@ -2000,8 +2013,8 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &lines,
-            ENV_FRAME_CAST_LINE,
-            "raw EvalFrame pointer cast must keep a SAFETY comment",
+            UPVAL_GET_DECODER_CALL_LINE,
+            "aos_upval_get decoder call must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &lines,
@@ -2020,13 +2033,33 @@ mod unchecked_cfg;
         );
         assert_has_safety_comment_before(
             &context_lines,
+            RUNTIME_ENV_CONTEXT_DECODER_LINE,
+            "raw shared runtime environment decoder must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &context_lines,
             RUNTIME_CONTEXT_CAST_LINE,
             "raw shared runtime context cast must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &context_lines,
+            RUNTIME_ENV_CONTEXT_CAST_LINE,
+            "raw shared runtime environment context cast must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &context_lines,
             RUNTIME_CONTEXT_EVAL_LINE,
             "raw shared runtime TreeWalk pointer cast must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &context_lines,
+            RUNTIME_ENV_CONTEXT_EVAL_LINE,
+            "raw shared runtime evaluator pointer must keep a SAFETY comment",
+        );
+        assert_has_safety_comment_before(
+            &context_lines,
+            RUNTIME_ENV_CONTEXT_ENV_LINE,
+            "raw shared runtime environment pointer must keep a SAFETY comment",
         );
         assert_has_safety_comment_before(
             &alloc_lines,

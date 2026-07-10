@@ -392,8 +392,8 @@ fn tier2_def_site_key(lambda: &EvalLambda) -> u64 {
 
 /// Returns true when the body's self-callee upvalue is the applied closure.
 ///
-/// Resolves the body-relative `(depth, slot)` against the closure's captured
-/// frames (`captured_len - depth`) and peeks through an already-forced thunk
+/// Resolves the body-relative `(depth, slot)` against the closure's hybrid
+/// captured environment and peeks through an already-forced thunk
 /// without forcing anything (an unforced binding simply fails the guard). The
 /// comparison is representation-level identity: the exact closure value the
 /// interpreter's own callee lookup would produce.
@@ -404,16 +404,7 @@ fn self_callee_is_this_closure(
     self_upval: (u32, u32),
 ) -> bool {
     let (depth, slot) = self_upval;
-    let frames = lambda.env().frames();
-    let captured_len = frames.len();
-    if depth == 0 || (depth as usize) > captured_len {
-        return false;
-    }
-    let index = captured_len - depth as usize;
-    let Some(frame) = frames.get(index) else {
-        return false;
-    };
-    let Ok(raw) = frame.get(slot) else {
+    let Some(raw) = eval.tier2_captured_upvalue(lambda.env(), depth, slot) else {
         return false;
     };
     let Some(resolved) = eval.tier2_peek_forced(raw) else {
@@ -466,7 +457,9 @@ mod tests {
     fn lower(source: &str) -> Ir {
         let parsed = parse_str(source).expect("source parses");
         let resolved = ratchet_oracle::compile::resolve(parsed).expect("source resolves");
-        aos_nix_dialect::nix_lower(resolved).expect("source lowers")
+        let mut ir = aos_nix_dialect::nix_lower(resolved).expect("source lowers");
+        ratchet_core::annotate_capture_plans(&mut ir).expect("capture plans annotate");
+        ir
     }
 
     /// Evaluates `source` to WHNF through the tree-walk oracle (no JIT engine).

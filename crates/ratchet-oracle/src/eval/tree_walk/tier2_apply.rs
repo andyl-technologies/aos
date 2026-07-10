@@ -163,6 +163,31 @@ impl TreeWalk {
         }
     }
 
+    /// Resolves a body-relative upvalue from a closure's hybrid captured environment.
+    ///
+    /// `depth` includes the lambda call frame, matching lowered `UpvalVar`
+    /// coordinates: depth one names the innermost captured frame. Both linked
+    /// frame chains and FV-5 flat capture payloads are supported.
+    pub fn tier2_captured_upvalue(
+        &self,
+        env: &EvalEnv,
+        depth: u32,
+        slot: u32,
+    ) -> Option<Value> {
+        let captured_depth = usize::try_from(depth.checked_sub(1)?).ok()?;
+        self.captured_env_value_at_depth(env, captured_depth, slot)
+    }
+
+    /// Resolves an outermost-indexed slot from a hybrid captured environment.
+    pub fn tier2_captured_value_at_index(
+        &self,
+        env: &EvalEnv,
+        frame: usize,
+        slot: u32,
+    ) -> Option<Value> {
+        self.captured_env_value_at_index(env, frame, slot)
+    }
+
     /// Returns the heap lambda record behind a lambda value, if any.
     ///
     /// The tier-2 engine uses this to inspect closures it resolved out of a

@@ -28,16 +28,13 @@
 //! partial-application spine the interpreter built is exactly the one the
 //! compiled chain fuses:
 //!
-//! - the applied closure's captured environment ends with the K-1 argument
-//!   frames of the outer applications, and the prefix before them is
-//!   frame-for-frame (pointer) identical to the resolved chain root's
-//!   captured environment — which makes every parameter and self-callee read
-//!   inside the native recursion exactly the read the interpreter would
-//!   perform;
-//! - the self-callee upvalue resolves (through an already-forced binding) to
-//!   a closure with the chain root's module, pattern, and body — the def-site
-//!   identity that makes the compiled direct self-call the interpreter's
-//!   call;
+//! - the applied closure's hybrid captured environment supplies the K-1 outer
+//!   arguments by conceptual frame index, whether FV-5 stored them in linked
+//!   frames or a flat capture tail;
+//! - the self-callee upvalue resolves (through an already-forced binding) to a
+//!   closure with the chain root's module, pattern, and body; the compiled body
+//!   reads every capture from the currently dispatched hybrid environment, so
+//!   the def-site guard remains valid after FV-5 copying;
 //! - every pinned callee still resolves to a closure with the recorded
 //!   def-site identity (a pinned body is call-free and environment-free, so
 //!   def-site identity implies behavioral identity); and
@@ -50,7 +47,6 @@
 //! unary tier: compiled chains are pure except for memoizing forces.
 
 use std::rc::Rc;
-use std::sync::Arc;
 
 use ratchet_core::{IrArena, IrBinding, IrData, IrId, IrKind};
 use ratchet_jit::{
@@ -72,8 +68,8 @@ use super::tier2::{TIER2_MIN_NATIVE_INSTS, continued_hook};
 /// Def-site identity (module-scoped pattern and body nodes) rather than value
 /// identity: any closure instance of the same source lambda chain behaves
 /// identically for a call-free pinned body, and the chain root's remaining
-/// behavioral dependence — its captured environment — is guarded separately
-/// by frame-pointer prefix identity.
+/// behavioral dependence — its captured environment — is read from the
+/// currently dispatched closure through the hybrid environment path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Tier2PinIdentity {
     /// Body-relative `(depth, slot)` of the callee upvalue.
@@ -216,19 +212,13 @@ impl NixJitTier1Engine {
         if candidates.is_empty() {
             return ChainPreparation::Structural;
         }
-        let frames = lambda.env().frames();
-        let frame_count = frames.len();
-
         // Find the self-callee: the candidate whose resolved closure's own
         // curried chain walks back down to exactly this def-site.
         let mut root = None;
         let mut saw_transient = false;
         for candidate in &candidates {
             let (depth, slot) = candidate.upval;
-            if depth == 0 || depth as usize > frame_count {
-                continue;
-            }
-            let Ok(raw) = frames[frame_count - depth as usize].get(slot) else {
+            let Some(raw) = eval.tier2_captured_upvalue(lambda.env(), depth, slot) else {
                 continue;
             };
             let Some(resolved) = eval.tier2_peek_forced(raw) else {
@@ -276,10 +266,7 @@ impl NixJitTier1Engine {
                 continue;
             }
             let (depth, slot) = site.upval;
-            if depth as usize > frame_count {
-                return ChainPreparation::Structural;
-            }
-            let Ok(raw) = frames[frame_count - depth as usize].get(slot) else {
+            let Some(raw) = eval.tier2_captured_upvalue(lambda.env(), depth, slot) else {
                 return ChainPreparation::Structural;
             };
             let Some(resolved) = eval.tier2_peek_forced(raw) else {
@@ -357,7 +344,7 @@ impl NixJitTier1Engine {
 /// Checks every chain dispatch guard and extracts the outer-argument run.
 ///
 /// Returns the argv prefix (chain parameters `0..K-1`, read from the last
-/// `K-1` captured argument frames) with the last slot left for the boundary
+/// `K-1` conceptual captured frames) with the last slot left for the boundary
 /// argument, or `None` when any guard fails (see the [module docs](self)).
 pub(super) fn chain_guard_argv(
     eval: &TreeWalk,
@@ -368,20 +355,18 @@ pub(super) fn chain_guard_argv(
     if arity < 2 || arity > TIER2_MAX_CHAIN_ARITY as usize {
         return None;
     }
-    let frames = lambda.env().frames();
-    let frame_count = frames.len();
+    let frame_count = lambda.env().frame_count();
     let outer = arity - 1;
     if frame_count < outer {
         return None;
     }
     let prefix_len = frame_count - outer;
 
-    // Self-callee def-site identity.
+    // Self-callee def-site identity. FV-5 may copy the root environment into a
+    // flat capture, so the legacy frame-prefix relation no longer exists. The
+    // compiled body reads all captures from this dispatched hybrid environment.
     let (depth, slot) = entry.self_upval;
-    if depth == 0 || depth as usize > frame_count {
-        return None;
-    }
-    let raw = frames[frame_count - depth as usize].get(slot).ok()?;
+    let raw = eval.tier2_captured_upvalue(lambda.env(), depth, slot)?;
     let resolved = eval.tier2_peek_forced(raw)?;
     let root = eval.tier2_clone_lambda(resolved)?;
     if root.module() != lambda.module()
@@ -390,26 +375,10 @@ pub(super) fn chain_guard_argv(
     {
         return None;
     }
-    // Environment-prefix identity: the applied closure's captured frames are
-    // the root's captured frames plus the K-1 argument frames.
-    let root_frames = root.env().frames();
-    if root_frames.len() != prefix_len {
-        return None;
-    }
-    if !root_frames
-        .iter()
-        .zip(frames.iter().take(prefix_len))
-        .all(|(left, right)| Arc::ptr_eq(left, right))
-    {
-        return None;
-    }
     // Pinned callee def-site identities.
     for pin in &entry.pinned {
         let (depth, slot) = pin.upval;
-        if depth == 0 || depth as usize > frame_count {
-            return None;
-        }
-        let raw = frames[frame_count - depth as usize].get(slot).ok()?;
+        let raw = eval.tier2_captured_upvalue(lambda.env(), depth, slot)?;
         let resolved = eval.tier2_peek_forced(raw)?;
         let pin_lambda = eval.tier2_clone_lambda(resolved)?;
         if pin_lambda.module() != lambda.module()
@@ -422,7 +391,7 @@ pub(super) fn chain_guard_argv(
 
     let mut argv = [Value::null(); TIER2_MAX_CHAIN_ARITY as usize];
     for (index, argument) in argv.iter_mut().enumerate().take(outer) {
-        *argument = frames[prefix_len + index].get(0).ok()?;
+        *argument = eval.tier2_captured_value_at_index(lambda.env(), prefix_len + index, 0)?;
     }
     Some(argv)
 }
@@ -443,7 +412,9 @@ mod tests {
     fn lower(source: &str) -> Ir {
         let parsed = parse_str(source).expect("source parses");
         let resolved = ratchet_oracle::compile::resolve(parsed).expect("source resolves");
-        aos_nix_dialect::nix_lower(resolved).expect("source lowers")
+        let mut ir = aos_nix_dialect::nix_lower(resolved).expect("source lowers");
+        ratchet_core::annotate_capture_plans(&mut ir).expect("capture plans annotate");
+        ir
     }
 
     /// Evaluates `source` to WHNF through the tree-walk oracle (no JIT engine).

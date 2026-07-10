@@ -17,7 +17,7 @@
 //! null runtime or environment pointer always aborts as a safety-contract
 //! violation.
 
-use std::{ffi::c_void, process, ptr::NonNull};
+use std::ffi::c_void;
 
 use ratchet_oracle::{
     compile::IrId,
@@ -26,7 +26,7 @@ use ratchet_oracle::{
     value::Value,
 };
 
-use crate::context::with_native_runtime_context;
+use crate::context::with_native_runtime_env_context;
 use crate::trap::{RuntimeTrap, record_runtime_trap, runtime_trap_sentinel_value};
 
 /// Native C ABI function-pointer shape for `aos_primop_call`.
@@ -47,8 +47,8 @@ pub type RuntimePrimopCallNativeFn =
 /// Forces a lowered primop body through the frozen native `aos_primop_call` ABI.
 ///
 /// This wrapper is the success-path C ABI body for `aos_primop_call`. It decodes
-/// `rt` as the shared runtime context, decodes `env` as the dispatched
-/// [`EvalEnv`], reconstructs the primop node from `module_id`/`node_id`, and
+/// `rt` as the shared runtime context and takes the dispatched [`EvalEnv`] from
+/// that context, reconstructs the primop node from `module_id`/`node_id`, and
 /// evaluates it through [`TreeWalk::run_lowered_primop_body`]. A tree-walk
 /// evaluator error is recorded as [`RuntimeTrap::Primop`] through the active
 /// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
@@ -59,10 +59,9 @@ pub type RuntimePrimopCallNativeFn =
 ///
 /// `rt` must be a non-null pointer produced from a pinned live runtime context
 /// whose wrapped evaluator outlives the call, and the caller must uphold
-/// exclusive mutable access to that evaluator. `env` must be a non-null pointer
-/// to a live [`EvalEnv`] whose frames outlive the call and are not mutably
-/// borrowed during it. The caller must also ensure the host ABI used to call
-/// this function matches the frozen `aos_primop_call` runtime signature.
+/// exclusive mutable access to that evaluator. `env` must equal `rt`, carrying
+/// the same pinned context and its live [`EvalEnv`]. The caller must also ensure
+/// the host ABI matches the frozen `aos_primop_call` runtime signature.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aos_primop_call(
     rt: *mut c_void,
@@ -71,33 +70,25 @@ pub unsafe extern "C" fn aos_primop_call(
     node_id: u32,
 ) -> Value {
     // SAFETY: The wrapper's caller must satisfy the frozen native ABI and the
-    // runtime-context and EvalEnv pointer contracts documented on this function.
+    // shared runtime-context pointer contract documented on this function.
     unsafe {
-        with_native_runtime_context(rt, |eval, _id, span| {
-            primop_call_success_path(eval, env, module_id, node_id, span)
+        with_native_runtime_env_context(rt, |eval, captured, _id, span| {
+            if env != rt {
+                std::process::abort();
+            }
+            primop_call_success_path(eval, captured, module_id, node_id, span)
         })
     }
 }
 
-/// Decodes `env` and forces the reconstructed primop node, trapping on error.
-///
-/// # Safety
-///
-/// `env` must be a non-null pointer to a live [`EvalEnv`] whose frames outlive
-/// this call and are not mutably borrowed for its duration.
-unsafe fn primop_call_success_path(
+/// Forces the reconstructed primop node against the context's captured environment.
+fn primop_call_success_path(
     eval: &mut TreeWalk,
-    env: *mut c_void,
+    env: &EvalEnv,
     module_id: u32,
     node_id: u32,
     span: Span,
 ) -> Value {
-    let Some(env) = NonNull::new(env) else {
-        process::abort();
-    };
-    // SAFETY: The caller guarantees a live EvalEnv pointer whose frames outlive
-    // this call and are not mutably borrowed for its duration.
-    let env = unsafe { env.cast::<EvalEnv>().as_ref() };
     let node = EvalNodeRef::new(EvalModuleId::new(module_id), IrId::new(node_id));
     match eval.run_lowered_primop_body(env, node, span) {
         Ok(value) => value,

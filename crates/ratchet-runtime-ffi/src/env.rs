@@ -1,16 +1,17 @@
 //! Environment-access C ABI wrappers.
 //!
-//! The tree-walk evaluator stores lexical captures in [`EvalFrame`]. Native
+//! The tree-walk evaluator stores lexical captures in linked
+//! [`ratchet_oracle::eval::EvalFrame`]s or FV-5 flat closure tails. Native
 //! tier-1 code imports `aos_env_get` with the frozen `(env, slot) -> Value`
 //! signature, where `env` is an opaque pointer to that frame and `slot` is the
 //! captured local index. This module supplies the first success-path wrapper for
 //! that ABI and metadata describing what still prevents final native export
 //! registration.
 
-use std::{ffi::c_void, process, ptr::NonNull};
+use std::ffi::c_void;
 
 use ratchet_oracle::{
-    eval::{EvalEnv, EvalEnvError, EvalFrame},
+    eval::{EvalEnv, EvalEnvError, tree_walk::TreeWalk},
     runtime::env::{
         RuntimeEnvAccessAbiSignature, RuntimeEnvAccessEntryPoint,
         RuntimeEnvAccessNativeExportBlocker,
@@ -18,6 +19,7 @@ use ratchet_oracle::{
     value::Value,
 };
 
+use crate::context::with_native_runtime_env_context;
 use crate::trap::{RuntimeTrap, record_runtime_trap, runtime_trap_sentinel_value};
 
 /// Native C ABI function pointer shape for `aos_env_get`.
@@ -44,26 +46,28 @@ const ENV_ACCESS_REMAINING_EXPORT_BLOCKERS: &[RuntimeEnvAccessNativeExportBlocke
 /// Reads one captured environment slot through an unmangled frozen native ABI body.
 ///
 /// This wrapper is the success-path C ABI body for `aos_env_get`. It decodes the
-/// opaque environment pointer as an [`EvalFrame`], reads `slot` through the same
-/// safe frame API used by the tree-walk oracle, and returns the copied [`Value`]
-/// by value. A frame-access error is recorded through the active
+/// opaque environment pointer as a pinned runtime context, resolves the
+/// innermost conceptual frame through the same hybrid-environment API as the
+/// tree-walk oracle, and returns the copied [`Value`] by value. An access error
+/// is recorded through the active
 /// [`crate::trap::RuntimeTrapScope`] and the wrapper returns
 /// [`runtime_trap_sentinel_value`]; outside a scope that error aborts. A null
 /// environment pointer always aborts as a safety-contract violation.
 ///
 /// # Safety
 ///
-/// `env` must be a non-null pointer produced from a live [`EvalFrame`] whose
-/// allocation outlives the call. The frame must not be mutably borrowed during
-/// the call, and `slot` must be in bounds for that frame. The caller must also
-/// ensure the host ABI used to call this function matches the frozen
-/// `aos_env_get` runtime signature.
+/// `env` must be the opaque pointer produced from a pinned live runtime context
+/// carrying the dispatched [`EvalEnv`]. The wrapped evaluator and environment
+/// must outlive the call, and `slot` must be in bounds. The caller must also
+/// ensure the host ABI matches the frozen `aos_env_get` signature.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aos_env_get(env: *mut c_void, slot: u32) -> Value {
     // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
-    // EvalEnv pointer contract documented on this function.
-    unsafe {
-        with_native_env(env, |env| innermost_frame_slot(env, slot))
+    // pinned runtime-environment contract documented on this function.
+    unsafe { // aos_env_get runtime-environment decode
+        with_native_runtime_env_context(env, |eval, env, _, _| {
+            innermost_frame_slot(eval, env, slot)
+        })
     }
 }
 
@@ -84,24 +88,28 @@ pub type RuntimeUpvalGetNativeFn = unsafe extern "C" fn(*mut c_void, u32, u32) -
 /// Reads one captured upvalue slot through an unmangled frozen native ABI body.
 ///
 /// This wrapper is the success-path C ABI body for `aos_upval_get`. It decodes
-/// the opaque environment pointer as an [`EvalEnv`], walks `depth` frames up from
-/// the innermost frame, and reads `slot`, mirroring the tree walk's
-/// `env[len - 1 - depth].get(slot)` resolution. A depth past the captured frame
+/// the opaque environment pointer as a pinned runtime context, walks `depth`
+/// conceptual frames up through its hybrid [`EvalEnv`], and reads `slot`. A
+/// depth past the captured frame
 /// stack is transferred as a deopt and a frame-access error as an environment
 /// trap through the active [`crate::trap::RuntimeTrapScope`]; the wrapper then
 /// returns [`runtime_trap_sentinel_value`]. A null pointer always aborts.
 ///
 /// # Safety
 ///
-/// `env` must be a non-null pointer produced from a live [`EvalEnv`] whose
-/// allocation outlives the call. Its frames must not be mutably borrowed during
-/// the call. The caller must also ensure the host ABI used to call this function
-/// matches the frozen `aos_upval_get` runtime signature.
+/// `env` must be the opaque pointer produced from a pinned live runtime context
+/// carrying the dispatched [`EvalEnv`]. The wrapped evaluator and environment
+/// must outlive the call. The caller must also ensure the host ABI matches the
+/// frozen `aos_upval_get` signature.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aos_upval_get(env: *mut c_void, depth: u32, slot: u32) -> Value {
     // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
-    // EvalEnv pointer contract documented on this function.
-    unsafe { with_native_env(env, |env| upval_frame_slot(env, depth, slot)) }
+    // pinned runtime-environment contract documented on this function.
+    unsafe { // aos_upval_get runtime-environment decode
+        with_native_runtime_env_context(env, |eval, env, _, _| {
+            upval_frame_slot(eval, env, depth, slot)
+        })
+    }
 }
 
 /// Returns the process-local address of the [`aos_upval_get`] native wrapper.
@@ -113,13 +121,14 @@ pub fn aos_upval_get_native_wrapper_address() -> *mut c_void {
 }
 
 /// Reads `slot` from the innermost frame of `env`, trapping when there is none.
-fn innermost_frame_slot(env: &EvalEnv, slot: u32) -> Value {
-    match env.frames().last() {
-        Some(frame) => frame_slot(frame, slot),
-        None => {
-            record_runtime_trap(RuntimeTrap::Env(EvalEnvError::SlotOutOfBounds { slot, slots: 0 }));
-            runtime_trap_sentinel_value()
-        }
+fn innermost_frame_slot(eval: &TreeWalk, env: &EvalEnv, slot: u32) -> Value {
+    let value = env
+        .frame_count()
+        .checked_sub(1)
+        .and_then(|frame| eval.tier2_captured_value_at_index(env, frame, slot));
+    match value {
+        Some(value) => value,
+        None => env_access_trap(slot),
     }
 }
 
@@ -129,14 +138,13 @@ fn innermost_frame_slot(env: &EvalEnv, slot: u32) -> Value {
 /// walk raises as an invalid-upvalue-depth error, so it is transferred as a
 /// deopt: the engine re-runs the body on the tree walk to reproduce the exact
 /// error.
-fn upval_frame_slot(env: &EvalEnv, depth: u32, slot: u32) -> Value {
-    let frames = env.frames();
-    let index = frames
-        .len()
+fn upval_frame_slot(eval: &TreeWalk, env: &EvalEnv, depth: u32, slot: u32) -> Value {
+    let index = env
+        .frame_count()
         .checked_sub(1)
         .and_then(|last| last.checked_sub(depth as usize));
-    match index {
-        Some(index) => frame_slot(&frames[index], slot),
+    match index.and_then(|index| eval.tier2_captured_value_at_index(env, index, slot)) {
+        Some(value) => value,
         None => {
             record_runtime_trap(RuntimeTrap::Deopt);
             runtime_trap_sentinel_value()
@@ -145,14 +153,9 @@ fn upval_frame_slot(env: &EvalEnv, depth: u32, slot: u32) -> Value {
 }
 
 /// Reads `slot` from `frame`, transferring a frame-access error as a trap.
-fn frame_slot(frame: &EvalFrame, slot: u32) -> Value {
-    match frame.get(slot) {
-        Ok(value) => value,
-        Err(error) => {
-            record_runtime_trap(RuntimeTrap::Env(error));
-            runtime_trap_sentinel_value()
-        }
-    }
+fn env_access_trap(slot: u32) -> Value {
+    record_runtime_trap(RuntimeTrap::Env(EvalEnvError::SlotOutOfBounds { slot, slots: 0 }));
+    runtime_trap_sentinel_value()
 }
 
 /// Returns metadata for exported environment-access wrappers in symbol order.
@@ -239,18 +242,10 @@ impl RuntimeEnvAccessNativeWrapperBinding {
     }
 }
 
-unsafe fn with_native_env<R>(env: *mut c_void, call: impl FnOnce(&EvalEnv) -> R) -> R {
-    let Some(env) = NonNull::new(env) else {
-        process::abort();
-    };
-    // SAFETY: The caller must provide a live EvalEnv pointer with a lifetime
-    // covering this call.
-    call(unsafe { env.cast::<EvalEnv>().as_ref() })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratchet_oracle::eval::EvalFrame;
 
     #[test]
     fn env_native_wrapper_binding_preserves_symbol_abi_and_address() {
@@ -299,8 +294,12 @@ mod tests {
         let expected = Value::int(42);
         frame.set(1, expected).expect("slot stores");
         let env = EvalEnv::capture(&[frame]).expect("env captures");
-
-        let env_ptr = (&env as *const EvalEnv) as *mut c_void;
+        let ir = lower_source("null");
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(crate::context::RuntimeJitContext::new_with_env(
+            &mut eval, ir.root, ratchet_oracle::syntax::Span::new(0, 4), &env,
+        ));
+        let env_ptr = context.as_mut().as_mut_ptr();
         // SAFETY: The env is live for the call, the slot is in bounds, and no
         // mutable borrow is active.
         let actual = unsafe { aos_env_get(env_ptr, 1) };
@@ -318,7 +317,12 @@ mod tests {
         inner.set(0, inner_value).expect("inner slot stores");
         // Frames are ordered outermost to innermost.
         let env = EvalEnv::capture(&[outer, inner]).expect("env captures");
-        let env_ptr = (&env as *const EvalEnv) as *mut c_void;
+        let ir = lower_source("null");
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(crate::context::RuntimeJitContext::new_with_env(
+            &mut eval, ir.root, ratchet_oracle::syntax::Span::new(0, 4), &env,
+        ));
+        let env_ptr = context.as_mut().as_mut_ptr();
 
         // SAFETY: The env is live, depths/slots are in bounds, no mutable borrow.
         let innermost = unsafe { aos_upval_get(env_ptr, 0, 0) };
@@ -332,7 +336,12 @@ mod tests {
     fn aos_upval_get_native_wrapper_traps_on_bad_depth() {
         let env = EvalEnv::capture(&[EvalFrame::new(1).expect("frame allocates")])
             .expect("env captures");
-        let env_ptr = (&env as *const EvalEnv) as *mut c_void;
+        let ir = lower_source("null");
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(crate::context::RuntimeJitContext::new_with_env(
+            &mut eval, ir.root, ratchet_oracle::syntax::Span::new(0, 4), &env,
+        ));
+        let env_ptr = context.as_mut().as_mut_ptr();
 
         let scope = crate::trap::RuntimeTrapScope::new();
         // SAFETY: The env is live; depth 5 exceeds the single captured frame.
@@ -352,12 +361,22 @@ mod tests {
         let expected = Value::bool(true);
         frame.set(0, expected).expect("slot stores");
         let env = EvalEnv::capture(&[frame]).expect("env captures");
-
-        let env_ptr = (&env as *const EvalEnv) as *mut c_void;
+        let ir = lower_source("null");
+        let mut eval = TreeWalk::new(&ir);
+        let mut context = std::pin::pin!(crate::context::RuntimeJitContext::new_with_env(
+            &mut eval, ir.root, ratchet_oracle::syntax::Span::new(0, 4), &env,
+        ));
+        let env_ptr = context.as_mut().as_mut_ptr();
         // SAFETY: The env is live for the call, the slot is in bounds, and no
         // mutable borrow is active.
         let actual = unsafe { (binding.function())(env_ptr, 0) };
 
         assert!(actual.raw_eq(expected));
+    }
+
+    fn lower_source(source: &str) -> ratchet_oracle::compile::Ir {
+        let parsed = ratchet_oracle::syntax::parse_str(source).expect("source parses");
+        let resolved = ratchet_oracle::compile::resolve(parsed).expect("source resolves");
+        aos_nix_dialect::nix_lower(resolved).expect("source lowers")
     }
 }

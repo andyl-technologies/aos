@@ -10,15 +10,14 @@
 //!
 //! - it pins a [`RuntimeJitContext`] over the caller's evaluator and derives the
 //!   `rt` pointer the forcing/attr wrappers decode,
-//! - it derives the `env` pointer from the caller's capture [`EvalFrame`], and
+//! - it carries the caller's hybrid [`EvalEnv`] in that pinned context and
+//!   passes the same opaque pointer through the frozen `env` ABI slot, and
 //! - it installs a [`RuntimeTrapScope`] for the duration of the call so a forcing
 //!   evaluator error is transferred out as a [`RuntimeTrap`] instead of aborting.
 //!
 //! Safe crates that forbid `unsafe` (such as `aos-nix`) can build the artifact,
 //! candidates, evaluator, and frame themselves and then run the compiled body
 //! through [`run_registered_native_thunk_call`].
-
-use std::ffi::c_void;
 
 use ratchet_jit::{
     JitClifArtifact, JitCraneliftNativeCallError,
@@ -97,9 +96,9 @@ pub fn run_registered_native_thunk_call(
     artifact: JitClifArtifact,
     candidates: &[JitRuntimeSymbolAddressCandidate],
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
     let rt = context.as_mut().as_mut_ptr();
-    let env = (env as *const EvalEnv) as *mut c_void;
+    let env = rt;
 
     let scope = RuntimeTrapScope::new();
     // SAFETY: `rt` comes from the pinned context over `eval` and `env` from the
@@ -153,9 +152,9 @@ pub fn run_finalized_native_thunk_call(
     env: &EvalEnv,
     finalization: &JitCraneliftRegisteredArtifactFinalizationPreflight,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
     let rt = context.as_mut().as_mut_ptr();
-    let env = (env as *const EvalEnv) as *mut c_void;
+    let env = rt;
 
     let scope = RuntimeTrapScope::new();
     // SAFETY: `rt` comes from the pinned context over `eval` and `env` from the
@@ -205,9 +204,9 @@ pub fn run_context_finalized_native_thunk_call(
     env: &EvalEnv,
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
     let rt = context.as_mut().as_mut_ptr();
-    let env = (env as *const EvalEnv) as *mut c_void;
+    let env = rt;
 
     let scope = RuntimeTrapScope::new();
     // SAFETY: `rt` comes from the pinned context over `eval` and `env` from the
@@ -256,9 +255,9 @@ pub fn run_context_finalized_native_lambda_call(
     argument: Value,
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
     let rt = context.as_mut().as_mut_ptr();
-    let env = (env as *const EvalEnv) as *mut c_void;
+    let env = rt;
 
     let scope = RuntimeTrapScope::new();
     // SAFETY: `rt` is the pinned context over `eval`, `env` the caller-owned
@@ -307,9 +306,9 @@ pub fn run_context_finalized_native_chain_call(
     argv: &[Value],
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
     let rt = context.as_mut().as_mut_ptr();
-    let env = (env as *const EvalEnv) as *mut c_void;
+    let env = rt;
 
     let scope = RuntimeTrapScope::new();
     // SAFETY: `rt` is the pinned context over `eval`, `env` the caller-owned
@@ -508,9 +507,9 @@ pub fn run_context_finalized_native_filter_loop(
     elements: &[Value],
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeFilterLoopOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
     let rt = context.as_mut().as_mut_ptr();
-    let env = (env as *const EvalEnv) as *mut c_void;
+    let env = rt;
 
     let scope = RuntimeTrapScope::new();
     let mut kept = Vec::with_capacity(elements.len());
@@ -618,9 +617,9 @@ fn run_native_fold_loop(
     source: FoldElementSource<'_>,
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeFoldLoopOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new(eval, id, span));
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
     let rt = context.as_mut().as_mut_ptr();
-    let env = (env as *const EvalEnv) as *mut c_void;
+    let env = rt;
 
     let scope = RuntimeTrapScope::new();
     let mut accumulator = initial;

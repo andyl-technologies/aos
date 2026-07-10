@@ -2,8 +2,8 @@
 //!
 //! Native tier-1 thunk bodies receive one opaque `rt` pointer and may call
 //! helpers from multiple runtime families. This module owns the single pinned
-//! context layout that force, apply, and attrset-access wrappers decode from
-//! that pointer so mixed-helper CLIF bodies do not rely on family-specific
+//! context layout that force, apply, attrset-access, and hybrid-environment
+//! wrappers decode so mixed-helper CLIF bodies do not rely on family-specific
 //! context layouts accidentally matching.
 
 use std::{
@@ -14,17 +14,24 @@ use std::{
     ptr::NonNull,
 };
 
-use ratchet_oracle::{compile::IrId, eval::tree_walk::TreeWalk, syntax::Span};
+use ratchet_oracle::{
+    compile::IrId,
+    eval::{EvalEnv, tree_walk::TreeWalk},
+    syntax::Span,
+};
 
 /// Scoped tree-walk evaluator context decoded by native runtime helpers.
 ///
 /// Native runtime helpers receive an opaque runtime pointer in their frozen C
 /// ABI. This context is the current explicit Rust-side representation for that
 /// pointer: it ties one live [`TreeWalk`] evaluator to the IR node id and
-/// source span used when safe oracle helpers report failures. It is pinned so a
-/// raw pointer derived from it stays stable across a native helper call.
+/// source span used when safe oracle helpers report failures. Native calls may
+/// also attach the dispatched [`EvalEnv`], allowing environment helpers to
+/// resolve both linked frames and FV-5 flat captures through the evaluator. It
+/// is pinned so a raw pointer derived from it stays stable across a native call.
 pub struct RuntimeJitContext<'eval> {
     eval: NonNull<TreeWalk>,
+    env: Option<NonNull<EvalEnv>>,
     id: IrId,
     span: Span,
     _marker: PhantomData<&'eval mut TreeWalk>,
@@ -36,6 +43,24 @@ impl<'eval> RuntimeJitContext<'eval> {
     pub fn new(eval: &'eval mut TreeWalk, id: IrId, span: Span) -> Self {
         Self {
             eval: NonNull::from(eval),
+            env: None,
+            id,
+            span,
+            _marker: PhantomData,
+            _pinned: PhantomPinned,
+        }
+    }
+
+    /// Creates a scoped runtime context carrying a hybrid captured environment.
+    pub fn new_with_env(
+        eval: &'eval mut TreeWalk,
+        id: IrId,
+        span: Span,
+        env: &'eval EvalEnv,
+    ) -> Self {
+        Self {
+            eval: NonNull::from(eval),
+            env: Some(NonNull::from(env)),
             id,
             span,
             _marker: PhantomData,
@@ -52,6 +77,29 @@ impl<'eval> RuntimeJitContext<'eval> {
     pub fn as_mut_ptr(self: Pin<&mut Self>) -> *mut c_void {
         self.as_ref().get_ref() as *const Self as *mut c_void
     }
+}
+
+// SAFETY: Callers must pass a live pinned RuntimeJitContext carrying an env and
+// uphold exclusive evaluator access for the duration of the callback.
+pub(crate) unsafe fn with_native_runtime_env_context<R>(
+    rt: *mut c_void,
+    call: impl FnOnce(&mut TreeWalk, &EvalEnv, IrId, Span) -> R,
+) -> R {
+    let Some(rt) = NonNull::new(rt) else {
+        process::abort();
+    };
+    // SAFETY: The caller provides the live pinned context described above.
+    let env_context = unsafe { rt.cast::<RuntimeJitContext<'static>>().as_mut() };
+    let Some(env) = env_context.env else {
+        process::abort();
+    };
+    // SAFETY: Both pointers were captured by `new_with_env` for this call.
+    call(
+        unsafe { env_context.eval.as_mut() },
+        unsafe { env.as_ref() },
+        env_context.id,
+        env_context.span,
+    )
 }
 
 // SAFETY: Callers must pass a live pinned RuntimeJitContext pointer and uphold

@@ -299,6 +299,25 @@ against pristine `51dddcb18` measured zlib cold/warm at -5.2%/-5.7%, wide at
 +1.3% for zlib and +2.5%/+3.9% for wide cold/warm, while JIT fib was flat;
 arena peaks matched exactly at 7.5/71.5/160 MiB.
 
+The post-campaign live-JIT audit found one FV-5 integration regression hidden
+by the tier-2 unit fixtures: those fixtures had not run capture-plan annotation,
+while production did, and the promotion/dispatch guards still indexed only the
+linked-frame suffix of `EvalEnv`. Production `fib` therefore reset promotion
+every eight calls and interpreted about 1.03 million thunks. The repaired seam
+resolves all tier-2 coordinates through the hybrid environment, guards the
+curried-chain root def-site and reads the currently dispatched captures after
+flat copying removes the old frame-prefix relation, and carries `EvalEnv` in
+the pinned runtime context so native upvalue helpers can ask the tree walk to
+validate flat-tail reads. The tier-2 fixture
+families now annotate capture plans. Five-sample byte-parity medians against
+C++ Nix 2.24.12 are 24.8x/29.2x faster for fib, 20.3x/20.1x for tak, and
+28.0x/25.4x for sum-fold cold/warm; fib telemetry is one promotion, nine
+dispatches, zero deopts, and 17 thunks. The opaque ABI signature is unchanged,
+and the expanded runtime-context pointer decodes are count-pinned by the unsafe
+audit. The landing remained byte-green across the 16 package legs, seven
+wide/shape modes, compute x8, cache validation, and all 648 strict-JSON seeds in
+serial/K=4/JIT/sweep-zero.
+
 ### 2.5 GC integration: header-resident marks
 
 The B1 sweep (`9422a34c8`) is record-table machinery today: mark states

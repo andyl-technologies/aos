@@ -295,8 +295,7 @@ impl NixJitTier1Engine {
         };
         let arena = &ir.arena;
         let arity = scan.arity() as usize;
-        let op_frames = lambda.env().frames();
-        let conceptual_len = op_frames.len() + arity - 1;
+        let conceptual_len = lambda.env().frame_count() + arity - 1;
         let mut pinned = Vec::new();
         let mut pinned_callees = Vec::new();
         for site in scan.callee_sites() {
@@ -305,10 +304,7 @@ impl NixJitTier1Engine {
                 return FoldOperatorResolution::Structural;
             }
             let index = conceptual_len - depth as usize;
-            let Some(frame) = op_frames.get(index) else {
-                return FoldOperatorResolution::Structural;
-            };
-            let Ok(raw) = frame.get(slot) else {
+            let Some(raw) = eval.tier2_captured_value_at_index(lambda.env(), index, slot) else {
                 return FoldOperatorResolution::Structural;
             };
             let Some(resolved) = eval.tier2_peek_forced(raw) else {
@@ -373,17 +369,17 @@ pub(super) fn fold_pins_still_valid(
     pinned: &[Tier2PinIdentity],
     arity: usize,
 ) -> bool {
-    let op_frames = lambda.env().frames();
-    let conceptual_len = op_frames.len() + arity - 1;
+    let conceptual_len = lambda.env().frame_count() + arity - 1;
     for pin in pinned {
         let (depth, slot) = pin.upval;
         if depth as usize > conceptual_len || (depth as usize) < arity {
             return false;
         }
-        let Some(frame) = op_frames.get(conceptual_len - depth as usize) else {
-            return false;
-        };
-        let Ok(raw) = frame.get(slot) else {
+        let Some(raw) = eval.tier2_captured_value_at_index(
+            lambda.env(),
+            conceptual_len - depth as usize,
+            slot,
+        ) else {
             return false;
         };
         let Some(resolved) = eval.tier2_peek_forced(raw) else {
@@ -426,7 +422,9 @@ mod tests {
     fn lower(source: &str) -> Ir {
         let parsed = parse_str(source).expect("source parses");
         let resolved = ratchet_oracle::compile::resolve(parsed).expect("source resolves");
-        aos_nix_dialect::nix_lower(resolved).expect("source lowers")
+        let mut ir = aos_nix_dialect::nix_lower(resolved).expect("source lowers");
+        ratchet_core::annotate_capture_plans(&mut ir).expect("capture plans annotate");
+        ir
     }
 
     /// Evaluates `source` to WHNF through the tree-walk oracle (no JIT engine).
