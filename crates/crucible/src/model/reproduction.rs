@@ -1,4 +1,6 @@
-// Finding reconstruction, minimization, and reproduction replay.
+//! Finding reconstruction, minimization, and reproduction replay.
+
+use super::*;
 
 /// Error returned when rebuilding a finding reproduction artifact from storage.
 #[derive(Debug)]
@@ -132,11 +134,11 @@ impl MinimizationRun {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct MinimizationCandidate {
-    removed_indices: Vec<usize>,
-    removed_decisions: Vec<Decision>,
-    schedule: Schedule,
-    order_key: ContentHash,
+pub(super) struct MinimizationCandidate {
+    pub(super) removed_indices: Vec<usize>,
+    pub(super) removed_decisions: Vec<Decision>,
+    pub(super) schedule: Schedule,
+    pub(super) order_key: ContentHash,
 }
 
 /// Successful replay-oracle verification of a reproduction artifact.
@@ -160,7 +162,7 @@ pub struct ReproductionReplay {
 /// compares the recomputed projections to this metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReproductionEventLogArtifact {
-    id: ContentHash,
+    pub(super) id: ContentHash,
     /// The reproduction artifact this log metadata belongs to.
     pub reproduction_artifact: ContentHash,
     /// Event-log offset used as the debugging fork-point index.
@@ -266,7 +268,7 @@ impl ReproductionEventLogReplay {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum FamilyFaultCandidate {
+pub(super) enum FamilyFaultCandidate {
     Crash(NodeId),
     Partition {
         endpoint_a: NodeId,
@@ -275,7 +277,7 @@ enum FamilyFaultCandidate {
 }
 
 impl FamilyFaultCandidate {
-    fn into_fault(self) -> MembershipFault {
+    pub(super) fn into_fault(self) -> MembershipFault {
         match self {
             Self::Crash(node) => MembershipFault::Crash {
                 node,

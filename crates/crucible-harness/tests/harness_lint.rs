@@ -94,6 +94,9 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
         ));
 
         for source in rust_sources(&package_dir.join("src"))? {
+            if is_test_only_source(&package_dir, &source) {
+                continue;
+            }
             let content = fs::read_to_string(&source)?;
             has_typed_error |= source_declares_typed_error(&content);
             findings.extend(error_logging_failures(
@@ -324,11 +327,28 @@ fn harness_lint_rejects_error_and_logging_drift() {
                 Ok(())
             }
         "#,
-        false,
+        true,
     );
 
-    assert_contains(&cli_module_findings, "direct stdout/stderr diagnostic");
-    assert_contains(&cli_module_findings, "erased error");
+    assert!(cli_module_findings.is_empty(), "{cli_module_findings:?}");
+
+    let cfg_all_test_findings = error_logging_failures(
+        Path::new("crucible-shmem/src/lib.rs"),
+        r#"
+            #[cfg(all(test, target_os = "linux"))]
+            mod tests {
+                fn test_helper() -> Result<(), Box<dyn Error>> {
+                    maybe().expect("test assertion");
+                    Ok(())
+                }
+            }
+        "#,
+        false,
+    );
+    assert!(
+        cfg_all_test_findings.is_empty(),
+        "{cfg_all_test_findings:?}"
+    );
 }
 
 #[test]

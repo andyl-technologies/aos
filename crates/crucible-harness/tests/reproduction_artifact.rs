@@ -55,7 +55,10 @@ fn reproduction_artifact_format_round_trips_seed_scenario_schedule_and_pinned_id
             .starts_with("crucible-hash:")
     );
     assert!(!decoded.build_identity.qemu_patch_series_hash.is_empty());
-    assert_eq!(decoded.build_identity.shmem_abi_version, "1");
+    assert_eq!(
+        decoded.build_identity.shmem_abi_version,
+        crucible_harness::e2e::CANONICAL_SHMEM_ABI_VERSION.to_string()
+    );
     assert_eq!(decoded.build_identity.guest_host_protocol_version, "1");
     assert_eq!(decoded.build_identity.rpc_abi_version, "4.0.0");
     assert_eq!(decoded.build_identity.rpc_abi_build, "crucible-rpc-abi-v4");

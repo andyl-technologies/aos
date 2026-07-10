@@ -466,7 +466,7 @@ fn complete_black_box_scenario_runs_deterministically_without_guest_marker() {
     assert!(!properties_have_guest_marker(&properties));
     assert!(
         world
-            .nodes()
+            .vm_nodes()
             .iter()
             .all(|node| node.white_box == WhiteBoxPolicy::Disabled)
     );

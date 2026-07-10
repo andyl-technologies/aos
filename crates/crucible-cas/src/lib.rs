@@ -1365,8 +1365,19 @@ impl ReductionAdmission {
     }
 }
 
-include!("cas/campaign_store.rs");
-include!("cas/campaign_model.rs");
-include!("cas/campaign_codec.rs");
-include!("cas/invalidation.rs");
-include!("cas/tests.rs");
+#[path = "cas/campaign_codec.rs"]
+mod campaign_codec;
+#[path = "cas/campaign_model.rs"]
+mod campaign_model;
+#[path = "cas/campaign_store.rs"]
+mod campaign_store;
+#[cfg(test)]
+#[path = "cas/tests.rs"]
+mod campaign_tests;
+#[path = "cas/invalidation.rs"]
+mod invalidation;
+
+use campaign_codec::*;
+pub use campaign_model::*;
+pub use campaign_store::*;
+pub use invalidation::*;

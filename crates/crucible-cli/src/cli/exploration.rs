@@ -1,5 +1,10 @@
-// Search/fuzz execution and machine-readable outcome rendering.
-fn run_builtin_fault_campaign_fuzz(cli: &Cli, plan: &FuzzDriverPlan) -> Result<(), CliError> {
+//! Search/fuzz execution and machine-readable outcome rendering.
+
+use super::*;
+pub(super) fn run_builtin_fault_campaign_fuzz(
+    cli: &Cli,
+    plan: &FuzzDriverPlan,
+) -> Result<(), CliError> {
     let report = crucible::run_fault_campaign_example(plan.config).map_err(|error| {
         backend_error(format!(
             "built-in fault-campaign fuzz proof failed: {error}"
@@ -32,7 +37,7 @@ fn run_builtin_fault_campaign_fuzz(cli: &Cli, plan: &FuzzDriverPlan) -> Result<(
     Ok(())
 }
 
-fn fuzz_dispatch_route(
+pub(super) fn fuzz_dispatch_route(
     backend_plan: &BackendSelectionPlan,
     plan: &FuzzDriverPlan,
 ) -> Option<FuzzDispatchRoute> {
@@ -50,7 +55,7 @@ fn fuzz_dispatch_route(
     None
 }
 
-fn run_local_double_fuzz_workflow(
+pub(super) fn run_local_double_fuzz_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -66,7 +71,7 @@ fn run_local_double_fuzz_workflow(
     )
 }
 
-fn run_local_double_fuzz_workflow_with_family(
+pub(super) fn run_local_double_fuzz_workflow_with_family(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -104,7 +109,7 @@ fn run_local_double_fuzz_workflow_with_family(
     Ok(outcome)
 }
 
-fn local_double_fuzz_report_from_run(
+pub(super) fn local_double_fuzz_report_from_run(
     plan: &FuzzDriverPlan,
     run: &crucible::CoverageGuidedFuzzRun,
 ) -> LocalDoubleFuzzReport {
@@ -126,7 +131,7 @@ fn local_double_fuzz_report_from_run(
     }
 }
 
-fn local_double_fuzz_report_from_corpus_run(
+pub(super) fn local_double_fuzz_report_from_corpus_run(
     plan: &FuzzDriverPlan,
     corpus: &Path,
     run: &crucible::CoverageGuidedCorpusRun,
@@ -150,7 +155,7 @@ fn local_double_fuzz_report_from_corpus_run(
     }
 }
 
-fn apply_local_double_fuzz_report(
+pub(super) fn apply_local_double_fuzz_report(
     outcome: &mut BackendCommandOutcome,
     plan: &FuzzDriverPlan,
     report: &LocalDoubleFuzzReport,
@@ -204,7 +209,7 @@ fn apply_local_double_fuzz_report(
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
 }
 
-fn run_local_double_search_workflow(
+pub(super) fn run_local_double_search_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -223,7 +228,7 @@ fn run_local_double_search_workflow(
     )
 }
 
-fn run_local_double_search_workflow_with_graph(
+pub(super) fn run_local_double_search_workflow_with_graph(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -317,7 +322,7 @@ fn run_local_double_search_workflow_with_graph(
     )
 }
 
-fn merge_search_failure_oracles<I>(
+pub(super) fn merge_search_failure_oracles<I>(
     reached: I,
     schedule_oracle: &SearchFailureOracle,
     retained_oracle: &SearchFailureOracle,
@@ -339,7 +344,7 @@ where
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn run_local_double_search_workflow_with_graph_and_failure_oracle(
+pub(super) fn run_local_double_search_workflow_with_graph_and_failure_oracle(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -421,14 +426,14 @@ fn run_local_double_search_workflow_with_graph_and_failure_oracle(
     Ok(outcome)
 }
 
-fn search_materialization_budget(max_states: u64) -> usize {
+pub(super) fn search_materialization_budget(max_states: u64) -> usize {
     match usize::try_from(max_states) {
         Ok(max_states) => max_states,
         Err(_) => usize::MAX,
     }
 }
 
-fn search_failure_reproduction_artifact_bytes(
+pub(super) fn search_failure_reproduction_artifact_bytes(
     backend_plan: &BackendSelectionPlan,
     plan: &SearchDriverPlan,
     failure: &SearchDiscoveredFailure,
@@ -452,7 +457,7 @@ fn search_failure_reproduction_artifact_bytes(
     )
 }
 
-fn search_extra_artifact_payloads(
+pub(super) fn search_extra_artifact_payloads(
     plan: &SearchDriverPlan,
     canonical_log: &mut Vec<CanonicalLogEntry>,
 ) -> Vec<ReproductionArtifactComponentPayload> {
@@ -500,7 +505,7 @@ fn search_extra_artifact_payloads(
     payloads
 }
 
-fn canonical_log_entries_from_search_failure(
+pub(super) fn canonical_log_entries_from_search_failure(
     failure: &SearchDiscoveredFailure,
 ) -> Vec<CanonicalLogEntry> {
     let entries = canonical_log_entries_from_engine_schedule(
@@ -523,7 +528,7 @@ fn canonical_log_entries_from_search_failure(
     }]
 }
 
-fn canonical_log_entries_from_engine_schedule(
+pub(super) fn canonical_log_entries_from_engine_schedule(
     schedule: &crucible::Schedule,
 ) -> Vec<CanonicalLogEntry> {
     schedule
@@ -540,7 +545,7 @@ fn canonical_log_entries_from_engine_schedule(
         .collect()
 }
 
-fn engine_decision_kind(decision: &crucible::Decision) -> &'static str {
+pub(super) fn engine_decision_kind(decision: &crucible::Decision) -> &'static str {
     match decision {
         crucible::Decision::DeliveryOrder(_) => "delivery-order",
         crucible::Decision::FaultFires(_) => "fault-fires",
@@ -552,11 +557,11 @@ fn engine_decision_kind(decision: &crucible::Decision) -> &'static str {
     }
 }
 
-fn cli_digest_from_engine_hash(hash: crucible::ContentHash) -> String {
+pub(super) fn cli_digest_from_engine_hash(hash: crucible::ContentHash) -> String {
     format!("{CONTENT_ADDRESS_PREFIX}{}", hash.to_hex())
 }
 
-fn apply_local_double_search_report(
+pub(super) fn apply_local_double_search_report(
     outcome: &mut BackendCommandOutcome,
     plan: &SearchDriverPlan,
     report: &LocalDoubleSearchReport,
@@ -628,7 +633,7 @@ fn apply_local_double_search_report(
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
 }
 
-fn local_double_search_counterexample_fields(
+pub(super) fn local_double_search_counterexample_fields(
     counterexample: Option<&LocalDoubleSearchCounterexample>,
 ) -> (String, String) {
     let Some(counterexample) = counterexample else {
@@ -649,7 +654,7 @@ fn local_double_search_counterexample_fields(
     )
 }
 
-fn local_double_search_status(
+pub(super) fn local_double_search_status(
     discovered_failures: bool,
     exhausted: bool,
     on_violation: SearchOnViolationArg,
@@ -663,7 +668,7 @@ fn local_double_search_status(
     BackendCommandStatus::Passed
 }
 
-fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
+pub(super) fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
     backend_error(format!(
         "search scenario {} strategy={} max-states={} on-violation={} requires the exploration-engine driver over phase-6 search policies tracked by T-CLI-13",
         plan.scenario.label(),
@@ -673,7 +678,7 @@ fn unsupported_search_backend_error(plan: &SearchDriverPlan) -> CliError {
     ))
 }
 
-fn unsupported_fuzz_backend_error(plan: &FuzzDriverPlan) -> CliError {
+pub(super) fn unsupported_fuzz_backend_error(plan: &FuzzDriverPlan) -> CliError {
     backend_error(format!(
         "fuzz family {} runs={} coverage={} requires the exploration-engine driver over phase-6 fuzzing policies tracked by T-CLI-13",
         plan.family.label(),
@@ -682,7 +687,10 @@ fn unsupported_fuzz_backend_error(plan: &FuzzDriverPlan) -> CliError {
     ))
 }
 
-fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Result<(), CliError> {
+pub(super) fn emit_backend_command_output(
+    cli: &Cli,
+    outcome: &BackendCommandOutcome,
+) -> Result<(), CliError> {
     let trace_entries = backend_machine_readable_trace_entries(outcome);
     let _trace =
         emit_canonical_trace(cli.format, &trace_entries, cli.trace.as_deref(), !cli.quiet)?;
@@ -748,21 +756,21 @@ fn emit_backend_command_output(cli: &Cli, outcome: &BackendCommandOutcome) -> Re
     Ok(())
 }
 
-fn outcome_skipped_reproduction_artifacts(outcome: &BackendCommandOutcome) -> bool {
+pub(super) fn outcome_skipped_reproduction_artifacts(outcome: &BackendCommandOutcome) -> bool {
     outcome.stdout.iter().any(|line| {
         line == "verify-reproduction-artifacts\tskipped=producer-provenance-unavailable"
     })
 }
 
-fn should_emit_human_backend_output(format: OutputFormat) -> bool {
+pub(super) fn should_emit_human_backend_output(format: OutputFormat) -> bool {
     !format.is_machine_readable()
 }
 
-fn should_emit_human_dispatch_output(cli: &Cli) -> bool {
+pub(super) fn should_emit_human_dispatch_output(cli: &Cli) -> bool {
     !cli.quiet && should_emit_human_backend_output(cli.format)
 }
 
-fn backend_machine_readable_trace_entries(
+pub(super) fn backend_machine_readable_trace_entries(
     outcome: &BackendCommandOutcome,
 ) -> Vec<CanonicalLogEntry> {
     let mut entries = outcome.canonical_log.clone();
@@ -779,7 +787,7 @@ fn backend_machine_readable_trace_entries(
     entries
 }
 
-fn final_outcome_summary(outcome: &BackendCommandOutcome) -> String {
+pub(super) fn final_outcome_summary(outcome: &BackendCommandOutcome) -> String {
     format!(
         "subcommand={} status={} exit_code={} canonical_log={} artifact={}",
         outcome.subcommand.label(),
@@ -790,7 +798,10 @@ fn final_outcome_summary(outcome: &BackendCommandOutcome) -> String {
     )
 }
 
-fn emit_replay_report_output(cli: &Cli, report: &ReplayArtifactReport) -> Result<(), CliError> {
+pub(super) fn emit_replay_report_output(
+    cli: &Cli,
+    report: &ReplayArtifactReport,
+) -> Result<(), CliError> {
     if cli.format.is_machine_readable() {
         let status = replay_report_status(report);
         let exit_code = replay_report_exit_code(report);
@@ -802,7 +813,7 @@ fn emit_replay_report_output(cli: &Cli, report: &ReplayArtifactReport) -> Result
     Ok(())
 }
 
-fn replay_report_status(report: &ReplayArtifactReport) -> BackendCommandStatus {
+pub(super) fn replay_report_status(report: &ReplayArtifactReport) -> BackendCommandStatus {
     if report
         .check
         .as_ref()
@@ -823,11 +834,11 @@ fn replay_report_status(report: &ReplayArtifactReport) -> BackendCommandStatus {
     }
 }
 
-fn replay_report_exit_code(report: &ReplayArtifactReport) -> i32 {
+pub(super) fn replay_report_exit_code(report: &ReplayArtifactReport) -> i32 {
     replay_report_status(report).exit_code()
 }
 
-fn replay_machine_readable_trace_entries(
+pub(super) fn replay_machine_readable_trace_entries(
     report: &ReplayArtifactReport,
     status: BackendCommandStatus,
     exit_code: i32,
@@ -874,7 +885,7 @@ fn replay_machine_readable_trace_entries(
     entries
 }
 
-fn push_replay_trace_entry(
+pub(super) fn push_replay_trace_entry(
     entries: &mut Vec<CanonicalLogEntry>,
     kind: impl Into<String>,
     summary: impl Into<String>,
@@ -891,7 +902,7 @@ fn push_replay_trace_entry(
     });
 }
 
-fn replay_final_outcome_summary(
+pub(super) fn replay_final_outcome_summary(
     report: &ReplayArtifactReport,
     status: BackendCommandStatus,
     exit_code: i32,
@@ -906,7 +917,7 @@ fn replay_final_outcome_summary(
     )
 }
 
-fn replay_check_machine_readable_summary(check: &ReplayCheckReport) -> String {
+pub(super) fn replay_check_machine_readable_summary(check: &ReplayCheckReport) -> String {
     match &check.mismatch {
         Some(mismatch) => format!(
             "path={} status=mismatch expected={} replayed={} first_diff_byte={} original_len={} replayed_len={}",
@@ -925,7 +936,9 @@ fn replay_check_machine_readable_summary(check: &ReplayCheckReport) -> String {
     }
 }
 
-fn replay_to_savepoint_machine_readable_summary(target: &ReplayToSavepointReport) -> String {
+pub(super) fn replay_to_savepoint_machine_readable_summary(
+    target: &ReplayToSavepointReport,
+) -> String {
     format!(
         "target={} status=target-validated schedule_prefix=typed materialization={} unified_operation={} checkpoint={} frontier_ticks={} target_decisions={} artifact_decisions={} matched_decisions={} typed_prefix_digest={} artifact_prefix_digest={} materialized_configuration={} materialized_schedule={} materialized_checkpoint={} runtime_state={} reduced_state={} single_vm_fingerprint={} graph={} replay_fat={} replay_thin={} oracle={} store_objects={}",
         target.target_label,
@@ -952,7 +965,7 @@ fn replay_to_savepoint_machine_readable_summary(target: &ReplayToSavepointReport
     )
 }
 
-fn replay_bisect_machine_readable_summary(bisect: &ReplayBisectionReport) -> String {
+pub(super) fn replay_bisect_machine_readable_summary(bisect: &ReplayBisectionReport) -> String {
     match &bisect.divergence {
         Some(divergence) => format!(
             "path={} status=diverged mismatch={} first_decision={} first_fingerprint_sample={} first_instruction={} node={} byte={} left_state={} right_state={}",

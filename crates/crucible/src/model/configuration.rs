@@ -1,13 +1,15 @@
-// Scenario forms, configurations, decisions, and schedules.
+//! Scenario forms, configurations, decisions, and schedules.
+
+use super::*;
 
 /// A fully materialized scenario definition form for storage and exchange.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioDefForm {
-    world: World,
-    plan: Plan,
-    properties: Properties,
-    seed: Seed,
-    app_random_draw_cap: u64,
+    pub(super) world: World,
+    pub(super) plan: Plan,
+    pub(super) properties: Properties,
+    pub(super) seed: Seed,
+    pub(super) app_random_draw_cap: u64,
 }
 
 impl ScenarioDefForm {
@@ -299,7 +301,7 @@ impl Decision {
 /// A totally ordered sequence of [`Decision`] values.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Schedule {
-    decisions: Vec<Decision>,
+    pub(super) decisions: Vec<Decision>,
 }
 
 impl Schedule {

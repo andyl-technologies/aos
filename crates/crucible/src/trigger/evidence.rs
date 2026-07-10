@@ -1,13 +1,15 @@
-// Assertion divergence, evidence extraction, formal trace export, and guest markers.
+//! Assertion divergence, evidence extraction, formal trace export, and guest markers.
+
+use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CausalEventLogPrefixDivergence {
-    expected_last_matching_event_prefix_len: usize,
-    expected_first_different_event_prefix_len: usize,
-    reproduced_first_different_event_prefix_len: usize,
+pub(super) struct CausalEventLogPrefixDivergence {
+    pub(super) expected_last_matching_event_prefix_len: usize,
+    pub(super) expected_first_different_event_prefix_len: usize,
+    pub(super) reproduced_first_different_event_prefix_len: usize,
 }
 
 impl CausalEventLogPrefixDivergence {
-    fn terminal(
+    pub(super) fn terminal(
         expected_log: &RecordedAssertionLog,
         reproduced_log: &RecordedAssertionLog,
     ) -> Self {
@@ -20,7 +22,7 @@ impl CausalEventLogPrefixDivergence {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ProjectedCausalEventLogEntry<'log> {
+pub(super) struct ProjectedCausalEventLogEntry<'log> {
     raw_index: usize,
     entry: &'log SchedulerEventLogEntry,
 }
@@ -31,7 +33,7 @@ impl<'log> ProjectedCausalEventLogEntry<'log> {
     }
 }
 
-fn first_different_assertion_replay_prefix(
+pub(super) fn first_different_assertion_replay_prefix(
     expected_log: &RecordedAssertionLog,
     reproduced_log: &RecordedAssertionLog,
 ) -> CausalEventLogPrefixDivergence {
@@ -70,7 +72,7 @@ fn first_different_assertion_replay_prefix(
     }
 }
 
-fn event_log_causal_projection(
+pub(super) fn event_log_causal_projection(
     entries: &[SchedulerEventLogEntry],
 ) -> Vec<ProjectedCausalEventLogEntry<'_>> {
     entries
@@ -83,7 +85,7 @@ fn event_log_causal_projection(
         .collect()
 }
 
-fn event_log_raw_prefix_for_causal_prefix(
+pub(super) fn event_log_raw_prefix_for_causal_prefix(
     projection: &[ProjectedCausalEventLogEntry<'_>],
     causal_prefix_len: usize,
     total_entries: usize,
@@ -97,7 +99,7 @@ fn event_log_raw_prefix_for_causal_prefix(
         .unwrap_or_else(|| total_entries.saturating_add(1))
 }
 
-fn event_log_causal_projection_prefixes_match(
+pub(super) fn event_log_causal_projection_prefixes_match(
     expected: &[ProjectedCausalEventLogEntry<'_>],
     reproduced: &[ProjectedCausalEventLogEntry<'_>],
     causal_prefix_len: usize,
@@ -119,14 +121,14 @@ fn event_log_causal_projection_prefixes_match(
     compare_event_log_determinism(&expected_entries, &reproduced_entries).passes()
 }
 
-fn event_log_causal_projections_match(
+pub(super) fn event_log_causal_projections_match(
     expected: &[SchedulerEventLogEntry],
     reproduced: &[SchedulerEventLogEntry],
 ) -> bool {
     compare_event_log_determinism(expected, reproduced).passes()
 }
 
-fn assertion_replay_report_for_prefix(
+pub(super) fn assertion_replay_report_for_prefix(
     artifact: ContentHash,
     properties: &Properties,
     world: &World,
@@ -144,7 +146,7 @@ fn assertion_replay_report_for_prefix(
     ))
 }
 
-fn first_differing_violation(
+pub(super) fn first_differing_violation(
     expected: &[HostAssertionViolation],
     reproduced: &[HostAssertionViolation],
 ) -> Option<(
@@ -159,7 +161,7 @@ fn first_differing_violation(
     })
 }
 
-fn first_different_decision_prefix_len(
+pub(super) fn first_different_decision_prefix_len(
     expected_log: &RecordedAssertionLog,
     reproduced_log: &RecordedAssertionLog,
 ) -> Option<usize> {
@@ -173,7 +175,7 @@ fn first_different_decision_prefix_len(
     })
 }
 
-fn scheduler_decisions(recorded_log: &RecordedAssertionLog) -> Vec<Decision> {
+pub(super) fn scheduler_decisions(recorded_log: &RecordedAssertionLog) -> Vec<Decision> {
     recorded_log
         .entries()
         .iter()
@@ -189,11 +191,11 @@ fn scheduler_decisions(recorded_log: &RecordedAssertionLog) -> Vec<Decision> {
         .collect()
 }
 
-fn engine_error_message(error: &EngineError) -> String {
+pub(super) fn engine_error_message(error: &EngineError) -> String {
     error.to_string()
 }
 
-fn observable_event_violation_site(
+pub(super) fn observable_event_violation_site(
     event: &ObservableEvent,
 ) -> Option<(Option<Icount>, Option<NodeId>)> {
     match event.payload() {
@@ -232,7 +234,7 @@ fn observable_event_violation_site(
     }
 }
 
-fn observable_event_evidence(
+pub(super) fn observable_event_evidence(
     event: &ObservableEvent,
     observed: impl Into<String>,
 ) -> HostAssertionViolationEvidence {
@@ -246,7 +248,7 @@ fn observable_event_evidence(
     }
 }
 
-fn evaluation_point_evidence(
+pub(super) fn evaluation_point_evidence(
     point: EventEvaluationPoint,
     observed: impl Into<String>,
 ) -> HostAssertionViolationEvidence {
@@ -259,7 +261,7 @@ fn evaluation_point_evidence(
     }
 }
 
-fn outcome_point_evidence(
+pub(super) fn outcome_point_evidence(
     prefix: &ConditionEventLogPrefix,
     outcome: &HostAssertionOutcome,
 ) -> HostAssertionViolationEvidence {
@@ -273,7 +275,7 @@ fn outcome_point_evidence(
     )
 }
 
-fn violation_detail(
+pub(super) fn violation_detail(
     outcome: &HostAssertionOutcome,
     evidence: &HostAssertionViolationEvidence,
 ) -> String {
@@ -285,7 +287,7 @@ fn violation_detail(
     )
 }
 
-fn violation_expectation(outcome: &HostAssertionOutcome) -> &'static str {
+pub(super) fn violation_expectation(outcome: &HostAssertionOutcome) -> &'static str {
     match (outcome.quantifier, outcome.kind) {
         (AssertionQuantifierKind::Always, _) => "always predicate remains true",
         (AssertionQuantifierKind::Sometimes, _) => "sometimes predicate becomes true",
@@ -307,11 +309,13 @@ fn violation_expectation(outcome: &HostAssertionOutcome) -> &'static str {
     }
 }
 
-fn assertion_reproduction_artifact_from_prefix(prefix: &ConditionEventLogPrefix) -> ContentHash {
+pub(super) fn assertion_reproduction_artifact_from_prefix(
+    prefix: &ConditionEventLogPrefix,
+) -> ContentHash {
     ContentHash::from_bytes(&external_formal_trace_bytes(&prefix.scheduler_entries))
 }
 
-fn condition_violation_evidence(
+pub(super) fn condition_violation_evidence(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
     actual: bool,
@@ -326,7 +330,7 @@ fn condition_violation_evidence(
     )
 }
 
-fn condition_violation_evidence_at(
+pub(super) fn condition_violation_evidence_at(
     prefix: &ConditionEventLogPrefix,
     point: EventEvaluationPoint,
     condition: &Condition,
@@ -348,7 +352,7 @@ fn condition_violation_evidence_at(
         })
 }
 
-fn condition_prefix_for_evidence_at(
+pub(super) fn condition_prefix_for_evidence_at(
     prefix: &ConditionEventLogPrefix,
     point: EventEvaluationPoint,
 ) -> ConditionEventLogPrefix {
@@ -367,7 +371,7 @@ fn condition_prefix_for_evidence_at(
         .unwrap_or_else(|_| prefix.clone().with_point(point))
 }
 
-fn condition_observed_evidence(
+pub(super) fn condition_observed_evidence(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
     actual: bool,
@@ -603,7 +607,7 @@ fn condition_observed_evidence(
     }
 }
 
-fn logged_condition_truth(
+pub(super) fn logged_condition_truth(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
@@ -613,11 +617,11 @@ fn logged_condition_truth(
     evaluation.evaluate_condition(condition)
 }
 
-fn false_condition_leaf(_leaf: ConditionLeaf<'_>) -> bool {
+pub(super) fn false_condition_leaf(_leaf: ConditionLeaf<'_>) -> bool {
     false
 }
 
-fn guest_marker_event_matches_policies(
+pub(super) fn guest_marker_event_matches_policies(
     event: &ObservableEventPayload,
     expected_marker: &MarkerId,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
@@ -641,7 +645,7 @@ fn guest_marker_event_matches_policies(
     }
 }
 
-fn resolved_mem_place_for_evidence(place: &MemPlace) -> Option<ResolvedMemPlace> {
+pub(super) fn resolved_mem_place_for_evidence(place: &MemPlace) -> Option<ResolvedMemPlace> {
     match place {
         MemPlace::PhysicalAddress { address, width } => {
             Some(ResolvedMemPlace::physical_address(*address, width.bytes()))
@@ -653,7 +657,7 @@ fn resolved_mem_place_for_evidence(place: &MemPlace) -> Option<ResolvedMemPlace>
     }
 }
 
-fn false_observed_condition_summary(condition: &Condition, at: VirtualTime) -> String {
+pub(super) fn false_observed_condition_summary(condition: &Condition, at: VirtualTime) -> String {
     match condition {
         Condition::NetworkMatch { .. } => {
             format!("no matching network frame at virtual_time={}", at.ticks)
@@ -710,7 +714,7 @@ fn false_observed_condition_summary(condition: &Condition, at: VirtualTime) -> S
     }
 }
 
-fn guest_assertion_marker_event_evidence(
+pub(super) fn guest_assertion_marker_event_evidence(
     event: &ObservableEvent,
     marker: &GuestAssertionMarker,
 ) -> HostAssertionViolationEvidence {
@@ -727,7 +731,7 @@ fn guest_assertion_marker_event_evidence(
     )
 }
 
-fn guest_assertion_state_evidence(
+pub(super) fn guest_assertion_state_evidence(
     state: &GuestMarkerAssertionState,
     at: VirtualTime,
 ) -> HostAssertionViolationEvidence {
@@ -745,16 +749,16 @@ fn guest_assertion_state_evidence(
     }
 }
 
-fn bool_observed_label(value: bool) -> &'static str {
+pub(super) fn bool_observed_label(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
-fn optional_link_label(link: Option<&LinkId>) -> String {
+pub(super) fn optional_link_label(link: Option<&LinkId>) -> String {
     link.map(|link| link.name.clone())
         .unwrap_or_else(|| String::from("*"))
 }
 
-fn resolved_mem_place_label(place: &ResolvedMemPlace) -> String {
+pub(super) fn resolved_mem_place_label(place: &ResolvedMemPlace) -> String {
     match place {
         ResolvedMemPlace::PhysicalAddress { address, bytes } => {
             format!("physical:{address}:{bytes}")
@@ -766,7 +770,7 @@ fn resolved_mem_place_label(place: &ResolvedMemPlace) -> String {
     }
 }
 
-fn memory_cmp_label(cmp: MemoryCmp) -> &'static str {
+pub(super) fn memory_cmp_label(cmp: MemoryCmp) -> &'static str {
     match cmp {
         MemoryCmp::Eq => "eq",
         MemoryCmp::Ne => "ne",
@@ -777,7 +781,7 @@ fn memory_cmp_label(cmp: MemoryCmp) -> &'static str {
     }
 }
 
-fn io_kind_label(kind: IoEventKind) -> &'static str {
+pub(super) fn io_kind_label(kind: IoEventKind) -> &'static str {
     match kind {
         IoEventKind::Any => "any",
         IoEventKind::BlockRead => "block-read",
@@ -788,13 +792,13 @@ fn io_kind_label(kind: IoEventKind) -> &'static str {
     }
 }
 
-fn eventually_deadline(triggered_at: VirtualTime, deadline: VirtualTime) -> VirtualTime {
+pub(super) fn eventually_deadline(triggered_at: VirtualTime, deadline: VirtualTime) -> VirtualTime {
     VirtualTime {
         ticks: triggered_at.ticks.saturating_add(deadline.ticks),
     }
 }
 
-fn condition_prefix_from_recorded_entries(
+pub(super) fn condition_prefix_from_recorded_entries(
     entries: &[SchedulerEventLogEntry],
 ) -> Result<ConditionEventLogPrefix, ConditionEvaluationError> {
     if entries.is_empty() {
@@ -804,7 +808,7 @@ fn condition_prefix_from_recorded_entries(
     }
 }
 
-fn validate_recorded_event_log_entries(
+pub(super) fn validate_recorded_event_log_entries(
     entries: &[SchedulerEventLogEntry],
 ) -> Result<(), ConditionEvaluationError> {
     if entries.is_empty() {
@@ -813,7 +817,7 @@ fn validate_recorded_event_log_entries(
     ConditionEventLogPrefix::from_scheduler_event_log_entries(entries.to_vec()).map(|_| ())
 }
 
-fn external_formal_trace_bytes(entries: &[SchedulerEventLogEntry]) -> Vec<u8> {
+pub(super) fn external_formal_trace_bytes(entries: &[SchedulerEventLogEntry]) -> Vec<u8> {
     let previous_prefix = scheduler_event_log_empty_prefix();
     let mut lines = Vec::new();
     lines.push(String::from("format=crucible.external-formal-trace.v1"));
@@ -828,7 +832,7 @@ fn external_formal_trace_bytes(entries: &[SchedulerEventLogEntry]) -> Vec<u8> {
     lines.join("\n").into_bytes()
 }
 
-fn external_formal_trace_entry_material(entry: &SchedulerEventLogEntry) -> String {
+pub(super) fn external_formal_trace_entry_material(entry: &SchedulerEventLogEntry) -> String {
     let mut lines = Vec::new();
     lines.push(String::from("entry_begin"));
     lines.push(format!("entry.sequence={}", entry.sequence()));
@@ -847,14 +851,18 @@ fn external_formal_trace_entry_material(entry: &SchedulerEventLogEntry) -> Strin
     lines.join("\n")
 }
 
-fn external_scheduler_event_log_class_label(class: SchedulerEventLogClass) -> &'static str {
+pub(super) fn external_scheduler_event_log_class_label(
+    class: SchedulerEventLogClass,
+) -> &'static str {
     match class {
         SchedulerEventLogClass::Causal => "causal",
         SchedulerEventLogClass::Observational => "observational",
     }
 }
 
-fn external_scheduler_event_log_payload_material(payload: &SchedulerEventLogPayload) -> String {
+pub(super) fn external_scheduler_event_log_payload_material(
+    payload: &SchedulerEventLogPayload,
+) -> String {
     let mut lines = Vec::new();
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
@@ -910,7 +918,10 @@ fn external_scheduler_event_log_payload_material(payload: &SchedulerEventLogPayl
     lines.join("\n")
 }
 
-fn external_event_attribute_value_material(prefix: &str, value: &EventAttributeValue) -> String {
+pub(super) fn external_event_attribute_value_material(
+    prefix: &str,
+    value: &EventAttributeValue,
+) -> String {
     let mut lines = Vec::new();
     match value {
         EventAttributeValue::Bool(value) => {
@@ -971,7 +982,7 @@ fn external_event_attribute_value_material(prefix: &str, value: &EventAttributeV
     lines.join("\n")
 }
 
-fn external_scheduled_event_material(event: &ScheduledEvent) -> String {
+pub(super) fn external_scheduled_event_material(event: &ScheduledEvent) -> String {
     let mut lines = Vec::new();
     lines.push(external_scheduled_event_key_material(&event.key));
     lines.push(format!(
@@ -982,7 +993,7 @@ fn external_scheduled_event_material(event: &ScheduledEvent) -> String {
     lines.join("\n")
 }
 
-fn external_scheduled_event_key_material(key: &ScheduledEventKey) -> String {
+pub(super) fn external_scheduled_event_key_material(key: &ScheduledEventKey) -> String {
     let mut lines = Vec::new();
     lines.push(format!("event.time_ticks={}", key.virtual_time().ticks));
     lines.push(external_scheduler_node_material(
@@ -997,7 +1008,7 @@ fn external_scheduled_event_key_material(key: &ScheduledEventKey) -> String {
     lines.join("\n")
 }
 
-fn external_scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
+pub(super) fn external_scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
     let mut lines = Vec::new();
     match payload {
         ScheduledEventPayload::BackendInput(input) => {
@@ -1061,7 +1072,7 @@ fn external_scheduled_event_payload_material(payload: &ScheduledEventPayload) ->
     lines.join("\n")
 }
 
-fn external_decision_material(decision: &Decision) -> String {
+pub(super) fn external_decision_material(decision: &Decision) -> String {
     use Decision as D;
 
     let mut lines = Vec::new();
@@ -1135,7 +1146,9 @@ fn external_decision_material(decision: &Decision) -> String {
     lines.join("\n")
 }
 
-fn external_observable_event_payload_material(observable: &ObservableEventPayload) -> String {
+pub(super) fn external_observable_event_payload_material(
+    observable: &ObservableEventPayload,
+) -> String {
     let mut lines = Vec::new();
     match observable {
         ObservableEventPayload::NetworkDelivered { link, payload } => {
@@ -1335,7 +1348,7 @@ fn external_observable_event_payload_material(observable: &ObservableEventPayloa
     lines.join("\n")
 }
 
-fn external_event_firing_material(firing: &EventFiring) -> String {
+pub(super) fn external_event_firing_material(firing: &EventFiring) -> String {
     let mut lines = Vec::new();
     lines.push(external_event_id_material("firing.event", firing.event()));
     lines.push(format!("firing.at_ticks={}", firing.at().ticks));
@@ -1343,7 +1356,9 @@ fn external_event_firing_material(firing: &EventFiring) -> String {
     lines.join("\n")
 }
 
-fn external_trigger_action_application_material(application: &TriggerActionApplication) -> String {
+pub(super) fn external_trigger_action_application_material(
+    application: &TriggerActionApplication,
+) -> String {
     let mut lines = Vec::new();
     lines.push(format!("application.sequence={}", application.sequence));
     lines.push(external_event_id_material(
@@ -1362,7 +1377,7 @@ fn external_trigger_action_application_material(application: &TriggerActionAppli
     lines.join("\n")
 }
 
-fn external_action_material(prefix: &str, action: &Action) -> String {
+pub(super) fn external_action_material(prefix: &str, action: &Action) -> String {
     let mut lines = Vec::new();
     match action {
         Action::InjectFault { tag, fault } => {
@@ -1443,7 +1458,7 @@ fn external_action_material(prefix: &str, action: &Action) -> String {
     lines.join("\n")
 }
 
-fn external_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
+pub(super) fn external_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
     let mut lines = Vec::new();
     match fault {
         MembershipFault::Crash { node, restart } => {
@@ -1492,7 +1507,10 @@ fn external_membership_fault_material(prefix: &str, fault: &MembershipFault) -> 
     lines.join("\n")
 }
 
-fn external_control_fault_action_material(prefix: &str, action: &ControlFaultAction) -> String {
+pub(super) fn external_control_fault_action_material(
+    prefix: &str,
+    action: &ControlFaultAction,
+) -> String {
     let mut lines = Vec::new();
     match action {
         ControlFaultAction::Inject { tag, fault } => {
@@ -1511,7 +1529,10 @@ fn external_control_fault_action_material(prefix: &str, action: &ControlFaultAct
     lines.join("\n")
 }
 
-fn external_control_operation_kind_material(prefix: &str, kind: &ControlOperationKind) -> String {
+pub(super) fn external_control_operation_kind_material(
+    prefix: &str,
+    kind: &ControlOperationKind,
+) -> String {
     let mut lines = Vec::new();
     match kind {
         ControlOperationKind::Pause => lines.push(format!("{prefix}=pause")),
@@ -1537,7 +1558,7 @@ fn external_control_operation_kind_material(prefix: &str, kind: &ControlOperatio
     lines.join("\n")
 }
 
-fn external_event_key_material(prefix: &str, key: &EventKey) -> String {
+pub(super) fn external_event_key_material(prefix: &str, key: &EventKey) -> String {
     let mut lines = Vec::new();
     lines.push(format!("{prefix}.time_ticks={}", key.virtual_time.ticks));
     lines.push(external_scheduler_node_material(
@@ -1552,7 +1573,7 @@ fn external_event_key_material(prefix: &str, key: &EventKey) -> String {
     lines.join("\n")
 }
 
-fn external_scheduler_node_material(prefix: &str, node: &SchedulerNodeId) -> String {
+pub(super) fn external_scheduler_node_material(prefix: &str, node: &SchedulerNodeId) -> String {
     format!(
         "{}\n{prefix}.kind={}",
         external_node_id_material(&format!("{prefix}.node"), &node.node),
@@ -1560,35 +1581,35 @@ fn external_scheduler_node_material(prefix: &str, node: &SchedulerNodeId) -> Str
     )
 }
 
-fn external_node_id_material(prefix: &str, node: &NodeId) -> String {
+pub(super) fn external_node_id_material(prefix: &str, node: &NodeId) -> String {
     external_string_material(prefix, &node.name)
 }
 
-fn external_event_id_material(prefix: &str, id: &EventId) -> String {
+pub(super) fn external_event_id_material(prefix: &str, id: &EventId) -> String {
     external_string_material(prefix, &id.name)
 }
 
-fn external_assertion_id_material(prefix: &str, id: &AssertionId) -> String {
+pub(super) fn external_assertion_id_material(prefix: &str, id: &AssertionId) -> String {
     external_string_material(prefix, &id.name)
 }
 
-fn external_marker_id_material(prefix: &str, id: &MarkerId) -> String {
+pub(super) fn external_marker_id_material(prefix: &str, id: &MarkerId) -> String {
     external_string_material(prefix, &id.name)
 }
 
-fn external_fault_id_material(prefix: &str, id: &FaultId) -> String {
+pub(super) fn external_fault_id_material(prefix: &str, id: &FaultId) -> String {
     external_string_material(prefix, &id.name)
 }
 
-fn external_fault_tag_material(prefix: &str, tag: &FaultTag) -> String {
+pub(super) fn external_fault_tag_material(prefix: &str, tag: &FaultTag) -> String {
     external_string_material(prefix, &tag.name)
 }
 
-fn external_timer_id_material(prefix: &str, id: &TimerId) -> String {
+pub(super) fn external_timer_id_material(prefix: &str, id: &TimerId) -> String {
     external_string_material(prefix, &id.name)
 }
 
-fn external_rng_stream_material(prefix: &str, stream: &RngStreamId) -> String {
+pub(super) fn external_rng_stream_material(prefix: &str, stream: &RngStreamId) -> String {
     format!(
         "{}\n{}",
         external_string_material(&format!("{prefix}.domain"), &stream.domain),
@@ -1596,7 +1617,7 @@ fn external_rng_stream_material(prefix: &str, stream: &RngStreamId) -> String {
     )
 }
 
-fn external_optional_label_material(prefix: &str, label: &Option<String>) -> String {
+pub(super) fn external_optional_label_material(prefix: &str, label: &Option<String>) -> String {
     match label {
         Some(label) => format!(
             "{prefix}.present=true\n{}",
@@ -1606,7 +1627,7 @@ fn external_optional_label_material(prefix: &str, label: &Option<String>) -> Str
     }
 }
 
-fn external_optional_link_material(prefix: &str, link: &Option<LinkId>) -> String {
+pub(super) fn external_optional_link_material(prefix: &str, link: &Option<LinkId>) -> String {
     match link {
         Some(link) => format!(
             "{prefix}.present=true\n{}",
@@ -1616,7 +1637,7 @@ fn external_optional_link_material(prefix: &str, link: &Option<LinkId>) -> Strin
     }
 }
 
-fn external_optional_node_id_material(prefix: &str, node: &Option<NodeId>) -> String {
+pub(super) fn external_optional_node_id_material(prefix: &str, node: &Option<NodeId>) -> String {
     match node {
         Some(node) => format!(
             "{prefix}.present=true\n{}",
@@ -1626,11 +1647,14 @@ fn external_optional_node_id_material(prefix: &str, node: &Option<NodeId>) -> St
     }
 }
 
-fn external_link_id_material(prefix: &str, id: &LinkId) -> String {
+pub(super) fn external_link_id_material(prefix: &str, id: &LinkId) -> String {
     external_string_material(prefix, &id.name)
 }
 
-fn external_resolved_mem_place_material(prefix: &str, place: &ResolvedMemPlace) -> String {
+pub(super) fn external_resolved_mem_place_material(
+    prefix: &str,
+    place: &ResolvedMemPlace,
+) -> String {
     match place {
         ResolvedMemPlace::PhysicalAddress { address, bytes } => {
             format!("{prefix}=physical-address\n{prefix}.address={address}\n{prefix}.bytes={bytes}")
@@ -1645,7 +1669,7 @@ fn external_resolved_mem_place_material(prefix: &str, place: &ResolvedMemPlace) 
     }
 }
 
-fn external_string_material(prefix: &str, value: &str) -> String {
+pub(super) fn external_string_material(prefix: &str, value: &str) -> String {
     format!(
         "{prefix}.bytes_len={}\n{prefix}.bytes={}",
         value.len(),
@@ -1653,7 +1677,7 @@ fn external_string_material(prefix: &str, value: &str) -> String {
     )
 }
 
-fn external_preemption_kind_material(prefix: &str, kind: &PreemptionKind) -> String {
+pub(super) fn external_preemption_kind_material(prefix: &str, kind: &PreemptionKind) -> String {
     match kind {
         PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => format!(
             "{prefix}=vcpu-switch\n{prefix}.from_vcpu={}\n{prefix}.to_vcpu={}",
@@ -1666,7 +1690,7 @@ fn external_preemption_kind_material(prefix: &str, kind: &PreemptionKind) -> Str
     }
 }
 
-fn external_scheduler_evaluation_boundary_kind_label(
+pub(super) fn external_scheduler_evaluation_boundary_kind_label(
     kind: SchedulerEvaluationBoundaryKind,
 ) -> &'static str {
     match kind {
@@ -1675,7 +1699,9 @@ fn external_scheduler_evaluation_boundary_kind_label(
     }
 }
 
-fn external_scheduled_event_resolve_class_label(class: ScheduledEventResolveClass) -> &'static str {
+pub(super) fn external_scheduled_event_resolve_class_label(
+    class: ScheduledEventResolveClass,
+) -> &'static str {
     match class {
         ScheduledEventResolveClass::FrameDelivery => "frame-delivery",
         ScheduledEventResolveClass::IoCompletion => "io-completion",
@@ -1685,7 +1711,7 @@ fn external_scheduled_event_resolve_class_label(class: ScheduledEventResolveClas
     }
 }
 
-fn external_scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
+pub(super) fn external_scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
     match kind {
         SchedulingNodeKind::Vm => "vm",
         SchedulingNodeKind::Disk => "disk",
@@ -1695,7 +1721,7 @@ fn external_scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str
     }
 }
 
-fn external_io_event_kind_label(kind: IoEventKind) -> &'static str {
+pub(super) fn external_io_event_kind_label(kind: IoEventKind) -> &'static str {
     match kind {
         IoEventKind::Any => "any",
         IoEventKind::BlockRead => "block-read",
@@ -1706,7 +1732,7 @@ fn external_io_event_kind_label(kind: IoEventKind) -> &'static str {
     }
 }
 
-fn external_node_lifecycle_label(state: NodeLifecycle) -> &'static str {
+pub(super) fn external_node_lifecycle_label(state: NodeLifecycle) -> &'static str {
     match state {
         NodeLifecycle::Started => "started",
         NodeLifecycle::Crashed => "crashed",
@@ -1715,14 +1741,14 @@ fn external_node_lifecycle_label(state: NodeLifecycle) -> &'static str {
     }
 }
 
-fn external_assertion_phase_label(phase: AssertionPhase) -> &'static str {
+pub(super) fn external_assertion_phase_label(phase: AssertionPhase) -> &'static str {
     match phase {
         AssertionPhase::Satisfied => "satisfied",
         AssertionPhase::Violated => "violated",
     }
 }
 
-fn external_assertion_quantifier_label(flavor: AssertionQuantifierKind) -> &'static str {
+pub(super) fn external_assertion_quantifier_label(flavor: AssertionQuantifierKind) -> &'static str {
     match flavor {
         AssertionQuantifierKind::Always => "always",
         AssertionQuantifierKind::Sometimes => "sometimes",
@@ -1736,7 +1762,7 @@ fn external_assertion_quantifier_label(flavor: AssertionQuantifierKind) -> &'sta
     }
 }
 
-fn external_guest_assertion_kind_label(kind: GuestAssertionKind) -> &'static str {
+pub(super) fn external_guest_assertion_kind_label(kind: GuestAssertionKind) -> &'static str {
     match kind {
         GuestAssertionKind::Always => "always",
         GuestAssertionKind::Sometimes => "sometimes",
@@ -1745,7 +1771,7 @@ fn external_guest_assertion_kind_label(kind: GuestAssertionKind) -> &'static str
     }
 }
 
-fn external_restart_policy_label(policy: RestartPolicy) -> &'static str {
+pub(super) fn external_restart_policy_label(policy: RestartPolicy) -> &'static str {
     match policy {
         RestartPolicy::FromReadyPoint => "from-ready-point",
         RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
@@ -1753,7 +1779,7 @@ fn external_restart_policy_label(policy: RestartPolicy) -> &'static str {
     }
 }
 
-fn external_partition_direction_label(direction: PartitionDirection) -> &'static str {
+pub(super) fn external_partition_direction_label(direction: PartitionDirection) -> &'static str {
     match direction {
         PartitionDirection::Bidirectional => "bidirectional",
         PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
@@ -1761,7 +1787,7 @@ fn external_partition_direction_label(direction: PartitionDirection) -> &'static
     }
 }
 
-fn external_log_level_label(level: LogLevel) -> &'static str {
+pub(super) fn external_log_level_label(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Debug => "debug",
         LogLevel::Info => "info",
@@ -1770,7 +1796,7 @@ fn external_log_level_label(level: LogLevel) -> &'static str {
     }
 }
 
-fn external_event_level_label(level: EventLevel) -> &'static str {
+pub(super) fn external_event_level_label(level: EventLevel) -> &'static str {
     match level {
         EventLevel::Trace => "trace",
         EventLevel::Debug => "debug",
@@ -1780,7 +1806,7 @@ fn external_event_level_label(level: EventLevel) -> &'static str {
     }
 }
 
-fn external_hex_bytes(bytes: &[u8]) -> String {
+pub(super) fn external_hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
@@ -1790,7 +1816,7 @@ fn external_hex_bytes(bytes: &[u8]) -> String {
     encoded
 }
 
-fn condition_prefix_from_recorded_log(
+pub(super) fn condition_prefix_from_recorded_log(
     recorded_log: &RecordedAssertionLog,
     prefix_len: usize,
     require_recorded_offset: bool,
@@ -1816,7 +1842,7 @@ fn condition_prefix_from_recorded_log(
     Ok(prefix.with_event_log_offset(offset))
 }
 
-fn observe_guest_marker_assertions(
+pub(super) fn observe_guest_marker_assertions(
     states: &mut Vec<GuestMarkerAssertionState>,
     prefix: &ConditionEventLogPrefix,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
@@ -1850,7 +1876,7 @@ fn observe_guest_marker_assertions(
     outcomes
 }
 
-fn guest_marker_assertion_state_for<'a>(
+pub(super) fn guest_marker_assertion_state_for<'a>(
     states: &'a mut Vec<GuestMarkerAssertionState>,
     marker: &GuestAssertionMarker,
 ) -> &'a mut GuestMarkerAssertionState {
@@ -1863,7 +1889,7 @@ fn guest_marker_assertion_state_for<'a>(
     }
 }
 
-fn observe_guest_marker_assertion_state(
+pub(super) fn observe_guest_marker_assertion_state(
     state: &mut GuestMarkerAssertionState,
     at: VirtualTime,
     event: &ObservableEvent,
@@ -1918,7 +1944,7 @@ fn observe_guest_marker_assertion_state(
     }
 }
 
-fn finalize_guest_marker_assertion_state(
+pub(super) fn finalize_guest_marker_assertion_state(
     state: &mut GuestMarkerAssertionState,
     at: VirtualTime,
 ) -> Option<HostAssertionOutcome> {
@@ -1962,17 +1988,17 @@ fn finalize_guest_marker_assertion_state(
     }
 }
 
-fn guest_marker_reason(state: &GuestMarkerAssertionState, summary: &str) -> String {
+pub(super) fn guest_marker_reason(state: &GuestMarkerAssertionState, summary: &str) -> String {
     let details = details_reason(&state.details);
     format!("{summary}; location={}; details={details}", state.location)
 }
 
-fn guest_marker_payload_reason(marker: &GuestAssertionMarker, summary: &str) -> String {
+pub(super) fn guest_marker_payload_reason(marker: &GuestAssertionMarker, summary: &str) -> String {
     let details = details_reason(&marker.details);
     format!("{summary}; location={}; details={details}", marker.location)
 }
 
-fn details_reason(details: &[GuestAssertionDetail]) -> String {
+pub(super) fn details_reason(details: &[GuestAssertionDetail]) -> String {
     details
         .iter()
         .map(|detail| format!("{}={}", detail.key, detail.value))
@@ -1980,7 +2006,7 @@ fn details_reason(details: &[GuestAssertionDetail]) -> String {
         .join(",")
 }
 
-fn sort_host_assertion_outcomes(outcomes: &mut [HostAssertionOutcome]) {
+pub(super) fn sort_host_assertion_outcomes(outcomes: &mut [HostAssertionOutcome]) {
     outcomes.sort_by(|left, right| {
         left.assertion
             .cmp(&right.assertion)
@@ -1993,7 +2019,7 @@ fn sort_host_assertion_outcomes(outcomes: &mut [HostAssertionOutcome]) {
     });
 }
 
-fn sort_host_assertion_proximities(proximities: &mut [HostAssertionProximity]) {
+pub(super) fn sort_host_assertion_proximities(proximities: &mut [HostAssertionProximity]) {
     proximities.sort_by(|left, right| {
         left.assertion
             .cmp(&right.assertion)
@@ -2013,7 +2039,7 @@ fn sort_host_assertion_proximities(proximities: &mut [HostAssertionProximity]) {
     });
 }
 
-fn lifecycle_for_outcome_kind(kind: HostAssertionOutcomeKind) -> PropertyLifecycleState {
+pub(super) fn lifecycle_for_outcome_kind(kind: HostAssertionOutcomeKind) -> PropertyLifecycleState {
     match kind {
         HostAssertionOutcomeKind::Passed
         | HostAssertionOutcomeKind::Warning
@@ -2027,7 +2053,7 @@ fn lifecycle_for_outcome_kind(kind: HostAssertionOutcomeKind) -> PropertyLifecyc
     }
 }
 
-fn host_assertion_outcome_kind_rank(kind: HostAssertionOutcomeKind) -> u8 {
+pub(super) fn host_assertion_outcome_kind_rank(kind: HostAssertionOutcomeKind) -> u8 {
     match kind {
         HostAssertionOutcomeKind::Passed => 0,
         HostAssertionOutcomeKind::Satisfied => 1,
@@ -2040,7 +2066,7 @@ fn host_assertion_outcome_kind_rank(kind: HostAssertionOutcomeKind) -> u8 {
     }
 }
 
-fn host_assertion_outcome_fails_run(kind: HostAssertionOutcomeKind) -> bool {
+pub(super) fn host_assertion_outcome_fails_run(kind: HostAssertionOutcomeKind) -> bool {
     matches!(
         kind,
         HostAssertionOutcomeKind::Violated | HostAssertionOutcomeKind::NeverReachedFail

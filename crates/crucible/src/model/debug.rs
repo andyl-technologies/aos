@@ -1,4 +1,6 @@
-// Debug attachment, inspection, branching, and time-travel reports.
+//! Debug attachment, inspection, branching, and time-travel reports.
+
+use super::*;
 
 /// Result of a graph-level runtime realization.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -14,7 +16,7 @@ pub struct TemporalGraphRuntime {
 /// A gdb-protocol endpoint used by the debug attach boundary.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DebugGdbEndpoint {
-    value: String,
+    pub(super) value: String,
 }
 
 impl DebugGdbEndpoint {
@@ -281,7 +283,7 @@ pub struct DebugReadOnlyInspectionFootprint {
 }
 
 impl DebugReadOnlyInspectionFootprint {
-    fn capture(
+    pub(super) fn capture(
         graph: &TemporalGraph,
         attach: &DebugAttachReport,
         fallback_virtual_time: VirtualTime,
@@ -410,7 +412,7 @@ impl DebugReadOnlyInspectionReport {
     }
 }
 
-fn checkpoint_footprints(
+pub(super) fn checkpoint_footprints(
     checkpoints: &BTreeMap<ContentHash, Checkpoint>,
 ) -> Vec<DebugReadOnlyCheckpointFootprint> {
     checkpoints
@@ -430,7 +432,7 @@ fn checkpoint_footprints(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum DebugReadOnlyInspectionEvent {
+pub(super) enum DebugReadOnlyInspectionEvent {
     Attach,
     Inspect(DebugReadOnlyInspectionKind),
     Detach,
@@ -454,7 +456,7 @@ impl DebugReadOnlyInspectionEvent {
     }
 }
 
-fn debug_read_only_observation_entry(
+pub(super) fn debug_read_only_observation_entry(
     sequence: u64,
     at: VirtualTime,
     event: DebugReadOnlyInspectionEvent,
@@ -490,7 +492,7 @@ fn debug_read_only_observation_entry(
     )
 }
 
-fn debug_non_canonical_branch_id(
+pub(super) fn debug_non_canonical_branch_id(
     attach: &DebugAttachReport,
     request: &DebugNonCanonicalBranchRequest,
 ) -> ContentHash {
@@ -500,7 +502,7 @@ fn debug_non_canonical_branch_id(
     )
 }
 
-fn debug_non_canonical_branch_material(
+pub(super) fn debug_non_canonical_branch_material(
     attach: &DebugAttachReport,
     request: &DebugNonCanonicalBranchRequest,
 ) -> String {
@@ -526,7 +528,7 @@ fn debug_non_canonical_branch_material(
     lines.join("\n")
 }
 
-fn push_debug_non_canonical_action_lines(
+pub(super) fn push_debug_non_canonical_action_lines(
     index: usize,
     action: &DebugNonCanonicalBranchAction,
     lines: &mut Vec<String>,
@@ -552,7 +554,7 @@ fn push_debug_non_canonical_action_lines(
     }
 }
 
-fn push_debug_control_operation_lines(
+pub(super) fn push_debug_control_operation_lines(
     prefix: &str,
     operation: &ControlOperation,
     lines: &mut Vec<String>,
@@ -582,7 +584,7 @@ fn push_debug_control_operation_lines(
     }
 }
 
-fn debug_control_operation_kind_label(kind: &ControlOperationKind) -> &'static str {
+pub(super) fn debug_control_operation_kind_label(kind: &ControlOperationKind) -> &'static str {
     match kind {
         ControlOperationKind::Pause => "pause",
         ControlOperationKind::Resume => "resume",
@@ -596,7 +598,11 @@ fn debug_control_operation_kind_label(kind: &ControlOperationKind) -> &'static s
     }
 }
 
-fn push_debug_guest_edit_lines(prefix: &str, edit: &DebugGuestEdit, lines: &mut Vec<String>) {
+pub(super) fn push_debug_guest_edit_lines(
+    prefix: &str,
+    edit: &DebugGuestEdit,
+    lines: &mut Vec<String>,
+) {
     lines.push(format!("{prefix}.node_len={}", edit.node.name.len()));
     lines.push(format!("{prefix}.node={}", edit.node.name));
     lines.push(format!("{prefix}.edit_kind={}", edit.kind.label()));
@@ -607,7 +613,7 @@ fn push_debug_guest_edit_lines(prefix: &str, edit: &DebugGuestEdit, lines: &mut 
     push_debug_coordinate_lines(&format!("{prefix}.coordinate"), &edit.coordinate, lines);
 }
 
-fn debug_hex_bytes(bytes: &[u8]) -> String {
+pub(super) fn debug_hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
@@ -617,7 +623,7 @@ fn debug_hex_bytes(bytes: &[u8]) -> String {
     encoded
 }
 
-fn push_debug_coordinate_lines(
+pub(super) fn push_debug_coordinate_lines(
     prefix: &str,
     coordinate: &DebugCoordinate,
     lines: &mut Vec<String>,
@@ -654,7 +660,7 @@ fn push_debug_coordinate_lines(
     }
 }
 
-fn debug_non_canonical_fork_marker(
+pub(super) fn debug_non_canonical_fork_marker(
     branch: ContentHash,
     fork_point: ContentHash,
     fork_checkpoint: ContentHash,
@@ -706,13 +712,13 @@ fn debug_non_canonical_fork_marker(
     }
 }
 
-fn next_event_log_sequence(event_log: &[SchedulerEventLogEntry]) -> u64 {
+pub(super) fn next_event_log_sequence(event_log: &[SchedulerEventLogEntry]) -> u64 {
     event_log
         .last()
         .map_or(0, |entry| entry.sequence().saturating_add(1))
 }
 
-fn canonical_run_event_log_projection_without_debug_branches(
+pub(super) fn canonical_run_event_log_projection_without_debug_branches(
     entries: &[SchedulerEventLogEntry],
 ) -> EventLogCausalProjection {
     let canonical_entries = entries
@@ -723,14 +729,16 @@ fn canonical_run_event_log_projection_without_debug_branches(
     event_log_causal_projection(&canonical_entries)
 }
 
-fn is_debug_non_canonical_fork_marker_entry(entry: &SchedulerEventLogEntry) -> bool {
+pub(super) fn is_debug_non_canonical_fork_marker_entry(entry: &SchedulerEventLogEntry) -> bool {
     entry.event_payload().kind() == "fork"
         && entry.event_payload().attribute("non_canonical")
             == Some(&EventAttributeValue::Bool(true))
         && entry.event_payload().attribute("canonical") == Some(&EventAttributeValue::Bool(false))
 }
 
-fn debug_non_canonical_schedule_delta(request: &DebugNonCanonicalBranchRequest) -> Schedule {
+pub(super) fn debug_non_canonical_schedule_delta(
+    request: &DebugNonCanonicalBranchRequest,
+) -> Schedule {
     Schedule::from_decisions(request.actions.iter().filter_map(|action| match action {
         DebugNonCanonicalBranchAction::Decision(decision) => Some(decision.clone()),
         DebugNonCanonicalBranchAction::ControlOperation(_)
@@ -739,18 +747,23 @@ fn debug_non_canonical_schedule_delta(request: &DebugNonCanonicalBranchRequest) 
     }))
 }
 
-fn debug_first_assertion_violation_sequence(event_log: &[SchedulerEventLogEntry]) -> Option<u64> {
+pub(super) fn debug_first_assertion_violation_sequence(
+    event_log: &[SchedulerEventLogEntry],
+) -> Option<u64> {
     event_log
         .iter()
         .find(|entry| debug_event_log_entry_is_assertion_violation(entry))
         .map(SchedulerEventLogEntry::sequence)
 }
 
-fn debug_event_log_contains_sequence(event_log: &[SchedulerEventLogEntry], sequence: u64) -> bool {
+pub(super) fn debug_event_log_contains_sequence(
+    event_log: &[SchedulerEventLogEntry],
+    sequence: u64,
+) -> bool {
     event_log.iter().any(|entry| entry.sequence() == sequence)
 }
 
-fn debug_event_log_entry_is_assertion_violation(entry: &SchedulerEventLogEntry) -> bool {
+pub(super) fn debug_event_log_entry_is_assertion_violation(entry: &SchedulerEventLogEntry) -> bool {
     matches!(
         entry.payload(),
         SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged {
@@ -761,7 +774,7 @@ fn debug_event_log_entry_is_assertion_violation(entry: &SchedulerEventLogEntry) 
         && entry.event_payload().string("new_state") == Some("Violated"))
 }
 
-fn shell_quote_command_argument(value: &str) -> String {
+pub(super) fn shell_quote_command_argument(value: &str) -> String {
     if !value.is_empty() && value.bytes().all(is_shell_safe_unquoted_byte) {
         return value.to_owned();
     }
@@ -778,7 +791,7 @@ fn shell_quote_command_argument(value: &str) -> String {
     quoted
 }
 
-fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
+pub(super) fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
     matches!(
         byte,
         b'a'..=b'z'
@@ -797,7 +810,7 @@ fn is_shell_safe_unquoted_byte(byte: u8) -> bool {
     )
 }
 
-fn debug_labels_contain_all(labels: &[&'static str], required: &[&'static str]) -> bool {
+pub(super) fn debug_labels_contain_all(labels: &[&'static str], required: &[&'static str]) -> bool {
     required
         .iter()
         .all(|required_label| labels.iter().any(|label| label == required_label))
@@ -889,7 +902,7 @@ impl DebugBreakpointRequest {
         )
     }
 
-    fn canonical_mechanism(&self) -> Option<DebugBreakpointMechanism> {
+    pub(super) fn canonical_mechanism(&self) -> Option<DebugBreakpointMechanism> {
         match &self.target {
             DebugBreakpointTarget::EngineCondition { .. } => {
                 Some(DebugBreakpointMechanism::EngineCondition)
@@ -1132,7 +1145,7 @@ impl DebugNonCanonicalBranchRequest {
         self
     }
 
-    fn trigger_has_evidence(&self) -> bool {
+    pub(super) fn trigger_has_evidence(&self) -> bool {
         self.actions
             .first()
             .is_some_and(|action| self.trigger.matches_first_action(action))
@@ -1329,7 +1342,7 @@ pub struct DebugNonCanonicalBranch {
 }
 
 impl DebugNonCanonicalBranch {
-    fn from_request(
+    pub(super) fn from_request(
         attach: &DebugAttachReport,
         request: &DebugNonCanonicalBranchRequest,
         marker_sequence: u64,
@@ -2221,7 +2234,7 @@ impl DebugReverseStepRequest {
         self
     }
 
-    fn current_event_sequence_limit(&self) -> u64 {
+    pub(super) fn current_event_sequence_limit(&self) -> u64 {
         self.current_event_sequence.unwrap_or(u64::MAX)
     }
 }
@@ -2294,11 +2307,11 @@ impl DebugReverseContinueRequest {
         self
     }
 
-    fn current_event_sequence_limit(&self) -> u64 {
+    pub(super) fn current_event_sequence_limit(&self) -> u64 {
         self.current_event_sequence.unwrap_or(u64::MAX)
     }
 
-    fn searched_entries_before(&self, matching_index: usize) -> usize {
+    pub(super) fn searched_entries_before(&self, matching_index: usize) -> usize {
         self.event_log.len().saturating_sub(matching_index)
     }
 }
@@ -2516,7 +2529,10 @@ impl DebugWholeWorldTimeTravelRequest {
         self
     }
 
-    fn goto_request(&self, graph: &TemporalGraph) -> Result<DebugGotoRequest, EngineError> {
+    pub(super) fn goto_request(
+        &self,
+        graph: &TemporalGraph,
+    ) -> Result<DebugGotoRequest, EngineError> {
         let mut request = match self.target {
             DebugWholeWorldTarget::PrefixLen(len) => DebugGotoRequest::at_configuration(
                 self.current.clone(),
@@ -2595,7 +2611,7 @@ impl DebugWholeWorldTimeTravelReport {
 /// Non-zero opportunistic checkpoint stride for debug time travel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DebugCheckpointStride {
-    every: NonZeroUsize,
+    pub(super) every: NonZeroUsize,
 }
 
 impl DebugCheckpointStride {
@@ -2611,7 +2627,7 @@ impl DebugCheckpointStride {
         self.every.get()
     }
 
-    fn includes_prefix(self, prefix_len: usize) -> bool {
+    pub(super) fn includes_prefix(self, prefix_len: usize) -> bool {
         prefix_len > 0 && prefix_len.is_multiple_of(self.every())
     }
 }

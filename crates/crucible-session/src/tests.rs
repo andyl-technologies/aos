@@ -13,5 +13,9 @@ use crucible::{
     WorldNode, bake, step, try_step,
 };
 
-include!("tests/engine_state.rs");
-include!("tests/actor_runtime.rs");
+#[path = "tests/actor_runtime.rs"]
+mod actor_runtime;
+#[path = "tests/engine_state.rs"]
+mod engine_state;
+
+use actor_runtime::*;

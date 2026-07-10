@@ -1322,7 +1322,8 @@ fn ninep_device() -> NinepDevice {
     );
     NinepDevice::new(
         core,
-        FsTree::new(Node::Directory { children: root }),
+        FsTree::try_new(Node::Directory { children: root })
+            .expect("test 9p tree components are valid"),
         NinepLatency::default(),
     )
 }

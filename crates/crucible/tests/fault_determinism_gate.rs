@@ -4,20 +4,26 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crucible::{
-    Action, BlockFault, ConditionLeaf, ConditionLeafOracle, DeviceId, EngineError, EventGraphState,
-    Fault, FaultBandwidthBitsPerSecond, FaultDecision, FaultDuration, FaultPlan, FaultPlanEntry,
-    FaultRateBasisPoints, FaultSlowdownFactorBasisPoints, FaultTag, Icount, IoFailureMode, LinkDef,
-    LinkId, MembershipFault, NetworkCorruptionFault, NetworkFault, NetworkLinkDirection,
-    NinePErrno, NinePFault, NodeCounter, NodeFault, NodeId, NodeTemplate, PartitionDirection, Plan,
-    ReadyPoint, RestartPolicy, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
+    Action, BlockFault, ConditionLeaf, ConditionLeafOracle, ContentAddressedBlobRef, ContentHash,
+    DagStore, DeviceDelivery, EventGraphState, Fault, FaultBandwidthBitsPerSecond, FaultDecision,
+    FaultDuration, FaultPlan, FaultPlanEntry, FaultRateBasisPoints, FaultSlowdownFactorBasisPoints,
+    FaultTag, Icount, IoFailureMode, LinkDef, LinkId, MembershipFault, MemoryDagStore,
+    NetworkCorruptionFault, NetworkFault, NetworkLinkDirection, NinePErrno, NinePFault,
+    NodeCounter, NodeFault, NodeId, NodeTemplate, PartitionDirection, Plan, ReadyPoint,
+    RestartPolicy, SchedulerEvaluationBoundaryKind, SchedulerLivenessScenario,
     SchedulerLookaheadEdge, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
     SchedulingNodeKind, Seed, Shift, SimDuration, SimInstant, SimOffset, SingleScheduler,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig,
+    WorldIoLayoutPolicy, WorldIoNode, WorldNinePLatency, WorldNode, WorldNodeDef,
 };
-use crucible_device::{Delivery, Frame, FrameDraws, LinkFaults, NetLink, PastDeliveryPolicy};
+use crucible_device::ninep::codec;
+use crucible_device::{
+    BaseImage, BlockRequest, Delivery, Frame, FrameDraws, FsTree, IoFaults, LinkFaults, NetLink,
+    Node, PastDeliveryPolicy,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FaultGateFingerprint {
@@ -25,6 +31,7 @@ struct FaultGateFingerprint {
     active_tags: Vec<(String, String)>,
     active_table: crucible::ActiveFaultTable,
     live_links: Vec<LinkEffectProbe>,
+    live_devices: Vec<DeviceEffectProbe>,
     decisions: Vec<crucible::Decision>,
 }
 
@@ -42,6 +49,13 @@ struct LinkEffectProbe {
     deliveries: Vec<Delivery>,
     injected_deliveries: Vec<Delivery>,
     decisions: Vec<crucible::Decision>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DeviceEffectProbe {
+    kind: SchedulingNodeKind,
+    faults: IoFaults,
+    deliveries: Vec<DeviceDelivery>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,12 +95,13 @@ const BANDWIDTH_B: &str = "bandwidth-b";
 fn gate_fault_determinism_run_twice_matches_activation_effects_and_draws() {
     let first = run_fault_gate();
     let second = run_fault_gate();
+    let world = world();
 
     assert_eq!(
         first, second,
         "same seed and fault plan must produce identical activation/effect/draw fingerprints"
     );
-    assert_eq!(first.activations.len(), fault_plan_entries().len());
+    assert_eq!(first.activations.len(), fault_plan_entries(&world).len());
     assert!(
         first
             .decisions
@@ -223,7 +238,7 @@ fn gate_fault_determinism_run_twice_matches_activation_effects_and_draws() {
     assert_eq!(latency.deliveries.len(), 1);
     assert_eq!(
         latency.deliveries[0].delivery_icount(),
-        17,
+        8,
         "latency bump must be visible in delivery timing"
     );
 
@@ -232,8 +247,40 @@ fn gate_fault_determinism_run_twice_matches_activation_effects_and_draws() {
     assert_eq!(bandwidth.deliveries.len(), 1);
     assert_eq!(
         bandwidth.deliveries[0].delivery_icount(),
-        32_000_010,
+        32_000_001,
         "bandwidth cap must be visible in delivery timing"
+    );
+
+    let block = device_probe(&first, SchedulingNodeKind::Disk);
+    assert_eq!(block.faults.added_latency_ns, 13);
+    assert_eq!(block.faults.jitter_window_ns, 5);
+    assert_eq!(block.faults.reorder_window_ns, 7);
+    assert_eq!(block.faults.bandwidth_bits_per_sec, vec![8_000_000]);
+    assert!(block.faults.loss.fires(0));
+    assert!(block.faults.duplicate.fires(0));
+    assert!(block.faults.corrupt.fires(0));
+    assert_eq!(block.deliveries.len(), 2);
+    assert!(
+        block
+            .deliveries
+            .iter()
+            .any(|delivery| !delivery.decisions.is_empty())
+    );
+
+    let ninep = device_probe(&first, SchedulingNodeKind::NineP);
+    assert_eq!(ninep.faults.added_latency_ns, 17);
+    assert_eq!(ninep.faults.jitter_window_ns, 6);
+    assert_eq!(ninep.faults.reorder_window_ns, 8);
+    assert_eq!(ninep.faults.bandwidth_bits_per_sec, vec![9_000_000]);
+    assert!(ninep.faults.loss.fires(0));
+    assert!(ninep.faults.duplicate.fires(0));
+    assert!(ninep.faults.corrupt.fires(0));
+    assert_eq!(ninep.deliveries.len(), 2);
+    assert!(
+        ninep
+            .deliveries
+            .iter()
+            .any(|delivery| !delivery.decisions.is_empty())
     );
 }
 
@@ -309,7 +356,7 @@ fn gate_fault_determinism_divergence_localizes_to_first_fault_decision() {
 
 #[test]
 fn gate_fault_determinism_plan_covers_every_currently_plan_valid_fault_kind() {
-    let plan = fault_plan_entries();
+    let plan = fault_plan_entries(&world());
     let kinds = plan
         .iter()
         .filter_map(|entry| match entry {
@@ -332,6 +379,18 @@ fn gate_fault_determinism_plan_covers_every_currently_plan_valid_fault_kind() {
         "node.crash",
         "node.slow",
         "node.clock-skew",
+        "block.latency",
+        "block.failure",
+        "block.reorder",
+        "block.duplicate",
+        "block.corruption.bit-flip",
+        "block.bandwidth",
+        "9p.latency",
+        "9p.failure",
+        "9p.reorder",
+        "9p.duplicate",
+        "9p.corruption.bit-flip",
+        "9p.bandwidth",
     ] {
         assert!(kinds.contains(expected), "missing fault kind {expected}");
     }
@@ -432,8 +491,9 @@ fn gate_fault_determinism_plan_covers_every_currently_plan_valid_fault_kind() {
 }
 
 #[test]
-fn gate_fault_determinism_documents_device_taxonomy_boundary() {
-    let taxonomy = full_fault_taxonomy_kinds();
+fn gate_fault_determinism_accepts_declared_device_taxonomy() {
+    let world = world();
+    let taxonomy = full_fault_taxonomy_kinds(&world);
     for expected in [
         "block.latency",
         "block.failure",
@@ -454,32 +514,33 @@ fn gate_fault_determinism_documents_device_taxonomy_boundary() {
         );
     }
 
-    for fault in device_taxonomy_faults() {
-        let error = Plan::from_fault_plan_for_world(
-            &world(),
+    for fault in device_taxonomy_faults(&world) {
+        Plan::from_fault_plan_for_world(
+            &world,
             FaultPlan::from_entries(vec![permanent(0, fault.kind_key(), fault)]),
         )
-        .expect_err("block/9p plan faults require declared world device targets");
-        assert!(
-            matches!(error, EngineError::PlanFaultUnknownDevice { .. }),
-            "device-target validation must reject undeclared block/9p faults"
-        );
+        .expect("declared block/9p targets must be plan-valid");
     }
 }
 
 fn run_fault_gate() -> FaultGateFingerprint {
-    let world = world();
-    let plan =
-        Plan::from_fault_plan_for_world(&world, FaultPlan::from_entries(fault_plan_entries()))
-            .expect("fault determinism gate plan should validate");
+    let (world, store) = world_and_store();
+    let entries = fault_plan_entries(&world);
+    let plan = Plan::from_fault_plan_for_world(&world, FaultPlan::from_entries(entries.clone()))
+        .expect("fault determinism gate plan should validate");
     let graph = plan
         .lower_to_event_graph_for_world(&world)
         .expect("fault determinism gate plan should lower");
-    let mut scheduler = SingleScheduler::new(scheduler_scenario("fault-determinism-gate", &world))
-        .expect("scheduler should build");
+    let mut scheduler = SingleScheduler::from_world(
+        scheduler_scenario("fault-determinism-gate", &world),
+        &world,
+        &store,
+        WorldIoLayoutPolicy::default(),
+    )
+    .expect("World-backed scheduler should build");
     let mut state = EventGraphState::new();
 
-    for tick in 0..fault_plan_entries().len() as u64 {
+    for tick in 0..entries.len() as u64 {
         scheduler
             .append_evaluation_boundary(time(tick), SchedulerEvaluationBoundaryKind::Quantum)
             .expect("evaluation boundary should append");
@@ -497,10 +558,17 @@ fn run_fault_gate() -> FaultGateFingerprint {
         .collect::<Vec<_>>();
     active_tags.sort();
     let live_links = probe_live_links(&mut scheduler);
-    let decisions = live_links
+    let live_devices = probe_live_devices(&mut scheduler);
+    let mut decisions = live_links
         .iter()
         .flat_map(|probe| probe.decisions.iter().cloned())
-        .collect();
+        .collect::<Vec<_>>();
+    decisions.extend(
+        live_devices
+            .iter()
+            .flat_map(|probe| probe.deliveries.iter())
+            .flat_map(|delivery| delivery.decisions.iter().cloned()),
+    );
 
     FaultGateFingerprint {
         activations: scheduler
@@ -512,6 +580,7 @@ fn run_fault_gate() -> FaultGateFingerprint {
         active_tags,
         active_table: materialized.active_fault_table,
         live_links,
+        live_devices,
         decisions,
     }
 }
@@ -664,11 +733,47 @@ fn probe_live_links(scheduler: &mut SingleScheduler) -> Vec<LinkEffectProbe> {
     ]
 }
 
+fn probe_live_devices(scheduler: &mut SingleScheduler) -> Vec<DeviceEffectProbe> {
+    let block = {
+        let node = scheduler
+            .device_sub_nodes_for_mut(&node("db-0"))
+            .expect("db-0 must own its declared block device")
+            .iter_mut()
+            .find(|node| node.sub_node().kind == SchedulingNodeKind::Disk)
+            .expect("declared block device must be attached");
+        let faults = node.io_faults().clone();
+        node.submit(0, &BlockRequest::read(42, 0, 4))
+            .expect("faulted block request should compute");
+        DeviceEffectProbe {
+            kind: SchedulingNodeKind::Disk,
+            faults,
+            deliveries: node.deliver_due(u64::MAX),
+        }
+    };
+    let ninep = {
+        let node = scheduler
+            .device_sub_nodes_for_mut(&node("db-1"))
+            .expect("db-1 must own its declared 9p device")
+            .iter_mut()
+            .find(|node| node.sub_node().kind == SchedulingNodeKind::NineP)
+            .expect("declared 9p device must be attached");
+        let faults = node.io_faults().clone();
+        node.submit_ninep_frame(0, &tversion(7, 4096, codec::PROTOCOL_VERSION))
+            .expect("faulted 9p request should compute");
+        DeviceEffectProbe {
+            kind: SchedulingNodeKind::NineP,
+            faults,
+            deliveries: node.deliver_due(u64::MAX),
+        }
+    };
+    vec![block, ninep]
+}
+
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
 fn probe_link(
     scheduler: &mut SingleScheduler,
-    sequence: u64,
+    _sequence: u64,
     label: &'static str,
     endpoint_a: &str,
     endpoint_b: &str,
@@ -676,32 +781,25 @@ fn probe_link(
     source_id: u32,
     injected_draws: Option<FrameDraws>,
 ) -> LinkEffectProbe {
-    let mut link =
-        NetLink::new(0, source_id, 10, 1, LinkFaults::none()).expect("link should build");
-    let application = scheduler
-        .apply_trigger_network_faults_to_link(
-            sequence,
-            &legacy_link_id(endpoint_a, endpoint_b),
-            scheduler_node(endpoint_a),
-            scheduler_node(endpoint_b),
-            &mut link,
+    let link_id = legacy_link_id(endpoint_a, endpoint_b);
+    let link_faults = scheduler
+        .world_network_link(&link_id, direction)
+        .expect("declared World link must be scheduler-owned")
+        .faults()
+        .clone();
+    let record = scheduler
+        .emit_world_network_frame(
+            &link_id,
             direction,
-            Vec::new(),
+            Seed::from_u64(0x17_15),
+            &Frame::new(0, 1, frame_payload()),
+            PastDeliveryPolicy::FailLoud,
         )
-        .expect("trigger network faults should apply");
-    let record = crucible::emit_link_frame_with_recorded_faults(
-        Seed::from_u64(0x17_15),
-        &device(label),
-        &mut link,
-        &Frame::new(0, 1, frame_payload()),
-        PastDeliveryPolicy::FailLoud,
-    )
-    .expect("link frame should resolve with recorded faults");
+        .expect("link frame should resolve with recorded faults");
     let injected_deliveries = injected_draws
         .map(|draws| {
-            let mut injected_link =
-                NetLink::new(0, source_id, 10, 1, application.link_faults.clone())
-                    .expect("injected link should build");
+            let mut injected_link = NetLink::new(0, source_id, 10, 1, link_faults.clone())
+                .expect("injected link should build");
             injected_link
                 .emit(
                     &Frame::new(0, 1, frame_payload()),
@@ -715,7 +813,7 @@ fn probe_link(
 
     LinkEffectProbe {
         label,
-        link_faults: application.link_faults,
+        link_faults,
         deliveries: record.outcome.deliveries,
         injected_deliveries,
         decisions: record.decisions,
@@ -745,6 +843,17 @@ fn link_probe<'a>(fingerprint: &'a FaultGateFingerprint, label: &str) -> &'a Lin
         .unwrap_or_else(|| panic!("missing link effect probe {label}"))
 }
 
+fn device_probe(
+    fingerprint: &FaultGateFingerprint,
+    kind: SchedulingNodeKind,
+) -> &DeviceEffectProbe {
+    fingerprint
+        .live_devices
+        .iter()
+        .find(|probe| probe.kind == kind)
+        .unwrap_or_else(|| panic!("missing {kind:?} device effect probe"))
+}
+
 fn assert_fault_fired(decisions: &[crucible::Decision], kind: &str, fired: bool) {
     let suffix = format!("/{kind}");
     assert!(
@@ -761,6 +870,19 @@ fn assert_fault_fired(decisions: &[crucible::Decision], kind: &str, fired: bool)
 
 fn frame_payload() -> Vec<u8> {
     vec![1, 2, 3, 4]
+}
+
+fn tversion(tag: u16, msize: u32, version: &str) -> Vec<u8> {
+    let mut body = msize.to_le_bytes().to_vec();
+    body.extend_from_slice(&(version.len() as u16).to_le_bytes());
+    body.extend_from_slice(version.as_bytes());
+    let size = (codec::HEADER_LEN + body.len()) as u32;
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&size.to_le_bytes());
+    frame.push(codec::TVERSION);
+    frame.extend_from_slice(&tag.to_le_bytes());
+    frame.extend_from_slice(&body);
+    frame
 }
 
 fn fault_activation_record(
@@ -781,8 +903,8 @@ fn fault_activation_record(
     }
 }
 
-fn fault_plan_entries() -> Vec<FaultPlanEntry> {
-    vec![
+fn fault_plan_entries(world: &World) -> Vec<FaultPlanEntry> {
+    let mut entries = vec![
         permanent(
             0,
             "partition",
@@ -887,17 +1009,30 @@ fn fault_plan_entries() -> Vec<FaultPlanEntry> {
                 offset: SimOffset { nanos: 11 },
             }),
         ),
-    ]
+    ];
+    entries.extend(
+        device_taxonomy_faults(world)
+            .into_iter()
+            .enumerate()
+            .map(|(index, fault)| {
+                permanent(
+                    12 + index as u64,
+                    &format!("device-{}", fault.kind_key()),
+                    fault,
+                )
+            }),
+    );
+    entries
 }
 
-fn full_fault_taxonomy_kinds() -> BTreeSet<&'static str> {
-    representative_fault_taxonomy()
+fn full_fault_taxonomy_kinds(world: &World) -> BTreeSet<&'static str> {
+    representative_fault_taxonomy(world)
         .into_iter()
         .map(|fault| fault.kind_key())
         .collect()
 }
 
-fn representative_fault_taxonomy() -> Vec<Fault> {
+fn representative_fault_taxonomy(world: &World) -> Vec<Fault> {
     let mut faults = vec![
         Fault::Network(NetworkFault::Partition {
             link: link_id(PARTITION_A, PARTITION_B),
@@ -956,77 +1091,77 @@ fn representative_fault_taxonomy() -> Vec<Fault> {
             offset: SimOffset { nanos: 1 },
         }),
     ];
-    faults.extend(device_taxonomy_faults());
+    faults.extend(device_taxonomy_faults(world));
     faults
 }
 
-fn device_taxonomy_faults() -> Vec<Fault> {
+fn device_taxonomy_faults(world: &World) -> Vec<Fault> {
+    let disk = world
+        .io_node(&node("disk0"))
+        .expect("gate world declares disk0")
+        .device_id();
+    let share = world
+        .io_node(&node("fs0"))
+        .expect("gate world declares fs0")
+        .device_id();
     vec![
-        block_latency_fault(),
+        Fault::Block(BlockFault::Latency {
+            device: disk.clone(),
+            extra: FaultDuration::from_nanos(13),
+            jitter: FaultDuration::from_nanos(5),
+        }),
         Fault::Block(BlockFault::Failure {
-            device: device("disk0"),
-            rate: rate(1),
+            device: disk.clone(),
+            rate: rate(10_000),
             mode: IoFailureMode::ErrorStatus,
         }),
         Fault::Block(BlockFault::Reorder {
-            device: device("disk0"),
-            window: FaultDuration::from_nanos(1),
+            device: disk.clone(),
+            window: FaultDuration::from_nanos(7),
         }),
         Fault::Block(BlockFault::Duplicate {
-            device: device("disk0"),
-            rate: rate(1),
-            gap: FaultDuration::from_nanos(1),
+            device: disk.clone(),
+            rate: rate(10_000),
+            gap: FaultDuration::from_nanos(11),
         }),
         Fault::Block(BlockFault::Corruption {
-            device: device("disk0"),
-            rate: rate(1),
+            device: disk.clone(),
+            rate: rate(10_000),
             bit_flips: 1,
         }),
         Fault::Block(BlockFault::Bandwidth {
-            device: device("disk0"),
-            limit: bandwidth(1_000),
+            device: disk,
+            limit: bandwidth(8_000_000),
         }),
-        ninep_latency_fault(),
+        Fault::NineP(NinePFault::Latency {
+            device: share.clone(),
+            extra: FaultDuration::from_nanos(17),
+            jitter: FaultDuration::from_nanos(6),
+        }),
         Fault::NineP(NinePFault::Failure {
-            device: device("fs0"),
-            rate: rate(1),
+            device: share.clone(),
+            rate: rate(10_000),
             errno: errno(5),
         }),
         Fault::NineP(NinePFault::Reorder {
-            device: device("fs0"),
-            window: FaultDuration::from_nanos(1),
+            device: share.clone(),
+            window: FaultDuration::from_nanos(8),
         }),
         Fault::NineP(NinePFault::Duplicate {
-            device: device("fs0"),
-            rate: rate(1),
-            gap: FaultDuration::from_nanos(1),
+            device: share.clone(),
+            rate: rate(10_000),
+            gap: FaultDuration::from_nanos(12),
         }),
         Fault::NineP(NinePFault::Corruption {
-            device: device("fs0"),
-            rate: rate(1),
+            device: share.clone(),
+            rate: rate(10_000),
             bit_flips: 1,
         }),
         Fault::NineP(NinePFault::Bandwidth {
-            device: device("fs0"),
-            limit: bandwidth(1_000),
+            device: share,
+            limit: bandwidth(9_000_000),
         }),
     ]
-}
-
-fn block_latency_fault() -> Fault {
-    Fault::Block(BlockFault::Latency {
-        device: device("disk0"),
-        extra: FaultDuration::from_nanos(1),
-        jitter: FaultDuration::ZERO,
-    })
-}
-
-fn ninep_latency_fault() -> Fault {
-    Fault::NineP(NinePFault::Latency {
-        device: device("fs0"),
-        extra: FaultDuration::from_nanos(1),
-        jitter: FaultDuration::ZERO,
-    })
 }
 
 fn permanent(at: u64, tag_name: &str, fault: Fault) -> FaultPlanEntry {
@@ -1044,7 +1179,7 @@ fn scheduler_scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
         256,
         SimInstant { nanos: 64 },
         world
-            .nodes()
+            .vm_nodes()
             .iter()
             .map(|node| scenario_node(&node.id.name))
             .collect(),
@@ -1065,32 +1200,81 @@ fn scenario_node(name: &str) -> SchedulerScenarioNode {
 }
 
 fn world() -> World {
-    World::from_nodes_and_links(
-        [
-            "db-0",
-            "db-1",
-            PARTITION_A,
-            PARTITION_B,
-            LOSS_A,
-            LOSS_B,
-            DUPLICATE_A,
-            DUPLICATE_B,
-            BIT_FLIP_A,
-            BIT_FLIP_B,
-            FIELD_MUTATION_A,
-            FIELD_MUTATION_B,
-            TRUNCATION_A,
-            TRUNCATION_B,
-            REORDER_A,
-            REORDER_B,
-            LATENCY_A,
-            LATENCY_B,
-            BANDWIDTH_A,
-            BANDWIDTH_B,
-        ]
+    world_and_store().0
+}
+
+fn world_and_store() -> (World, MemoryDagStore) {
+    let block_bytes = vec![0xab; 4096];
+    let base = BaseImage::new(block_bytes.clone());
+    let tree = FsTree::try_new(Node::Directory {
+        children: [(
+            String::from("alpha"),
+            Node::File {
+                content: b"alpha".to_vec(),
+            },
+        )]
         .into_iter()
-        .map(ready_node)
-        .collect(),
+        .collect::<BTreeMap<_, _>>(),
+    })
+    .expect("gate 9p tree should validate");
+    let store = MemoryDagStore::new();
+    let block_key = store
+        .put(&block_bytes)
+        .expect("block artifact should store");
+    let tree_key = store
+        .put(&tree.canonical_bytes())
+        .expect("9p artifact should store");
+    assert_eq!(block_key, ContentHash { bytes: base.hash() });
+    assert_eq!(
+        tree_key,
+        ContentHash {
+            bytes: tree.content_hash()
+        }
+    );
+
+    let mut nodes = [
+        "db-0",
+        "db-1",
+        PARTITION_A,
+        PARTITION_B,
+        LOSS_A,
+        LOSS_B,
+        DUPLICATE_A,
+        DUPLICATE_B,
+        BIT_FLIP_A,
+        BIT_FLIP_B,
+        FIELD_MUTATION_A,
+        FIELD_MUTATION_B,
+        TRUNCATION_A,
+        TRUNCATION_B,
+        REORDER_A,
+        REORDER_B,
+        LATENCY_A,
+        LATENCY_B,
+        BANDWIDTH_A,
+        BANDWIDTH_B,
+    ]
+    .into_iter()
+    .map(ready_node)
+    .map(WorldNodeDef::Vm)
+    .collect::<Vec<_>>();
+    nodes.push(WorldNodeDef::Io(WorldIoNode::block(
+        node("disk0"),
+        node("db-0"),
+        WorldIoCoreConfig::new(0),
+        ContentAddressedBlobRef::from_hash(block_key),
+        block_bytes.len() as u64,
+        WorldBlockLatency::new(100, 200, 30, 40, 2),
+    )));
+    nodes.push(WorldNodeDef::Io(WorldIoNode::ninep(
+        node("fs0"),
+        node("db-1"),
+        WorldIoCoreConfig::new(0),
+        ContentAddressedBlobRef::from_hash(tree_key),
+        WorldNinePLatency::new(80, 120, 1),
+    )));
+    let world = World::from_node_defs_and_links(
+        nodes,
         [
             (PARTITION_A, PARTITION_B),
             (LOSS_A, LOSS_B),
@@ -1106,7 +1290,8 @@ fn world() -> World {
         .map(|(left, right)| LinkDef::new(node(left), node(right)).expect("test link should build"))
         .collect(),
     )
-    .expect("test world should build")
+    .expect("test world should build");
+    (world, store)
 }
 
 fn world_lookahead_edges(world: &World) -> Vec<SchedulerLookaheadEdge> {
@@ -1158,12 +1343,6 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
 
 fn node(name: &str) -> NodeId {
     NodeId {
-        name: name.to_owned(),
-    }
-}
-
-fn device(name: &str) -> DeviceId {
-    DeviceId {
         name: name.to_owned(),
     }
 }

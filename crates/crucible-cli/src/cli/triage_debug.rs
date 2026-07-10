@@ -1,5 +1,10 @@
-// Failure triage and time-travel debugging planning.
-fn plan_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageInvocationPlan, CliError> {
+//! Failure triage and time-travel debugging planning.
+
+use super::*;
+pub(super) fn plan_triage_invocation(
+    cli: &Cli,
+    args: &TriageArgs,
+) -> Result<TriageInvocationPlan, CliError> {
     if cli.daemon.is_some() {
         return Err(CliError::Backend(
             "triage is an offline DagStore operation and must not use --daemon".to_string(),
@@ -66,7 +71,10 @@ fn plan_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageInvocati
     Ok(plan)
 }
 
-fn run_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageRunReport, CliError> {
+pub(super) fn run_triage_invocation(
+    cli: &Cli,
+    args: &TriageArgs,
+) -> Result<TriageRunReport, CliError> {
     let plan = plan_triage_invocation(cli, args)?;
     let store = crucible::LocalDagStore::new(plan.store_root.clone());
     let loaded_findings = load_triage_findings_ledger(&store, &plan.findings)?;
@@ -125,7 +133,7 @@ fn run_triage_invocation(cli: &Cli, args: &TriageArgs) -> Result<TriageRunReport
     })
 }
 
-fn store_loaded_findings_ledger(
+pub(super) fn store_loaded_findings_ledger(
     store: &crucible::LocalDagStore,
     findings: &LoadedTriageFindings,
 ) -> Result<crucible::FailureTriageStoredArtifact, CliError> {
@@ -149,7 +157,7 @@ fn store_loaded_findings_ledger(
     })
 }
 
-fn build_triage_minimization(
+pub(super) fn build_triage_minimization(
     plan: &TriageInvocationPlan,
     clustering: &crucible::FailureClusteringResult,
     evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
@@ -238,7 +246,7 @@ fn build_triage_minimization(
     }
 }
 
-fn triage_signature_templates_by_fingerprint(
+pub(super) fn triage_signature_templates_by_fingerprint(
     clustering: &crucible::FailureClusteringResult,
     evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
 ) -> Result<BTreeMap<crucible::ContentHash, TriageFindingEvidence>, CliError> {
@@ -267,7 +275,7 @@ fn triage_signature_templates_by_fingerprint(
     Ok(templates)
 }
 
-fn build_triage_report_set(
+pub(super) fn build_triage_report_set(
     policy: crucible::SignaturePolicy,
     clustering: &crucible::FailureClusteringResult,
     minimization: &crucible::FailureSignaturePreservingMinimizationResult,
@@ -301,7 +309,7 @@ fn build_triage_report_set(
         .map_err(|_| CliError::Triage("triage report set assembly failed".to_string()))
 }
 
-fn triage_report_evidence_for_minimization_run(
+pub(super) fn triage_report_evidence_for_minimization_run(
     run: &crucible_model::FailureSignaturePreservingMinimizationRun,
     evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
 ) -> Result<TriageFindingEvidence, CliError> {
@@ -315,7 +323,7 @@ fn triage_report_evidence_for_minimization_run(
         .map_err(|_| CliError::Triage("triage report evidence reconstruction failed".to_string()))
 }
 
-fn build_triage_signature_self_check(
+pub(super) fn build_triage_signature_self_check(
     evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
 ) -> Result<crucible::FailureTriageSignatureSelfCheck, CliError> {
     let mut checks = Vec::new();
@@ -330,7 +338,7 @@ fn build_triage_signature_self_check(
     Ok(crucible::FailureTriageSignatureSelfCheck::from_signature_pairs(checks))
 }
 
-fn recompute_triage_evidence_signature(
+pub(super) fn recompute_triage_evidence_signature(
     item: &TriageFindingEvidence,
 ) -> Result<crucible_model::FailureSignature, CliError> {
     match &item.failure {
@@ -351,7 +359,7 @@ fn recompute_triage_evidence_signature(
     .map_err(|_| CliError::Triage("triage signature recomputation failed".to_string()))
 }
 
-fn triage_evidence_for_finding(
+pub(super) fn triage_evidence_for_finding(
     finding: crucible::FindingReproductionArtifact,
     template: &TriageFindingEvidence,
 ) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
@@ -370,7 +378,7 @@ fn triage_evidence_for_finding(
     }
 }
 
-fn triage_property_evidence_for_violation(
+pub(super) fn triage_property_evidence_for_violation(
     finding: crucible::FindingReproductionArtifact,
     violation: crucible_model::HostAssertionViolation,
 ) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
@@ -415,7 +423,7 @@ fn triage_property_evidence_for_violation(
     })
 }
 
-fn load_triage_findings_ledger(
+pub(super) fn load_triage_findings_ledger(
     store: &crucible::LocalDagStore,
     source: &TriageFindingsSource,
 ) -> Result<LoadedTriageFindings, CliError> {
@@ -463,7 +471,9 @@ fn load_triage_findings_ledger(
     }
 }
 
-fn loaded_artifact_only_findings(ledger: crucible::FailureFindingsLedger) -> LoadedTriageFindings {
+pub(super) fn loaded_artifact_only_findings(
+    ledger: crucible::FailureFindingsLedger,
+) -> LoadedTriageFindings {
     LoadedTriageFindings {
         artifact_bytes: ledger.artifact_bytes(),
         ledger,
@@ -471,7 +481,7 @@ fn loaded_artifact_only_findings(ledger: crucible::FailureFindingsLedger) -> Loa
     }
 }
 
-fn looks_like_failure_findings_ledger(bytes: &[u8]) -> bool {
+pub(super) fn looks_like_failure_findings_ledger(bytes: &[u8]) -> bool {
     std::str::from_utf8(bytes)
         .ok()
         .and_then(|text| text.lines().next())
@@ -481,7 +491,7 @@ fn looks_like_failure_findings_ledger(bytes: &[u8]) -> bool {
         })
 }
 
-fn parse_failure_findings_ledger_bytes(
+pub(super) fn parse_failure_findings_ledger_bytes(
     store: &crucible::LocalDagStore,
     bytes: &[u8],
 ) -> Result<LoadedTriageFindings, CliError> {
@@ -500,7 +510,7 @@ fn parse_failure_findings_ledger_bytes(
     }
 }
 
-fn parse_failure_findings_ledger_v1_bytes(
+pub(super) fn parse_failure_findings_ledger_v1_bytes(
     bytes: &[u8],
     text: &str,
 ) -> Result<LoadedTriageFindings, CliError> {
@@ -525,7 +535,7 @@ fn parse_failure_findings_ledger_v1_bytes(
     })
 }
 
-fn parse_failure_findings_ledger_v2_bytes(
+pub(super) fn parse_failure_findings_ledger_v2_bytes(
     store: &crucible::LocalDagStore,
     bytes: &[u8],
     text: &str,
@@ -575,7 +585,7 @@ fn parse_failure_findings_ledger_v2_bytes(
     })
 }
 
-fn parse_triage_property_finding_evidence(
+pub(super) fn parse_triage_property_finding_evidence(
     store: &crucible::LocalDagStore,
     index: usize,
     fields: &BTreeMap<String, String>,
@@ -643,7 +653,7 @@ fn parse_triage_property_finding_evidence(
     Ok(item)
 }
 
-fn required_field<'a>(
+pub(super) fn required_field<'a>(
     fields: &'a BTreeMap<String, String>,
     field: &'static str,
 ) -> Result<&'a str, CliError> {
@@ -653,27 +663,29 @@ fn required_field<'a>(
         .ok_or_else(|| artifact_error(format!("signed findings ledger is missing `{field}`")))
 }
 
-fn parse_required_hash_field(
+pub(super) fn parse_required_hash_field(
     fields: &BTreeMap<String, String>,
     field: &'static str,
 ) -> Result<crucible::ContentHash, CliError> {
     parse_hex_content_hash(field, required_field(fields, field)?)
 }
 
-fn parse_u64_field(
+pub(super) fn parse_u64_field(
     fields: &BTreeMap<String, String>,
     field: &'static str,
 ) -> Result<u64, CliError> {
     parse_triage_u64(field, required_field(fields, field)?)
 }
 
-fn parse_triage_u64(field: &'static str, value: &str) -> Result<u64, CliError> {
+pub(super) fn parse_triage_u64(field: &'static str, value: &str) -> Result<u64, CliError> {
     value
         .parse::<u64>()
         .map_err(|_| artifact_error(format!("malformed signed findings ledger `{field}`")))
 }
 
-fn parse_triage_discovery_path(value: &str) -> Result<crucible::FindingDiscoveryPath, CliError> {
+pub(super) fn parse_triage_discovery_path(
+    value: &str,
+) -> Result<crucible::FindingDiscoveryPath, CliError> {
     match value {
         "interactive-fork" => Ok(crucible::FindingDiscoveryPath::InteractiveFork),
         "state-space-search" => Ok(crucible::FindingDiscoveryPath::StateSpaceSearch),
@@ -685,7 +697,7 @@ fn parse_triage_discovery_path(value: &str) -> Result<crucible::FindingDiscovery
     }
 }
 
-fn parse_assertion_quantifier(
+pub(super) fn parse_assertion_quantifier(
     value: &str,
 ) -> Result<crucible_model::AssertionQuantifierKind, CliError> {
     match value {
@@ -704,7 +716,7 @@ fn parse_assertion_quantifier(
     }
 }
 
-fn write_triage_report(
+pub(super) fn write_triage_report(
     plan: &TriageInvocationPlan,
     report_set: &crucible::FailureClusterReportSet,
 ) -> Result<PathBuf, CliError> {
@@ -717,7 +729,7 @@ fn write_triage_report(
     Ok(path)
 }
 
-fn compare_triage_result(
+pub(super) fn compare_triage_result(
     store: &crucible::LocalDagStore,
     result: &crucible::FailureTriageResult,
     target: &TriageCompareTarget,
@@ -735,7 +747,9 @@ fn compare_triage_result(
     Ok(TriageResultSummary::from_result(result).diff_from(&baseline))
 }
 
-fn triage_report_extension(format: crucible::FailureClusterReportFormat) -> &'static str {
+pub(super) fn triage_report_extension(
+    format: crucible::FailureClusterReportFormat,
+) -> &'static str {
     match format {
         crucible::FailureClusterReportFormat::JsonLines => "jsonl",
         crucible::FailureClusterReportFormat::Json => "json",
@@ -744,7 +758,7 @@ fn triage_report_extension(format: crucible::FailureClusterReportFormat) -> &'st
     }
 }
 
-fn parse_hex_content_hash(
+pub(super) fn parse_hex_content_hash(
     field: &'static str,
     hex: &str,
 ) -> Result<crucible::ContentHash, CliError> {
@@ -754,11 +768,11 @@ fn parse_hex_content_hash(
         .map_err(|error| artifact_error(format!("invalid {field}: {error}")))
 }
 
-fn format_content_hash_ref(hash: crucible::ContentHash) -> String {
+pub(super) fn format_content_hash_ref(hash: crucible::ContentHash) -> String {
     crucible::ContentAddressedBlobRef::from_hash(hash).to_uri()
 }
 
-fn parse_triage_findings_source(value: &str) -> TriageFindingsSource {
+pub(super) fn parse_triage_findings_source(value: &str) -> TriageFindingsSource {
     if let Ok(reference) = crucible::ContentAddressedBlobRef::parse("findings", value) {
         TriageFindingsSource::StoredLedger(reference.hash())
     } else {
@@ -766,7 +780,7 @@ fn parse_triage_findings_source(value: &str) -> TriageFindingsSource {
     }
 }
 
-fn parse_triage_compare_target(value: &str) -> Result<TriageCompareTarget, CliError> {
+pub(super) fn parse_triage_compare_target(value: &str) -> Result<TriageCompareTarget, CliError> {
     if value.is_empty() {
         return Err(usage_error("--compare must not be empty"));
     }
@@ -777,7 +791,10 @@ fn parse_triage_compare_target(value: &str) -> Result<TriageCompareTarget, CliEr
     }
 }
 
-fn plan_debug_invocation(cli: &Cli, args: &DebugArgs) -> Result<DebugInvocationPlan, CliError> {
+pub(super) fn plan_debug_invocation(
+    cli: &Cli,
+    args: &DebugArgs,
+) -> Result<DebugInvocationPlan, CliError> {
     if cli.backend == Backend::Double {
         return Err(CliError::Backend(
             "selected backend `double` does not implement open_gdbstub".to_string(),
@@ -868,7 +885,7 @@ fn plan_debug_invocation(cli: &Cli, args: &DebugArgs) -> Result<DebugInvocationP
     Ok(plan)
 }
 
-fn debug_target(args: &DebugArgs) -> Result<DebugPlanTarget, CliError> {
+pub(super) fn debug_target(args: &DebugArgs) -> Result<DebugPlanTarget, CliError> {
     match (&args.target, &args.session) {
         (Some(_), Some(_)) => Err(usage_error(
             "debug accepts either ARTIFACT|SAVEPOINT or --session, not both",
@@ -888,7 +905,7 @@ fn debug_target(args: &DebugArgs) -> Result<DebugPlanTarget, CliError> {
     }
 }
 
-fn debug_coordinate(
+pub(super) fn debug_coordinate(
     args: &DebugArgs,
     target: &DebugPlanTarget,
 ) -> Result<DebugPlanCoordinate, CliError> {
@@ -913,7 +930,9 @@ fn debug_coordinate(
     })
 }
 
-fn parse_debug_at_coordinate(value: &str) -> Result<crucible::DebugCoordinate, CliError> {
+pub(super) fn parse_debug_at_coordinate(
+    value: &str,
+) -> Result<crucible::DebugCoordinate, CliError> {
     if let Some(ticks) = value.strip_prefix("vtime:") {
         return parse_virtual_time(ticks);
     }
@@ -926,14 +945,14 @@ fn parse_debug_at_coordinate(value: &str) -> Result<crucible::DebugCoordinate, C
     parse_virtual_time(value)
 }
 
-fn parse_virtual_time(value: &str) -> Result<crucible::DebugCoordinate, CliError> {
+pub(super) fn parse_virtual_time(value: &str) -> Result<crucible::DebugCoordinate, CliError> {
     let ticks = parse_u64_value("--at", value)?;
     Ok(crucible::DebugCoordinate::virtual_time(
         crucible::VirtualTime { ticks },
     ))
 }
 
-fn parse_node_icount(value: &str) -> Result<crucible::DebugCoordinate, CliError> {
+pub(super) fn parse_node_icount(value: &str) -> Result<crucible::DebugCoordinate, CliError> {
     let Some((node, retired)) = value.split_once(':') else {
         return Err(usage_error(
             "--at node-icount coordinates must be `icount:<node>:<retired>`",
@@ -951,7 +970,7 @@ fn parse_node_icount(value: &str) -> Result<crucible::DebugCoordinate, CliError>
     ))
 }
 
-fn parse_u64_value(field: &'static str, value: &str) -> Result<u64, CliError> {
+pub(super) fn parse_u64_value(field: &'static str, value: &str) -> Result<u64, CliError> {
     value.parse::<u64>().map_err(|_| {
         usage_error(format!(
             "{field} must be an unsigned integer value, got `{value}`"
@@ -959,7 +978,7 @@ fn parse_u64_value(field: &'static str, value: &str) -> Result<u64, CliError> {
     })
 }
 
-fn validate_debug_checkpoint_stride(stride: u64) -> Result<u64, CliError> {
+pub(super) fn validate_debug_checkpoint_stride(stride: u64) -> Result<u64, CliError> {
     let Ok(every) = usize::try_from(stride) else {
         return Err(usage_error(
             "--checkpoint-stride is too large for this platform",
@@ -971,7 +990,7 @@ fn validate_debug_checkpoint_stride(stride: u64) -> Result<u64, CliError> {
     Ok(stride)
 }
 
-fn debug_verb(args: &DebugArgs) -> Result<DebugInteractiveVerbPlan, CliError> {
+pub(super) fn debug_verb(args: &DebugArgs) -> Result<DebugInteractiveVerbPlan, CliError> {
     match &args.verb {
         None | Some(DebugVerbArgs::AttachGdb) => Ok(DebugInteractiveVerbPlan::AttachGdb),
         Some(DebugVerbArgs::Goto { coord }) => {
@@ -988,14 +1007,14 @@ fn debug_verb(args: &DebugArgs) -> Result<DebugInteractiveVerbPlan, CliError> {
     }
 }
 
-fn short_digest(digest: &str) -> &str {
+pub(super) fn short_digest(digest: &str) -> &str {
     digest
         .strip_prefix(CONTENT_ADDRESS_PREFIX)
         .and_then(|hex| hex.get(..12))
         .unwrap_or("unknown")
 }
 
-fn sanitize_slug(slug: &str) -> String {
+pub(super) fn sanitize_slug(slug: &str) -> String {
     let mut sanitized = slug
         .chars()
         .map(|ch| {

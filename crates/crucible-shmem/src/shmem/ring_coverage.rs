@@ -1,3 +1,7 @@
+//! SPSC ring storage plus deterministic coverage bitmap operations.
+
+use super::*;
+
 /// A Lamport SPSC ring header shared by exactly one producer and one consumer.
 #[repr(C, align(128))]
 pub struct RingHeader {
@@ -31,12 +35,12 @@ pub const RING_HEADER_SIZE: usize = core::mem::size_of::<RingHeader>();
 /// Wire alignment of one [`RingHeader`].
 pub const RING_HEADER_ALIGN: usize = core::mem::align_of::<RingHeader>();
 
-const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);
-const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);
-const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);
-const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);
-const _: () = assert!(RING_HEADER_SIZE == 128);
-const _: () = assert!(RING_HEADER_ALIGN == 128);
+pub(super) const _: () = assert!(RING_HEADER_READ_IDX_OFFSET == 0);
+pub(super) const _: () = assert!(RING_HEADER_PAD_READ_OFFSET == 8);
+pub(super) const _: () = assert!(RING_HEADER_WRITE_IDX_OFFSET == 64);
+pub(super) const _: () = assert!(RING_HEADER_PAD_WRITE_OFFSET == 72);
+pub(super) const _: () = assert!(RING_HEADER_SIZE == 128);
+pub(super) const _: () = assert!(RING_HEADER_ALIGN == 128);
 
 impl RingHeader {
     /// Builds an empty SPSC ring header.
@@ -363,7 +367,7 @@ impl SpscRingSnapshot {
     }
 }
 
-struct SnapshotByteCursor<'a> {
+pub(super) struct SnapshotByteCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
@@ -431,12 +435,12 @@ impl<'a> SnapshotByteCursor<'a> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C, align(64))]
 pub struct CoverageEntry {
-    current_icount: u64,
-    guest_pc: u64,
-    map_index: u64,
-    vcpu_index: u32,
-    block_len: u32,
-    _reserved: [u8; 32],
+    pub(super) current_icount: u64,
+    pub(super) guest_pc: u64,
+    pub(super) map_index: u64,
+    pub(super) vcpu_index: u32,
+    pub(super) block_len: u32,
+    pub(super) _reserved: [u8; 32],
 }
 
 /// Byte offset of [`CoverageEntry`]'s exact TB-entry icount.
@@ -458,14 +462,14 @@ pub const COVERAGE_ENTRY_SIZE: usize = core::mem::size_of::<CoverageEntry>();
 /// Wire alignment of one [`CoverageEntry`].
 pub const COVERAGE_ENTRY_ALIGN: usize = core::mem::align_of::<CoverageEntry>();
 
-const _: () = assert!(COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET == 0);
-const _: () = assert!(COVERAGE_ENTRY_GUEST_PC_OFFSET == 8);
-const _: () = assert!(COVERAGE_ENTRY_MAP_INDEX_OFFSET == 16);
-const _: () = assert!(COVERAGE_ENTRY_VCPU_INDEX_OFFSET == 24);
-const _: () = assert!(COVERAGE_ENTRY_BLOCK_LEN_OFFSET == 28);
-const _: () = assert!(COVERAGE_ENTRY_RESERVED_OFFSET == 32);
-const _: () = assert!(COVERAGE_ENTRY_SIZE == 64);
-const _: () = assert!(COVERAGE_ENTRY_ALIGN == 64);
+pub(super) const _: () = assert!(COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET == 0);
+pub(super) const _: () = assert!(COVERAGE_ENTRY_GUEST_PC_OFFSET == 8);
+pub(super) const _: () = assert!(COVERAGE_ENTRY_MAP_INDEX_OFFSET == 16);
+pub(super) const _: () = assert!(COVERAGE_ENTRY_VCPU_INDEX_OFFSET == 24);
+pub(super) const _: () = assert!(COVERAGE_ENTRY_BLOCK_LEN_OFFSET == 28);
+pub(super) const _: () = assert!(COVERAGE_ENTRY_RESERVED_OFFSET == 32);
+pub(super) const _: () = assert!(COVERAGE_ENTRY_SIZE == 64);
+pub(super) const _: () = assert!(COVERAGE_ENTRY_ALIGN == 64);
 
 impl CoverageEntry {
     /// Builds one validated novel coverage observation.

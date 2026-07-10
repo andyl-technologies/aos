@@ -1,3 +1,7 @@
+//! Asynchronous session actor, mailbox scheduling, and live state mirrors.
+
+use super::*;
+
 /// Error returned by the session actor or engine state machine.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SessionError {
@@ -118,7 +122,10 @@ pub enum SessionError {
     },
 }
 
-fn is_recoverable_command_rejection(command: &SessionCommand, error: &SessionError) -> bool {
+pub(super) fn is_recoverable_command_rejection(
+    command: &SessionCommand,
+    error: &SessionError,
+) -> bool {
     let SessionCommand::Acknowledge { .. } = command else {
         return false;
     };
@@ -143,7 +150,7 @@ fn is_recoverable_command_rejection(command: &SessionCommand, error: &SessionErr
     }
 }
 
-fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
+pub(super) fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
     matches!(
         error,
         EngineError::CheckpointNotRecorded { .. }
@@ -172,7 +179,7 @@ fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
     )
 }
 
-const fn is_recoverable_scheduler_rejection(error: &SchedulerError) -> bool {
+pub(super) const fn is_recoverable_scheduler_rejection(error: &SchedulerError) -> bool {
     match error {
         SchedulerError::NotImplemented { .. }
         | SchedulerError::BoundaryViolation { .. }
@@ -182,7 +189,7 @@ const fn is_recoverable_scheduler_rejection(error: &SchedulerError) -> bool {
     }
 }
 
-const fn is_recoverable_backend_rejection(error: &BackendError) -> bool {
+pub(super) const fn is_recoverable_backend_rejection(error: &BackendError) -> bool {
     match error {
         BackendError::NotImplemented { .. }
         | BackendError::Unsupported { .. }
@@ -274,7 +281,7 @@ pub enum SessionControlPayload {
 }
 
 impl SessionControlPayload {
-    fn from(command: &SessionCommand) -> Self {
+    pub(super) fn from(command: &SessionCommand) -> Self {
         match command {
             SessionCommand::Acknowledge { command, .. } => Self::from(command),
             SessionCommand::Fork { from, .. } => Self::Fork { from: *from },
@@ -293,7 +300,7 @@ impl SessionControlPayload {
         }
     }
 
-    fn from_control_or_kind(
+    pub(super) fn from_control_or_kind(
         command: SessionCommandKind,
         control: Option<&ControlOperationKind>,
     ) -> Self {
@@ -332,21 +339,21 @@ pub struct BreakpointFiring {
 /// boundaries, drives at most one scheduler quantum per running-loop iteration,
 /// and yields after each applied command or scheduler quantum.
 pub struct SessionActor<L> {
-    engine: Engine<L>,
-    mailbox: mpsc::Receiver<SessionCommand>,
-    live: Arc<LiveSnapshot>,
-    event_log: SessionEventLog,
-    reproduction_log: SessionReproductionLog,
-    state_transitions: SessionStateTransitionBus,
-    last_published_state: EngineState,
-    fork_loop_factory: Option<SessionForkLoopFactory<L>>,
-    condition_event_log: Vec<SchedulerEventLogEntry>,
-    commands_applied: u64,
-    yielded_after_quanta: u64,
-    control_acknowledgements: u64,
-    state_transition_sequence: u64,
-    terminal_command_keepalive: bool,
-    terminal_shutdown_requested: bool,
+    pub(super) engine: Engine<L>,
+    pub(super) mailbox: mpsc::Receiver<SessionCommand>,
+    pub(super) live: Arc<LiveSnapshot>,
+    pub(super) event_log: SessionEventLog,
+    pub(super) reproduction_log: SessionReproductionLog,
+    pub(super) state_transitions: SessionStateTransitionBus,
+    pub(super) last_published_state: EngineState,
+    pub(super) fork_loop_factory: Option<SessionForkLoopFactory<L>>,
+    pub(super) condition_event_log: Vec<SchedulerEventLogEntry>,
+    pub(super) commands_applied: u64,
+    pub(super) yielded_after_quanta: u64,
+    pub(super) control_acknowledgements: u64,
+    pub(super) state_transition_sequence: u64,
+    pub(super) terminal_command_keepalive: bool,
+    pub(super) terminal_shutdown_requested: bool,
 }
 
 impl<L> SessionActor<L> {
@@ -505,7 +512,7 @@ impl<L> SessionActor<L> {
         self.last_published_state = after_state;
     }
 
-    fn append_event_log_entries(&mut self, entries: &[SchedulerEventLogEntry]) {
+    pub(super) fn append_event_log_entries(&mut self, entries: &[SchedulerEventLogEntry]) {
         let base_len = self.engine.event_log_len().saturating_sub(entries.len());
         self.event_log.truncate_to_len(base_len);
         self.condition_event_log.truncate(base_len);
@@ -527,7 +534,7 @@ impl<L> SessionActor<L> {
     }
 }
 
-fn split_acknowledged_command(
+pub(super) fn split_acknowledged_command(
     command: SessionCommand,
 ) -> (SessionCommand, Option<CommandReply<()>>) {
     match command {
@@ -536,14 +543,14 @@ fn split_acknowledged_command(
     }
 }
 
-fn acknowledged_stop_command(command: &SessionCommand) -> bool {
+pub(super) fn acknowledged_stop_command(command: &SessionCommand) -> bool {
     matches!(
         command,
         SessionCommand::Acknowledge { command, .. } if matches!(command.as_ref(), SessionCommand::Stop)
     )
 }
 
-fn complete_acknowledgement(
+pub(super) fn complete_acknowledgement(
     acknowledgement: Option<CommandReply<()>>,
     result: &Result<(), SessionError>,
 ) {
@@ -602,7 +609,7 @@ where
         }
     }
 
-    async fn run_once(&mut self) -> Result<(), SessionError> {
+    pub(super) async fn run_once(&mut self) -> Result<(), SessionError> {
         match self.engine.state().clone() {
             EngineState::Running => {
                 if let Some(command) = self.next_boundary_command()? {
@@ -705,7 +712,10 @@ where
         }
     }
 
-    async fn apply_command(&mut self, command: SessionCommand) -> Result<(), SessionError> {
+    pub(super) async fn apply_command(
+        &mut self,
+        command: SessionCommand,
+    ) -> Result<(), SessionError> {
         let shutdown_requested = acknowledged_stop_command(&command);
         let (command, acknowledgement) = split_acknowledged_command(command);
         if matches!(command, SessionCommand::Fork { .. }) && self.fork_loop_factory.is_some() {
@@ -756,7 +766,7 @@ where
         }
     }
 
-    async fn apply_command_without_spawning_forks(
+    pub(super) async fn apply_command_without_spawning_forks(
         &mut self,
         command: SessionCommand,
     ) -> Result<(), SessionError> {

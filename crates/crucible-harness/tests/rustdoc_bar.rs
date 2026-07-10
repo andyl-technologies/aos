@@ -221,6 +221,13 @@ pub fn panics() {
     panic!("boom");
 }
 "#;
+    let crate_private_missing_errors = r#"
+//! synthetic module
+
+pub(crate) fn fallible_helper() -> Result<(), ()> {
+    Ok(())
+}
+"#;
     let non_ascii_comment = r#"
 //! synthetic module
 
@@ -394,6 +401,10 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(missing_panics, "synthetic.rs", false, None),
         "missing `# Panics`",
+    );
+    assert_not_contains(
+        &rustdoc_bar_failures(crate_private_missing_errors, "synthetic.rs", false, None),
+        "missing `# Errors`",
     );
     assert_contains(
         &rustdoc_bar_failures(non_ascii_comment, "synthetic.rs", false, None),

@@ -1,4 +1,6 @@
-// Liveness scenario identity and canonical scheduler material.
+//! Liveness scenario identity and canonical scheduler material.
+
+use super::*;
 /// One generated node consumed by the scheduler liveness gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchedulerScenarioNode {
@@ -219,7 +221,7 @@ impl SchedulerLivenessScenario {
     }
 }
 
-fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) -> String {
+pub(super) fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
         "authored_material_len={}",
@@ -302,7 +304,7 @@ fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessScenario) ->
     lines.join("\n")
 }
 
-fn recompute_scenario_node_lookahead(
+pub(super) fn recompute_scenario_node_lookahead(
     nodes: &mut [SchedulerScenarioNode],
     topology: &SchedulerLookaheadGraph,
 ) {
@@ -311,7 +313,7 @@ fn recompute_scenario_node_lookahead(
     }
 }
 
-fn scheduler_scenario_node_material(node: &SchedulerScenarioNode) -> String {
+pub(super) fn scheduler_scenario_node_material(node: &SchedulerScenarioNode) -> String {
     format!(
         "node:\n{}\ncounter_ticks={}\nactivity={}\n{}\n{}",
         scheduler_node_material(&node.id),
@@ -322,7 +324,7 @@ fn scheduler_scenario_node_material(node: &SchedulerScenarioNode) -> String {
     )
 }
 
-fn run_subdivision_policy_material(policy: &SchedulerRunSubdivisionPolicy) -> String {
+pub(super) fn run_subdivision_policy_material(policy: &SchedulerRunSubdivisionPolicy) -> String {
     format!(
         "run_subdivision_policy:\n{}\nvcpu_count={}\nrr_switch_quantum={}",
         scheduler_node_material(&policy.node),
@@ -331,7 +333,7 @@ fn run_subdivision_policy_material(policy: &SchedulerRunSubdivisionPolicy) -> St
     )
 }
 
-fn preemption_decision_order(
+pub(super) fn preemption_decision_order(
     left: &PreemptionDecision,
     right: &PreemptionDecision,
 ) -> std::cmp::Ordering {
@@ -341,14 +343,14 @@ fn preemption_decision_order(
         .then_with(|| preemption_kind_order(&left.kind).cmp(&preemption_kind_order(&right.kind)))
 }
 
-fn preemption_kind_order(kind: &PreemptionKind) -> (u8, u32, u32, u32) {
+pub(super) fn preemption_kind_order(kind: &PreemptionKind) -> (u8, u32, u32, u32) {
     match kind {
         PreemptionKind::VcpuSwitch { from_vcpu, to_vcpu } => (0, from_vcpu.index, to_vcpu.index, 0),
         PreemptionKind::InterruptAt { target_vcpu, irq } => (1, target_vcpu.index, irq.vector, 0),
     }
 }
 
-fn preemption_decision_material(preemption: &PreemptionDecision) -> String {
+pub(super) fn preemption_decision_material(preemption: &PreemptionDecision) -> String {
     let mut lines = Vec::new();
     lines.push(String::from("preemption_request:"));
     lines.push(format!("node_len={}", preemption.node.name.len()));
@@ -369,7 +371,7 @@ fn preemption_decision_material(preemption: &PreemptionDecision) -> String {
     lines.join("\n")
 }
 
-fn vcpu_idle_snapshot_material(snapshot: &SchedulerNodeVcpuIdleSnapshot) -> String {
+pub(super) fn vcpu_idle_snapshot_material(snapshot: &SchedulerNodeVcpuIdleSnapshot) -> String {
     let mut vcpus = snapshot.vcpus.clone();
     vcpus.sort();
     let mut lines = Vec::new();
@@ -389,7 +391,7 @@ fn vcpu_idle_snapshot_material(snapshot: &SchedulerNodeVcpuIdleSnapshot) -> Stri
     lines.join("\n")
 }
 
-fn scheduler_lookahead_edge_material(edge: &SchedulerLookaheadEdge) -> String {
+pub(super) fn scheduler_lookahead_edge_material(edge: &SchedulerLookaheadEdge) -> String {
     format!(
         "edge:\nedge_from:\n{}\nedge_to:\n{}\nedge_minimum_latency_ns={}",
         scheduler_node_material(&edge.from),
@@ -398,7 +400,7 @@ fn scheduler_lookahead_edge_material(edge: &SchedulerLookaheadEdge) -> String {
     )
 }
 
-fn world_static_topology_material(topology: &WorldStaticTopology) -> String {
+pub(super) fn world_static_topology_material(topology: &WorldStaticTopology) -> String {
     let mut participants = topology.participants.clone();
     participants.sort();
     let mut scheduling_nodes = topology.scheduling_nodes.clone();
@@ -438,7 +440,7 @@ fn world_static_topology_material(topology: &WorldStaticTopology) -> String {
     lines.join("\n")
 }
 
-fn world_lookahead_edge_material(edge: &WorldLookaheadEdge) -> String {
+pub(super) fn world_lookahead_edge_material(edge: &WorldLookaheadEdge) -> String {
     format!(
         "world_edge_from_len={}\nworld_edge_from={}\nworld_edge_to_len={}\nworld_edge_to={}\nworld_edge_minimum_latency_ns={}",
         edge.from.name.len(),
@@ -449,7 +451,7 @@ fn world_lookahead_edge_material(edge: &WorldLookaheadEdge) -> String {
     )
 }
 
-fn topology_change_material(change: &SchedulerTopologyChange) -> String {
+pub(super) fn topology_change_material(change: &SchedulerTopologyChange) -> String {
     let mut lines = Vec::new();
     lines.push(format!("topology_change_sequence={}", change.sequence));
     lines.push(format!(
@@ -515,7 +517,9 @@ fn topology_change_material(change: &SchedulerTopologyChange) -> String {
     lines.join("\n")
 }
 
-fn topology_change_trigger_label(trigger: SchedulerTopologyChangeTrigger) -> &'static str {
+pub(super) fn topology_change_trigger_label(
+    trigger: SchedulerTopologyChangeTrigger,
+) -> &'static str {
     match trigger {
         SchedulerTopologyChangeTrigger::FaultActivation => "fault-activation",
         SchedulerTopologyChangeTrigger::Heal => "heal",
@@ -523,7 +527,7 @@ fn topology_change_trigger_label(trigger: SchedulerTopologyChangeTrigger) -> &'s
     }
 }
 
-fn scheduler_node_material(node: &SchedulerNodeId) -> String {
+pub(super) fn scheduler_node_material(node: &SchedulerNodeId) -> String {
     format!(
         "node_name_len={}\nnode_name={}\nnode_kind={}",
         node.node.name.len(),
@@ -532,7 +536,9 @@ fn scheduler_node_material(node: &SchedulerNodeId) -> String {
     )
 }
 
-fn scheduler_lookahead_edge_endpoint_material(endpoint: &SchedulerLookaheadEdgeEndpoint) -> String {
+pub(super) fn scheduler_lookahead_edge_endpoint_material(
+    endpoint: &SchedulerLookaheadEdgeEndpoint,
+) -> String {
     format!(
         "edge_endpoint:\nedge_from:\n{}\nedge_to:\n{}",
         scheduler_node_material(&endpoint.from),
@@ -540,7 +546,7 @@ fn scheduler_lookahead_edge_endpoint_material(endpoint: &SchedulerLookaheadEdgeE
     )
 }
 
-fn scheduler_node_activity_label(activity: SchedulerNodeActivity) -> &'static str {
+pub(super) fn scheduler_node_activity_label(activity: SchedulerNodeActivity) -> &'static str {
     match activity {
         SchedulerNodeActivity::Runnable => "runnable",
         SchedulerNodeActivity::Idle => "idle",
@@ -549,7 +555,7 @@ fn scheduler_node_activity_label(activity: SchedulerNodeActivity) -> &'static st
     }
 }
 
-fn scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
+pub(super) fn scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
     match kind {
         SchedulingNodeKind::Vm => "vm",
         SchedulingNodeKind::Disk => "disk",
@@ -559,7 +565,7 @@ fn scheduling_node_kind_label(kind: SchedulingNodeKind) -> &'static str {
     }
 }
 
-fn network_lookahead_material(lookahead: NetworkLookahead) -> String {
+pub(super) fn network_lookahead_material(lookahead: NetworkLookahead) -> String {
     match lookahead {
         NetworkLookahead::Finite(duration) => {
             format!(
@@ -571,7 +577,7 @@ fn network_lookahead_material(lookahead: NetworkLookahead) -> String {
     }
 }
 
-fn exact_local_event_material(event: &ExactLocalEvent) -> String {
+pub(super) fn exact_local_event_material(event: &ExactLocalEvent) -> String {
     match event {
         ExactLocalEvent::NoArmedTimer => String::from("exact_local_event=none"),
         ExactLocalEvent::TimerDeadline { virtual_time } => {
@@ -600,7 +606,7 @@ fn exact_local_event_material(event: &ExactLocalEvent) -> String {
     }
 }
 
-fn scheduled_event_material(event: &ScheduledEvent) -> String {
+pub(super) fn scheduled_event_material(event: &ScheduledEvent) -> String {
     format!(
         "event:\n{}\n{}",
         scheduled_event_key_material(&event.key),
@@ -608,7 +614,7 @@ fn scheduled_event_material(event: &ScheduledEvent) -> String {
     )
 }
 
-fn scheduled_event_key_material(key: &ScheduledEventKey) -> String {
+pub(super) fn scheduled_event_key_material(key: &ScheduledEventKey) -> String {
     format!(
         "event_time={}\nevent_consumer:\n{}\nevent_producer:\n{}\nevent_sequence={}",
         key.virtual_time().ticks,
@@ -618,7 +624,7 @@ fn scheduled_event_key_material(key: &ScheduledEventKey) -> String {
     )
 }
 
-fn scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
+pub(super) fn scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
     match payload {
         ScheduledEventPayload::BackendInput(input) => format!(
             "payload=backend-input\npayload_node_len={}\npayload_node={}\npayload_bytes={}",
@@ -655,7 +661,7 @@ fn scheduled_event_payload_material(payload: &ScheduledEventPayload) -> String {
     }
 }
 
-fn control_operation_material(operation: &ControlOperation) -> String {
+pub(super) fn control_operation_material(operation: &ControlOperation) -> String {
     let mut lines = Vec::new();
     lines.push(format!("control_sequence={}", operation.sequence));
     lines.push(format!(
@@ -681,7 +687,7 @@ fn control_operation_material(operation: &ControlOperation) -> String {
     lines.join("\n")
 }
 
-fn control_operation_kind_label(kind: &ControlOperationKind) -> &'static str {
+pub(super) fn control_operation_kind_label(kind: &ControlOperationKind) -> &'static str {
     match kind {
         ControlOperationKind::Pause => "pause",
         ControlOperationKind::Resume => "resume",
@@ -695,7 +701,7 @@ fn control_operation_kind_label(kind: &ControlOperationKind) -> &'static str {
     }
 }
 
-fn hex_bytes(bytes: &[u8]) -> String {
+pub(super) fn hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {

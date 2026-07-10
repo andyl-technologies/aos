@@ -37,9 +37,9 @@ fn architecture_red_placeholder_gates_are_wired() {
             }
         })
         .collect();
-    // Every canonical gate now has an implemented local target; the perf-bench
-    // gate's cost-model body landed with the §25 performance suite.
-    let expected: BTreeSet<&str> = BTreeSet::new();
+    // Coverage has deterministic model and bridge targets, but the canonical
+    // gate stays red until a loaded-QEMU callback run proves the live boundary.
+    let expected = BTreeSet::from(["gate:basic-block-coverage"]);
 
     assert_eq!(placeholders, expected);
 
@@ -115,6 +115,10 @@ fn architecture_red_placeholder_gates_are_wired() {
         find_gate("gate:campaign-continuity").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
+    assert!(matches!(
+        find_gate("gate:basic-block-coverage").map(|spec| spec.status),
+        Some(GateStatus::RedPlaceholder)
+    ));
 
     let expected_phases = BTreeMap::from([
         ("gate:harness-lint", GatePhase::Always),
@@ -132,6 +136,7 @@ fn architecture_red_placeholder_gates_are_wired() {
         ("gate:patch-microtests", GatePhase::Phase2),
         ("gate:adversarial-determinism", GatePhase::Phase3),
         ("gate:e2e-determinism", GatePhase::Phase4),
+        ("gate:basic-block-coverage", GatePhase::Phase6),
         ("gate:perf-bench", GatePhase::Phase7),
         ("gate:fleet-equivalence", GatePhase::Phase7),
         ("gate:campaign-continuity", GatePhase::Phase7),

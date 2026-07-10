@@ -1,5 +1,9 @@
+//! Session-actor mailbox, lifecycle, and runtime-isolation unit tests.
+
+use super::*;
+
 #[test]
-fn session_actor_source_does_not_lock_engine_across_run() {
+pub(super) fn session_actor_source_does_not_lock_engine_across_run() {
     let source = concat!(include_str!("../session/actor.rs"), "\n#[cfg(test)]");
     let actor_struct = source_section(
         source,
@@ -74,7 +78,7 @@ fn session_actor_source_does_not_lock_engine_across_run() {
     }
 }
 
-fn source_section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+pub(super) fn source_section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let Some(start_index) = source.find(start) else {
         panic!("source should contain section start {start}");
     };
@@ -85,14 +89,14 @@ fn source_section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     &tail[..end_index]
 }
 
-fn deterministic_command_index(seed: u64, step: u64) -> usize {
+pub(super) fn deterministic_command_index(seed: u64, step: u64) -> usize {
     let mixed = seed
         .wrapping_mul(0x9e37_79b9_7f4a_7c15)
         .wrapping_add(step.wrapping_mul(0xbf58_476d_1ce4_e5b9));
     (mixed as usize) % SessionCommandKind::ALL.len()
 }
 
-fn engine_with_lifecycle_state(state: LifecycleStateKind) -> Engine<AppendingLoop> {
+pub(super) fn engine_with_lifecycle_state(state: LifecycleStateKind) -> Engine<AppendingLoop> {
     let seed = match state {
         LifecycleStateKind::Loaded => 9_001,
         LifecycleStateKind::Running => 9_002,
@@ -117,7 +121,9 @@ fn engine_with_lifecycle_state(state: LifecycleStateKind) -> Engine<AppendingLoo
     engine
 }
 
-async fn receive_reply<T: fmt::Debug>(receiver: oneshot::Receiver<Result<T, SessionError>>) -> T {
+pub(super) async fn receive_reply<T: fmt::Debug>(
+    receiver: oneshot::Receiver<Result<T, SessionError>>,
+) -> T {
     match receiver.await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => panic!("reply should succeed: {error}"),
@@ -125,7 +131,7 @@ async fn receive_reply<T: fmt::Debug>(receiver: oneshot::Receiver<Result<T, Sess
     }
 }
 
-async fn receive_reply_error<T: fmt::Debug>(
+pub(super) async fn receive_reply_error<T: fmt::Debug>(
     receiver: oneshot::Receiver<Result<T, SessionError>>,
 ) -> SessionError {
     match receiver.await {
@@ -135,7 +141,7 @@ async fn receive_reply_error<T: fmt::Debug>(
     }
 }
 
-async fn receive_state_transition(
+pub(super) async fn receive_state_transition(
     stream: &mut SessionStateTransitionStream,
 ) -> SessionStateTransitionFrame {
     match stream.recv().await {
@@ -145,7 +151,7 @@ async fn receive_state_transition(
     }
 }
 
-fn assert_boundary_log_entry(
+pub(super) fn assert_boundary_log_entry(
     entry: &SessionControlLogEntry,
     sequence: u64,
     command: SessionCommandKind,
@@ -156,7 +162,7 @@ fn assert_boundary_log_entry(
     assert_eq!(entry.scheduler_control, scheduler_control);
 }
 
-fn recorded_control_batches(
+pub(super) fn recorded_control_batches(
     control_batches: &Arc<Mutex<Vec<Vec<ControlOperationKind>>>>,
 ) -> Vec<Vec<ControlOperationKind>> {
     match control_batches.lock() {
@@ -165,7 +171,7 @@ fn recorded_control_batches(
     }
 }
 
-async fn assert_actor_step_completes_after_second_quantum(
+pub(super) async fn assert_actor_step_completes_after_second_quantum(
     seed: u64,
     mode: StepMode,
     quantum_loop: ScriptedStepLoop,
@@ -208,7 +214,7 @@ async fn assert_actor_step_completes_after_second_quantum(
     );
 }
 
-fn assert_engine_step_completes_after_second_quantum(
+pub(super) fn assert_engine_step_completes_after_second_quantum(
     seed: u64,
     mode: StepMode,
     quantum_loop: ScriptedStepLoop,
@@ -245,7 +251,7 @@ fn assert_engine_step_completes_after_second_quantum(
     assert_eq!(engine.active_step, None);
 }
 
-fn assert_rejection_names_state_and_command(
+pub(super) fn assert_rejection_names_state_and_command(
     error: SessionError,
     expected_state: EngineState,
     expected_command: SessionCommand,
@@ -260,7 +266,7 @@ fn assert_rejection_names_state_and_command(
 }
 
 #[test]
-fn engine_rejects_invalid_transition_without_changing_state() {
+pub(super) fn engine_rejects_invalid_transition_without_changing_state() {
     let scenario = generated_scenario(12);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -276,7 +282,7 @@ fn engine_rejects_invalid_transition_without_changing_state() {
 }
 
 #[test]
-fn engine_instantiate_runtime_cannot_bypass_state_transitions() {
+pub(super) fn engine_instantiate_runtime_cannot_bypass_state_transitions() {
     let scenario = generated_scenario(15);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -326,7 +332,7 @@ fn engine_instantiate_runtime_cannot_bypass_state_transitions() {
 }
 
 #[test]
-fn engine_runtime_cache_reinstantiates_without_observable_change_at_pause_boundary() {
+pub(super) fn engine_runtime_cache_reinstantiates_without_observable_change_at_pause_boundary() {
     let scenario = generated_scenario(19);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -366,7 +372,7 @@ fn engine_runtime_cache_reinstantiates_without_observable_change_at_pause_bounda
 }
 
 #[test]
-fn engine_runtime_cache_reinstantiates_after_running_quantum_boundary() {
+pub(super) fn engine_runtime_cache_reinstantiates_after_running_quantum_boundary() {
     let scenario = generated_scenario(20);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -405,7 +411,7 @@ fn engine_runtime_cache_reinstantiates_after_running_quantum_boundary() {
 }
 
 #[test]
-fn engine_runtime_cache_reinstantiate_rejects_loaded_state_without_mutation() {
+pub(super) fn engine_runtime_cache_reinstantiate_rejects_loaded_state_without_mutation() {
     let scenario = generated_scenario(21);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -444,7 +450,7 @@ fn engine_runtime_cache_reinstantiate_rejects_loaded_state_without_mutation() {
 }
 
 #[test]
-fn engine_runtime_cache_reinstantiate_rejects_never_instantiated_stopped_state() {
+pub(super) fn engine_runtime_cache_reinstantiate_rejects_never_instantiated_stopped_state() {
     let scenario = generated_scenario(22);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -473,7 +479,7 @@ fn engine_runtime_cache_reinstantiate_rejects_never_instantiated_stopped_state()
 }
 
 #[test]
-fn engine_runtime_cache_refresh_preserves_cache_when_reinstantiate_fails() {
+pub(super) fn engine_runtime_cache_refresh_preserves_cache_when_reinstantiate_fails() {
     let scenario = generated_scenario(23);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -499,7 +505,7 @@ fn engine_runtime_cache_refresh_preserves_cache_when_reinstantiate_fails() {
 }
 
 #[tokio::test]
-async fn session_actor_services_pending_command_before_quantum() {
+pub(super) async fn session_actor_services_pending_command_before_quantum() {
     let scenario = generated_scenario(13);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -532,7 +538,7 @@ async fn session_actor_services_pending_command_before_quantum() {
 }
 
 #[tokio::test]
-async fn session_actor_steps_one_quantum_then_yields() {
+pub(super) async fn session_actor_steps_one_quantum_then_yields() {
     let scenario = generated_scenario(14);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -563,7 +569,7 @@ async fn session_actor_steps_one_quantum_then_yields() {
 }
 
 #[tokio::test]
-async fn session_actor_yields_after_command_driven_step() {
+pub(super) async fn session_actor_yields_after_command_driven_step() {
     let scenario = generated_scenario(16);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -622,7 +628,7 @@ async fn session_actor_yields_after_command_driven_step() {
 }
 
 #[tokio::test]
-async fn session_actor_command_driven_step_acknowledges_preexisting_running_controls() {
+pub(super) async fn session_actor_command_driven_step_acknowledges_preexisting_running_controls() {
     let scenario = generated_scenario(24);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -679,7 +685,7 @@ async fn session_actor_command_driven_step_acknowledges_preexisting_running_cont
 }
 
 #[tokio::test]
-async fn session_actor_paused_step_acknowledges_preexisting_running_controls() {
+pub(super) async fn session_actor_paused_step_acknowledges_preexisting_running_controls() {
     let scenario = generated_scenario(25);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -751,7 +757,7 @@ async fn session_actor_paused_step_acknowledges_preexisting_running_controls() {
 }
 
 #[tokio::test]
-async fn session_actor_step_modes_stop_on_deterministic_boundaries() {
+pub(super) async fn session_actor_step_modes_stop_on_deterministic_boundaries() {
     let cases = vec![
         (
             30,
@@ -781,7 +787,7 @@ async fn session_actor_step_modes_stop_on_deterministic_boundaries() {
 }
 
 #[tokio::test]
-async fn session_actor_step_modes_are_interruptible_by_pause_and_stop() {
+pub(super) async fn session_actor_step_modes_are_interruptible_by_pause_and_stop() {
     for command in [SessionCommand::Pause, SessionCommand::Stop] {
         let scenario = generated_scenario(34);
         let config = Configuration::genesis(scenario.clone());
@@ -838,7 +844,7 @@ async fn session_actor_step_modes_are_interruptible_by_pause_and_stop() {
 }
 
 #[test]
-fn session_actor_live_snapshot_starts_as_loaded_without_mailbox() {
+pub(super) fn session_actor_live_snapshot_starts_as_loaded_without_mailbox() {
     let scenario = generated_scenario(17);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -856,7 +862,7 @@ fn session_actor_live_snapshot_starts_as_loaded_without_mailbox() {
 }
 
 #[tokio::test]
-async fn session_actor_live_query_reads_atomic_mirror_without_mailbox_query() {
+pub(super) async fn session_actor_live_query_reads_atomic_mirror_without_mailbox_query() {
     let scenario = generated_scenario(18);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -898,7 +904,7 @@ async fn session_actor_live_query_reads_atomic_mirror_without_mailbox_query() {
 }
 
 #[tokio::test]
-async fn session_actor_live_snapshot_publishes_monotone_progress() {
+pub(super) async fn session_actor_live_snapshot_publishes_monotone_progress() {
     let scenario = generated_scenario(19);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -927,7 +933,7 @@ async fn session_actor_live_snapshot_publishes_monotone_progress() {
 }
 
 #[tokio::test]
-async fn session_actor_state_transition_bus_broadcasts_actor_owned_transitions() {
+pub(super) async fn session_actor_state_transition_bus_broadcasts_actor_owned_transitions() {
     let scenario = generated_scenario(20);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1042,7 +1048,7 @@ async fn session_actor_state_transition_bus_broadcasts_actor_owned_transitions()
 }
 
 #[tokio::test]
-async fn session_state_transition_stream_reports_lag_without_backpressure() {
+pub(super) async fn session_state_transition_stream_reports_lag_without_backpressure() {
     let bus = SessionStateTransitionBus::new();
     let mut stream = bus.subscribe();
     let view = LiveSnapshotView {
@@ -1072,7 +1078,7 @@ async fn session_state_transition_stream_reports_lag_without_backpressure() {
 }
 
 #[test]
-fn engine_rejects_event_log_offset_mismatch() {
+pub(super) fn engine_rejects_event_log_offset_mismatch() {
     let scenario = generated_scenario(21);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1099,7 +1105,7 @@ fn engine_rejects_event_log_offset_mismatch() {
 }
 
 #[test]
-fn engine_rejects_event_log_offset_regression() {
+pub(super) fn engine_rejects_event_log_offset_regression() {
     let scenario = generated_scenario(22);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1128,7 +1134,7 @@ fn engine_rejects_event_log_offset_regression() {
 }
 
 #[tokio::test]
-async fn actor_publishes_backend_coverage_from_the_canonical_event_log() {
+pub(super) async fn actor_publishes_backend_coverage_from_the_canonical_event_log() {
     let scenario = generated_scenario(223);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1171,7 +1177,7 @@ async fn actor_publishes_backend_coverage_from_the_canonical_event_log() {
 }
 
 #[tokio::test]
-async fn actor_publishes_final_backend_coverage_before_shutdown_completes() {
+pub(super) async fn actor_publishes_final_backend_coverage_before_shutdown_completes() {
     let scenario = generated_scenario(224);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1225,7 +1231,7 @@ async fn actor_publishes_final_backend_coverage_before_shutdown_completes() {
 }
 
 #[test]
-fn engine_rejects_non_dense_final_shutdown_entries() {
+pub(super) fn engine_rejects_non_dense_final_shutdown_entries() {
     let scenario = generated_scenario(225);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1245,7 +1251,7 @@ fn engine_rejects_non_dense_final_shutdown_entries() {
     );
 }
 
-struct NonDenseShutdownLoop;
+pub(super) struct NonDenseShutdownLoop;
 
 impl QuantumLoop for NonDenseShutdownLoop {
     fn drive_quantum(
@@ -1263,7 +1269,7 @@ impl QuantumLoop for NonDenseShutdownLoop {
 }
 
 #[derive(Default)]
-struct CoverageAppendingLoop {
+pub(super) struct CoverageAppendingLoop {
     event_log: crucible::EventLog,
 }
 
@@ -1295,7 +1301,7 @@ impl QuantumLoop for CoverageAppendingLoop {
     }
 }
 
-struct CoverageBackend {
+pub(super) struct CoverageBackend {
     now: VirtualTime,
     events: Vec<crucible::ObservableEvent>,
 }
@@ -1357,7 +1363,7 @@ impl crucible::SimulationBackend for CoverageBackend {
     }
 }
 
-struct StubLoop;
+pub(super) struct StubLoop;
 
 impl QuantumLoop for StubLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -1378,7 +1384,7 @@ impl QuantumLoop for StubLoop {
 }
 
 #[derive(Default)]
-struct CountingLoop {
+pub(super) struct CountingLoop {
     quanta: u64,
 }
 
@@ -1401,14 +1407,14 @@ impl QuantumLoop for CountingLoop {
     }
 }
 
-struct RecordingLoop {
+pub(super) struct RecordingLoop {
     quanta: u64,
     control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>,
     shutdowns: Option<Arc<AtomicU64>>,
 }
 
 impl RecordingLoop {
-    fn new(control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>) -> Self {
+    pub(super) fn new(control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>) -> Self {
         Self {
             quanta: 0,
             control_batches,
@@ -1416,7 +1422,7 @@ impl RecordingLoop {
         }
     }
 
-    fn with_shutdown(
+    pub(super) fn with_shutdown(
         control_batches: Arc<Mutex<Vec<Vec<ControlOperationKind>>>>,
         shutdowns: Arc<AtomicU64>,
     ) -> Self {
@@ -1480,7 +1486,7 @@ impl QuantumLoop for RecordingLoop {
     }
 }
 
-struct ControlEventLoop;
+pub(super) struct ControlEventLoop;
 
 impl QuantumLoop for ControlEventLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -1508,7 +1514,7 @@ impl QuantumLoop for ControlEventLoop {
 }
 
 #[derive(Default)]
-struct ControlSensitiveLoop {
+pub(super) struct ControlSensitiveLoop {
     quanta: u64,
     active_faults: std::collections::BTreeSet<FaultTag>,
     legacy_injects: u64,
@@ -1580,13 +1586,13 @@ impl QuantumLoop for ControlSensitiveLoop {
     }
 }
 
-struct ShutdownLoop {
+pub(super) struct ShutdownLoop {
     quanta: u64,
     shutdowns: Arc<AtomicU64>,
 }
 
 impl ShutdownLoop {
-    fn new(shutdowns: Arc<AtomicU64>) -> Self {
+    pub(super) fn new(shutdowns: Arc<AtomicU64>) -> Self {
         Self {
             quanta: 0,
             shutdowns,
@@ -1619,7 +1625,7 @@ impl QuantumLoop for ShutdownLoop {
 }
 
 #[derive(Default)]
-struct ScriptedStepLoop {
+pub(super) struct ScriptedStepLoop {
     quanta: u64,
     event_log_entries: u64,
     payloads_by_quantum: std::collections::BTreeMap<u64, Vec<SchedulerEventLogPayload>>,
@@ -1627,11 +1633,11 @@ struct ScriptedStepLoop {
 }
 
 impl ScriptedStepLoop {
-    fn with_payload(quantum: u64, payload: SchedulerEventLogPayload) -> Self {
+    pub(super) fn with_payload(quantum: u64, payload: SchedulerEventLogPayload) -> Self {
         Self::with_payloads(quantum, vec![payload])
     }
 
-    fn with_payloads(quantum: u64, payloads: Vec<SchedulerEventLogPayload>) -> Self {
+    pub(super) fn with_payloads(quantum: u64, payloads: Vec<SchedulerEventLogPayload>) -> Self {
         let mut payloads_by_quantum = std::collections::BTreeMap::new();
         payloads_by_quantum.insert(quantum, payloads);
         Self {
@@ -1642,7 +1648,7 @@ impl ScriptedStepLoop {
         }
     }
 
-    fn with_quiescence(scheduler_quiescence: SchedulerQuiescence) -> Self {
+    pub(super) fn with_quiescence(scheduler_quiescence: SchedulerQuiescence) -> Self {
         Self {
             scheduler_quiescence: Some(scheduler_quiescence),
             ..Self::default()
@@ -1698,8 +1704,8 @@ impl QuantumLoop for ScriptedStepLoop {
     }
 }
 
-struct NoEventQuiescenceLoop {
-    quiescence: SchedulerQuiescence,
+pub(super) struct NoEventQuiescenceLoop {
+    pub(super) quiescence: SchedulerQuiescence,
 }
 
 impl QuantumLoop for NoEventQuiescenceLoop {
@@ -1720,9 +1726,9 @@ impl QuantumLoop for NoEventQuiescenceLoop {
     }
 }
 
-struct PriorEventThenNoEventQuiescenceLoop {
-    quanta: u64,
-    quiescence: SchedulerQuiescence,
+pub(super) struct PriorEventThenNoEventQuiescenceLoop {
+    pub(super) quanta: u64,
+    pub(super) quiescence: SchedulerQuiescence,
 }
 
 impl QuantumLoop for PriorEventThenNoEventQuiescenceLoop {
@@ -1756,7 +1762,7 @@ impl QuantumLoop for PriorEventThenNoEventQuiescenceLoop {
     }
 }
 
-struct NoLeaves;
+pub(super) struct NoLeaves;
 
 impl ConditionLeafOracle for NoLeaves {
     fn leaf_is_true(&mut self, leaf: ConditionLeaf<'_>) -> bool {
@@ -1769,11 +1775,11 @@ impl ConditionLeafOracle for NoLeaves {
 }
 
 #[derive(Default)]
-struct AppendingLoop {
+pub(super) struct AppendingLoop {
     quanta: u64,
 }
 
-struct InvalidEventLogLoop;
+pub(super) struct InvalidEventLogLoop;
 
 impl QuantumLoop for InvalidEventLogLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -1794,7 +1800,7 @@ impl QuantumLoop for InvalidEventLogLoop {
 }
 
 #[derive(Default)]
-struct RegressingEventLogLoop {
+pub(super) struct RegressingEventLogLoop {
     quanta: u64,
 }
 
@@ -1846,7 +1852,7 @@ impl QuantumLoop for AppendingLoop {
     }
 }
 
-struct DebugGdbLoop;
+pub(super) struct DebugGdbLoop;
 
 impl QuantumLoop for DebugGdbLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
@@ -1874,7 +1880,8 @@ impl QuantumLoop for DebugGdbLoop {
     }
 }
 
-fn debug_time_travel_fixture() -> (Configuration, Configuration, Configuration, TemporalGraph) {
+pub(super) fn debug_time_travel_fixture()
+-> (Configuration, Configuration, Configuration, TemporalGraph) {
     let world = single_node_debug_world("session-command")
         .unwrap_or_else(|error| panic!("debug world should build: {error}"));
     let scenario = world.scenario_def();
@@ -1904,7 +1911,7 @@ fn debug_time_travel_fixture() -> (Configuration, Configuration, Configuration, 
     (root, first, second, graph)
 }
 
-fn single_node_debug_world(label: &str) -> Result<World, EngineError> {
+pub(super) fn single_node_debug_world(label: &str) -> Result<World, EngineError> {
     World::from_nodes(vec![WorldNode {
         id: node_id("guest-a"),
         arch: VmArchitecture::X86_64,
@@ -1922,7 +1929,7 @@ fn single_node_debug_world(label: &str) -> Result<World, EngineError> {
     }])
 }
 
-fn override_decision(point: &str, choice: &str) -> Decision {
+pub(super) fn override_decision(point: &str, choice: &str) -> Decision {
     Decision::Override(OverrideDecision {
         point: SchedulingPoint {
             key: point.to_owned(),
@@ -1933,18 +1940,18 @@ fn override_decision(point: &str, choice: &str) -> Decision {
     })
 }
 
-fn gdb_listen(endpoint: &str) -> GdbListen {
+pub(super) fn gdb_listen(endpoint: &str) -> GdbListen {
     GdbListen::new(endpoint)
         .unwrap_or_else(|error| panic!("test gdb listen should be stable: {error}"))
 }
 
-fn node_id(name: &str) -> NodeId {
+pub(super) fn node_id(name: &str) -> NodeId {
     NodeId {
         name: name.to_owned(),
     }
 }
 
-fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {
+pub(super) fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {
     let genesis = Configuration::genesis(scenario.clone());
     match TemporalGraph::empty().with_baked_genesis(scenario, genesis_checkpoint(&genesis)) {
         Ok(graph) => graph,
@@ -1952,7 +1959,7 @@ fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {
     }
 }
 
-fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
+pub(super) fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
     let checkpoint = Checkpoint::from_recorded_configuration(
         configuration,
         None,
@@ -1965,7 +1972,7 @@ fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
     GenesisCheckpoint { checkpoint }
 }
 
-fn generated_scenario(seed: u64) -> ScenarioDef {
+pub(super) fn generated_scenario(seed: u64) -> ScenarioDef {
     ScenarioDef::from_canonical_material_with_seed(
         "crucible.session.test.scenario",
         &format!("seed={seed}"),
@@ -1973,7 +1980,7 @@ fn generated_scenario(seed: u64) -> ScenarioDef {
     )
 }
 
-fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
+pub(super) fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
     crucible::test_support::condition_boundary_entry_for_test(
         sequence,
         VirtualTime {
@@ -1983,7 +1990,7 @@ fn test_event_log_entry(sequence: u64) -> crucible::SchedulerEventLogEntry {
     )
 }
 
-fn resolved_backend_input_payload(seed: u64) -> SchedulerEventLogPayload {
+pub(super) fn resolved_backend_input_payload(seed: u64) -> SchedulerEventLogPayload {
     let node = scheduler_node("node-a");
     SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
         key: ScheduledEventKey::from_parts(
@@ -1999,14 +2006,14 @@ fn resolved_backend_input_payload(seed: u64) -> SchedulerEventLogPayload {
     })
 }
 
-fn assertion_state_change_payload() -> SchedulerEventLogPayload {
+pub(super) fn assertion_state_change_payload() -> SchedulerEventLogPayload {
     SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged {
         name: AssertionId::from_name("session-step-assertion"),
         state: AssertionPhase::Satisfied,
     })
 }
 
-fn trigger_fired_payload(
+pub(super) fn trigger_fired_payload(
     sequence: u64,
     event: EventId,
     predicate: Predicate,
@@ -2036,7 +2043,7 @@ fn trigger_fired_payload(
     SchedulerEventLogPayload::TriggerFired(firing)
 }
 
-fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPayload {
+pub(super) fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPayload {
     let timer = TimerId {
         name: String::from("session-step-timer"),
     };
@@ -2075,7 +2082,7 @@ fn timer_fire_payload(sequence: u64) -> SchedulerEventLogPayload {
     SchedulerEventLogPayload::TriggerFired(firing)
 }
 
-fn timer_action_payload(sequence: u64) -> SchedulerEventLogPayload {
+pub(super) fn timer_action_payload(sequence: u64) -> SchedulerEventLogPayload {
     SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
         sequence,
         event: EventId::from_name("session-step-timer"),
@@ -2087,7 +2094,7 @@ fn timer_action_payload(sequence: u64) -> SchedulerEventLogPayload {
     })
 }
 
-fn generated_decision(seed: u64) -> Decision {
+pub(super) fn generated_decision(seed: u64) -> Decision {
     let node = scheduler_node("control-plane");
     Decision::DeliveryOrder(DeliveryOrderDecision {
         at: VirtualTime { ticks: seed },
@@ -2100,7 +2107,7 @@ fn generated_decision(seed: u64) -> Decision {
     })
 }
 
-fn scheduler_node(name: &str) -> SchedulerNodeId {
+pub(super) fn scheduler_node(name: &str) -> SchedulerNodeId {
     SchedulerNodeId {
         node: NodeId {
             name: name.to_owned(),

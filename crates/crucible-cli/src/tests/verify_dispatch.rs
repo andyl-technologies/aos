@@ -1,7 +1,9 @@
-// Verification, dispatch, selftest, and failure-path tests.
+//! Verification, dispatch, selftest, and failure-path tests.
+
+use super::*;
 #[test]
-fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts() -> Result<(), Box<dyn Error>>
-{
+pub(super) fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = crucible::partition_recovery_scenario()?
         .scenario
@@ -132,7 +134,7 @@ fn cli_verify_workflow_localizes_divergence_and_writes_side_artifacts() -> Resul
 }
 
 #[test]
-fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without_producer_identity()
+pub(super) fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without_producer_identity()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
@@ -220,7 +222,8 @@ fn cli_verify_workflow_remote_divergence_skips_side_artifacts_without_producer_i
 }
 
 #[test]
-fn cli_verify_workflow_compares_existing_reproduction_artifacts() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_workflow_compares_existing_reproduction_artifacts()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario_path = write_valid_run_scenario(&temp)?;
     let scenario = resolve_run_scenario(Some(&scenario_path.display().to_string()), temp.path())?
@@ -331,7 +334,8 @@ fn cli_verify_workflow_compares_existing_reproduction_artifacts() -> Result<(), 
 }
 
 #[test]
-fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Result<(), Box<dyn Error>>
+{
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let daemon = spawn_production_lifecycle_server()?;
@@ -404,7 +408,7 @@ fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Result<(), Box<d
 }
 
 #[test]
-fn cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_pinned_identity()
+pub(super) fn cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_pinned_identity()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
@@ -463,8 +467,8 @@ fn cli_verify_workflow_runs_fresh_local_qemu_routed_reductions_with_pinned_ident
 }
 
 #[test]
-fn cli_backend_selection_routes_daemon_over_api_without_local_backend() -> Result<(), Box<dyn Error>>
-{
+pub(super) fn cli_backend_selection_routes_daemon_over_api_without_local_backend()
+-> Result<(), Box<dyn Error>> {
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -519,7 +523,7 @@ fn cli_backend_selection_routes_daemon_over_api_without_local_backend() -> Resul
 }
 
 #[test]
-fn cli_backend_selection_local_and_remote_have_equivalent_canonical_outcome()
+pub(super) fn cli_backend_selection_local_and_remote_have_equivalent_canonical_outcome()
 -> Result<(), Box<dyn Error>> {
     let local_cli = Cli::parse_from(["crucible", "--backend", "double", "run", TEST_SCENARIO]);
     let remote_cli = Cli::parse_from([
@@ -581,7 +585,7 @@ fn cli_backend_selection_local_and_remote_have_equivalent_canonical_outcome()
 }
 
 #[test]
-fn cli_backend_selection_rejects_daemon_on_serve() {
+pub(super) fn cli_backend_selection_rejects_daemon_on_serve() {
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -601,8 +605,8 @@ fn cli_backend_selection_rejects_daemon_on_serve() {
 }
 
 #[test]
-fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated() -> Result<(), Box<dyn Error>>
-{
+pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated()
+-> Result<(), Box<dyn Error>> {
     let mut entropy = FakeSeedEntropySource::new(0xfeed_face_cafe_beef);
     let flag_cli = Cli::parse_from(["crucible", "--seed", "0x2a", "run", TEST_SCENARIO]);
     let flag_plan = plan_determinism_ergonomics(
@@ -672,7 +676,7 @@ fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated() -> Result
 }
 
 #[test]
-fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace_format()
+pub(super) fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace_format()
 -> Result<(), Box<dyn Error>> {
     let mut entropy = FakeSeedEntropySource::new(7);
     let bad_seed = Cli::parse_from(["crucible", "--seed", "not-a-seed", "run", TEST_SCENARIO]);
@@ -730,7 +734,7 @@ fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace_format()
 }
 
 #[test]
-fn cli_determinism_ergonomics_renders_three_formats_over_same_canonical_log()
+pub(super) fn cli_determinism_ergonomics_renders_three_formats_over_same_canonical_log()
 -> Result<(), Box<dyn Error>> {
     let entries = canonical_trace_entries();
     let jsonl = render_canonical_event_log(OutputFormat::Jsonl, &entries)?;
@@ -763,7 +767,8 @@ fn cli_determinism_ergonomics_renders_three_formats_over_same_canonical_log()
 }
 
 #[test]
-fn cli_determinism_ergonomics_threads_seed_into_backend_outcome() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_determinism_ergonomics_threads_seed_into_backend_outcome()
+-> Result<(), Box<dyn Error>> {
     let local_cli = Cli::parse_from([
         "crucible",
         "--backend",
@@ -866,7 +871,7 @@ fn cli_determinism_ergonomics_threads_seed_into_backend_outcome() -> Result<(), 
 }
 
 #[test]
-fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_and_footer()
+pub(super) fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_and_footer()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("artifacts");
@@ -905,7 +910,7 @@ fn cli_determinism_ergonomics_failure_artifact_carries_resolved_seed_and_footer(
 }
 
 #[test]
-fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_outcome()
+pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_outcome()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("artifact dir with spaces");
@@ -1005,7 +1010,8 @@ fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_outcome()
 }
 
 #[test]
-fn cli_determinism_ergonomics_rejects_remote_mock_failure_artifact() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_determinism_ergonomics_rejects_remote_mock_failure_artifact()
+-> Result<(), Box<dyn Error>> {
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -1047,12 +1053,12 @@ fn cli_determinism_ergonomics_rejects_remote_mock_failure_artifact() -> Result<(
 }
 
 #[test]
-fn cli_determinism_ergonomics_keeps_wall_clock_out_of_canonical_paths() {
+pub(super) fn cli_determinism_ergonomics_keeps_wall_clock_out_of_canonical_paths() {
     assert!(canonical_state_wall_clock_guard());
 }
 
 #[test]
-fn cli_triage_help_surface_lists_required_flags_and_exit_code_contract() {
+pub(super) fn cli_triage_help_surface_lists_required_flags_and_exit_code_contract() {
     let mut command = Cli::command();
     let top_help = command.render_long_help().to_string();
     assert!(top_help.contains("triage"));
@@ -1112,7 +1118,8 @@ fn cli_triage_help_surface_lists_required_flags_and_exit_code_contract() {
 }
 
 #[test]
-fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let findings = temp.path().join("findings");
     let store = temp.path().join("store");
@@ -1292,7 +1299,7 @@ fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline() -> Result<(), Box
 }
 
 #[test]
-fn cli_triage_rejects_artifact_only_findings_without_engine_evidence() {
+pub(super) fn cli_triage_rejects_artifact_only_findings_without_engine_evidence() {
     let temp = TempDir::new().expect("tempdir must be created");
     let findings = temp.path().join("findings");
     fs::create_dir_all(&findings).expect("findings dir must be created");
@@ -1327,7 +1334,7 @@ fn cli_triage_rejects_artifact_only_findings_without_engine_evidence() {
 }
 
 #[test]
-fn cli_triage_rejects_cli_sidecar_signature_evidence() {
+pub(super) fn cli_triage_rejects_cli_sidecar_signature_evidence() {
     let temp = TempDir::new().expect("tempdir must be created");
     let findings = temp.path().join("sidecar.findings-ledger");
     let store_root = temp.path().join("store");
@@ -1395,7 +1402,7 @@ finding.0.kind=property
 }
 
 #[test]
-fn cli_triage_rejects_mismatched_engine_owned_signature_evidence() {
+pub(super) fn cli_triage_rejects_mismatched_engine_owned_signature_evidence() {
     let temp = TempDir::new().expect("tempdir must be created");
     let store_root = temp.path().join("store");
     let findings_dir = temp.path().join("findings");
@@ -1431,7 +1438,7 @@ fn cli_triage_rejects_mismatched_engine_owned_signature_evidence() {
 }
 
 #[test]
-fn cli_triage_is_offline_and_uses_uniform_failure_exit_code() {
+pub(super) fn cli_triage_is_offline_and_uses_uniform_failure_exit_code() {
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -1458,7 +1465,7 @@ fn cli_triage_is_offline_and_uses_uniform_failure_exit_code() {
 }
 
 #[test]
-fn cli_selftest_canonical_gate_names_match_harness_catalog() {
+pub(super) fn cli_selftest_canonical_gate_names_match_harness_catalog() {
     let harness_gate_names = crucible_harness::canonical_gates()
         .iter()
         .map(|gate| gate.name)
@@ -1468,7 +1475,7 @@ fn cli_selftest_canonical_gate_names_match_harness_catalog() {
 }
 
 #[test]
-fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse_from(["crucible", "--quiet", "selftest"]);
     let Commands::Selftest(args) = &cli.command else {
         panic!("expected selftest command");
@@ -1639,7 +1646,7 @@ fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn cli_replay_validates_reproduction_artifact() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_validates_reproduction_artifact() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("case.crucible");
     let artifact = mock_e2e_reproduction_artifact()?;
@@ -1666,7 +1673,8 @@ fn cli_replay_validates_reproduction_artifact() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn cli_replay_check_accepts_byte_identical_canonical_log() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_check_accepts_byte_identical_canonical_log() -> Result<(), Box<dyn Error>>
+{
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let check_path = temp.path().join("original.jsonl");
@@ -1713,7 +1721,8 @@ fn cli_replay_check_accepts_byte_identical_canonical_log() -> Result<(), Box<dyn
 }
 
 #[test]
-fn cli_replay_resolves_content_addressed_component_payloads() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_resolves_content_addressed_component_payloads()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("externalized.crucible");
     let check_path = temp.path().join("original.jsonl");
@@ -1765,7 +1774,8 @@ fn cli_replay_resolves_content_addressed_component_payloads() -> Result<(), Box<
 }
 
 #[test]
-fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -1949,7 +1959,8 @@ fn cli_replay_to_savepoint_validates_artifact_prefix_and_oracle() -> Result<(), 
 }
 
 #[test]
-fn cli_replay_to_savepoint_rejects_missing_prefix_decision_payload() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_to_savepoint_rejects_missing_prefix_decision_payload()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("missing-prefix-payload.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -2034,7 +2045,8 @@ fn cli_replay_to_savepoint_rejects_missing_prefix_decision_payload() -> Result<(
 }
 
 #[test]
-fn cli_replay_to_savepoint_rejects_non_matching_schedule_prefix() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_to_savepoint_rejects_non_matching_schedule_prefix()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("prefix-mismatch.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -2110,7 +2122,7 @@ fn cli_replay_to_savepoint_rejects_non_matching_schedule_prefix() -> Result<(), 
 }
 
 #[test]
-fn cli_replay_to_savepoint_rejects_scenario_mismatch() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_to_savepoint_rejects_scenario_mismatch() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("scenario-mismatch.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -2183,7 +2195,8 @@ fn cli_replay_to_savepoint_rejects_scenario_mismatch() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn cli_replay_to_savepoint_rejects_target_beyond_artifact_prefix() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_to_savepoint_rejects_target_beyond_artifact_prefix()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("short-artifact.crucible");
     let fixture = crucible::happy_path_scenario()?;
@@ -2254,7 +2267,8 @@ fn cli_replay_to_savepoint_rejects_target_beyond_artifact_prefix() -> Result<(),
 }
 
 #[test]
-fn cli_replay_externalized_identity_mismatch_keeps_identity_exit() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_externalized_identity_mismatch_keeps_identity_exit()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("externalized-identity-drift.crucible");
     let store_root = temp.path().join("store");
@@ -2300,7 +2314,8 @@ fn cli_replay_externalized_identity_mismatch_keeps_identity_exit() -> Result<(),
 }
 
 #[test]
-fn cli_replay_rejects_inline_component_store_uri_mismatch() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_rejects_inline_component_store_uri_mismatch() -> Result<(), Box<dyn Error>>
+{
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("inline-store-mismatch.crucible");
     let store_root = temp.path().join("store");
@@ -2355,7 +2370,7 @@ fn cli_replay_rejects_inline_component_store_uri_mismatch() -> Result<(), Box<dy
 }
 
 #[test]
-fn cli_replay_check_rejects_mismatch_with_failure_exit() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_check_rejects_mismatch_with_failure_exit() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let check_path = temp.path().join("original.jsonl");
@@ -2432,7 +2447,7 @@ fn cli_replay_check_rejects_mismatch_with_failure_exit() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = crucible::partition_recovery_scenario()?
         .scenario
@@ -2546,7 +2561,7 @@ fn cli_replay_bisects_artifact_divergence() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn cli_replay_bisect_accepts_identical_artifacts() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_bisect_accepts_identical_artifacts() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("case.crucible");
     let artifact = mock_e2e_reproduction_artifact()?;
@@ -2573,7 +2588,8 @@ fn cli_replay_bisect_accepts_identical_artifacts() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
-fn cli_replay_rejects_build_identity_mismatch_with_identity_exit() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_rejects_build_identity_mismatch_with_identity_exit()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("identity-drift.crucible");
     let mut artifact = mock_e2e_reproduction_artifact()?;
@@ -2602,7 +2618,7 @@ fn cli_replay_rejects_build_identity_mismatch_with_identity_exit() -> Result<(),
 }
 
 #[test]
-fn cli_replay_rejects_selected_qemu_file_identity_mismatch_with_identity_exit()
+pub(super) fn cli_replay_rejects_selected_qemu_file_identity_mismatch_with_identity_exit()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
@@ -2644,7 +2660,8 @@ fn cli_replay_rejects_selected_qemu_file_identity_mismatch_with_identity_exit()
 }
 
 #[test]
-fn cli_replay_rejects_remote_daemon_without_producer_identity() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_rejects_remote_daemon_without_producer_identity()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_path = temp.path().join("case.crucible");
     let artifact = mock_e2e_reproduction_artifact()?;
@@ -2675,7 +2692,8 @@ fn cli_replay_rejects_remote_daemon_without_producer_identity() -> Result<(), Bo
 }
 
 #[test]
-fn cli_failure_artifact_writer_emits_replay_and_debug_commands() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_failure_artifact_writer_emits_replay_and_debug_commands()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let artifact_dir = temp.path().join("artifact dir with spaces");
     let cli = Cli::parse_from([
@@ -2738,7 +2756,8 @@ fn cli_failure_artifact_writer_emits_replay_and_debug_commands() -> Result<(), B
 }
 
 #[test]
-fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<(), Box<dyn Error>>
+{
     let cli = Cli::parse_from([
         "crucible",
         "debug",
@@ -2808,7 +2827,8 @@ fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<(), Box<dyn
 }
 
 #[test]
-fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
+-> Result<(), Box<dyn Error>> {
     let checkpoint = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
     let cli = Cli::parse_from([
         "crucible",
@@ -2858,7 +2878,7 @@ fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate() -> Result<()
 }
 
 #[test]
-fn cli_debug_surface_rejects_conflicts_and_backend_without_gdbstub() {
+pub(super) fn cli_debug_surface_rejects_conflicts_and_backend_without_gdbstub() {
     assert!(
         Cli::try_parse_from([
             "crucible",
@@ -2926,7 +2946,7 @@ fn cli_debug_surface_rejects_conflicts_and_backend_without_gdbstub() {
 }
 
 #[test]
-fn cli_debug_surface_defaults_coordinate_by_target_kind() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_debug_surface_defaults_coordinate_by_target_kind() -> Result<(), Box<dyn Error>> {
     let artifact_cli = Cli::parse_from(["crucible", "debug", "case.crucible"]);
     let Commands::Debug(args) = &artifact_cli.command else {
         panic!("expected debug command");
@@ -2962,7 +2982,7 @@ fn cli_debug_surface_defaults_coordinate_by_target_kind() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn cli_replay_rejects_duplicate_singleton_lines() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_rejects_duplicate_singleton_lines() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("duplicate.crucible");
     let artifact = mock_e2e_reproduction_artifact()?;
@@ -2990,7 +3010,7 @@ fn cli_replay_rejects_duplicate_singleton_lines() -> Result<(), Box<dyn Error>> 
 }
 
 #[test]
-fn cli_mock_failure_artifact_is_harness_decodable() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_mock_failure_artifact_is_harness_decodable() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
     let bytes = mock_failure_reproduction_artifact_bytes(&cli, 0xe2e0_0010)?;
     let artifact = ReproductionArtifact::decode(&bytes)?;

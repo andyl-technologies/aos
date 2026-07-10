@@ -122,7 +122,7 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
     CoverageSurface {
         id: "scheduler-quantum-loop",
         source_path: "crates/crucible/src/scheduler.rs",
-        test_path: "crates/crucible/src/scheduler.rs",
+        test_path: "crates/crucible/src/scheduler",
         status: CoverageStatus::Active,
         instrumentation: COVERAGE_MEASUREMENT_MODE,
         required_test_markers: SCHEDULER_QUANTUM_MARKERS,
@@ -132,7 +132,7 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
     CoverageSurface {
         id: "scheduler-ordering-keys",
         source_path: "crates/crucible/src/scheduler.rs",
-        test_path: "crates/crucible/src/scheduler.rs",
+        test_path: "crates/crucible/src/scheduler",
         status: CoverageStatus::Active,
         instrumentation: COVERAGE_MEASUREMENT_MODE,
         required_test_markers: SCHEDULER_ORDERING_MARKERS,
@@ -142,7 +142,7 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
     CoverageSurface {
         id: "error-variant-floor",
         source_path: "crates/crucible/src/lib.rs",
-        test_path: "crates/crucible/src/lib.rs",
+        test_path: "crates/crucible/src/tests",
         status: CoverageStatus::Active,
         instrumentation: COVERAGE_MEASUREMENT_MODE,
         required_test_markers: ERROR_VARIANT_MARKERS,
@@ -152,7 +152,7 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
     CoverageSurface {
         id: "instantiate-recursion",
         source_path: "crates/crucible/src/model.rs",
-        test_path: "crates/crucible/src/lib.rs",
+        test_path: "crates/crucible/src/tests",
         status: CoverageStatus::Active,
         instrumentation: COVERAGE_MEASUREMENT_MODE,
         required_test_markers: INSTANTIATE_MARKERS,
@@ -317,10 +317,7 @@ fn coverage_floor_failures(
             continue;
         }
 
-        let content = match source_overrides.get(surface.test_path) {
-            Some(content) => content.clone(),
-            None => fs::read_to_string(root.join(surface.test_path))?,
-        };
+        let content = test_source_content(surface.test_path, root, source_overrides)?;
         let code = scrub_comments_and_strings(&content);
 
         for marker in surface.required_test_markers {
@@ -335,6 +332,30 @@ fn coverage_floor_failures(
 
     failures.extend(required_surface_regression_failures(surfaces));
     Ok(failures)
+}
+
+fn test_source_content(
+    test_path: &str,
+    root: &Path,
+    source_overrides: &SourceOverrides,
+) -> Result<String, Box<dyn Error>> {
+    if let Some(content) = source_overrides.get(test_path) {
+        return Ok(content.clone());
+    }
+
+    let path = root.join(test_path);
+    if path.is_file() {
+        return Ok(fs::read_to_string(path)?);
+    }
+
+    let mut files = Vec::new();
+    collect_rust_files(&path, &mut files)?;
+    let mut content = String::new();
+    for file in files {
+        content.push_str(&fs::read_to_string(file)?);
+        content.push('\n');
+    }
+    Ok(content)
 }
 
 fn planned_surface_is_implemented(surface: &CoverageSurface, source_content: &str) -> bool {

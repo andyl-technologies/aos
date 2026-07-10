@@ -1,4 +1,6 @@
-// Plan lowering, coverage collection, black-box contracts, and readiness.
+//! Plan lowering, coverage collection, black-box contracts, and readiness.
+
+use super::*;
 /// Identity-preserving event-graph lowering of a time-scheduled [`Plan`].
 ///
 /// This is the RFC-0010 §17a.7 bridge between the legacy declarative fault plan
@@ -112,7 +114,7 @@ impl Plan {
     }
 }
 
-fn graph_static_evaluation_times(events: &[Event]) -> Vec<VirtualTime> {
+pub(super) fn graph_static_evaluation_times(events: &[Event]) -> Vec<VirtualTime> {
     events
         .iter()
         .filter_map(|event| match &event.trigger {
@@ -125,7 +127,7 @@ fn graph_static_evaluation_times(events: &[Event]) -> Vec<VirtualTime> {
         .collect()
 }
 
-fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
+pub(super) fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
     let mut assertions = BTreeSet::new();
     for event in events {
         if let Some(trigger) = &event.trigger {
@@ -135,7 +137,7 @@ fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
     assertions.into_iter().collect()
 }
 
-fn collect_condition_assertion_references(
+pub(super) fn collect_condition_assertion_references(
     condition: &Condition,
     assertions: &mut BTreeSet<AssertionId>,
 ) {
@@ -663,7 +665,7 @@ pub fn basic_block_coverage_map_index(
     Ok((folded as usize) & (map_entries - 1))
 }
 
-fn validate_basic_block_coverage_map_entries(
+pub(super) fn validate_basic_block_coverage_map_entries(
     entries: usize,
 ) -> Result<(), BasicBlockCoverageError> {
     if entries == 0 || !entries.is_power_of_two() {
@@ -916,7 +918,7 @@ pub fn resolve_ready_point(
     }
 }
 
-fn resolution_from_icount(
+pub(super) fn resolution_from_icount(
     node: &NodeId,
     kind: ReadyPointResolutionKind,
     icount: Icount,
@@ -939,7 +941,7 @@ fn resolution_from_icount(
     })
 }
 
-fn resolution_from_virtual_time(
+pub(super) fn resolution_from_virtual_time(
     node: &NodeId,
     kind: ReadyPointResolutionKind,
     virtual_time: VirtualTime,
@@ -970,7 +972,7 @@ fn resolution_from_virtual_time(
     })
 }
 
-fn resolve_network_idle_ready_point(
+pub(super) fn resolve_network_idle_ready_point(
     world: &World,
     node: &NodeId,
     window: SimDuration,
@@ -1031,7 +1033,7 @@ fn resolve_network_idle_ready_point(
     })
 }
 
-fn resolve_console_marker_ready_point(
+pub(super) fn resolve_console_marker_ready_point(
     node: &NodeId,
     marker: &str,
     observed_until: VirtualTime,
@@ -1079,7 +1081,7 @@ fn resolve_console_marker_ready_point(
     })
 }
 
-fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
+pub(super) fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
         && haystack.len() >= needle.len()
         && haystack
@@ -1087,7 +1089,7 @@ fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|candidate| candidate == needle)
 }
 
-fn incident_link_ids(world: &World, node: &NodeId) -> BTreeSet<LinkId> {
+pub(super) fn incident_link_ids(world: &World, node: &NodeId) -> BTreeSet<LinkId> {
     let mut ids = BTreeSet::new();
     for link in world.links() {
         let (endpoint_a, endpoint_b) = link.endpoints();

@@ -1,4 +1,6 @@
-// Event graph authoring, lowering, firing, state, and validation.
+//! Event graph authoring, lowering, firing, state, and validation.
+
+use super::*;
 /// Whether an event fires once or on each false-to-true trigger transition.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FirePolicy {
@@ -329,7 +331,7 @@ impl EventGraphEventBuilder {
     }
 }
 
-fn lower_plan_entry_to_event((index, entry): (usize, &PlanEntry)) -> Event {
+pub(super) fn lower_plan_entry_to_event((index, entry): (usize, &PlanEntry)) -> Event {
     match entry {
         PlanEntry::Activate { at, tag, fault } => Event::once(
             lowered_plan_event_id(index, "activate", tag),
@@ -348,7 +350,7 @@ fn lower_plan_entry_to_event((index, entry): (usize, &PlanEntry)) -> Event {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FaultPlanLoweredAction {
+pub(super) struct FaultPlanLoweredAction {
     at: VirtualTime,
     kind: &'static str,
     kind_order: u8,
@@ -357,7 +359,7 @@ struct FaultPlanLoweredAction {
     action: Action,
 }
 
-fn lower_fault_plan_actions(entries: &[FaultPlanEntry]) -> Vec<FaultPlanLoweredAction> {
+pub(super) fn lower_fault_plan_actions(entries: &[FaultPlanEntry]) -> Vec<FaultPlanLoweredAction> {
     let mut actions = Vec::new();
     for entry in entries {
         match entry {
@@ -393,7 +395,7 @@ fn lower_fault_plan_actions(entries: &[FaultPlanEntry]) -> Vec<FaultPlanLoweredA
     actions
 }
 
-fn inject_fault_plan_action(
+pub(super) fn inject_fault_plan_action(
     at: VirtualTime,
     tag: &FaultTag,
     fault: &Fault,
@@ -415,7 +417,7 @@ fn inject_fault_plan_action(
     }
 }
 
-fn heal_fault_plan_action(
+pub(super) fn heal_fault_plan_action(
     at: VirtualTime,
     kind: &'static str,
     tag: &FaultTag,
@@ -430,11 +432,13 @@ fn heal_fault_plan_action(
     }
 }
 
-fn fault_tag_sort_material(tag: &FaultTag) -> String {
+pub(super) fn fault_tag_sort_material(tag: &FaultTag) -> String {
     format!("tag_len={}\ntag={}", tag.name.len(), tag.name)
 }
 
-fn lower_fault_plan_action_to_event((index, action): (usize, &FaultPlanLoweredAction)) -> Event {
+pub(super) fn lower_fault_plan_action_to_event(
+    (index, action): (usize, &FaultPlanLoweredAction),
+) -> Event {
     Event::once(
         lowered_plan_event_id(index, action.kind, &action.tag),
         Some(Condition::At { at: action.at }),
@@ -442,11 +446,11 @@ fn lower_fault_plan_action_to_event((index, action): (usize, &FaultPlanLoweredAc
     )
 }
 
-fn lowered_plan_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
+pub(super) fn lowered_plan_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
     EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
 }
 
-fn plan_evaluation_times(entries: &[PlanEntry]) -> Vec<VirtualTime> {
+pub(super) fn plan_evaluation_times(entries: &[PlanEntry]) -> Vec<VirtualTime> {
     entries
         .iter()
         .map(|entry| match entry {
@@ -457,7 +461,9 @@ fn plan_evaluation_times(entries: &[PlanEntry]) -> Vec<VirtualTime> {
         .collect()
 }
 
-fn fault_plan_action_evaluation_times(actions: &[FaultPlanLoweredAction]) -> Vec<VirtualTime> {
+pub(super) fn fault_plan_action_evaluation_times(
+    actions: &[FaultPlanLoweredAction],
+) -> Vec<VirtualTime> {
     actions
         .iter()
         .map(|action| action.at)
@@ -917,7 +923,7 @@ impl EventGraphState {
     }
 }
 
-struct EventGraphConditionEvaluator<'state, 'inner, E> {
+pub(super) struct EventGraphConditionEvaluator<'state, 'inner, E> {
     state: &'state mut EventGraphState,
     inner: &'inner mut E,
 }
@@ -1301,7 +1307,7 @@ impl fmt::Display for EventGraphError {
 impl Error for EventGraphError {}
 
 #[derive(Clone, Debug)]
-struct EventGraphTopology {
+pub(super) struct EventGraphTopology {
     nodes: BTreeSet<NodeId>,
     links: BTreeSet<LinkId>,
     devices: BTreeMap<DeviceId, WorldDeviceKind>,
@@ -1324,14 +1330,14 @@ impl EventGraphTopology {
     }
 }
 
-fn world_device_kind_name(kind: WorldDeviceKind) -> &'static str {
+pub(super) fn world_device_kind_name(kind: WorldDeviceKind) -> &'static str {
     match kind {
         WorldDeviceKind::Block => "block",
         WorldDeviceKind::NineP => "9p",
     }
 }
 
-fn event_graph_link_ids(links: &[LinkDef]) -> BTreeSet<LinkId> {
+pub(super) fn event_graph_link_ids(links: &[LinkDef]) -> BTreeSet<LinkId> {
     let mut ids = BTreeSet::new();
     let mut legacy_counts = BTreeMap::new();
     for link in links {
@@ -1348,7 +1354,7 @@ fn event_graph_link_ids(links: &[LinkDef]) -> BTreeSet<LinkId> {
     ids
 }
 
-fn canonical_link_id_for_world_link(link: &LinkDef) -> LinkId {
+pub(super) fn canonical_link_id_for_world_link(link: &LinkDef) -> LinkId {
     let (endpoint_a, endpoint_b) = link.endpoints();
     LinkId::from_name(format!(
         "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
@@ -1359,12 +1365,12 @@ fn canonical_link_id_for_world_link(link: &LinkDef) -> LinkId {
     ))
 }
 
-fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
+pub(super) fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
     let (endpoint_a, endpoint_b) = link.endpoints();
     LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
 }
 
-fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
+pub(super) fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
     let (endpoint_a, endpoint_b) = if left <= right {
         (left, right)
     } else {
@@ -1379,7 +1385,7 @@ fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
     ))
 }
 
-fn armed_timer_names(events: &[Event]) -> BTreeSet<TimerId> {
+pub(super) fn armed_timer_names(events: &[Event]) -> BTreeSet<TimerId> {
     let mut timers = BTreeSet::new();
     for event in events {
         collect_timer_names(&event.action, &mut timers);
@@ -1387,7 +1393,7 @@ fn armed_timer_names(events: &[Event]) -> BTreeSet<TimerId> {
     timers
 }
 
-fn collect_timer_names(action: &Action, timers: &mut BTreeSet<TimerId>) {
+pub(super) fn collect_timer_names(action: &Action, timers: &mut BTreeSet<TimerId>) {
     match action {
         Action::ArmTimer { name, .. } => {
             timers.insert(name.clone());
@@ -1410,7 +1416,7 @@ fn collect_timer_names(action: &Action, timers: &mut BTreeSet<TimerId>) {
     }
 }
 
-fn injected_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
+pub(super) fn injected_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
     let mut tags = BTreeSet::new();
     for event in events {
         collect_injected_fault_tags(&event.action, &mut tags);
@@ -1418,7 +1424,7 @@ fn injected_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
     tags
 }
 
-fn collect_injected_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
+pub(super) fn collect_injected_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
     match action {
         Action::InjectFault { tag, .. } => {
             tags.insert(tag.clone());
@@ -1441,7 +1447,7 @@ fn collect_injected_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
     }
 }
 
-fn validate_action_references(
+pub(super) fn validate_action_references(
     event: &Event,
     action: &Action,
     static_topology: Option<&WorldStaticTopology>,
@@ -1505,7 +1511,7 @@ fn validate_action_references(
     }
 }
 
-fn validate_membership_fault_reference(
+pub(super) fn validate_membership_fault_reference(
     event: &Event,
     fault: &MembershipFault,
     topology: Option<&EventGraphTopology>,
@@ -1533,7 +1539,7 @@ fn validate_membership_fault_reference(
     }
 }
 
-fn validate_taxonomy_fault_reference(
+pub(super) fn validate_taxonomy_fault_reference(
     event: &Event,
     fault: &Fault,
     topology: Option<&EventGraphTopology>,
@@ -1556,7 +1562,7 @@ fn validate_taxonomy_fault_reference(
     }
 }
 
-fn validate_device_reference(
+pub(super) fn validate_device_reference(
     event: &Event,
     device: &DeviceId,
     expected: WorldDeviceKind,
@@ -1585,7 +1591,7 @@ fn validate_device_reference(
     Ok(())
 }
 
-fn validate_network_fault_reference(
+pub(super) fn validate_network_fault_reference(
     event: &Event,
     fault: &NetworkFault,
     topology: Option<&EventGraphTopology>,
@@ -1593,7 +1599,7 @@ fn validate_network_fault_reference(
     validate_link_reference(event, network_fault_link(fault), topology)
 }
 
-fn validate_node_fault_reference(
+pub(super) fn validate_node_fault_reference(
     event: &Event,
     fault: &NodeFault,
     topology: Option<&EventGraphTopology>,
@@ -1601,7 +1607,7 @@ fn validate_node_fault_reference(
     validate_node_reference(event, node_fault_node(fault), topology)
 }
 
-fn network_fault_link(fault: &NetworkFault) -> &LinkId {
+pub(super) fn network_fault_link(fault: &NetworkFault) -> &LinkId {
     match fault {
         NetworkFault::Partition { link, .. }
         | NetworkFault::Loss { link, .. }
@@ -1613,7 +1619,7 @@ fn network_fault_link(fault: &NetworkFault) -> &LinkId {
     }
 }
 
-fn node_fault_node(fault: &NodeFault) -> &NodeId {
+pub(super) fn node_fault_node(fault: &NodeFault) -> &NodeId {
     match fault {
         NodeFault::Crash { node, .. }
         | NodeFault::Slow { node, .. }
@@ -1621,7 +1627,7 @@ fn node_fault_node(fault: &NodeFault) -> &NodeId {
     }
 }
 
-fn block_fault_device(fault: &BlockFault) -> &DeviceId {
+pub(super) fn block_fault_device(fault: &BlockFault) -> &DeviceId {
     match fault {
         BlockFault::Latency { device, .. }
         | BlockFault::Failure { device, .. }
@@ -1632,7 +1638,7 @@ fn block_fault_device(fault: &BlockFault) -> &DeviceId {
     }
 }
 
-fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
+pub(super) fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
     match fault {
         NinePFault::Latency { device, .. }
         | NinePFault::Failure { device, .. }
@@ -1643,7 +1649,7 @@ fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
     }
 }
 
-fn enabled_white_box_nodes(world: &World) -> BTreeSet<NodeId> {
+pub(super) fn enabled_white_box_nodes(world: &World) -> BTreeSet<NodeId> {
     world
         .vm_nodes()
         .iter()
@@ -1654,7 +1660,7 @@ fn enabled_white_box_nodes(world: &World) -> BTreeSet<NodeId> {
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn validate_condition_references(
+pub(super) fn validate_condition_references(
     event: &Event,
     condition: &Condition,
     event_ids: &BTreeSet<EventId>,
@@ -1773,7 +1779,7 @@ fn validate_condition_references(
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn validate_compound_condition_references(
+pub(super) fn validate_compound_condition_references(
     event: &Event,
     kind: &'static str,
     predicates: &[Condition],
@@ -1807,7 +1813,7 @@ fn validate_compound_condition_references(
     Ok(())
 }
 
-fn validate_node_reference(
+pub(super) fn validate_node_reference(
     event: &Event,
     node: &NodeId,
     topology: Option<&EventGraphTopology>,
@@ -1828,7 +1834,7 @@ fn validate_node_reference(
     }
 }
 
-fn validate_link_reference(
+pub(super) fn validate_link_reference(
     event: &Event,
     link: &LinkId,
     topology: Option<&EventGraphTopology>,
@@ -1849,7 +1855,10 @@ fn validate_link_reference(
     }
 }
 
-fn validate_condition_regex(event: &Event, regex: &RegexProgram) -> Result<(), EventGraphError> {
+pub(super) fn validate_condition_regex(
+    event: &Event,
+    regex: &RegexProgram,
+) -> Result<(), EventGraphError> {
     regex::bytes::Regex::new(&regex.pattern)
         .map(|_| ())
         .map_err(|source| EventGraphError::InvalidRegex {
@@ -1859,7 +1868,7 @@ fn validate_condition_regex(event: &Event, regex: &RegexProgram) -> Result<(), E
         })
 }
 
-fn validate_event_graph_dependencies(
+pub(super) fn validate_event_graph_dependencies(
     events: &[Event],
     timer_names: &BTreeSet<TimerId>,
 ) -> Result<(), EventGraphError> {
@@ -1868,7 +1877,7 @@ fn validate_event_graph_dependencies(
     validate_event_reachability(events, timer_names, &armers)
 }
 
-fn timer_armers(events: &[Event]) -> BTreeMap<TimerId, BTreeSet<EventId>> {
+pub(super) fn timer_armers(events: &[Event]) -> BTreeMap<TimerId, BTreeSet<EventId>> {
     let mut armers = BTreeMap::new();
     for event in events {
         collect_timer_armers(&event.action, &event.id, &mut armers);
@@ -1876,7 +1885,7 @@ fn timer_armers(events: &[Event]) -> BTreeMap<TimerId, BTreeSet<EventId>> {
     armers
 }
 
-fn collect_timer_armers(
+pub(super) fn collect_timer_armers(
     action: &Action,
     event: &EventId,
     armers: &mut BTreeMap<TimerId, BTreeSet<EventId>>,
@@ -1906,7 +1915,7 @@ fn collect_timer_armers(
     }
 }
 
-fn validate_non_repeatable_cycles(
+pub(super) fn validate_non_repeatable_cycles(
     events: &[Event],
     armers: &BTreeMap<TimerId, BTreeSet<EventId>>,
 ) -> Result<(), EventGraphError> {
@@ -1941,12 +1950,12 @@ fn validate_non_repeatable_cycles(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DfsMark {
+pub(super) enum DfsMark {
     Gray,
     Black,
 }
 
-fn visit_non_repeatable_event(
+pub(super) fn visit_non_repeatable_event(
     event: &EventId,
     graph: &BTreeMap<EventId, BTreeSet<EventId>>,
     marks: &mut BTreeMap<EventId, DfsMark>,
@@ -1980,7 +1989,7 @@ fn visit_non_repeatable_event(
     Ok(())
 }
 
-fn hard_event_dependencies(
+pub(super) fn hard_event_dependencies(
     condition: &Condition,
     armers: &BTreeMap<TimerId, BTreeSet<EventId>>,
 ) -> BTreeSet<EventId> {
@@ -2023,7 +2032,7 @@ fn hard_event_dependencies(
     }
 }
 
-fn validate_event_reachability(
+pub(super) fn validate_event_reachability(
     events: &[Event],
     timer_names: &BTreeSet<TimerId>,
     armers: &BTreeMap<TimerId, BTreeSet<EventId>>,
@@ -2071,7 +2080,7 @@ fn validate_event_reachability(
     Ok(())
 }
 
-fn possible_dependency_alternatives(
+pub(super) fn possible_dependency_alternatives(
     condition: &Condition,
     timer_names: &BTreeSet<TimerId>,
     armers: &BTreeMap<TimerId, BTreeSet<EventId>>,
@@ -2122,7 +2131,7 @@ fn possible_dependency_alternatives(
     }
 }
 
-fn combine_dependency_alternatives(
+pub(super) fn combine_dependency_alternatives(
     left: &[BTreeSet<EventId>],
     right: &[BTreeSet<EventId>],
 ) -> Vec<BTreeSet<EventId>> {

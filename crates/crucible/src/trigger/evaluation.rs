@@ -1,5 +1,7 @@
-// Cached condition evaluation, runtime fact projection, and predicate matching.
-struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
+//! Cached condition evaluation, runtime fact projection, and predicate matching.
+
+use super::*;
+pub(super) struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
     observed: ObservedState<'prefix>,
     oracle: &'state mut O,
     once_latches: &'state mut Vec<Condition>,
@@ -10,10 +12,10 @@ struct HostConditionEvaluation<'prefix, 'state, O: ?Sized> {
     scheduler_quiescence: Option<&'state SchedulerQuiescence>,
 }
 
-type HostConditionEvaluationCache = BTreeMap<HostConditionLeafKey, bool>;
+pub(super) type HostConditionEvaluationCache = BTreeMap<HostConditionLeafKey, bool>;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum HostConditionLeafKey {
+pub(super) enum HostConditionLeafKey {
     Named { name: String, nodes: Vec<NodeId> },
     GuestMarker { marker: MarkerId },
 }
@@ -112,7 +114,7 @@ where
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn host_condition_is_true<O>(
+pub(super) fn host_condition_is_true<O>(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
     oracle: &mut O,
@@ -141,7 +143,7 @@ where
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn host_condition_is_true_with_cache<O>(
+pub(super) fn host_condition_is_true_with_cache<O>(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
     oracle: &mut O,
@@ -168,10 +170,10 @@ where
     evaluate_condition(&mut evaluator, condition)
 }
 
-const ASSERTION_PROXIMITY_UNIT: u128 = 1;
-const ASSERTION_PROXIMITY_UNOBSERVED_NUMERIC: u128 = u128::MAX;
+pub(super) const ASSERTION_PROXIMITY_UNIT: u128 = 1;
+pub(super) const ASSERTION_PROXIMITY_UNOBSERVED_NUMERIC: u128 = u128::MAX;
 
-fn property_proximity_is_reportable(
+pub(super) fn property_proximity_is_reportable(
     property: &Property,
     terminal_kind: HostAssertionOutcomeKind,
     eventually_triggered: bool,
@@ -199,7 +201,7 @@ fn property_proximity_is_reportable(
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn host_condition_distance_to_satisfaction<O>(
+pub(super) fn host_condition_distance_to_satisfaction<O>(
     prefix: &ConditionEventLogPrefix,
     condition: &Condition,
     oracle: &mut O,
@@ -227,7 +229,10 @@ where
     condition_distance_to_satisfaction(&mut evaluator, condition)
 }
 
-fn condition_distance_to_satisfaction<E>(evaluator: &mut E, condition: &Condition) -> u128
+pub(super) fn condition_distance_to_satisfaction<E>(
+    evaluator: &mut E,
+    condition: &Condition,
+) -> u128
 where
     E: ConditionEvaluator + ?Sized,
 {
@@ -270,7 +275,7 @@ where
     }
 }
 
-fn boolean_condition_distance<E>(evaluator: &mut E, condition: &Condition) -> u128
+pub(super) fn boolean_condition_distance<E>(evaluator: &mut E, condition: &Condition) -> u128
 where
     E: ConditionEvaluator + ?Sized,
 {
@@ -281,7 +286,7 @@ where
     }
 }
 
-fn memory_predicate_distance_to_satisfaction<E>(
+pub(super) fn memory_predicate_distance_to_satisfaction<E>(
     evaluator: &mut E,
     expected_node: &NodeId,
     place: &MemPlace,
@@ -315,7 +320,11 @@ where
         .unwrap_or(ASSERTION_PROXIMITY_UNOBSERVED_NUMERIC)
 }
 
-fn memory_cmp_distance_to_satisfaction(cmp: MemoryCmp, actual: u64, expected: u64) -> u128 {
+pub(super) fn memory_cmp_distance_to_satisfaction(
+    cmp: MemoryCmp,
+    actual: u64,
+    expected: u64,
+) -> u128 {
     match cmp {
         MemoryCmp::Eq => u128::from(actual.max(expected) - actual.min(expected)),
         MemoryCmp::Ne => {
@@ -356,7 +365,7 @@ fn memory_cmp_distance_to_satisfaction(cmp: MemoryCmp, actual: u64, expected: u6
     }
 }
 
-fn push_observed_state_facts(
+pub(super) fn push_observed_state_facts(
     entry: &SchedulerEventLogEntry,
     observable_events: &mut Vec<ObservableEvent>,
     black_box_observation_kinds: &mut BTreeSet<BlackBoxObservationKind>,
@@ -424,7 +433,7 @@ fn push_observed_state_facts(
     Ok(())
 }
 
-fn push_condition_runtime_facts(
+pub(super) fn push_condition_runtime_facts(
     entry: &SchedulerEventLogEntry,
     event_firings: &mut BTreeMap<EventId, VirtualTime>,
     timer_fires: &mut BTreeMap<TimerId, VirtualTime>,
@@ -461,7 +470,7 @@ fn push_condition_runtime_facts(
     }
 }
 
-fn scheduler_entry_black_box_observation_kind(
+pub(super) fn scheduler_entry_black_box_observation_kind(
     entry: &SchedulerEventLogEntry,
 ) -> Option<BlackBoxObservationKind> {
     let SchedulerEventLogPayload::Observable(payload) = entry.payload() else {
@@ -470,7 +479,7 @@ fn scheduler_entry_black_box_observation_kind(
     payload.black_box_observation_kind()
 }
 
-fn validate_black_box_observation_entry(
+pub(super) fn validate_black_box_observation_entry(
     entry: &SchedulerEventLogEntry,
     event: &ObservableEvent,
     kind: BlackBoxObservationKind,
@@ -494,7 +503,7 @@ fn validate_black_box_observation_entry(
     Ok(())
 }
 
-fn black_box_observation_icount_stamp(
+pub(super) fn black_box_observation_icount_stamp(
     at: VirtualTime,
     payload: &ObservableEventPayload,
 ) -> EventLogIcountStamp {
@@ -543,21 +552,24 @@ fn black_box_observation_icount_stamp(
     }
 }
 
-fn black_box_boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
+pub(super) fn black_box_boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
     EventLogIcountStamp {
         node: None,
         icount: Icount { retired: at.ticks },
     }
 }
 
-fn black_box_node_boundary_icount(at: VirtualTime, node: &NodeId) -> EventLogIcountStamp {
+pub(super) fn black_box_node_boundary_icount(
+    at: VirtualTime,
+    node: &NodeId,
+) -> EventLogIcountStamp {
     EventLogIcountStamp {
         node: Some(node.clone()),
         icount: Icount { retired: at.ticks },
     }
 }
 
-fn push_resolved_happening_observed_facts(
+pub(super) fn push_resolved_happening_observed_facts(
     sequence: u64,
     at: VirtualTime,
     event: &ScheduledEvent,
@@ -591,7 +603,7 @@ fn push_resolved_happening_observed_facts(
     }
 }
 
-fn push_control_fault_fact(
+pub(super) fn push_control_fault_fact(
     sequence: u64,
     at: VirtualTime,
     control_sequence: u64,
@@ -619,7 +631,7 @@ fn push_control_fault_fact(
     }
 }
 
-fn push_trigger_fault_fact(
+pub(super) fn push_trigger_fault_fact(
     sequence: u64,
     at: VirtualTime,
     application: &crate::scheduler::TriggerActionApplication,
@@ -748,7 +760,7 @@ where
     }
 }
 
-fn fault_tag_is_active(facts: &[ObservedFaultFact], expected_tag: &FaultTag) -> bool {
+pub(super) fn fault_tag_is_active(facts: &[ObservedFaultFact], expected_tag: &FaultTag) -> bool {
     let mut active = false;
     for fact in facts {
         match fact {
@@ -776,7 +788,7 @@ fn fault_tag_is_active(facts: &[ObservedFaultFact], expected_tag: &FaultTag) -> 
     active
 }
 
-fn observable_event_matches(
+pub(super) fn observable_event_matches(
     at: VirtualTime,
     events: &[ObservableEvent],
     matches_payload: impl Fn(&ObservableEventPayload) -> bool,
@@ -786,7 +798,7 @@ fn observable_event_matches(
         .any(|event| event.at() == at && matches_payload(event.payload()))
 }
 
-fn network_event_matches(
+pub(super) fn network_event_matches(
     event: &ObservableEventPayload,
     expected_link: Option<&LinkId>,
     predicate: &FramePredicate,
@@ -798,7 +810,7 @@ fn network_event_matches(
     link_matches && frame_predicate_matches(predicate, payload)
 }
 
-fn frame_predicate_matches(predicate: &FramePredicate, payload: &[u8]) -> bool {
+pub(super) fn frame_predicate_matches(predicate: &FramePredicate, payload: &[u8]) -> bool {
     match predicate {
         FramePredicate::Any => true,
         FramePredicate::Exact(expected) => payload == expected,
@@ -812,7 +824,7 @@ fn frame_predicate_matches(predicate: &FramePredicate, payload: &[u8]) -> bool {
     }
 }
 
-fn console_stream_matches(
+pub(super) fn console_stream_matches(
     at: VirtualTime,
     events: &[ObservableEvent],
     expected_node: &NodeId,
@@ -845,7 +857,11 @@ fn console_stream_matches(
         .any(|matched| matched.end() > current_start)
 }
 
-fn coverage_point_matches<E>(evaluator: &E, expected_node: &NodeId, point: &CodePoint) -> bool
+pub(super) fn coverage_point_matches<E>(
+    evaluator: &E,
+    expected_node: &NodeId,
+    point: &CodePoint,
+) -> bool
 where
     E: ConditionEvaluator + ?Sized,
 {
@@ -863,7 +879,7 @@ where
     matches_current && !seen_before
 }
 
-fn coverage_event_matches(
+pub(super) fn coverage_event_matches(
     event: &ObservableEventPayload,
     expected_node: &NodeId,
     expected_point: ResolvedCodePoint,
@@ -880,14 +896,14 @@ fn coverage_event_matches(
     node == expected_node && block_contains_address(*guest_pc, *block_len, expected_point.address())
 }
 
-fn block_contains_address(guest_pc: u64, block_len: u32, address: u64) -> bool {
+pub(super) fn block_contains_address(guest_pc: u64, block_len: u32, address: u64) -> bool {
     let Some(end) = guest_pc.checked_add(u64::from(block_len)) else {
         return false;
     };
     guest_pc <= address && address < end
 }
 
-fn memory_predicate_matches<E>(
+pub(super) fn memory_predicate_matches<E>(
     evaluator: &E,
     expected_node: &NodeId,
     place: &MemPlace,
@@ -907,7 +923,7 @@ where
     )
 }
 
-fn memory_event_matches(
+pub(super) fn memory_event_matches(
     event: &ObservableEventPayload,
     expected_node: &NodeId,
     expected_place: &ResolvedMemPlace,
@@ -928,7 +944,7 @@ fn memory_event_matches(
         && memory_cmp_matches(cmp, *value, expected_value)
 }
 
-fn memory_cmp_matches(cmp: MemoryCmp, actual: u64, expected: u64) -> bool {
+pub(super) fn memory_cmp_matches(cmp: MemoryCmp, actual: u64, expected: u64) -> bool {
     match cmp {
         MemoryCmp::Eq => actual == expected,
         MemoryCmp::Ne => actual != expected,
@@ -939,7 +955,7 @@ fn memory_cmp_matches(cmp: MemoryCmp, actual: u64, expected: u64) -> bool {
     }
 }
 
-fn io_event_matches(
+pub(super) fn io_event_matches(
     event: &ObservableEventPayload,
     expected_node: &NodeId,
     expected_kind: IoEventKind,
@@ -950,7 +966,7 @@ fn io_event_matches(
     node == expected_node && (expected_kind == IoEventKind::Any || expected_kind == *kind)
 }
 
-fn node_state_event_matches(
+pub(super) fn node_state_event_matches(
     event: &ObservableEventPayload,
     expected_node: &NodeId,
     expected_state: NodeLifecycle,
@@ -961,7 +977,7 @@ fn node_state_event_matches(
     node == expected_node && *state == expected_state
 }
 
-fn assertion_state_event_matches(
+pub(super) fn assertion_state_event_matches(
     event: &ObservableEventPayload,
     expected_name: &AssertionId,
     expected_state: AssertionPhase,
@@ -972,7 +988,7 @@ fn assertion_state_event_matches(
     name == expected_name && *state == expected_state
 }
 
-fn guest_marker_matches<E>(evaluator: &E, expected_marker: &MarkerId) -> bool
+pub(super) fn guest_marker_matches<E>(evaluator: &E, expected_marker: &MarkerId) -> bool
 where
     E: ConditionEvaluator + ?Sized,
 {
@@ -983,7 +999,7 @@ where
     )
 }
 
-fn guest_marker_event_matches<E>(
+pub(super) fn guest_marker_event_matches<E>(
     evaluator: &E,
     event: &ObservableEventPayload,
     expected_marker: &MarkerId,

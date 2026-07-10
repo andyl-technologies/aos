@@ -1,17 +1,13 @@
-// CLI parsing, planning, backend selection, and run workflow tests.
-
-use std::error::Error;
-
-use clap::CommandFactory;
-use crucible_harness::reproduction::{ReproductionArtifact, mock_e2e_reproduction_artifact};
-use tempfile::TempDir;
+//! CLI parsing, planning, backend selection, and run workflow tests.
 
 use super::*;
 
-const TEST_SCENARIO: &str = "builtin:happy-path.scn";
+use clap::CommandFactory;
+
+pub(super) const TEST_SCENARIO: &str = "builtin:happy-path.scn";
 
 #[derive(Default)]
-struct RecordingOperationRecorder {
+pub(super) struct RecordingOperationRecorder {
     session_commands: Vec<SessionCommandKind>,
     api_calls: Vec<CliApiCall>,
     drivers: Vec<CliDelegatedDriver>,
@@ -37,10 +33,10 @@ impl CliOperationRecorder for RecordingOperationRecorder {
 }
 
 #[derive(Default)]
-struct RecordingBackendRouteRecorder {
-    remote_daemons: Vec<String>,
-    local_backends: Vec<ResolvedLocalBackend>,
-    announcements: Vec<String>,
+pub(super) struct RecordingBackendRouteRecorder {
+    pub(super) remote_daemons: Vec<String>,
+    pub(super) local_backends: Vec<ResolvedLocalBackend>,
+    pub(super) announcements: Vec<String>,
 }
 
 impl BackendRouteRecorder for RecordingBackendRouteRecorder {
@@ -58,10 +54,10 @@ impl BackendRouteRecorder for RecordingBackendRouteRecorder {
 }
 
 #[derive(Default)]
-struct RecordingBackendCommandRunner {
-    local_runs: Vec<ResolvedLocalBackend>,
-    remote_runs: Vec<String>,
-    outcomes: Vec<BackendCommandOutcome>,
+pub(super) struct RecordingBackendCommandRunner {
+    pub(super) local_runs: Vec<ResolvedLocalBackend>,
+    pub(super) remote_runs: Vec<String>,
+    pub(super) outcomes: Vec<BackendCommandOutcome>,
 }
 
 impl BackendCommandRunner for RecordingBackendCommandRunner {
@@ -99,10 +95,10 @@ impl BackendCommandRunner for RecordingBackendCommandRunner {
 }
 
 #[derive(Default)]
-struct RecordingDeterminismErgonomicsRecorder {
-    seeds: Vec<ResolvedSeed>,
-    formats: Vec<OutputFormat>,
-    failure_rules: Vec<FailureArtifactRule>,
+pub(super) struct RecordingDeterminismErgonomicsRecorder {
+    pub(super) seeds: Vec<ResolvedSeed>,
+    pub(super) formats: Vec<OutputFormat>,
+    pub(super) failure_rules: Vec<FailureArtifactRule>,
 }
 
 impl DeterminismErgonomicsRecorder for RecordingDeterminismErgonomicsRecorder {
@@ -119,49 +115,56 @@ impl DeterminismErgonomicsRecorder for RecordingDeterminismErgonomicsRecorder {
     }
 }
 
-fn write_valid_run_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_valid_run_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let fixture = crucible::happy_path_scenario()?;
     let path = temp.path().join("scenario.toml");
     fs::write(&path, fixture.scenario.to_canonical_toml()?)?;
     Ok(path)
 }
 
-fn write_search_frontier_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_search_frontier_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let form = search_frontier_scenario_form()?;
     let path = temp.path().join("search-frontier-scenario.toml");
     fs::write(&path, form.to_canonical_toml()?)?;
     Ok(path)
 }
 
-fn write_search_named_truth_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_search_named_truth_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let form = search_named_truth_scenario_form()?;
     let path = temp.path().join("search-named-truth-scenario.toml");
     fs::write(&path, form.to_canonical_toml()?)?;
     Ok(path)
 }
 
-fn write_search_retained_evidence_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_search_retained_evidence_scenario(
+    temp: &TempDir,
+) -> Result<PathBuf, Box<dyn Error>> {
     let form = search_retained_evidence_scenario_form()?;
     let path = temp.path().join("search-retained-evidence-scenario.toml");
     fs::write(&path, form.to_canonical_toml()?)?;
     Ok(path)
 }
 
-fn write_search_terminal_quiescence_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_search_terminal_quiescence_scenario(
+    temp: &TempDir,
+) -> Result<PathBuf, Box<dyn Error>> {
     let form = search_terminal_quiescence_scenario_form()?;
     let path = temp.path().join("search-terminal-quiescence-scenario.toml");
     fs::write(&path, form.to_canonical_toml()?)?;
     Ok(path)
 }
 
-fn write_search_terminal_sometimes_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_search_terminal_sometimes_scenario(
+    temp: &TempDir,
+) -> Result<PathBuf, Box<dyn Error>> {
     let form = search_terminal_sometimes_scenario_form()?;
     let path = temp.path().join("search-terminal-sometimes-scenario.toml");
     fs::write(&path, form.to_canonical_toml()?)?;
     Ok(path)
 }
 
-fn search_named_truth_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+pub(super) fn search_named_truth_scenario_form()
+-> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_frontier_world()?;
     let properties = ::crucible::Properties::from_assertions_for_world(
         &world,
@@ -181,7 +184,8 @@ fn search_named_truth_scenario_form() -> Result<::crucible::ScenarioDefForm, Box
     )?)
 }
 
-fn search_retained_evidence_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+pub(super) fn search_retained_evidence_scenario_form()
+-> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_retained_evidence_world()?;
     let properties = ::crucible::Properties::from_assertions_for_world(
         &world,
@@ -203,8 +207,8 @@ fn search_retained_evidence_scenario_form() -> Result<::crucible::ScenarioDefFor
     )?)
 }
 
-fn search_terminal_quiescence_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>>
-{
+pub(super) fn search_terminal_quiescence_scenario_form()
+-> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_retained_evidence_world()?;
     let properties = ::crucible::Properties::from_assertions_for_world(
         &world,
@@ -224,8 +228,8 @@ fn search_terminal_quiescence_scenario_form() -> Result<::crucible::ScenarioDefF
     )?)
 }
 
-fn search_terminal_sometimes_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>>
-{
+pub(super) fn search_terminal_sometimes_scenario_form()
+-> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = search_retained_evidence_world()?;
     let properties = ::crucible::Properties::from_assertions_for_world(
         &world,
@@ -247,7 +251,7 @@ fn search_terminal_sometimes_scenario_form() -> Result<::crucible::ScenarioDefFo
     )?)
 }
 
-fn write_search_schedule_named_truths(
+pub(super) fn write_search_schedule_named_truths(
     temp: &TempDir,
     value: bool,
 ) -> Result<PathBuf, Box<dyn Error>> {
@@ -260,7 +264,7 @@ fn write_search_schedule_named_truths(
     Ok(path)
 }
 
-fn valid_search_schedule_named_truths_toml(value: bool) -> String {
+pub(super) fn valid_search_schedule_named_truths_toml(value: bool) -> String {
     format!(
         r#"schema = "crucible.search-schedule-named-truths.v1"
 
@@ -271,13 +275,13 @@ value = {value}
     )
 }
 
-fn write_search_retained_evidence(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_search_retained_evidence(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let path = temp.path().join("search-retained-evidence.toml");
     fs::write(&path, valid_search_retained_evidence_toml("root"))?;
     Ok(path)
 }
 
-fn write_search_terminal_quiescence_retained_evidence(
+pub(super) fn write_search_terminal_quiescence_retained_evidence(
     temp: &TempDir,
 ) -> Result<PathBuf, Box<dyn Error>> {
     let path = temp
@@ -290,7 +294,7 @@ fn write_search_terminal_quiescence_retained_evidence(
     Ok(path)
 }
 
-fn write_search_terminal_sometimes_retained_evidence(
+pub(super) fn write_search_terminal_sometimes_retained_evidence(
     temp: &TempDir,
 ) -> Result<PathBuf, Box<dyn Error>> {
     let path = temp
@@ -303,7 +307,7 @@ fn write_search_terminal_sometimes_retained_evidence(
     Ok(path)
 }
 
-fn valid_search_retained_evidence_toml(configuration: &str) -> String {
+pub(super) fn valid_search_retained_evidence_toml(configuration: &str) -> String {
     format!(
         r#"schema = "crucible.search-retained-evidence.v1"
 
@@ -317,7 +321,9 @@ retired_icount = 7
     )
 }
 
-fn valid_search_terminal_quiescence_retained_evidence_toml(configuration: &str) -> String {
+pub(super) fn valid_search_terminal_quiescence_retained_evidence_toml(
+    configuration: &str,
+) -> String {
     format!(
         r#"schema = "crucible.search-retained-evidence.v1"
 
@@ -329,7 +335,9 @@ quiescent = true
     )
 }
 
-fn valid_search_terminal_sometimes_retained_evidence_toml(configuration: &str) -> String {
+pub(super) fn valid_search_terminal_sometimes_retained_evidence_toml(
+    configuration: &str,
+) -> String {
     format!(
         r#"schema = "crucible.search-retained-evidence.v1"
 
@@ -346,7 +354,7 @@ quiescent = true
     )
 }
 
-fn valid_fuzz_family_toml() -> &'static str {
+pub(super) fn valid_fuzz_family_toml() -> &'static str {
     r#"schema = "crucible.scenario-family.v1"
 topology_shapes = ["ring"]
 
@@ -369,13 +377,13 @@ cmdline = "cli-fuzz-family"
 "#
 }
 
-fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let path = temp.path().join("family.toml");
     fs::write(&path, valid_fuzz_family_toml())?;
     Ok(path)
 }
 
-fn write_signed_triage_findings_ledger(
+pub(super) fn write_signed_triage_findings_ledger(
     dir: &Path,
     store_root: &Path,
     file_name: &str,
@@ -430,7 +438,8 @@ finding.0.detail=synthetic signed finding evidence
     Ok((path, finding))
 }
 
-fn search_frontier_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+pub(super) fn search_frontier_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>>
+{
     let world = search_frontier_world()?;
     Ok(::crucible::ScenarioDefForm::from_components(
         &world,
@@ -440,7 +449,7 @@ fn search_frontier_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dy
     )?)
 }
 
-fn search_frontier_world() -> Result<::crucible::World, Box<dyn Error>> {
+pub(super) fn search_frontier_world() -> Result<::crucible::World, Box<dyn Error>> {
     Ok(::crucible::World::from_nodes(vec![
         ::crucible::WorldNode {
             id: ::crucible::NodeId {
@@ -462,7 +471,7 @@ fn search_frontier_world() -> Result<::crucible::World, Box<dyn Error>> {
     ])?)
 }
 
-fn search_retained_evidence_world() -> Result<::crucible::World, Box<dyn Error>> {
+pub(super) fn search_retained_evidence_world() -> Result<::crucible::World, Box<dyn Error>> {
     Ok(::crucible::World::from_nodes(vec![
         ::crucible::WorldNode {
             id: ::crucible::NodeId {
@@ -484,14 +493,14 @@ fn search_retained_evidence_world() -> Result<::crucible::World, Box<dyn Error>>
     ])?)
 }
 
-fn search_frontier_graph(
+pub(super) fn search_frontier_graph(
     scenario: &::crucible::ScenarioDefForm,
 ) -> Result<ValidationDag, Box<dyn Error>> {
     let baked = baked_with_search_frontier_choices(scenario.world(), search_frontier_decisions())?;
     Ok(empty_validation_dag().with_baked_genesis(&scenario.scenario_def(), baked)?)
 }
 
-fn baked_with_search_frontier_choices(
+pub(super) fn baked_with_search_frontier_choices(
     world: &::crucible::World,
     decisions: Vec<::crucible::Decision>,
 ) -> Result<::crucible::GenesisCheckpoint, Box<dyn Error>> {
@@ -515,7 +524,7 @@ fn baked_with_search_frontier_choices(
     Ok(baked)
 }
 
-fn search_frontier_decisions() -> Vec<::crucible::Decision> {
+pub(super) fn search_frontier_decisions() -> Vec<::crucible::Decision> {
     vec![
         ::crucible::Decision::FaultFires(::crucible::FaultDecision {
             at: ::crucible::VirtualTime { ticks: 12 },
@@ -539,14 +548,15 @@ fn search_frontier_decisions() -> Vec<::crucible::Decision> {
     ]
 }
 
-fn write_property_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_property_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let form = property_selector_scenario_form()?;
     let path = temp.path().join("property-selector-scenario.toml");
     fs::write(&path, form.to_canonical_toml()?)?;
     Ok(path)
 }
 
-fn property_selector_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
+pub(super) fn property_selector_scenario_form()
+-> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
     let fixture = ::crucible::happy_path_scenario()?;
     let properties = ::crucible::Properties::from_assertions_for_world(
         fixture.scenario.world(),
@@ -563,7 +573,7 @@ fn property_selector_scenario_form() -> Result<::crucible::ScenarioDefForm, Box<
     )?)
 }
 
-fn write_marker_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_marker_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     write_marker_selector_scenario_with_policy(
         temp,
         "marker-selector-scenario.toml",
@@ -571,7 +581,7 @@ fn write_marker_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Err
     )
 }
 
-fn write_marker_selector_without_source_scenario(
+pub(super) fn write_marker_selector_without_source_scenario(
     temp: &TempDir,
 ) -> Result<PathBuf, Box<dyn Error>> {
     write_marker_selector_scenario_with_policy(
@@ -581,7 +591,7 @@ fn write_marker_selector_without_source_scenario(
     )
 }
 
-fn write_marker_selector_scenario_with_policy(
+pub(super) fn write_marker_selector_scenario_with_policy(
     temp: &TempDir,
     file_name: &str,
     white_box: ::crucible::WhiteBoxPolicy,
@@ -592,7 +602,7 @@ fn write_marker_selector_scenario_with_policy(
     Ok(path)
 }
 
-fn marker_selector_scenario_form(
+pub(super) fn marker_selector_scenario_form(
     white_box: ::crucible::WhiteBoxPolicy,
 ) -> Result<::crucible::ScenarioDefForm, Box<dyn Error>> {
     let world = ::crucible::World::from_nodes(vec![::crucible::WorldNode {
@@ -620,7 +630,7 @@ fn marker_selector_scenario_form(
     )?)
 }
 
-fn property_selector_assertion(name: &str) -> ::crucible::AssertionDef {
+pub(super) fn property_selector_assertion(name: &str) -> ::crucible::AssertionDef {
     ::crucible::AssertionDef {
         id: ::crucible::AssertionId::from_name(name),
         message: format!("{name} test selector"),
@@ -630,7 +640,7 @@ fn property_selector_assertion(name: &str) -> ::crucible::AssertionDef {
     }
 }
 
-fn spawn_production_lifecycle_server() -> Result<String, Box<dyn Error>> {
+pub(super) fn spawn_production_lifecycle_server() -> Result<String, Box<dyn Error>> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
@@ -658,7 +668,7 @@ fn spawn_production_lifecycle_server() -> Result<String, Box<dyn Error>> {
     Ok(address.to_string())
 }
 
-fn spawn_save_recording_lifecycle_server() -> Result<String, Box<dyn Error>> {
+pub(super) fn spawn_save_recording_lifecycle_server() -> Result<String, Box<dyn Error>> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
     let address = listener.local_addr()?;
@@ -692,7 +702,7 @@ fn spawn_save_recording_lifecycle_server() -> Result<String, Box<dyn Error>> {
     Ok(address.to_string())
 }
 
-fn spawn_resume_recording_lifecycle_server(
+pub(super) fn spawn_resume_recording_lifecycle_server(
     fixture: ResumeRecordingFixture,
     frontier: VirtualTime,
 ) -> Result<String, Box<dyn Error>> {
@@ -729,8 +739,8 @@ fn spawn_resume_recording_lifecycle_server(
 }
 
 #[derive(Default)]
-struct FakeSeedEnvironment {
-    seed: Option<String>,
+pub(super) struct FakeSeedEnvironment {
+    pub(super) seed: Option<String>,
 }
 
 impl SeedEnvironment for FakeSeedEnvironment {
@@ -743,13 +753,13 @@ impl SeedEnvironment for FakeSeedEnvironment {
     }
 }
 
-struct FakeSeedEntropySource {
-    next: u64,
-    draws: usize,
+pub(super) struct FakeSeedEntropySource {
+    pub(super) next: u64,
+    pub(super) draws: usize,
 }
 
 impl FakeSeedEntropySource {
-    fn new(next: u64) -> Self {
+    pub(super) fn new(next: u64) -> Self {
         Self { next, draws: 0 }
     }
 }
@@ -762,7 +772,7 @@ impl SeedEntropySource for FakeSeedEntropySource {
 }
 
 #[derive(Default)]
-struct FakeQemuDiscoveryEnvironment {
+pub(super) struct FakeQemuDiscoveryEnvironment {
     qemu: Option<String>,
     plugin: Option<String>,
 }
@@ -778,7 +788,7 @@ impl QemuDiscoveryEnvironment for FakeQemuDiscoveryEnvironment {
 }
 
 #[derive(Default)]
-struct FakeAosQemuPackageSet {
+pub(super) struct FakeAosQemuPackageSet {
     qemu: Option<PathBuf>,
     plugin: Option<PathBuf>,
 }
@@ -793,7 +803,7 @@ impl AosQemuPackageSet for FakeAosQemuPackageSet {
     }
 }
 
-fn canonical_trace_entries() -> Vec<CanonicalLogEntry> {
+pub(super) fn canonical_trace_entries() -> Vec<CanonicalLogEntry> {
     vec![
         CanonicalLogEntry {
             sequence: 0,
@@ -812,7 +822,7 @@ fn canonical_trace_entries() -> Vec<CanonicalLogEntry> {
     ]
 }
 
-fn verify_compare_artifacts_with_paths(
+pub(super) fn verify_compare_artifacts_with_paths(
     left: &Path,
     right_bytes: &[u8],
     _cli: &Cli,
@@ -846,7 +856,7 @@ fn verify_compare_artifacts_with_paths(
     Ok(error)
 }
 
-fn temp_qemu_artifacts(temp: &TempDir) -> Result<(String, String), Box<dyn Error>> {
+pub(super) fn temp_qemu_artifacts(temp: &TempDir) -> Result<(String, String), Box<dyn Error>> {
     qemu_artifacts_in_dir(
         temp.path(),
         "test-qemu-build-v1",
@@ -854,7 +864,7 @@ fn temp_qemu_artifacts(temp: &TempDir) -> Result<(String, String), Box<dyn Error
     )
 }
 
-fn qemu_artifacts_in_dir(
+pub(super) fn qemu_artifacts_in_dir(
     dir: &Path,
     qemu_build_id: &str,
     plugin_abi: &str,
@@ -871,7 +881,7 @@ fn qemu_artifacts_in_dir(
     ))
 }
 
-fn write_qemu_artifact_markers(
+pub(super) fn write_qemu_artifact_markers(
     dir: &Path,
     qemu_build_id: &str,
     plugin_abi: &str,
@@ -892,7 +902,7 @@ fn write_qemu_artifact_markers(
     Ok(())
 }
 
-fn write_savepoint_handle_fixture(
+pub(super) fn write_savepoint_handle_fixture(
     dir: &Path,
     label: &str,
     form: &crucible::ScenarioDefForm,
@@ -943,7 +953,7 @@ fn write_savepoint_handle_fixture(
     Ok(path)
 }
 
-fn write_checkpoint_closure_fixture(
+pub(super) fn write_checkpoint_closure_fixture(
     store_root: &Path,
     form: &crucible::ScenarioDefForm,
     schedule: &Schedule,
@@ -964,7 +974,7 @@ fn write_checkpoint_closure_fixture(
     Ok(artifact_key)
 }
 
-fn replay_to_savepoint_schedule(len: usize) -> Schedule {
+pub(super) fn replay_to_savepoint_schedule(len: usize) -> Schedule {
     Schedule::from_decisions((0..len).map(|index| {
         crucible::Decision::DeliveryOrder(crucible::DeliveryOrderDecision {
             at: VirtualTime {
@@ -975,7 +985,7 @@ fn replay_to_savepoint_schedule(len: usize) -> Schedule {
     }))
 }
 
-fn externalized_replay_artifact_text(
+pub(super) fn externalized_replay_artifact_text(
     artifact_bytes: &[u8],
     store_root: &Path,
     keep_inline_payloads: bool,
@@ -1001,7 +1011,9 @@ fn externalized_replay_artifact_text(
     Ok(canonical_artifact_text(&decoded))
 }
 
-fn fork_artifact_path(outcome: &BackendCommandOutcome) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn fork_artifact_path(
+    outcome: &BackendCommandOutcome,
+) -> Result<PathBuf, Box<dyn Error>> {
     let line = outcome
         .stdout
         .iter()
@@ -1014,7 +1026,7 @@ fn fork_artifact_path(outcome: &BackendCommandOutcome) -> Result<PathBuf, Box<dy
     Ok(PathBuf::from(path))
 }
 
-fn assert_fork_artifact_replays(
+pub(super) fn assert_fork_artifact_replays(
     cli: &Cli,
     outcome: &BackendCommandOutcome,
     expected_seed: u64,
@@ -1037,7 +1049,7 @@ fn assert_fork_artifact_replays(
     Ok(())
 }
 
-fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'static str>)> {
+pub(super) fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'static str>)> {
     vec![
         (CliSubcommand::Run, vec!["run", TEST_SCENARIO]),
         (CliSubcommand::Verify, vec!["verify", TEST_SCENARIO]),
@@ -1060,12 +1072,12 @@ fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'static str>)> 
     ]
 }
 
-fn cli_from_owned(args: Vec<String>) -> Cli {
+pub(super) fn cli_from_owned(args: Vec<String>) -> Cli {
     Cli::parse_from(args)
 }
 
 #[test]
-fn cli_skeleton_exposes_closed_subcommand_set() {
+pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
     let mut names = Cli::command()
         .get_subcommands()
         .map(|command| command.get_name().to_string())
@@ -1093,7 +1105,7 @@ fn cli_skeleton_exposes_closed_subcommand_set() {
 }
 
 #[test]
-fn cli_skeleton_parses_global_flag_block() {
+pub(super) fn cli_skeleton_parses_global_flag_block() {
     let cli = Cli::parse_from([
         "crucible",
         "--seed",
@@ -1153,7 +1165,7 @@ fn cli_skeleton_parses_global_flag_block() {
 }
 
 #[test]
-fn cli_skeleton_rejects_unknown_subcommands() {
+pub(super) fn cli_skeleton_rejects_unknown_subcommands() {
     let error = match Cli::try_parse_from(["crucible", "invented"]) {
         Ok(_) => panic!("invented subcommand must be rejected"),
         Err(error) => error,
@@ -1163,7 +1175,8 @@ fn cli_skeleton_rejects_unknown_subcommands() {
 }
 
 #[test]
-fn cli_completions_generates_every_supported_shell_script() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_completions_generates_every_supported_shell_script() -> Result<(), Box<dyn Error>>
+{
     let cases = [
         ("bash", Shell::Bash, "complete -F"),
         ("elvish", Shell::Elvish, "set edit:completion:arg-completer"),
@@ -1205,7 +1218,7 @@ fn cli_completions_generates_every_supported_shell_script() -> Result<(), Box<dy
 }
 
 #[test]
-fn cli_completions_requires_shell_argument() {
+pub(super) fn cli_completions_requires_shell_argument() {
     let error = match Cli::try_parse_from(["crucible", "completions"]) {
         Ok(_) => panic!("completions without shell must be rejected"),
         Err(error) => error,
@@ -1218,7 +1231,8 @@ fn cli_completions_requires_shell_argument() {
 }
 
 #[test]
-fn cli_completions_ignores_global_daemon_for_thin_wrapper_metadata() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_completions_ignores_global_daemon_for_thin_wrapper_metadata()
+-> Result<(), Box<dyn Error>> {
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -1239,7 +1253,7 @@ fn cli_completions_ignores_global_daemon_for_thin_wrapper_metadata() -> Result<(
 }
 
 #[test]
-fn cli_resume_help_and_version_surface_matches_rfc_copy() {
+pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
     let mut command = Cli::command();
     let top_help = command.render_long_help().to_string();
     for needle in [
@@ -1399,7 +1413,7 @@ fn cli_resume_help_and_version_surface_matches_rfc_copy() {
 }
 
 #[test]
-fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
+pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
     let snapshots = [
         (
             "run",
@@ -1514,7 +1528,7 @@ fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
     }
 }
 
-fn normalized_subcommand_help_snapshot(
+pub(super) fn normalized_subcommand_help_snapshot(
     command: &clap::Command,
     name: &str,
     argument_ids: &[&str],
@@ -1575,12 +1589,12 @@ fn normalized_subcommand_help_snapshot(
     snapshot
 }
 
-fn normalize_help_text(text: &str) -> String {
+pub(super) fn normalize_help_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[test]
-fn cli_parser_enforces_every_normatively_required_input() {
+pub(super) fn cli_parser_enforces_every_normatively_required_input() {
     for argv in [
         vec!["crucible", "run"],
         vec!["crucible", "verify"],
@@ -1652,7 +1666,7 @@ fn cli_parser_enforces_every_normatively_required_input() {
 }
 
 #[test]
-fn cli_parser_enforces_normative_alternative_and_conflicting_inputs() {
+pub(super) fn cli_parser_enforces_normative_alternative_and_conflicting_inputs() {
     for argv in [
         vec![
             "crucible",
@@ -1689,7 +1703,7 @@ fn cli_parser_enforces_normative_alternative_and_conflicting_inputs() {
 }
 
 #[test]
-fn cli_help_surface_rejects_unimplemented_future_flags() {
+pub(super) fn cli_help_surface_rejects_unimplemented_future_flags() {
     for argv in [
         vec![
             "crucible",
@@ -1776,7 +1790,7 @@ fn cli_help_surface_rejects_unimplemented_future_flags() {
 }
 
 #[test]
-fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
+pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1833,7 +1847,7 @@ fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
 }
 
 #[test]
-fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_driver() {
+pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_driver() {
     let cases = [
         (
             CliSubcommand::Run,
@@ -1935,7 +1949,7 @@ fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_driver() {
 }
 
 #[test]
-fn cli_thin_wrapper_emits_only_control_client_methods_and_session_command_kinds() {
+pub(super) fn cli_thin_wrapper_emits_only_control_client_methods_and_session_command_kinds() {
     let cli = Cli::parse_from([
         "crucible",
         "--daemon",
@@ -1978,7 +1992,7 @@ fn cli_thin_wrapper_emits_only_control_client_methods_and_session_command_kinds(
 }
 
 #[test]
-fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabilities() {
+pub(super) fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabilities() {
     let cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
     let base = plan_cli_invocation(&cli);
     assert!(base.proves_t_cli_2());
@@ -2015,7 +2029,8 @@ fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabilities() {
 }
 
 #[test]
-fn cli_backend_selection_auto_announces_qemu_or_double_resolution() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_backend_selection_auto_announces_qemu_or_double_resolution()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
     let double_cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
@@ -2064,7 +2079,7 @@ fn cli_backend_selection_auto_announces_qemu_or_double_resolution() -> Result<()
 }
 
 #[test]
-fn cli_backend_selection_honors_explicit_backend_and_qemu_failure_exit()
+pub(super) fn cli_backend_selection_honors_explicit_backend_and_qemu_failure_exit()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
@@ -2182,7 +2197,7 @@ fn cli_backend_selection_honors_explicit_backend_and_qemu_failure_exit()
 }
 
 #[test]
-fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_package_set()
+pub(super) fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_package_set()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let plugin_abi = required_qemu_plugin_abi();
@@ -2275,7 +2290,8 @@ fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_package_set()
 }
 
 #[test]
-fn cli_hermetic_qemu_discovery_uses_compile_time_aos_package_hints() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_hermetic_qemu_discovery_uses_compile_time_aos_package_hints()
+-> Result<(), Box<dyn Error>> {
     let (Some(qemu_hint), Some(plugin_hint)) = (
         option_env!("CRUCIBLE_AOS_QEMU"),
         option_env!("CRUCIBLE_AOS_PLUGIN"),
@@ -2314,7 +2330,7 @@ fn cli_hermetic_qemu_discovery_uses_compile_time_aos_package_hints() -> Result<(
 }
 
 #[test]
-fn cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_with_exit_4()
+pub(super) fn cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_with_exit_4()
 -> Result<(), Box<dyn Error>> {
     let missing_cli = Cli::parse_from(["crucible", "--backend", "qemu", "run", TEST_SCENARIO]);
     let error = match plan_backend_selection_with_discovery(
@@ -2474,8 +2490,8 @@ fn cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_with_exit_4(
 }
 
 #[test]
-fn cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts() -> Result<(), Box<dyn Error>>
-{
+pub(super) fn cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let plugin_abi = required_qemu_plugin_abi();
     let (qemu, plugin) = qemu_artifacts_in_dir(temp.path(), "artifact-qemu-build", &plugin_abi)?;
@@ -2527,7 +2543,8 @@ fn cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts() -> Result<
 }
 
 #[test]
-fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints() -> Result<(), Box<dyn Error>> {
+pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
+-> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let scenario = write_valid_run_scenario(&temp)?;
     let artifact_dir = temp.path().join("artifacts");

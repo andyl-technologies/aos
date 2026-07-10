@@ -1,3 +1,6 @@
+//! Engine-state transition, stepping, checkpoint, and replay unit tests.
+
+use super::*;
 
 #[test]
 fn step_modes_cover_forward_vocabulary_and_reverse_grains() {

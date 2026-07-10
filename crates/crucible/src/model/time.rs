@@ -1,4 +1,6 @@
-// Virtual-time, icount, drift, and conversion vocabulary.
+//! Virtual-time, icount, drift, and conversion vocabulary.
+
+use super::*;
 
 /// A virtual time value used by the execution-model signatures.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -449,7 +451,7 @@ impl fmt::Display for TimeConversionError {
 
 impl Error for TimeConversionError {}
 
-fn scale_for_shift(shift: Shift) -> Result<u64, TimeConversionError> {
+pub(super) fn scale_for_shift(shift: Shift) -> Result<u64, TimeConversionError> {
     1_u64
         .checked_shl(u32::from(shift.bits))
         .ok_or(TimeConversionError::InvalidShift { shift })

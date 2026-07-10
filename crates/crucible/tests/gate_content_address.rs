@@ -16,13 +16,13 @@ use crucible::{
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
     EngineError, EventKey, EventLogOffset, EventSequenceState, FaultDecision, FaultId, FaultState,
     FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef,
-    NodeId, PartialOrderReductionPolicy, PendingFrame, PreemptionDecision, PreemptionKind,
-    RngDecision, RngStreamId, RngStreamPosition, ScenarioDef, Schedule, SchedulerNodeId,
-    SchedulerState, SchedulingNodeKind, SearchFrontierChoices, State, SymmetryClassId,
-    SymmetryReductionClasses, TemporalGraph, TemporalGraphGcRoots, TemporalGraphStoreError,
-    TimerId, TimerRegistry, TimerState, VcpuId, VirtualTime, VmSnapshotRef, World, bake,
-    instantiate, reduce, step,
+    MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore,
+    NetworkLinkRuntimeCursor, NodeBlobRef, NodeId, PartialOrderReductionPolicy, PendingFrame,
+    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef,
+    Schedule, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SearchFrontierChoices, State,
+    SymmetryClassId, SymmetryReductionClasses, TemporalGraph, TemporalGraphGcRoots,
+    TemporalGraphStoreError, TimerId, TimerRegistry, TimerState, VcpuId, VirtualTime,
+    VmSnapshotRef, World, bake, instantiate, reduce, step,
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -295,6 +295,9 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
     let device = DeviceId {
         name: String::from("disk-a"),
     };
+    let network_link = DeviceId {
+        name: String::from("link-a-to-b"),
+    };
     let timer = TimerId {
         name: String::from("heal-after"),
     };
@@ -343,7 +346,19 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
                 payload,
             }],
         )]),
+        network_link_cursors: BTreeMap::from([(
+            network_link.clone(),
+            NetworkLinkRuntimeCursor {
+                current_icount: 17,
+                next_sequence: 2,
+                rng_position: 11,
+                inflight: Vec::new(),
+            },
+        )]),
         event_sequences: EventSequenceState::empty(),
+        topology_epoch: 0,
+        effective_topology_edges: Vec::new(),
+        pending_topology_changes: Vec::new(),
         timers: TimerRegistry {
             timers: BTreeMap::from([(
                 timer,
@@ -364,6 +379,7 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
         )]),
         active_fault_tags: BTreeMap::new(),
         active_fault_table: crucible::ActiveFaultTable::default(),
+        pending_device_decisions: Vec::new(),
         search_frontier: SearchFrontierChoices::empty(),
     };
     let decision_rng = DecisionRngState {
@@ -383,6 +399,19 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
         decision_rng.clone(),
         event_log,
     );
+    let mut changed_scheduler = scheduler.clone();
+    changed_scheduler
+        .network_link_cursors
+        .get_mut(&network_link)
+        .unwrap_or_else(|| panic!("scheduler fixture should contain network link"))
+        .rng_position = 12;
+    let changed_network_cursor = MaterializedState::from_components(
+        snapshots.clone(),
+        overlays.clone(),
+        changed_scheduler,
+        decision_rng.clone(),
+        event_log,
+    );
     let mut changed_snapshots = snapshots;
     changed_snapshots
         .get_mut(&node)
@@ -397,6 +426,7 @@ fn gate_content_address_materialized_state_hashes_loadvm_components() {
     );
 
     assert_eq!(state.id, same.id);
+    assert_ne!(state.id, changed_network_cursor.id);
     assert_ne!(state.id, changed.id);
     assert_eq!(state.vm_snapshots[&node].blob.content_hash(), resolved_blob);
     assert_eq!(state.event_log, event_log);

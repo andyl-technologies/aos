@@ -1,9 +1,11 @@
-// RNG, materialized scheduler state, checkpoints, and checkpoint policy.
+//! RNG, materialized scheduler state, checkpoints, and checkpoint policy.
+
+use super::*;
 
 /// The 256-bit root entropy component of a scenario definition.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Seed {
-    bytes: [u8; 32],
+    pub(super) bytes: [u8; 32],
 }
 
 impl Seed {
@@ -444,8 +446,8 @@ pub struct NetworkLinkRuntimeCursor {
 /// Runtime-derived search choices available at one frontier.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SearchFrontierChoices {
-    choices: Vec<SearchFrontierChoice>,
-    decisions: Vec<Decision>,
+    pub(super) choices: Vec<SearchFrontierChoice>,
+    pub(super) decisions: Vec<Decision>,
 }
 
 impl SearchFrontierChoices {
@@ -526,8 +528,8 @@ impl SearchFrontierChoices {
 /// One search choice and the causal decision sequence that realizes it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SearchFrontierChoice {
-    decision: Decision,
-    decisions: Vec<Decision>,
+    pub(super) decision: Decision,
+    pub(super) decisions: Vec<Decision>,
 }
 
 impl SearchFrontierChoice {
@@ -1355,9 +1357,9 @@ impl MaterializationPolicy {
 /// Deterministic replay-oracle sampling policy for active graph search.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SearchReplayOracleSamplingConfig {
-    numerator: u64,
-    denominator: u64,
-    seed_tag: String,
+    pub(super) numerator: u64,
+    pub(super) denominator: u64,
+    pub(super) seed_tag: String,
 }
 
 impl SearchReplayOracleSamplingConfig {
@@ -1420,7 +1422,7 @@ impl SearchReplayOracleSamplingConfig {
         &self.seed_tag
     }
 
-    fn samples(&self, sequence: u64, checkpoint: ContentHash) -> bool {
+    pub(super) fn samples(&self, sequence: u64, checkpoint: ContentHash) -> bool {
         search_replay_oracle_sampling_score(&self.seed_tag, sequence, checkpoint) % self.denominator
             < self.numerator
     }
@@ -1429,8 +1431,8 @@ impl SearchReplayOracleSamplingConfig {
 /// Policy for hedging incomplete backend `savevm` coverage.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SavevmCompletenessHedge {
-    fat_snapshot_default: bool,
-    unreliable_devices: BTreeSet<DeviceId>,
+    pub(super) fat_snapshot_default: bool,
+    pub(super) unreliable_devices: BTreeSet<DeviceId>,
 }
 
 impl SavevmCompletenessHedge {

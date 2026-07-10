@@ -1,5 +1,7 @@
-// Verification comparison, canonical witnesses, and daemon service entrypoints.
-async fn run_control_client_verify_workflow_async<C>(
+//! Verification comparison, canonical witnesses, and daemon service entrypoints.
+
+use super::*;
+pub(super) async fn run_control_client_verify_workflow_async<C>(
     client: &C,
     verify_plan: &VerifyInvocationPlan,
     backend: Option<&ResolvedLocalBackend>,
@@ -40,7 +42,7 @@ where
     })
 }
 
-fn verify_compare_artifacts(
+pub(super) fn verify_compare_artifacts(
     verify_plan: &VerifyInvocationPlan,
     backend: Option<&ResolvedLocalBackend>,
 ) -> Result<VerifyWorkflowReport, CliError> {
@@ -72,7 +74,7 @@ fn verify_compare_artifacts(
     })
 }
 
-fn verify_compare_artifact_inputs_match(
+pub(super) fn verify_compare_artifact_inputs_match(
     command: &str,
     left: &CliReproductionArtifact,
     right: &CliReproductionArtifact,
@@ -98,7 +100,7 @@ fn verify_compare_artifact_inputs_match(
     Ok(())
 }
 
-fn verify_run_invocation_plan(
+pub(super) fn verify_run_invocation_plan(
     scenario: RunScenarioRef,
     request_seed: crucible::Seed,
     reduction: VerifyReductionPlan,
@@ -145,7 +147,7 @@ fn verify_run_invocation_plan(
     }
 }
 
-fn verify_witness_from_run_report(
+pub(super) fn verify_witness_from_run_report(
     reduction: VerifyReductionPlan,
     run_plan: &RunInvocationPlan,
     report: &RunWorkflowReport,
@@ -186,7 +188,7 @@ fn verify_witness_from_run_report(
     })
 }
 
-fn verify_witness_from_artifact(
+pub(super) fn verify_witness_from_artifact(
     reduction: VerifyReductionPlan,
     artifact: CliReproductionArtifact,
     bytes: Vec<u8>,
@@ -207,7 +209,7 @@ fn verify_witness_from_artifact(
     })
 }
 
-fn canonical_run_log_entries(
+pub(super) fn canonical_run_log_entries(
     run_plan: &RunInvocationPlan,
     report: &RunWorkflowReport,
 ) -> Vec<CanonicalLogEntry> {
@@ -229,11 +231,11 @@ fn canonical_run_log_entries(
     outcome.canonical_log
 }
 
-fn canonical_log_entry_bytes(entries: &[CanonicalLogEntry]) -> Vec<u8> {
+pub(super) fn canonical_log_entry_bytes(entries: &[CanonicalLogEntry]) -> Vec<u8> {
     jsonl_for_canonical_log_entries(entries).into_bytes()
 }
 
-fn canonical_verify_log_stream_bytes(
+pub(super) fn canonical_verify_log_stream_bytes(
     entries: &[CanonicalLogEntry],
     event_frames: &[Vec<u8>],
 ) -> Vec<u8> {
@@ -250,7 +252,9 @@ fn canonical_verify_log_stream_bytes(
     bytes
 }
 
-fn canonical_streaming_event_frame_bytes(frame: &crucible_api::StreamingEventFrame) -> Vec<u8> {
+pub(super) fn canonical_streaming_event_frame_bytes(
+    frame: &crucible_api::StreamingEventFrame,
+) -> Vec<u8> {
     let mut output = String::from("crucible.rpc/event-frame\n");
     push_canonical_wire_line(&mut output, "generation", &frame.generation.to_string());
     push_canonical_wire_line(
@@ -313,13 +317,13 @@ fn canonical_streaming_event_frame_bytes(frame: &crucible_api::StreamingEventFra
     output.into_bytes()
 }
 
-fn optional_string_canonical_wire(value: Option<&str>) -> String {
+pub(super) fn optional_string_canonical_wire(value: Option<&str>) -> String {
     value
         .map(|value| hex_bytes(value.as_bytes()))
         .unwrap_or_else(|| String::from("none"))
 }
 
-fn event_source_canonical_wire(source: &crucible_api::OpenSetEventSource) -> String {
+pub(super) fn event_source_canonical_wire(source: &crucible_api::OpenSetEventSource) -> String {
     match source {
         crucible_api::OpenSetEventSource::Scenario { event } => {
             format!("scenario|{}", hex_bytes(event.as_bytes()))
@@ -337,7 +341,7 @@ fn event_source_canonical_wire(source: &crucible_api::OpenSetEventSource) -> Str
     }
 }
 
-fn event_level_canonical_wire(level: crucible::EventLevel) -> &'static str {
+pub(super) fn event_level_canonical_wire(level: crucible::EventLevel) -> &'static str {
     match level {
         crucible::EventLevel::Trace => "trace",
         crucible::EventLevel::Debug => "debug",
@@ -347,7 +351,7 @@ fn event_level_canonical_wire(level: crucible::EventLevel) -> &'static str {
     }
 }
 
-fn attribute_canonical_wire(value: &crucible_api::OpenSetAttributeValue) -> String {
+pub(super) fn attribute_canonical_wire(value: &crucible_api::OpenSetAttributeValue) -> String {
     match value {
         crucible_api::OpenSetAttributeValue::Bool(value) => {
             format!("bool|{}", if *value { "true" } else { "false" })
@@ -365,14 +369,14 @@ fn attribute_canonical_wire(value: &crucible_api::OpenSetAttributeValue) -> Stri
     }
 }
 
-fn push_canonical_wire_line(output: &mut String, key: &str, value: &str) {
+pub(super) fn push_canonical_wire_line(output: &mut String, key: &str, value: &str) {
     output.push_str(key);
     output.push('=');
     output.push_str(value);
     output.push('\n');
 }
 
-fn verify_fingerprint_samples(
+pub(super) fn verify_fingerprint_samples(
     report: &RunWorkflowReport,
 ) -> Result<Vec<VerifyFingerprintSample>, CliError> {
     if report.execution_fingerprints.is_empty() {
@@ -397,7 +401,7 @@ fn verify_fingerprint_samples(
     Ok(samples)
 }
 
-fn verify_fingerprint_stream_bytes(samples: &[VerifyFingerprintSample]) -> Vec<u8> {
+pub(super) fn verify_fingerprint_stream_bytes(samples: &[VerifyFingerprintSample]) -> Vec<u8> {
     let mut text = String::from("crucible.verify.execution-fingerprint-stream.v1\n");
     for sample in samples {
         artifact_line(
@@ -414,7 +418,10 @@ fn verify_fingerprint_stream_bytes(samples: &[VerifyFingerprintSample]) -> Vec<u
     text.into_bytes()
 }
 
-fn verify_state_dump(run_plan: &RunInvocationPlan, report: &RunWorkflowReport) -> String {
+pub(super) fn verify_state_dump(
+    run_plan: &RunInvocationPlan,
+    report: &RunWorkflowReport,
+) -> String {
     let seed = run_plan
         .request_seed
         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed());
@@ -435,7 +442,7 @@ fn verify_state_dump(run_plan: &RunInvocationPlan, report: &RunWorkflowReport) -
     )
 }
 
-fn canonical_log_entries_from_artifact(
+pub(super) fn canonical_log_entries_from_artifact(
     artifact: &CliReproductionArtifact,
 ) -> Result<Vec<CanonicalLogEntry>, CliError> {
     if artifact.decisions.is_empty() {
@@ -458,7 +465,7 @@ fn canonical_log_entries_from_artifact(
         .collect()
 }
 
-fn decision_payload_summary(
+pub(super) fn decision_payload_summary(
     artifact: &CliReproductionArtifact,
     decision: &CliDecision,
 ) -> Result<String, CliError> {
@@ -480,7 +487,7 @@ fn decision_payload_summary(
     })
 }
 
-fn artifact_fingerprint_samples(
+pub(super) fn artifact_fingerprint_samples(
     artifact: &CliReproductionArtifact,
 ) -> Vec<VerifyFingerprintSample> {
     artifact
@@ -495,7 +502,7 @@ fn artifact_fingerprint_samples(
         .collect()
 }
 
-fn artifact_state_dump(artifact: &CliReproductionArtifact) -> String {
+pub(super) fn artifact_state_dump(artifact: &CliReproductionArtifact) -> String {
     format!(
         "scenario={} seed={} decisions={} fingerprints={} schedule={}",
         artifact.scenario.digest,
@@ -506,7 +513,9 @@ fn artifact_state_dump(artifact: &CliReproductionArtifact) -> String {
     )
 }
 
-fn compare_verify_witnesses(witnesses: &[VerifyRunWitness]) -> Option<VerifyDivergenceReport> {
+pub(super) fn compare_verify_witnesses(
+    witnesses: &[VerifyRunWitness],
+) -> Option<VerifyDivergenceReport> {
     for left_index in 0..witnesses.len() {
         for right_index in left_index + 1..witnesses.len() {
             let left = &witnesses[left_index];
@@ -533,7 +542,7 @@ fn compare_verify_witnesses(witnesses: &[VerifyRunWitness]) -> Option<VerifyDive
     None
 }
 
-fn localize_verify_divergence(
+pub(super) fn localize_verify_divergence(
     left_index: usize,
     right_index: usize,
     mismatch: VerifyMismatchKind,
@@ -579,7 +588,7 @@ fn localize_verify_divergence(
     }
 }
 
-fn verify_witness_state_digest(witness: &VerifyRunWitness) -> String {
+pub(super) fn verify_witness_state_digest(witness: &VerifyRunWitness) -> String {
     if let Some(artifact) = witness.artifact.as_ref() {
         return content_address_bytes(artifact);
     }
@@ -590,7 +599,10 @@ fn verify_witness_state_digest(witness: &VerifyRunWitness) -> String {
     content_address_bytes(&bytes)
 }
 
-fn bytes_for_mismatch(mismatch: VerifyMismatchKind, witness: &VerifyRunWitness) -> &[u8] {
+pub(super) fn bytes_for_mismatch(
+    mismatch: VerifyMismatchKind,
+    witness: &VerifyRunWitness,
+) -> &[u8] {
     match mismatch {
         VerifyMismatchKind::CanonicalLog | VerifyMismatchKind::CanonicalLogAndFingerprintStream => {
             &witness.canonical_log_bytes
@@ -599,7 +611,7 @@ fn bytes_for_mismatch(mismatch: VerifyMismatchKind, witness: &VerifyRunWitness) 
     }
 }
 
-fn first_different_canonical_entry(
+pub(super) fn first_different_canonical_entry(
     left: &[CanonicalLogEntry],
     right: &[CanonicalLogEntry],
 ) -> Option<usize> {
@@ -611,7 +623,7 @@ fn first_different_canonical_entry(
     (left.len() != right.len()).then_some(left.len().min(right.len()))
 }
 
-fn first_different_fingerprint_sample(
+pub(super) fn first_different_fingerprint_sample(
     left: &[VerifyFingerprintSample],
     right: &[VerifyFingerprintSample],
 ) -> Option<usize> {
@@ -623,7 +635,7 @@ fn first_different_fingerprint_sample(
     (left.len() != right.len()).then_some(left.len().min(right.len()))
 }
 
-fn bisect_first_different_byte(left: &[u8], right: &[u8]) -> usize {
+pub(super) fn bisect_first_different_byte(left: &[u8], right: &[u8]) -> usize {
     let max_len = left.len().max(right.len());
     if max_len == 0 || left == right {
         return 0;
@@ -641,11 +653,11 @@ fn bisect_first_different_byte(left: &[u8], right: &[u8]) -> usize {
     low
 }
 
-fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
+pub(super) fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
     left.get(..len) == right.get(..len)
 }
 
-fn verify_reproduction_artifact_bytes(
+pub(super) fn verify_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
     scenario: &crucible::ScenarioDef,
@@ -662,7 +674,7 @@ fn verify_reproduction_artifact_bytes(
     )
 }
 
-fn verify_reproduction_artifact_bytes_with_components(
+pub(super) fn verify_reproduction_artifact_bytes_with_components(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
     scenario: &crucible::ScenarioDef,
@@ -814,14 +826,14 @@ fn verify_reproduction_artifact_bytes_with_components(
     Ok(bytes)
 }
 
-fn seed_to_u64(seed: crucible::Seed) -> u64 {
+pub(super) fn seed_to_u64(seed: crucible::Seed) -> u64 {
     let bytes = seed.bytes();
     let mut low = [0u8; 8];
     low.copy_from_slice(&bytes[..8]);
     u64::from_le_bytes(low)
 }
 
-fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u8> {
+pub(super) fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u8> {
     format!(
         "scenario_id={}\nseed={}\napp_random_draw_cap={}\n",
         scenario.id().to_hex(),
@@ -831,7 +843,7 @@ fn scenario_identity_bytes(scenario: &crucible::ScenarioDef) -> Vec<u8> {
     .into_bytes()
 }
 
-async fn run_local_double_workflow_async(
+pub(super) async fn run_local_double_workflow_async(
     run_plan: &RunInvocationPlan,
     _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     interactive_commands: &[SessionCommandKind],
@@ -845,7 +857,7 @@ async fn run_local_double_workflow_async(
     run_control_client_workflow_async(&client, run_plan, interactive_commands).await
 }
 
-async fn run_local_double_workflow_stdin_async(
+pub(super) async fn run_local_double_workflow_stdin_async(
     run_plan: &RunInvocationPlan,
     _ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
 ) -> Result<RunWorkflowReport, CliError> {
@@ -858,7 +870,7 @@ async fn run_local_double_workflow_stdin_async(
     run_control_client_workflow_stdin_async(&client, run_plan).await
 }
 
-fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
+pub(super) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
     if cli.daemon.is_some() {
         return Err(usage_error(
             "serve hosts the daemon and cannot itself use --daemon",
@@ -876,7 +888,7 @@ fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), CliError> {
     ))
 }
 
-async fn run_serve_invocation_until_shutdown<S>(
+pub(super) async fn run_serve_invocation_until_shutdown<S>(
     cli: &Cli,
     args: &ServeArgs,
     shutdown: S,
@@ -936,7 +948,7 @@ where
 }
 
 #[cfg(unix)]
-async fn serve_shutdown_signal() -> Result<(), CliError> {
+pub(super) async fn serve_shutdown_signal() -> Result<(), CliError> {
     use tokio::signal::unix::{SignalKind, signal};
 
     let mut interrupt = signal(SignalKind::interrupt())
@@ -951,20 +963,20 @@ async fn serve_shutdown_signal() -> Result<(), CliError> {
 }
 
 #[cfg(not(unix))]
-async fn serve_shutdown_signal() -> Result<(), CliError> {
+pub(super) async fn serve_shutdown_signal() -> Result<(), CliError> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| serve_error(format!("serve shutdown signal error: {error}")))
 }
 
-fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {
+pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
     }
     Ok(())
 }
 
-async fn run_control_client_workflow_async<C>(
+pub(super) async fn run_control_client_workflow_async<C>(
     client: &C,
     run_plan: &RunInvocationPlan,
     interactive_commands: &[SessionCommandKind],
@@ -980,7 +992,7 @@ where
     .await
 }
 
-async fn run_control_client_save_workflow_async<C>(
+pub(super) async fn run_control_client_save_workflow_async<C>(
     client: &C,
     save_plan: &SaveInvocationPlan,
 ) -> Result<SaveWorkflowReport, CliError>

@@ -1,5 +1,7 @@
-// World, plan, property, and random-fault validation/canonicalization.
-fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
+//! World, plan, property, and random-fault validation/canonicalization.
+
+use super::*;
+pub(super) fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
     let mut seen = BTreeSet::new();
     for node in nodes {
         if !seen.insert(node.id.clone()) {
@@ -59,7 +61,7 @@ fn validate_world_nodes(nodes: &[WorldNode]) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn validate_world_node_workload(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload(node: &WorldNode) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_SCENARIO_PARAMETER_PREFIX) else {
@@ -81,7 +83,7 @@ fn validate_world_node_workload(node: &WorldNode) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn validate_world_node_workload_seed(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_seed(node: &WorldNode) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_SEED_SCENARIO_PARAMETER_PREFIX) else {
@@ -103,7 +105,9 @@ fn validate_world_node_workload_seed(node: &WorldNode) -> Result<(), EngineError
     Ok(())
 }
 
-fn validate_world_node_workload_scalar_parameters(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_scalar_parameters(
+    node: &WorldNode,
+) -> Result<(), EngineError> {
     let mut selected = BTreeSet::new();
     for token in node.cmdline.split_whitespace() {
         let Some((key, value)) = token.split_once('=') else {
@@ -129,7 +133,9 @@ fn validate_world_node_workload_scalar_parameters(node: &WorldNode) -> Result<()
     Ok(())
 }
 
-fn validate_world_node_workload_config_tree(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_config_tree(
+    node: &WorldNode,
+) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_CONFIG_TREE_SCENARIO_PARAMETER_PREFIX) else {
@@ -173,7 +179,7 @@ fn validate_world_node_workload_config_tree(node: &WorldNode) -> Result<(), Engi
     Ok(())
 }
 
-fn validate_world_node_workload_pattern(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_pattern(node: &WorldNode) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER_PREFIX)
@@ -196,7 +202,7 @@ fn validate_world_node_workload_pattern(node: &WorldNode) -> Result<(), EngineEr
     Ok(())
 }
 
-fn validate_world_node_workload_spike_mode(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_spike_mode(node: &WorldNode) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER_PREFIX) else {
@@ -218,7 +224,9 @@ fn validate_world_node_workload_spike_mode(node: &WorldNode) -> Result<(), Engin
     Ok(())
 }
 
-fn validate_world_node_workload_pattern_consistency(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_pattern_consistency(
+    node: &WorldNode,
+) -> Result<(), EngineError> {
     let pattern = GuestWorkloadPattern::from_cmdline(&node.cmdline);
     let spike_mode = GuestWorkloadSpikeMode::from_cmdline(&node.cmdline);
 
@@ -235,7 +243,9 @@ fn validate_world_node_workload_pattern_consistency(node: &WorldNode) -> Result<
     }
 }
 
-fn validate_world_node_workload_time_source(node: &WorldNode) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_workload_time_source(
+    node: &WorldNode,
+) -> Result<(), EngineError> {
     let mut selected = false;
     for token in node.cmdline.split_whitespace() {
         let Some(value) = token.strip_prefix(WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER_PREFIX) else {
@@ -257,7 +267,7 @@ fn validate_world_node_workload_time_source(node: &WorldNode) -> Result<(), Engi
     Ok(())
 }
 
-fn validate_world_node_workload_time_source_consistency(
+pub(super) fn validate_world_node_workload_time_source_consistency(
     node: &WorldNode,
 ) -> Result<(), EngineError> {
     let pattern = GuestWorkloadPattern::from_cmdline(&node.cmdline);
@@ -282,7 +292,7 @@ fn validate_world_node_workload_time_source_consistency(
     }
 }
 
-fn validate_world_links_for_node_defs(
+pub(super) fn validate_world_links_for_node_defs(
     topology_nodes: &[WorldNodeDef],
     links: &[LinkDef],
 ) -> Result<(), EngineError> {
@@ -352,7 +362,7 @@ fn validate_world_links_for_node_defs(
     Ok(())
 }
 
-fn validate_world_node_defs(nodes: &[WorldNodeDef]) -> Result<(), EngineError> {
+pub(super) fn validate_world_node_defs(nodes: &[WorldNodeDef]) -> Result<(), EngineError> {
     let vm_ids = nodes
         .iter()
         .filter_map(|node| match node {
@@ -391,7 +401,7 @@ fn validate_world_node_defs(nodes: &[WorldNodeDef]) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn validate_plan_entries_for_world(
+pub(super) fn validate_plan_entries_for_world(
     world: &World,
     entries: &[PlanEntry],
 ) -> Result<(), EngineError> {
@@ -438,7 +448,7 @@ fn validate_plan_entries_for_world(
     Ok(())
 }
 
-fn validate_fault_plan_entries_for_world(
+pub(super) fn validate_fault_plan_entries_for_world(
     world: &World,
     entries: &[FaultPlanEntry],
 ) -> Result<(), EngineError> {
@@ -481,7 +491,7 @@ fn validate_fault_plan_entries_for_world(
     Ok(())
 }
 
-fn validate_event_graph_plan(
+pub(super) fn validate_event_graph_plan(
     world: &World,
     assertions: impl IntoIterator<Item = AssertionId>,
     graph: EventGraph,
@@ -489,11 +499,11 @@ fn validate_event_graph_plan(
     EventGraph::new_with_assertions_for_world(graph.events().to_vec(), assertions, world)
 }
 
-fn event_graph_plan_error(error: EventGraphError) -> EngineError {
+pub(super) fn event_graph_plan_error(error: EventGraphError) -> EngineError {
     scenario_serialization_error(format!("event graph plan validation failed: {error}"))
 }
 
-fn validate_membership_fault_for_world(
+pub(super) fn validate_membership_fault_for_world(
     at: VirtualTime,
     fault: &MembershipFault,
     node_ids: &BTreeSet<&NodeId>,
@@ -537,7 +547,7 @@ fn validate_membership_fault_for_world(
     }
 }
 
-fn validate_fault_plan_heal(
+pub(super) fn validate_fault_plan_heal(
     tag: &FaultTag,
     heal_at: VirtualTime,
     activated_tags: &BTreeMap<FaultTag, Vec<VirtualTime>>,
@@ -563,7 +573,7 @@ fn validate_fault_plan_heal(
     Err(EngineError::PlanHealUnknownTag { tag: tag.clone() })
 }
 
-fn validate_fault_for_world(
+pub(super) fn validate_fault_for_world(
     fault: &Fault,
     node_ids: &BTreeSet<&NodeId>,
     link_ids: &BTreeSet<LinkId>,
@@ -585,7 +595,7 @@ fn validate_fault_for_world(
     }
 }
 
-fn validate_fault_device_for_world(
+pub(super) fn validate_fault_device_for_world(
     device: &DeviceId,
     expected: WorldDeviceKind,
     device_kinds: &BTreeMap<DeviceId, WorldDeviceKind>,
@@ -605,7 +615,7 @@ fn validate_fault_device_for_world(
     Ok(())
 }
 
-fn validate_network_fault_for_world(
+pub(super) fn validate_network_fault_for_world(
     fault: &NetworkFault,
     link_ids: &BTreeSet<LinkId>,
 ) -> Result<(), EngineError> {
@@ -617,14 +627,14 @@ fn validate_network_fault_for_world(
     }
 }
 
-fn validate_node_fault_for_world(
+pub(super) fn validate_node_fault_for_world(
     fault: &NodeFault,
     node_ids: &BTreeSet<&NodeId>,
 ) -> Result<(), EngineError> {
     validate_plan_node(node_fault_node(fault), node_ids)
 }
 
-fn network_fault_link(fault: &NetworkFault) -> &LinkId {
+pub(super) fn network_fault_link(fault: &NetworkFault) -> &LinkId {
     match fault {
         NetworkFault::Partition { link, .. }
         | NetworkFault::Loss { link, .. }
@@ -636,7 +646,7 @@ fn network_fault_link(fault: &NetworkFault) -> &LinkId {
     }
 }
 
-fn node_fault_node(fault: &NodeFault) -> &NodeId {
+pub(super) fn node_fault_node(fault: &NodeFault) -> &NodeId {
     match fault {
         NodeFault::Crash { node, .. }
         | NodeFault::Slow { node, .. }
@@ -644,7 +654,7 @@ fn node_fault_node(fault: &NodeFault) -> &NodeId {
     }
 }
 
-fn block_fault_device(fault: &BlockFault) -> &DeviceId {
+pub(super) fn block_fault_device(fault: &BlockFault) -> &DeviceId {
     match fault {
         BlockFault::Latency { device, .. }
         | BlockFault::Failure { device, .. }
@@ -655,7 +665,7 @@ fn block_fault_device(fault: &BlockFault) -> &DeviceId {
     }
 }
 
-fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
+pub(super) fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
     match fault {
         NinePFault::Latency { device, .. }
         | NinePFault::Failure { device, .. }
@@ -666,11 +676,11 @@ fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
     }
 }
 
-fn world_node_id_set(world: &World) -> BTreeSet<&NodeId> {
+pub(super) fn world_node_id_set(world: &World) -> BTreeSet<&NodeId> {
     world.nodes.iter().map(|node| &node.id).collect()
 }
 
-fn world_link_id_set(world: &World) -> BTreeSet<LinkId> {
+pub(super) fn world_link_id_set(world: &World) -> BTreeSet<LinkId> {
     let mut links = BTreeSet::new();
     let mut legacy_counts = BTreeMap::new();
     for link in &world.links {
@@ -687,14 +697,17 @@ fn world_link_id_set(world: &World) -> BTreeSet<LinkId> {
     links
 }
 
-fn world_device_kind_map(world: &World) -> BTreeMap<DeviceId, WorldDeviceKind> {
+pub(super) fn world_device_kind_map(world: &World) -> BTreeMap<DeviceId, WorldDeviceKind> {
     world
         .io_nodes()
         .map(|node| (node.device_id(), node.kind.family()))
         .collect()
 }
 
-fn link_id_for_canonical_endpoint_pair(endpoint_a: &NodeId, endpoint_b: &NodeId) -> LinkId {
+pub(super) fn link_id_for_canonical_endpoint_pair(
+    endpoint_a: &NodeId,
+    endpoint_b: &NodeId,
+) -> LinkId {
     LinkId::from_name(format!(
         "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
         endpoint_a.name.len(),
@@ -704,12 +717,12 @@ fn link_id_for_canonical_endpoint_pair(endpoint_a: &NodeId, endpoint_b: &NodeId)
     ))
 }
 
-fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
+pub(super) fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
     let (endpoint_a, endpoint_b) = link.endpoints();
     LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
 }
 
-fn validate_random_fault_config(config: &RandomFaultConfig) -> Result<(), EngineError> {
+pub(super) fn validate_random_fault_config(config: &RandomFaultConfig) -> Result<(), EngineError> {
     let bounds = config.bounds;
     if config.fault_slots == 0 {
         return Ok(());
@@ -782,22 +795,22 @@ fn validate_random_fault_config(config: &RandomFaultConfig) -> Result<(), Engine
     Ok(())
 }
 
-fn random_fault_nodes(world: &World) -> Vec<NodeId> {
+pub(super) fn random_fault_nodes(world: &World) -> Vec<NodeId> {
     world_participants(world)
 }
 
-fn random_fault_links(world: &World) -> Vec<LinkId> {
+pub(super) fn random_fault_links(world: &World) -> Vec<LinkId> {
     canonical_world_links(world.links())
         .into_iter()
         .map(|link| random_fault_link_id(&link))
         .collect()
 }
 
-fn random_fault_link_id(link: &LinkDef) -> LinkId {
+pub(super) fn random_fault_link_id(link: &LinkDef) -> LinkId {
     LinkId::from_name(world_link_stream_name(link))
 }
 
-fn random_fault_devices(world: &World, kind: WorldDeviceKind) -> Vec<DeviceId> {
+pub(super) fn random_fault_devices(world: &World, kind: WorldDeviceKind) -> Vec<DeviceId> {
     world
         .io_nodes()
         .filter(|node| node.kind.family() == kind)
@@ -805,7 +818,7 @@ fn random_fault_devices(world: &World, kind: WorldDeviceKind) -> Vec<DeviceId> {
         .collect()
 }
 
-fn eligible_random_fault_kinds(
+pub(super) fn eligible_random_fault_kinds(
     weights: &FaultWeights,
     has_nodes: bool,
     has_links: bool,
@@ -875,7 +888,7 @@ fn eligible_random_fault_kinds(
     kinds
 }
 
-fn push_weighted_random_fault_kind(
+pub(super) fn push_weighted_random_fault_kind(
     kinds: &mut Vec<(RandomFaultKind, u32)>,
     kind: RandomFaultKind,
     weight: u32,
@@ -885,7 +898,7 @@ fn push_weighted_random_fault_kind(
     }
 }
 
-fn draw_random_fault_start(
+pub(super) fn draw_random_fault_start(
     stream: &mut DecisionStream,
     config: &RandomFaultConfig,
 ) -> Result<u64, EngineError> {
@@ -896,7 +909,7 @@ fn draw_random_fault_start(
     draw_u64_inclusive(stream, 0, max_start)
 }
 
-fn draw_random_fault_duration(
+pub(super) fn draw_random_fault_duration(
     stream: &mut DecisionStream,
     config: &RandomFaultConfig,
     start: u64,
@@ -906,7 +919,7 @@ fn draw_random_fault_duration(
     draw_fault_duration_inclusive(stream, config.bounds.min_duration.nanos(), max_duration)
 }
 
-fn draw_random_fault_kind(
+pub(super) fn draw_random_fault_kind(
     stream: &mut DecisionStream,
     kinds: &[(RandomFaultKind, u32)],
 ) -> Result<RandomFaultKind, EngineError> {
@@ -931,7 +944,7 @@ fn draw_random_fault_kind(
     })
 }
 
-fn draw_random_fault(
+pub(super) fn draw_random_fault(
     stream: &mut DecisionStream,
     config: &RandomFaultConfig,
     kind: RandomFaultKind,
@@ -1021,17 +1034,23 @@ fn draw_random_fault(
     }
 }
 
-fn draw_node_target(stream: &mut DecisionStream, nodes: &[NodeId]) -> Result<NodeId, EngineError> {
+pub(super) fn draw_node_target(
+    stream: &mut DecisionStream,
+    nodes: &[NodeId],
+) -> Result<NodeId, EngineError> {
     let index = draw_index(stream, nodes.len())?;
     Ok(nodes[index].clone())
 }
 
-fn draw_link_target(stream: &mut DecisionStream, links: &[LinkId]) -> Result<LinkId, EngineError> {
+pub(super) fn draw_link_target(
+    stream: &mut DecisionStream,
+    links: &[LinkId],
+) -> Result<LinkId, EngineError> {
     let index = draw_index(stream, links.len())?;
     Ok(links[index].clone())
 }
 
-fn draw_device_target(
+pub(super) fn draw_device_target(
     stream: &mut DecisionStream,
     devices: &[DeviceId],
 ) -> Result<DeviceId, EngineError> {
@@ -1039,7 +1058,7 @@ fn draw_device_target(
     Ok(devices[index].clone())
 }
 
-fn draw_index(stream: &mut DecisionStream, len: usize) -> Result<usize, EngineError> {
+pub(super) fn draw_index(stream: &mut DecisionStream, len: usize) -> Result<usize, EngineError> {
     if len == 0 {
         return Err(EngineError::RandomFaultConfigInvalid {
             reason: "random fault target set is empty",
@@ -1048,7 +1067,7 @@ fn draw_index(stream: &mut DecisionStream, len: usize) -> Result<usize, EngineEr
     Ok(draw_bounded_u64(stream, len as u64)? as usize)
 }
 
-fn draw_partition_direction(
+pub(super) fn draw_partition_direction(
     stream: &mut DecisionStream,
 ) -> Result<PartitionDirection, EngineError> {
     match draw_bounded_u64(stream, 3)? {
@@ -1058,7 +1077,9 @@ fn draw_partition_direction(
     }
 }
 
-fn draw_restart_policy(stream: &mut DecisionStream) -> Result<RestartPolicy, EngineError> {
+pub(super) fn draw_restart_policy(
+    stream: &mut DecisionStream,
+) -> Result<RestartPolicy, EngineError> {
     match draw_bounded_u64(stream, 3)? {
         0 => Ok(RestartPolicy::FromReadyPoint),
         1 => Ok(RestartPolicy::FromLastCheckpoint),
@@ -1066,14 +1087,16 @@ fn draw_restart_policy(stream: &mut DecisionStream) -> Result<RestartPolicy, Eng
     }
 }
 
-fn draw_io_failure_mode(stream: &mut DecisionStream) -> Result<IoFailureMode, EngineError> {
+pub(super) fn draw_io_failure_mode(
+    stream: &mut DecisionStream,
+) -> Result<IoFailureMode, EngineError> {
     match draw_bounded_u64(stream, 2)? {
         0 => Ok(IoFailureMode::ErrorStatus),
         _ => Ok(IoFailureMode::Drop),
     }
 }
 
-fn draw_latency_duration(
+pub(super) fn draw_latency_duration(
     stream: &mut DecisionStream,
     bounds: SeverityBounds,
 ) -> Result<FaultDuration, EngineError> {
@@ -1084,7 +1107,7 @@ fn draw_latency_duration(
     )
 }
 
-fn draw_reorder_window(
+pub(super) fn draw_reorder_window(
     stream: &mut DecisionStream,
     bounds: SeverityBounds,
 ) -> Result<FaultDuration, EngineError> {
@@ -1095,7 +1118,7 @@ fn draw_reorder_window(
     )
 }
 
-fn draw_network_corruption_fault(
+pub(super) fn draw_network_corruption_fault(
     stream: &mut DecisionStream,
     bounds: SeverityBounds,
 ) -> Result<NetworkCorruptionFault, EngineError> {
@@ -1121,7 +1144,7 @@ fn draw_network_corruption_fault(
     }
 }
 
-fn draw_fault_rate(
+pub(super) fn draw_fault_rate(
     stream: &mut DecisionStream,
     bounds: SeverityBounds,
 ) -> Result<FaultRateBasisPoints, EngineError> {
@@ -1132,7 +1155,7 @@ fn draw_fault_rate(
     )?)
 }
 
-fn draw_bandwidth_limit(
+pub(super) fn draw_bandwidth_limit(
     stream: &mut DecisionStream,
     bounds: SeverityBounds,
 ) -> Result<FaultBandwidthBitsPerSecond, EngineError> {
@@ -1143,7 +1166,7 @@ fn draw_bandwidth_limit(
     )?)
 }
 
-fn draw_slowdown_factor(
+pub(super) fn draw_slowdown_factor(
     stream: &mut DecisionStream,
     bounds: SeverityBounds,
 ) -> Result<FaultSlowdownFactorBasisPoints, EngineError> {
@@ -1154,7 +1177,7 @@ fn draw_slowdown_factor(
     )?)
 }
 
-fn draw_clock_skew(
+pub(super) fn draw_clock_skew(
     stream: &mut DecisionStream,
     bounds: SeverityBounds,
 ) -> Result<SimOffset, EngineError> {
@@ -1167,7 +1190,7 @@ fn draw_clock_skew(
     })
 }
 
-fn draw_fault_duration_inclusive(
+pub(super) fn draw_fault_duration_inclusive(
     stream: &mut DecisionStream,
     min: u64,
     max: u64,
@@ -1177,11 +1200,19 @@ fn draw_fault_duration_inclusive(
     )?))
 }
 
-fn draw_u32_inclusive(stream: &mut DecisionStream, min: u32, max: u32) -> Result<u32, EngineError> {
+pub(super) fn draw_u32_inclusive(
+    stream: &mut DecisionStream,
+    min: u32,
+    max: u32,
+) -> Result<u32, EngineError> {
     Ok(draw_u64_inclusive(stream, u64::from(min), u64::from(max))? as u32)
 }
 
-fn draw_u64_inclusive(stream: &mut DecisionStream, min: u64, max: u64) -> Result<u64, EngineError> {
+pub(super) fn draw_u64_inclusive(
+    stream: &mut DecisionStream,
+    min: u64,
+    max: u64,
+) -> Result<u64, EngineError> {
     if min > max {
         return Err(EngineError::RandomFaultConfigInvalid {
             reason: "random fault integer draw range is empty",
@@ -1196,7 +1227,11 @@ fn draw_u64_inclusive(stream: &mut DecisionStream, min: u64, max: u64) -> Result
     Ok(min + draw_bounded_u64(stream, span)?)
 }
 
-fn draw_i64_inclusive(stream: &mut DecisionStream, min: i64, max: i64) -> Result<i64, EngineError> {
+pub(super) fn draw_i64_inclusive(
+    stream: &mut DecisionStream,
+    min: i64,
+    max: i64,
+) -> Result<i64, EngineError> {
     if min > max {
         return Err(EngineError::RandomFaultConfigInvalid {
             reason: "random fault signed draw range is empty",
@@ -1211,12 +1246,15 @@ fn draw_i64_inclusive(stream: &mut DecisionStream, min: i64, max: i64) -> Result
     Ok((i128::from(min) + i128::from(draw_bounded_u64(stream, span as u64)?)) as i64)
 }
 
-fn draw_bounded_u64(stream: &mut DecisionStream, upper_exclusive: u64) -> Result<u64, EngineError> {
+pub(super) fn draw_bounded_u64(
+    stream: &mut DecisionStream,
+    upper_exclusive: u64,
+) -> Result<u64, EngineError> {
     draw_bounded_u64_from(upper_exclusive, || stream.next_u64())
 }
 
 /// Reduces an arbitrary deterministic `u64` draw source without modulo bias.
-fn draw_bounded_u64_from(
+pub(super) fn draw_bounded_u64_from(
     upper_exclusive: u64,
     mut next_u64: impl FnMut() -> u64,
 ) -> Result<u64, EngineError> {
@@ -1238,7 +1276,7 @@ fn draw_bounded_u64_from(
     }
 }
 
-fn prune_random_fault_candidates(
+pub(super) fn prune_random_fault_candidates(
     candidates: Vec<RandomFaultCandidate>,
     caps: FaultCaps,
 ) -> Vec<RandomFaultCandidate> {
@@ -1268,7 +1306,7 @@ fn prune_random_fault_candidates(
     kept
 }
 
-fn random_fault_candidate_exceeds_concurrency(
+pub(super) fn random_fault_candidate_exceeds_concurrency(
     kept: &[RandomFaultCandidate],
     candidate: &RandomFaultCandidate,
     cap: u32,
@@ -1295,7 +1333,7 @@ fn random_fault_candidate_exceeds_concurrency(
     })
 }
 
-fn random_fault_intervals_overlap(
+pub(super) fn random_fault_intervals_overlap(
     left: &RandomFaultCandidate,
     right: &RandomFaultCandidate,
 ) -> bool {
@@ -1312,7 +1350,7 @@ impl RandomFaultKind {
     }
 }
 
-fn random_fault_config_material(config: &RandomFaultConfig, world: &World) -> String {
+pub(super) fn random_fault_config_material(config: &RandomFaultConfig, world: &World) -> String {
     format!(
         "world_ref={}\nfault_slots={}\nduration_nanos={}\n{}\n{}\n{}",
         content_hash_hex(canonical_world_identity(world)),
@@ -1324,7 +1362,7 @@ fn random_fault_config_material(config: &RandomFaultConfig, world: &World) -> St
     )
 }
 
-fn random_fault_weights_material(weights: FaultWeights) -> String {
+pub(super) fn random_fault_weights_material(weights: FaultWeights) -> String {
     format!(
         "weights.partition={}\nweights.message_loss={}\nweights.reorder={}\nweights.duplicate={}\nweights.corruption={}\nweights.bandwidth_limit={}\nweights.latency_bump={}\nweights.crash={}\nweights.slow={}\nweights.clock_skew={}\nweights.block_latency={}\nweights.block_failure={}\nweights.block_reorder={}\nweights.ninep_latency={}\nweights.ninep_failure={}",
         weights.partition,
@@ -1345,7 +1383,7 @@ fn random_fault_weights_material(weights: FaultWeights) -> String {
     )
 }
 
-fn random_fault_bounds_material(bounds: SeverityBounds) -> String {
+pub(super) fn random_fault_bounds_material(bounds: SeverityBounds) -> String {
     format!(
         "bounds.min_duration_nanos={}\nbounds.max_duration_nanos={}\nbounds.min_rate_basis_points={}\nbounds.max_rate_basis_points={}\nbounds.min_latency_nanos={}\nbounds.max_latency_nanos={}\nbounds.min_reorder_window_nanos={}\nbounds.max_reorder_window_nanos={}\nbounds.min_duplicate_gap_nanos={}\nbounds.max_duplicate_gap_nanos={}\nbounds.min_bandwidth_bits_per_second={}\nbounds.max_bandwidth_bits_per_second={}\nbounds.min_slowdown_basis_points={}\nbounds.max_slowdown_basis_points={}\nbounds.min_clock_skew_nanos={}\nbounds.max_clock_skew_nanos={}\nbounds.min_corruption_bits={}\nbounds.max_corruption_bits={}\nbounds.min_truncation_bytes={}\nbounds.max_truncation_bytes={}",
         bounds.min_duration.nanos(),
@@ -1371,7 +1409,7 @@ fn random_fault_bounds_material(bounds: SeverityBounds) -> String {
     )
 }
 
-fn validate_plan_heal(
+pub(super) fn validate_plan_heal(
     tag: &FaultTag,
     entry: &PlanEntry,
     activated_tags: &BTreeMap<FaultTag, Vec<VirtualTime>>,
@@ -1400,7 +1438,10 @@ fn validate_plan_heal(
     Err(EngineError::PlanHealUnknownTag { tag: tag.clone() })
 }
 
-fn validate_plan_node(node: &NodeId, node_ids: &BTreeSet<&NodeId>) -> Result<(), EngineError> {
+pub(super) fn validate_plan_node(
+    node: &NodeId,
+    node_ids: &BTreeSet<&NodeId>,
+) -> Result<(), EngineError> {
     if node_ids.contains(node) {
         Ok(())
     } else {
@@ -1408,7 +1449,7 @@ fn validate_plan_node(node: &NodeId, node_ids: &BTreeSet<&NodeId>) -> Result<(),
     }
 }
 
-fn validate_properties_for_world(
+pub(super) fn validate_properties_for_world(
     world: &World,
     assertions: &[AssertionDef],
 ) -> Result<(), EngineError> {
@@ -1441,7 +1482,7 @@ fn validate_properties_for_world(
     Ok(())
 }
 
-fn resolve_assertions_dsl_for_context(
+pub(super) fn resolve_assertions_dsl_for_context(
     world: &World,
     plan: &Plan,
     assertions: &[AssertionDef],
@@ -1457,7 +1498,7 @@ fn resolve_assertions_dsl_for_context(
         .collect()
 }
 
-fn resolve_properties_dsl_for_context(
+pub(super) fn resolve_properties_dsl_for_context(
     world: &World,
     plan: &Plan,
     properties: &Properties,
@@ -1465,7 +1506,7 @@ fn resolve_properties_dsl_for_context(
     Properties::from_assertions_for_world_and_plan(world, plan, properties.assertions().to_vec())
 }
 
-fn resolve_property_dsl_for_context(
+pub(super) fn resolve_property_dsl_for_context(
     property: &Property,
     world: &World,
     fault_tags: &BTreeSet<FaultTag>,
@@ -1499,7 +1540,7 @@ fn resolve_property_dsl_for_context(
     }
 }
 
-fn resolve_event_graph_dsl_for_world(world: &World, graph: &EventGraph) -> EventGraph {
+pub(super) fn resolve_event_graph_dsl_for_world(world: &World, graph: &EventGraph) -> EventGraph {
     let fault_tags = event_graph_declared_fault_tags(graph.events());
     EventGraph::from_unchecked_events_for_model(
         graph
@@ -1518,7 +1559,7 @@ fn resolve_event_graph_dsl_for_world(world: &World, graph: &EventGraph) -> Event
     )
 }
 
-fn resolve_predicate_dsl_for_context(
+pub(super) fn resolve_predicate_dsl_for_context(
     predicate: &Predicate,
     world: &World,
     fault_tags: &BTreeSet<FaultTag>,
@@ -1563,7 +1604,7 @@ fn resolve_predicate_dsl_for_context(
     }
 }
 
-fn resolve_named_predicate_dsl_for_context(
+pub(super) fn resolve_named_predicate_dsl_for_context(
     name: &str,
     world: &World,
     fault_tags: &BTreeSet<FaultTag>,
@@ -1588,7 +1629,7 @@ fn resolve_named_predicate_dsl_for_context(
     }
 }
 
-fn node_crashed_predicate(node: &str) -> Predicate {
+pub(super) fn node_crashed_predicate(node: &str) -> Predicate {
     Predicate::node_state(
         NodeId {
             name: node.to_owned(),
@@ -1597,7 +1638,7 @@ fn node_crashed_predicate(node: &str) -> Predicate {
     )
 }
 
-fn not_any_or_true(predicates: impl IntoIterator<Item = Predicate>) -> Predicate {
+pub(super) fn not_any_or_true(predicates: impl IntoIterator<Item = Predicate>) -> Predicate {
     let predicates = predicates.into_iter().collect::<Vec<_>>();
     if predicates.is_empty() {
         dsl_true_predicate()
@@ -1606,14 +1647,14 @@ fn not_any_or_true(predicates: impl IntoIterator<Item = Predicate>) -> Predicate
     }
 }
 
-fn dsl_true_predicate() -> Predicate {
+pub(super) fn dsl_true_predicate() -> Predicate {
     Predicate::any_of(vec![
         Predicate::quiescent(),
         Predicate::not(Predicate::quiescent()),
     ])
 }
 
-fn plan_declared_fault_tags(plan: &Plan) -> BTreeSet<FaultTag> {
+pub(super) fn plan_declared_fault_tags(plan: &Plan) -> BTreeSet<FaultTag> {
     match &plan.kind {
         PlanKind::ScheduledEntries { entries } => entries
             .iter()
@@ -1636,7 +1677,7 @@ fn plan_declared_fault_tags(plan: &Plan) -> BTreeSet<FaultTag> {
     }
 }
 
-fn event_graph_declared_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
+pub(super) fn event_graph_declared_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
     let mut tags = BTreeSet::new();
     for event in events {
         collect_action_declared_fault_tags(&event.action, &mut tags);
@@ -1644,7 +1685,7 @@ fn event_graph_declared_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
     tags
 }
 
-fn collect_action_declared_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
+pub(super) fn collect_action_declared_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
     match action {
         Action::InjectFault { tag, .. } => {
             tags.insert(tag.clone());
@@ -1667,7 +1708,7 @@ fn collect_action_declared_fault_tags(action: &Action, tags: &mut BTreeSet<Fault
     }
 }
 
-fn validate_property_for_world(
+pub(super) fn validate_property_for_world(
     property: &Property,
     node_ids: &BTreeSet<&NodeId>,
     assertion_ids: &BTreeSet<AssertionId>,
@@ -1702,7 +1743,7 @@ fn validate_property_for_world(
     }
 }
 
-fn validate_property_predicate_for_world(
+pub(super) fn validate_property_predicate_for_world(
     predicate: &Predicate,
     node_ids: &BTreeSet<&NodeId>,
     assertion_ids: &BTreeSet<AssertionId>,
@@ -1774,7 +1815,7 @@ fn validate_property_predicate_for_world(
     }
 }
 
-fn validate_compound_predicate(
+pub(super) fn validate_compound_predicate(
     kind: &'static str,
     predicates: &[Predicate],
     node_ids: &BTreeSet<&NodeId>,
@@ -1797,7 +1838,10 @@ fn validate_compound_predicate(
     Ok(())
 }
 
-fn validate_property_node(node: &NodeId, node_ids: &BTreeSet<&NodeId>) -> Result<(), EngineError> {
+pub(super) fn validate_property_node(
+    node: &NodeId,
+    node_ids: &BTreeSet<&NodeId>,
+) -> Result<(), EngineError> {
     if node_ids.contains(node) {
         Ok(())
     } else {
@@ -1805,7 +1849,7 @@ fn validate_property_node(node: &NodeId, node_ids: &BTreeSet<&NodeId>) -> Result
     }
 }
 
-fn validate_property_regex(regex: &RegexProgram) -> Result<(), EngineError> {
+pub(super) fn validate_property_regex(regex: &RegexProgram) -> Result<(), EngineError> {
     regex::bytes::Regex::new(&regex.pattern)
         .map(|_| ())
         .map_err(|source| EngineError::PropertyPredicateInvalidRegex {
@@ -1814,7 +1858,7 @@ fn validate_property_regex(regex: &RegexProgram) -> Result<(), EngineError> {
         })
 }
 
-fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeId) {
+pub(super) fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeId) {
     if left <= right {
         (left.clone(), right.clone())
     } else {
@@ -1822,13 +1866,13 @@ fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeI
     }
 }
 
-fn canonical_plan_entries(entries: &[PlanEntry]) -> Vec<PlanEntry> {
+pub(super) fn canonical_plan_entries(entries: &[PlanEntry]) -> Vec<PlanEntry> {
     let mut entries = entries.iter().map(canonical_plan_entry).collect::<Vec<_>>();
     entries.sort_by(plan_entry_cmp);
     entries
 }
 
-fn canonical_fault_plan_entries(entries: &[FaultPlanEntry]) -> Vec<FaultPlanEntry> {
+pub(super) fn canonical_fault_plan_entries(entries: &[FaultPlanEntry]) -> Vec<FaultPlanEntry> {
     let mut entries = entries
         .iter()
         .map(canonical_fault_plan_entry)
@@ -1837,7 +1881,7 @@ fn canonical_fault_plan_entries(entries: &[FaultPlanEntry]) -> Vec<FaultPlanEntr
     entries
 }
 
-fn canonical_plan_entry(entry: &PlanEntry) -> PlanEntry {
+pub(super) fn canonical_plan_entry(entry: &PlanEntry) -> PlanEntry {
     match entry {
         PlanEntry::Activate { at, tag, fault } => PlanEntry::Activate {
             at: *at,
@@ -1851,7 +1895,7 @@ fn canonical_plan_entry(entry: &PlanEntry) -> PlanEntry {
     }
 }
 
-fn canonical_fault_plan_entry(entry: &FaultPlanEntry) -> FaultPlanEntry {
+pub(super) fn canonical_fault_plan_entry(entry: &FaultPlanEntry) -> FaultPlanEntry {
     match entry {
         FaultPlanEntry::At {
             at,
@@ -1876,7 +1920,7 @@ fn canonical_fault_plan_entry(entry: &FaultPlanEntry) -> FaultPlanEntry {
     }
 }
 
-fn canonical_membership_fault(fault: &MembershipFault) -> MembershipFault {
+pub(super) fn canonical_membership_fault(fault: &MembershipFault) -> MembershipFault {
     match fault {
         MembershipFault::Crash { node, restart } => MembershipFault::Crash {
             node: node.clone(),
@@ -1904,7 +1948,7 @@ fn canonical_membership_fault(fault: &MembershipFault) -> MembershipFault {
     }
 }
 
-fn inverted_partition_direction(direction: PartitionDirection) -> PartitionDirection {
+pub(super) fn inverted_partition_direction(direction: PartitionDirection) -> PartitionDirection {
     match direction {
         PartitionDirection::Bidirectional => PartitionDirection::Bidirectional,
         PartitionDirection::EndpointAToEndpointB => PartitionDirection::EndpointBToEndpointA,
@@ -1912,27 +1956,30 @@ fn inverted_partition_direction(direction: PartitionDirection) -> PartitionDirec
     }
 }
 
-fn plan_entry_cmp(left: &PlanEntry, right: &PlanEntry) -> std::cmp::Ordering {
+pub(super) fn plan_entry_cmp(left: &PlanEntry, right: &PlanEntry) -> std::cmp::Ordering {
     plan_entry_time(left)
         .cmp(&plan_entry_time(right))
         .then_with(|| plan_entry_kind_order(left).cmp(&plan_entry_kind_order(right)))
         .then_with(|| plan_entry_material(left).cmp(&plan_entry_material(right)))
 }
 
-fn fault_plan_entry_cmp(left: &FaultPlanEntry, right: &FaultPlanEntry) -> std::cmp::Ordering {
+pub(super) fn fault_plan_entry_cmp(
+    left: &FaultPlanEntry,
+    right: &FaultPlanEntry,
+) -> std::cmp::Ordering {
     fault_plan_entry_time(left)
         .cmp(&fault_plan_entry_time(right))
         .then_with(|| fault_plan_entry_kind_order(left).cmp(&fault_plan_entry_kind_order(right)))
         .then_with(|| fault_plan_entry_material(left).cmp(&fault_plan_entry_material(right)))
 }
 
-fn plan_entry_time(entry: &PlanEntry) -> VirtualTime {
+pub(super) fn plan_entry_time(entry: &PlanEntry) -> VirtualTime {
     match entry {
         PlanEntry::Activate { at, .. } | PlanEntry::Heal { at, .. } => *at,
     }
 }
 
-fn fault_plan_entry_time(entry: &FaultPlanEntry) -> VirtualTime {
+pub(super) fn fault_plan_entry_time(entry: &FaultPlanEntry) -> VirtualTime {
     match entry {
         FaultPlanEntry::At { at, .. }
         | FaultPlanEntry::PermanentAt { at, .. }
@@ -1940,14 +1987,14 @@ fn fault_plan_entry_time(entry: &FaultPlanEntry) -> VirtualTime {
     }
 }
 
-fn plan_entry_kind_order(entry: &PlanEntry) -> u8 {
+pub(super) fn plan_entry_kind_order(entry: &PlanEntry) -> u8 {
     match entry {
         PlanEntry::Activate { .. } => 0,
         PlanEntry::Heal { .. } => 1,
     }
 }
 
-fn fault_plan_entry_kind_order(entry: &FaultPlanEntry) -> u8 {
+pub(super) fn fault_plan_entry_kind_order(entry: &FaultPlanEntry) -> u8 {
     match entry {
         FaultPlanEntry::At { .. } => 0,
         FaultPlanEntry::PermanentAt { .. } => 1,
@@ -1955,7 +2002,7 @@ fn fault_plan_entry_kind_order(entry: &FaultPlanEntry) -> u8 {
     }
 }
 
-fn canonical_assertions(assertions: &[AssertionDef]) -> Vec<AssertionDef> {
+pub(super) fn canonical_assertions(assertions: &[AssertionDef]) -> Vec<AssertionDef> {
     let mut assertions = assertions
         .iter()
         .map(canonical_assertion)
@@ -1968,7 +2015,7 @@ fn canonical_assertions(assertions: &[AssertionDef]) -> Vec<AssertionDef> {
     assertions
 }
 
-fn canonical_assertion(assertion: &AssertionDef) -> AssertionDef {
+pub(super) fn canonical_assertion(assertion: &AssertionDef) -> AssertionDef {
     AssertionDef {
         id: assertion.id.clone(),
         message: assertion.message.clone(),
@@ -1976,7 +2023,7 @@ fn canonical_assertion(assertion: &AssertionDef) -> AssertionDef {
     }
 }
 
-fn canonical_property(property: &Property) -> Property {
+pub(super) fn canonical_property(property: &Property) -> Property {
     match property {
         Property::Always { predicate } => Property::Always {
             predicate: canonical_predicate(predicate),
@@ -2006,7 +2053,7 @@ fn canonical_property(property: &Property) -> Property {
     }
 }
 
-fn canonical_predicate(predicate: &Predicate) -> Predicate {
+pub(super) fn canonical_predicate(predicate: &Predicate) -> Predicate {
     match predicate {
         Predicate::At { at } => Predicate::At { at: *at },
         Predicate::After { duration, of } => Predicate::After {
@@ -2073,7 +2120,7 @@ fn canonical_predicate(predicate: &Predicate) -> Predicate {
     }
 }
 
-fn canonical_predicate_set(predicates: &[Predicate]) -> Vec<Predicate> {
+pub(super) fn canonical_predicate_set(predicates: &[Predicate]) -> Vec<Predicate> {
     let mut predicates = predicates
         .iter()
         .map(canonical_predicate)

@@ -1,3 +1,7 @@
+//! Shared-memory frame entries and per-node slot state.
+
+use super::*;
+
 /// A shared-memory frame whose delivery time is carried in band.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -10,7 +14,7 @@ pub struct FrameEntry {
     pub seq: u32,
     /// The number of valid bytes in [`FrameEntry::data`].
     pub len: u16,
-    _pad: [u8; 6],
+    pub(super) _pad: [u8; 6],
     /// The fixed-capacity frame payload buffer.
     pub data: [u8; MAX_FRAME_DATA],
 }
@@ -33,22 +37,23 @@ pub const FRAME_ENTRY_SIZE: usize = core::mem::size_of::<FrameEntry>();
 /// Wire alignment of one [`FrameEntry`].
 pub const FRAME_ENTRY_ALIGN: usize = core::mem::align_of::<FrameEntry>();
 
-const _: () = assert!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET == 0);
-const _: () = assert!(FRAME_ENTRY_SRC_NODE_OFFSET == 8);
-const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
-const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
-const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
-const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
-const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
-const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
-const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
+pub(super) const _: () = assert!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET == 0);
+pub(super) const _: () = assert!(FRAME_ENTRY_SRC_NODE_OFFSET == 8);
+pub(super) const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
+pub(super) const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
+pub(super) const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
+pub(super) const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
+pub(super) const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
+pub(super) const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
+pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
+pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
+pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
+pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
+pub(super) const _: () =
+    assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
 #[rustfmt::skip]
-const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
-const _: () = assert!(core::mem::align_of::<FrameEntry>() == 8);
+pub(super) const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
+pub(super) const _: () = assert!(core::mem::align_of::<FrameEntry>() == 8);
 
 /// Node status: actively retiring instructions or processing an I/O burst.
 pub const STATUS_RUNNING: u8 = 0;
@@ -133,19 +138,19 @@ pub const NODE_SLOT_SIZE: usize = core::mem::size_of::<NodeSlot>();
 /// Wire alignment of one [`NodeSlot`].
 pub const NODE_SLOT_ALIGN: usize = core::mem::align_of::<NodeSlot>();
 
-const _: () = assert!(NODE_SLOT_CURRENT_ICOUNT_OFFSET == 0);
-const _: () = assert!(NODE_SLOT_CURRENT_NS_OFFSET == 8);
-const _: () = assert!(NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET == 16);
-const _: () = assert!(NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET == 24);
-const _: () = assert!(NODE_SLOT_WAKE_SIGNAL_OFFSET == 32);
-const _: () = assert!(NODE_SLOT_STATUS_OFFSET == 36);
-const _: () = assert!(NODE_SLOT_KIND_OFFSET == 37);
-const _: () = assert!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET == 38);
-const _: () = assert!(NODE_SLOT_PAD0_OFFSET == 39);
-const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);
-const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 44);
-const _: () = assert!(NODE_SLOT_SIZE == 128);
-const _: () = assert!(NODE_SLOT_ALIGN == 128);
+pub(super) const _: () = assert!(NODE_SLOT_CURRENT_ICOUNT_OFFSET == 0);
+pub(super) const _: () = assert!(NODE_SLOT_CURRENT_NS_OFFSET == 8);
+pub(super) const _: () = assert!(NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET == 16);
+pub(super) const _: () = assert!(NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET == 24);
+pub(super) const _: () = assert!(NODE_SLOT_WAKE_SIGNAL_OFFSET == 32);
+pub(super) const _: () = assert!(NODE_SLOT_STATUS_OFFSET == 36);
+pub(super) const _: () = assert!(NODE_SLOT_KIND_OFFSET == 37);
+pub(super) const _: () = assert!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET == 38);
+pub(super) const _: () = assert!(NODE_SLOT_PAD0_OFFSET == 39);
+pub(super) const _: () = assert!(NODE_SLOT_PUBLISH_GEN_OFFSET == 40);
+pub(super) const _: () = assert!(NODE_SLOT_RESERVED_OFFSET == 44);
+pub(super) const _: () = assert!(NODE_SLOT_SIZE == 128);
+pub(super) const _: () = assert!(NODE_SLOT_ALIGN == 128);
 
 impl NodeSlot {
     /// Builds a zeroed node slot with `max_advance_icount` held at the boot barrier.
@@ -154,7 +159,7 @@ impl NodeSlot {
         Self::new_with_status(kind, STATUS_IDLE)
     }
 
-    const fn new_with_status(kind: u8, status: u8) -> Self {
+    pub(super) const fn new_with_status(kind: u8, status: u8) -> Self {
         Self {
             current_icount: AtomicU64::new(0),
             current_ns: AtomicU64::new(0),
@@ -503,7 +508,10 @@ impl NodeSlot {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
     }
 
-    fn validate_scheduler_ceiling(&self, ceiling: AdvanceCeiling) -> Result<(), NodeSlotError> {
+    pub(super) fn validate_scheduler_ceiling(
+        &self,
+        ceiling: AdvanceCeiling,
+    ) -> Result<(), NodeSlotError> {
         let current_icount = self.current_icount.load(Ordering::Acquire);
         if ceiling.max_advance_icount < current_icount {
             Err(NodeSlotError::CeilingBeforePublishedCurrent {
@@ -515,7 +523,7 @@ impl NodeSlot {
         }
     }
 
-    fn publish_prevalidated_scheduler_ceiling(
+    pub(super) fn publish_prevalidated_scheduler_ceiling(
         &self,
         ceiling: AdvanceCeiling,
     ) -> Result<WakeAction, NodeSlotError> {
@@ -533,7 +541,7 @@ impl NodeSlot {
         status != STATUS_IDLE || max_advance_icount >= idle_wake_icount
     }
 
-    fn wake_after_signal_increment(&self) -> Result<WakeAction, FutexError> {
+    pub(super) fn wake_after_signal_increment(&self) -> Result<WakeAction, FutexError> {
         let previous = self.wake_signal.fetch_add(1, Ordering::Release);
         let futex = self.futex_wake_nonprivate(1)?;
         Ok(WakeAction::Wake {
@@ -676,7 +684,7 @@ pub fn icount_to_virtual_ns(icount: u64, shift_bits: u8) -> Result<u64, NodeSlot
 }
 
 #[cfg(target_os = "linux")]
-fn futex_wake_nonprivate(
+pub(super) fn futex_wake_nonprivate(
     wake_signal: &AtomicU32,
     max_waiters: u32,
 ) -> Result<FutexWakeResult, FutexError> {
@@ -704,7 +712,7 @@ fn futex_wake_nonprivate(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn futex_wake_nonprivate(
+pub(super) fn futex_wake_nonprivate(
     _wake_signal: &AtomicU32,
     _max_waiters: u32,
 ) -> Result<FutexWakeResult, FutexError> {
@@ -715,7 +723,7 @@ fn futex_wake_nonprivate(
 }
 
 #[cfg(target_os = "linux")]
-fn futex_wait_nonprivate(
+pub(super) fn futex_wait_nonprivate(
     wake_signal: &AtomicU32,
     expected: u32,
 ) -> Result<FutexWaitOutcome, FutexError> {
@@ -745,7 +753,7 @@ fn futex_wait_nonprivate(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn futex_wait_nonprivate(
+pub(super) fn futex_wait_nonprivate(
     _wake_signal: &AtomicU32,
     _expected: u32,
 ) -> Result<FutexWaitOutcome, FutexError> {
@@ -753,7 +761,7 @@ fn futex_wait_nonprivate(
 }
 
 #[cfg(target_os = "linux")]
-fn last_futex_error(operation: &'static str) -> FutexError {
+pub(super) fn last_futex_error(operation: &'static str) -> FutexError {
     FutexError::Syscall {
         operation,
         errno: last_errno(),
@@ -761,7 +769,7 @@ fn last_futex_error(operation: &'static str) -> FutexError {
 }
 
 #[cfg(target_os = "linux")]
-fn last_errno() -> i32 {
+pub(super) fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
@@ -839,7 +847,7 @@ impl FrameEntry {
         self._pad.iter().all(|byte| *byte == 0)
     }
 
-    fn canonicalized_for_snapshot(&self) -> Result<Self, SpscRingError> {
+    pub(super) fn canonicalized_for_snapshot(&self) -> Result<Self, SpscRingError> {
         let len = usize::from(self.len);
         if len > MAX_FRAME_DATA {
             return Err(SpscRingError::InvalidFrameLength {

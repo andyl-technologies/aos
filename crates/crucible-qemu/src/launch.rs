@@ -414,6 +414,34 @@ impl QemuLaunchCommand {
         self.plugin_coverage
     }
 
+    /// Appends one content-addressed observation-only QEMU plugin.
+    ///
+    /// This is used by loaded-QEMU gates that need an independent fingerprint
+    /// observer alongside the production control plugin. The complete argument
+    /// remains part of [`Self::command_line_hash_material`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuLaunchCommandError`] when the argument is unstable text,
+    /// its shared-object prefix is not an AOS store path, or the extended argv
+    /// fails deterministic pre-spawn validation.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_observation_plugin(
+        mut self,
+        plugin_argument: impl Into<String>,
+    ) -> Result<Self, QemuLaunchCommandError> {
+        let plugin_argument = plugin_argument.into();
+        validate_launch_text("observation_plugin_argument", &plugin_argument)?;
+        let plugin_path = plugin_argument
+            .split_once(',')
+            .map_or(plugin_argument.as_str(), |(path, _arguments)| path);
+        validate_store_path("observation_plugin_path", plugin_path)?;
+        self.args.extend(["-plugin".to_owned(), plugin_argument]);
+        validate_pre_spawn_qemu_launch_args(&self.args)
+            .map_err(|source| QemuLaunchCommandError::PreSpawnValidation { source })?;
+        Ok(self)
+    }
+
     /// Returns canonical material for hashing the complete QEMU command line.
     #[must_use]
     pub fn command_line_hash_material(&self) -> String {

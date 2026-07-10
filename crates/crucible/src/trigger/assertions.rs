@@ -1,4 +1,6 @@
-// Assertion outcomes, replay, offline checking, evaluation, and lifecycle state.
+//! Assertion outcomes, replay, offline checking, evaluation, and lifecycle state.
+
+use super::*;
 /// Terminal kind for one host-side assertion outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostAssertionOutcomeKind {
@@ -88,10 +90,10 @@ pub struct HostAssertionOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct HostAssertionViolationEvidence {
-    at_icount: Option<Icount>,
-    node: Option<NodeId>,
-    observed: String,
+pub(super) struct HostAssertionViolationEvidence {
+    pub(super) at_icount: Option<Icount>,
+    pub(super) node: Option<NodeId>,
+    pub(super) observed: String,
 }
 
 /// Deterministic violation record derived from the retained event log.
@@ -760,8 +762,8 @@ impl OfflineAssertionChecker {
 /// segments using the scheduler's canonical segment and prefix hashing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordedAssertionLog {
-    entries: Vec<SchedulerEventLogEntry>,
-    prefix_offsets: BTreeMap<u64, EventLogOffset>,
+    pub(super) entries: Vec<SchedulerEventLogEntry>,
+    pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
 }
 
 impl RecordedAssertionLog {
@@ -1257,7 +1259,7 @@ impl HostAssertionEvaluator {
 }
 
 #[derive(Clone, Debug)]
-struct HostAssertionState {
+pub(super) struct HostAssertionState {
     assertion: AssertionDef,
     lifecycle: PropertyLifecycleState,
     terminal: Option<HostAssertionTerminal>,
@@ -1269,22 +1271,22 @@ struct HostAssertionState {
 }
 
 #[derive(Clone, Debug)]
-struct GuestMarkerAssertionState {
-    id: AssertionId,
-    lifecycle: PropertyLifecycleState,
-    message: String,
-    kind: GuestAssertionKind,
-    must_hit: bool,
-    details: Vec<GuestAssertionDetail>,
-    location: String,
-    observed_true: bool,
-    last_icount: Option<Icount>,
-    last_node: Option<NodeId>,
-    terminal: Option<HostAssertionTerminal>,
+pub(super) struct GuestMarkerAssertionState {
+    pub(super) id: AssertionId,
+    pub(super) lifecycle: PropertyLifecycleState,
+    pub(super) message: String,
+    pub(super) kind: GuestAssertionKind,
+    pub(super) must_hit: bool,
+    pub(super) details: Vec<GuestAssertionDetail>,
+    pub(super) location: String,
+    pub(super) observed_true: bool,
+    pub(super) last_icount: Option<Icount>,
+    pub(super) last_node: Option<NodeId>,
+    pub(super) terminal: Option<HostAssertionTerminal>,
 }
 
 impl GuestMarkerAssertionState {
-    fn new(marker: &GuestAssertionMarker) -> Self {
+    pub(super) fn new(marker: &GuestAssertionMarker) -> Self {
         Self {
             id: marker.id.clone(),
             lifecycle: PropertyLifecycleState::Declared,
@@ -1300,7 +1302,7 @@ impl GuestMarkerAssertionState {
         }
     }
 
-    fn observe_payload(
+    pub(super) fn observe_payload(
         &mut self,
         retired_icount: Icount,
         node: &NodeId,
@@ -1340,7 +1342,7 @@ impl GuestMarkerAssertionState {
         })
     }
 
-    fn terminal(
+    pub(super) fn terminal(
         &mut self,
         kind: HostAssertionOutcomeKind,
         at: VirtualTime,
@@ -1349,7 +1351,7 @@ impl GuestMarkerAssertionState {
         self.terminal_with_evidence(kind, at, reason, None)
     }
 
-    fn terminal_with_evidence(
+    pub(super) fn terminal_with_evidence(
         &mut self,
         kind: HostAssertionOutcomeKind,
         at: VirtualTime,
@@ -1473,7 +1475,7 @@ impl HostAssertionState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct HostAssertionTerminal {
+pub(super) struct HostAssertionTerminal {
     kind: HostAssertionOutcomeKind,
     lifecycle: PropertyLifecycleState,
     at: VirtualTime,
@@ -1482,7 +1484,7 @@ struct HostAssertionTerminal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct HostAssertionProximityMinimum {
+pub(super) struct HostAssertionProximityMinimum {
     distance: u128,
     at: VirtualTime,
     event_log_offset: EventLogOffset,
@@ -1508,12 +1510,12 @@ impl HostAssertionProximityMinimum {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct EventuallyObligation {
+pub(super) struct EventuallyObligation {
     triggered_at: VirtualTime,
     deadline: VirtualTime,
 }
 
-fn observe_host_assertion_state<O>(
+pub(super) fn observe_host_assertion_state<O>(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
     oracle: &mut O,
@@ -1640,7 +1642,7 @@ where
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn observe_eventually_assertion<O>(
+pub(super) fn observe_eventually_assertion<O>(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
     oracle: &mut O,
@@ -1761,7 +1763,7 @@ where
     None
 }
 
-fn observe_eventually_deadline_state<O>(
+pub(super) fn observe_eventually_deadline_state<O>(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
     oracle: &mut O,
@@ -1835,7 +1837,7 @@ where
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn observe_reachability_assertion<O>(
+pub(super) fn observe_reachability_assertion<O>(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
     oracle: &mut O,
@@ -1903,7 +1905,7 @@ where
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn finalize_host_assertion_state<O>(
+pub(super) fn finalize_host_assertion_state<O>(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
     oracle: &mut O,
@@ -2022,7 +2024,7 @@ fn finalize_host_assertion_state<O>(
     }
 }
 
-fn finalize_eventually_assertion(
+pub(super) fn finalize_eventually_assertion(
     state: &mut HostAssertionState,
     prefix: &ConditionEventLogPrefix,
     trigger: &Condition,
@@ -2090,7 +2092,7 @@ fn finalize_eventually_assertion(
     }
 }
 
-fn property_quantifier_kind(property: &Property) -> AssertionQuantifierKind {
+pub(super) fn property_quantifier_kind(property: &Property) -> AssertionQuantifierKind {
     match property {
         Property::Always { .. } => AssertionQuantifierKind::Always,
         Property::Sometimes { .. } => AssertionQuantifierKind::Sometimes,
@@ -2100,7 +2102,7 @@ fn property_quantifier_kind(property: &Property) -> AssertionQuantifierKind {
     }
 }
 
-fn guest_assertion_quantifier_kind(kind: GuestAssertionKind) -> AssertionQuantifierKind {
+pub(super) fn guest_assertion_quantifier_kind(kind: GuestAssertionKind) -> AssertionQuantifierKind {
     match kind {
         GuestAssertionKind::Always => AssertionQuantifierKind::GuestAlways,
         GuestAssertionKind::Sometimes => AssertionQuantifierKind::GuestSometimes,
@@ -2109,7 +2111,7 @@ fn guest_assertion_quantifier_kind(kind: GuestAssertionKind) -> AssertionQuantif
     }
 }
 
-fn host_assertion_violations_from_outcomes(
+pub(super) fn host_assertion_violations_from_outcomes(
     outcomes: &[HostAssertionOutcome],
     prefix: &ConditionEventLogPrefix,
     reproduction_artifact: ContentHash,
@@ -2148,7 +2150,7 @@ fn host_assertion_violations_from_outcomes(
     violations
 }
 
-fn assertion_replay_report_for_log_with_oracle<O>(
+pub(super) fn assertion_replay_report_for_log_with_oracle<O>(
     artifact: ContentHash,
     properties: &Properties,
     world: &World,
@@ -2166,7 +2168,7 @@ where
     ))
 }
 
-fn host_assertion_report_with_reproduction_artifact(
+pub(super) fn host_assertion_report_with_reproduction_artifact(
     mut report: HostAssertionReport,
     artifact: ContentHash,
 ) -> HostAssertionReport {
@@ -2178,7 +2180,7 @@ fn host_assertion_report_with_reproduction_artifact(
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn assertion_violation_replay_divergence(
+pub(super) fn assertion_violation_replay_divergence(
     artifact: ContentHash,
     schedule: &Schedule,
     properties: &Properties,

@@ -367,6 +367,12 @@ impl PluginRegistrationSequence {
     }
 
     #[cfg(test)]
+    /// Registers the modeled callback capabilities without a live QEMU owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginRegistrationSequenceError`] when the registration step
+    /// is out of order or any required callback capability is absent.
     pub(crate) fn register_callbacks_for_test(
         &mut self,
         args: &PluginArgs,

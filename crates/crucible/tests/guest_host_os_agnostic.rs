@@ -148,7 +148,7 @@ fn black_box_contract_catalog_has_no_guest_software_assumptions() {
 #[test]
 fn non_linux_opaque_image_uses_black_box_observation_without_guest_contract() {
     let world = opaque_non_linux_world();
-    let node = &world.nodes()[0];
+    let node = &world.vm_nodes()[0];
     assert_eq!(node.arch, VmArchitecture::Aarch64);
     assert_eq!(node.white_box, WhiteBoxPolicy::Disabled);
     assert_eq!(node.root_image, Some(opaque_non_linux_image_ref()));

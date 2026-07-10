@@ -1,14 +1,16 @@
-// Scenario and World construction plus immutable launch identity.
+//! Scenario and World construction plus immutable launch identity.
+
+use super::*;
 
 /// A handle to an immutable scenario definition.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioDef {
     /// The content address of the scenario definition.
-    id: ContentHash,
+    pub(super) id: ContentHash,
     /// The root entropy carried by this scenario definition.
-    seed: Seed,
+    pub(super) seed: Seed,
     /// The maximum number of app-random decisions admitted for one run.
-    app_random_draw_cap: u64,
+    pub(super) app_random_draw_cap: u64,
 }
 
 impl ScenarioDef {
@@ -659,7 +661,7 @@ impl World {
         }
     }
 
-    fn scenario_def_from_components_with_app_random_draw_cap(
+    pub(super) fn scenario_def_from_components_with_app_random_draw_cap(
         &self,
         plan: &Plan,
         properties: &Properties,

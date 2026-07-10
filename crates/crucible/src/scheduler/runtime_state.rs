@@ -1,4 +1,6 @@
-// Terminal conditions, quiescence, World-link runtime, and scheduler-owned state.
+//! Terminal conditions, quiescence, World-link runtime, and scheduler-owned state.
+
+use super::*;
 /// The terminal scheduler condition reached by a liveness run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchedulerTerminal {
@@ -240,20 +242,20 @@ pub enum SchedulerWorldInstantiationError {
 /// One concrete directed network link owned by the production scheduler.
 #[derive(Clone, Debug)]
 pub struct WorldNetworkLinkRuntime {
-    canonical_id: LinkId,
-    legacy_id: Option<LinkId>,
-    endpoint_a: NodeId,
-    endpoint_b: NodeId,
-    direction: NetworkLinkDirection,
-    scheduler_node: SchedulerNodeId,
-    base_faults: crucible_device::LinkFaults,
-    rng_stream: RngStreamId,
-    fault_id: crate::DeviceId,
-    link: crucible_device::NetLink,
+    pub(super) canonical_id: LinkId,
+    pub(super) legacy_id: Option<LinkId>,
+    pub(super) endpoint_a: NodeId,
+    pub(super) endpoint_b: NodeId,
+    pub(super) direction: NetworkLinkDirection,
+    pub(super) scheduler_node: SchedulerNodeId,
+    pub(super) base_faults: crucible_device::LinkFaults,
+    pub(super) rng_stream: RngStreamId,
+    pub(super) fault_id: crate::DeviceId,
+    pub(super) link: crucible_device::NetLink,
 }
 
 impl WorldNetworkLinkRuntime {
-    fn matches(&self, link: &LinkId, direction: NetworkLinkDirection) -> bool {
+    pub(super) fn matches(&self, link: &LinkId, direction: NetworkLinkDirection) -> bool {
         self.direction == direction
             && (&self.canonical_id == link || self.legacy_id.as_ref() == Some(link))
     }
@@ -270,14 +272,14 @@ impl WorldNetworkLinkRuntime {
         self.direction
     }
 
-    fn source(&self) -> &NodeId {
+    pub(super) fn source(&self) -> &NodeId {
         match self.direction {
             NetworkLinkDirection::EndpointAToEndpointB => &self.endpoint_a,
             NetworkLinkDirection::EndpointBToEndpointA => &self.endpoint_b,
         }
     }
 
-    fn target(&self) -> &NodeId {
+    pub(super) fn target(&self) -> &NodeId {
         match self.direction {
             NetworkLinkDirection::EndpointAToEndpointB => &self.endpoint_b,
             NetworkLinkDirection::EndpointBToEndpointA => &self.endpoint_a,
@@ -305,7 +307,7 @@ impl WorldNetworkLinkRuntime {
         self.emit_from_position(seed, self.link.rng_position(), frame, policy)
     }
 
-    fn emit_from_position(
+    pub(super) fn emit_from_position(
         &mut self,
         seed: Seed,
         rng_position: u64,
@@ -327,22 +329,22 @@ impl WorldNetworkLinkRuntime {
 /// The single authoritative scheduler used by the liveness gate.
 #[derive(Clone, Debug)]
 pub struct SingleScheduler {
-    configuration: Configuration,
-    timeline: SharedTimeline,
-    quantum_budget: u64,
-    time_limit: SimInstant,
-    rendezvous: SchedulerRendezvous,
-    effective_topology: SchedulerLookaheadGraph,
-    nodes: Vec<RuntimeSchedulerNode>,
-    topology_changes: Vec<SchedulerTopologyChange>,
-    run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
-    run_subdivision_records: Vec<SchedulerRunSubdivisionRecord>,
-    preemption_requests: Vec<PreemptionDecision>,
-    preemption_applications: Vec<SchedulerPreemptionApplication>,
-    control_admissions: Vec<SchedulerControlAdmission>,
-    control_applications: Vec<SchedulerControlApplication>,
-    pending_events: Vec<ScheduledEvent>,
-    event_sequences: EventSequenceState,
+    pub(super) configuration: Configuration,
+    pub(super) timeline: SharedTimeline,
+    pub(super) quantum_budget: u64,
+    pub(super) time_limit: SimInstant,
+    pub(super) rendezvous: SchedulerRendezvous,
+    pub(super) effective_topology: SchedulerLookaheadGraph,
+    pub(super) nodes: Vec<RuntimeSchedulerNode>,
+    pub(super) topology_changes: Vec<SchedulerTopologyChange>,
+    pub(super) run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
+    pub(super) run_subdivision_records: Vec<SchedulerRunSubdivisionRecord>,
+    pub(super) preemption_requests: Vec<PreemptionDecision>,
+    pub(super) preemption_applications: Vec<SchedulerPreemptionApplication>,
+    pub(super) control_admissions: Vec<SchedulerControlAdmission>,
+    pub(super) control_applications: Vec<SchedulerControlApplication>,
+    pub(super) pending_events: Vec<ScheduledEvent>,
+    pub(super) event_sequences: EventSequenceState,
     /// Exact-completion I/O scheduling sub-nodes (disk/9p) keyed by target VM.
     ///
     /// Each [`DeviceSchedulingSubNode`](crate::device_subnode::DeviceSchedulingSubNode)
@@ -350,20 +352,22 @@ pub struct SingleScheduler {
     /// node's exact I/O-completion horizon term and are delivered at their exact
     /// icount through [`SingleScheduler::resolve_device_completions`] ([IO-1],
     /// [IO-3], [SCHED-29]).
-    device_sub_nodes: BTreeMap<NodeId, Vec<crate::device_subnode::DeviceSchedulingSubNode>>,
+    pub(super) device_sub_nodes:
+        BTreeMap<NodeId, Vec<crate::device_subnode::DeviceSchedulingSubNode>>,
     /// Concrete directed network links derived from the logical World.
     ///
     /// Each symmetric [`LinkDef`] produces two scheduler-owned [`crucible_device::NetLink`]
     /// values. Trigger/control network faults update these live tables directly;
     /// callers may only borrow the links through the World-aware accessors.
-    world_network_links: BTreeMap<(LinkId, NetworkLinkDirection), WorldNetworkLinkRuntime>,
+    pub(super) world_network_links:
+        BTreeMap<(LinkId, NetworkLinkDirection), WorldNetworkLinkRuntime>,
     /// Shared logical RNG cursor per symmetric World link.
     ///
     /// Both directed runtime edges consume this one stream in scheduler emission
     /// order; their concrete queues and clocks remain direction-local.
-    world_network_rng_positions: BTreeMap<LinkId, u64>,
+    pub(super) world_network_rng_positions: BTreeMap<LinkId, u64>,
     /// Link-fault decisions awaiting the next authoritative EMIT/STEP boundary.
-    world_network_decisions: Vec<Decision>,
+    pub(super) world_network_decisions: Vec<Decision>,
     /// The earliest undelivered device-completion virtual time per target node,
     /// recomputed each quantum by
     /// [`refresh_device_horizons`](SingleScheduler::refresh_device_horizons).
@@ -374,7 +378,7 @@ pub struct SingleScheduler {
     /// happens solely on the RESOLVE path through
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// and is never double-counted.
-    device_horizons: BTreeMap<NodeId, SimInstant>,
+    pub(super) device_horizons: BTreeMap<NodeId, SimInstant>,
     /// Test-only fault injection: when `true`,
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// stamps each I/O completion's key with the consumer's *frontier* icount
@@ -383,25 +387,25 @@ pub struct SingleScheduler {
     /// Used by `gate:layer1-injection` falsifiability tests to prove the gates go
     /// red when delivery is not icount-exact. It is never set in production.
     #[cfg(test)]
-    broken_device_delivery_stamp: bool,
-    control_inbox: Vec<ControlOperation>,
-    decision_rng_cursor: DecisionRngState,
-    event_log: EventLog,
-    trigger_actions: TriggerActionState,
-    trigger_static_topology: Option<WorldStaticTopology>,
+    pub(super) broken_device_delivery_stamp: bool,
+    pub(super) control_inbox: Vec<ControlOperation>,
+    pub(super) decision_rng_cursor: DecisionRngState,
+    pub(super) event_log: EventLog,
+    pub(super) trigger_actions: TriggerActionState,
+    pub(super) trigger_static_topology: Option<WorldStaticTopology>,
     /// Canonical VM, device, and network-link scheduler identities consumed from
     /// the World projection at instantiation.
-    world_scheduling_nodes: BTreeSet<SchedulerNodeId>,
-    frontier: VirtualTime,
-    quanta: u64,
-    topology_epoch: u64,
-    topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
-    node_crash_applications: Vec<SchedulerNodeCrashApplication>,
-    node_restart_applications: Vec<SchedulerNodeRestartApplication>,
-    rendezvous_records: Vec<SchedulerRendezvousRecord>,
-    boundary_yields: u64,
-    ceiling_publications: Vec<SchedulerRunCeilingPublication>,
-    lock_held: bool,
-    last_advance: Option<NodeAdvance>,
-    last_topology_recompute: bool,
+    pub(super) world_scheduling_nodes: BTreeSet<SchedulerNodeId>,
+    pub(super) frontier: VirtualTime,
+    pub(super) quanta: u64,
+    pub(super) topology_epoch: u64,
+    pub(super) topology_change_applications: Vec<SchedulerTopologyChangeApplication>,
+    pub(super) node_crash_applications: Vec<SchedulerNodeCrashApplication>,
+    pub(super) node_restart_applications: Vec<SchedulerNodeRestartApplication>,
+    pub(super) rendezvous_records: Vec<SchedulerRendezvousRecord>,
+    pub(super) boundary_yields: u64,
+    pub(super) ceiling_publications: Vec<SchedulerRunCeilingPublication>,
+    pub(super) lock_held: bool,
+    pub(super) last_advance: Option<NodeAdvance>,
+    pub(super) last_topology_recompute: bool,
 }

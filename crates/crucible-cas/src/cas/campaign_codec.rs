@@ -1,9 +1,13 @@
-fn content_path(root: &Path, key: &ContentHash) -> PathBuf {
+//! Canonical campaign codecs, hashes, and on-disk path helpers.
+
+use super::*;
+
+pub(super) fn content_path(root: &Path, key: &ContentHash) -> PathBuf {
     let hex = key.to_hex();
     root.join(&hex[0..2]).join(hex)
 }
 
-fn hex_nibble(byte: u8) -> Option<u8> {
+pub(super) fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),
@@ -12,7 +16,7 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn validate_claim_request(request: &FrontierClaimRequest) -> Result<(), CasError> {
+pub(super) fn validate_claim_request(request: &FrontierClaimRequest) -> Result<(), CasError> {
     if request.host_id.is_empty() {
         return Err(CasError::InvalidLease {
             reason: "host id must not be empty",
@@ -37,7 +41,7 @@ fn validate_claim_request(request: &FrontierClaimRequest) -> Result<(), CasError
     Ok(())
 }
 
-fn create_content_record(path: &Path, material: &str) -> Result<bool, CasError> {
+pub(super) fn create_content_record(path: &Path, material: &str) -> Result<bool, CasError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| CasError::Io {
             operation: "create-dir",
@@ -66,7 +70,10 @@ fn create_content_record(path: &Path, material: &str) -> Result<bool, CasError> 
     }
 }
 
-fn coverage_record_material(coverage_fingerprint: &ContentHash, entry: &ContentHash) -> String {
+pub(super) fn coverage_record_material(
+    coverage_fingerprint: &ContentHash,
+    entry: &ContentHash,
+) -> String {
     format!(
         "format=crucible.coverage-map-entry.v1\ncoverage_fingerprint={}\nentry={}\n",
         coverage_fingerprint.to_hex(),
@@ -74,7 +81,7 @@ fn coverage_record_material(coverage_fingerprint: &ContentHash, entry: &ContentH
     )
 }
 
-fn coverage_fingerprint_record_material(
+pub(super) fn coverage_fingerprint_record_material(
     coverage_fingerprint: &ContentHash,
     entries: &[ContentHash],
 ) -> String {
@@ -89,7 +96,10 @@ fn coverage_fingerprint_record_material(
     )
 }
 
-fn reduction_record_material(fingerprint: &ContentHash, representative: &ContentHash) -> String {
+pub(super) fn reduction_record_material(
+    fingerprint: &ContentHash,
+    representative: &ContentHash,
+) -> String {
     format!(
         "format=crucible.reduction-fingerprint.v1\nfingerprint={}\nrepresentative={}\n",
         fingerprint.to_hex(),
@@ -97,7 +107,7 @@ fn reduction_record_material(fingerprint: &ContentHash, representative: &Content
     )
 }
 
-fn manifest_record_material(manifest: &CampaignManifest) -> String {
+pub(super) fn manifest_record_material(manifest: &CampaignManifest) -> String {
     format!(
         "format=crucible.campaign-manifest.v1\ncorpus_root={}\ncoverage_map_root={}\nfindings_root={}\ngenesis_pin={}\nprovenance.crucible_version={}\nprovenance.qemu_build={}\nprovenance.abi_versions={}\n",
         manifest.corpus_root.to_hex(),
@@ -110,14 +120,17 @@ fn manifest_record_material(manifest: &CampaignManifest) -> String {
     )
 }
 
-fn campaign_provenance_material(provenance: &CampaignProvenance) -> String {
+pub(super) fn campaign_provenance_material(provenance: &CampaignProvenance) -> String {
     format!(
         "format={CAMPAIGN_PROVENANCE_SCHEMA}\ncrucible_version={}\nqemu_build={}\nabi_versions={}\n",
         provenance.crucible_version, provenance.qemu_build, provenance.abi_versions,
     )
 }
 
-fn campaign_lineage_material(manifest: &CampaignManifest, provenance_key: ContentHash) -> String {
+pub(super) fn campaign_lineage_material(
+    manifest: &CampaignManifest,
+    provenance_key: ContentHash,
+) -> String {
     format!(
         "format={CAMPAIGN_LINEAGE_SCHEMA}\ngenesis_pin={}\nprovenance_key={provenance_key}\n",
         manifest.genesis_pin.to_hex(),
@@ -125,7 +138,7 @@ fn campaign_lineage_material(manifest: &CampaignManifest, provenance_key: Conten
     )
 }
 
-fn campaign_fresh_lineage_baseline_event_material(
+pub(super) fn campaign_fresh_lineage_baseline_event_material(
     event: &CampaignFreshLineageBaselineEvent,
 ) -> String {
     format!(
@@ -148,7 +161,7 @@ fn campaign_fresh_lineage_baseline_event_material(
     )
 }
 
-fn campaign_replay_input_material(artifact: &CampaignReplayArtifact) -> String {
+pub(super) fn campaign_replay_input_material(artifact: &CampaignReplayArtifact) -> String {
     format!(
         "format=crucible.campaign-replay-input.v1\ndefinition={}\nseed={}\nschedule={}\n",
         encode_hex(artifact.definition()),
@@ -157,7 +170,7 @@ fn campaign_replay_input_material(artifact: &CampaignReplayArtifact) -> String {
     )
 }
 
-fn campaign_replay_artifact_material(artifact: &CampaignReplayArtifact) -> String {
+pub(super) fn campaign_replay_artifact_material(artifact: &CampaignReplayArtifact) -> String {
     format!(
         "format=crucible.campaign-replay-artifact.v1\ndefinition={}\nseed={}\nschedule={}\nreplay_hash={}\n",
         encode_hex(artifact.definition()),
@@ -167,7 +180,9 @@ fn campaign_replay_artifact_material(artifact: &CampaignReplayArtifact) -> Strin
     )
 }
 
-fn campaign_corpus_record_material(entries: &BTreeMap<ContentHash, ContentHash>) -> String {
+pub(super) fn campaign_corpus_record_material(
+    entries: &BTreeMap<ContentHash, ContentHash>,
+) -> String {
     let mut material = String::from("format=crucible.campaign-corpus.v1\n");
     for (artifact_hash, replay_hash) in entries {
         material.push_str(&format!(
@@ -179,7 +194,7 @@ fn campaign_corpus_record_material(entries: &BTreeMap<ContentHash, ContentHash>)
     material
 }
 
-fn campaign_corpus_retention_record_material(
+pub(super) fn campaign_corpus_retention_record_material(
     source_root: ContentHash,
     policy: &CampaignCorpusRetentionPolicy,
     entries: &BTreeMap<ContentHash, ContentHash>,
@@ -200,7 +215,7 @@ fn campaign_corpus_retention_record_material(
     material
 }
 
-fn campaign_coverage_map_record_material(edges: &BTreeSet<ContentHash>) -> String {
+pub(super) fn campaign_coverage_map_record_material(edges: &BTreeSet<ContentHash>) -> String {
     let mut material = String::from("format=crucible.campaign-coverage-map.v1\n");
     for edge in edges {
         material.push_str(&format!("edge={}\n", edge.to_hex()));
@@ -208,7 +223,7 @@ fn campaign_coverage_map_record_material(edges: &BTreeSet<ContentHash>) -> Strin
     material
 }
 
-fn campaign_finding_record_material(
+pub(super) fn campaign_finding_record_material(
     finding: &CampaignFinding,
     artifact_hash: ContentHash,
 ) -> String {
@@ -220,7 +235,7 @@ fn campaign_finding_record_material(
     )
 }
 
-fn campaign_findings_ledger_record_material(
+pub(super) fn campaign_findings_ledger_record_material(
     entries: &BTreeMap<ContentHash, ContentHash>,
 ) -> String {
     let mut material = String::from("format=crucible.campaign-findings-ledger.v1\n");
@@ -234,7 +249,7 @@ fn campaign_findings_ledger_record_material(
     material
 }
 
-fn campaign_head_entry_material(generation: u64, manifest_hash: ContentHash) -> String {
+pub(super) fn campaign_head_entry_material(generation: u64, manifest_hash: ContentHash) -> String {
     let checksum = campaign_head_entry_checksum(generation, manifest_hash);
     format!(
         "entry generation={generation} manifest={} checksum={}\n",
@@ -243,7 +258,10 @@ fn campaign_head_entry_material(generation: u64, manifest_hash: ContentHash) -> 
     )
 }
 
-fn campaign_head_entry_checksum(generation: u64, manifest_hash: ContentHash) -> ContentHash {
+pub(super) fn campaign_head_entry_checksum(
+    generation: u64,
+    manifest_hash: ContentHash,
+) -> ContentHash {
     ContentHash::from_bytes(
         format!(
             "crucible.campaign-head-entry.v1\ngeneration={generation}\nmanifest={}\n",
@@ -253,7 +271,11 @@ fn campaign_head_entry_checksum(generation: u64, manifest_hash: ContentHash) -> 
     )
 }
 
-fn frontier_lease_id(node: &ContentHash, owner: &str, expires_at_tick: u64) -> ContentHash {
+pub(super) fn frontier_lease_id(
+    node: &ContentHash,
+    owner: &str,
+    expires_at_tick: u64,
+) -> ContentHash {
     ContentHash::from_bytes(
         format!(
             "crucible.frontier-lease.v1\nnode={}\nowner={owner}\nexpires_at_tick={expires_at_tick}\n",
@@ -263,7 +285,7 @@ fn frontier_lease_id(node: &ContentHash, owner: &str, expires_at_tick: u64) -> C
     )
 }
 
-fn lease_record_material(lease: &FrontierLease) -> String {
+pub(super) fn lease_record_material(lease: &FrontierLease) -> String {
     format!(
         "format=crucible.frontier-lease.v1\nnode={}\nowner={}\nexpires_at_tick={}\nlease_id={}\n",
         lease.node.to_hex(),
@@ -273,7 +295,7 @@ fn lease_record_material(lease: &FrontierLease) -> String {
     )
 }
 
-fn claim_lock_record_material(
+pub(super) fn claim_lock_record_material(
     node: &ContentHash,
     acquired_at_tick: u64,
     expires_at_tick: u64,
@@ -284,7 +306,7 @@ fn claim_lock_record_material(
     )
 }
 
-fn parse_lease_record(
+pub(super) fn parse_lease_record(
     path: &Path,
     expected_node: &ContentHash,
     material: &str,
@@ -346,7 +368,7 @@ fn parse_lease_record(
     })
 }
 
-fn parse_reduction_record(
+pub(super) fn parse_reduction_record(
     path: &Path,
     expected_fingerprint: &ContentHash,
     material: &str,
@@ -377,7 +399,10 @@ fn parse_reduction_record(
     parse_required_hash(path, &fields, "representative")
 }
 
-fn parse_manifest_record(path: &Path, material: &str) -> Result<CampaignManifest, CasError> {
+pub(super) fn parse_manifest_record(
+    path: &Path,
+    material: &str,
+) -> Result<CampaignManifest, CasError> {
     let fields = parse_key_value_record(path, material, "campaign manifest")?;
     if fields.get("format") != Some(&"crucible.campaign-manifest.v1") {
         return Err(CasError::InvalidCampaignRecord {
@@ -400,7 +425,7 @@ fn parse_manifest_record(path: &Path, material: &str) -> Result<CampaignManifest
     Ok(manifest)
 }
 
-fn parse_replay_artifact_record(
+pub(super) fn parse_replay_artifact_record(
     path: &Path,
     material: &str,
 ) -> Result<CampaignReplayArtifact, CasError> {
@@ -426,7 +451,7 @@ fn parse_replay_artifact_record(
     Ok(artifact)
 }
 
-fn parse_campaign_corpus_record(
+pub(super) fn parse_campaign_corpus_record(
     path: &Path,
     material: &str,
 ) -> Result<BTreeMap<ContentHash, ContentHash>, CasError> {
@@ -453,7 +478,7 @@ fn parse_campaign_corpus_record(
     Ok(entries)
 }
 
-fn parse_campaign_corpus_retention_record(
+pub(super) fn parse_campaign_corpus_retention_record(
     path: &Path,
     material: &str,
 ) -> Result<CampaignCorpusRetentionRecord, CasError> {
@@ -545,7 +570,7 @@ fn parse_campaign_corpus_retention_record(
     })
 }
 
-fn parse_campaign_coverage_map_record(
+pub(super) fn parse_campaign_coverage_map_record(
     path: &Path,
     material: &str,
 ) -> Result<BTreeSet<ContentHash>, CasError> {
@@ -574,7 +599,7 @@ fn parse_campaign_coverage_map_record(
     Ok(edges)
 }
 
-fn parse_campaign_finding_record(
+pub(super) fn parse_campaign_finding_record(
     path: &Path,
     finding_hash: ContentHash,
     material: &str,
@@ -594,7 +619,7 @@ fn parse_campaign_finding_record(
     })
 }
 
-fn parse_campaign_findings_ledger_record(
+pub(super) fn parse_campaign_findings_ledger_record(
     path: &Path,
     material: &str,
 ) -> Result<BTreeMap<ContentHash, ContentHash>, CasError> {
@@ -621,7 +646,7 @@ fn parse_campaign_findings_ledger_record(
     Ok(findings)
 }
 
-fn parse_campaign_root_merge_record(
+pub(super) fn parse_campaign_root_merge_record(
     path: &Path,
     material: &str,
 ) -> Result<CampaignRootMerge, CasError> {
@@ -656,7 +681,7 @@ fn parse_campaign_root_merge_record(
     })
 }
 
-fn parse_fresh_lineage_baseline_event(
+pub(super) fn parse_fresh_lineage_baseline_event(
     path: &Path,
     baseline_event_hash: ContentHash,
     material: &str,
@@ -733,14 +758,14 @@ fn parse_fresh_lineage_baseline_event(
     Ok(event)
 }
 
-fn parse_campaign_head_record(
+pub(super) fn parse_campaign_head_record(
     path: &Path,
     material: &str,
 ) -> Result<Option<CampaignHeadPointer>, CasError> {
     parse_campaign_head_log_record(path, material)
 }
 
-fn parse_campaign_head_log_record(
+pub(super) fn parse_campaign_head_log_record(
     path: &Path,
     material: &str,
 ) -> Result<Option<CampaignHeadPointer>, CasError> {
@@ -766,7 +791,10 @@ fn parse_campaign_head_log_record(
     Ok(latest)
 }
 
-fn parse_campaign_head_entry(path: &Path, line: &str) -> Result<CampaignHeadPointer, CasError> {
+pub(super) fn parse_campaign_head_entry(
+    path: &Path,
+    line: &str,
+) -> Result<CampaignHeadPointer, CasError> {
     let Some(fields_material) = line.strip_prefix("entry ") else {
         return Err(CasError::InvalidCampaignRecord {
             path: path.to_path_buf(),
@@ -808,7 +836,7 @@ fn parse_campaign_head_entry(path: &Path, line: &str) -> Result<CampaignHeadPoin
     })
 }
 
-fn parse_claim_lock_record(
+pub(super) fn parse_claim_lock_record(
     path: &Path,
     expected_node: &ContentHash,
     material: &str,
@@ -853,7 +881,7 @@ fn parse_claim_lock_record(
     })
 }
 
-fn parse_key_value_record<'a>(
+pub(super) fn parse_key_value_record<'a>(
     path: &Path,
     material: &'a str,
     label: &'static str,
@@ -876,7 +904,7 @@ fn parse_key_value_record<'a>(
     Ok(fields)
 }
 
-fn parse_space_fields<'a>(
+pub(super) fn parse_space_fields<'a>(
     path: &Path,
     material: &'a str,
     label: &'static str,
@@ -898,7 +926,7 @@ fn parse_space_fields<'a>(
     Ok(fields)
 }
 
-fn parse_required_hash(
+pub(super) fn parse_required_hash(
     path: &Path,
     fields: &BTreeMap<&str, &str>,
     name: &'static str,
@@ -915,7 +943,7 @@ fn parse_required_hash(
     })
 }
 
-fn parse_required_string(
+pub(super) fn parse_required_string(
     path: &Path,
     fields: &BTreeMap<&str, &str>,
     name: &'static str,
@@ -929,7 +957,7 @@ fn parse_required_string(
     Ok((*value).to_string())
 }
 
-fn parse_required_campaign_hash(
+pub(super) fn parse_required_campaign_hash(
     path: &Path,
     fields: &BTreeMap<&str, &str>,
     name: &'static str,
@@ -946,7 +974,7 @@ fn parse_required_campaign_hash(
     })
 }
 
-fn decode_hex_field(
+pub(super) fn decode_hex_field(
     path: &Path,
     fields: &BTreeMap<&str, &str>,
     name: &'static str,
@@ -963,19 +991,21 @@ fn decode_hex_field(
     })
 }
 
-fn validate_campaign_manifest(manifest: &CampaignManifest) -> Result<(), CasError> {
+pub(super) fn validate_campaign_manifest(manifest: &CampaignManifest) -> Result<(), CasError> {
     validate_campaign_provenance(&manifest.provenance)?;
     Ok(())
 }
 
-fn validate_campaign_provenance(provenance: &CampaignProvenance) -> Result<(), CasError> {
+pub(super) fn validate_campaign_provenance(
+    provenance: &CampaignProvenance,
+) -> Result<(), CasError> {
     validate_campaign_provenance_field(&provenance.crucible_version)?;
     validate_campaign_provenance_field(&provenance.qemu_build)?;
     validate_campaign_provenance_field(&provenance.abi_versions)?;
     Ok(())
 }
 
-fn validate_campaign_provenance_field(value: &str) -> Result<(), CasError> {
+pub(super) fn validate_campaign_provenance_field(value: &str) -> Result<(), CasError> {
     if value.is_empty() {
         return Err(CasError::InvalidCampaignRecord {
             path: PathBuf::from("campaign-manifest"),
@@ -991,7 +1021,7 @@ fn validate_campaign_provenance_field(value: &str) -> Result<(), CasError> {
     Ok(())
 }
 
-fn validate_campaign_lineage(
+pub(super) fn validate_campaign_lineage(
     current: &CampaignManifest,
     proposed: &CampaignManifest,
 ) -> Result<(), CasError> {
@@ -1010,7 +1040,7 @@ fn validate_campaign_lineage(
     Ok(())
 }
 
-fn validate_campaign_corpus_retention_policy(
+pub(super) fn validate_campaign_corpus_retention_policy(
     policy: &CampaignCorpusRetentionPolicy,
     path: PathBuf,
 ) -> Result<(), CasError> {
@@ -1023,7 +1053,7 @@ fn validate_campaign_corpus_retention_policy(
     Ok(())
 }
 
-fn campaign_root_field(label: &str) -> &'static str {
+pub(super) fn campaign_root_field(label: &str) -> &'static str {
     match label {
         "corpus" => "corpus_root",
         "coverage-map" => "coverage_map_root",
@@ -1032,7 +1062,7 @@ fn campaign_root_field(label: &str) -> &'static str {
     }
 }
 
-fn campaign_root_regression_reason(label: &str) -> &'static str {
+pub(super) fn campaign_root_regression_reason(label: &str) -> &'static str {
     match label {
         "corpus" => "typed campaign corpus root cannot be replaced by an untyped root",
         "coverage-map" => "typed campaign coverage-map root cannot be replaced by an untyped root",
@@ -1041,7 +1071,7 @@ fn campaign_root_regression_reason(label: &str) -> &'static str {
     }
 }
 
-fn is_typed_campaign_root_format(label: &str, format: &str) -> bool {
+pub(super) fn is_typed_campaign_root_format(label: &str, format: &str) -> bool {
     match label {
         "corpus" => {
             matches!(
@@ -1055,11 +1085,11 @@ fn is_typed_campaign_root_format(label: &str, format: &str) -> bool {
     }
 }
 
-fn record_format(material: &str) -> Option<&str> {
+pub(super) fn record_format(material: &str) -> Option<&str> {
     material.lines().next()?.strip_prefix("format=")
 }
 
-fn retain_campaign_corpus_entries(
+pub(super) fn retain_campaign_corpus_entries(
     entries: &BTreeMap<ContentHash, ContentHash>,
     policy: &CampaignCorpusRetentionPolicy,
 ) -> BTreeMap<ContentHash, ContentHash> {
@@ -1081,7 +1111,7 @@ fn retain_campaign_corpus_entries(
         .collect()
 }
 
-fn campaign_corpus_retention_score(
+pub(super) fn campaign_corpus_retention_score(
     seed: ContentHash,
     artifact_hash: ContentHash,
     replay_hash: ContentHash,
@@ -1097,7 +1127,11 @@ fn campaign_corpus_retention_score(
     )
 }
 
-fn campaign_root_merge_hash(label: &str, left: ContentHash, right: ContentHash) -> ContentHash {
+pub(super) fn campaign_root_merge_hash(
+    label: &str,
+    left: ContentHash,
+    right: ContentHash,
+) -> ContentHash {
     if left == right {
         return left;
     }
@@ -1105,7 +1139,7 @@ fn campaign_root_merge_hash(label: &str, left: ContentHash, right: ContentHash) 
     ContentHash::from_bytes(campaign_root_merge_record_material(label, first, second).as_bytes())
 }
 
-fn campaign_root_merge_record_material(
+pub(super) fn campaign_root_merge_record_material(
     label: &str,
     first: ContentHash,
     second: ContentHash,
@@ -1117,7 +1151,10 @@ fn campaign_root_merge_record_material(
     )
 }
 
-fn ordered_manifest_roots(left: ContentHash, right: ContentHash) -> (ContentHash, ContentHash) {
+pub(super) fn ordered_manifest_roots(
+    left: ContentHash,
+    right: ContentHash,
+) -> (ContentHash, ContentHash) {
     if left <= right {
         (left, right)
     } else {
@@ -1125,7 +1162,7 @@ fn ordered_manifest_roots(left: ContentHash, right: ContentHash) -> (ContentHash
     }
 }
 
-fn insert_deduped_finding_entry(
+pub(super) fn insert_deduped_finding_entry(
     entries: &mut BTreeMap<ContentHash, ContentHash>,
     artifact_hash: ContentHash,
     finding_hash: ContentHash,
@@ -1141,7 +1178,7 @@ fn insert_deduped_finding_entry(
     }
 }
 
-fn encode_hex(bytes: &[u8]) -> String {
+pub(super) fn encode_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -1151,7 +1188,7 @@ fn encode_hex(bytes: &[u8]) -> String {
     encoded
 }
 
-fn decode_hex(hex: &str) -> Option<Vec<u8>> {
+pub(super) fn decode_hex(hex: &str) -> Option<Vec<u8>> {
     if !hex.len().is_multiple_of(2) {
         return None;
     }
@@ -1164,9 +1201,9 @@ fn decode_hex(hex: &str) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
-static FRONTIER_CLAIM_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub(super) static FRONTIER_CLAIM_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn frontier_claim_temp_path(path: &Path, lease: &FrontierLease) -> PathBuf {
+pub(super) fn frontier_claim_temp_path(path: &Path, lease: &FrontierLease) -> PathBuf {
     let mut temp_path = path.to_path_buf();
     let sequence = FRONTIER_CLAIM_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     temp_path.set_file_name(format!(
@@ -1178,7 +1215,11 @@ fn frontier_claim_temp_path(path: &Path, lease: &FrontierLease) -> PathBuf {
     temp_path
 }
 
-fn frontier_claim_lock_temp_path(path: &Path, node: &ContentHash, expires_at_tick: u64) -> PathBuf {
+pub(super) fn frontier_claim_lock_temp_path(
+    path: &Path,
+    node: &ContentHash,
+    expires_at_tick: u64,
+) -> PathBuf {
     let mut temp_path = path.to_path_buf();
     let sequence = FRONTIER_CLAIM_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     temp_path.set_file_name(format!(

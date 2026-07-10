@@ -1,32 +1,34 @@
-// Reproduction artifact schema, codec, identity, and validation.
+//! Reproduction artifact schema, codec, identity, and validation.
+
+use super::*;
 #[derive(Clone, Debug)]
-struct CliReproductionArtifact {
-    seed: u64,
-    identity: CliIdentity,
-    scenario: CliComponent,
-    components: Vec<CliComponent>,
-    payloads: Vec<CliPayload>,
-    schedule_digest: String,
-    decisions: Vec<CliDecision>,
-    fingerprints: Vec<CliFingerprint>,
-    sampling: CliSamplingConfig,
+pub(super) struct CliReproductionArtifact {
+    pub(super) seed: u64,
+    pub(super) identity: CliIdentity,
+    pub(super) scenario: CliComponent,
+    pub(super) components: Vec<CliComponent>,
+    pub(super) payloads: Vec<CliPayload>,
+    pub(super) schedule_digest: String,
+    pub(super) decisions: Vec<CliDecision>,
+    pub(super) fingerprints: Vec<CliFingerprint>,
+    pub(super) sampling: CliSamplingConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CliIdentity {
-    engine_version: String,
-    engine_abi: String,
-    artifact_abi: String,
-    qemu_build_id: String,
-    qemu_patch_series_hash: String,
-    shmem_abi_version: String,
-    guest_host_protocol_version: String,
-    rpc_abi_version: String,
-    rpc_abi_build: String,
-    plugin_abi: String,
+pub(super) struct CliIdentity {
+    pub(super) engine_version: String,
+    pub(super) engine_abi: String,
+    pub(super) artifact_abi: String,
+    pub(super) qemu_build_id: String,
+    pub(super) qemu_patch_series_hash: String,
+    pub(super) shmem_abi_version: String,
+    pub(super) guest_host_protocol_version: String,
+    pub(super) rpc_abi_version: String,
+    pub(super) rpc_abi_build: String,
+    pub(super) plugin_abi: String,
 }
 
-fn validate_replayable_reproduction_artifact(
+pub(super) fn validate_replayable_reproduction_artifact(
     cli: &Cli,
     bytes: &[u8],
 ) -> Result<CliReproductionArtifact, CliError> {
@@ -36,7 +38,7 @@ fn validate_replayable_reproduction_artifact(
     Ok(artifact)
 }
 
-fn hydrate_replay_artifact_components(
+pub(super) fn hydrate_replay_artifact_components(
     artifact: &mut CliReproductionArtifact,
     store_root: &Path,
 ) -> Result<(), CliError> {
@@ -78,7 +80,7 @@ fn hydrate_replay_artifact_components(
     Ok(())
 }
 
-fn replay_component_payload_bytes(
+pub(super) fn replay_component_payload_bytes(
     store: &crucible::LocalDagStore,
     component: &CliComponent,
     embedded: Option<&CliPayload>,
@@ -106,7 +108,10 @@ fn replay_component_payload_bytes(
     Ok(Some(bytes))
 }
 
-fn verify_replay_identity(actual: &CliIdentity, expected: &CliIdentity) -> Result<(), CliError> {
+pub(super) fn verify_replay_identity(
+    actual: &CliIdentity,
+    expected: &CliIdentity,
+) -> Result<(), CliError> {
     if actual != expected {
         return Err(CliError::Identity(format!(
             "reproduction build identity mismatch: expected engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`, got engine `{}` ABI `{}` artifact ABI `{}` QEMU `{}` patch-series `{}` shmem `{}` guest-host `{}` RPC `{}+{}` plugin `{}`",
@@ -135,7 +140,7 @@ fn verify_replay_identity(actual: &CliIdentity, expected: &CliIdentity) -> Resul
     Ok(())
 }
 
-fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliError> {
+pub(super) fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliError> {
     let backend_plan = plan_backend_selection(cli)?;
     if let Some(plan) = backend_plan.as_ref()
         && plan.target == BackendExecutionTarget::RemoteDaemon
@@ -150,7 +155,9 @@ fn expected_replay_identity(cli: &Cli) -> Result<CliIdentity, CliError> {
     Ok(expected_replay_identity_for_backend(resolved_backend))
 }
 
-fn expected_replay_identity_for_backend(backend: Option<&ResolvedLocalBackend>) -> CliIdentity {
+pub(super) fn expected_replay_identity_for_backend(
+    backend: Option<&ResolvedLocalBackend>,
+) -> CliIdentity {
     let (qemu_build_id, qemu_patch_series_hash, shmem_abi_version, plugin_abi) = match backend {
         Some(ResolvedLocalBackend::Qemu {
             qemu_build_id,
@@ -186,31 +193,33 @@ fn expected_replay_identity_for_backend(backend: Option<&ResolvedLocalBackend>) 
 }
 
 #[derive(Clone, Debug)]
-struct CliComponent {
-    kind: String,
-    name: String,
-    digest: String,
-    store_uri: String,
-    media_type: String,
-    size_bytes: u64,
+pub(super) struct CliComponent {
+    pub(super) kind: String,
+    pub(super) name: String,
+    pub(super) digest: String,
+    pub(super) store_uri: String,
+    pub(super) media_type: String,
+    pub(super) size_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
-struct CliPayload {
-    digest: String,
-    bytes: Vec<u8>,
+pub(super) struct CliPayload {
+    pub(super) digest: String,
+    pub(super) bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct CliDecision {
-    sequence: u64,
-    virtual_time_ticks: u64,
-    node: String,
-    kind: String,
-    payload_digest: String,
+pub(super) struct CliDecision {
+    pub(super) sequence: u64,
+    pub(super) virtual_time_ticks: u64,
+    pub(super) node: String,
+    pub(super) kind: String,
+    pub(super) payload_digest: String,
 }
 
-fn cli_decisions_from_canonical_log(canonical_log: &[CanonicalLogEntry]) -> Vec<CliDecision> {
+pub(super) fn cli_decisions_from_canonical_log(
+    canonical_log: &[CanonicalLogEntry],
+) -> Vec<CliDecision> {
     canonical_log
         .iter()
         .map(|entry| CliDecision {
@@ -224,27 +233,29 @@ fn cli_decisions_from_canonical_log(canonical_log: &[CanonicalLogEntry]) -> Vec<
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ReproductionArtifactComponentPayload {
-    kind: String,
-    name: String,
-    media_type: String,
-    bytes: Vec<u8>,
+pub(super) struct ReproductionArtifactComponentPayload {
+    pub(super) kind: String,
+    pub(super) name: String,
+    pub(super) media_type: String,
+    pub(super) bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
-struct CliFingerprint {
-    index: u64,
-    digest: String,
+pub(super) struct CliFingerprint {
+    pub(super) index: u64,
+    pub(super) digest: String,
 }
 
 #[derive(Clone, Debug)]
-struct CliSamplingConfig {
-    fine: String,
-    coarse: String,
-    regions: Vec<String>,
+pub(super) struct CliSamplingConfig {
+    pub(super) fine: String,
+    pub(super) coarse: String,
+    pub(super) regions: Vec<String>,
 }
 
-fn decode_reproduction_artifact(bytes: &[u8]) -> Result<CliReproductionArtifact, CliError> {
+pub(super) fn decode_reproduction_artifact(
+    bytes: &[u8],
+) -> Result<CliReproductionArtifact, CliError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| artifact_error(format!("artifact is not UTF-8: {error}")))?;
     let mut schema_version = None;
@@ -473,7 +484,7 @@ fn decode_reproduction_artifact(bytes: &[u8]) -> Result<CliReproductionArtifact,
     Ok(artifact)
 }
 
-fn parse_component(
+pub(super) fn parse_component(
     line_index: usize,
     tag: &str,
     fields: &[String],
@@ -503,7 +514,7 @@ fn parse_component(
     Ok(component)
 }
 
-fn validate_schedule(decisions: &[CliDecision], digest: &str) -> Result<(), CliError> {
+pub(super) fn validate_schedule(decisions: &[CliDecision], digest: &str) -> Result<(), CliError> {
     if decisions.is_empty() {
         return Err(artifact_error("reproduction schedule is empty"));
     }
@@ -524,7 +535,7 @@ fn validate_schedule(decisions: &[CliDecision], digest: &str) -> Result<(), CliE
     Ok(())
 }
 
-fn canonical_artifact_text(artifact: &CliReproductionArtifact) -> String {
+pub(super) fn canonical_artifact_text(artifact: &CliReproductionArtifact) -> String {
     let mut text = String::new();
     artifact_line(&mut text, &["schema", REPRODUCTION_ARTIFACT_SCHEMA]);
     artifact_line(&mut text, &["seed", &artifact.seed.to_string()]);
@@ -602,7 +613,7 @@ fn canonical_artifact_text(artifact: &CliReproductionArtifact) -> String {
     text
 }
 
-fn artifact_component_line(text: &mut String, tag: &str, component: &CliComponent) {
+pub(super) fn artifact_component_line(text: &mut String, tag: &str, component: &CliComponent) {
     artifact_line(
         text,
         &[
@@ -618,7 +629,10 @@ fn artifact_component_line(text: &mut String, tag: &str, component: &CliComponen
 }
 
 #[cfg(test)]
-fn mock_failure_reproduction_artifact_bytes(cli: &Cli, seed: u64) -> Result<Vec<u8>, CliError> {
+pub(super) fn mock_failure_reproduction_artifact_bytes(
+    cli: &Cli,
+    seed: u64,
+) -> Result<Vec<u8>, CliError> {
     let backend_plan = plan_backend_selection(cli)?;
     let resolved_backend = backend_plan
         .as_ref()
@@ -626,7 +640,7 @@ fn mock_failure_reproduction_artifact_bytes(cli: &Cli, seed: u64) -> Result<Vec<
     mock_failure_reproduction_artifact_bytes_for_backend(seed, resolved_backend)
 }
 
-fn mock_failure_reproduction_artifact_bytes_for_backend(
+pub(super) fn mock_failure_reproduction_artifact_bytes_for_backend(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
 ) -> Result<Vec<u8>, CliError> {
@@ -744,7 +758,7 @@ fn mock_failure_reproduction_artifact_bytes_for_backend(
     Ok(bytes)
 }
 
-fn schedule_digest(decisions: &[CliDecision]) -> String {
+pub(super) fn schedule_digest(decisions: &[CliDecision]) -> String {
     let mut material = String::new();
     for decision in decisions {
         artifact_line(
@@ -762,7 +776,7 @@ fn schedule_digest(decisions: &[CliDecision]) -> String {
     content_address_bytes(material.as_bytes())
 }
 
-fn content_address_bytes(bytes: &[u8]) -> String {
+pub(super) fn content_address_bytes(bytes: &[u8]) -> String {
     format!(
         "{}{}",
         CONTENT_ADDRESS_PREFIX,
@@ -770,13 +784,13 @@ fn content_address_bytes(bytes: &[u8]) -> String {
     )
 }
 
-fn is_content_address(digest: &str) -> bool {
+pub(super) fn is_content_address(digest: &str) -> bool {
     digest
         .strip_prefix(CONTENT_ADDRESS_PREFIX)
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-fn stable_digest(material: &[u8]) -> [u8; 32] {
+pub(super) fn stable_digest(material: &[u8]) -> [u8; 32] {
     let mut output = [0u8; 32];
     for lane in 0..4 {
         let mut state = 0xcbf2_9ce4_8422_2325u64 ^ lane;
@@ -795,7 +809,7 @@ fn stable_digest(material: &[u8]) -> [u8; 32] {
     output
 }
 
-fn hex_bytes(bytes: &[u8]) -> String {
+pub(super) fn hex_bytes(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -805,7 +819,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
     output
 }
 
-fn artifact_line(text: &mut String, fields: &[&str]) {
+pub(super) fn artifact_line(text: &mut String, fields: &[&str]) {
     for (index, field) in fields.iter().enumerate() {
         if index > 0 {
             text.push('\t');
@@ -815,7 +829,7 @@ fn artifact_line(text: &mut String, fields: &[&str]) {
     text.push('\n');
 }
 
-fn escape_artifact_field(value: &str) -> String {
+pub(super) fn escape_artifact_field(value: &str) -> String {
     let mut escaped = String::new();
     for byte in value.bytes() {
         match byte {
@@ -829,11 +843,11 @@ fn escape_artifact_field(value: &str) -> String {
     escaped
 }
 
-fn parse_artifact_fields(line_text: &str) -> Result<Vec<String>, CliError> {
+pub(super) fn parse_artifact_fields(line_text: &str) -> Result<Vec<String>, CliError> {
     line_text.split('\t').map(unescape_artifact_field).collect()
 }
 
-fn unescape_artifact_field(value: &str) -> Result<String, CliError> {
+pub(super) fn unescape_artifact_field(value: &str) -> Result<String, CliError> {
     let bytes = value.as_bytes();
     let mut output = String::new();
     let mut index = 0;
@@ -863,7 +877,7 @@ fn unescape_artifact_field(value: &str) -> Result<String, CliError> {
     Ok(output)
 }
 
-fn require_field_count(
+pub(super) fn require_field_count(
     line_index: usize,
     tag: &str,
     fields: &[String],
@@ -879,7 +893,7 @@ fn require_field_count(
     ))
 }
 
-fn set_once<T>(
+pub(super) fn set_once<T>(
     slot: &mut Option<T>,
     line_index: usize,
     tag: &str,
@@ -896,13 +910,13 @@ fn set_once<T>(
     Ok(())
 }
 
-fn parse_u64(line_index: usize, tag: &str, value: &str) -> Result<u64, CliError> {
+pub(super) fn parse_u64(line_index: usize, tag: &str, value: &str) -> Result<u64, CliError> {
     value.parse::<u64>().map_err(|error| {
         artifact_line_error(line_index, tag, &format!("invalid u64 `{value}`: {error}"))
     })
 }
 
-fn parse_usize(line_index: usize, tag: &str, value: &str) -> Result<usize, CliError> {
+pub(super) fn parse_usize(line_index: usize, tag: &str, value: &str) -> Result<usize, CliError> {
     value.parse::<usize>().map_err(|error| {
         artifact_line_error(
             line_index,
@@ -912,7 +926,11 @@ fn parse_usize(line_index: usize, tag: &str, value: &str) -> Result<usize, CliEr
     })
 }
 
-fn parse_hex_bytes(line_index: usize, tag: &str, value: &str) -> Result<Vec<u8>, CliError> {
+pub(super) fn parse_hex_bytes(
+    line_index: usize,
+    tag: &str,
+    value: &str,
+) -> Result<Vec<u8>, CliError> {
     if !value.len().is_multiple_of(2) {
         return Err(artifact_line_error(
             line_index,
@@ -931,7 +949,7 @@ fn parse_hex_bytes(line_index: usize, tag: &str, value: &str) -> Result<Vec<u8>,
     Ok(bytes)
 }
 
-fn hex_nibble(byte: u8) -> Option<u8> {
+pub(super) fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
         b'a'..=b'f' => Some(byte - b'a' + 10),
@@ -939,14 +957,14 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn validate_required_field(field: &'static str, value: &str) -> Result<(), CliError> {
+pub(super) fn validate_required_field(field: &'static str, value: &str) -> Result<(), CliError> {
     if value.is_empty() {
         return Err(artifact_error(format!("required field `{field}` is empty")));
     }
     Ok(())
 }
 
-fn validate_digest(field: &'static str, digest: &str) -> Result<(), CliError> {
+pub(super) fn validate_digest(field: &'static str, digest: &str) -> Result<(), CliError> {
     if !is_content_address(digest) {
         return Err(artifact_error(format!(
             "field `{field}` is not a content address: `{digest}`"
@@ -955,78 +973,78 @@ fn validate_digest(field: &'static str, digest: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-fn artifact_line_error(line_index: usize, tag: &str, reason: &str) -> CliError {
+pub(super) fn artifact_line_error(line_index: usize, tag: &str, reason: &str) -> CliError {
     artifact_error(format!("line {} `{tag}`: {reason}", line_index + 1))
 }
 
-fn missing_line(tag: &str) -> CliError {
+pub(super) fn missing_line(tag: &str) -> CliError {
     artifact_error(format!("missing `{tag}` line"))
 }
 
-fn artifact_error(reason: impl Into<String>) -> CliError {
+pub(super) fn artifact_error(reason: impl Into<String>) -> CliError {
     CliError::Artifact(reason.into())
 }
 
-fn invalid_scenario(reason: impl Into<String>) -> CliError {
+pub(super) fn invalid_scenario(reason: impl Into<String>) -> CliError {
     CliError::InvalidScenario(reason.into())
 }
 
 #[derive(Debug)]
-struct ReplayArtifactReport {
-    path: PathBuf,
-    digest: String,
-    seed: u64,
-    scenario_digest: String,
-    to_savepoint: Option<ReplayToSavepointReport>,
-    check: Option<ReplayCheckReport>,
-    bisect: Option<ReplayBisectionReport>,
+pub(super) struct ReplayArtifactReport {
+    pub(super) path: PathBuf,
+    pub(super) digest: String,
+    pub(super) seed: u64,
+    pub(super) scenario_digest: String,
+    pub(super) to_savepoint: Option<ReplayToSavepointReport>,
+    pub(super) check: Option<ReplayCheckReport>,
+    pub(super) bisect: Option<ReplayBisectionReport>,
 }
 
 #[derive(Debug)]
-struct ReplayToSavepointReport {
-    target_label: String,
-    checkpoint: crucible::ContentHash,
-    frontier_ticks: u64,
-    schedule_prefix: ReplaySchedulePrefixProof,
-    oracle: SavepointOracleProof,
-    materialization: ReplayToSavepointMaterializationProof,
+pub(super) struct ReplayToSavepointReport {
+    pub(super) target_label: String,
+    pub(super) checkpoint: crucible::ContentHash,
+    pub(super) frontier_ticks: u64,
+    pub(super) schedule_prefix: ReplaySchedulePrefixProof,
+    pub(super) oracle: SavepointOracleProof,
+    pub(super) materialization: ReplayToSavepointMaterializationProof,
 }
 
 #[derive(Debug)]
-struct ReplaySchedulePrefixProof {
-    target_decisions: usize,
-    artifact_decisions: usize,
-    matched_decisions: usize,
-    typed_prefix_digest: String,
-    artifact_prefix_digest: String,
+pub(super) struct ReplaySchedulePrefixProof {
+    pub(super) target_decisions: usize,
+    pub(super) artifact_decisions: usize,
+    pub(super) matched_decisions: usize,
+    pub(super) typed_prefix_digest: String,
+    pub(super) artifact_prefix_digest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ReplaySchedulePrefixDecisionProof {
-    sequence: u64,
-    virtual_time_ticks: u64,
-    kind: String,
-    payload_summary: String,
-    payload_digest: String,
+pub(super) struct ReplaySchedulePrefixDecisionProof {
+    pub(super) sequence: u64,
+    pub(super) virtual_time_ticks: u64,
+    pub(super) kind: String,
+    pub(super) payload_summary: String,
+    pub(super) payload_digest: String,
 }
 
 #[derive(Debug)]
-struct ReplayToSavepointMaterializationProof {
-    materialization: &'static str,
-    operation: &'static str,
-    graph: crucible::ContentHash,
-    configuration: crucible::ContentHash,
-    schedule: crucible::ContentHash,
-    checkpoint: crucible::ContentHash,
-    reduced_state: crucible::ContentHash,
-    runtime_state: crucible::ContentHash,
-    single_vm_fingerprint: crucible::ContentHash,
-    replay_fat_checkpoint: crucible::ContentHash,
-    replay_thin_checkpoint: crucible::ContentHash,
+pub(super) struct ReplayToSavepointMaterializationProof {
+    pub(super) materialization: &'static str,
+    pub(super) operation: &'static str,
+    pub(super) graph: crucible::ContentHash,
+    pub(super) configuration: crucible::ContentHash,
+    pub(super) schedule: crucible::ContentHash,
+    pub(super) checkpoint: crucible::ContentHash,
+    pub(super) reduced_state: crucible::ContentHash,
+    pub(super) runtime_state: crucible::ContentHash,
+    pub(super) single_vm_fingerprint: crucible::ContentHash,
+    pub(super) replay_fat_checkpoint: crucible::ContentHash,
+    pub(super) replay_thin_checkpoint: crucible::ContentHash,
 }
 
 impl ReplayToSavepointMaterializationProof {
-    fn from_report(report: crucible::UnifiedGraphOperationReport) -> Self {
+    pub(super) fn from_report(report: crucible::UnifiedGraphOperationReport) -> Self {
         Self {
             materialization: "model-temporal-graph",
             operation: "replay",
@@ -1044,31 +1062,31 @@ impl ReplayToSavepointMaterializationProof {
 }
 
 #[derive(Debug)]
-struct ReplayCheckReport {
-    path: PathBuf,
-    digest: String,
-    mismatch: Option<ReplayCheckMismatchReport>,
+pub(super) struct ReplayCheckReport {
+    pub(super) path: PathBuf,
+    pub(super) digest: String,
+    pub(super) mismatch: Option<ReplayCheckMismatchReport>,
 }
 
 #[derive(Debug)]
-struct ReplayCheckMismatchReport {
-    original_digest: String,
-    replayed_digest: String,
-    first_diff_byte: usize,
-    original_len: usize,
-    replayed_len: usize,
+pub(super) struct ReplayCheckMismatchReport {
+    pub(super) original_digest: String,
+    pub(super) replayed_digest: String,
+    pub(super) first_diff_byte: usize,
+    pub(super) original_len: usize,
+    pub(super) replayed_len: usize,
 }
 
 #[derive(Debug)]
-struct ReplayBisectionReport {
-    other_path: PathBuf,
-    other_digest: String,
-    divergence: Option<VerifyDivergenceReport>,
+pub(super) struct ReplayBisectionReport {
+    pub(super) other_path: PathBuf,
+    pub(super) other_digest: String,
+    pub(super) divergence: Option<VerifyDivergenceReport>,
 }
 
 #[derive(Debug)]
-struct FailureArtifactReport {
-    path: PathBuf,
-    digest: String,
-    footer: FailureReproductionFooter,
+pub(super) struct FailureArtifactReport {
+    pub(super) path: PathBuf,
+    pub(super) digest: String,
+    pub(super) footer: FailureReproductionFooter,
 }

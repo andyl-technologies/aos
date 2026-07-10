@@ -13,8 +13,9 @@
 //! `gate:single-vm-fingerprint`;
 //! `shutdown` owns the graceful QEMU child shutdown escalation ladder;
 //! `setup_failure` owns setup-abort classification and teardown; `coverage`
-//! owns host-side plugin coverage observation bridging; `host_setup` owns the
-//! real Linux descriptor handoff and setup lifecycle driver; `inertness`
+//! owns host-side plugin coverage observation bridging; `live_coverage_gate`
+//! owns the Linux loaded-plugin coverage equivalence proof; `host_setup` owns
+//! the real Linux descriptor handoff and setup lifecycle driver; `inertness`
 //! owns the sim-off/sim-on QEMU control-plane inertness assertion;
 //! `determinism_boundary` owns the QEMU hermeticity/fingerprint/microtest
 //! boundary assertion; `gdbstub_proxy` owns the mediated debug gdbstub bridge
@@ -46,6 +47,8 @@ mod gdbstub_proxy;
 mod host_setup;
 mod inertness;
 mod launch;
+#[cfg(target_os = "linux")]
+mod live_coverage_gate;
 #[cfg(unix)]
 mod mapped_quantum;
 mod node;
@@ -109,6 +112,11 @@ pub use launch::{
     QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
     QemuVmLaunchConfig, validate_pre_spawn_qemu_launch_args,
+};
+#[cfg(target_os = "linux")]
+pub use live_coverage_gate::{
+    LoadedQemuCoverageGateConfig, LoadedQemuCoverageGateError, LoadedQemuCoverageGateReport,
+    run_loaded_qemu_coverage_gate,
 };
 #[cfg(unix)]
 pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};

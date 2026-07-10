@@ -1,4 +1,6 @@
-// Declarative plans, assertions, predicates, and properties.
+//! Declarative plans, assertions, predicates, and properties.
+
+use super::*;
 
 /// One entry in the declarative membership-fault plan.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -56,7 +58,7 @@ pub enum FaultPlanEntry {
 /// A declarative full-taxonomy fault plan layered over a static [`World`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FaultPlan {
-    entries: Vec<FaultPlanEntry>,
+    pub(super) entries: Vec<FaultPlanEntry>,
 }
 
 impl FaultPlan {
@@ -354,16 +356,16 @@ impl Default for FaultCaps {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RandomFaultCandidate {
-    order: u32,
-    start: u64,
-    end: u64,
-    kind: RandomFaultKind,
-    entry: FaultPlanEntry,
+pub(super) struct RandomFaultCandidate {
+    pub(super) order: u32,
+    pub(super) start: u64,
+    pub(super) end: u64,
+    pub(super) kind: RandomFaultKind,
+    pub(super) entry: FaultPlanEntry,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RandomFaultKind {
+pub(super) enum RandomFaultKind {
     Partition,
     MessageLoss,
     Reorder,
@@ -385,12 +387,12 @@ enum RandomFaultKind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Plan {
     /// The independently content-addressed plan identity.
-    id: ContentHash,
-    kind: PlanKind,
+    pub(super) id: ContentHash,
+    pub(super) kind: PlanKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum PlanKind {
+pub(super) enum PlanKind {
     ScheduledEntries { entries: Vec<PlanEntry> },
     FaultPlan { plan: FaultPlan },
     EventGraph { graph: EventGraph },
@@ -630,7 +632,7 @@ impl Plan {
         self.validate_for_world_with_assertions(world, [])
     }
 
-    fn validate_for_world_with_properties(
+    pub(super) fn validate_for_world_with_properties(
         &self,
         world: &World,
         properties: &Properties,
@@ -1498,8 +1500,8 @@ pub struct AssertionDef {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Properties {
     /// The independently content-addressed properties identity.
-    id: ContentHash,
-    assertions: Vec<AssertionDef>,
+    pub(super) id: ContentHash,
+    pub(super) assertions: Vec<AssertionDef>,
 }
 
 impl Default for Properties {

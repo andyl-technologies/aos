@@ -1,5 +1,7 @@
-// Resume, fork, and verification workflow realization.
-fn run_local_double_fork_workflow(
+//! Resume, fork, and verification workflow realization.
+
+use super::*;
+pub(super) fn run_local_double_fork_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -16,7 +18,7 @@ fn run_local_double_fork_workflow(
     )
 }
 
-fn run_local_qemu_fork_workflow(
+pub(super) fn run_local_qemu_fork_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -35,7 +37,7 @@ fn run_local_qemu_fork_workflow(
     Ok(outcome)
 }
 
-fn default_fork_interactive_driver(
+pub(super) fn default_fork_interactive_driver(
     fork_plan: &ForkInvocationPlan,
 ) -> ResumeInteractiveCommandDriver<'static> {
     if matches!(fork_plan.execution_mode, RunExecutionMode::Interactive) {
@@ -45,7 +47,7 @@ fn default_fork_interactive_driver(
     }
 }
 
-fn run_local_double_fork_workflow_with_driver(
+pub(super) fn run_local_double_fork_workflow_with_driver(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -65,7 +67,7 @@ fn run_local_double_fork_workflow_with_driver(
 }
 
 #[cfg(test)]
-fn run_local_double_fork_workflow_with_interactive_commands(
+pub(super) fn run_local_double_fork_workflow_with_interactive_commands(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -83,15 +85,19 @@ fn run_local_double_fork_workflow_with_interactive_commands(
     )
 }
 
-fn resume_handle_evidence(plan: &ResumeInvocationPlan) -> Result<ResumeHandleEvidence, CliError> {
+pub(super) fn resume_handle_evidence(
+    plan: &ResumeInvocationPlan,
+) -> Result<ResumeHandleEvidence, CliError> {
     savepoint_evidence("resume", &plan.savepoint, &plan.store_root)
 }
 
-fn fork_handle_evidence(plan: &ForkInvocationPlan) -> Result<ResumeHandleEvidence, CliError> {
+pub(super) fn fork_handle_evidence(
+    plan: &ForkInvocationPlan,
+) -> Result<ResumeHandleEvidence, CliError> {
     savepoint_evidence("fork", &plan.source, &plan.store_root)
 }
 
-fn savepoint_evidence(
+pub(super) fn savepoint_evidence(
     command_name: &'static str,
     savepoint: &ResumeSavepointRef,
     store_root: &Path,
@@ -106,7 +112,7 @@ fn savepoint_evidence(
     }
 }
 
-fn savepoint_handle_evidence(
+pub(super) fn savepoint_handle_evidence(
     command_name: &'static str,
     handle: &SavepointHandle,
 ) -> Result<ResumeHandleEvidence, CliError> {
@@ -159,7 +165,7 @@ fn savepoint_handle_evidence(
     })
 }
 
-fn savepoint_store_evidence(
+pub(super) fn savepoint_store_evidence(
     command_name: &'static str,
     checkpoint: crucible::ContentHash,
     store_root: &Path,
@@ -241,7 +247,7 @@ fn savepoint_store_evidence(
     })
 }
 
-fn validate_resume_handle_frontier(
+pub(super) fn validate_resume_handle_frontier(
     schedule: &Schedule,
     frontier_ticks: u64,
 ) -> Result<VirtualTime, CliError> {
@@ -261,7 +267,7 @@ fn validate_resume_handle_frontier(
     })
 }
 
-fn checkpoint_for_resume_configuration(
+pub(super) fn checkpoint_for_resume_configuration(
     configuration: &crucible::Configuration,
     frontier: VirtualTime,
 ) -> Result<Checkpoint, CliError> {
@@ -290,7 +296,7 @@ fn checkpoint_for_resume_configuration(
     .map_err(|error| CliError::Identity(format!("resume checkpoint setup failed: {error}")))
 }
 
-fn resume_recording_loop_for_plan(
+pub(super) fn resume_recording_loop_for_plan(
     plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> Result<ResumeRecordingLifecycleLoop, CliError> {
@@ -306,7 +312,7 @@ fn resume_recording_loop_for_plan(
     ))
 }
 
-fn fork_recording_loop_for_plan(
+pub(super) fn fork_recording_loop_for_plan(
     plan: &ForkInvocationPlan,
     evidence: &ResumeHandleEvidence,
     frontier: VirtualTime,
@@ -323,7 +329,7 @@ fn fork_recording_loop_for_plan(
     Ok(loop_driver)
 }
 
-fn fork_override_decisions(plan: &ForkInvocationPlan) -> Vec<crucible::Decision> {
+pub(super) fn fork_override_decisions(plan: &ForkInvocationPlan) -> Vec<crucible::Decision> {
     plan.decision_overrides
         .iter()
         .map(|override_plan| {
@@ -339,7 +345,7 @@ fn fork_override_decisions(plan: &ForkInvocationPlan) -> Vec<crucible::Decision>
         .collect()
 }
 
-fn fork_branch_frontier(
+pub(super) fn fork_branch_frontier(
     evidence: &ResumeHandleEvidence,
     appended_decisions: usize,
 ) -> Result<VirtualTime, CliError> {
@@ -356,7 +362,7 @@ fn fork_branch_frontier(
     Ok(VirtualTime { ticks })
 }
 
-fn resume_property_fixture_assertion(
+pub(super) fn resume_property_fixture_assertion(
     scenario: &crucible::ScenarioDefForm,
 ) -> Result<crucible::AssertionId, CliError> {
     scenario
@@ -372,7 +378,7 @@ fn resume_property_fixture_assertion(
         })
 }
 
-fn resume_property_violation_predicate(
+pub(super) fn resume_property_violation_predicate(
     scenario: &crucible::ScenarioDefForm,
 ) -> Result<crucible::Predicate, CliError> {
     let mut predicates = scenario
@@ -396,14 +402,15 @@ fn resume_property_violation_predicate(
     }
 }
 
-enum ResumeInteractiveCommandDriver<'a> {
+pub(super) enum ResumeInteractiveCommandDriver<'a> {
     Preparsed(&'a [SessionCommandKind]),
     Stdin,
 }
 
-type ResumeCommandReply<T> = oneshot::Receiver<Result<T, crucible_session::SessionError>>;
+pub(super) type ResumeCommandReply<T> =
+    oneshot::Receiver<Result<T, crucible_session::SessionError>>;
 
-async fn run_resumed_savepoint_actor_with_driver_async(
+pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
     plan: &ResumeInvocationPlan,
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
@@ -599,7 +606,7 @@ async fn run_resumed_savepoint_actor_with_driver_async(
     })
 }
 
-async fn run_forked_savepoint_actor_with_driver_async(
+pub(super) async fn run_forked_savepoint_actor_with_driver_async(
     plan: &ForkInvocationPlan,
     evidence: ResumeHandleEvidence,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
@@ -819,7 +826,7 @@ async fn run_forked_savepoint_actor_with_driver_async(
     })
 }
 
-async fn drive_resumed_actor_interactive_commands(
+pub(super) async fn drive_resumed_actor_interactive_commands(
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,
@@ -856,7 +863,7 @@ async fn drive_resumed_actor_interactive_commands(
     }
 }
 
-async fn drive_resumed_actor_interactive_stdin_commands(
+pub(super) async fn drive_resumed_actor_interactive_stdin_commands(
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
@@ -877,7 +884,7 @@ async fn drive_resumed_actor_interactive_stdin_commands(
     .await
 }
 
-async fn drive_resumed_actor_interactive_command_reader<R, W>(
+pub(super) async fn drive_resumed_actor_interactive_command_reader<R, W>(
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
@@ -911,7 +918,7 @@ where
     Ok(())
 }
 
-async fn acknowledge_resumed_actor_command_kind(
+pub(super) async fn acknowledge_resumed_actor_command_kind(
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
     command: SessionCommandKind,
@@ -929,7 +936,7 @@ async fn acknowledge_resumed_actor_command_kind(
     observe_resumed_actor_interactive_boundary(live, command, before).await
 }
 
-fn resume_actor_interactive_command(
+pub(super) fn resume_actor_interactive_command(
     command: SessionCommand,
 ) -> (SessionCommand, ResumeCommandReply<()>) {
     let (acknowledgement, acknowledgement_receiver) = CommandReply::channel();
@@ -939,7 +946,7 @@ fn resume_actor_interactive_command(
     )
 }
 
-async fn observe_resumed_actor_interactive_acceptance(
+pub(super) async fn observe_resumed_actor_interactive_acceptance(
     command: SessionCommandKind,
     acknowledgement: ResumeCommandReply<()>,
 ) -> Result<(), CliError> {
@@ -947,7 +954,7 @@ async fn observe_resumed_actor_interactive_acceptance(
     receive_resumed_actor_reply(acknowledgement, &context).await
 }
 
-async fn observe_resumed_actor_interactive_boundary(
+pub(super) async fn observe_resumed_actor_interactive_boundary(
     live: &Arc<LiveSnapshot>,
     command: SessionCommandKind,
     before: LiveSnapshotView,
@@ -979,7 +986,7 @@ async fn observe_resumed_actor_interactive_boundary(
     }
 }
 
-async fn send_resumed_actor_command(
+pub(super) async fn send_resumed_actor_command(
     sender: &mpsc::Sender<SessionCommand>,
     command: SessionCommand,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
@@ -993,7 +1000,7 @@ async fn send_resumed_actor_command(
     Ok(())
 }
 
-async fn set_resumed_actor_breakpoint(
+pub(super) async fn set_resumed_actor_breakpoint(
     sender: &mpsc::Sender<SessionCommand>,
     spec: BreakpointSpec,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
@@ -1008,7 +1015,7 @@ async fn set_resumed_actor_breakpoint(
     Ok(id)
 }
 
-async fn query_resumed_actor_breakpoint_firings(
+pub(super) async fn query_resumed_actor_breakpoint_firings(
     sender: &mpsc::Sender<SessionCommand>,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
 ) -> Result<Vec<crucible_session::BreakpointFiring>, CliError> {
@@ -1030,7 +1037,7 @@ async fn query_resumed_actor_breakpoint_firings(
     }
 }
 
-async fn receive_resumed_actor_reply<T>(
+pub(super) async fn receive_resumed_actor_reply<T>(
     receiver: tokio::sync::oneshot::Receiver<Result<T, crucible_session::SessionError>>,
     context: &str,
 ) -> Result<T, CliError> {
@@ -1040,7 +1047,7 @@ async fn receive_resumed_actor_reply<T>(
         .map_err(|error| backend_error(format!("resume actor {context} failed: {error}")))
 }
 
-fn validate_resume_property_firing(
+pub(super) fn validate_resume_property_firing(
     breakpoint_id: BreakpointId,
     expected: &crucible::Predicate,
     boundary: LiveSnapshotView,
@@ -1081,7 +1088,7 @@ fn validate_resume_property_firing(
     Ok(())
 }
 
-fn validate_resume_property_firing_summary(
+pub(super) fn validate_resume_property_firing_summary(
     breakpoint_id: BreakpointId,
     expected: &crucible::Predicate,
     boundary: &crucible_api::SessionSummary,
@@ -1122,7 +1129,7 @@ fn validate_resume_property_firing_summary(
     Ok(())
 }
 
-async fn send_resume_workflow_command<C>(
+pub(super) async fn send_resume_workflow_command<C>(
     client: &C,
     session: SessionRef,
     command_id: &mut u64,
@@ -1156,7 +1163,7 @@ where
     }
 }
 
-async fn wait_for_resume_workflow_state<C>(
+pub(super) async fn wait_for_resume_workflow_state<C>(
     client: &C,
     session: SessionRef,
     expected: LiveStateKind,
@@ -1175,7 +1182,7 @@ where
     .await
 }
 
-async fn wait_for_resume_workflow_advanced_paused<C>(
+pub(super) async fn wait_for_resume_workflow_advanced_paused<C>(
     client: &C,
     session: SessionRef,
     before: &crucible_api::SessionSummary,
@@ -1198,7 +1205,7 @@ where
     .await
 }
 
-async fn wait_for_resume_workflow_summary<C>(
+pub(super) async fn wait_for_resume_workflow_summary<C>(
     client: &C,
     session: SessionRef,
     mut accepts: impl FnMut(&crucible_api::SessionSummary) -> bool,
@@ -1230,7 +1237,7 @@ where
     )))
 }
 
-async fn wait_resumed_actor_boundary(
+pub(super) async fn wait_resumed_actor_boundary(
     live: &Arc<LiveSnapshot>,
     max_actor_yields: u64,
     predicate: impl Fn(LiveSnapshotView) -> bool,
@@ -1250,11 +1257,11 @@ async fn wait_resumed_actor_boundary(
     ))
 }
 
-fn resume_actor_boundary_yield_budget(start_ticks: u64, target_ticks: u64) -> u64 {
+pub(super) fn resume_actor_boundary_yield_budget(start_ticks: u64, target_ticks: u64) -> u64 {
     RUN_INTERACTIVE_ACK_QUANTA_BOUND.saturating_add(target_ticks.saturating_sub(start_ticks))
 }
 
-fn resume_watch_status(view: LiveSnapshotView) -> String {
+pub(super) fn resume_watch_status(view: LiveSnapshotView) -> String {
     format!(
         "state={}\tfrontier_ticks={}\tquanta={}\toutcome={}\tsavepoint={}",
         format!("{:?}", view.state_kind).to_ascii_lowercase(),
@@ -1267,7 +1274,7 @@ fn resume_watch_status(view: LiveSnapshotView) -> String {
     )
 }
 
-fn finish_resume_workflow_outcome(
+pub(super) fn finish_resume_workflow_outcome(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -1330,7 +1337,7 @@ fn finish_resume_workflow_outcome(
     Ok(outcome)
 }
 
-fn finish_fork_workflow_outcome(
+pub(super) fn finish_fork_workflow_outcome(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -1431,7 +1438,7 @@ fn finish_fork_workflow_outcome(
     Ok(outcome)
 }
 
-fn write_fork_reproduction_artifact(
+pub(super) fn write_fork_reproduction_artifact(
     plan: &ForkInvocationPlan,
     backend: Option<&ResolvedLocalBackend>,
     scenario_form: &crucible::ScenarioDefForm,
@@ -1490,16 +1497,16 @@ fn write_fork_reproduction_artifact(
     })
 }
 
-fn fork_seed_label(plan: &ForkInvocationPlan) -> String {
+pub(super) fn fork_seed_label(plan: &ForkInvocationPlan) -> String {
     format_optional_seed(plan.fork_seed)
 }
 
-fn format_optional_seed(seed: Option<u64>) -> String {
+pub(super) fn format_optional_seed(seed: Option<u64>) -> String {
     seed.map(format_seed)
         .unwrap_or_else(|| String::from("inherited"))
 }
 
-fn fork_finding_fingerprint(
+pub(super) fn fork_finding_fingerprint(
     plan: &ForkInvocationPlan,
     configuration: &crucible::Configuration,
 ) -> crucible::ContentHash {
@@ -1524,7 +1531,9 @@ fn fork_finding_fingerprint(
     crucible::ContentHash::from_canonical_material("crucible.cli.fork.finding.v1", &material)
 }
 
-fn fork_artifact_canonical_log(configuration: &crucible::Configuration) -> Vec<CanonicalLogEntry> {
+pub(super) fn fork_artifact_canonical_log(
+    configuration: &crucible::Configuration,
+) -> Vec<CanonicalLogEntry> {
     let mut entries = configuration
         .schedule
         .decisions()
@@ -1553,7 +1562,7 @@ fn fork_artifact_canonical_log(configuration: &crucible::Configuration) -> Vec<C
     entries
 }
 
-fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'static str {
+pub(super) fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'static str {
     match decision {
         crucible::Decision::DeliveryOrder(_) => "delivery_order",
         crucible::Decision::FaultFires(_) => "fault_fires",
@@ -1565,7 +1574,7 @@ fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'static str {
     }
 }
 
-fn append_local_qemu_verify_identity(
+pub(super) fn append_local_qemu_verify_identity(
     outcome: &mut BackendCommandOutcome,
     backend_plan: &BackendSelectionPlan,
 ) -> Result<(), CliError> {
@@ -1587,7 +1596,7 @@ fn append_local_qemu_verify_identity(
     Ok(())
 }
 
-fn append_local_qemu_save_identity(
+pub(super) fn append_local_qemu_save_identity(
     outcome: &mut BackendCommandOutcome,
     backend_plan: &BackendSelectionPlan,
 ) -> Result<(), CliError> {
@@ -1619,7 +1628,7 @@ fn append_local_qemu_save_identity(
     Ok(())
 }
 
-fn append_local_qemu_resume_identity(
+pub(super) fn append_local_qemu_resume_identity(
     outcome: &mut BackendCommandOutcome,
     backend_plan: &BackendSelectionPlan,
     proof: &ModelCheckpointVmResumeRealizationProof,
@@ -1653,7 +1662,7 @@ fn append_local_qemu_resume_identity(
     Ok(())
 }
 
-fn append_local_qemu_fork_identity(
+pub(super) fn append_local_qemu_fork_identity(
     outcome: &mut BackendCommandOutcome,
     backend_plan: &BackendSelectionPlan,
 ) -> Result<(), CliError> {
@@ -1685,7 +1694,7 @@ fn append_local_qemu_fork_identity(
     Ok(())
 }
 
-fn run_remote_workflow(
+pub(super) fn run_remote_workflow(
     daemon: &str,
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -1705,7 +1714,7 @@ fn run_remote_workflow(
     finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
 }
 
-fn run_remote_verify_workflow(
+pub(super) fn run_remote_verify_workflow(
     daemon: &str,
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -1739,7 +1748,7 @@ fn run_remote_verify_workflow(
     )
 }
 
-fn run_remote_save_workflow(
+pub(super) fn run_remote_save_workflow(
     daemon: &str,
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -1757,7 +1766,7 @@ fn run_remote_save_workflow(
     finish_save_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, save_plan, report)
 }
 
-fn run_remote_resume_workflow(
+pub(super) fn run_remote_resume_workflow(
     daemon: &str,
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -1783,7 +1792,7 @@ fn run_remote_resume_workflow(
 }
 
 #[cfg(test)]
-fn run_remote_resume_workflow_with_interactive_commands(
+pub(super) fn run_remote_resume_workflow_with_interactive_commands(
     daemon: &str,
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -1810,7 +1819,7 @@ fn run_remote_resume_workflow_with_interactive_commands(
     )
 }
 
-fn daemon_rpc_endpoint(daemon: &str) -> String {
+pub(super) fn daemon_rpc_endpoint(daemon: &str) -> String {
     if daemon.contains("://") {
         daemon.to_string()
     } else {
@@ -1818,7 +1827,7 @@ fn daemon_rpc_endpoint(daemon: &str) -> String {
     }
 }
 
-fn finish_run_workflow_outcome(
+pub(super) fn finish_run_workflow_outcome(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -1882,7 +1891,7 @@ fn finish_run_workflow_outcome(
     Ok(outcome)
 }
 
-fn finish_save_workflow_outcome(
+pub(super) fn finish_save_workflow_outcome(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
@@ -1924,7 +1933,7 @@ fn finish_save_workflow_outcome(
     Ok(outcome)
 }
 
-fn finish_verify_workflow_outcome(
+pub(super) fn finish_verify_workflow_outcome(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,

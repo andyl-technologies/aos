@@ -1,4 +1,9 @@
-// Failure findings, signatures, clustering, reports, and triage artifacts.
+//! Failure findings, signatures, clustering, reports, and triage artifacts.
 
-include!("failure/model.rs");
-include!("failure/material.rs");
+use super::*;
+
+mod material;
+mod model;
+
+pub(super) use material::*;
+pub use model::*;

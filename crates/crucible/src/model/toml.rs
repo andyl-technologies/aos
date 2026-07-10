@@ -1,5 +1,7 @@
-// TOML schema types and semantic conversion helpers.
-fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
+//! TOML schema types and semantic conversion helpers.
+
+use super::*;
+pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
     let latency = link.latency();
     let jitter = link.jitter();
     if latency < MIN_LINK_LATENCY {
@@ -25,65 +27,68 @@ fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError> {
     Ok(())
 }
 
-const SCENARIO_FORM_BINARY_MAGIC_V1: &[u8] = b"crucible.scenario-def-form.v1\0";
-const SCENARIO_FORM_BINARY_MAGIC_V2: &[u8] = b"crucible.scenario-def-form.v2\0";
-const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V1: &[u8] = b"crucible.reproduction-artifact.v1\0";
-const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V2: &[u8] = b"crucible.reproduction-artifact.v2\0";
-const SCHEDULE_BINARY_MAGIC: &[u8] = b"crucible.schedule.v1\0";
-const WORLD_BINARY_MAGIC_V1: &[u8] = b"crucible.world.v1\0";
-const WORLD_BINARY_MAGIC_V2: &[u8] = b"crucible.world.v2\0";
-const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v1\0";
-const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
-const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v1\0";
-const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v1\0";
-const CONTROL_OPERATION_KIND_BINARY_MAGIC: &[u8] = b"crucible.control-operation-kind.v1\0";
-const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
-const CHECKPOINT_BINARY_MAGIC: &[u8] = b"crucible.checkpoint.v1\0";
-const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
-const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
-const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V1: &[u8] = b"crucible.scenario-def-form.v1\0";
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V2: &[u8] = b"crucible.scenario-def-form.v2\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V1: &[u8] =
+    b"crucible.reproduction-artifact.v1\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V2: &[u8] =
+    b"crucible.reproduction-artifact.v2\0";
+pub(super) const SCHEDULE_BINARY_MAGIC: &[u8] = b"crucible.schedule.v1\0";
+pub(super) const WORLD_BINARY_MAGIC_V1: &[u8] = b"crucible.world.v1\0";
+pub(super) const WORLD_BINARY_MAGIC_V2: &[u8] = b"crucible.world.v2\0";
+pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v1\0";
+pub(super) const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
+pub(super) const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v1\0";
+pub(super) const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v1\0";
+pub(super) const CONTROL_OPERATION_KIND_BINARY_MAGIC: &[u8] =
+    b"crucible.control-operation-kind.v1\0";
+pub(super) const SEED_BINARY_MAGIC: &[u8] = b"crucible.seed.v1\0";
+pub(super) const CHECKPOINT_BINARY_MAGIC: &[u8] = b"crucible.checkpoint.v1\0";
+pub(super) const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
+pub(super) const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ScenarioDefToml {
-    scenario: ScenarioHeaderToml,
-    world: WorldToml,
-    plan: PlanToml,
-    properties: PropertiesToml,
+pub(super) struct ScenarioDefToml {
+    pub(super) scenario: ScenarioHeaderToml,
+    pub(super) world: WorldToml,
+    pub(super) plan: PlanToml,
+    pub(super) properties: PropertiesToml,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ScenarioHeaderToml {
-    id: String,
-    seed: String,
+pub(super) struct ScenarioHeaderToml {
+    pub(super) id: String,
+    pub(super) seed: String,
     #[serde(
         deserialize_with = "deserialize_u64_toml_number_or_string",
         serialize_with = "serialize_u64_toml_number_or_string"
     )]
-    app_random_draw_cap: u64,
+    pub(super) app_random_draw_cap: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WorldToml {
-    id: String,
+pub(super) struct WorldToml {
+    pub(super) id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    node: Vec<WorldNodeDefToml>,
+    pub(super) node: Vec<WorldNodeDefToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    link: Vec<LinkToml>,
+    pub(super) link: Vec<LinkToml>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
-enum WorldNodeDefToml {
+pub(super) enum WorldNodeDefToml {
     Vm(WorldNodeToml),
     Io(WorldIoNodeToml),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum WorldIoNodeToml {
+pub(super) enum WorldIoNodeToml {
     Block {
         id: String,
         owner: String,
@@ -109,30 +114,30 @@ enum WorldIoNodeToml {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WorldNodeToml {
-    id: String,
+pub(super) struct WorldNodeToml {
+    pub(super) id: String,
     #[serde(default = "default_vm_arch_toml")]
-    arch: VmArchitectureToml,
+    pub(super) arch: VmArchitectureToml,
     #[serde(default = "default_world_node_memory_mib")]
-    memory_mib: u32,
+    pub(super) memory_mib: u32,
     #[serde(default)]
-    cmdline: String,
-    smp_vcpus: u16,
-    icount_shift: u8,
+    pub(super) cmdline: String,
+    pub(super) smp_vcpus: u16,
+    pub(super) icount_shift: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    kernel: Option<String>,
+    pub(super) kernel: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    root_image: Option<String>,
+    pub(super) root_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    initrd: Option<String>,
-    ready_point: ReadyPointToml,
-    white_box: WhiteBoxToml,
+    pub(super) initrd: Option<String>,
+    pub(super) ready_point: ReadyPointToml,
+    pub(super) white_box: WhiteBoxToml,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum VmArchitectureToml {
+pub(super) enum VmArchitectureToml {
     X86_64,
     Aarch64,
 }
@@ -140,7 +145,7 @@ enum VmArchitectureToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum ReadyPointToml {
+pub(super) enum ReadyPointToml {
     FixedIcount { retired: u64 },
     NetworkIdle { window_nanos: u64 },
     ConsoleMarker { marker: String },
@@ -150,41 +155,41 @@ enum ReadyPointToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum WhiteBoxToml {
+pub(super) enum WhiteBoxToml {
     Disabled,
     Enabled,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LinkToml {
-    endpoint_a: String,
-    endpoint_b: String,
-    latency_nanos: u64,
-    jitter_nanos: u64,
-    loss_millionths: u32,
+pub(super) struct LinkToml {
+    pub(super) endpoint_a: String,
+    pub(super) endpoint_b: String,
+    pub(super) latency_nanos: u64,
+    pub(super) jitter_nanos: u64,
+    pub(super) loss_millionths: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    bandwidth_bps: Option<u64>,
+    pub(super) bandwidth_bps: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PlanToml {
-    id: String,
+pub(super) struct PlanToml {
+    pub(super) id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    kind: Option<PlanKindToml>,
+    pub(super) kind: Option<PlanKindToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    entry: Vec<PlanEntryToml>,
+    pub(super) entry: Vec<PlanEntryToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    fault_entry: Vec<FaultPlanEntryToml>,
+    pub(super) fault_entry: Vec<FaultPlanEntryToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    event: Vec<EventToml>,
+    pub(super) event: Vec<EventToml>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum PlanKindToml {
+pub(super) enum PlanKindToml {
     Entries,
     FaultPlan,
     EventGraph,
@@ -193,7 +198,7 @@ enum PlanKindToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum PlanEntryToml {
+pub(super) enum PlanEntryToml {
     Activate {
         at_ticks: u64,
         tag: String,
@@ -208,7 +213,7 @@ enum PlanEntryToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum FaultPlanEntryToml {
+pub(super) enum FaultPlanEntryToml {
     At {
         at_ticks: u64,
         duration_nanos: u64,
@@ -228,19 +233,19 @@ enum FaultPlanEntryToml {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EventToml {
-    id: String,
+pub(super) struct EventToml {
+    pub(super) id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    trigger: Option<PredicateToml>,
-    action: ActionToml,
+    pub(super) trigger: Option<PredicateToml>,
+    pub(super) action: ActionToml,
     #[serde(default = "default_fire_policy_toml")]
-    policy: FirePolicyToml,
+    pub(super) policy: FirePolicyToml,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum FirePolicyToml {
+pub(super) enum FirePolicyToml {
     Once,
     Repeatable,
 }
@@ -248,7 +253,7 @@ enum FirePolicyToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum ActionToml {
+pub(super) enum ActionToml {
     InjectFault {
         tag: String,
         fault: MembershipFaultToml,
@@ -293,7 +298,7 @@ enum ActionToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum LogLevelToml {
+pub(super) enum LogLevelToml {
     Debug,
     Info,
     Warn,
@@ -303,7 +308,7 @@ enum LogLevelToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum MembershipFaultToml {
+pub(super) enum MembershipFaultToml {
     Crash {
         node: String,
         restart: RestartToml,
@@ -327,7 +332,7 @@ enum MembershipFaultToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum FaultToml {
+pub(super) enum FaultToml {
     NetworkPartition {
         link: String,
         direction: PartitionDirectionToml,
@@ -440,7 +445,7 @@ enum FaultToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum IoFailureModeToml {
+pub(super) enum IoFailureModeToml {
     Drop,
     ErrorStatus,
 }
@@ -448,7 +453,7 @@ enum IoFailureModeToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum RestartToml {
+pub(super) enum RestartToml {
     FromReadyPoint,
     FromLastCheckpoint,
     StayDown,
@@ -457,7 +462,7 @@ enum RestartToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum PartitionDirectionToml {
+pub(super) enum PartitionDirectionToml {
     Bidirectional,
     EndpointAToEndpointB,
     EndpointBToEndpointA,
@@ -465,39 +470,39 @@ enum PartitionDirectionToml {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PropertiesToml {
-    id: String,
+pub(super) struct PropertiesToml {
+    pub(super) id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    assertion: Vec<AssertionToml>,
+    pub(super) assertion: Vec<AssertionToml>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AssertionToml {
-    id: String,
-    message: String,
-    property: PropertyToml,
+pub(super) struct AssertionToml {
+    pub(super) id: String,
+    pub(super) message: String,
+    pub(super) property: PropertyToml,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PropertyToml {
-    kind: String,
+pub(super) struct PropertyToml {
+    pub(super) kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    predicate: Option<PredicateToml>,
+    pub(super) predicate: Option<PredicateToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    trigger: Option<PredicateToml>,
+    pub(super) trigger: Option<PredicateToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    property: Option<PredicateToml>,
+    pub(super) property: Option<PredicateToml>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    deadline_ticks: Option<u64>,
+    pub(super) deadline_ticks: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    expectation: Option<ReachabilityExpectationToml>,
+    pub(super) expectation: Option<ReachabilityExpectationToml>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
-enum PredicateToml {
+pub(super) enum PredicateToml {
     Dsl(String),
     Structured(PredicateTomlKind),
 }
@@ -505,7 +510,7 @@ enum PredicateToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum PredicateTomlKind {
+pub(super) enum PredicateTomlKind {
     At {
         at_ticks: u64,
     },
@@ -576,7 +581,7 @@ enum PredicateTomlKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum FramePredicateToml {
+pub(super) enum FramePredicateToml {
     Any,
     Exact { bytes_hex: String },
     Contains { needle_hex: String },
@@ -586,7 +591,7 @@ enum FramePredicateToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum CodePointToml {
+pub(super) enum CodePointToml {
     GuestAddress { address: u64 },
     Symbol { name: String },
 }
@@ -594,7 +599,7 @@ enum CodePointToml {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum MemPlaceToml {
+pub(super) enum MemPlaceToml {
     PhysicalAddress {
         address: u64,
         width: MemoryWidthToml,
@@ -616,7 +621,7 @@ enum MemPlaceToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum MemoryWidthToml {
+pub(super) enum MemoryWidthToml {
     U8,
     U16,
     U32,
@@ -626,7 +631,7 @@ enum MemoryWidthToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum MemoryCmpToml {
+pub(super) enum MemoryCmpToml {
     Eq,
     Ne,
     Lt,
@@ -638,7 +643,7 @@ enum MemoryCmpToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum IoEventKindToml {
+pub(super) enum IoEventKindToml {
     Any,
     BlockRead,
     BlockWrite,
@@ -650,7 +655,7 @@ enum IoEventKindToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum NodeLifecycleToml {
+pub(super) enum NodeLifecycleToml {
     Started,
     Crashed,
     Hung,
@@ -660,7 +665,7 @@ enum NodeLifecycleToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum AssertionPhaseToml {
+pub(super) enum AssertionPhaseToml {
     Satisfied,
     Violated,
 }
@@ -668,7 +673,7 @@ enum AssertionPhaseToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum ReachabilityExpectationToml {
+pub(super) enum ReachabilityExpectationToml {
     Reachable {
         #[serde(default = "reachable_disposition_warn_toml")]
         on_unreached: ReachableDispositionToml,
@@ -679,22 +684,25 @@ enum ReachabilityExpectationToml {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
-enum ReachableDispositionToml {
+pub(super) enum ReachableDispositionToml {
     Warn,
     Fail,
 }
 
-fn reachable_disposition_warn_toml() -> ReachableDispositionToml {
+pub(super) fn reachable_disposition_warn_toml() -> ReachableDispositionToml {
     ReachableDispositionToml::Warn
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SeedToml {
-    bytes: String,
+pub(super) struct SeedToml {
+    pub(super) bytes: String,
 }
 
-fn serialize_u64_toml_number_or_string<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
+pub(super) fn serialize_u64_toml_number_or_string<S>(
+    value: &u64,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
@@ -705,7 +713,9 @@ where
     }
 }
 
-fn deserialize_u64_toml_number_or_string<'de, D>(deserializer: D) -> Result<u64, D::Error>
+pub(super) fn deserialize_u64_toml_number_or_string<'de, D>(
+    deserializer: D,
+) -> Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -745,7 +755,7 @@ where
     deserializer.deserialize_any(NumberOrStringVisitor)
 }
 
-fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
+pub(super) fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
     ScenarioDefToml {
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
@@ -758,7 +768,9 @@ fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
     }
 }
 
-fn scenario_form_from_toml(toml: ScenarioDefToml) -> Result<ScenarioDefForm, EngineError> {
+pub(super) fn scenario_form_from_toml(
+    toml: ScenarioDefToml,
+) -> Result<ScenarioDefForm, EngineError> {
     let world = world_from_toml(toml.world)?;
     let (properties_id, assertions) = properties_assertions_from_toml(toml.properties)?;
     let plan = plan_from_toml_with_assertions(
@@ -782,7 +794,7 @@ fn scenario_form_from_toml(toml: ScenarioDefToml) -> Result<ScenarioDefForm, Eng
     Ok(form)
 }
 
-fn world_to_toml(world: &World) -> WorldToml {
+pub(super) fn world_to_toml(world: &World) -> WorldToml {
     WorldToml {
         id: format_content_hash_ref(world.id()),
         node: world
@@ -794,7 +806,7 @@ fn world_to_toml(world: &World) -> WorldToml {
     }
 }
 
-fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
+pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
     let id = parse_content_hash_ref(&toml.id)?;
     let topology_nodes = toml
         .node
@@ -811,21 +823,23 @@ fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
     Ok(world)
 }
 
-fn world_node_def_to_toml(node: &WorldNodeDef) -> WorldNodeDefToml {
+pub(super) fn world_node_def_to_toml(node: &WorldNodeDef) -> WorldNodeDefToml {
     match node {
         WorldNodeDef::Vm(node) => WorldNodeDefToml::Vm(world_node_to_toml(node)),
         WorldNodeDef::Io(node) => WorldNodeDefToml::Io(world_io_node_to_toml(node)),
     }
 }
 
-fn world_node_def_from_toml(toml: WorldNodeDefToml) -> Result<WorldNodeDef, EngineError> {
+pub(super) fn world_node_def_from_toml(
+    toml: WorldNodeDefToml,
+) -> Result<WorldNodeDef, EngineError> {
     match toml {
         WorldNodeDefToml::Vm(node) => world_node_from_toml(node).map(WorldNodeDef::Vm),
         WorldNodeDefToml::Io(node) => world_io_node_from_toml(node).map(WorldNodeDef::Io),
     }
 }
 
-fn world_io_node_to_toml(node: &WorldIoNode) -> WorldIoNodeToml {
+pub(super) fn world_io_node_to_toml(node: &WorldIoNode) -> WorldIoNodeToml {
     let core = node.core;
     match &node.kind {
         WorldIoNodeKind::Block {
@@ -856,7 +870,7 @@ fn world_io_node_to_toml(node: &WorldIoNode) -> WorldIoNodeToml {
     }
 }
 
-fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNode, EngineError> {
+pub(super) fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNode, EngineError> {
     Ok(match toml {
         WorldIoNodeToml::Block {
             id,
@@ -901,7 +915,7 @@ fn world_io_node_from_toml(toml: WorldIoNodeToml) -> Result<WorldIoNode, EngineE
     })
 }
 
-fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
+pub(super) fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
     WorldNodeToml {
         id: node.id.name.clone(),
         arch: vm_arch_to_toml(node.arch),
@@ -917,7 +931,7 @@ fn world_node_to_toml(node: &WorldNode) -> WorldNodeToml {
     }
 }
 
-fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
+pub(super) fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
     let kernel = parse_optional_blob_ref("kernel", toml.kernel)?;
     let root_image = parse_optional_blob_ref("root_image", toml.root_image)?;
     let initrd = parse_optional_blob_ref("initrd", toml.initrd)?;
@@ -936,29 +950,29 @@ fn world_node_from_toml(toml: WorldNodeToml) -> Result<WorldNode, EngineError> {
     })
 }
 
-fn default_vm_arch_toml() -> VmArchitectureToml {
+pub(super) fn default_vm_arch_toml() -> VmArchitectureToml {
     vm_arch_to_toml(NodeTemplate::DEFAULT_ARCH)
 }
 
-fn default_world_node_memory_mib() -> u32 {
+pub(super) fn default_world_node_memory_mib() -> u32 {
     NodeTemplate::DEFAULT_MEMORY_MIB
 }
 
-fn vm_arch_to_toml(arch: VmArchitecture) -> VmArchitectureToml {
+pub(super) fn vm_arch_to_toml(arch: VmArchitecture) -> VmArchitectureToml {
     match arch {
         VmArchitecture::X86_64 => VmArchitectureToml::X86_64,
         VmArchitecture::Aarch64 => VmArchitectureToml::Aarch64,
     }
 }
 
-fn vm_arch_from_toml(toml: VmArchitectureToml) -> VmArchitecture {
+pub(super) fn vm_arch_from_toml(toml: VmArchitectureToml) -> VmArchitecture {
     match toml {
         VmArchitectureToml::X86_64 => VmArchitecture::X86_64,
         VmArchitectureToml::Aarch64 => VmArchitecture::Aarch64,
     }
 }
 
-fn ready_point_to_toml(ready_point: &ReadyPoint) -> ReadyPointToml {
+pub(super) fn ready_point_to_toml(ready_point: &ReadyPoint) -> ReadyPointToml {
     match ready_point {
         ReadyPoint::FixedIcount { icount } => ReadyPointToml::FixedIcount {
             retired: icount.retired,
@@ -973,7 +987,7 @@ fn ready_point_to_toml(ready_point: &ReadyPoint) -> ReadyPointToml {
     }
 }
 
-fn ready_point_from_toml(toml: ReadyPointToml) -> ReadyPoint {
+pub(super) fn ready_point_from_toml(toml: ReadyPointToml) -> ReadyPoint {
     match toml {
         ReadyPointToml::FixedIcount { retired } => ReadyPoint::FixedIcount {
             icount: Icount { retired },
@@ -988,21 +1002,21 @@ fn ready_point_from_toml(toml: ReadyPointToml) -> ReadyPoint {
     }
 }
 
-fn white_box_to_toml(policy: WhiteBoxPolicy) -> WhiteBoxToml {
+pub(super) fn white_box_to_toml(policy: WhiteBoxPolicy) -> WhiteBoxToml {
     match policy {
         WhiteBoxPolicy::Disabled => WhiteBoxToml::Disabled,
         WhiteBoxPolicy::Enabled => WhiteBoxToml::Enabled,
     }
 }
 
-fn white_box_from_toml(toml: WhiteBoxToml) -> WhiteBoxPolicy {
+pub(super) fn white_box_from_toml(toml: WhiteBoxToml) -> WhiteBoxPolicy {
     match toml {
         WhiteBoxToml::Disabled => WhiteBoxPolicy::Disabled,
         WhiteBoxToml::Enabled => WhiteBoxPolicy::Enabled,
     }
 }
 
-fn link_to_toml(link: &LinkDef) -> LinkToml {
+pub(super) fn link_to_toml(link: &LinkDef) -> LinkToml {
     let (endpoint_a, endpoint_b) = link.endpoints();
     LinkToml {
         endpoint_a: endpoint_a.name.clone(),
@@ -1014,7 +1028,7 @@ fn link_to_toml(link: &LinkDef) -> LinkToml {
     }
 }
 
-fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
+pub(super) fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
     LinkDef::with_transport(
         NodeId {
             name: toml.endpoint_a,
@@ -1033,7 +1047,7 @@ fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
     )
 }
 
-fn plan_to_toml(plan: &Plan) -> PlanToml {
+pub(super) fn plan_to_toml(plan: &Plan) -> PlanToml {
     match &plan.kind {
         PlanKind::ScheduledEntries { entries } => PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
@@ -1063,11 +1077,11 @@ fn plan_to_toml(plan: &Plan) -> PlanToml {
     }
 }
 
-fn plan_from_toml(world: &World, toml: PlanToml) -> Result<Plan, EngineError> {
+pub(super) fn plan_from_toml(world: &World, toml: PlanToml) -> Result<Plan, EngineError> {
     plan_from_toml_with_assertions(world, [], toml)
 }
 
-fn plan_from_toml_with_assertions(
+pub(super) fn plan_from_toml_with_assertions(
     world: &World,
     assertions: impl IntoIterator<Item = AssertionId>,
     toml: PlanToml,
@@ -1105,13 +1119,13 @@ fn plan_from_toml_with_assertions(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SerializedPlanKind {
+pub(super) enum SerializedPlanKind {
     ScheduledEntries,
     FaultPlan,
     EventGraph,
 }
 
-fn serialized_plan_kind(toml: &PlanToml) -> Result<SerializedPlanKind, EngineError> {
+pub(super) fn serialized_plan_kind(toml: &PlanToml) -> Result<SerializedPlanKind, EngineError> {
     match toml.kind {
         Some(PlanKindToml::Entries) => {
             if !toml.event.is_empty() || !toml.fault_entry.is_empty() {
@@ -1155,7 +1169,7 @@ fn serialized_plan_kind(toml: &PlanToml) -> Result<SerializedPlanKind, EngineErr
     }
 }
 
-fn plan_entry_to_toml(entry: &PlanEntry) -> PlanEntryToml {
+pub(super) fn plan_entry_to_toml(entry: &PlanEntry) -> PlanEntryToml {
     match entry {
         PlanEntry::Activate { at, tag, fault } => PlanEntryToml::Activate {
             at_ticks: at.ticks,
@@ -1169,7 +1183,7 @@ fn plan_entry_to_toml(entry: &PlanEntry) -> PlanEntryToml {
     }
 }
 
-fn plan_entry_from_toml(toml: PlanEntryToml) -> Result<PlanEntry, EngineError> {
+pub(super) fn plan_entry_from_toml(toml: PlanEntryToml) -> Result<PlanEntry, EngineError> {
     Ok(match toml {
         PlanEntryToml::Activate {
             at_ticks,
@@ -1187,7 +1201,7 @@ fn plan_entry_from_toml(toml: PlanEntryToml) -> Result<PlanEntry, EngineError> {
     })
 }
 
-fn fault_plan_entry_to_toml(entry: &FaultPlanEntry) -> FaultPlanEntryToml {
+pub(super) fn fault_plan_entry_to_toml(entry: &FaultPlanEntry) -> FaultPlanEntryToml {
     match entry {
         FaultPlanEntry::At {
             at,
@@ -1212,7 +1226,9 @@ fn fault_plan_entry_to_toml(entry: &FaultPlanEntry) -> FaultPlanEntryToml {
     }
 }
 
-fn fault_plan_entry_from_toml(toml: FaultPlanEntryToml) -> Result<FaultPlanEntry, EngineError> {
+pub(super) fn fault_plan_entry_from_toml(
+    toml: FaultPlanEntryToml,
+) -> Result<FaultPlanEntry, EngineError> {
     Ok(match toml {
         FaultPlanEntryToml::At {
             at_ticks,
@@ -1241,7 +1257,7 @@ fn fault_plan_entry_from_toml(toml: FaultPlanEntryToml) -> Result<FaultPlanEntry
     })
 }
 
-fn event_to_toml(event: &Event) -> EventToml {
+pub(super) fn event_to_toml(event: &Event) -> EventToml {
     EventToml {
         id: event.id.name.clone(),
         trigger: event.trigger.as_ref().map(predicate_to_toml),
@@ -1250,7 +1266,7 @@ fn event_to_toml(event: &Event) -> EventToml {
     }
 }
 
-fn event_from_toml(toml: EventToml) -> Result<Event, EngineError> {
+pub(super) fn event_from_toml(toml: EventToml) -> Result<Event, EngineError> {
     Ok(Event {
         id: EventId { name: toml.id },
         trigger: toml.trigger.map(predicate_from_toml).transpose()?,
@@ -1259,25 +1275,25 @@ fn event_from_toml(toml: EventToml) -> Result<Event, EngineError> {
     })
 }
 
-fn default_fire_policy_toml() -> FirePolicyToml {
+pub(super) fn default_fire_policy_toml() -> FirePolicyToml {
     FirePolicyToml::Once
 }
 
-fn fire_policy_to_toml(policy: FirePolicy) -> FirePolicyToml {
+pub(super) fn fire_policy_to_toml(policy: FirePolicy) -> FirePolicyToml {
     match policy {
         FirePolicy::Once => FirePolicyToml::Once,
         FirePolicy::Repeatable => FirePolicyToml::Repeatable,
     }
 }
 
-fn fire_policy_from_toml(toml: FirePolicyToml) -> FirePolicy {
+pub(super) fn fire_policy_from_toml(toml: FirePolicyToml) -> FirePolicy {
     match toml {
         FirePolicyToml::Once => FirePolicy::Once,
         FirePolicyToml::Repeatable => FirePolicy::Repeatable,
     }
 }
 
-fn action_to_toml(action: &Action) -> ActionToml {
+pub(super) fn action_to_toml(action: &Action) -> ActionToml {
     match action {
         Action::InjectFault { tag, fault } => ActionToml::InjectFault {
             tag: tag.name.clone(),
@@ -1319,7 +1335,7 @@ fn action_to_toml(action: &Action) -> ActionToml {
     }
 }
 
-fn action_from_toml(toml: ActionToml) -> Result<Action, EngineError> {
+pub(super) fn action_from_toml(toml: ActionToml) -> Result<Action, EngineError> {
     Ok(match toml {
         ActionToml::InjectFault { tag, fault } => Action::InjectFault {
             tag: FaultTag { name: tag },
@@ -1358,7 +1374,7 @@ fn action_from_toml(toml: ActionToml) -> Result<Action, EngineError> {
     })
 }
 
-fn log_level_to_toml(level: LogLevel) -> LogLevelToml {
+pub(super) fn log_level_to_toml(level: LogLevel) -> LogLevelToml {
     match level {
         LogLevel::Debug => LogLevelToml::Debug,
         LogLevel::Info => LogLevelToml::Info,
@@ -1367,7 +1383,7 @@ fn log_level_to_toml(level: LogLevel) -> LogLevelToml {
     }
 }
 
-fn log_level_from_toml(toml: LogLevelToml) -> LogLevel {
+pub(super) fn log_level_from_toml(toml: LogLevelToml) -> LogLevel {
     match toml {
         LogLevelToml::Debug => LogLevel::Debug,
         LogLevelToml::Info => LogLevel::Info,
@@ -1376,7 +1392,7 @@ fn log_level_from_toml(toml: LogLevelToml) -> LogLevel {
     }
 }
 
-fn membership_fault_to_toml(fault: &MembershipFault) -> MembershipFaultToml {
+pub(super) fn membership_fault_to_toml(fault: &MembershipFault) -> MembershipFaultToml {
     match fault {
         MembershipFault::Crash { node, restart } => MembershipFaultToml::Crash {
             node: node.name.clone(),
@@ -1403,7 +1419,9 @@ fn membership_fault_to_toml(fault: &MembershipFault) -> MembershipFaultToml {
     }
 }
 
-fn membership_fault_from_toml(toml: MembershipFaultToml) -> Result<MembershipFault, EngineError> {
+pub(super) fn membership_fault_from_toml(
+    toml: MembershipFaultToml,
+) -> Result<MembershipFault, EngineError> {
     Ok(match toml {
         MembershipFaultToml::Crash { node, restart } => MembershipFault::Crash {
             node: NodeId { name: node },
@@ -1430,7 +1448,7 @@ fn membership_fault_from_toml(toml: MembershipFaultToml) -> Result<MembershipFau
     })
 }
 
-fn fault_to_toml(fault: &Fault) -> FaultToml {
+pub(super) fn fault_to_toml(fault: &Fault) -> FaultToml {
     match fault {
         Fault::Network(fault) => network_fault_to_toml(fault),
         Fault::Node(fault) => node_fault_to_toml(fault),
@@ -1439,7 +1457,7 @@ fn fault_to_toml(fault: &Fault) -> FaultToml {
     }
 }
 
-fn fault_from_toml(toml: FaultToml) -> Result<Fault, EngineError> {
+pub(super) fn fault_from_toml(toml: FaultToml) -> Result<Fault, EngineError> {
     Ok(match toml {
         FaultToml::NetworkPartition { link, direction } => {
             Fault::Network(NetworkFault::Partition {
@@ -1631,7 +1649,7 @@ fn fault_from_toml(toml: FaultToml) -> Result<Fault, EngineError> {
     })
 }
 
-fn network_fault_to_toml(fault: &NetworkFault) -> FaultToml {
+pub(super) fn network_fault_to_toml(fault: &NetworkFault) -> FaultToml {
     match fault {
         NetworkFault::Partition { link, direction } => FaultToml::NetworkPartition {
             link: link.name.clone(),
@@ -1662,7 +1680,10 @@ fn network_fault_to_toml(fault: &NetworkFault) -> FaultToml {
     }
 }
 
-fn network_corruption_fault_to_toml(link: &LinkId, fault: &NetworkCorruptionFault) -> FaultToml {
+pub(super) fn network_corruption_fault_to_toml(
+    link: &LinkId,
+    fault: &NetworkCorruptionFault,
+) -> FaultToml {
     match fault {
         NetworkCorruptionFault::BitFlip { rate, max_bits } => FaultToml::NetworkCorruptionBitFlip {
             link: link.name.clone(),
@@ -1685,7 +1706,7 @@ fn network_corruption_fault_to_toml(link: &LinkId, fault: &NetworkCorruptionFaul
     }
 }
 
-fn node_fault_to_toml(fault: &NodeFault) -> FaultToml {
+pub(super) fn node_fault_to_toml(fault: &NodeFault) -> FaultToml {
     match fault {
         NodeFault::Crash { node, restart } => FaultToml::NodeCrash {
             node: node.name.clone(),
@@ -1702,7 +1723,7 @@ fn node_fault_to_toml(fault: &NodeFault) -> FaultToml {
     }
 }
 
-fn block_fault_to_toml(fault: &BlockFault) -> FaultToml {
+pub(super) fn block_fault_to_toml(fault: &BlockFault) -> FaultToml {
     match fault {
         BlockFault::Latency {
             device,
@@ -1743,7 +1764,7 @@ fn block_fault_to_toml(fault: &BlockFault) -> FaultToml {
     }
 }
 
-fn ninep_fault_to_toml(fault: &NinePFault) -> FaultToml {
+pub(super) fn ninep_fault_to_toml(fault: &NinePFault) -> FaultToml {
     match fault {
         NinePFault::Latency {
             device,
@@ -1788,21 +1809,21 @@ fn ninep_fault_to_toml(fault: &NinePFault) -> FaultToml {
     }
 }
 
-fn io_failure_mode_to_toml(mode: IoFailureMode) -> IoFailureModeToml {
+pub(super) fn io_failure_mode_to_toml(mode: IoFailureMode) -> IoFailureModeToml {
     match mode {
         IoFailureMode::Drop => IoFailureModeToml::Drop,
         IoFailureMode::ErrorStatus => IoFailureModeToml::ErrorStatus,
     }
 }
 
-fn io_failure_mode_from_toml(toml: IoFailureModeToml) -> IoFailureMode {
+pub(super) fn io_failure_mode_from_toml(toml: IoFailureModeToml) -> IoFailureMode {
     match toml {
         IoFailureModeToml::Drop => IoFailureMode::Drop,
         IoFailureModeToml::ErrorStatus => IoFailureMode::ErrorStatus,
     }
 }
 
-fn restart_to_toml(policy: RestartPolicy) -> RestartToml {
+pub(super) fn restart_to_toml(policy: RestartPolicy) -> RestartToml {
     match policy {
         RestartPolicy::FromReadyPoint => RestartToml::FromReadyPoint,
         RestartPolicy::FromLastCheckpoint => RestartToml::FromLastCheckpoint,
@@ -1810,7 +1831,7 @@ fn restart_to_toml(policy: RestartPolicy) -> RestartToml {
     }
 }
 
-fn restart_from_toml(toml: RestartToml) -> RestartPolicy {
+pub(super) fn restart_from_toml(toml: RestartToml) -> RestartPolicy {
     match toml {
         RestartToml::FromReadyPoint => RestartPolicy::FromReadyPoint,
         RestartToml::FromLastCheckpoint => RestartPolicy::FromLastCheckpoint,
@@ -1818,7 +1839,7 @@ fn restart_from_toml(toml: RestartToml) -> RestartPolicy {
     }
 }
 
-fn partition_direction_to_toml(direction: PartitionDirection) -> PartitionDirectionToml {
+pub(super) fn partition_direction_to_toml(direction: PartitionDirection) -> PartitionDirectionToml {
     match direction {
         PartitionDirection::Bidirectional => PartitionDirectionToml::Bidirectional,
         PartitionDirection::EndpointAToEndpointB => PartitionDirectionToml::EndpointAToEndpointB,
@@ -1826,7 +1847,7 @@ fn partition_direction_to_toml(direction: PartitionDirection) -> PartitionDirect
     }
 }
 
-fn partition_direction_from_toml(toml: PartitionDirectionToml) -> PartitionDirection {
+pub(super) fn partition_direction_from_toml(toml: PartitionDirectionToml) -> PartitionDirection {
     match toml {
         PartitionDirectionToml::Bidirectional => PartitionDirection::Bidirectional,
         PartitionDirectionToml::EndpointAToEndpointB => PartitionDirection::EndpointAToEndpointB,
@@ -1834,7 +1855,7 @@ fn partition_direction_from_toml(toml: PartitionDirectionToml) -> PartitionDirec
     }
 }
 
-fn properties_to_toml(properties: &Properties) -> PropertiesToml {
+pub(super) fn properties_to_toml(properties: &Properties) -> PropertiesToml {
     PropertiesToml {
         id: format_content_hash_ref(properties.content_hash()),
         assertion: properties
@@ -1845,14 +1866,17 @@ fn properties_to_toml(properties: &Properties) -> PropertiesToml {
     }
 }
 
-fn properties_from_toml(world: &World, toml: PropertiesToml) -> Result<Properties, EngineError> {
+pub(super) fn properties_from_toml(
+    world: &World,
+    toml: PropertiesToml,
+) -> Result<Properties, EngineError> {
     let (id, assertions) = properties_assertions_from_toml(toml)?;
     let properties = Properties::from_assertions_for_world(world, assertions)?;
     validate_serialized_id("properties", id, properties.content_hash())?;
     Ok(properties)
 }
 
-fn properties_from_toml_with_plan(
+pub(super) fn properties_from_toml_with_plan(
     world: &World,
     plan: &Plan,
     toml: PropertiesToml,
@@ -1863,7 +1887,7 @@ fn properties_from_toml_with_plan(
     Ok(properties)
 }
 
-fn properties_assertions_from_toml(
+pub(super) fn properties_assertions_from_toml(
     toml: PropertiesToml,
 ) -> Result<(ContentHash, Vec<AssertionDef>), EngineError> {
     let id = parse_content_hash_ref(&toml.id)?;
@@ -1875,7 +1899,7 @@ fn properties_assertions_from_toml(
     Ok((id, assertions))
 }
 
-fn assertion_to_toml(assertion: &AssertionDef) -> AssertionToml {
+pub(super) fn assertion_to_toml(assertion: &AssertionDef) -> AssertionToml {
     AssertionToml {
         id: assertion.id.name.clone(),
         message: assertion.message.clone(),
@@ -1883,7 +1907,7 @@ fn assertion_to_toml(assertion: &AssertionDef) -> AssertionToml {
     }
 }
 
-fn assertion_from_toml(toml: AssertionToml) -> Result<AssertionDef, EngineError> {
+pub(super) fn assertion_from_toml(toml: AssertionToml) -> Result<AssertionDef, EngineError> {
     Ok(AssertionDef {
         id: AssertionId { name: toml.id },
         message: toml.message,
@@ -1891,7 +1915,7 @@ fn assertion_from_toml(toml: AssertionToml) -> Result<AssertionDef, EngineError>
     })
 }
 
-fn property_to_toml(property: &Property) -> PropertyToml {
+pub(super) fn property_to_toml(property: &Property) -> PropertyToml {
     match property {
         Property::Always { predicate } => PropertyToml {
             kind: property.kind().toml_kind().to_owned(),
@@ -1943,7 +1967,7 @@ fn property_to_toml(property: &Property) -> PropertyToml {
     }
 }
 
-fn property_from_toml(toml: PropertyToml) -> Result<Property, EngineError> {
+pub(super) fn property_from_toml(toml: PropertyToml) -> Result<Property, EngineError> {
     let PropertyToml {
         kind,
         predicate,
@@ -2029,7 +2053,7 @@ fn property_from_toml(toml: PropertyToml) -> Result<Property, EngineError> {
     })
 }
 
-fn require_property_toml_field<T>(
+pub(super) fn require_property_toml_field<T>(
     kind: PropertyKind,
     field_name: &'static str,
     value: Option<T>,
@@ -2042,7 +2066,7 @@ fn require_property_toml_field<T>(
     })
 }
 
-fn reject_property_toml_field<T>(
+pub(super) fn reject_property_toml_field<T>(
     kind: PropertyKind,
     field_name: &'static str,
     value: Option<T>,
@@ -2057,7 +2081,7 @@ fn reject_property_toml_field<T>(
     }
 }
 
-fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
+pub(super) fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
     PredicateToml::Structured(match predicate {
         Predicate::At { at } => PredicateTomlKind::At { at_ticks: at.ticks },
         Predicate::After { duration, of } => PredicateTomlKind::After {
@@ -2128,7 +2152,7 @@ fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
     })
 }
 
-fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
+pub(super) fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
     let toml = match toml {
         PredicateToml::Dsl(name) => {
             return Ok(Predicate::Named {
@@ -2218,7 +2242,7 @@ fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, EngineError> {
     })
 }
 
-fn frame_predicate_to_toml(predicate: &FramePredicate) -> FramePredicateToml {
+pub(super) fn frame_predicate_to_toml(predicate: &FramePredicate) -> FramePredicateToml {
     match predicate {
         FramePredicate::Any => FramePredicateToml::Any,
         FramePredicate::Exact(bytes) => FramePredicateToml::Exact {
@@ -2233,7 +2257,9 @@ fn frame_predicate_to_toml(predicate: &FramePredicate) -> FramePredicateToml {
     }
 }
 
-fn frame_predicate_from_toml(toml: FramePredicateToml) -> Result<FramePredicate, EngineError> {
+pub(super) fn frame_predicate_from_toml(
+    toml: FramePredicateToml,
+) -> Result<FramePredicate, EngineError> {
     Ok(match toml {
         FramePredicateToml::Any => FramePredicate::Any,
         FramePredicateToml::Exact { bytes_hex } => {
@@ -2248,21 +2274,21 @@ fn frame_predicate_from_toml(toml: FramePredicateToml) -> Result<FramePredicate,
     })
 }
 
-fn code_point_to_toml(point: &CodePoint) -> CodePointToml {
+pub(super) fn code_point_to_toml(point: &CodePoint) -> CodePointToml {
     match point {
         CodePoint::GuestAddress { address } => CodePointToml::GuestAddress { address: *address },
         CodePoint::Symbol { name } => CodePointToml::Symbol { name: name.clone() },
     }
 }
 
-fn code_point_from_toml(toml: CodePointToml) -> CodePoint {
+pub(super) fn code_point_from_toml(toml: CodePointToml) -> CodePoint {
     match toml {
         CodePointToml::GuestAddress { address } => CodePoint::GuestAddress { address },
         CodePointToml::Symbol { name } => CodePoint::Symbol { name },
     }
 }
 
-fn mem_place_to_toml(place: &MemPlace) -> MemPlaceToml {
+pub(super) fn mem_place_to_toml(place: &MemPlace) -> MemPlaceToml {
     match place {
         MemPlace::PhysicalAddress { address, width } => MemPlaceToml::PhysicalAddress {
             address: *address,
@@ -2283,7 +2309,7 @@ fn mem_place_to_toml(place: &MemPlace) -> MemPlaceToml {
     }
 }
 
-fn mem_place_from_toml(toml: MemPlaceToml) -> MemPlace {
+pub(super) fn mem_place_from_toml(toml: MemPlaceToml) -> MemPlace {
     match toml {
         MemPlaceToml::PhysicalAddress { address, width } => MemPlace::PhysicalAddress {
             address,
@@ -2304,7 +2330,7 @@ fn mem_place_from_toml(toml: MemPlaceToml) -> MemPlace {
     }
 }
 
-fn memory_width_to_toml(width: MemoryWidth) -> MemoryWidthToml {
+pub(super) fn memory_width_to_toml(width: MemoryWidth) -> MemoryWidthToml {
     match width {
         MemoryWidth::U8 => MemoryWidthToml::U8,
         MemoryWidth::U16 => MemoryWidthToml::U16,
@@ -2313,7 +2339,7 @@ fn memory_width_to_toml(width: MemoryWidth) -> MemoryWidthToml {
     }
 }
 
-fn memory_width_from_toml(toml: MemoryWidthToml) -> MemoryWidth {
+pub(super) fn memory_width_from_toml(toml: MemoryWidthToml) -> MemoryWidth {
     match toml {
         MemoryWidthToml::U8 => MemoryWidth::U8,
         MemoryWidthToml::U16 => MemoryWidth::U16,
@@ -2322,7 +2348,7 @@ fn memory_width_from_toml(toml: MemoryWidthToml) -> MemoryWidth {
     }
 }
 
-fn memory_cmp_to_toml(cmp: MemoryCmp) -> MemoryCmpToml {
+pub(super) fn memory_cmp_to_toml(cmp: MemoryCmp) -> MemoryCmpToml {
     match cmp {
         MemoryCmp::Eq => MemoryCmpToml::Eq,
         MemoryCmp::Ne => MemoryCmpToml::Ne,
@@ -2333,7 +2359,7 @@ fn memory_cmp_to_toml(cmp: MemoryCmp) -> MemoryCmpToml {
     }
 }
 
-fn memory_cmp_from_toml(toml: MemoryCmpToml) -> MemoryCmp {
+pub(super) fn memory_cmp_from_toml(toml: MemoryCmpToml) -> MemoryCmp {
     match toml {
         MemoryCmpToml::Eq => MemoryCmp::Eq,
         MemoryCmpToml::Ne => MemoryCmp::Ne,
@@ -2344,7 +2370,7 @@ fn memory_cmp_from_toml(toml: MemoryCmpToml) -> MemoryCmp {
     }
 }
 
-fn io_event_kind_to_toml(kind: IoEventKind) -> IoEventKindToml {
+pub(super) fn io_event_kind_to_toml(kind: IoEventKind) -> IoEventKindToml {
     match kind {
         IoEventKind::Any => IoEventKindToml::Any,
         IoEventKind::BlockRead => IoEventKindToml::BlockRead,
@@ -2355,7 +2381,7 @@ fn io_event_kind_to_toml(kind: IoEventKind) -> IoEventKindToml {
     }
 }
 
-fn io_event_kind_from_toml(toml: IoEventKindToml) -> IoEventKind {
+pub(super) fn io_event_kind_from_toml(toml: IoEventKindToml) -> IoEventKind {
     match toml {
         IoEventKindToml::Any => IoEventKind::Any,
         IoEventKindToml::BlockRead => IoEventKind::BlockRead,
@@ -2366,7 +2392,7 @@ fn io_event_kind_from_toml(toml: IoEventKindToml) -> IoEventKind {
     }
 }
 
-fn node_lifecycle_to_toml(state: NodeLifecycle) -> NodeLifecycleToml {
+pub(super) fn node_lifecycle_to_toml(state: NodeLifecycle) -> NodeLifecycleToml {
     match state {
         NodeLifecycle::Started => NodeLifecycleToml::Started,
         NodeLifecycle::Crashed => NodeLifecycleToml::Crashed,
@@ -2375,7 +2401,7 @@ fn node_lifecycle_to_toml(state: NodeLifecycle) -> NodeLifecycleToml {
     }
 }
 
-fn node_lifecycle_from_toml(toml: NodeLifecycleToml) -> NodeLifecycle {
+pub(super) fn node_lifecycle_from_toml(toml: NodeLifecycleToml) -> NodeLifecycle {
     match toml {
         NodeLifecycleToml::Started => NodeLifecycle::Started,
         NodeLifecycleToml::Crashed => NodeLifecycle::Crashed,
@@ -2384,21 +2410,21 @@ fn node_lifecycle_from_toml(toml: NodeLifecycleToml) -> NodeLifecycle {
     }
 }
 
-fn assertion_phase_to_toml(state: AssertionPhase) -> AssertionPhaseToml {
+pub(super) fn assertion_phase_to_toml(state: AssertionPhase) -> AssertionPhaseToml {
     match state {
         AssertionPhase::Satisfied => AssertionPhaseToml::Satisfied,
         AssertionPhase::Violated => AssertionPhaseToml::Violated,
     }
 }
 
-fn assertion_phase_from_toml(toml: AssertionPhaseToml) -> AssertionPhase {
+pub(super) fn assertion_phase_from_toml(toml: AssertionPhaseToml) -> AssertionPhase {
     match toml {
         AssertionPhaseToml::Satisfied => AssertionPhase::Satisfied,
         AssertionPhaseToml::Violated => AssertionPhase::Violated,
     }
 }
 
-fn reachability_expectation_to_toml(
+pub(super) fn reachability_expectation_to_toml(
     expectation: ReachabilityExpectation,
 ) -> ReachabilityExpectationToml {
     match expectation {
@@ -2411,7 +2437,7 @@ fn reachability_expectation_to_toml(
     }
 }
 
-fn reachability_expectation_from_toml(
+pub(super) fn reachability_expectation_from_toml(
     toml: ReachabilityExpectationToml,
 ) -> ReachabilityExpectation {
     match toml {
@@ -2424,26 +2450,30 @@ fn reachability_expectation_from_toml(
     }
 }
 
-fn reachable_disposition_to_toml(disposition: ReachableDisposition) -> ReachableDispositionToml {
+pub(super) fn reachable_disposition_to_toml(
+    disposition: ReachableDisposition,
+) -> ReachableDispositionToml {
     match disposition {
         ReachableDisposition::Warn => ReachableDispositionToml::Warn,
         ReachableDisposition::Fail => ReachableDispositionToml::Fail,
     }
 }
 
-fn reachable_disposition_from_toml(toml: ReachableDispositionToml) -> ReachableDisposition {
+pub(super) fn reachable_disposition_from_toml(
+    toml: ReachableDispositionToml,
+) -> ReachableDisposition {
     match toml {
         ReachableDispositionToml::Warn => ReachableDisposition::Warn,
         ReachableDispositionToml::Fail => ReachableDisposition::Fail,
     }
 }
 
-fn seed_to_toml(seed: Seed) -> SeedToml {
+pub(super) fn seed_to_toml(seed: Seed) -> SeedToml {
     SeedToml {
         bytes: format_seed_ref(seed),
     }
 }
 
-fn seed_from_toml(toml: &SeedToml) -> Result<Seed, EngineError> {
+pub(super) fn seed_from_toml(toml: &SeedToml) -> Result<Seed, EngineError> {
     parse_seed_ref(&toml.bytes)
 }

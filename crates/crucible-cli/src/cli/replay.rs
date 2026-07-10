@@ -1,15 +1,17 @@
-// Replay execution, schedule-prefix proof, and bisection.
+//! Replay execution, schedule-prefix proof, and bisection.
+
+use super::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct TraceRenderReport {
-    format: OutputFormat,
-    path: Option<PathBuf>,
-    bytes: Vec<u8>,
-    entry_count: usize,
-    streamed_entries: usize,
-    canonical_digest: String,
+pub(super) struct TraceRenderReport {
+    pub(super) format: OutputFormat,
+    pub(super) path: Option<PathBuf>,
+    pub(super) bytes: Vec<u8>,
+    pub(super) entry_count: usize,
+    pub(super) streamed_entries: usize,
+    pub(super) canonical_digest: String,
 }
 
-fn emit_canonical_trace(
+pub(super) fn emit_canonical_trace(
     format: OutputFormat,
     entries: &[CanonicalLogEntry],
     trace_path: Option<&Path>,
@@ -61,7 +63,7 @@ fn emit_canonical_trace(
     })
 }
 
-fn replay_reproduction_artifact(
+pub(super) fn replay_reproduction_artifact(
     cli: &Cli,
     args: &ReplayArgs,
 ) -> Result<ReplayArtifactReport, CliError> {
@@ -116,7 +118,7 @@ fn replay_reproduction_artifact(
     })
 }
 
-fn replay_to_savepoint(
+pub(super) fn replay_to_savepoint(
     cli: &Cli,
     target: &str,
     artifact: &CliReproductionArtifact,
@@ -151,7 +153,7 @@ fn replay_to_savepoint(
     })
 }
 
-fn prove_replay_schedule_prefix(
+pub(super) fn prove_replay_schedule_prefix(
     artifact: &CliReproductionArtifact,
     target_schedule: &Schedule,
 ) -> Result<ReplaySchedulePrefixProof, CliError> {
@@ -195,7 +197,9 @@ fn prove_replay_schedule_prefix(
     })
 }
 
-fn replay_schedule_prefix_decisions(schedule: &Schedule) -> Vec<ReplaySchedulePrefixDecisionProof> {
+pub(super) fn replay_schedule_prefix_decisions(
+    schedule: &Schedule,
+) -> Vec<ReplaySchedulePrefixDecisionProof> {
     schedule
         .decisions()
         .iter()
@@ -213,7 +217,7 @@ fn replay_schedule_prefix_decisions(schedule: &Schedule) -> Vec<ReplaySchedulePr
         .collect()
 }
 
-fn replay_schedule_prefix_decision_matches(
+pub(super) fn replay_schedule_prefix_decision_matches(
     actual: &CliDecision,
     actual_payload_summary: &str,
     expected: &ReplaySchedulePrefixDecisionProof,
@@ -225,11 +229,13 @@ fn replay_schedule_prefix_decision_matches(
         && actual_payload_summary == expected.payload_summary
 }
 
-fn replay_schedule_prefix_kind_matches(actual: &str, expected: &str) -> bool {
+pub(super) fn replay_schedule_prefix_kind_matches(actual: &str, expected: &str) -> bool {
     actual == expected || actual == expected.replace('-', "_")
 }
 
-fn typed_schedule_prefix_digest(decisions: &[ReplaySchedulePrefixDecisionProof]) -> String {
+pub(super) fn typed_schedule_prefix_digest(
+    decisions: &[ReplaySchedulePrefixDecisionProof],
+) -> String {
     let mut material = String::new();
     artifact_line(
         &mut material,
@@ -250,7 +256,7 @@ fn typed_schedule_prefix_digest(decisions: &[ReplaySchedulePrefixDecisionProof])
     content_address_bytes(material.as_bytes())
 }
 
-fn replay_to_savepoint_status_line(target: &ReplayToSavepointReport) -> String {
+pub(super) fn replay_to_savepoint_status_line(target: &ReplayToSavepointReport) -> String {
     format!(
         "crucible: replay --to {} status=target-validated schedule_prefix=typed materialization={} unified_operation={} checkpoint={} frontier_ticks={} target_decisions={} artifact_decisions={} matched_decisions={} typed_prefix_digest={} artifact_prefix_digest={} materialized_configuration={} materialized_schedule={} materialized_checkpoint={} runtime_state={} reduced_state={} single_vm_fingerprint={} graph={} replay_fat={} replay_thin={} oracle={} store_objects={}",
         target.target_label,
@@ -277,7 +283,7 @@ fn replay_to_savepoint_status_line(target: &ReplayToSavepointReport) -> String {
     )
 }
 
-fn materialize_replay_to_savepoint(
+pub(super) fn materialize_replay_to_savepoint(
     scenario: &crucible::ScenarioDef,
     configuration: &crucible::Configuration,
     oracle: &SavepointOracleProof,
@@ -307,7 +313,7 @@ fn materialize_replay_to_savepoint(
     Ok(ReplayToSavepointMaterializationProof::from_report(report))
 }
 
-fn replay_bisect_artifacts(
+pub(super) fn replay_bisect_artifacts(
     cli: &Cli,
     other_path: &Path,
     artifact: &CliReproductionArtifact,
@@ -340,7 +346,7 @@ fn replay_bisect_artifacts(
     })
 }
 
-fn replay_bisect_error(
+pub(super) fn replay_bisect_error(
     left_path: &Path,
     bisect: &ReplayBisectionReport,
     divergence: &VerifyDivergenceReport,
@@ -366,7 +372,7 @@ fn replay_bisect_error(
     ))
 }
 
-fn replay_check_mismatch_error(
+pub(super) fn replay_check_mismatch_error(
     check: &ReplayCheckReport,
     mismatch: &ReplayCheckMismatchReport,
 ) -> CliError {
@@ -381,7 +387,7 @@ fn replay_check_mismatch_error(
     ))
 }
 
-fn write_failure_reproduction_artifact(
+pub(super) fn write_failure_reproduction_artifact(
     cli: &Cli,
     artifact_bytes: &[u8],
     failure_slug: &str,

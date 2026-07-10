@@ -1,9 +1,11 @@
-// Event-log canonical material, typed payload projection, and binary segment codec.
+//! Event-log canonical material, typed payload projection, and binary segment codec.
+
+use super::*;
 pub(crate) fn scheduler_event_log_empty_prefix() -> ContentHash {
     ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", "empty=true")
 }
 
-fn scheduler_event_log_prefix_for_resume(offset: EventLogOffset) -> ContentHash {
+pub(super) fn scheduler_event_log_prefix_for_resume(offset: EventLogOffset) -> ContentHash {
     match offset.appended_segment {
         Some(appended_segment) => scheduler_event_log_prefix_after_append(
             offset.prefix,
@@ -15,7 +17,7 @@ fn scheduler_event_log_prefix_for_resume(offset: EventLogOffset) -> ContentHash 
     }
 }
 
-fn scheduler_event_log_prefix_after_append(
+pub(super) fn scheduler_event_log_prefix_after_append(
     previous_prefix: ContentHash,
     appended_segment: ContentHash,
     bytes: u64,
@@ -29,7 +31,10 @@ fn scheduler_event_log_prefix_after_append(
     ContentHash::from_canonical_material("crucible.scheduler.event-log.prefix.v1", &prefix_material)
 }
 
-fn scheduler_event_log_sequence(base: u64, offset: usize) -> Result<u64, SchedulerError> {
+pub(super) fn scheduler_event_log_sequence(
+    base: u64,
+    offset: usize,
+) -> Result<u64, SchedulerError> {
     let offset = u64::try_from(offset).map_err(|_| SchedulerError::BoundaryViolation {
         message: String::from("scheduler event-log entry offset exceeds u64"),
     })?;
@@ -84,7 +89,10 @@ pub(crate) fn recorded_assertion_log_from_schedule_for_search(
     RecordedAssertionLog::from_segments(vec![entries])
 }
 
-fn search_schedule_decision_event_time(decision: &Decision, fallback_sequence: u64) -> VirtualTime {
+pub(super) fn search_schedule_decision_event_time(
+    decision: &Decision,
+    fallback_sequence: u64,
+) -> VirtualTime {
     match decision {
         Decision::DeliveryOrder(order) => order.at,
         Decision::FaultFires(fault) => fault.at,
@@ -98,7 +106,7 @@ fn search_schedule_decision_event_time(decision: &Decision, fallback_sequence: u
     }
 }
 
-fn scheduler_event_log_entry(
+pub(super) fn scheduler_event_log_entry(
     sequence: u64,
     at: VirtualTime,
     payload: SchedulerEventLogPayload,
@@ -108,7 +116,7 @@ fn scheduler_event_log_entry(
     scheduler_event_log_entry_with_class(sequence, at, class, event_payload, payload)
 }
 
-fn scheduler_event_log_entry_with_class(
+pub(super) fn scheduler_event_log_entry_with_class(
     sequence: u64,
     at: VirtualTime,
     class: SchedulerEventLogClass,
@@ -143,7 +151,7 @@ fn scheduler_event_log_entry_with_class(
     }
 }
 
-fn scheduler_event_log_entry_with_material(
+pub(super) fn scheduler_event_log_entry_with_material(
     sequence: u64,
     at: EventLogTime,
     source: EventSource,
@@ -177,7 +185,7 @@ fn scheduler_event_log_entry_with_material(
     }
 }
 
-fn scheduler_event_log_entry_material(
+pub(super) fn scheduler_event_log_entry_material(
     sequence: u64,
     at: &EventLogTime,
     source: &EventSource,
@@ -235,7 +243,9 @@ fn scheduler_event_log_entry_material(
     lines.join("\n")
 }
 
-fn event_payload_from_scheduler_payload(payload: &SchedulerEventLogPayload) -> EventPayload {
+pub(super) fn event_payload_from_scheduler_payload(
+    payload: &SchedulerEventLogPayload,
+) -> EventPayload {
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
             resolved_happening_event_payload(event)
@@ -277,7 +287,7 @@ fn event_payload_from_scheduler_payload(payload: &SchedulerEventLogPayload) -> E
     }
 }
 
-fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventPayload {
+pub(super) fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventPayload {
     let mut attributes = BTreeMap::new();
     attributes.insert(
         String::from("virtual_time"),
@@ -364,7 +374,7 @@ fn resolved_happening_event_payload(event: &ScheduledEvent) -> EventPayload {
     }
 }
 
-fn decision_event_payload(decision: &Decision) -> EventPayload {
+pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
     let mut attributes = BTreeMap::new();
     match decision {
         Decision::DeliveryOrder(order) => {
@@ -476,7 +486,7 @@ fn decision_event_payload(decision: &Decision) -> EventPayload {
     }
 }
 
-fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload {
+pub(super) fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload {
     let mut attributes = BTreeMap::new();
     match observable {
         ObservableEventPayload::NetworkDelivered { link, payload } => {
@@ -744,7 +754,7 @@ fn observable_event_payload(observable: &ObservableEventPayload) -> EventPayload
     }
 }
 
-fn insert_guest_assertion_details(
+pub(super) fn insert_guest_assertion_details(
     attributes: &mut BTreeMap<String, EventAttributeValue>,
     details: &[crate::trigger::GuestAssertionDetail],
 ) {
@@ -765,7 +775,7 @@ fn insert_guest_assertion_details(
     }
 }
 
-fn trigger_action_application_event_payload(
+pub(super) fn trigger_action_application_event_payload(
     application: &TriggerActionApplication,
 ) -> EventPayload {
     if let Action::Log { level, message } = &application.action {
@@ -805,14 +815,17 @@ fn trigger_action_application_event_payload(
     EventPayload::new("trigger_action_applied", attributes)
 }
 
-fn scheduler_event_log_time(at: VirtualTime, payload: &SchedulerEventLogPayload) -> EventLogTime {
+pub(super) fn scheduler_event_log_time(
+    at: VirtualTime,
+    payload: &SchedulerEventLogPayload,
+) -> EventLogTime {
     EventLogTime {
         virtual_time: at,
         icount: scheduler_event_log_payload_icount(at, payload),
     }
 }
 
-fn scheduler_event_log_payload_icount(
+pub(super) fn scheduler_event_log_payload_icount(
     at: VirtualTime,
     payload: &SchedulerEventLogPayload,
 ) -> EventLogIcountStamp {
@@ -831,7 +844,7 @@ fn scheduler_event_log_payload_icount(
     }
 }
 
-fn scheduled_event_payload_icount(
+pub(super) fn scheduled_event_payload_icount(
     at: VirtualTime,
     payload: &ScheduledEventPayload,
 ) -> EventLogIcountStamp {
@@ -847,7 +860,7 @@ fn scheduled_event_payload_icount(
     }
 }
 
-fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogIcountStamp {
+pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogIcountStamp {
     match decision {
         Decision::Preemption(preemption) => EventLogIcountStamp {
             node: Some(preemption.node.clone()),
@@ -862,7 +875,7 @@ fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogIcountStamp 
     }
 }
 
-fn observable_payload_icount(
+pub(super) fn observable_payload_icount(
     at: VirtualTime,
     observable: &ObservableEventPayload,
 ) -> EventLogIcountStamp {
@@ -911,21 +924,23 @@ fn observable_payload_icount(
     }
 }
 
-fn boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
+pub(super) fn boundary_icount(at: VirtualTime) -> EventLogIcountStamp {
     EventLogIcountStamp {
         node: None,
         icount: Icount { retired: at.ticks },
     }
 }
 
-fn node_boundary_icount(at: VirtualTime, node: &NodeId) -> EventLogIcountStamp {
+pub(super) fn node_boundary_icount(at: VirtualTime, node: &NodeId) -> EventLogIcountStamp {
     EventLogIcountStamp {
         node: Some(node.clone()),
         icount: Icount { retired: at.ticks },
     }
 }
 
-fn scheduler_event_log_payload_source(payload: &SchedulerEventLogPayload) -> EventSource {
+pub(super) fn scheduler_event_log_payload_source(
+    payload: &SchedulerEventLogPayload,
+) -> EventSource {
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => scheduled_event_source(event),
         SchedulerEventLogPayload::Decision(decision) => decision_source(decision),
@@ -941,7 +956,7 @@ fn scheduler_event_log_payload_source(payload: &SchedulerEventLogPayload) -> Eve
     }
 }
 
-fn scheduled_event_source(event: &ScheduledEvent) -> EventSource {
+pub(super) fn scheduled_event_source(event: &ScheduledEvent) -> EventSource {
     match &event.payload {
         ScheduledEventPayload::Control(operation) => EventSource::Command {
             command_id: operation.sequence,
@@ -950,7 +965,7 @@ fn scheduled_event_source(event: &ScheduledEvent) -> EventSource {
     }
 }
 
-fn scheduled_event_payload_source(payload: &ScheduledEventPayload) -> EventSource {
+pub(super) fn scheduled_event_payload_source(payload: &ScheduledEventPayload) -> EventSource {
     match payload {
         ScheduledEventPayload::BackendInput(input) => EventSource::Node {
             node: input.node.clone(),
@@ -970,7 +985,7 @@ fn scheduled_event_payload_source(payload: &ScheduledEventPayload) -> EventSourc
     }
 }
 
-fn decision_source(decision: &Decision) -> EventSource {
+pub(super) fn decision_source(decision: &Decision) -> EventSource {
     match decision {
         Decision::Preemption(preemption) => EventSource::Node {
             node: preemption.node.clone(),
@@ -988,7 +1003,7 @@ fn decision_source(decision: &Decision) -> EventSource {
     }
 }
 
-fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource {
+pub(super) fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource {
     match observable {
         ObservableEventPayload::ConsoleOutput { node, .. }
         | ObservableEventPayload::MemorySample { node, .. }
@@ -1009,7 +1024,7 @@ fn observable_payload_source(observable: &ObservableEventPayload) -> EventSource
     }
 }
 
-fn scheduler_event_log_payload_level(payload: &SchedulerEventLogPayload) -> EventLevel {
+pub(super) fn scheduler_event_log_payload_level(payload: &SchedulerEventLogPayload) -> EventLevel {
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(_) => EventLevel::Info,
         SchedulerEventLogPayload::Decision(Decision::RngDraw(_)) => EventLevel::Trace,
@@ -1024,7 +1039,7 @@ fn scheduler_event_log_payload_level(payload: &SchedulerEventLogPayload) -> Even
     }
 }
 
-fn observable_payload_level(observable: &ObservableEventPayload) -> EventLevel {
+pub(super) fn observable_payload_level(observable: &ObservableEventPayload) -> EventLevel {
     match observable {
         ObservableEventPayload::CoverageBlock { .. } => EventLevel::Trace,
         ObservableEventPayload::MemorySample { .. } => EventLevel::Debug,
@@ -1041,7 +1056,9 @@ fn observable_payload_level(observable: &ObservableEventPayload) -> EventLevel {
     }
 }
 
-fn trigger_action_application_level(application: &TriggerActionApplication) -> EventLevel {
+pub(super) fn trigger_action_application_level(
+    application: &TriggerActionApplication,
+) -> EventLevel {
     match &application.action {
         Action::Log { level, .. } => event_level_from_trigger_log(*level),
         Action::Fail { .. } => EventLevel::Error,
@@ -1058,7 +1075,7 @@ fn trigger_action_application_level(application: &TriggerActionApplication) -> E
     }
 }
 
-fn event_level_from_trigger_log(level: LogLevel) -> EventLevel {
+pub(super) fn event_level_from_trigger_log(level: LogLevel) -> EventLevel {
     match level {
         LogLevel::Debug => EventLevel::Debug,
         LogLevel::Info => EventLevel::Info,
@@ -1067,7 +1084,7 @@ fn event_level_from_trigger_log(level: LogLevel) -> EventLevel {
     }
 }
 
-fn scheduler_event_log_source_material(prefix: &str, source: &EventSource) -> String {
+pub(super) fn scheduler_event_log_source_material(prefix: &str, source: &EventSource) -> String {
     match source {
         EventSource::Scenario { event } => format!(
             "{prefix}=scenario\n{prefix}.event_len={}\n{prefix}.event={}",
@@ -1091,7 +1108,7 @@ fn scheduler_event_log_source_material(prefix: &str, source: &EventSource) -> St
     }
 }
 
-fn event_level_label(level: EventLevel) -> &'static str {
+pub(super) fn event_level_label(level: EventLevel) -> &'static str {
     match level {
         EventLevel::Trace => "trace",
         EventLevel::Debug => "debug",
@@ -1101,7 +1118,7 @@ fn event_level_label(level: EventLevel) -> &'static str {
     }
 }
 
-fn assertion_quantifier_kind_label(kind: AssertionQuantifierKind) -> &'static str {
+pub(super) fn assertion_quantifier_kind_label(kind: AssertionQuantifierKind) -> &'static str {
     match kind {
         AssertionQuantifierKind::Always => "always",
         AssertionQuantifierKind::Sometimes => "sometimes",
@@ -1115,14 +1132,14 @@ fn assertion_quantifier_kind_label(kind: AssertionQuantifierKind) -> &'static st
     }
 }
 
-fn event_class_label(class: SchedulerEventLogClass) -> &'static str {
+pub(super) fn event_class_label(class: SchedulerEventLogClass) -> &'static str {
     match class {
         SchedulerEventLogClass::Causal => "causal",
         SchedulerEventLogClass::Observational => "observational",
     }
 }
 
-fn event_payload_material(prefix: &str, payload: &EventPayload) -> String {
+pub(super) fn event_payload_material(prefix: &str, payload: &EventPayload) -> String {
     let mut lines = Vec::new();
     lines.push(format!("{prefix}.kind_len={}", payload.kind().len()));
     lines.push(format!("{prefix}.kind={}", payload.kind()));
@@ -1141,7 +1158,7 @@ fn event_payload_material(prefix: &str, payload: &EventPayload) -> String {
     lines.join("\n")
 }
 
-fn event_attribute_value_material(prefix: &str, value: &EventAttributeValue) -> String {
+pub(super) fn event_attribute_value_material(prefix: &str, value: &EventAttributeValue) -> String {
     match value {
         EventAttributeValue::Bool(value) => format!("{prefix}.type=bool\n{prefix}.value={value}"),
         EventAttributeValue::U64(value) => format!("{prefix}.type=u64\n{prefix}.value={value}"),
@@ -1185,7 +1202,7 @@ fn event_attribute_value_material(prefix: &str, value: &EventAttributeValue) -> 
     }
 }
 
-fn diagnostic_payload_material(diagnostic: &EventDiagnosticPayload) -> String {
+pub(super) fn diagnostic_payload_material(diagnostic: &EventDiagnosticPayload) -> String {
     let mut lines = Vec::new();
     lines.push(format!("diagnostic.name_len={}", diagnostic.name.len()));
     lines.push(format!("diagnostic.name={}", diagnostic.name));
@@ -1200,28 +1217,30 @@ fn diagnostic_payload_material(diagnostic: &EventDiagnosticPayload) -> String {
     lines.join("\n")
 }
 
-fn evaluation_boundary_kind_label(kind: SchedulerEvaluationBoundaryKind) -> &'static str {
+pub(super) fn evaluation_boundary_kind_label(
+    kind: SchedulerEvaluationBoundaryKind,
+) -> &'static str {
     match kind {
         SchedulerEvaluationBoundaryKind::Quantum => "quantum",
         SchedulerEvaluationBoundaryKind::Rendezvous => "rendezvous",
     }
 }
 
-fn preemption_kind_label(kind: &PreemptionKind) -> &'static str {
+pub(super) fn preemption_kind_label(kind: &PreemptionKind) -> &'static str {
     match kind {
         PreemptionKind::VcpuSwitch { .. } => "vcpu-switch",
         PreemptionKind::InterruptAt { .. } => "interrupt-at",
     }
 }
 
-fn control_fault_action_label(action: &ControlFaultAction) -> &'static str {
+pub(super) fn control_fault_action_label(action: &ControlFaultAction) -> &'static str {
     match action {
         ControlFaultAction::Inject { .. } => "inject",
         ControlFaultAction::Heal { .. } => "heal",
     }
 }
 
-fn trigger_action_kind_label(action: &Action) -> &'static str {
+pub(super) fn trigger_action_kind_label(action: &Action) -> &'static str {
     match action {
         Action::InjectFault { .. } => "inject-fault",
         Action::HealFault { .. } => "heal-fault",
@@ -1238,7 +1257,7 @@ fn trigger_action_kind_label(action: &Action) -> &'static str {
     }
 }
 
-fn event_kind_catalog_class_for_entry_construction(
+pub(super) fn event_kind_catalog_class_for_entry_construction(
     payload: &EventPayload,
 ) -> SchedulerEventLogClass {
     match event_kind_catalog_class(payload) {
@@ -1247,11 +1266,13 @@ fn event_kind_catalog_class_for_entry_construction(
     }
 }
 
-fn event_kind_catalog_class(payload: &EventPayload) -> Option<SchedulerEventLogClass> {
+pub(super) fn event_kind_catalog_class(payload: &EventPayload) -> Option<SchedulerEventLogClass> {
     crate::event_catalog::event_kind_catalog_class(payload.kind())
 }
 
-fn trigger_action_application_material(application: &TriggerActionApplication) -> String {
+pub(super) fn trigger_action_application_material(
+    application: &TriggerActionApplication,
+) -> String {
     let mut lines = Vec::new();
     lines.push(format!("trigger_action_sequence={}", application.sequence));
     lines.push(format!("event_len={}", application.event.name.len()));
@@ -1265,7 +1286,7 @@ fn trigger_action_application_material(application: &TriggerActionApplication) -
     lines.join("\n")
 }
 
-fn trigger_firing_material(firing: &EventFiring) -> String {
+pub(super) fn trigger_firing_material(firing: &EventFiring) -> String {
     let mut lines = Vec::new();
     lines.push(format!("event_len={}", firing.event().name.len()));
     lines.push(format!("event={}", firing.event().name));
@@ -1279,7 +1300,7 @@ fn trigger_firing_material(firing: &EventFiring) -> String {
     lines.join("\n")
 }
 
-fn trigger_action_material(prefix: &str, action: &Action) -> String {
+pub(super) fn trigger_action_material(prefix: &str, action: &Action) -> String {
     let mut lines = Vec::new();
     match action {
         Action::InjectFault { tag, fault } => {
@@ -1356,7 +1377,7 @@ fn trigger_action_material(prefix: &str, action: &Action) -> String {
     lines.join("\n")
 }
 
-fn trigger_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
+pub(super) fn trigger_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
     let mut lines = Vec::new();
     match fault {
         MembershipFault::Crash { node, restart } => {
@@ -1402,19 +1423,19 @@ fn trigger_membership_fault_material(prefix: &str, fault: &MembershipFault) -> S
     lines.join("\n")
 }
 
-fn trigger_fault_tag_material(prefix: &str, tag: &crate::FaultTag) -> String {
+pub(super) fn trigger_fault_tag_material(prefix: &str, tag: &crate::FaultTag) -> String {
     format!("{prefix}.len={}\n{prefix}={}", tag.name.len(), tag.name)
 }
 
-fn trigger_node_material(prefix: &str, node: &NodeId) -> String {
+pub(super) fn trigger_node_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}.len={}\n{prefix}={}", node.name.len(), node.name)
 }
 
-fn trigger_timer_material(prefix: &str, timer: &TimerId) -> String {
+pub(super) fn trigger_timer_material(prefix: &str, timer: &TimerId) -> String {
     format!("{prefix}.len={}\n{prefix}={}", timer.name.len(), timer.name)
 }
 
-fn trigger_optional_label_material(prefix: &str, label: &Option<String>) -> String {
+pub(super) fn trigger_optional_label_material(prefix: &str, label: &Option<String>) -> String {
     match label {
         Some(label) => format!(
             "{prefix}.present=true\n{prefix}.len={}\n{prefix}={label}",
@@ -1424,7 +1445,7 @@ fn trigger_optional_label_material(prefix: &str, label: &Option<String>) -> Stri
     }
 }
 
-fn trigger_restart_policy_label(policy: RestartPolicy) -> &'static str {
+pub(super) fn trigger_restart_policy_label(policy: RestartPolicy) -> &'static str {
     match policy {
         RestartPolicy::FromReadyPoint => "from-ready-point",
         RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
@@ -1432,7 +1453,7 @@ fn trigger_restart_policy_label(policy: RestartPolicy) -> &'static str {
     }
 }
 
-fn trigger_partition_direction_label(direction: PartitionDirection) -> &'static str {
+pub(super) fn trigger_partition_direction_label(direction: PartitionDirection) -> &'static str {
     match direction {
         PartitionDirection::Bidirectional => "bidirectional",
         PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
@@ -1440,7 +1461,7 @@ fn trigger_partition_direction_label(direction: PartitionDirection) -> &'static 
     }
 }
 
-fn trigger_log_level_label(level: LogLevel) -> &'static str {
+pub(super) fn trigger_log_level_label(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Debug => "debug",
         LogLevel::Info => "info",
@@ -1449,7 +1470,7 @@ fn trigger_log_level_label(level: LogLevel) -> &'static str {
     }
 }
 
-fn network_direction_is_partitioned(
+pub(super) fn network_direction_is_partitioned(
     direction: NetworkLinkDirection,
     partition: &CombinedPartitionFault,
 ) -> bool {
@@ -1459,7 +1480,7 @@ fn network_direction_is_partitioned(
     }
 }
 
-fn scheduler_link_ids_for_nodes(left: &NodeId, right: &NodeId) -> [LinkId; 2] {
+pub(super) fn scheduler_link_ids_for_nodes(left: &NodeId, right: &NodeId) -> [LinkId; 2] {
     let (endpoint_a, endpoint_b) = if left <= right {
         (left, right)
     } else {
@@ -1477,7 +1498,7 @@ fn scheduler_link_ids_for_nodes(left: &NodeId, right: &NodeId) -> [LinkId; 2] {
     ]
 }
 
-fn combined_network_faults_for_link(
+pub(super) fn combined_network_faults_for_link(
     network: &BTreeMap<LinkId, CombinedNetworkFaults>,
     link_id: &LinkId,
     endpoint_a: &NodeId,
@@ -1489,7 +1510,7 @@ fn combined_network_faults_for_link(
         .unwrap_or_default()
 }
 
-fn combined_network_faults_for_world_link(
+pub(super) fn combined_network_faults_for_world_link(
     network: &BTreeMap<LinkId, CombinedNetworkFaults>,
     canonical_id: &LinkId,
     legacy_id: Option<&LinkId>,
@@ -1501,7 +1522,7 @@ fn combined_network_faults_for_world_link(
         .unwrap_or_default()
 }
 
-fn instantiate_world_network_links(
+pub(super) fn instantiate_world_network_links(
     world: &World,
     shift: Shift,
 ) -> Result<
@@ -1577,7 +1598,7 @@ fn instantiate_world_network_links(
     Ok(links)
 }
 
-fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFaults {
+pub(super) fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFaults {
     let mut faults = crucible_device::LinkFaults::none();
     faults.jitter_window_ns = link.jitter().nanos.saturating_mul(2);
     if link.loss().millionths() != 0 {
@@ -1590,7 +1611,7 @@ fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFaults {
     faults
 }
 
-fn merge_world_network_faults(
+pub(super) fn merge_world_network_faults(
     base: &crucible_device::LinkFaults,
     active: &CombinedNetworkFaults,
     direction: NetworkLinkDirection,
@@ -1612,7 +1633,7 @@ fn merge_world_network_faults(
     faults
 }
 
-fn network_topology_faults(
+pub(super) fn network_topology_faults(
     network: &BTreeMap<LinkId, CombinedNetworkFaults>,
 ) -> BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)> {
     network
@@ -1625,7 +1646,7 @@ fn network_topology_faults(
         .collect()
 }
 
-fn network_topology_faults_were_relaxed(
+pub(super) fn network_topology_faults_were_relaxed(
     previous: &BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)>,
     next: &BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)>,
 ) -> bool {
@@ -1641,7 +1662,7 @@ fn network_topology_faults_were_relaxed(
     })
 }
 
-fn world_edge_with_network_faults(
+pub(super) fn world_edge_with_network_faults(
     edge: &WorldLookaheadEdge,
     network: &BTreeMap<LinkId, CombinedNetworkFaults>,
     legacy_counts: &BTreeMap<LinkId, usize>,
@@ -1680,7 +1701,9 @@ fn world_edge_with_network_faults(
     ))
 }
 
-fn legacy_link_id_counts_from_world_edges(edges: &[WorldLookaheadEdge]) -> BTreeMap<LinkId, usize> {
+pub(super) fn legacy_link_id_counts_from_world_edges(
+    edges: &[WorldLookaheadEdge],
+) -> BTreeMap<LinkId, usize> {
     let mut counts = BTreeMap::new();
     for edge in edges.iter().filter(|edge| edge.from < edge.to) {
         let legacy = scheduler_link_ids_for_nodes(&edge.from, &edge.to)[1].clone();
@@ -1690,7 +1713,7 @@ fn legacy_link_id_counts_from_world_edges(edges: &[WorldLookaheadEdge]) -> BTree
     counts
 }
 
-fn apply_trigger_action(
+pub(super) fn apply_trigger_action(
     state: &mut TriggerActionState,
     static_topology: Option<&WorldStaticTopology>,
     firing: &EventFiring,
@@ -1742,7 +1765,7 @@ fn apply_trigger_action(
     }
 }
 
-fn apply_trigger_effect(
+pub(super) fn apply_trigger_effect(
     state: &mut TriggerActionState,
     static_topology: Option<&WorldStaticTopology>,
     application: &TriggerActionApplication,
@@ -1824,7 +1847,7 @@ fn apply_trigger_effect(
     Ok(())
 }
 
-fn apply_trigger_verdict_effect(
+pub(super) fn apply_trigger_verdict_effect(
     state: &mut TriggerActionState,
     application: &TriggerActionApplication,
 ) {
@@ -1861,7 +1884,11 @@ fn apply_trigger_verdict_effect(
     }
 }
 
-fn activate_fault_tag(state: &mut TriggerActionState, tag: &FaultTag, fault: &MembershipFault) {
+pub(super) fn activate_fault_tag(
+    state: &mut TriggerActionState,
+    tag: &FaultTag,
+    fault: &MembershipFault,
+) {
     state.active_taxonomy_faults.remove(tag);
     if let Some(fault) = fault.as_taxonomy_fault() {
         state
@@ -1871,12 +1898,14 @@ fn activate_fault_tag(state: &mut TriggerActionState, tag: &FaultTag, fault: &Me
     state.active_faults.insert(tag.clone(), fault.clone());
 }
 
-fn heal_fault_tag(state: &mut TriggerActionState, tag: &FaultTag) {
+pub(super) fn heal_fault_tag(state: &mut TriggerActionState, tag: &FaultTag) {
     state.active_taxonomy_faults.remove(tag);
     state.active_faults.remove(tag);
 }
 
-fn control_fault_action_for_operation(operation: &ControlOperation) -> Option<ControlFaultAction> {
+pub(super) fn control_fault_action_for_operation(
+    operation: &ControlOperation,
+) -> Option<ControlFaultAction> {
     match &operation.kind {
         ControlOperationKind::InjectFault { tag, fault } => Some(ControlFaultAction::Inject {
             tag: tag.clone(),
@@ -1895,7 +1924,10 @@ fn control_fault_action_for_operation(operation: &ControlOperation) -> Option<Co
     }
 }
 
-fn apply_control_fault_action(state: &mut TriggerActionState, action: &ControlFaultAction) {
+pub(super) fn apply_control_fault_action(
+    state: &mut TriggerActionState,
+    action: &ControlFaultAction,
+) {
     match action {
         ControlFaultAction::Inject { tag, fault } => {
             activate_fault_tag(state, tag, &MembershipFault::taxonomy(fault.clone()));
@@ -1904,7 +1936,7 @@ fn apply_control_fault_action(state: &mut TriggerActionState, action: &ControlFa
     }
 }
 
-fn trigger_action_state_from_control_fault_decisions(
+pub(super) fn trigger_action_state_from_control_fault_decisions(
     decisions: &[Decision],
 ) -> (TriggerActionState, Option<u64>) {
     let mut state = TriggerActionState::default();
@@ -1919,7 +1951,7 @@ fn trigger_action_state_from_control_fault_decisions(
     (state, sequence)
 }
 
-fn validate_trigger_node_schedule_target(
+pub(super) fn validate_trigger_node_schedule_target(
     static_topology: Option<&WorldStaticTopology>,
     node: &NodeId,
 ) -> Result<(), SchedulerError> {
@@ -1951,13 +1983,13 @@ fn validate_trigger_node_schedule_target(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SchedulerEventLogSegmentMaterial {
+pub(super) struct SchedulerEventLogSegmentMaterial {
     previous_prefix: ContentHash,
-    entries: Vec<SchedulerEventLogSegmentEntryMaterial>,
+    pub(super) entries: Vec<SchedulerEventLogSegmentEntryMaterial>,
 }
 
 impl SchedulerEventLogSegmentMaterial {
-    fn encode(&self) -> Vec<u8> {
+    pub(super) fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(EVENT_LOG_SEGMENT_BINARY_MAGIC);
         bytes.extend_from_slice(&EVENT_LOG_SEGMENT_BINARY_VERSION.to_le_bytes());
@@ -1979,7 +2011,7 @@ impl SchedulerEventLogSegmentMaterial {
         bytes
     }
 
-    fn text_view(&self) -> String {
+    pub(super) fn text_view(&self) -> String {
         let mut lines = Vec::new();
         lines.push(String::from(
             "format=crucible.scheduler.event-log.segment-text.v1",
@@ -2026,22 +2058,22 @@ impl SchedulerEventLogSegmentMaterial {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SchedulerEventLogSegmentEntryMaterial {
-    sequence: u64,
-    at_virtual_time_ticks: u64,
-    at_icount_retired: u64,
-    at_icount_node: Option<String>,
-    source_material: String,
-    level: EventLevel,
-    class: SchedulerEventLogClass,
-    payload_kind: String,
-    payload_attribute_count: u64,
-    content_hash: ContentHash,
-    entry_material: String,
+pub(super) struct SchedulerEventLogSegmentEntryMaterial {
+    pub(super) sequence: u64,
+    pub(super) at_virtual_time_ticks: u64,
+    pub(super) at_icount_retired: u64,
+    pub(super) at_icount_node: Option<String>,
+    pub(super) source_material: String,
+    pub(super) level: EventLevel,
+    pub(super) class: SchedulerEventLogClass,
+    pub(super) payload_kind: String,
+    pub(super) payload_attribute_count: u64,
+    pub(super) content_hash: ContentHash,
+    pub(super) entry_material: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum SchedulerEventLogSegmentDecodeError {
+pub(super) enum SchedulerEventLogSegmentDecodeError {
     InvalidMagic,
     UnsupportedVersion { version: u32 },
     Truncated { field: &'static str },
@@ -2053,9 +2085,9 @@ enum SchedulerEventLogSegmentDecodeError {
     TrailingBytes { remaining: usize },
 }
 
-struct SchedulerEventLogSegmentCursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+pub(super) struct SchedulerEventLogSegmentCursor<'a> {
+    pub(super) bytes: &'a [u8],
+    pub(super) offset: usize,
 }
 
 impl<'a> SchedulerEventLogSegmentCursor<'a> {
@@ -2160,7 +2192,7 @@ pub(crate) fn scheduler_event_log_segment_bytes(
     bytes
 }
 
-fn scheduler_event_log_segment_material(
+pub(super) fn scheduler_event_log_segment_material(
     previous_prefix: ContentHash,
     entries: &[SchedulerEventLogEntry],
 ) -> SchedulerEventLogSegmentMaterial {
@@ -2197,7 +2229,7 @@ fn scheduler_event_log_segment_material(
     }
 }
 
-fn decode_scheduler_event_log_segment(
+pub(super) fn decode_scheduler_event_log_segment(
     bytes: &[u8],
 ) -> Result<SchedulerEventLogSegmentMaterial, SchedulerEventLogSegmentDecodeError> {
     let mut cursor = SchedulerEventLogSegmentCursor::new(bytes);
@@ -2241,16 +2273,16 @@ fn decode_scheduler_event_log_segment(
     })
 }
 
-fn write_u64_le(bytes: &mut Vec<u8>, value: u64) {
+pub(super) fn write_u64_le(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
-fn write_string(bytes: &mut Vec<u8>, value: &str) {
+pub(super) fn write_string(bytes: &mut Vec<u8>, value: &str) {
     write_u64_le(bytes, value.len() as u64);
     bytes.extend_from_slice(value.as_bytes());
 }
 
-fn write_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) {
+pub(super) fn write_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) {
     match value {
         Some(value) => {
             bytes.push(EVENT_LOG_SEGMENT_NODE_PRESENT);
@@ -2260,7 +2292,7 @@ fn write_optional_string(bytes: &mut Vec<u8>, value: Option<&str>) {
     }
 }
 
-fn event_level_code(level: EventLevel) -> u8 {
+pub(super) fn event_level_code(level: EventLevel) -> u8 {
     match level {
         EventLevel::Trace => EVENT_LOG_LEVEL_TRACE,
         EventLevel::Debug => EVENT_LOG_LEVEL_DEBUG,
@@ -2270,7 +2302,9 @@ fn event_level_code(level: EventLevel) -> u8 {
     }
 }
 
-fn event_level_from_code(value: u8) -> Result<EventLevel, SchedulerEventLogSegmentDecodeError> {
+pub(super) fn event_level_from_code(
+    value: u8,
+) -> Result<EventLevel, SchedulerEventLogSegmentDecodeError> {
     match value {
         EVENT_LOG_LEVEL_TRACE => Ok(EventLevel::Trace),
         EVENT_LOG_LEVEL_DEBUG => Ok(EventLevel::Debug),
@@ -2281,14 +2315,14 @@ fn event_level_from_code(value: u8) -> Result<EventLevel, SchedulerEventLogSegme
     }
 }
 
-fn event_class_code(class: SchedulerEventLogClass) -> u8 {
+pub(super) fn event_class_code(class: SchedulerEventLogClass) -> u8 {
     match class {
         SchedulerEventLogClass::Causal => EVENT_LOG_CLASS_CAUSAL,
         SchedulerEventLogClass::Observational => EVENT_LOG_CLASS_OBSERVATIONAL,
     }
 }
 
-fn event_class_from_code(
+pub(super) fn event_class_from_code(
     value: u8,
 ) -> Result<SchedulerEventLogClass, SchedulerEventLogSegmentDecodeError> {
     match value {
@@ -2298,7 +2332,7 @@ fn event_class_from_code(
     }
 }
 
-fn scheduler_ordered_decisions(
+pub(super) fn scheduler_ordered_decisions(
     decisions: Vec<Decision>,
     fallback: SimInstant,
     shift: Shift,
@@ -2322,7 +2356,7 @@ fn scheduler_ordered_decisions(
     Ok(keyed.into_iter().map(|(_, _, decision)| decision).collect())
 }
 
-fn scheduler_decision_event_log_time(
+pub(super) fn scheduler_decision_event_log_time(
     decision: &Decision,
     fallback: SimInstant,
     shift: Shift,
@@ -2352,7 +2386,7 @@ fn scheduler_decision_event_log_time(
     }
 }
 
-fn scheduler_decision_material(decision: &Decision) -> String {
+pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
     let mut lines = Vec::new();
     match decision {
         Decision::DeliveryOrder(order) => {
@@ -2437,7 +2471,7 @@ fn scheduler_decision_material(decision: &Decision) -> String {
     lines.join("\n")
 }
 
-fn control_fault_action_material(prefix: &str, action: &ControlFaultAction) -> String {
+pub(super) fn control_fault_action_material(prefix: &str, action: &ControlFaultAction) -> String {
     let mut lines = Vec::new();
     match action {
         ControlFaultAction::Inject { tag, fault } => {

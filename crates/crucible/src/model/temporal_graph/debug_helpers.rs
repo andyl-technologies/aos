@@ -1,27 +1,31 @@
+//! Debug target resolution and checkpoint-coordinate helpers.
+
+use super::*;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct DebugResolvedReverseStepTarget {
-    configuration: Configuration,
-    event_sequence: Option<u64>,
+pub(in crate::model) struct DebugResolvedReverseStepTarget {
+    pub(in crate::model) configuration: Configuration,
+    pub(in crate::model) event_sequence: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct DebugCheckpointCoordinateCandidate {
-    configuration: Configuration,
-    virtual_time: VirtualTime,
-    node_icounts: BTreeMap<NodeId, Icount>,
+pub(in crate::model) struct DebugCheckpointCoordinateCandidate {
+    pub(in crate::model) configuration: Configuration,
+    pub(in crate::model) virtual_time: VirtualTime,
+    pub(in crate::model) node_icounts: BTreeMap<NodeId, Icount>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct DebugScopedNodeMaterial {
-    target_configuration: ContentHash,
-    node_icount: Icount,
-    node_blob: NodeBlobRef,
-    goto: DebugPerNodeGotoReport,
+pub(in crate::model) struct DebugScopedNodeMaterial {
+    pub(in crate::model) target_configuration: ContentHash,
+    pub(in crate::model) node_icount: Icount,
+    pub(in crate::model) node_blob: NodeBlobRef,
+    pub(in crate::model) goto: DebugPerNodeGotoReport,
 }
 
-struct DebugReverseContinueLeafOracle<'a, F> {
-    entry: &'a SchedulerEventLogEntry,
-    leaf_oracle: &'a mut F,
+pub(in crate::model) struct DebugReverseContinueLeafOracle<'a, F> {
+    pub(in crate::model) entry: &'a SchedulerEventLogEntry,
+    pub(in crate::model) leaf_oracle: &'a mut F,
 }
 
 impl<F> ConditionLeafOracle for DebugReverseContinueLeafOracle<'_, F>
@@ -33,7 +37,7 @@ where
     }
 }
 
-fn debug_validate_same_scenario(
+pub(in crate::model) fn debug_validate_same_scenario(
     current: &Configuration,
     target: &Configuration,
 ) -> Result<(), EngineError> {
@@ -47,7 +51,7 @@ fn debug_validate_same_scenario(
     }
 }
 
-fn debug_configuration_is_ancestor_or_self(
+pub(in crate::model) fn debug_configuration_is_ancestor_or_self(
     candidate: &Configuration,
     current: &Configuration,
 ) -> bool {
@@ -59,7 +63,7 @@ fn debug_configuration_is_ancestor_or_self(
             .starts_with(candidate.schedule.decisions())
 }
 
-fn debug_configurations_are_linearly_related(
+pub(in crate::model) fn debug_configurations_are_linearly_related(
     candidate: &Configuration,
     current: &Configuration,
 ) -> bool {
@@ -74,7 +78,7 @@ fn debug_configurations_are_linearly_related(
                 .starts_with(current.schedule.decisions()))
 }
 
-fn debug_runtime_node_material(
+pub(in crate::model) fn debug_runtime_node_material(
     runtime: &RuntimeState,
     node: &NodeId,
     configuration: ContentHash,
@@ -94,7 +98,7 @@ fn debug_runtime_node_material(
     Ok((icount, blob))
 }
 
-fn debug_checkpoint_node_material(
+pub(in crate::model) fn debug_checkpoint_node_material(
     checkpoint: &Checkpoint,
     node: &NodeId,
     configuration: ContentHash,
@@ -114,7 +118,7 @@ fn debug_checkpoint_node_material(
     Ok((icount, blob))
 }
 
-fn maps_equal_except_key<T: PartialEq>(
+pub(in crate::model) fn maps_equal_except_key<T: PartialEq>(
     left: &BTreeMap<NodeId, T>,
     right: &BTreeMap<NodeId, T>,
     excluded: &NodeId,
@@ -128,7 +132,7 @@ fn maps_equal_except_key<T: PartialEq>(
             .all(|(node, value)| left.get(node) == Some(value))
 }
 
-fn debug_configuration_prefix(
+pub(in crate::model) fn debug_configuration_prefix(
     configuration: &Configuration,
     len: usize,
 ) -> Result<Configuration, EngineError> {
@@ -141,7 +145,7 @@ fn debug_configuration_prefix(
     })
 }
 
-fn debug_cached_prefix_matches_replay_oracle(
+pub(in crate::model) fn debug_cached_prefix_matches_replay_oracle(
     graph: &TemporalGraph,
     configuration: &Configuration,
 ) -> Result<bool, EngineError> {
@@ -162,7 +166,7 @@ fn debug_cached_prefix_matches_replay_oracle(
     }
 }
 
-fn debug_reverse_step_target(
+pub(in crate::model) fn debug_reverse_step_target(
     request: &DebugReverseStepRequest,
 ) -> Result<DebugResolvedReverseStepTarget, EngineError> {
     if request.grain == DebugReverseStepGrain::Instruction {
@@ -204,7 +208,7 @@ fn debug_reverse_step_target(
     })
 }
 
-fn debug_entry_matches_reverse_grain(
+pub(in crate::model) fn debug_entry_matches_reverse_grain(
     entry: &SchedulerEventLogEntry,
     grain: DebugReverseStepGrain,
 ) -> bool {
@@ -223,7 +227,7 @@ fn debug_entry_matches_reverse_grain(
     }
 }
 
-fn debug_payload_is_event_grain(payload: &SchedulerEventLogPayload) -> bool {
+pub(in crate::model) fn debug_payload_is_event_grain(payload: &SchedulerEventLogPayload) -> bool {
     matches!(
         payload,
         SchedulerEventLogPayload::ResolvedHappening(_)
@@ -233,7 +237,9 @@ fn debug_payload_is_event_grain(payload: &SchedulerEventLogPayload) -> bool {
     )
 }
 
-fn debug_payload_is_assertion_grain(payload: &SchedulerEventLogPayload) -> bool {
+pub(in crate::model) fn debug_payload_is_assertion_grain(
+    payload: &SchedulerEventLogPayload,
+) -> bool {
     match payload {
         SchedulerEventLogPayload::Observable(observable) => {
             matches!(
@@ -248,7 +254,7 @@ fn debug_payload_is_assertion_grain(payload: &SchedulerEventLogPayload) -> bool 
     }
 }
 
-fn debug_payload_is_timer_grain(payload: &SchedulerEventLogPayload) -> bool {
+pub(in crate::model) fn debug_payload_is_timer_grain(payload: &SchedulerEventLogPayload) -> bool {
     match payload {
         SchedulerEventLogPayload::ResolvedHappening(event) => {
             matches!(

@@ -138,14 +138,27 @@ pub(super) fn flaky_escape_failures(
     test_target: &str,
     content: &str,
 ) -> Vec<String> {
-    let lower = content.to_ascii_lowercase();
+    let lower = scrub_comments_and_strings(content).to_ascii_lowercase();
     FLAKY_ESCAPE_PATTERNS
         .iter()
-        .filter(|pattern| lower.contains(**pattern))
+        .filter(|pattern| contains_flaky_escape_pattern(&lower, pattern))
         .map(|pattern| {
             format!("{package}:{test_target} contains flaky-test escape pattern `{pattern}`")
         })
         .collect()
+}
+
+fn contains_flaky_escape_pattern(source: &str, pattern: &str) -> bool {
+    if pattern.contains("::") {
+        return source.contains(pattern);
+    }
+
+    source.match_indices(pattern).any(|(start, _)| {
+        let before = source[..start].chars().next_back();
+        let after = source[start + pattern.len()..].chars().next();
+        before.is_none_or(|character| !character.is_ascii_alphanumeric())
+            && after.is_none_or(|character| !character.is_ascii_alphanumeric())
+    })
 }
 
 pub(super) fn source_shape_failures(
@@ -370,7 +383,17 @@ pub(super) fn testing_source_regression_failures() -> Vec<String> {
         "#,
     );
 
-    if findings.len() >= 2 {
+    let inactive_findings = flaky_escape_failures(
+        "crucible",
+        "gate_replay_oracle",
+        r#"
+            // A comment can describe retry and flaky rejection semantics.
+            const DIAGNOSTIC: &str = "rerun is forbidden";
+            fn stable_test() {}
+        "#,
+    );
+
+    if findings.len() >= 2 && inactive_findings.is_empty() {
         Vec::new()
     } else {
         vec!["testing-standard regression failed to reject flaky/retry escapes".to_string()]

@@ -121,14 +121,17 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         &qemu_rr_quantum_icount,
         "strcmp(current_accel_name(), \"sim\") != 0",
     );
-    assert_contains(&qemu_rr_quantum_icount, "accelerator = \"sim\";");
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "accelerator = \"sim,thread=single\";",
+    );
     assert_contains(&qemu_rr_quantum_icount, "cadence = 4096;");
     assert_contains(&qemu_rr_quantum_icount, "requireGuestPass = false;");
     assert_contains(&qemu_rr_quantum_icount, "stopAt = 16384;");
     assert_contains(&qemu_rr_quantum_icount, "vcpus=2");
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"accelerator=sim\"",
+        "require_line \"$s11_result\" \"accelerator=sim,thread=single\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
@@ -193,7 +196,7 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         &qemu_det_ipi,
         "qemu_plugin_crucible_register_ipi_delivery_cb(on_det_ipi_delivery, NULL)",
     );
-    assert_contains(&qemu_det_ipi, "accelerator = \"sim\";");
+    assert_contains(&qemu_det_ipi, "accelerator = \"sim,thread=single\";");
     assert_contains(&qemu_det_ipi, "stopAt = 4194304;");
     assert_contains(&qemu_det_ipi, "select(.kind == \"det_ipi\")");
     assert_contains(&qemu_det_ipi, "any($events[]; .delivery_mode == 0)");

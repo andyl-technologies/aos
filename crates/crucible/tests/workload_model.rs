@@ -118,7 +118,7 @@ fn workload_seed_black_box_config_path_suffices_without_white_box() {
     let world = World::from_nodes(vec![world_node_with_cmdline(cmdline)])
         .expect("black-box workload seed world should validate");
     let node = world
-        .nodes()
+        .vm_nodes()
         .first()
         .expect("workload seed world should contain one node");
 

@@ -1,4 +1,6 @@
-// Temporal graph storage, replay, checkpointing, and time-travel core.
+//! Temporal graph storage, replay, checkpointing, and time-travel core.
+
+use super::*;
 
 /// A baked genesis checkpoint handle.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -12,12 +14,12 @@ pub struct GenesisCheckpoint {
 pub struct World {
     /// The world content address.
     pub id: ContentHash,
-    topology_nodes: Vec<WorldNodeDef>,
+    pub(in crate::model) topology_nodes: Vec<WorldNodeDef>,
     /// Derived VM-only projection retained for the legacy VM authoring/runtime API.
     /// It is rebuilt from `topology_nodes` by every constructor and is not a
     /// separate logical topology collection.
-    nodes: Vec<WorldNode>,
-    links: Vec<LinkDef>,
+    pub(in crate::model) nodes: Vec<WorldNode>,
+    pub(in crate::model) links: Vec<LinkDef>,
 }
 
 /// A workload config-tree export declared by one world node.
@@ -71,11 +73,12 @@ pub struct State {
 pub struct TemporalGraph {
     /// The temporal graph content address.
     pub id: ContentHash,
-    recorded_configurations: BTreeMap<ContentHash, Configuration>,
-    checkpoint_nodes: BTreeMap<ContentHash, Checkpoint>,
-    cached_snapshots: BTreeMap<ContentHash, Checkpoint>,
-    baked_genesis: BTreeMap<ContentHash, GenesisCheckpoint>,
-    non_canonical_debug_branches: BTreeMap<ContentHash, DebugNonCanonicalBranch>,
+    pub(in crate::model) recorded_configurations: BTreeMap<ContentHash, Configuration>,
+    pub(in crate::model) checkpoint_nodes: BTreeMap<ContentHash, Checkpoint>,
+    pub(in crate::model) cached_snapshots: BTreeMap<ContentHash, Checkpoint>,
+    pub(in crate::model) baked_genesis: BTreeMap<ContentHash, GenesisCheckpoint>,
+    pub(in crate::model) non_canonical_debug_branches:
+        BTreeMap<ContentHash, DebugNonCanonicalBranch>,
 }
 
 impl TemporalGraph {
@@ -900,7 +903,7 @@ impl TemporalGraph {
         })
     }
 
-    fn debug_resolve_exact_divergence_coordinate(
+    pub(in crate::model) fn debug_resolve_exact_divergence_coordinate(
         &self,
         current: &Configuration,
         coordinate: &DebugDivergenceCoordinate,
@@ -1343,7 +1346,7 @@ impl TemporalGraph {
         Ok(report)
     }
 
-    fn validate_unified_configuration(
+    pub(in crate::model) fn validate_unified_configuration(
         &mut self,
         operation: UnifiedGraphOperationKind,
         configuration: &Configuration,

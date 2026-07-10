@@ -1,50 +1,52 @@
-// User-facing reports, debug plans, selftest reports, and CLI errors.
+//! User-facing reports, debug plans, selftest reports, and CLI errors.
+
+use super::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct TriageRunReport {
-    plan: TriageInvocationPlan,
-    ledger: crucible::FailureFindingsLedger,
-    stored_ledger: crucible::FailureTriageStoredArtifact,
-    result: crucible::FailureTriageResult,
-    stored_result: crucible::FailureTriageStoredArtifact,
-    report_path: PathBuf,
-    compare: Option<TriageSummaryDiff>,
+pub(super) struct TriageRunReport {
+    pub(super) plan: TriageInvocationPlan,
+    pub(super) ledger: crucible::FailureFindingsLedger,
+    pub(super) stored_ledger: crucible::FailureTriageStoredArtifact,
+    pub(super) result: crucible::FailureTriageResult,
+    pub(super) stored_result: crucible::FailureTriageStoredArtifact,
+    pub(super) report_path: PathBuf,
+    pub(super) compare: Option<TriageSummaryDiff>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct LoadedTriageFindings {
-    ledger: crucible::FailureFindingsLedger,
-    evidence: BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
-    artifact_bytes: Vec<u8>,
+pub(super) struct LoadedTriageFindings {
+    pub(super) ledger: crucible::FailureFindingsLedger,
+    pub(super) evidence: BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+    pub(super) artifact_bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct TriageFindingEvidence {
-    finding: crucible::FindingReproductionArtifact,
-    recorded_event_log: crucible_model::FailureRecordedEventLog,
-    failure: crucible_model::FailureClusterReportFailure,
-    discovery_signature: crucible_model::FailureSignature,
+pub(super) struct TriageFindingEvidence {
+    pub(super) finding: crucible::FindingReproductionArtifact,
+    pub(super) recorded_event_log: crucible_model::FailureRecordedEventLog,
+    pub(super) failure: crucible_model::FailureClusterReportFailure,
+    pub(super) discovery_signature: crucible_model::FailureSignature,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct TriageInvocationPlan {
-    findings: TriageFindingsSource,
-    policy: crucible::SignaturePolicy,
-    minimize: TriageMinimizeArg,
-    report_dir: PathBuf,
-    format: crucible::FailureClusterReportFormat,
-    recompute_signatures: bool,
-    compare: Option<TriageCompareTarget>,
-    store_root: PathBuf,
-    pipeline: Vec<TriagePipelineStep>,
-    failure_exit_code: i32,
-    thin_driver: bool,
-    owns_run_state: bool,
-    offline: bool,
-    scheduler_started: bool,
+pub(super) struct TriageInvocationPlan {
+    pub(super) findings: TriageFindingsSource,
+    pub(super) policy: crucible::SignaturePolicy,
+    pub(super) minimize: TriageMinimizeArg,
+    pub(super) report_dir: PathBuf,
+    pub(super) format: crucible::FailureClusterReportFormat,
+    pub(super) recompute_signatures: bool,
+    pub(super) compare: Option<TriageCompareTarget>,
+    pub(super) store_root: PathBuf,
+    pub(super) pipeline: Vec<TriagePipelineStep>,
+    pub(super) failure_exit_code: i32,
+    pub(super) thin_driver: bool,
+    pub(super) owns_run_state: bool,
+    pub(super) offline: bool,
+    pub(super) scheduler_started: bool,
 }
 
 impl TriageInvocationPlan {
-    fn policy_label(&self) -> &'static str {
+    pub(super) fn policy_label(&self) -> &'static str {
         match self.policy.level() {
             crucible::SignaturePolicyLevel::Coarse => "coarse",
             crucible::SignaturePolicyLevel::Default => "default",
@@ -53,7 +55,7 @@ impl TriageInvocationPlan {
         }
     }
 
-    fn minimize_label(&self) -> &'static str {
+    pub(super) fn minimize_label(&self) -> &'static str {
         match self.minimize {
             TriageMinimizeArg::None => "none",
             TriageMinimizeArg::Representative => "representative",
@@ -61,7 +63,7 @@ impl TriageInvocationPlan {
         }
     }
 
-    fn format_label(&self) -> &'static str {
+    pub(super) fn format_label(&self) -> &'static str {
         match self.format {
             crucible::FailureClusterReportFormat::JsonLines => "jsonl",
             crucible::FailureClusterReportFormat::Json => "json",
@@ -70,7 +72,7 @@ impl TriageInvocationPlan {
         }
     }
 
-    fn proves_t_tri_7(&self) -> bool {
+    pub(super) fn proves_t_tri_7(&self) -> bool {
         self.thin_driver
             && !self.owns_run_state
             && self.offline
@@ -105,13 +107,13 @@ impl TriageInvocationPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum TriageFindingsSource {
+pub(super) enum TriageFindingsSource {
     Path(PathBuf),
     StoredLedger(crucible::ContentHash),
 }
 
 impl TriageFindingsSource {
-    fn label(&self) -> &'static str {
+    pub(super) fn label(&self) -> &'static str {
         match self {
             Self::Path(_) => "path",
             Self::StoredLedger(_) => "dag-store",
@@ -120,13 +122,13 @@ impl TriageFindingsSource {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum TriageCompareTarget {
+pub(super) enum TriageCompareTarget {
     Path(PathBuf),
     StoredResult(crucible::ContentHash),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum TriagePipelineStep {
+pub(super) enum TriagePipelineStep {
     LoadFindingsLedger,
     RecomputeSignatureSelfCheck,
     Cluster,
@@ -139,13 +141,13 @@ enum TriagePipelineStep {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct TriageResultSummary {
-    result: crucible::ContentHash,
-    report_hashes: BTreeMap<crucible::ContentHash, crucible::ContentHash>,
+pub(super) struct TriageResultSummary {
+    pub(super) result: crucible::ContentHash,
+    pub(super) report_hashes: BTreeMap<crucible::ContentHash, crucible::ContentHash>,
 }
 
 impl TriageResultSummary {
-    fn from_result(result: &crucible::FailureTriageResult) -> Self {
+    pub(super) fn from_result(result: &crucible::FailureTriageResult) -> Self {
         Self {
             result: result.content_hash(),
             report_hashes: result
@@ -157,7 +159,7 @@ impl TriageResultSummary {
         }
     }
 
-    fn from_artifact_bytes(bytes: &[u8]) -> Result<Self, CliError> {
+    pub(super) fn from_artifact_bytes(bytes: &[u8]) -> Result<Self, CliError> {
         let text = std::str::from_utf8(bytes)
             .map_err(|error| artifact_error(format!("triage result is not UTF-8: {error}")))?;
         if text.lines().next() != Some("crucible.failure-triage.result.v1") {
@@ -211,7 +213,7 @@ impl TriageResultSummary {
         })
     }
 
-    fn diff_from(&self, baseline: &Self) -> TriageSummaryDiff {
+    pub(super) fn diff_from(&self, baseline: &Self) -> TriageSummaryDiff {
         let all_clusters = self
             .report_hashes
             .keys()
@@ -250,24 +252,24 @@ impl TriageResultSummary {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TriageSummaryChangedCluster {
-    cluster: crucible::ContentHash,
-    baseline_report: crucible::ContentHash,
-    candidate_report: crucible::ContentHash,
+pub(super) struct TriageSummaryChangedCluster {
+    pub(super) cluster: crucible::ContentHash,
+    pub(super) baseline_report: crucible::ContentHash,
+    pub(super) candidate_report: crucible::ContentHash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct TriageSummaryDiff {
-    baseline: crucible::ContentHash,
-    candidate: crucible::ContentHash,
-    added: Vec<crucible::ContentHash>,
-    removed: Vec<crucible::ContentHash>,
-    changed: Vec<TriageSummaryChangedCluster>,
-    unchanged: Vec<crucible::ContentHash>,
+pub(super) struct TriageSummaryDiff {
+    pub(super) baseline: crucible::ContentHash,
+    pub(super) candidate: crucible::ContentHash,
+    pub(super) added: Vec<crucible::ContentHash>,
+    pub(super) removed: Vec<crucible::ContentHash>,
+    pub(super) changed: Vec<TriageSummaryChangedCluster>,
+    pub(super) unchanged: Vec<crucible::ContentHash>,
 }
 
 impl TriageSummaryDiff {
-    fn status_label(&self) -> &'static str {
+    pub(super) fn status_label(&self) -> &'static str {
         if self.baseline == self.candidate
             && self.added.is_empty()
             && self.removed.is_empty()
@@ -279,7 +281,7 @@ impl TriageSummaryDiff {
         }
     }
 
-    fn content_diff(&self) -> String {
+    pub(super) fn content_diff(&self) -> String {
         let mut lines = vec![
             format!("baseline\t{}", format_content_hash_ref(self.baseline)),
             format!("candidate\t{}", format_content_hash_ref(self.candidate)),
@@ -306,25 +308,25 @@ impl TriageSummaryDiff {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct DebugInvocationPlan {
-    target: DebugPlanTarget,
-    coordinate: DebugPlanCoordinate,
-    node: Option<String>,
-    gdb_listen: String,
-    read_only: bool,
-    allow_mutate: bool,
-    checkpoint_stride: Option<u64>,
-    verb: DebugInteractiveVerbPlan,
-    session_commands: Vec<SessionCommand>,
-    engine_operations: Vec<DebugEngineOperation>,
-    surface_contract: crucible::DebugCliSurfaceContract,
-    owns_debug_state: bool,
-    raw_gdb_single_step_allowed: bool,
-    non_canonical_branch_label: Option<String>,
+pub(super) struct DebugInvocationPlan {
+    pub(super) target: DebugPlanTarget,
+    pub(super) coordinate: DebugPlanCoordinate,
+    pub(super) node: Option<String>,
+    pub(super) gdb_listen: String,
+    pub(super) read_only: bool,
+    pub(super) allow_mutate: bool,
+    pub(super) checkpoint_stride: Option<u64>,
+    pub(super) verb: DebugInteractiveVerbPlan,
+    pub(super) session_commands: Vec<SessionCommand>,
+    pub(super) engine_operations: Vec<DebugEngineOperation>,
+    pub(super) surface_contract: crucible::DebugCliSurfaceContract,
+    pub(super) owns_debug_state: bool,
+    pub(super) raw_gdb_single_step_allowed: bool,
+    pub(super) non_canonical_branch_label: Option<String>,
 }
 
 impl DebugInvocationPlan {
-    fn mode_label(&self) -> &'static str {
+    pub(super) fn mode_label(&self) -> &'static str {
         if self.allow_mutate {
             "allow-mutate"
         } else {
@@ -383,7 +385,7 @@ impl DebugInvocationPlan {
         }
     }
 
-    fn proves_t_dbg_8(&self) -> bool {
+    pub(super) fn proves_t_dbg_8(&self) -> bool {
         self.surface_contract.proves_t_dbg_8()
             && self.proves_thin_wrapper()
             && self.proves_read_mutate_boundary()
@@ -395,14 +397,14 @@ impl DebugInvocationPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum DebugPlanTarget {
+pub(super) enum DebugPlanTarget {
     Artifact(PathBuf),
     Savepoint(crucible::ContentHash),
     Session(String),
 }
 
 impl DebugPlanTarget {
-    fn label(&self) -> &'static str {
+    pub(super) fn label(&self) -> &'static str {
         match self {
             Self::Artifact(_) => "artifact",
             Self::Savepoint(_) => "savepoint",
@@ -412,7 +414,7 @@ impl DebugPlanTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum DebugPlanCoordinate {
+pub(super) enum DebugPlanCoordinate {
     Current,
     At(crucible::DebugCoordinate),
     AtEvent(u64),
@@ -421,7 +423,7 @@ enum DebugPlanCoordinate {
 }
 
 impl DebugPlanCoordinate {
-    fn label(&self) -> &'static str {
+    pub(super) fn label(&self) -> &'static str {
         match self {
             Self::Current => "current",
             Self::At(_) => "at",
@@ -433,7 +435,7 @@ impl DebugPlanCoordinate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum DebugInteractiveVerbPlan {
+pub(super) enum DebugInteractiveVerbPlan {
     AttachGdb,
     Goto(crucible::DebugCoordinate),
     ReverseStep {
@@ -445,7 +447,7 @@ enum DebugInteractiveVerbPlan {
 }
 
 impl DebugInteractiveVerbPlan {
-    fn label(&self) -> &'static str {
+    pub(super) fn label(&self) -> &'static str {
         match self {
             Self::AttachGdb => "attach-gdb",
             Self::Goto(_) => "goto",
@@ -456,7 +458,7 @@ impl DebugInteractiveVerbPlan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum DebugEngineOperation {
+pub(super) enum DebugEngineOperation {
     ResolveTarget,
     Instantiate,
     AttachGdbProxy,
@@ -474,28 +476,28 @@ enum DebugEngineOperation {
 }
 
 #[derive(Debug)]
-struct SelftestReport {
-    gates: Vec<SelftestGateReport>,
-    verified: Vec<crucible::ExampleScenarioVerifyReport>,
+pub(super) struct SelftestReport {
+    pub(super) gates: Vec<SelftestGateReport>,
+    pub(super) verified: Vec<crucible::ExampleScenarioVerifyReport>,
 }
 
 #[derive(Debug)]
-struct SelftestGateReport {
-    name: String,
-    status: SelftestGateStatus,
-    corpus_entries: usize,
-    runs_per_entry: usize,
-    runner: SelftestGateRunner,
-    qemu_build_id: Option<String>,
+pub(super) struct SelftestGateReport {
+    pub(super) name: String,
+    pub(super) status: SelftestGateStatus,
+    pub(super) corpus_entries: usize,
+    pub(super) runs_per_entry: usize,
+    pub(super) runner: SelftestGateRunner,
+    pub(super) qemu_build_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SelftestGateStatus {
+pub(super) enum SelftestGateStatus {
     Passed,
 }
 
 impl SelftestGateStatus {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Passed => "PASS",
         }
@@ -503,13 +505,13 @@ impl SelftestGateStatus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SelftestGateRunner {
+pub(super) enum SelftestGateRunner {
     DoubleBackedCorpus,
     RealQemu,
 }
 
 impl SelftestGateRunner {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::DoubleBackedCorpus => "double",
             Self::RealQemu => "qemu",
@@ -518,7 +520,7 @@ impl SelftestGateRunner {
 }
 
 #[derive(Debug)]
-enum CliError {
+pub(super) enum CliError {
     Io(io::Error),
     Store(crucible::DagStoreError),
     Artifact(String),
@@ -534,7 +536,7 @@ enum CliError {
 }
 
 impl CliError {
-    fn exit_code(&self) -> i32 {
+    pub(super) fn exit_code(&self) -> i32 {
         match self {
             Self::Io(_) => 5,
             Self::Store(_) => 5,
@@ -599,14 +601,14 @@ impl From<io::Error> for CliError {
     }
 }
 
-fn usage_error(reason: impl Into<String>) -> CliError {
+pub(super) fn usage_error(reason: impl Into<String>) -> CliError {
     CliError::Usage(reason.into())
 }
 
-fn serve_error(reason: impl Into<String>) -> CliError {
+pub(super) fn serve_error(reason: impl Into<String>) -> CliError {
     CliError::Serve(reason.into())
 }
 
-fn backend_error(reason: impl Into<String>) -> CliError {
+pub(super) fn backend_error(reason: impl Into<String>) -> CliError {
     CliError::Backend(reason.into())
 }

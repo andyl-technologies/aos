@@ -1,3 +1,7 @@
+//! CAS, campaign-store, fleet, and invalidation unit tests.
+
+use super::*;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_retention_merge_retry_does_not_expand_over_cap()
+    fn campaign_retention_merge_attempts_do_not_expand_over_cap()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let campaign = SharedCampaignStore::new(temp.path());
@@ -1139,7 +1143,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_head_read_merge_retry_advances_union_manifest()
+    fn campaign_head_compare_and_swap_loop_advances_union_manifest()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let campaign = SharedCampaignStore::new(temp.path());

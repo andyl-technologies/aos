@@ -1,4 +1,6 @@
-// Scheduler construction, World/device attachment, materialization, faults, and lifecycle.
+//! Scheduler construction, World/device attachment, materialization, faults, and lifecycle.
+
+use super::*;
 impl SingleScheduler {
     /// Builds a scheduler from a finite generated liveness scenario.
     ///
@@ -222,7 +224,7 @@ impl SingleScheduler {
         )
     }
 
-    fn new_with_event_log(
+    pub(super) fn new_with_event_log(
         scenario: SchedulerLivenessScenario,
         event_log: EventLog,
     ) -> Result<Self, SchedulerError> {
@@ -795,7 +797,7 @@ impl SingleScheduler {
         self.materialized_scheduler_state_with_payload_refs(|payload| store.put(payload))
     }
 
-    fn materialized_scheduler_state_with_payload_refs<E>(
+    pub(super) fn materialized_scheduler_state_with_payload_refs<E>(
         &self,
         mut payload_ref: impl FnMut(&[u8]) -> Result<ContentHash, E>,
     ) -> Result<SchedulerState, E> {
@@ -1197,7 +1199,7 @@ impl SingleScheduler {
         Ok(application)
     }
 
-    fn apply_trigger_taxonomy_faults(
+    pub(super) fn apply_trigger_taxonomy_faults(
         &mut self,
         sequence: u64,
         previous: &CombinedFaults,
@@ -1213,7 +1215,7 @@ impl SingleScheduler {
         Ok(())
     }
 
-    fn hydrate_control_fault_schedule_prefix(
+    pub(super) fn hydrate_control_fault_schedule_prefix(
         &mut self,
         sequence: Option<u64>,
     ) -> Result<(), SchedulerError> {
@@ -1231,7 +1233,7 @@ impl SingleScheduler {
         self.apply_trigger_device_faults(&next)
     }
 
-    fn hydrate_network_partition_faults(
+    pub(super) fn hydrate_network_partition_faults(
         &mut self,
         sequence: u64,
         next: &CombinedFaults,
@@ -1279,7 +1281,7 @@ impl SingleScheduler {
         Ok(())
     }
 
-    fn apply_trigger_node_faults(
+    pub(super) fn apply_trigger_node_faults(
         &mut self,
         sequence: u64,
         previous: &CombinedFaults,
@@ -1304,7 +1306,7 @@ impl SingleScheduler {
         Ok(())
     }
 
-    fn apply_trigger_network_topology_faults(
+    pub(super) fn apply_trigger_network_topology_faults(
         &mut self,
         sequence: u64,
         previous: &CombinedFaults,
@@ -1337,7 +1339,10 @@ impl SingleScheduler {
         ))
     }
 
-    fn apply_trigger_device_faults(&mut self, next: &CombinedFaults) -> Result<(), SchedulerError> {
+    pub(super) fn apply_trigger_device_faults(
+        &mut self,
+        next: &CombinedFaults,
+    ) -> Result<(), SchedulerError> {
         for sub_nodes in self.device_sub_nodes.values_mut() {
             for sub_node in sub_nodes {
                 match sub_node.sub_node().kind {
@@ -1377,7 +1382,10 @@ impl SingleScheduler {
         self.refresh_device_horizons()
     }
 
-    fn validate_trigger_firings(&self, firings: &EventFirings) -> Result<(), SchedulerError> {
+    pub(super) fn validate_trigger_firings(
+        &self,
+        firings: &EventFirings,
+    ) -> Result<(), SchedulerError> {
         let current_point = self.event_log.condition_prefix().point();
         let current_offset = self.event_log_offset();
         if firings.point() != current_point {
@@ -1408,7 +1416,7 @@ impl SingleScheduler {
         Ok(())
     }
 
-    fn trigger_firing_entries(
+    pub(super) fn trigger_firing_entries(
         &self,
         firings: &EventFirings,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
@@ -2016,5 +2024,4 @@ impl SingleScheduler {
 
         Ok(SchedulerQuiescence { blockers })
     }
-
 }

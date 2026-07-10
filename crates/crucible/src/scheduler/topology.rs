@@ -1,4 +1,6 @@
-// Control admission, lookahead topology, timeline ordering, horizons, and rendezvous.
+//! Control admission, lookahead topology, timeline ordering, horizons, and rendezvous.
+
+use super::*;
 /// Maximum allowed scheduler-side control application latency in quanta.
 pub const SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA: u64 = 1;
 
@@ -64,16 +66,16 @@ pub struct SchedulerControlApplication {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SchedulerControlAdmission {
-    operation: ControlOperation,
-    accepted_after_quanta: u64,
-    accepted_after_boundary_yield: u64,
+pub(super) struct SchedulerControlAdmission {
+    pub(super) operation: ControlOperation,
+    pub(super) accepted_after_quanta: u64,
+    pub(super) accepted_after_boundary_yield: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct SchedulerControlDrain {
-    events: Vec<ScheduledEvent>,
-    applications: Vec<SchedulerControlApplication>,
+pub(super) struct SchedulerControlDrain {
+    pub(super) events: Vec<ScheduledEvent>,
+    pub(super) applications: Vec<SchedulerControlApplication>,
 }
 
 /// One unresolved cross-node dependency that can constrain conservative advance.
@@ -294,7 +296,7 @@ impl SchedulerLookaheadEdge {
 /// Canonical directed edge set used to compute scheduler network lookahead.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SchedulerLookaheadGraph {
-    edges: Vec<SchedulerLookaheadEdge>,
+    pub(super) edges: Vec<SchedulerLookaheadEdge>,
 }
 
 impl SchedulerLookaheadGraph {
@@ -419,7 +421,7 @@ pub fn lookahead_for_node(
 /// Shared virtual-timeline projection used by scheduler ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SharedTimeline {
-    shift: Shift,
+    pub(super) shift: Shift,
 }
 
 impl SharedTimeline {
@@ -714,7 +716,7 @@ pub fn ordered_scheduled_events(events: &[ScheduledEvent]) -> Vec<&ScheduledEven
 /// frame list is returned unchanged, so the no-device path is byte-identical to
 /// before the device seam existed.
 #[must_use]
-fn merge_node_deliveries(
+pub(super) fn merge_node_deliveries(
     frames: Vec<ScheduledEvent>,
     device: Vec<ScheduledEvent>,
 ) -> Vec<ScheduledEvent> {
@@ -729,7 +731,7 @@ fn merge_node_deliveries(
         .collect()
 }
 
-fn pending_frames_from_scheduled_events(
+pub(super) fn pending_frames_from_scheduled_events(
     events: &[ScheduledEvent],
 ) -> BTreeMap<NodeId, Vec<PendingFrame>> {
     let mut pending_frames: BTreeMap<NodeId, Vec<PendingFrame>> = BTreeMap::new();
@@ -752,7 +754,7 @@ fn pending_frames_from_scheduled_events(
     pending_frames
 }
 
-fn search_frontier_choices_from_scheduled_events(
+pub(super) fn search_frontier_choices_from_scheduled_events(
     _configuration: Configuration,
     events: &[ScheduledEvent],
 ) -> SearchFrontierChoices {
@@ -776,7 +778,7 @@ fn search_frontier_choices_from_scheduled_events(
     SearchFrontierChoices::from_decision_sequences(choices)
 }
 
-fn probabilistic_fault_search_choice(
+pub(super) fn probabilistic_fault_search_choice(
     event: &ScheduledEvent,
     choice: &SchedulerResolveFaultChoice,
     value: u64,
@@ -1160,7 +1162,7 @@ pub fn next_exact_local_event(
         .unwrap_or(ExactLocalEvent::NoArmedTimer))
 }
 
-fn exact_local_event_rank(event: &ExactLocalEvent) -> u8 {
+pub(super) fn exact_local_event_rank(event: &ExactLocalEvent) -> u8 {
     match event {
         ExactLocalEvent::NoArmedTimer => 0,
         ExactLocalEvent::TimerDeadline { .. } => 1,
@@ -1169,7 +1171,7 @@ fn exact_local_event_rank(event: &ExactLocalEvent) -> u8 {
     }
 }
 
-fn exact_local_event_source_key(event: &ExactLocalEvent) -> &str {
+pub(super) fn exact_local_event_source_key(event: &ExactLocalEvent) -> &str {
     match event {
         ExactLocalEvent::NoArmedTimer | ExactLocalEvent::TimerDeadline { .. } => "",
         ExactLocalEvent::IoCompletion { sub_node, .. } => &sub_node.node.name,
@@ -1197,7 +1199,7 @@ pub enum SchedulerHorizonSource {
 /// and must not add canonical schedule material by itself.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct SchedulerRendezvous {
-    interval: Option<SimDuration>,
+    pub(super) interval: Option<SimDuration>,
 }
 
 impl SchedulerRendezvous {
@@ -1370,7 +1372,7 @@ pub fn scheduler_rr_run_subdivision(
     Ok(slices)
 }
 
-fn validate_scheduler_rr_policy(
+pub(super) fn validate_scheduler_rr_policy(
     vcpu_count: u32,
     rr_switch_quantum: u64,
 ) -> Result<(), SchedulerError> {
@@ -1387,7 +1389,7 @@ fn validate_scheduler_rr_policy(
     Ok(())
 }
 
-fn validate_vcpu_idle_snapshot(
+pub(super) fn validate_vcpu_idle_snapshot(
     node: &SchedulerNodeId,
     vcpu_count: u32,
     vcpus: &mut [SchedulerVcpuIdleState],
@@ -1587,7 +1589,7 @@ pub fn horizon_from_network_lookahead(
     }
 }
 
-fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> SchedulerHorizonSource {
+pub(super) fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> SchedulerHorizonSource {
     match event {
         ExactLocalEvent::TimerDeadline { .. } => SchedulerHorizonSource::ExactLocalTimer,
         ExactLocalEvent::IoCompletion { .. } => SchedulerHorizonSource::ExactLocalIoCompletion,
@@ -1596,7 +1598,7 @@ fn exact_local_event_horizon_source(event: &ExactLocalEvent) -> SchedulerHorizon
     }
 }
 
-fn horizon_source_allows_ceiling_past_target(source: SchedulerHorizonSource) -> bool {
+pub(super) fn horizon_source_allows_ceiling_past_target(source: SchedulerHorizonSource) -> bool {
     matches!(
         source,
         SchedulerHorizonSource::ExactLocalTimer
@@ -1605,7 +1607,7 @@ fn horizon_source_allows_ceiling_past_target(source: SchedulerHorizonSource) -> 
     )
 }
 
-fn scheduler_ceiling_overshoot_error(
+pub(super) fn scheduler_ceiling_overshoot_error(
     node: &SchedulerNodeId,
     boundary_label: &str,
     boundary_time: SimInstant,

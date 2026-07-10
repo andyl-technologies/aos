@@ -1,19 +1,21 @@
-// Backend discovery, validation, routing, and command outcome projection.
+//! Backend discovery, validation, routing, and command outcome projection.
+
+use super::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct BackendSelectionPlan {
-    subcommand: CliSubcommand,
-    target: BackendExecutionTarget,
-    requested_backend: Backend,
-    resolved_backend: Option<ResolvedLocalBackend>,
-    reason: BackendSelectionReason,
-    daemon: Option<String>,
-    remote_uses_control_api: bool,
-    local_uses_simulation_backend: bool,
-    local_remote_equivalence_contract: bool,
+pub(super) struct BackendSelectionPlan {
+    pub(super) subcommand: CliSubcommand,
+    pub(super) target: BackendExecutionTarget,
+    pub(super) requested_backend: Backend,
+    pub(super) resolved_backend: Option<ResolvedLocalBackend>,
+    pub(super) reason: BackendSelectionReason,
+    pub(super) daemon: Option<String>,
+    pub(super) remote_uses_control_api: bool,
+    pub(super) local_uses_simulation_backend: bool,
+    pub(super) local_remote_equivalence_contract: bool,
 }
 
 impl BackendSelectionPlan {
-    fn proves_t_cli_3(&self) -> bool {
+    pub(super) fn proves_t_cli_3(&self) -> bool {
         self.local_remote_equivalence_contract
             && match self.target {
                 BackendExecutionTarget::RemoteDaemon => {
@@ -57,7 +59,7 @@ impl BackendSelectionPlan {
             }
     }
 
-    fn proves_t_cli_5(&self) -> bool {
+    pub(super) fn proves_t_cli_5(&self) -> bool {
         match (&self.target, &self.resolved_backend, self.requested_backend) {
             (BackendExecutionTarget::RemoteDaemon, None, _) => true,
             (BackendExecutionTarget::Local, Some(ResolvedLocalBackend::Double), Backend::Auto)
@@ -94,7 +96,7 @@ impl BackendSelectionPlan {
         }
     }
 
-    fn should_announce(&self, quiet: bool) -> bool {
+    pub(super) fn should_announce(&self, quiet: bool) -> bool {
         !quiet
             && matches!(
                 self.reason,
@@ -103,7 +105,7 @@ impl BackendSelectionPlan {
             )
     }
 
-    fn announcement(&self) -> String {
+    pub(super) fn announcement(&self) -> String {
         match (&self.target, &self.resolved_backend, self.reason) {
             (
                 BackendExecutionTarget::Local,
@@ -143,13 +145,13 @@ impl BackendSelectionPlan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum BackendExecutionTarget {
+pub(super) enum BackendExecutionTarget {
     Local,
     RemoteDaemon,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ResolvedLocalBackend {
+pub(super) enum ResolvedLocalBackend {
     Qemu {
         qemu: PathBuf,
         plugin: PathBuf,
@@ -164,7 +166,7 @@ enum ResolvedLocalBackend {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum QemuDiscoverySource {
+pub(super) enum QemuDiscoverySource {
     Flag,
     Environment,
     AosPackageSet,
@@ -177,40 +179,40 @@ impl QemuDiscoverySource {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct QemuDiscoveryCandidate {
-    path: PathBuf,
-    source: QemuDiscoverySource,
+pub(super) struct QemuDiscoveryCandidate {
+    pub(super) path: PathBuf,
+    pub(super) source: QemuDiscoverySource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct QemuArtifactIdentity {
-    qemu_build_id: String,
-    qemu_patch_series_hash: String,
-    plugin_abi: String,
-    shmem_abi_version: String,
+pub(super) struct QemuArtifactIdentity {
+    pub(super) qemu_build_id: String,
+    pub(super) qemu_patch_series_hash: String,
+    pub(super) plugin_abi: String,
+    pub(super) shmem_abi_version: String,
 }
 
 #[derive(Debug)]
-struct QemuBuildMarker {
-    raw_build_id: String,
-    artifact_build_id: String,
-    qemu_patch_series_hash: String,
-    shmem_abi_version: String,
-    shmem_abi: String,
-    shmem_header_hash: String,
+pub(super) struct QemuBuildMarker {
+    pub(super) raw_build_id: String,
+    pub(super) artifact_build_id: String,
+    pub(super) qemu_patch_series_hash: String,
+    pub(super) shmem_abi_version: String,
+    pub(super) shmem_abi: String,
+    pub(super) shmem_header_hash: String,
 }
 
 #[derive(Debug)]
-struct PluginBuildMarker {
-    plugin_abi: String,
-    qemu_build_id: String,
-    shmem_abi_version: String,
-    shmem_abi: String,
-    shmem_header_hash: String,
+pub(super) struct PluginBuildMarker {
+    pub(super) plugin_abi: String,
+    pub(super) qemu_build_id: String,
+    pub(super) shmem_abi_version: String,
+    pub(super) shmem_abi: String,
+    pub(super) shmem_header_hash: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum BackendSelectionReason {
+pub(super) enum BackendSelectionReason {
     RemoteDaemon,
     ExplicitDouble,
     ExplicitQemu,
@@ -218,7 +220,7 @@ enum BackendSelectionReason {
     AutoFallbackDouble,
 }
 
-trait BackendRouteRecorder {
+pub(super) trait BackendRouteRecorder {
     fn record_remote_daemon(&mut self, daemon: &str);
 
     fn record_local_backend(&mut self, backend: &ResolvedLocalBackend);
@@ -227,7 +229,7 @@ trait BackendRouteRecorder {
 }
 
 #[derive(Default)]
-struct NullBackendRouteRecorder;
+pub(super) struct NullBackendRouteRecorder;
 
 impl BackendRouteRecorder for NullBackendRouteRecorder {
     fn record_remote_daemon(&mut self, _daemon: &str) {}
@@ -238,7 +240,7 @@ impl BackendRouteRecorder for NullBackendRouteRecorder {
 }
 
 #[cfg(not(test))]
-fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, CliError> {
+pub(super) fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, CliError> {
     plan_backend_selection_with_discovery(
         cli,
         &ProcessQemuDiscoveryEnvironment,
@@ -247,7 +249,7 @@ fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, Cli
 }
 
 #[cfg(test)]
-fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, CliError> {
+pub(super) fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, CliError> {
     plan_backend_selection_with_discovery(
         cli,
         &ProcessQemuDiscoveryEnvironment,
@@ -255,7 +257,7 @@ fn plan_backend_selection(cli: &Cli) -> Result<Option<BackendSelectionPlan>, Cli
     )
 }
 
-fn plan_backend_selection_with_discovery(
+pub(super) fn plan_backend_selection_with_discovery(
     cli: &Cli,
     environment: &impl QemuDiscoveryEnvironment,
     package_set: &impl AosQemuPackageSet,
@@ -318,12 +320,12 @@ fn plan_backend_selection_with_discovery(
     }))
 }
 
-trait QemuDiscoveryEnvironment {
+pub(super) trait QemuDiscoveryEnvironment {
     fn variable(&self, name: &'static str) -> Option<String>;
 }
 
 #[derive(Default)]
-struct ProcessQemuDiscoveryEnvironment;
+pub(super) struct ProcessQemuDiscoveryEnvironment;
 
 impl QemuDiscoveryEnvironment for ProcessQemuDiscoveryEnvironment {
     fn variable(&self, name: &'static str) -> Option<String> {
@@ -333,14 +335,14 @@ impl QemuDiscoveryEnvironment for ProcessQemuDiscoveryEnvironment {
     }
 }
 
-trait AosQemuPackageSet {
+pub(super) trait AosQemuPackageSet {
     fn qemu_path(&self) -> Option<PathBuf>;
 
     fn plugin_path(&self) -> Option<PathBuf>;
 }
 
 #[derive(Default)]
-struct CompileTimeAosQemuPackageSet;
+pub(super) struct CompileTimeAosQemuPackageSet;
 
 impl AosQemuPackageSet for CompileTimeAosQemuPackageSet {
     fn qemu_path(&self) -> Option<PathBuf> {
@@ -354,7 +356,7 @@ impl AosQemuPackageSet for CompileTimeAosQemuPackageSet {
 
 #[cfg(test)]
 #[derive(Default)]
-struct NoAosQemuPackageSet;
+pub(super) struct NoAosQemuPackageSet;
 
 #[cfg(test)]
 impl AosQemuPackageSet for NoAosQemuPackageSet {
@@ -367,7 +369,7 @@ impl AosQemuPackageSet for NoAosQemuPackageSet {
     }
 }
 
-fn require_qemu_artifacts(
+pub(super) fn require_qemu_artifacts(
     cli: &Cli,
     environment: &impl QemuDiscoveryEnvironment,
     package_set: &impl AosQemuPackageSet,
@@ -380,7 +382,7 @@ fn require_qemu_artifacts(
     })
 }
 
-fn discover_qemu_artifacts(
+pub(super) fn discover_qemu_artifacts(
     cli: &Cli,
     environment: &impl QemuDiscoveryEnvironment,
     package_set: &impl AosQemuPackageSet,
@@ -411,7 +413,7 @@ fn discover_qemu_artifacts(
     }))
 }
 
-fn select_qemu_candidate(
+pub(super) fn select_qemu_candidate(
     flag: Option<&PathBuf>,
     environment: Option<String>,
     package_set: Option<PathBuf>,
@@ -419,7 +421,7 @@ fn select_qemu_candidate(
     select_qemu_discovery_candidate(flag, environment, package_set)
 }
 
-fn select_plugin_candidate(
+pub(super) fn select_plugin_candidate(
     flag: Option<&PathBuf>,
     environment: Option<String>,
     package_set: Option<PathBuf>,
@@ -427,7 +429,7 @@ fn select_plugin_candidate(
     select_qemu_discovery_candidate(flag, environment, package_set)
 }
 
-fn select_qemu_discovery_candidate(
+pub(super) fn select_qemu_discovery_candidate(
     flag: Option<&PathBuf>,
     environment: Option<String>,
     package_set: Option<PathBuf>,
@@ -450,7 +452,10 @@ fn select_qemu_discovery_candidate(
     })
 }
 
-fn validate_qemu_artifacts(qemu: &Path, plugin: &Path) -> Result<QemuArtifactIdentity, CliError> {
+pub(super) fn validate_qemu_artifacts(
+    qemu: &Path,
+    plugin: &Path,
+) -> Result<QemuArtifactIdentity, CliError> {
     validate_readable_file_artifact("patched QEMU", qemu)?;
     validate_readable_file_artifact("plugin", plugin)?;
     let qemu_marker = read_qemu_build_marker(qemu)?;
@@ -522,7 +527,10 @@ fn validate_qemu_artifacts(qemu: &Path, plugin: &Path) -> Result<QemuArtifactIde
     })
 }
 
-fn validate_readable_file_artifact(label: &'static str, path: &Path) -> Result<(), CliError> {
+pub(super) fn validate_readable_file_artifact(
+    label: &'static str,
+    path: &Path,
+) -> Result<(), CliError> {
     if !path.is_file() {
         return Err(qemu_backend_config_error(format!(
             "--backend qemu cannot read {label} artifact `{}`: not a regular file; {}",
@@ -540,37 +548,37 @@ fn validate_readable_file_artifact(label: &'static str, path: &Path) -> Result<(
     Ok(())
 }
 
-fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
+pub(super) fn qemu_backend_config_error(reason: impl Into<String>) -> CliError {
     CliError::Backend(reason.into())
 }
 // The session boundary re-exports the ABI derived from `crucible_shmem::ABI_VERSION`.
-fn required_qemu_plugin_abi() -> String {
+pub(super) fn required_qemu_plugin_abi() -> String {
     shmem_abi_label_for_version(&crucible::SHMEM_ABI_VERSION.to_string())
 }
 
-fn shmem_abi_label_for_version(version: &str) -> String {
+pub(super) fn shmem_abi_label_for_version(version: &str) -> String {
     format!("{CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX}{version}")
 }
 
-fn current_guest_host_protocol_version() -> String {
+pub(super) fn current_guest_host_protocol_version() -> String {
     CONTROL_PROTOCOL_VERSION.to_string()
 }
 
-fn current_rpc_abi_version() -> String {
+pub(super) fn current_rpc_abi_version() -> String {
     format!("{RPC_PROTOCOL_MAJOR}.{RPC_PROTOCOL_MINOR}.{RPC_PROTOCOL_PATCH}")
 }
 
-fn current_rpc_abi_build() -> String {
+pub(super) fn current_rpc_abi_build() -> String {
     RPC_PROTOCOL_BUILD.to_string()
 }
 
-fn qemu_discovery_order_help() -> String {
+pub(super) fn qemu_discovery_order_help() -> String {
     format!(
         "discovery order is --qemu/--plugin, {CRUCIBLE_QEMU_ENV}/{CRUCIBLE_PLUGIN_ENV}, then AOS package-set hints {CRUCIBLE_AOS_QEMU_ENV}/{CRUCIBLE_AOS_PLUGIN_ENV}; host $PATH QEMU is never used; supply a matched qemu-crucible/crucible-qemu-plugin pair or use --backend double"
     )
 }
 
-fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
+pub(super) fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
     let marker = existing_metadata_path(qemu_build_marker_paths(qemu)).ok_or_else(|| {
         qemu_backend_config_error(format!(
             "patched QEMU `{}` is missing its sim-capability marker `share/aos/crucible/qemu-build-identity.env`; {}",
@@ -656,7 +664,7 @@ fn read_qemu_build_marker(qemu: &Path) -> Result<QemuBuildMarker, CliError> {
     })
 }
 
-fn read_plugin_build_marker(plugin: &Path) -> Result<PluginBuildMarker, CliError> {
+pub(super) fn read_plugin_build_marker(plugin: &Path) -> Result<PluginBuildMarker, CliError> {
     let marker = existing_metadata_path(plugin_build_marker_paths(plugin)).ok_or_else(|| {
         qemu_backend_config_error(format!(
             "plugin `{}` is missing `nix-support/crucible-qemu-plugin-build-info`; {}",
@@ -703,7 +711,7 @@ fn read_plugin_build_marker(plugin: &Path) -> Result<PluginBuildMarker, CliError
     })
 }
 
-fn qemu_build_marker_paths(qemu: &Path) -> Vec<PathBuf> {
+pub(super) fn qemu_build_marker_paths(qemu: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(parent) = qemu.parent() {
         if parent.file_name().and_then(|name| name.to_str()) == Some("bin")
@@ -716,7 +724,7 @@ fn qemu_build_marker_paths(qemu: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn plugin_build_marker_paths(plugin: &Path) -> Vec<PathBuf> {
+pub(super) fn plugin_build_marker_paths(plugin: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(parent) = plugin.parent() {
         if parent.file_name().and_then(|name| name.to_str()) == Some("lib")
@@ -729,11 +737,11 @@ fn plugin_build_marker_paths(plugin: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn existing_metadata_path(paths: Vec<PathBuf>) -> Option<PathBuf> {
+pub(super) fn existing_metadata_path(paths: Vec<PathBuf>) -> Option<PathBuf> {
     paths.into_iter().find(|path| path.is_file())
 }
 
-fn read_key_value_metadata(path: &Path) -> Result<BTreeMap<String, String>, CliError> {
+pub(super) fn read_key_value_metadata(path: &Path) -> Result<BTreeMap<String, String>, CliError> {
     let text = fs::read_to_string(path).map_err(|error| {
         qemu_backend_config_error(format!(
             "cannot read metadata marker `{}`: {error}",
@@ -758,7 +766,7 @@ fn read_key_value_metadata(path: &Path) -> Result<BTreeMap<String, String>, CliE
     Ok(fields)
 }
 
-fn required_metadata_field(
+pub(super) fn required_metadata_field(
     fields: &BTreeMap<String, String>,
     key: &'static str,
     marker: &Path,
@@ -772,7 +780,7 @@ fn required_metadata_field(
     })
 }
 
-fn subcommand_uses_backend_selection(command: &Commands) -> bool {
+pub(super) fn subcommand_uses_backend_selection(command: &Commands) -> bool {
     matches!(
         command,
         Commands::Run(_)
@@ -787,7 +795,7 @@ fn subcommand_uses_backend_selection(command: &Commands) -> bool {
     )
 }
 
-fn execute_backend_selection_plan(
+pub(super) fn execute_backend_selection_plan(
     plan: &BackendSelectionPlan,
     quiet: bool,
     recorder: &mut impl BackendRouteRecorder,
@@ -824,24 +832,24 @@ fn execute_backend_selection_plan(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct BackendCommandOutcome {
-    subcommand: CliSubcommand,
-    status: BackendCommandStatus,
-    exit_code: i32,
-    stdout: Vec<String>,
-    stderr: Vec<String>,
-    canonical_log: Vec<CanonicalLogEntry>,
-    canonical_log_digest: String,
-    artifact_digest: String,
-    terminal_savepoint: Option<crucible::ContentHash>,
-    savepoint_oracle: Option<SavepointOracleProof>,
-    reproduction_artifact: Option<Vec<u8>>,
-    side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
+pub(super) struct BackendCommandOutcome {
+    pub(super) subcommand: CliSubcommand,
+    pub(super) status: BackendCommandStatus,
+    pub(super) exit_code: i32,
+    pub(super) stdout: Vec<String>,
+    pub(super) stderr: Vec<String>,
+    pub(super) canonical_log: Vec<CanonicalLogEntry>,
+    pub(super) canonical_log_digest: String,
+    pub(super) artifact_digest: String,
+    pub(super) terminal_savepoint: Option<crucible::ContentHash>,
+    pub(super) savepoint_oracle: Option<SavepointOracleProof>,
+    pub(super) reproduction_artifact: Option<Vec<u8>>,
+    pub(super) side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
 }
 
 impl BackendCommandOutcome {
     #[cfg(test)]
-    fn normalized(&self) -> BackendCommandOutcomeProjection {
+    pub(super) fn normalized(&self) -> BackendCommandOutcomeProjection {
         BackendCommandOutcomeProjection {
             subcommand: self.subcommand,
             status: self.status,
@@ -857,7 +865,7 @@ impl BackendCommandOutcome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum BackendCommandStatus {
+pub(super) enum BackendCommandStatus {
     Passed,
     Failed,
     Crashed,
@@ -865,11 +873,11 @@ enum BackendCommandStatus {
 }
 
 impl BackendCommandStatus {
-    fn exit_code(self) -> i32 {
+    pub(super) fn exit_code(self) -> i32 {
         CliError::Outcome(self).exit_code()
     }
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Passed => "passed",
             Self::Failed => "failed",
@@ -878,15 +886,15 @@ impl BackendCommandStatus {
         }
     }
 
-    fn non_passing_variants() -> [Self; 3] {
+    pub(super) fn non_passing_variants() -> [Self; 3] {
         [Self::Failed, Self::Crashed, Self::Timeout]
     }
 
-    fn is_non_passing(self) -> bool {
+    pub(super) fn is_non_passing(self) -> bool {
         !matches!(self, Self::Passed)
     }
 
-    fn failure_slug(self) -> &'static str {
+    pub(super) fn failure_slug(self) -> &'static str {
         match self {
             Self::Passed => "passed",
             Self::Failed => "failed",
@@ -898,19 +906,19 @@ impl BackendCommandStatus {
 
 #[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct BackendCommandOutcomeProjection {
-    subcommand: CliSubcommand,
-    status: BackendCommandStatus,
-    exit_code: i32,
-    stdout: Vec<String>,
-    stderr: Vec<String>,
-    canonical_log_digest: String,
-    artifact_digest: String,
-    terminal_savepoint: Option<crucible::ContentHash>,
-    savepoint_oracle: Option<SavepointOracleProof>,
+pub(super) struct BackendCommandOutcomeProjection {
+    pub(super) subcommand: CliSubcommand,
+    pub(super) status: BackendCommandStatus,
+    pub(super) exit_code: i32,
+    pub(super) stdout: Vec<String>,
+    pub(super) stderr: Vec<String>,
+    pub(super) canonical_log_digest: String,
+    pub(super) artifact_digest: String,
+    pub(super) terminal_savepoint: Option<crucible::ContentHash>,
+    pub(super) savepoint_oracle: Option<SavepointOracleProof>,
 }
 
-trait BackendCommandRunner {
+pub(super) trait BackendCommandRunner {
     // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
     #[allow(clippy::too_many_arguments)]
     fn run_local(
@@ -939,7 +947,7 @@ trait BackendCommandRunner {
 }
 
 #[derive(Default)]
-struct NullBackendCommandRunner;
+pub(super) struct NullBackendCommandRunner;
 
 impl BackendCommandRunner for NullBackendCommandRunner {
     fn run_local(
@@ -1056,7 +1064,7 @@ impl BackendCommandRunner for NullBackendCommandRunner {
     }
 }
 
-fn execute_backend_routed_command(
+pub(super) fn execute_backend_routed_command(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,

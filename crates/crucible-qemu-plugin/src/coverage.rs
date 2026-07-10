@@ -542,6 +542,11 @@ pub(crate) struct LiveBasicBlockCoverage {
 
 impl LiveBasicBlockCoverage {
     /// Registers the translation callback and takes ownership of its live state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoverageError`] when the configured map is invalid, the ABI-v2
+    /// output ring does not match it, or another live owner is already published.
     pub(crate) fn register(
         plugin_id: QemuPluginId,
         callback: CoverageCallback,

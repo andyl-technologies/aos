@@ -1,3 +1,7 @@
+//! Session constants, lifecycle vocabulary, snapshots, and command results.
+
+use super::*;
+
 /// Number of live event-log frames retained by the broadcast tail.
 pub const SESSION_EVENT_LOG_BROADCAST_CAPACITY: usize = 1024;
 
@@ -85,7 +89,7 @@ pub enum LiveStateKind {
 }
 
 impl LiveStateKind {
-    fn from_engine_state(state: &EngineState) -> Self {
+    pub(super) fn from_engine_state(state: &EngineState) -> Self {
         match state {
             EngineState::Loaded => Self::Loaded,
             EngineState::Running => Self::Running,
@@ -94,7 +98,7 @@ impl LiveStateKind {
         }
     }
 
-    fn from_raw(raw: u8) -> Self {
+    pub(super) fn from_raw(raw: u8) -> Self {
         match raw {
             1 => Self::Loaded,
             2 => Self::Running,
@@ -241,23 +245,23 @@ impl BreakpointSet {
         self.specs.get(&id)
     }
 
-    fn iter(&self) -> impl Iterator<Item = (BreakpointId, &BreakpointSpec, bool)> {
+    pub(super) fn iter(&self) -> impl Iterator<Item = (BreakpointId, &BreakpointSpec, bool)> {
         self.specs
             .iter()
             .map(|(id, spec)| (*id, spec, self.last_truth.get(id).copied().unwrap_or(false)))
     }
 
-    fn set_last_truth(&mut self, id: BreakpointId, value: bool) {
+    pub(super) fn set_last_truth(&mut self, id: BreakpointId, value: bool) {
         if self.specs.contains_key(&id) {
             self.last_truth.insert(id, value);
         }
     }
 
-    fn once_latches(&self, id: BreakpointId) -> Vec<Condition> {
+    pub(super) fn once_latches(&self, id: BreakpointId) -> Vec<Condition> {
         self.once_latches.get(&id).cloned().unwrap_or_default()
     }
 
-    fn set_once_latches(&mut self, id: BreakpointId, once_latches: Vec<Condition>) {
+    pub(super) fn set_once_latches(&mut self, id: BreakpointId, once_latches: Vec<Condition>) {
         if self.specs.contains_key(&id) {
             self.once_latches.insert(id, once_latches);
         }
@@ -311,7 +315,7 @@ impl OutcomeKind {
     ];
 }
 
-fn outcome_kind_from_raw(raw: u8) -> Option<OutcomeKind> {
+pub(super) fn outcome_kind_from_raw(raw: u8) -> Option<OutcomeKind> {
     match raw {
         1 => Some(OutcomeKind::Passed),
         2 => Some(OutcomeKind::Failed),
@@ -322,7 +326,7 @@ fn outcome_kind_from_raw(raw: u8) -> Option<OutcomeKind> {
     }
 }
 
-fn outcome_kind_to_raw(kind: Option<OutcomeKind>) -> u8 {
+pub(super) fn outcome_kind_to_raw(kind: Option<OutcomeKind>) -> u8 {
     match kind {
         Some(OutcomeKind::Passed) => 1,
         Some(OutcomeKind::Failed) => 2,
@@ -333,14 +337,14 @@ fn outcome_kind_to_raw(kind: Option<OutcomeKind>) -> u8 {
     }
 }
 
-fn outcome_kind_from_engine_state(state: &EngineState) -> Option<OutcomeKind> {
+pub(super) fn outcome_kind_from_engine_state(state: &EngineState) -> Option<OutcomeKind> {
     match state {
         EngineState::Stopped { outcome } => Some(OutcomeKind::from(outcome)),
         EngineState::Loaded | EngineState::Running | EngineState::Paused { .. } => None,
     }
 }
 
-fn content_hash_to_words(hash: ContentHash) -> [u64; 4] {
+pub(super) fn content_hash_to_words(hash: ContentHash) -> [u64; 4] {
     let mut words = [0_u64; 4];
     for (index, chunk) in hash.bytes.chunks_exact(8).enumerate() {
         let mut word = [0_u8; 8];
@@ -350,7 +354,7 @@ fn content_hash_to_words(hash: ContentHash) -> [u64; 4] {
     words
 }
 
-fn content_hash_from_words(present: u8, words: [u64; 4]) -> Option<ContentHash> {
+pub(super) fn content_hash_from_words(present: u8, words: [u64; 4]) -> Option<ContentHash> {
     if present == 0 {
         return None;
     }
@@ -418,14 +422,14 @@ impl StepMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ActiveStep {
-    mode: StepMode,
-    target_frontier: Option<VirtualTime>,
-    breakpoint: BreakpointSpec,
+pub(super) struct ActiveStep {
+    pub(super) mode: StepMode,
+    pub(super) target_frontier: Option<VirtualTime>,
+    pub(super) breakpoint: BreakpointSpec,
 }
 
 impl ActiveStep {
-    fn new(mode: StepMode, start_frontier: VirtualTime) -> Self {
+    pub(super) fn new(mode: StepMode, start_frontier: VirtualTime) -> Self {
         let target_frontier = match mode {
             StepMode::Duration(duration) => Some(VirtualTime {
                 ticks: start_frontier.ticks.saturating_add(duration.nanos),
@@ -464,7 +468,7 @@ impl ActiveStep {
         }
     }
 
-    fn is_complete(
+    pub(super) fn is_complete(
         &self,
         outcome: &QuantumOutcome,
         event_log_len_before: u64,
@@ -490,7 +494,7 @@ impl ActiveStep {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct StepConditionLeaves {
+pub(super) struct StepConditionLeaves {
     quantum: bool,
     event: bool,
     assertion: bool,
@@ -529,7 +533,7 @@ impl ConditionLeafOracle for StepConditionLeaves {
     }
 }
 
-fn entry_is_resolved_external_event(entry: &SchedulerEventLogEntry) -> bool {
+pub(super) fn entry_is_resolved_external_event(entry: &SchedulerEventLogEntry) -> bool {
     match entry.payload() {
         SchedulerEventLogPayload::ResolvedHappening(event) => matches!(
             &event.payload,
@@ -546,14 +550,14 @@ fn entry_is_resolved_external_event(entry: &SchedulerEventLogEntry) -> bool {
     }
 }
 
-fn entry_is_assertion_state_change(entry: &SchedulerEventLogEntry) -> bool {
+pub(super) fn entry_is_assertion_state_change(entry: &SchedulerEventLogEntry) -> bool {
     matches!(
         entry.payload(),
         SchedulerEventLogPayload::Observable(ObservableEventPayload::AssertionStateChanged { .. })
     )
 }
 
-fn entry_is_timer_fire(entry: &SchedulerEventLogEntry) -> bool {
+pub(super) fn entry_is_timer_fire(entry: &SchedulerEventLogEntry) -> bool {
     matches!(
         entry.payload(),
         SchedulerEventLogPayload::TriggerFired(firing)
@@ -561,6 +565,6 @@ fn entry_is_timer_fire(entry: &SchedulerEventLogEntry) -> bool {
     )
 }
 
-fn condition_summary_is_timer_fire(summary: &str) -> bool {
+pub(super) fn condition_summary_is_timer_fire(summary: &str) -> bool {
     summary.lines().any(|line| line.trim() == "predicate=timer")
 }

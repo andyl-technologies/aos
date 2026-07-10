@@ -1,5 +1,10 @@
-// Canonical binary plan, action, fault, and predicate codec.
-fn collection_count_from_raw(label: &'static str, count: u64) -> Result<usize, EngineError> {
+//! Canonical binary plan, action, fault, and predicate codec.
+
+use super::*;
+pub(super) fn collection_count_from_raw(
+    label: &'static str,
+    count: u64,
+) -> Result<usize, EngineError> {
     let count = usize::try_from(count)
         .map_err(|_| scenario_serialization_error("binary count does not fit usize"))?;
     if count > MAX_SCENARIO_BINARY_COLLECTION_ITEMS {
@@ -11,7 +16,7 @@ fn collection_count_from_raw(label: &'static str, count: u64) -> Result<usize, E
     }
 }
 
-fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
+pub(super) fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
     let mut assertions = BTreeSet::new();
     for event in events {
         if let Some(trigger) = &event.trigger {
@@ -21,7 +26,7 @@ fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
     assertions.into_iter().collect()
 }
 
-fn collect_predicate_assertion_references(
+pub(super) fn collect_predicate_assertion_references(
     predicate: &Predicate,
     assertions: &mut BTreeSet<AssertionId>,
 ) {
@@ -53,7 +58,7 @@ fn collect_predicate_assertion_references(
     }
 }
 
-fn write_plan_entry_binary(entry: &PlanEntry, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_plan_entry_binary(entry: &PlanEntry, writer: &mut ScenarioBinaryWriter) {
     match entry {
         PlanEntry::Activate { at, tag, fault } => {
             writer.write_u8(0);
@@ -69,7 +74,9 @@ fn write_plan_entry_binary(entry: &PlanEntry, writer: &mut ScenarioBinaryWriter)
     }
 }
 
-fn read_plan_entry_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<PlanEntry, EngineError> {
+pub(super) fn read_plan_entry_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<PlanEntry, EngineError> {
     match reader.read_u8()? {
         0 => Ok(PlanEntry::Activate {
             at: VirtualTime {
@@ -92,7 +99,10 @@ fn read_plan_entry_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<PlanE
     }
 }
 
-fn write_fault_plan_entry_binary(entry: &FaultPlanEntry, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_fault_plan_entry_binary(
+    entry: &FaultPlanEntry,
+    writer: &mut ScenarioBinaryWriter,
+) {
     match entry {
         FaultPlanEntry::At {
             at,
@@ -120,7 +130,7 @@ fn write_fault_plan_entry_binary(entry: &FaultPlanEntry, writer: &mut ScenarioBi
     }
 }
 
-fn read_fault_plan_entry_binary(
+pub(super) fn read_fault_plan_entry_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<FaultPlanEntry, EngineError> {
     match reader.read_u8()? {
@@ -155,7 +165,7 @@ fn read_fault_plan_entry_binary(
     }
 }
 
-fn write_event_binary(event: &Event, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_event_binary(event: &Event, writer: &mut ScenarioBinaryWriter) {
     writer.write_string(&event.id.name);
     match &event.trigger {
         Some(trigger) => {
@@ -171,7 +181,9 @@ fn write_event_binary(event: &Event, writer: &mut ScenarioBinaryWriter) {
     });
 }
 
-fn read_event_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Event, EngineError> {
+pub(super) fn read_event_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Event, EngineError> {
     let id = EventId {
         name: reader.read_string()?,
     };
@@ -194,7 +206,7 @@ fn read_event_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Event, Eng
     })
 }
 
-fn write_action_binary(action: &Action, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_action_binary(action: &Action, writer: &mut ScenarioBinaryWriter) {
     match action {
         Action::InjectFault { tag, fault } => {
             writer.write_u8(0);
@@ -250,7 +262,9 @@ fn write_action_binary(action: &Action, writer: &mut ScenarioBinaryWriter) {
     }
 }
 
-fn read_action_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Action, EngineError> {
+pub(super) fn read_action_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Action, EngineError> {
     match reader.read_u8()? {
         0 => Ok(Action::InjectFault {
             tag: FaultTag {
@@ -312,7 +326,7 @@ fn read_action_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Action, E
     }
 }
 
-fn write_control_operation_kind_binary(
+pub(super) fn write_control_operation_kind_binary(
     kind: &ControlOperationKind,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -336,7 +350,7 @@ fn write_control_operation_kind_binary(
     }
 }
 
-fn read_control_operation_kind_binary(
+pub(super) fn read_control_operation_kind_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<ControlOperationKind, EngineError> {
     match reader.read_u8()? {
@@ -364,7 +378,7 @@ fn read_control_operation_kind_binary(
     }
 }
 
-fn write_optional_string_binary(value: Option<&str>, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_optional_string_binary(value: Option<&str>, writer: &mut ScenarioBinaryWriter) {
     match value {
         Some(value) => {
             writer.write_u8(1);
@@ -374,7 +388,7 @@ fn write_optional_string_binary(value: Option<&str>, writer: &mut ScenarioBinary
     }
 }
 
-fn read_optional_string_binary(
+pub(super) fn read_optional_string_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Option<String>, EngineError> {
     match reader.read_u8()? {
@@ -386,7 +400,7 @@ fn read_optional_string_binary(
     }
 }
 
-fn write_log_level_binary(level: LogLevel, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_log_level_binary(level: LogLevel, writer: &mut ScenarioBinaryWriter) {
     writer.write_u8(match level {
         LogLevel::Debug => 0,
         LogLevel::Info => 1,
@@ -395,7 +409,9 @@ fn write_log_level_binary(level: LogLevel, writer: &mut ScenarioBinaryWriter) {
     });
 }
 
-fn read_log_level_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LogLevel, EngineError> {
+pub(super) fn read_log_level_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<LogLevel, EngineError> {
     match reader.read_u8()? {
         0 => Ok(LogLevel::Debug),
         1 => Ok(LogLevel::Info),
@@ -405,7 +421,10 @@ fn read_log_level_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LogLev
     }
 }
 
-fn write_membership_fault_binary(fault: &MembershipFault, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_membership_fault_binary(
+    fault: &MembershipFault,
+    writer: &mut ScenarioBinaryWriter,
+) {
     match fault {
         MembershipFault::Crash { node, restart } => {
             writer.write_u8(0);
@@ -445,7 +464,7 @@ fn write_membership_fault_binary(fault: &MembershipFault, writer: &mut ScenarioB
     }
 }
 
-fn read_membership_fault_binary(
+pub(super) fn read_membership_fault_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<MembershipFault, EngineError> {
     match reader.read_u8()? {
@@ -501,7 +520,7 @@ fn read_membership_fault_binary(
     }
 }
 
-fn write_fault_binary(fault: &Fault, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_fault_binary(fault: &Fault, writer: &mut ScenarioBinaryWriter) {
     match fault {
         Fault::Network(fault) => {
             writer.write_u8(0);
@@ -522,7 +541,9 @@ fn write_fault_binary(fault: &Fault, writer: &mut ScenarioBinaryWriter) {
     }
 }
 
-fn read_fault_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Fault, EngineError> {
+pub(super) fn read_fault_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Fault, EngineError> {
     match reader.read_u8()? {
         0 => Ok(Fault::Network(read_network_fault_binary(reader)?)),
         1 => Ok(Fault::Node(read_node_fault_binary(reader)?)),
@@ -532,7 +553,7 @@ fn read_fault_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Fault, Eng
     }
 }
 
-fn write_network_fault_binary(fault: &NetworkFault, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_network_fault_binary(fault: &NetworkFault, writer: &mut ScenarioBinaryWriter) {
     match fault {
         NetworkFault::Partition { link, direction } => {
             writer.write_u8(0);
@@ -573,7 +594,7 @@ fn write_network_fault_binary(fault: &NetworkFault, writer: &mut ScenarioBinaryW
     }
 }
 
-fn read_network_fault_binary(
+pub(super) fn read_network_fault_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<NetworkFault, EngineError> {
     match reader.read_u8()? {
@@ -610,7 +631,7 @@ fn read_network_fault_binary(
     }
 }
 
-fn write_network_corruption_fault_binary(
+pub(super) fn write_network_corruption_fault_binary(
     fault: &NetworkCorruptionFault,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -632,7 +653,7 @@ fn write_network_corruption_fault_binary(
     }
 }
 
-fn read_network_corruption_fault_binary(
+pub(super) fn read_network_corruption_fault_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<NetworkCorruptionFault, EngineError> {
     match reader.read_u8()? {
@@ -653,7 +674,7 @@ fn read_network_corruption_fault_binary(
     }
 }
 
-fn write_node_fault_binary(fault: &NodeFault, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_node_fault_binary(fault: &NodeFault, writer: &mut ScenarioBinaryWriter) {
     match fault {
         NodeFault::Crash { node, restart } => {
             writer.write_u8(0);
@@ -673,7 +694,9 @@ fn write_node_fault_binary(fault: &NodeFault, writer: &mut ScenarioBinaryWriter)
     }
 }
 
-fn read_node_fault_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<NodeFault, EngineError> {
+pub(super) fn read_node_fault_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<NodeFault, EngineError> {
     match reader.read_u8()? {
         0 => Ok(NodeFault::Crash {
             node: read_node_id_binary(reader)?,
@@ -693,7 +716,7 @@ fn read_node_fault_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<NodeF
     }
 }
 
-fn write_block_fault_binary(fault: &BlockFault, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_block_fault_binary(fault: &BlockFault, writer: &mut ScenarioBinaryWriter) {
     match fault {
         BlockFault::Latency {
             device,
@@ -740,7 +763,7 @@ fn write_block_fault_binary(fault: &BlockFault, writer: &mut ScenarioBinaryWrite
     }
 }
 
-fn read_block_fault_binary(
+pub(super) fn read_block_fault_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<BlockFault, EngineError> {
     match reader.read_u8()? {
@@ -776,7 +799,7 @@ fn read_block_fault_binary(
     }
 }
 
-fn write_ninep_fault_binary(fault: &NinePFault, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_ninep_fault_binary(fault: &NinePFault, writer: &mut ScenarioBinaryWriter) {
     match fault {
         NinePFault::Latency {
             device,
@@ -827,7 +850,7 @@ fn write_ninep_fault_binary(fault: &NinePFault, writer: &mut ScenarioBinaryWrite
     }
 }
 
-fn read_ninep_fault_binary(
+pub(super) fn read_ninep_fault_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<NinePFault, EngineError> {
     match reader.read_u8()? {
@@ -869,7 +892,10 @@ fn read_ninep_fault_binary(
     }
 }
 
-fn write_restart_policy_binary(policy: RestartPolicy, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_restart_policy_binary(
+    policy: RestartPolicy,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_u8(match policy {
         RestartPolicy::FromReadyPoint => 0,
         RestartPolicy::FromLastCheckpoint => 1,
@@ -877,7 +903,7 @@ fn write_restart_policy_binary(policy: RestartPolicy, writer: &mut ScenarioBinar
     });
 }
 
-fn read_restart_policy_binary(
+pub(super) fn read_restart_policy_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<RestartPolicy, EngineError> {
     match reader.read_u8()? {
@@ -888,7 +914,7 @@ fn read_restart_policy_binary(
     }
 }
 
-fn write_partition_direction_binary(
+pub(super) fn write_partition_direction_binary(
     direction: PartitionDirection,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -899,7 +925,7 @@ fn write_partition_direction_binary(
     });
 }
 
-fn read_partition_direction_binary(
+pub(super) fn read_partition_direction_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<PartitionDirection, EngineError> {
     match reader.read_u8()? {
@@ -912,14 +938,14 @@ fn read_partition_direction_binary(
     }
 }
 
-fn write_io_failure_mode_binary(mode: IoFailureMode, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_io_failure_mode_binary(mode: IoFailureMode, writer: &mut ScenarioBinaryWriter) {
     writer.write_u8(match mode {
         IoFailureMode::Drop => 0,
         IoFailureMode::ErrorStatus => 1,
     });
 }
 
-fn read_io_failure_mode_binary(
+pub(super) fn read_io_failure_mode_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<IoFailureMode, EngineError> {
     match reader.read_u8()? {
@@ -929,25 +955,31 @@ fn read_io_failure_mode_binary(
     }
 }
 
-fn read_node_id_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<NodeId, EngineError> {
+pub(super) fn read_node_id_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<NodeId, EngineError> {
     Ok(NodeId {
         name: reader.read_string()?,
     })
 }
 
-fn read_link_id_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<LinkId, EngineError> {
+pub(super) fn read_link_id_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<LinkId, EngineError> {
     Ok(LinkId {
         name: reader.read_string()?,
     })
 }
 
-fn read_device_id_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<DeviceId, EngineError> {
+pub(super) fn read_device_id_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<DeviceId, EngineError> {
     Ok(DeviceId {
         name: reader.read_string()?,
     })
 }
 
-fn write_properties_binary(properties: &Properties, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_properties_binary(properties: &Properties, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(properties.content_hash());
     writer.write_count(properties.assertions().len());
     for assertion in properties.assertions() {
@@ -955,7 +987,7 @@ fn write_properties_binary(properties: &Properties, writer: &mut ScenarioBinaryW
     }
 }
 
-fn read_properties_binary(
+pub(super) fn read_properties_binary(
     world: &World,
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Properties, EngineError> {
@@ -970,13 +1002,13 @@ fn read_properties_binary(
     Ok(properties)
 }
 
-fn write_assertion_binary(assertion: &AssertionDef, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_assertion_binary(assertion: &AssertionDef, writer: &mut ScenarioBinaryWriter) {
     writer.write_string(&assertion.id.name);
     writer.write_string(&assertion.message);
     write_property_binary(&assertion.property, writer);
 }
 
-fn read_assertion_binary(
+pub(super) fn read_assertion_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<AssertionDef, EngineError> {
     Ok(AssertionDef {
@@ -988,7 +1020,7 @@ fn read_assertion_binary(
     })
 }
 
-fn write_property_binary(property: &Property, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_property_binary(property: &Property, writer: &mut ScenarioBinaryWriter) {
     match property {
         Property::Always { predicate } => {
             writer.write_u8(property.kind().binary_tag());
@@ -1023,7 +1055,9 @@ fn write_property_binary(property: &Property, writer: &mut ScenarioBinaryWriter)
     }
 }
 
-fn read_property_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Property, EngineError> {
+pub(super) fn read_property_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Property, EngineError> {
     match PropertyKind::from_binary_tag(reader.read_u8()?) {
         Some(PropertyKind::Always) => Ok(Property::Always {
             predicate: read_predicate_binary(reader)?,
@@ -1049,7 +1083,7 @@ fn read_property_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Propert
     }
 }
 
-fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWriter) {
     match predicate {
         Predicate::At { at } => {
             writer.write_u8(6);
@@ -1156,7 +1190,9 @@ fn write_predicate_binary(predicate: &Predicate, writer: &mut ScenarioBinaryWrit
     }
 }
 
-fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predicate, EngineError> {
+pub(super) fn read_predicate_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<Predicate, EngineError> {
     match reader.read_u8()? {
         0 => {
             let name = reader.read_string()?;
@@ -1281,7 +1317,10 @@ fn read_predicate_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Predic
     }
 }
 
-fn write_frame_predicate_binary(predicate: &FramePredicate, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_frame_predicate_binary(
+    predicate: &FramePredicate,
+    writer: &mut ScenarioBinaryWriter,
+) {
     match predicate {
         FramePredicate::Any => writer.write_u8(0),
         FramePredicate::Exact(bytes) => {
@@ -1299,7 +1338,7 @@ fn write_frame_predicate_binary(predicate: &FramePredicate, writer: &mut Scenari
     }
 }
 
-fn read_frame_predicate_binary(
+pub(super) fn read_frame_predicate_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<FramePredicate, EngineError> {
     match reader.read_u8()? {
@@ -1317,7 +1356,7 @@ fn read_frame_predicate_binary(
     }
 }
 
-fn write_code_point_binary(point: &CodePoint, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_code_point_binary(point: &CodePoint, writer: &mut ScenarioBinaryWriter) {
     match point {
         CodePoint::GuestAddress { address } => {
             writer.write_u8(0);
@@ -1330,7 +1369,9 @@ fn write_code_point_binary(point: &CodePoint, writer: &mut ScenarioBinaryWriter)
     }
 }
 
-fn read_code_point_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<CodePoint, EngineError> {
+pub(super) fn read_code_point_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<CodePoint, EngineError> {
     match reader.read_u8()? {
         0 => Ok(CodePoint::GuestAddress {
             address: reader.read_u64()?,
@@ -1342,7 +1383,7 @@ fn read_code_point_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<CodeP
     }
 }
 
-fn write_mem_place_binary(place: &MemPlace, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_mem_place_binary(place: &MemPlace, writer: &mut ScenarioBinaryWriter) {
     match place {
         MemPlace::PhysicalAddress { address, width } => {
             writer.write_u8(0);
@@ -1367,7 +1408,9 @@ fn write_mem_place_binary(place: &MemPlace, writer: &mut ScenarioBinaryWriter) {
     }
 }
 
-fn read_mem_place_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<MemPlace, EngineError> {
+pub(super) fn read_mem_place_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<MemPlace, EngineError> {
     match reader.read_u8()? {
         0 => Ok(MemPlace::PhysicalAddress {
             address: reader.read_u64()?,
@@ -1389,7 +1432,7 @@ fn read_mem_place_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<MemPla
     }
 }
 
-fn write_memory_width_binary(width: MemoryWidth, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_memory_width_binary(width: MemoryWidth, writer: &mut ScenarioBinaryWriter) {
     writer.write_u8(match width {
         MemoryWidth::U8 => 0,
         MemoryWidth::U16 => 1,
@@ -1398,7 +1441,7 @@ fn write_memory_width_binary(width: MemoryWidth, writer: &mut ScenarioBinaryWrit
     });
 }
 
-fn read_memory_width_binary(
+pub(super) fn read_memory_width_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<MemoryWidth, EngineError> {
     match reader.read_u8()? {
@@ -1410,7 +1453,7 @@ fn read_memory_width_binary(
     }
 }
 
-fn write_memory_cmp_binary(cmp: MemoryCmp, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_memory_cmp_binary(cmp: MemoryCmp, writer: &mut ScenarioBinaryWriter) {
     writer.write_u8(match cmp {
         MemoryCmp::Eq => 0,
         MemoryCmp::Ne => 1,
@@ -1421,7 +1464,9 @@ fn write_memory_cmp_binary(cmp: MemoryCmp, writer: &mut ScenarioBinaryWriter) {
     });
 }
 
-fn read_memory_cmp_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<MemoryCmp, EngineError> {
+pub(super) fn read_memory_cmp_binary(
+    reader: &mut ScenarioBinaryReader<'_>,
+) -> Result<MemoryCmp, EngineError> {
     match reader.read_u8()? {
         0 => Ok(MemoryCmp::Eq),
         1 => Ok(MemoryCmp::Ne),
@@ -1435,7 +1480,7 @@ fn read_memory_cmp_binary(reader: &mut ScenarioBinaryReader<'_>) -> Result<Memor
     }
 }
 
-fn write_io_event_kind_binary(kind: IoEventKind, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_io_event_kind_binary(kind: IoEventKind, writer: &mut ScenarioBinaryWriter) {
     writer.write_u8(match kind {
         IoEventKind::Any => 0,
         IoEventKind::BlockRead => 1,
@@ -1446,7 +1491,7 @@ fn write_io_event_kind_binary(kind: IoEventKind, writer: &mut ScenarioBinaryWrit
     });
 }
 
-fn read_io_event_kind_binary(
+pub(super) fn read_io_event_kind_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<IoEventKind, EngineError> {
     match reader.read_u8()? {
@@ -1460,7 +1505,7 @@ fn read_io_event_kind_binary(
     }
 }
 
-fn write_node_lifecycle_binary(state: NodeLifecycle, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_node_lifecycle_binary(state: NodeLifecycle, writer: &mut ScenarioBinaryWriter) {
     writer.write_u8(match state {
         NodeLifecycle::Started => 0,
         NodeLifecycle::Crashed => 1,
@@ -1469,7 +1514,7 @@ fn write_node_lifecycle_binary(state: NodeLifecycle, writer: &mut ScenarioBinary
     });
 }
 
-fn read_node_lifecycle_binary(
+pub(super) fn read_node_lifecycle_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<NodeLifecycle, EngineError> {
     match reader.read_u8()? {
@@ -1481,14 +1526,17 @@ fn read_node_lifecycle_binary(
     }
 }
 
-fn write_assertion_phase_binary(state: AssertionPhase, writer: &mut ScenarioBinaryWriter) {
+pub(super) fn write_assertion_phase_binary(
+    state: AssertionPhase,
+    writer: &mut ScenarioBinaryWriter,
+) {
     writer.write_u8(match state {
         AssertionPhase::Satisfied => 0,
         AssertionPhase::Violated => 1,
     });
 }
 
-fn read_assertion_phase_binary(
+pub(super) fn read_assertion_phase_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<AssertionPhase, EngineError> {
     match reader.read_u8()? {
@@ -1498,7 +1546,7 @@ fn read_assertion_phase_binary(
     }
 }
 
-fn write_reachability_expectation_binary(
+pub(super) fn write_reachability_expectation_binary(
     expectation: ReachabilityExpectation,
     writer: &mut ScenarioBinaryWriter,
 ) {
@@ -1514,7 +1562,7 @@ fn write_reachability_expectation_binary(
     }
 }
 
-fn read_reachability_expectation_binary(
+pub(super) fn read_reachability_expectation_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<ReachabilityExpectation, EngineError> {
     match reader.read_u8()? {

@@ -1,4 +1,8 @@
-fn validate_finding_static_identity(
+//! Failure-artifact identity validation and canonical material helpers.
+
+use super::*;
+
+pub(in crate::model) fn validate_finding_static_identity(
     finding: &FindingReproductionArtifact,
 ) -> Result<(), EngineError> {
     let artifact = finding.artifact.id();
@@ -40,7 +44,7 @@ fn validate_finding_static_identity(
     Ok(())
 }
 
-fn validate_recorded_event_log_for_finding(
+pub(in crate::model) fn validate_recorded_event_log_for_finding(
     finding: &FindingReproductionArtifact,
     event_log: &FailureRecordedEventLog,
 ) -> Result<(), EngineError> {
@@ -54,7 +58,7 @@ fn validate_recorded_event_log_for_finding(
     Ok(())
 }
 
-fn validate_violation_for_finding(
+pub(in crate::model) fn validate_violation_for_finding(
     finding: &FindingReproductionArtifact,
     violation: &FailurePropertyViolationRecord,
 ) -> Result<(), EngineError> {
@@ -68,7 +72,7 @@ fn validate_violation_for_finding(
     Ok(())
 }
 
-fn validate_divergence_point(
+pub(in crate::model) fn validate_divergence_point(
     event_log: &FailureRecordedEventLog,
     divergence: &EventLogCausalDivergencePoint,
 ) -> Result<usize, EngineError> {
@@ -94,7 +98,7 @@ fn validate_divergence_point(
     })
 }
 
-fn validate_violation_point(
+pub(in crate::model) fn validate_violation_point(
     event_log: &FailureRecordedEventLog,
     violation: &FailurePropertyViolationRecord,
 ) -> Result<usize, EngineError> {
@@ -123,7 +127,7 @@ fn validate_violation_point(
     })
 }
 
-fn violation_event_icount_matches(
+pub(in crate::model) fn violation_event_icount_matches(
     at: &crate::scheduler::EventLogTime,
     violation: &HostAssertionViolation,
 ) -> bool {
@@ -133,7 +137,7 @@ fn violation_event_icount_matches(
         .unwrap_or(true)
 }
 
-fn violation_event_assertion_matches(
+pub(in crate::model) fn violation_event_assertion_matches(
     payload: &crate::scheduler::EventPayload,
     violation: &HostAssertionViolation,
 ) -> bool {
@@ -143,7 +147,9 @@ fn violation_event_assertion_matches(
     )
 }
 
-fn divergence_faulting_node(divergence: &EventLogCausalDivergencePoint) -> Option<NodeId> {
+pub(in crate::model) fn divergence_faulting_node(
+    divergence: &EventLogCausalDivergencePoint,
+) -> Option<NodeId> {
     match &divergence.source {
         EventSource::Node { node } | EventSource::Guest { node } => Some(node.clone()),
         EventSource::Scenario { .. } | EventSource::Engine | EventSource::Command { .. } => {
@@ -152,7 +158,7 @@ fn divergence_faulting_node(divergence: &EventLogCausalDivergencePoint) -> Optio
     }
 }
 
-fn failure_causal_cone_through_index(
+pub(in crate::model) fn failure_causal_cone_through_index(
     event_log: &FailureRecordedEventLog,
     causal_index: usize,
     canonicalizer: &FailureSymmetryCanonicalizer,
@@ -165,7 +171,7 @@ fn failure_causal_cone_through_index(
     FailureCausalCone::from_canonical_material(lines.join("\n"))
 }
 
-fn failure_causal_cone_entries<'a>(
+pub(in crate::model) fn failure_causal_cone_entries<'a>(
     event_log: &'a FailureRecordedEventLog,
     causal_index: usize,
     canonicalizer: &FailureSymmetryCanonicalizer,
@@ -186,7 +192,7 @@ fn failure_causal_cone_entries<'a>(
         .collect()
 }
 
-fn failure_causal_dependency_keys(
+pub(in crate::model) fn failure_causal_dependency_keys(
     entry: &crate::scheduler::EventLogCausalProjectionEntry,
     canonicalizer: &FailureSymmetryCanonicalizer,
 ) -> BTreeSet<String> {
@@ -215,7 +221,7 @@ fn failure_causal_dependency_keys(
     keys
 }
 
-fn push_failure_dependency_keys_for_attribute(
+pub(in crate::model) fn push_failure_dependency_keys_for_attribute(
     value: &EventAttributeValue,
     canonicalizer: &FailureSymmetryCanonicalizer,
     keys: &mut BTreeSet<String>,
@@ -246,7 +252,7 @@ fn push_failure_dependency_keys_for_attribute(
     }
 }
 
-fn push_failure_causal_slice_entry_lines(
+pub(in crate::model) fn push_failure_causal_slice_entry_lines(
     cone_index: usize,
     entry: &crate::scheduler::EventLogCausalProjectionEntry,
     canonicalizer: &FailureSymmetryCanonicalizer,
@@ -281,7 +287,7 @@ fn push_failure_causal_slice_entry_lines(
     }
 }
 
-fn failure_event_source_material(
+pub(in crate::model) fn failure_event_source_material(
     prefix: &str,
     source: &EventSource,
     canonicalizer: &FailureSymmetryCanonicalizer,
@@ -307,7 +313,7 @@ fn failure_event_source_material(
     }
 }
 
-fn failure_event_attribute_material(
+pub(in crate::model) fn failure_event_attribute_material(
     value: &EventAttributeValue,
     canonicalizer: &FailureSymmetryCanonicalizer,
 ) -> Option<String> {
@@ -336,15 +342,15 @@ fn failure_event_attribute_material(
     }
 }
 
-fn failure_node_material(prefix: &str, node: &NodeId) -> String {
+pub(in crate::model) fn failure_node_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}={}", failure_node_value(node))
 }
 
-fn failure_node_value(node: &NodeId) -> String {
+pub(in crate::model) fn failure_node_value(node: &NodeId) -> String {
     format!("{}:{}", node.name.len(), node.name)
 }
 
-fn failure_event_level_label(level: EventLevel) -> &'static str {
+pub(in crate::model) fn failure_event_level_label(level: EventLevel) -> &'static str {
     match level {
         EventLevel::Trace => "trace",
         EventLevel::Debug => "debug",
@@ -354,14 +360,14 @@ fn failure_event_level_label(level: EventLevel) -> &'static str {
     }
 }
 
-fn failure_event_class_label(class: SchedulerEventLogClass) -> &'static str {
+pub(in crate::model) fn failure_event_class_label(class: SchedulerEventLogClass) -> &'static str {
     match class {
         SchedulerEventLogClass::Causal => "causal",
         SchedulerEventLogClass::Observational => "observational",
     }
 }
 
-fn failure_signature_material(signature: &FailureSignature) -> String {
+pub(in crate::model) fn failure_signature_material(signature: &FailureSignature) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
         "failure_kind={}",
@@ -407,7 +413,7 @@ fn failure_signature_material(signature: &FailureSignature) -> String {
     lines.join("\n")
 }
 
-fn failure_signature_report_material(signature: &FailureSignature) -> String {
+pub(in crate::model) fn failure_signature_report_material(signature: &FailureSignature) -> String {
     let mut lines = vec![signature.canonical_material()];
     lines.push(
         signature
@@ -427,7 +433,10 @@ fn failure_signature_report_material(signature: &FailureSignature) -> String {
     lines.join("\n")
 }
 
-fn failure_signature_key_material(signature: &FailureSignature, policy: SignaturePolicy) -> String {
+pub(in crate::model) fn failure_signature_key_material(
+    signature: &FailureSignature,
+    policy: SignaturePolicy,
+) -> String {
     let mut lines = vec![failure_signature_policy_material(policy)];
     lines.push(String::from("key_fields_BEGIN"));
     lines.push(format!(
@@ -498,7 +507,7 @@ fn failure_signature_key_material(signature: &FailureSignature, policy: Signatur
     lines.join("\n")
 }
 
-fn failure_signature_policy_material(policy: SignaturePolicy) -> String {
+pub(in crate::model) fn failure_signature_policy_material(policy: SignaturePolicy) -> String {
     [
         format!(
             "signature_policy_schema_version={}",
@@ -517,7 +526,7 @@ fn failure_signature_policy_material(policy: SignaturePolicy) -> String {
     .join("\n")
 }
 
-fn failure_findings_ledger_material(ledger: &FailureFindingsLedger) -> String {
+pub(in crate::model) fn failure_findings_ledger_material(ledger: &FailureFindingsLedger) -> String {
     let mut lines = vec![
         format!("artifact_count={}", ledger.artifacts.len()),
         format!("signed_finding_count={}", ledger.findings.len()),
@@ -537,7 +546,9 @@ fn failure_findings_ledger_material(ledger: &FailureFindingsLedger) -> String {
     lines.join("\n")
 }
 
-fn failure_triage_result_identity_material(identity: FailureTriageResultIdentity) -> String {
+pub(in crate::model) fn failure_triage_result_identity_material(
+    identity: FailureTriageResultIdentity,
+) -> String {
     [
         format!(
             "triage_result_schema_version={}",
@@ -552,7 +563,9 @@ fn failure_triage_result_identity_material(identity: FailureTriageResultIdentity
     .join("\n")
 }
 
-fn failure_triage_signature_self_check_material(check: &FailureTriageSignatureSelfCheck) -> String {
+pub(in crate::model) fn failure_triage_signature_self_check_material(
+    check: &FailureTriageSignatureSelfCheck,
+) -> String {
     let mut lines = vec![
         format!("checked_count={}", check.checked_count),
         format!("check_record_count={}", check.checks.len()),
@@ -608,7 +621,7 @@ fn failure_triage_signature_self_check_material(check: &FailureTriageSignatureSe
     lines.join("\n")
 }
 
-fn failure_triage_result_material(result: &FailureTriageResult) -> String {
+pub(in crate::model) fn failure_triage_result_material(result: &FailureTriageResult) -> String {
     let mut lines = vec![
         result.identity.canonical_material(),
         format!(
@@ -651,7 +664,9 @@ fn failure_triage_result_material(result: &FailureTriageResult) -> String {
     lines.join("\n")
 }
 
-fn failure_triage_result_diff_material(diff: &FailureTriageResultDiff) -> String {
+pub(in crate::model) fn failure_triage_result_diff_material(
+    diff: &FailureTriageResultDiff,
+) -> String {
     let mut lines = vec![
         format!("baseline={}", content_hash_hex(diff.baseline)),
         format!("candidate={}", content_hash_hex(diff.candidate)),
@@ -686,15 +701,15 @@ fn failure_triage_result_diff_material(diff: &FailureTriageResultDiff) -> String
     lines.join("\n")
 }
 
-fn failure_signature_report_bytes_hash(material: &str) -> ContentHash {
+pub(in crate::model) fn failure_signature_report_bytes_hash(material: &str) -> ContentHash {
     ContentHash::from_canonical_material(FAILURE_TRIAGE_SIGNATURE_SELF_CHECK_DOMAIN, material)
 }
 
-fn failure_triage_artifact_bytes(domain: &str, material: &str) -> Vec<u8> {
+pub(in crate::model) fn failure_triage_artifact_bytes(domain: &str, material: &str) -> Vec<u8> {
     format!("{domain}\n{material}\n").into_bytes()
 }
 
-fn store_failure_triage_artifact<S>(
+pub(in crate::model) fn store_failure_triage_artifact<S>(
     store: &S,
     bytes: &[u8],
 ) -> Result<FailureTriageStoredArtifact, DagStoreError>
@@ -717,7 +732,7 @@ where
     })
 }
 
-fn triage_report_hashes_by_cluster(
+pub(in crate::model) fn triage_report_hashes_by_cluster(
     result: &FailureTriageResult,
 ) -> BTreeMap<ContentHash, ContentHash> {
     result
@@ -728,7 +743,9 @@ fn triage_report_hashes_by_cluster(
         .collect()
 }
 
-fn failure_clustering_result_material(result: &FailureClusteringResult) -> String {
+pub(in crate::model) fn failure_clustering_result_material(
+    result: &FailureClusteringResult,
+) -> String {
     let mut lines = vec![
         result.policy.canonical_material(),
         format!("cluster_count={}", result.clusters.len()),
@@ -756,7 +773,7 @@ fn failure_clustering_result_material(result: &FailureClusteringResult) -> Strin
     lines.join("\n")
 }
 
-fn failure_signature_preserving_minimization_result_material(
+pub(in crate::model) fn failure_signature_preserving_minimization_result_material(
     result: &FailureSignaturePreservingMinimizationResult,
 ) -> String {
     let mut lines = vec![
@@ -815,7 +832,7 @@ fn failure_signature_preserving_minimization_result_material(
     lines.join("\n")
 }
 
-fn push_minimization_attempt_lines(
+pub(in crate::model) fn push_minimization_attempt_lines(
     run_index: usize,
     attempt_index: usize,
     attempt: &MinimizationAttempt,
@@ -865,7 +882,7 @@ fn push_minimization_attempt_lines(
     lines.push(format!("{prefix}.accepted={}", attempt.accepted));
 }
 
-fn failure_report_anchor_index(
+pub(in crate::model) fn failure_report_anchor_index(
     failure: &FailureClusterReportFailure,
     event_log: &FailureRecordedEventLog,
 ) -> Result<usize, EngineError> {
@@ -885,7 +902,7 @@ fn failure_report_anchor_index(
     }
 }
 
-fn failure_signature_for_report_failure(
+pub(in crate::model) fn failure_signature_for_report_failure(
     finding: &FindingReproductionArtifact,
     event_log: &FailureRecordedEventLog,
     failure: &FailureClusterReportFailure,
@@ -911,7 +928,7 @@ fn failure_signature_for_report_failure(
     }
 }
 
-fn failure_report_excerpt(
+pub(in crate::model) fn failure_report_excerpt(
     event_log: &FailureRecordedEventLog,
     causal_index: usize,
     excerpt_len: usize,
@@ -927,7 +944,7 @@ fn failure_report_excerpt(
         .collect()
 }
 
-fn failure_cluster_report_causal_step(
+pub(in crate::model) fn failure_cluster_report_causal_step(
     entry: &crate::scheduler::EventLogCausalProjectionEntry,
     canonicalizer: &FailureSymmetryCanonicalizer,
 ) -> FailureClusterReportCausalStep {
@@ -961,7 +978,7 @@ fn failure_cluster_report_causal_step(
     }
 }
 
-fn failure_cluster_report_material(report: &FailureClusterReport) -> String {
+pub(in crate::model) fn failure_cluster_report_material(report: &FailureClusterReport) -> String {
     let mut lines = vec![
         report.policy.canonical_material(),
         format!("cluster_id={}", content_hash_hex(report.cluster_id)),
@@ -1009,7 +1026,7 @@ fn failure_cluster_report_material(report: &FailureClusterReport) -> String {
     lines.join("\n")
 }
 
-fn push_failure_report_reproduction_lines(
+pub(in crate::model) fn push_failure_report_reproduction_lines(
     prefix: &str,
     reproduction: &FailureClusterReportReproduction,
     lines: &mut Vec<String>,
@@ -1029,7 +1046,7 @@ fn push_failure_report_reproduction_lines(
     ));
 }
 
-fn push_failure_report_failure_lines(
+pub(in crate::model) fn push_failure_report_failure_lines(
     prefix: &str,
     failure: &FailureClusterReportFailure,
     lines: &mut Vec<String>,
@@ -1118,7 +1135,7 @@ fn push_failure_report_failure_lines(
     }
 }
 
-fn push_failure_report_step_lines(
+pub(in crate::model) fn push_failure_report_step_lines(
     prefix: &str,
     step: &FailureClusterReportCausalStep,
     lines: &mut Vec<String>,
@@ -1137,7 +1154,9 @@ fn push_failure_report_step_lines(
     lines.push(format!("{prefix}.entry={}", content_hash_hex(step.entry)));
 }
 
-fn failure_cluster_report_set_material(report_set: &FailureClusterReportSet) -> String {
+pub(in crate::model) fn failure_cluster_report_set_material(
+    report_set: &FailureClusterReportSet,
+) -> String {
     let mut lines = vec![
         report_set.policy.canonical_material(),
         format!("report_count={}", report_set.reports.len()),
@@ -1156,7 +1175,7 @@ fn failure_cluster_report_set_material(report_set: &FailureClusterReportSet) -> 
     lines.join("\n")
 }
 
-fn failure_cluster_report_json(report: &FailureClusterReport) -> String {
+pub(in crate::model) fn failure_cluster_report_json(report: &FailureClusterReport) -> String {
     let members = report
         .member_hashes
         .iter()
@@ -1178,7 +1197,9 @@ fn failure_cluster_report_json(report: &FailureClusterReport) -> String {
     )
 }
 
-fn failure_cluster_report_set_json(report_set: &FailureClusterReportSet) -> String {
+pub(in crate::model) fn failure_cluster_report_set_json(
+    report_set: &FailureClusterReportSet,
+) -> String {
     let reports = report_set
         .reports
         .iter()
@@ -1196,7 +1217,7 @@ fn failure_cluster_report_set_json(report_set: &FailureClusterReportSet) -> Stri
     )
 }
 
-fn failure_cluster_report_table(report: &FailureClusterReport) -> String {
+pub(in crate::model) fn failure_cluster_report_table(report: &FailureClusterReport) -> String {
     let mut lines = vec![
         String::from("field\tvalue"),
         format!("cluster_id\t{}", format_content_hash_ref(report.cluster_id)),
@@ -1214,7 +1235,7 @@ fn failure_cluster_report_table(report: &FailureClusterReport) -> String {
     lines.join("\n")
 }
 
-fn failure_cluster_report_markdown(report: &FailureClusterReport) -> String {
+pub(in crate::model) fn failure_cluster_report_markdown(report: &FailureClusterReport) -> String {
     format!(
         "# Crucible Triage Cluster {}\n\n- Policy: {}\n- Members: {}\n- Minimal representative: {}\n- Replay: `{}`\n\n## Canonical Report\n\n```text\n{}\n```",
         format_content_hash_ref(report.cluster_id),
@@ -1226,7 +1247,7 @@ fn failure_cluster_report_markdown(report: &FailureClusterReport) -> String {
     )
 }
 
-fn json_string(value: &str) -> String {
+pub(in crate::model) fn json_string(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len() + 2);
     escaped.push('"');
     for ch in value.chars() {
@@ -1248,7 +1269,7 @@ fn json_string(value: &str) -> String {
     escaped
 }
 
-fn signature_policy_level_label(level: SignaturePolicyLevel) -> &'static str {
+pub(in crate::model) fn signature_policy_level_label(level: SignaturePolicyLevel) -> &'static str {
     match level {
         SignaturePolicyLevel::Coarse => "coarse",
         SignaturePolicyLevel::Default => "default",
@@ -1257,14 +1278,16 @@ fn signature_policy_level_label(level: SignaturePolicyLevel) -> &'static str {
     }
 }
 
-fn failure_kind_label(kind: FailureKind) -> &'static str {
+pub(in crate::model) fn failure_kind_label(kind: FailureKind) -> &'static str {
     match kind {
         FailureKind::PropertyViolation => "property-violation",
         FailureKind::Divergence => "divergence",
     }
 }
 
-fn failure_assertion_quantifier_label(quantifier: AssertionQuantifierKind) -> &'static str {
+pub(in crate::model) fn failure_assertion_quantifier_label(
+    quantifier: AssertionQuantifierKind,
+) -> &'static str {
     match quantifier {
         AssertionQuantifierKind::Always => "always",
         AssertionQuantifierKind::Sometimes => "sometimes",
