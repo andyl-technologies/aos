@@ -91,7 +91,7 @@ shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1547
 shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
 shape-line|crates/crucible-qemu/src/launch.rs|1460
 shape-line|crates/crucible-qemu/src/launch/validation.rs|855
-shape-line|crates/crucible-qemu/src/live_coverage_gate.rs|759
+shape-line|crates/crucible-qemu/src/live_coverage_gate.rs|768
 shape-line|crates/crucible-qemu/src/node.rs|2121
 shape-line|crates/crucible-qemu/src/node_factory/tests.rs|808
 shape-line|crates/crucible-qemu/src/qmp.rs|848

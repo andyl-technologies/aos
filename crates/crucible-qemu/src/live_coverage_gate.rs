@@ -8,7 +8,9 @@
 //! second enables the registration-time callback and must publish at least one
 //! observation without changing the host execution fingerprint. An independent
 //! observation plugin also compares the instruction stream, all vCPU registers,
-//! round-robin cursor, RAM, and device-I/O history across the two runs.
+//! round-robin cursor, RAM, and device-I/O history across the two runs. Both
+//! runs admit their live observations and exact quantum boundary through one
+//! [`EventLog`], then compare its canonical causal projection byte-for-byte.
 
 use std::fs;
 use std::path::{Path, PathBuf};
