@@ -1432,7 +1432,7 @@ FV-0 columns rather than sketch estimates:**
       separate medians are 0.392 versus 0.408 seconds cold and 0.378 versus
       0.385 seconds warm. Median post-run RSS falls from 172.7 to 140.6 MiB
       cold and from 189.2 to 156.9 MiB warm. Direct process peak is effectively
-      flat (208.8 versus 210.9 MiB): arena mapping rises from 35.5 to 67.5 MiB
+      flat (199.1 versus 201.1 MiB): arena mapping rises from 35.5 to 67.5 MiB
       because those payload bytes moved from separate malloc allocations into
       the measured arena. A package-sized `pkgs.zlib` probe is flat on time
       (~87.1 vs ~87.3 ms cold, ~79.7 vs ~80.5 ms warm) and RSS. Invalid probes
