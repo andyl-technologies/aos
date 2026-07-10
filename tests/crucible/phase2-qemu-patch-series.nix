@@ -109,7 +109,7 @@
       catalogName = "crucible-plugin-wake-fd";
       class = "F";
       enforces = "SHM-26,INV-8";
-      capability = "plugin wake fd drain, device notification, and RR-vCPU kick";
+      capability = "live single-threaded RR proof, plugin wake fd drain, and clean or fail-loud shutdown request";
     }
     {
       file = "0014-crucible-plugin-tcg-exec-cb.patch";
@@ -243,6 +243,13 @@
       class = "D";
       enforces = "DET-1,E7";
       capability = "sim-mode synchronous virtio-rng vq-kick dispatch under icount (ioeventfd disabled for rng)";
+    }
+    {
+      file = "0033-crucible-sim-observer.patch";
+      catalogName = "crucible-sim-observer";
+      class = "F";
+      enforces = "DET-29,PLUG-35";
+      capability = "observation-only post-execution sim-boundary callback alongside the scheduler-owned dispatch";
     }
   ];
 

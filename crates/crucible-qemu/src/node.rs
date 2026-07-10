@@ -247,6 +247,38 @@ impl QemuNodeChild {
         self.reaped
     }
 
+    /// Polls for a natural child exit without sending a signal.
+    ///
+    /// A returned status is the exact `waitpid` result and marks this wrapper
+    /// reaped, so dropping it cannot hide the outcome with kill-and-wait
+    /// cleanup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuShutdownTargetError`] when the child was already reaped or
+    /// the nonblocking wait fails.
+    pub fn try_wait_natural_exit(
+        &mut self,
+    ) -> Result<Option<std::process::ExitStatus>, QemuShutdownTargetError> {
+        if self.reaped {
+            return Err(QemuShutdownTargetError::new(
+                "poll natural QEMU exit",
+                "child was already reaped",
+            ));
+        }
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                self.reaped = true;
+                Ok(Some(status))
+            }
+            Ok(None) => Ok(None),
+            Err(error) => Err(QemuShutdownTargetError::new(
+                "poll natural QEMU exit",
+                error.to_string(),
+            )),
+        }
+    }
+
     fn send_sigterm(&mut self) -> Result<(), QemuShutdownTargetError> {
         signal_child(self.child.id(), libc::SIGTERM, "send SIGTERM")
     }
@@ -1131,6 +1163,57 @@ mod tests {
     use super::*;
 
     type SharedLog = Rc<RefCell<Vec<ChannelCall>>>;
+
+    #[test]
+    fn child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup()
+    -> Result<(), Box<dyn Error>> {
+        let child = Command::new("true").spawn()?;
+        let mut child = QemuNodeChild::new(child);
+        wait_for_test_child_exit_pending(&child)?;
+        let status = child
+            .try_wait_natural_exit()?
+            .ok_or("child remained live after closing its output pipe")?;
+
+        assert!(status.success());
+        assert!(child.reaped());
+        drop(child);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_poll_preserves_signal_termination_as_unclean() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let child = Command::new("sleep").arg("60").spawn()?;
+        let mut child = QemuNodeChild::new(child);
+        signal_child(
+            child.child.id(),
+            libc::SIGTERM,
+            "terminate child test fixture",
+        )?;
+        wait_for_test_child_exit_pending(&child)?;
+        let status = child
+            .try_wait_natural_exit()?
+            .ok_or("signaled child remained live after closing its output pipe")?;
+
+        assert!(!status.success());
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        assert!(child.reaped());
+        Ok(())
+    }
+
+    fn wait_for_test_child_exit_pending(child: &QemuNodeChild) -> Result<(), Box<dyn Error>> {
+        use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+
+        let pid = Pid::from_child(&child.child);
+        waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+        )?
+        .ok_or("waitid returned no status for a blocking child-exit wait")?;
+        Ok(())
+    }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum ChannelCall {

@@ -18,7 +18,7 @@ pkgs.mkDerivation {
         .long 0x00000003
         .long -(0x1badb002 + 0x00000003)
 
-        .section .text
+        .section .text.entry,"ax"
         .code32
         .global _start
         _start:
@@ -31,6 +31,12 @@ pkgs.mkDerivation {
           xorl $0xa5a5a5a5, %eax
           movl %eax, scratch
           movl scratch, %edx
+          movb %al, 0x000b8000
+          outb %al, $0x80
+          jmp post_io
+
+        .section .text.post_io,"ax"
+        post_io:
           xorl %edx, %eax
           jmp workload_loop
 
@@ -52,7 +58,9 @@ pkgs.mkDerivation {
         SECTIONS {
           . = 0x00100000;
           .multiboot : { KEEP(*(.multiboot)) } :text
-          .text : { *(.text*) } :text
+          .text : { *(.text.entry) } :text
+          . = 0x00100800;
+          .text.post_io : { *(.text.post_io) } :text
           .rodata : { *(.rodata*) } :text
           . = ALIGN(0x1000);
           .data : { *(.data*) } :data
@@ -63,13 +71,15 @@ pkgs.mkDerivation {
         mkdir -p "$out"
         as --32 guest.S -o guest.o
         ld -m elf_i386 -nostdlib -T guest.ld -o "$out/coverage-guest.elf" guest.o
+        strip --strip-all "$out/coverage-guest.elf"
         test -s "$out/coverage-guest.elf"
 
         cat > "$out/evidence.env" <<'EVIDENCE'
         guest_format=multiboot-elf32
         guest_interface=none
         guest_instrumentation=none
-        guest_symbols=removed-by-fixup
+        guest_device_io=vga-mmio-and-port-80
+        guest_symbols=removed-by-explicit-strip
         EVIDENCE
       '';
     }

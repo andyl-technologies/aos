@@ -190,6 +190,7 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-clock-deadline ....... exact next vtimer deadline D    TIME-24, TIME-25
   crucible-plugin-icount-raw .... raw icount read           F    DET-29, INV-10
   crucible-vcpu-introspect ...... per-vCPU regs + RR cursor  F    PATCH-46, DET-29, INV-10
+  crucible-sim-observer ......... post-exec boundary observe F    DET-29, PLUG-35
   crucible-preemption-inject .... commanded vCPU switch/IRQ  D    PATCH-47, DET-1, PLUG-50
   crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1, INV-10
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
@@ -678,6 +679,25 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
   MUST be side-effect-free wrt `S`/`T`. *Gate:* `gate:single-vm-fingerprint`,
   `gate:qemu-inert`. *Spec:* §11.5; satisfies [DET-29], references [QEMU-34],
   [PATCH-44], [INV-10].
+
+### crucible-sim-observer — observation-only post-execution boundary
+
+- **Enforces:** [DET-29], [PLUG-35]; lets an independent plugin fingerprint the
+  exact architectural state reached after a scheduler-controlled execution
+  window.
+- **Mechanism:** adds a second, observation-only callback beside the single
+  scheduler-owned shmem dispatch callback. The RR loop invokes it only after
+  `cpu_exec` and icount processing have completed. It finishes before the
+  control plugin's release publication makes the boundary visible to the host,
+  so evidence cannot race host collection. Registering the observer never
+  replaces the ceiling callback and cannot authorize progress.
+- **Micro-test:** compile the callback against the patched installed header,
+  reject the stock-header negative control, and require the loaded-QEMU coverage
+  gate to consume the callback for its post-boundary register, RAM, RR-cursor,
+  memory, and device-I/O fingerprint.
+- **Inertness:** [PATCH-3](c) — an additive plugin-API export that is inert until
+  an auxiliary plugin registers it.
+- **Risk:** F.
 
 ### crucible-preemption-inject — commanded vCPU switch / interrupt delivery
 
@@ -1468,8 +1488,9 @@ time-control primitives the whole design rests on.
   [PATCH-39]; spec §11.9.
   - Completed by `checks.crucible.phase2.qemuPatchRegeneration` and consumed by
     `gate:patch-microtests`: the gate rebuilds the ordered patch stack from the
-    checked-in `crucible/qemu-10.0.0` git bundle, verifies the base/head commits
-    and each per-patch commit/tree entry, regenerates deterministic `--unified=3`
+    checked-in `crucible/qemu-10.0.0` thin git bundle, requires the pinned QEMU
+    base commit as its prerequisite, verifies the base/head commits and each
+    per-patch commit/tree entry, regenerates deterministic `--unified=3`
     patch bytes, fails on committed-file drift, applies the regenerated series
     with fuzz disabled, and records the QEMU source hash, patch count,
     patch-series hash, patch-branch bundle/material, and QEMU build identity. The

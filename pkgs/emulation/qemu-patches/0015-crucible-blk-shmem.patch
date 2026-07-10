@@ -2,7 +2,7 @@ diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
 new file mode 100644
 --- /dev/null
 +++ b/block/crucible-shmem.c
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,274 @@
 +/*
 + * Crucible shmem block driver
 + *
@@ -275,18 +275,19 @@ new file mode 100644
 +{
 +    bdrv_register(&bdrv_crucible_shmem);
 +}
++block_init(bdrv_crucible_shmem_init);
 +
 diff --git a/block/meson.build b/block/meson.build
 --- a/block/meson.build
 +++ b/block/meson.build
-@@ -12,6 +12,7 @@ block_ss.add(files(
-   'commit.c',
-   'copy-before-write.c',
-   'copy-on-read.c',
-+  'crucible-shmem.c',
-   'create.c',
-   'crypto.c',
-   'dirty-bitmap.c',
+@@ -164,6 +164,7 @@ block_ss.add(block_gen_c)
+ block_ss.add(files('stream.c'))
+ 
+ system_ss.add(files('qapi-system.c'))
++system_ss.add(files('crucible-shmem.c'))
+ 
+ subdir('export')
+ subdir('monitor')
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
@@ -335,9 +336,9 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -829,6 +867,20 @@ QEMU_PLUGIN_API
+@@ -875,6 +913,20 @@ QEMU_PLUGIN_API
  void qemu_plugin_register_tcg_exec_cb(qemu_plugin_tcg_exec_cb_t cb,
-                                       void *userdata);
+                                        void *userdata);
  
 +/**
 + * qemu_plugin_register_blk_cb() - register shmem block callbacks

@@ -145,6 +145,18 @@
         label = "failed descriptor unregistration";
         needle = "qemu_plugin_unregister_wake_fd(fd)";
       }
+      {
+        label = "plugin shutdown export";
+        needle = "qemu_plugin_request_shutdown";
+      }
+      {
+        label = "clean plugin shutdown cause";
+        needle = "SHUTDOWN_CAUSE_HOST_QMP_QUIT";
+      }
+      {
+        label = "fail-loud plugin shutdown cause";
+        needle = "SHUTDOWN_CAUSE_HOST_ERROR";
+      }
     ]
     else [
       {
@@ -381,6 +393,7 @@ in
             #define SYSTEM_RUNSTATE_H
 
             #define SHUTDOWN_CAUSE_HOST_ERROR 1
+            #define SHUTDOWN_CAUSE_HOST_QMP_QUIT 2
             void qemu_system_shutdown_request(int reason);
 
             #endif
@@ -577,6 +590,8 @@ in
 
             void qemu_plugin_atexit_cb(void);
 
+            bool qemu_plugin_time_advance_is_pending(void);
+
             void qemu_plugin_add_dyn_cb_arr(GArray *arr);
 
             static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
@@ -760,6 +775,7 @@ in
               qemu_plugin_force_vcpu_exit \
               qemu_plugin_crucible_single_threaded_rr \
               qemu_plugin_register_wake_fd \
+              qemu_plugin_request_shutdown \
               qemu_plugin_register_tcg_exec_cb
             do
               cat > "stock-plugin-runtime-negative-$symbol.c" <<STOCK_NEGATIVE
@@ -795,6 +811,7 @@ in
             grep -q 'qemu_plugin_force_vcpu_exit' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_crucible_single_threaded_rr' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_register_wake_fd' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_request_shutdown' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_register_tcg_exec_cb' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_maybe_fire_tcg_exec_cb(cpu);' accel/tcg/tcg-accel-ops-rr.c
             awk '
@@ -822,6 +839,8 @@ in
             grep -q '^wake_fd_registered=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_single_owner=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_same_descriptor_idempotent=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^plugin_shutdown_clean_exit_cause=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^plugin_shutdown_fail_loud_cause=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_drained=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_requires_nonblocking=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_eintr_retried=true$' "$out/plugin-runtime-apis-microtest"

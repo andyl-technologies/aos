@@ -1,7 +1,7 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -989,6 +989,33 @@ int qemu_plugin_net_flush(void);
+@@ -1035,6 +1035,33 @@ int qemu_plugin_net_flush(void);
  QEMU_PLUGIN_API
  int qemu_plugin_net_can_receive(void);
  

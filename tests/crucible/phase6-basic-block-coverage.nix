@@ -24,6 +24,7 @@
   qemuLiveCoverageGate = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate.rs;
   qemuLiveCoverageTrace = builtins.readFile ../../crates/crucible-qemu/src/live_coverage_gate/trace.rs;
   qemuLiveCoverageGateCli = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-live-coverage.rs;
+  qemuSimObserverPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0033-crucible-sim-observer.patch;
   guestSource = builtins.readFile ./phase6-basic-block-coverage-guest.nix;
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
@@ -383,8 +384,20 @@
         needle = "LoadedQemuCoverageGateError::CoverageOnEmpty";
       }
       {
+        label = "standalone-guest coverage attribution requirement";
+        needle = "LoadedQemuCoverageGateError::CoverageOnGuestUnattributed";
+      }
+      {
         label = "real off/on fingerprint equivalence";
         needle = "off.fingerprint != on.fingerprint";
+      }
+      {
+        label = "real unified event-log admission";
+        needle = "record_loaded_run_event_log(mode, config.horizon_icount, observations)?";
+      }
+      {
+        label = "real canonical event-log equivalence";
+        needle = "compare_event_log_determinism(&off.event_log_entries, &on.event_log_entries)";
       }
       {
         label = "independent full-state fingerprint equivalence";
@@ -402,15 +415,33 @@
     ++ failuresFor "crates/crucible-qemu/src/live_coverage_gate/trace.rs" qemuLiveCoverageTrace [
       {
         label = "independent trace plugin arguments";
-        needle = "extended=on,mem_events=on,rr_switch_events=on";
+        needle = "extended=on,mem_events=on,post_boundary=on,required_pc=";
       }
       {
         label = "independent trace completeness validation";
-        needle = "validate_trace_sample(&sample, mode)?";
+        needle = "validate_trace_sample(&sample, config, mode)?";
       }
       {
         label = "full fingerprint component requirement";
         needle = ''"extended_hash",'';
+      }
+      {
+        label = "per-instruction architectural trajectory requirement";
+        needle = ''"trajectory_hash",'';
+      }
+      {
+        label = "known post-I/O guest PC requirement";
+        needle = "the standalone guest did not reach its known post-I/O basic block";
+      }
+    ]
+    ++ failuresFor "pkgs/emulation/qemu-patches/0033-crucible-sim-observer.patch" qemuSimObserverPatch [
+      {
+        label = "independent post-execution observer API";
+        needle = "qemu_plugin_register_sim_shmem_observer_cb";
+      }
+      {
+        label = "observer shares the post-execution icount publication boundary";
+        needle = "crucible_observe_icount_cb(current_icount, crucible_sim_observer_userdata)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/examples/crucible-qemu-live-coverage.rs" qemuLiveCoverageGateCli [
@@ -423,12 +454,32 @@
         needle = "guest_instrumentation=none";
       }
       {
+        label = "post-I/O guest execution evidence";
+        needle = "guest_post_io_reached=true";
+      }
+      {
         label = "live callback evidence";
         needle = "loaded_qemu_callback_evidence=present";
       }
       {
+        label = "run control silence evidence";
+        needle = ''"run_control_silent={}", report.run_control_silent'';
+      }
+      {
+        label = "plugin Quit consumption evidence";
+        needle = ''"plugin_quit_consumed={}", report.plugin_quit_consumed'';
+      }
+      {
+        label = "natural orderly child exit evidence";
+        needle = ''"orderly_child_exit={}", report.orderly_child_exit'';
+      }
+      {
         label = "live fingerprint evidence";
         needle = "coverage_on_off_fingerprint_match=true";
+      }
+      {
+        label = "canonical event-log evidence";
+        needle = "canonical_event_log_match=true";
       }
       {
         label = "independent full-state fingerprint evidence";
@@ -447,6 +498,18 @@
       {
         label = "guest RX and RW segment separation";
         needle = "text PT_LOAD FLAGS(5)";
+      }
+      {
+        label = "guest exercises deterministic device I/O";
+        needle = "outb %al, $0x80";
+      }
+      {
+        label = "guest exposes a fixed post-I/O translation block";
+        needle = ". = 0x00100800;";
+      }
+      {
+        label = "guest symbol table is explicitly removed";
+        needle = ''strip --strip-all "$out/coverage-guest.elf"'';
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/mapped_quantum.rs" qemuMappedQuantum [
@@ -756,6 +819,14 @@ in
               --target-dir "$TMPDIR/crucible-basic-block-coverage-qemu-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
+              live_coverage_gate:: \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-basic-block-coverage-qemu-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-qemu \
               --test gate_basic_block_coverage \
               -- --test-threads=1
             cargo test \
@@ -777,10 +848,25 @@ in
 
             off_run="$TMPDIR/loaded-qemu-coverage-off"
             on_run="$TMPDIR/loaded-qemu-coverage-on"
+            readelf -h ${guestImage}/coverage-guest.elf \
+              | grep -Eq 'Class:[[:space:]]+ELF32'
+            readelf -W -l ${guestImage}/coverage-guest.elf \
+              | grep -Eq 'LOAD.* R E '
+            readelf -W -l ${guestImage}/coverage-guest.elf \
+              | grep -Eq 'LOAD.* RW '
+            if readelf -W -S ${guestImage}/coverage-guest.elf | grep -q '[.]symtab'; then
+              echo 'standalone coverage guest retained a symbol table after fixup' >&2
+              exit 1
+            fi
+            od -An -tx4 -N8192 ${guestImage}/coverage-guest.elf \
+              | grep -q '1badb002'
+            grep -q '^guest_interface=none$' ${guestImage}/evidence.env
+            grep -q '^guest_instrumentation=none$' ${guestImage}/evidence.env
+            grep -q '^guest_device_io=vga-mmio-and-port-80$' ${guestImage}/evidence.env
             mkdir -p "$off_run" "$on_run"
             cp ${rootImage}/overlay.qcow2 "$off_run/crucible-root-overlay.qcow2"
             cp ${rootImage}/overlay.qcow2 "$on_run/crucible-root-overlay.qcow2"
-            timeout 180 cargo run \
+            timeout -k 15 180 cargo run \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-loaded-qemu-coverage-target" \
@@ -801,13 +887,27 @@ in
               "$TMPDIR/loaded-qemu-coverage.result"
             grep -q '^guest_instrumentation=none$' \
               "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^guest_post_io_reached=true$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
             grep -q '^coverage_on_off_fingerprint_match=true$' \
               "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^canonical_event_log_match=true$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -Eq '^canonical_event_log_fingerprint=[0-9a-f]{64}$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
             grep -q '^independent_trace_fingerprint_match=true$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^run_control_silent=true$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^plugin_quit_consumed=true$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -q '^orderly_child_exit=true$' \
               "$TMPDIR/loaded-qemu-coverage.result"
             grep -q '^trace_components=instruction-stream,all-vcpu-registers,rr-cursor,ram,device-io$' \
               "$TMPDIR/loaded-qemu-coverage.result"
             grep -Eq '^coverage_observation_count=[1-9][0-9]*$' \
+              "$TMPDIR/loaded-qemu-coverage.result"
+            grep -Eq '^guest_coverage_observation_count=[1-9][0-9]*$' \
               "$TMPDIR/loaded-qemu-coverage.result"
           '';
         }
@@ -816,6 +916,14 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
+            cp "$TMPDIR/loaded-qemu-coverage.result" "$out/loaded-qemu-coverage.result"
+            cp "$TMPDIR/loaded-qemu-coverage-off/independent-fingerprint.jsonl" \
+              "$out/coverage-off-independent-fingerprint.jsonl"
+            cp "$TMPDIR/loaded-qemu-coverage-on/independent-fingerprint.jsonl" \
+              "$out/coverage-on-independent-fingerprint.jsonl"
+            cp ${guestImage}/evidence.env "$out/guest-evidence.env"
+            readelf -W -h -l -S ${guestImage}/coverage-guest.elf \
+              > "$out/guest-elf-inspection.txt"
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
@@ -828,9 +936,11 @@ in
             loaded_qemu_guest=uninstrumented-standalone-multiboot-elf
             loaded_qemu_fingerprint_equivalence=coverage-off-equals-coverage-on
             loaded_qemu_independent_fingerprint=instruction-stream,all-vcpu-registers,rr-cursor,ram,device-io
+            loaded_qemu_trajectory_fingerprint=per-instruction-register-memory-io-plus-post-boundary-state
             host_observation_handoff=abi-v2-per-vm-spsc-to-unified-event-log
             registration=opt-in
             fingerprint_effect=none
+            canonical_event_log_effect=none
             rust_test=crucible::gate_basic_block_coverage
             qemu_bridge_test=crucible-qemu::gate_basic_block_coverage
             RESULT
