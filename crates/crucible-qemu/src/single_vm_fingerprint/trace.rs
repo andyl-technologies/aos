@@ -480,8 +480,8 @@ impl QemuTraceFingerprintImport {
     /// # Errors
     ///
     /// Returns [`QemuTraceFingerprintImportError::InvalidContract`] when the
-    /// node name or cadence is empty, the horizon is not on the cadence, the
-    /// digest is malformed, or the N-vCPU contract is invalid.
+    /// node name is empty, the cadence or horizon is zero, the digest is
+    /// malformed, or the N-vCPU contract is invalid.
     pub fn new(
         node: impl Into<String>,
         definition_digest: impl Into<Vec<u8>>,
@@ -500,9 +500,9 @@ impl QemuTraceFingerprintImport {
                 reason: "trace fingerprint cadence must be non-zero",
             });
         }
-        if run_horizon_icount == 0 || !run_horizon_icount.is_multiple_of(cadence_icount) {
+        if run_horizon_icount == 0 {
             return Err(QemuTraceFingerprintImportError::InvalidContract {
-                reason: "trace fingerprint horizon must be a non-zero cadence multiple",
+                reason: "trace fingerprint horizon must be non-zero",
             });
         }
         let definition_digest = definition_digest.into();
@@ -536,12 +536,14 @@ impl QemuTraceFingerprintImport {
     ///
     /// Non-sample diagnostic records, such as RR-switch and deterministic-IPI
     /// records, are ignored. Periodic sample records must cover every cadence
-    /// point through the configured horizon exactly once. The terminal plugin
-    /// exit record is required as evidence that QEMU reached its requested
-    /// stop, but is not fingerprinted because it is a bounded post-stop-request
-    /// teardown observation rather than the authoritative horizon state. It
-    /// must be the final JSON-lines record and may retire at most one RR
-    /// quantum beyond the horizon sample.
+    /// point before the configured horizon exactly once, and the exact horizon
+    /// is always represented by its event-boundary sample. When the horizon
+    /// lands on a cadence, that one event sample satisfies both observations.
+    /// The terminal plugin exit record is required as evidence that QEMU
+    /// reached its requested stop, but is not fingerprinted because it is a
+    /// bounded post-stop-request teardown observation rather than the
+    /// authoritative horizon state. It must be the final JSON-lines record and
+    /// may retire at most one RR quantum beyond the horizon sample.
     ///
     /// # Errors
     ///
@@ -728,9 +730,10 @@ impl QemuTraceFingerprintImport {
             samples.push(sample);
         }
 
-        if periodic_sample_count.checked_mul(self.cadence_icount) != Some(self.run_horizon_icount) {
+        let expected_periodic_sample_count = self.run_horizon_icount / self.cadence_icount;
+        if periodic_sample_count != expected_periodic_sample_count {
             return Err(QemuTraceFingerprintImportError::IncompleteTrace {
-                reason: "periodic samples do not reach the configured horizon",
+                reason: "periodic samples do not cover every cadence before the configured horizon",
             });
         }
         if !horizon_boundary_seen {
