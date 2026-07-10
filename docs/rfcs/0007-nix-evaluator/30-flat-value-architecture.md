@@ -485,11 +485,15 @@ structural totality, static exact/all-except attribute provenance through
 right-biased `//` and `removeAttrs`, persisted/remapped fact sidecars, and a
 tree-walk call-site consumer that can elide binding thunks during safe formal-set
 assembly. The same provenance seeds only surviving derivation-boundary values.
-The wide-eval arena peak moved from 71.5 to 67.5 MiB in the noisy local final
-A/B (-5.6%); median wall moved -1.3% cold/-2.4% warm, which is recorded as a
-non-regression rather than a stable speed claim. The remaining Phase-4 gap is
-the global memoized closed-world fixpoint and worker/wrapper rewrite, not fact
-transport or the current tree-walk consumer.
+Fresh imports compute only these contracts plus capture plans; complete
+intramodule strictness/cardinality/escape refresh remains on the durable-cache
+path, avoiding a full demand walk for each of 496 cold imports. The final wide
+work counters record 325 thunk elisions (215 during binding assembly) with the
+arena peak memory-neutral at 67.5 MiB. An immediate five-sample A/B on the noisy
+host measured mean wall -3.6% cold/-2.7% warm, recorded as a non-regression
+rather than a broad speed claim. The remaining Phase-4 gap is the global
+memoized closed-world fixpoint and worker/wrapper rewrite, not fact transport or
+the current tree-walk consumer.
 
 ### 4.5 What dies
 

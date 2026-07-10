@@ -903,17 +903,23 @@ This doc owns the **analyses**; the IR-to-IR *reductions* they license (inlining
       non-total values, unknown update operands, aggregate escape, and missing
       or malformed facts fail closed to ordinary lazy allocation. The same
       static provenance seeds derivation-boundary values through `//` with exact
-      RHS shadowing. Adversarial trace/error tests, fact-sidecar round trips and
-      corruption rejection, cache miss-to-hit remapping, the representative
-      byte-parity matrix, and the upstream language suite are green. A noisy
-      local three-sample `bench.wide-eval` A/B against pristine pre-Chunk-E HEAD
-      measured median native wall 1.391 -> 1.373 s cold and 1.338 -> 1.306 s
-      warm, while peak arena mapping fell 71.5 -> 67.5 MiB; the absolute times
-      are load-contaminated, so this landing claims the allocation reduction and
-      no regression rather than a stable throughput win. This closes the
-      scheduled Chunk-E transport/consumer slice, not the memoized closed-world
-      fixpoint, IR rewrite, worker generation, or independent IR-hash fact
-      index.
+      RHS shadowing. Fresh imports run a dedicated contract producer (totality,
+      direct boundary seeds, lambda demand/escape summaries, and capture plans)
+      rather than the complete intramodule strictness/cardinality/escape suite;
+      durable parse-cache refresh remains the complete-analysis owner. This
+      avoids paying the unrelated full demand walk for all 496 cold imports.
+      Sidecar validation additionally requires attribute-value rules to name a
+      real formal-set `@` alias. Adversarial trace/error tests, fact-sidecar
+      round trips and corruption rejection, cache miss-to-hit remapping, and the
+      full differential matrix are green. The final immutable wide-eval work
+      counters report 325 elided thunks, including 215 binding-assembly
+      elisions, with the 67.5 MiB arena peak unchanged. An immediate five-sample
+      A/B against pristine pre-Chunk-E HEAD measured mean native wall
+      0.445 -> 0.429 s cold (-3.6%) and 0.417 -> 0.406 s warm (-2.7%) on a
+      host carrying a long-running VM; this is a throughput non-regression, not
+      a broad performance claim. This closes the scheduled Chunk-E
+      transport/consumer slice, not the memoized closed-world fixpoint, IR
+      rewrite, worker generation, or independent IR-hash fact index.
 
 ### Strictness / demand analysis + worker-wrapper (§4)
 

@@ -9574,20 +9574,23 @@ the heap). Annotates the IR — helps the oracle before any JIT exists.
       RHS-biased values. Gates cover pattern errors, non-total and shadowed
       traces, unknown operands, recursive aliases, mixed mkDerivation-style
       all-except provenance, parse-cache miss/hit symbol remapping, and
-      conservative-versus-analyzed output/trace identity. The full
-      representative serial/K=4/JIT/sweep byte matrix, compute x8, wide roots,
-      cache validation, shape modes, 3,010-test oracle suite, 321-test native
-      suite, and 38-test upstream-language suite are green. The checked-in
-      generated eval-json corpus is stale (109 source seeds point to a deleted
-      prior-session Nix tree) and the valid top-level derivation seed retains
-      its documented effectful-expression limitation; neither failure is new to
-      Chunk E. A load-contaminated local three-sample wide A/B shows median
-      native wall -1.3% cold/-2.4% warm and arena peak -5.6% (71.5 -> 67.5 MiB),
-      so the landing records a non-regression/allocation win but no stable
-      throughput claim. This completes Chunk E's summary transport and current
-      tree-walk consumer; the global memoized closed-world fixpoint,
-      worker/wrapper IR transform, and independent IR-hash analysis cache remain
-      open.
+      conservative-versus-analyzed output/trace identity. Fresh uncached imports
+      run only the contract producers needed at first call (totality, direct
+      derivation seeds, lambda summaries and their escape refinement, and
+      capture plans); full per-node strictness/cardinality/escape analysis stays
+      with durable parse-cache refreshes. Persisted attribute-value rules are
+      rejected unless the formal set has an actual `@` alias. The final
+      immutable gate is green across 353 core tests, 3,010 oracle tests plus
+      doctests, the representative serial/K=4/JIT/sweep byte matrix, compute x8,
+      the full wide closure, all 647 canonical strict-JSON seeds in all four
+      modes, three-way cache validation, explicit cold/warm replay, and all
+      shape modes. Wide work counters record 325 thunk elisions, 215 during
+      binding assembly; mapped arena peak is memory-neutral at 67.5 MiB. With a
+      long-running VM held constant, the immediate five-sample A/B measured
+      mean native wall 0.445 -> 0.429 s cold (-3.6%) and 0.417 -> 0.406 s warm
+      (-2.7%). This completes Chunk E's summary transport and current tree-walk
+      consumer; the global memoized closed-world fixpoint, worker/wrapper IR
+      transform, and independent IR-hash analysis cache remain open.
 - [ ] Soundness harness: property-test fuzzing of escape signatures for the
       ~120-primop surface (a wrong escape-transparency claim could corrupt a
       result — `R-9`).

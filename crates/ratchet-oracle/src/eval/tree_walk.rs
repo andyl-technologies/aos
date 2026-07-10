@@ -108,7 +108,7 @@ use crate::cache::{
 use crate::compile::{
     CapturePlan, DeadBindingReplacement, Escape, ExprFacts, FrameId, Ir, IrArena, IrAttrPathId,
     IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrDialectOp, IrId, IrKind,
-    IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, annotate_ir,
+    IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions, ScopeResolver, annotate_import_ir,
     dead_binding_elimination_plan, resolve,
 };
 #[cfg(test)]

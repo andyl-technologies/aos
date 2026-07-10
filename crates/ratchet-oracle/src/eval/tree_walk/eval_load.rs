@@ -174,10 +174,11 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
-        // Fresh imports need the same facts as durable-cache hits, including
-        // cross-module call summaries. Analysis failures leave conservative
-        // facts and therefore preserve evaluator semantics.
-        let _ = annotate_ir(&mut ir);
+        // Fresh imports need capture plans plus the demand/escape facts used
+        // across module boundaries. Durable-cache refreshes additionally own
+        // full per-node cardinality and escape analysis. Failures remain
+        // conservative.
+        let _ = annotate_import_ir(&mut ir);
         // Adopt the freshly lowered symbol table as the live table without a
         // clone; the module keeps the emptied husk and reads `self.symbols`.
         self.symbols = std::mem::take(&mut ir.symbols);
@@ -252,7 +253,7 @@ impl TreeWalk {
             )
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
-        let _ = annotate_ir(&mut ir);
+        let _ = annotate_import_ir(&mut ir);
         let ir = self.remap_cached_import_ir(argument, argument_span, path, ir)?;
         self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
     }

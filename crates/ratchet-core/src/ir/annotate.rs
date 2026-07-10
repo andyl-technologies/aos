@@ -11,7 +11,7 @@ use crate::analysis::{
     CaptureAnalysisError, CaptureAnalysisReport, CardinalityAnalysisError,
     CardinalityAnalysisReport, EscapeAnalysisError, EscapeAnalysisReport, StrictnessAnalysisError,
     StrictnessAnalysisReport, annotate_capture_plans, annotate_cardinality, annotate_escape,
-    annotate_strictness,
+    annotate_import_strictness, annotate_lambda_call_summary_escape, annotate_strictness,
 };
 use crate::scope::{FrameId, Upvalue};
 
@@ -194,6 +194,32 @@ pub fn annotate_ir(ir: &mut Ir) -> Result<IrAnalysisReport, IrAnalysisError> {
     }
 }
 
+/// Refreshes facts required while evaluating a freshly imported module.
+///
+/// Fresh imports need strictness, structural totality, cross-module lambda
+/// demand/escape summaries, and capture plans before their first call. The
+/// import pipeline deliberately omits unrelated per-node cardinality and
+/// escape refinements; durable parse-cache refreshes continue to use
+/// [`annotate_ir`] and persist the complete analysis set.
+///
+/// As with [`annotate_ir`], a failed pass leaves a conservative fact table.
+///
+/// # Errors
+///
+/// Returns [`IrAnalysisError`] when an import fact producer rejects malformed
+/// IR storage, payloads, symbols, frames, or side-table references.
+pub fn annotate_import_ir(ir: &mut Ir) -> Result<IrAnalysisReport, IrAnalysisError> {
+    let node_count = ir.arena.nodes().len();
+    ir.facts = IrFacts::conservative(node_count);
+    match run_import_analyses(ir) {
+        Ok(report) => Ok(report),
+        Err(error) => {
+            ir.facts = IrFacts::conservative(node_count);
+            Err(error)
+        }
+    }
+}
+
 fn run_analyses(ir: &mut Ir) -> Result<IrAnalysisReport, IrAnalysisError> {
     let strictness = annotate_strictness(ir)?;
     let cardinality = annotate_cardinality(ir)?;
@@ -204,6 +230,20 @@ fn run_analyses(ir: &mut Ir) -> Result<IrAnalysisReport, IrAnalysisError> {
         strictness,
         cardinality,
         escape,
+        capture,
+        dependency_footprint,
+    })
+}
+
+fn run_import_analyses(ir: &mut Ir) -> Result<IrAnalysisReport, IrAnalysisError> {
+    let strictness = annotate_import_strictness(ir)?;
+    annotate_lambda_call_summary_escape(ir)?;
+    let capture = annotate_capture_plans(ir)?;
+    let dependency_footprint = IrDependencyFootprint::from_ir(ir);
+    Ok(IrAnalysisReport {
+        strictness,
+        cardinality: CardinalityAnalysisReport::default(),
+        escape: EscapeAnalysisReport::default(),
         capture,
         dependency_footprint,
     })

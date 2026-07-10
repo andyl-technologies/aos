@@ -240,6 +240,21 @@ pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalys
         facts.escape = Escape::NoEscape;
         report.nodes_marked_no_escape += 1;
     }
+    annotate_lambda_call_summary_escape(ir)?;
+    Ok(report)
+}
+
+/// Refines only the escape fields carried by persisted lambda call summaries.
+///
+/// This narrow producer supports fresh imported modules, which need their
+/// cross-module contracts immediately but do not otherwise consume per-node
+/// escape facts before a durable full-analysis refresh.
+///
+/// # Errors
+///
+/// Returns [`EscapeAnalysisError`] when a summarized lambda frame or any node
+/// reachable by its escape scan is malformed.
+pub fn annotate_lambda_call_summary_escape(ir: &mut Ir) -> Result<(), EscapeAnalysisError> {
     let lambda_escapes = frame_local::lambda_frame_escapes(ir)?;
     for lambda in lambda_escapes {
         let Some(summary) = ir
@@ -255,7 +270,7 @@ pub fn annotate_escape(ir: &mut Ir) -> Result<EscapeAnalysisReport, EscapeAnalys
             formal.escape = escape;
         }
     }
-    Ok(report)
+    Ok(())
 }
 
 pub(super) fn binding_values(

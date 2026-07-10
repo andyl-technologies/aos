@@ -89,6 +89,23 @@ fn chunk_e_validator_rejects_malformed_lambda_summary_contracts() {
     let error = validate_lowered_ir_artifact(&invalid_symbol)
         .expect_err("out-of-range summary symbol is rejected");
     assert!(error.contains("symbol id"), "{error}");
+
+    let mut missing_alias = lowered_ir_for_source("{ value, ... }: value");
+    crate::compile::annotate_ir(&mut missing_alias).expect("analysis succeeds");
+    missing_alias
+        .facts
+        .lambda_call_summaries_mut()
+        .first_mut()
+        .expect("summary exists")
+        .attr_values = vec![LambdaAttrValueSummary {
+        keys: LambdaAttrKeys::AllExcept(Box::new([])),
+        demand: LambdaDemand::Unconditional(Strictness::Demanded),
+        escape: Escape::Escapes,
+    }]
+    .into_boxed_slice();
+    let error = validate_lowered_ir_artifact(&missing_alias)
+        .expect_err("attribute rules without an alias are rejected");
+    assert!(error.contains("formal-set alias"), "{error}");
 }
 
 #[test]

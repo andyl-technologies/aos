@@ -1,6 +1,7 @@
 //! Tests for per-node IR analysis facts.
 
 use super::*;
+use crate::{CardinalityAnalysisReport, EscapeAnalysisReport};
 
 #[test]
 fn expr_facts_default_to_conservative_choices() {
@@ -247,6 +248,100 @@ fn annotate_ir_leaves_conservative_facts_after_analysis_error() {
 
     assert!(error.to_string().contains("invalid payload"));
     assert_eq!(ir.node_facts(ir.root), Some(ExprFacts::conservative()));
+}
+
+#[test]
+fn annotate_import_ir_produces_only_import_runtime_contracts() {
+    let mut ir = lowered("{ value }: value + 1");
+    let IrData::Lambda { pattern, .. } = node(&ir, ir.root).data else {
+        panic!("root lambda payload expected");
+    };
+
+    let report = annotate_import_ir(&mut ir).expect("import annotation succeeds");
+    let summary = ir
+        .facts
+        .lambda_call_summary(pattern)
+        .expect("formal-set call summary exists");
+
+    assert_eq!(summary.formals.len(), 1);
+    assert_eq!(summary.formals[0].escape, Escape::NoEscape);
+    assert!(ir.facts.capture_plan(ir.root).is_some());
+    assert!(ir.facts.structurally_total_bits().iter().any(|total| *total));
+    assert_eq!(report.cardinality, CardinalityAnalysisReport::default());
+    assert_eq!(report.escape, EscapeAnalysisReport::default());
+    assert!(
+        ir.facts
+            .as_slice()
+            .iter()
+            .all(|facts| facts.cardinality == Cardinality::Many)
+    );
+    assert!(
+        ir.facts
+            .as_slice()
+            .iter()
+            .all(|facts| facts.escape == Escape::Escapes)
+    );
+}
+
+#[test]
+fn annotate_import_ir_seeds_direct_static_derivation_updates() {
+    let mut ir = lowered(
+        r#"builtins.derivation (
+          { name = [ "n" ]; builder = [ "b" ]; } //
+          { system = [ "x" ]; }
+        )"#,
+    );
+
+    let report = annotate_import_ir(&mut ir).expect("import annotation succeeds");
+    let eager_sites = ir
+        .facts
+        .assembly_eager_bits()
+        .iter()
+        .filter(|eager| **eager)
+        .count();
+
+    assert_eq!(eager_sites, 3);
+    assert_eq!(report.strictness.nodes_marked_strict, 0);
+    assert_eq!(
+        ir.node_facts(ir.root).map(|facts| facts.strictness),
+        Some(Strictness::Unknown)
+    );
+}
+
+#[test]
+fn annotate_import_ir_leaves_conservative_facts_after_analysis_error() {
+    let arena = IrArena::from_raw_parts(
+        vec![IrNode::new(
+            IrKind::Int,
+            Span::new(0, 1),
+            EffectClass::pure(),
+            IrData::None,
+        )],
+        Vec::new(),
+    );
+    let mut ir = Ir {
+        root: IrId::new(0),
+        facts: IrFacts::conservative(arena.nodes().len()),
+        arena,
+        symbols: SymbolTable::new(),
+        frames: Box::new([]),
+        with_chains: Box::new([]),
+        attr_paths: Box::new([]),
+        bindings: Box::new([]),
+        shapes: Box::new([]),
+    };
+
+    let error = annotate_import_ir(&mut ir).expect_err("invalid payload errors");
+
+    assert!(error.to_string().contains("invalid payload"));
+    assert_eq!(ir.node_facts(ir.root), Some(ExprFacts::conservative()));
+    assert!(ir.facts.lambda_call_summaries().is_empty());
+    assert!(
+        ir.facts
+            .capture_plans()
+            .iter()
+            .all(Option::is_none)
+    );
 }
 
 #[test]

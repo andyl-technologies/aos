@@ -59,6 +59,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
+use crate::builtins::{BuiltinExecution, lookup_builtin};
 use crate::ir::{
     Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId, IrKind,
     Strictness,
@@ -192,6 +193,104 @@ pub fn annotate_strictness(
     totality::compute(&mut analysis, ir.root, &mut Vec::new())?;
     walk::run(&mut analysis)?;
     let lambda_call_summaries = summary::compute(&mut analysis)?;
+    let results = complete_analysis(analysis, lambda_call_summaries);
+    apply_analysis_results(ir, results)
+}
+
+/// Produces only the strictness contracts consumed by fresh imports.
+///
+/// Fresh imports need structural totality, direct derivation-boundary assembly
+/// seeds, and cross-module lambda summaries. They do not consume the ordinary
+/// intramodule top-down demand marks before a durable full-analysis refresh.
+pub(crate) fn annotate_import_strictness(
+    ir: &mut Ir,
+) -> Result<StrictnessAnalysisReport, StrictnessAnalysisError> {
+    let node_count = ir.arena.nodes().len();
+    if ir.facts.len() != node_count {
+        return Err(StrictnessAnalysisError::InvalidFactTableLength {
+            expected: node_count,
+            actual: ir.facts.len(),
+        });
+    }
+    for index in 0..node_count {
+        let id = IrId::new(index as u32);
+        let node = *ir
+            .arena
+            .node(id)
+            .ok_or(StrictnessAnalysisError::InvalidNode { id })?;
+        validate_payload(id, node)?;
+        ir.facts
+            .get(id)
+            .ok_or(StrictnessAnalysisError::MissingFact { id })?;
+    }
+    if !edges_form_tree(ir)? {
+        return Ok(StrictnessAnalysisReport::default());
+    }
+
+    let mut analysis = Analysis::new(ir);
+    totality::compute(&mut analysis, ir.root, &mut Vec::new())?;
+    seed_import_derivation_boundaries(&mut analysis)?;
+    let lambda_call_summaries = summary::compute(&mut analysis)?;
+    let results = complete_analysis(analysis, lambda_call_summaries);
+    apply_analysis_results(ir, results)
+}
+
+fn seed_import_derivation_boundaries(
+    analysis: &mut Analysis<'_>,
+) -> Result<(), StrictnessAnalysisError> {
+    let mut boundaries = Vec::new();
+    for (index, node) in analysis.ir.arena.nodes().iter().copied().enumerate() {
+        let id = IrId::new(index as u32);
+        match node.data {
+            IrData::PrimOp { symbol, args } => {
+                let name = analysis
+                    .ir
+                    .symbols
+                    .resolve(symbol)
+                    .ok_or(StrictnessAnalysisError::InvalidSymbol { id, symbol })?;
+                let Some(builtin) = lookup_builtin(name) else {
+                    continue;
+                };
+                let boundary = match builtin.execution() {
+                    BuiltinExecution::DerivationStrict => {
+                        Some(derivation::DerivationBoundary::Strict)
+                    }
+                    BuiltinExecution::Derivation => {
+                        Some(derivation::DerivationBoundary::Wrapper)
+                    }
+                    _ => None,
+                };
+                let args = analysis.child_ids(id, args)?;
+                if let (Some(boundary), [argument]) = (boundary, args) {
+                    boundaries.push((*argument, boundary));
+                }
+            }
+            IrData::DialectNode { op, argument }
+                if op == derivation::DERIVATION_STRICT_DIALECT_OP =>
+            {
+                boundaries.push((argument, derivation::DerivationBoundary::Strict));
+            }
+            _ => {}
+        }
+    }
+    for (argument, boundary) in boundaries {
+        derivation::seed_derivation_boundary(analysis, argument, &[], boundary)?;
+    }
+    Ok(())
+}
+
+struct CompletedAnalysis {
+    structurally_total: Vec<IrId>,
+    marks: Vec<(IrId, Strictness)>,
+    barriers: Vec<IrId>,
+    assembly_eager: Vec<IrId>,
+    lambda_call_summaries: Vec<crate::ir::LambdaCallSummary>,
+}
+
+fn complete_analysis(
+    analysis: Analysis<'_>,
+    lambda_call_summaries: Vec<crate::ir::LambdaCallSummary>,
+) -> CompletedAnalysis {
     let structurally_total: Vec<IrId> = analysis
         .totality
         .iter()
@@ -204,6 +303,26 @@ pub fn annotate_strictness(
         assembly_eager,
         ..
     } = analysis;
+    CompletedAnalysis {
+        structurally_total,
+        marks,
+        barriers,
+        assembly_eager,
+        lambda_call_summaries,
+    }
+}
+
+fn apply_analysis_results(
+    ir: &mut Ir,
+    results: CompletedAnalysis,
+) -> Result<StrictnessAnalysisReport, StrictnessAnalysisError> {
+    let CompletedAnalysis {
+        structurally_total,
+        marks,
+        barriers,
+        assembly_eager,
+        lambda_call_summaries,
+    } = results;
 
     let mut report = StrictnessAnalysisReport::default();
     for (id, level) in marks {

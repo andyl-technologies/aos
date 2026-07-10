@@ -54,8 +54,8 @@ pub use ir::{
     IrChildSlice, IrData, IrDependencyFootprint, IrDialectOp, IrError, IrErrorKind, IrFacts,
     IrFrameCaptureFootprint, IrId, IrInlineCacheSiteId, IrKind, IrLowerOptions, IrNode, IrShape,
     IrShapeId, IrWithChain, LambdaAttrKeys, LambdaAttrValueSummary, LambdaCallSummary, LambdaDemand,
-    LambdaFormalSummary, Strictness, ThunkSharing, all_pure, all_pure_builtin, annotate_ir, lower,
-    lower_with_options,
+    LambdaFormalSummary, Strictness, ThunkSharing, all_pure, all_pure_builtin, annotate_import_ir,
+    annotate_ir, lower, lower_with_options,
 };
 pub use runtime_abi::{
     BUILTIN_SYMBOL_PREFIX, BuiltinRuntimeSymbol, MAX_RUNTIME_PRIMOP_ABI_ARITY,

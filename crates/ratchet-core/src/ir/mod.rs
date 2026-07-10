@@ -23,7 +23,7 @@ mod facts;
 
 pub use annotate::{
     IR_ANALYSIS_VERSION, IrAnalysisError, IrAnalysisReport, IrDependencyFootprint,
-    IrFrameCaptureFootprint, annotate_ir,
+    IrFrameCaptureFootprint, annotate_import_ir, annotate_ir,
 };
 pub use facts::{
     BindingLowering, CapturePlan, Cardinality, Escape, ExprFacts, FlatCaptureAccess, IrFacts,

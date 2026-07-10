@@ -218,8 +218,8 @@ fn validate_lambda_call_summaries(ir: &Ir) -> Result<(), String> {
             .arena
             .node(summary.pattern)
             .ok_or_else(|| "lambda call-summary pattern out of range".to_owned())?;
-        let expected_slots = match pattern.data {
-            IrData::Formal { .. } if pattern.kind == IrKind::Formal => 1,
+        let (expected_slots, has_alias) = match pattern.data {
+            IrData::Formal { .. } if pattern.kind == IrKind::Formal => (1, false),
             IrData::FormalSet { formals, alias, .. } if pattern.kind == IrKind::FormalSet => {
                 let children = ir
                     .arena
@@ -240,7 +240,10 @@ fn validate_lambda_call_summaries(ir: &Ir) -> Result<(), String> {
                     };
                     names.push(*name);
                 }
-                names.len() + usize::from(alias.is_some_and(|alias| !names.contains(&alias)))
+                (
+                    names.len() + usize::from(alias.is_some_and(|alias| !names.contains(&alias))),
+                    alias.is_some(),
+                )
             }
             _ => return Err("lambda call-summary key is not a formal pattern".to_owned()),
         };
@@ -266,8 +269,10 @@ fn validate_lambda_call_summaries(ir: &Ir) -> Result<(), String> {
         if frame_slots != expected_slots {
             return Err("lambda call-summary formal count does not match frame".to_owned());
         }
-        if pattern.kind != IrKind::FormalSet && !summary.attr_values.is_empty() {
-            return Err("lambda call-summary attribute rules require a formal set".to_owned());
+        if !has_alias && !summary.attr_values.is_empty() {
+            return Err(
+                "lambda call-summary attribute rules require a formal-set alias".to_owned(),
+            );
         }
         for attr in &summary.attr_values {
             let mut previous = None;

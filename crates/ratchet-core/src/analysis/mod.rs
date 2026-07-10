@@ -25,7 +25,10 @@ pub use dead_binding::{
     DeadBindingReplacement, DeadBindingRetention, DeadBindingRetentionReason,
     dead_binding_elimination_plan,
 };
-pub use escape::{EscapeAnalysisError, EscapeAnalysisReport, annotate_escape};
+pub use escape::{
+    EscapeAnalysisError, EscapeAnalysisReport, annotate_escape,
+    annotate_lambda_call_summary_escape,
+};
 pub use escape_signature::{
     PrimOpArgumentEscape, PrimOpEscapeSignature, primop_argument_escape_signature,
     primop_escape_signature,
@@ -38,6 +41,7 @@ pub use scalar_replacement::{
     ScalarReplacement, ScalarReplacementError, ScalarReplacementKind, ScalarReplacementPlan,
     ScalarReplacementRetention, ScalarReplacementRetentionReason, scalar_replacement_plan,
 };
+pub(crate) use strictness::annotate_import_strictness;
 pub use strictness::{StrictnessAnalysisError, StrictnessAnalysisReport, annotate_strictness};
 pub use thunk_sharing::{
     FrameLocalSingleEntryThunk, FrameLocalThunkDowngrade, FrameLocalThunkDowngradeError,
