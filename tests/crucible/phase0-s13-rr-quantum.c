@@ -126,6 +126,7 @@ main(void)
   puts("s11_result_consumed=true");
   puts("s11_sim_rerun_green=true");
   puts("s11_rr_switch_quantum=4096");
+  puts("s11_workload_affinity_active=true");
   puts("s11_extended_fingerprint_match=true");
   puts("decision_preemption_exploration_enabled=false");
   puts("d25_status=open_until_preemption_explorer_enabled");

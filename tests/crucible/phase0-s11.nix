@@ -1083,10 +1083,14 @@ in
             horizon_sample_plugin_exit_state_comparison=recorded
           fi
 
+          workload_affinity_active=false
+          if grep -q "CRUCIBLE_S11_AFFINITY_ACTIVE vcpus=0,1,2,3" "$TMPDIR/serial-a.log" \
+            && grep -q "CRUCIBLE_S11_AFFINITY_ACTIVE vcpus=0,1,2,3" "$TMPDIR/serial-b.log"; then
+            workload_affinity_active=true
+          fi
           sustained_workload_active=false
           if [ "$SUSTAIN_WORKLOAD" -eq 1 ] \
-            && grep -q "CRUCIBLE_S11_AFFINITY_ACTIVE vcpus=0,1,2,3" "$TMPDIR/serial-a.log" \
-            && grep -q "CRUCIBLE_S11_AFFINITY_ACTIVE vcpus=0,1,2,3" "$TMPDIR/serial-b.log" \
+            && [ "$workload_affinity_active" = true ] \
             && grep -q "CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock" "$TMPDIR/serial-a.log" \
             && grep -q "CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock" "$TMPDIR/serial-b.log"; then
             sustained_workload_active=true
@@ -1129,8 +1133,12 @@ in
             echo sustain_workload="$SUSTAIN_WORKLOAD"
             echo sustained_workload_active="$sustained_workload_active"
             echo sustained_workload_marker=CRUCIBLE_S11_SUSTAIN_ACTIVE
-            echo workload_affinity_active=true
-            echo workload_affinity_vcpus=0,1,2,3
+            echo workload_affinity_active="$workload_affinity_active"
+            if [ "$workload_affinity_active" = true ]; then
+              echo workload_affinity_vcpus=0,1,2,3
+            else
+              echo workload_affinity_vcpus=not-observed
+            fi
             if [ "$DET_IPI_PROBE" -eq 1 ]; then
               echo det_ipi_probe=enabled
             else
