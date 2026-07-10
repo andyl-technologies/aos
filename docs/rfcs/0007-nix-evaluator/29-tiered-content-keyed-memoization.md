@@ -794,11 +794,10 @@ constant in this RFC):
 
 | Knob | Default | Meaning |
 | --- | --- | --- |
-| `AOS_NIX_MEMO` | `1` | master switch for the unified memo store (subsumes, does not replace, the switches above during migration) |
+| `AOS_NIX_MEMO` | `0` | master switch for the experimental in-process memo tables; the measured MEMO-1 exit ramp keeps them off by default |
 | `AOS_NIX_MEMO_L0` | `1` | in-thread tier |
 | `AOS_NIX_MEMO_L1` | `1` when `AOS_NIX_PARALLEL` set, else `0` | in-process shared tier (pointless serial; L0 covers it) |
 | `AOS_NIX_MEMO_L2` | `1` when `AOS_NIX_CACHE` set | disk tier(s) |
-| `AOS_NIX_MEMO_L3` | `0` | network tier |
 | `AOS_NIX_MEMO_CHECK` | unset | comma list of tiers to shadow-check (`l0,l1,l2,l3` or `all`); every hit re-evaluated + byte/structurally asserted |
 | `AOS_NIX_MEMO_MIN_COST` | `64` estimate units | admission floor on static recompute estimate (§5.7, §8) |
 | `AOS_NIX_MEMO_L0_ENTRIES` | `65536` | per-worker L0 entry cap (evict LRU-ish, silent) |
@@ -807,7 +806,7 @@ constant in this RFC):
 | `AOS_NIX_MEMO_PROMOTE_HITS` | `2` | hits at tier N before also-installing at N-1 |
 | `AOS_NIX_MEMO_NET` | unset | L3 endpoint URL |
 | `AOS_NIX_MEMO_NET_MODE` | `ro` | `ro` (fetch only) / `rw` (CI/trusted publishers) |
-| `AOS_NIX_MEMO_STATS` | `0` | probe/key/hit/record timing decomposition + potential-hit counters (adds sampled clocks; not for parity runs) |
+| `AOS_NIX_MEMO_STATS` | `0` | probe/key/hit/record timing decomposition + potential-hit counters (adds per-stage clock reads; not for parity runs) |
 
 Every boolean parses like the existing knobs (`0`/`false`/`off`/`no` =
 off); invalid values disable the feature with a `tracing` warning,
@@ -839,6 +838,34 @@ Acceptance gates:
 - **Win demonstration**: measured cold-eval improvement on at least one
   real corpus attr, or an explicit counters-backed negative result and
   MEMO-1 ships counters-only (§8's exit ramp).
+
+**Current implementation boundary.** The L0/L1 tables, stable key derivation,
+static-cost admission, per-subtree slices, CHECK modes, and counters are live
+behind the default-off master switch. `AOS_NIX_MEMO_STATS=1` now operates even
+with that switch off: a single cross-worker census counts admitted candidates,
+unique keys, keys seen at least twice, repeat occurrences, and the full static
+cost represented by those repeats before any replay table exists. With memo
+tiers enabled, the same opt-in run separately records samples and saturating
+nanosecond totals for key derivation, table probe, resident-hit replay, and
+record construction. Normal parity/performance runs allocate no census and
+read no clock.
+
+**Measured MEMO-1 decision (2026-07-10).** The pre-table census found no repeat
+at the shipped floor of 64: zlib reported 2 candidates / 2 unique keys and
+`bench.wide` 4 / 4. Lowering the floor to 1 exposed 1,290 potential hits over
+3,377 zlib candidates (3,202 static cost units) and 34,288 potential hits over
+40,826 wide candidates (117,837 cost units), but the repeated work was too
+cheap to repay keying and replay. Three-sample stats-off L0 A/Bs moved zlib
+from 93.99 ms cold / 90.79 ms warm to 122.98 / 111.92 ms (+30.9% / +23.3%),
+and wide from 458.17 / 424.10 ms to 574.64 / 553.93 ms (+25.4% / +30.6%).
+Arena peaks were unchanged at 7.5 MiB and 67.5 MiB respectively; zlib retained
+RSS rose about 4-5%, while wide RSS was effectively flat. The default-floor
+zlib A/B was noise-flat (95.78 / 89.96 ms) but produced no reusable key. A
+12-leg zlib/openssl/coreutils/bash CHECK matrix across serial, K=4, and JIT,
+plus repeat-heavy wide L0 CHECK, remained byte-identical. This satisfies §8's
+explicit negative-result exit ramp: MEMO-1 ships counters-only, the L0/L1
+tables remain available behind explicit experimental knobs, and no default
+flip is justified.
 
 ### 10.2 MEMO-2 — durable unification + tiers
 
@@ -973,22 +1000,44 @@ design above with the code as ground truth:
    persist-backed force cache with admission
    (`ForceCacheMemoizationAdmission`), free-variable value-hash keying,
    options identity, and materialization economics counters is already
-   live — the unified abstraction is one-quarter built and this
-   document is partly *recognition*, not proposal. The genuinely new
-   pieces: per-subtree slice attribution, the L0/L1 content tables,
-   admission cost flags, multi-location L2, L3, and
-   promotion/demotion.
+   live. The unification has since added per-subtree slice attribution,
+   L0/L1 content tables, admission cost flags, multi-location L2, L3,
+   and promotion; compiled-body records and final measured defaults remain.
 5. **"Recompute cost from force-time stats — the `AOS_NIX_EVAL_STATS`
-   machinery exists" — counters exist, per-node timing does not.**
-   `EvalStats` is aggregate; per-force clocks would be a hook tax.
-   §5.7 substitutes static estimates (the `ratchet-jit` cost-model
-   precedent) plus sampled timing behind `AOS_NIX_MEMO_STATS`.
+   machinery exists" — corrected by the economics seam.** `EvalStats`
+   remains aggregate and normal runs still pay no clock hook. The explicit
+   `AOS_NIX_MEMO_STATS` mode combines full static subtree estimates with
+   stage-specific timing samples and the pre-table potential-hit census.
 6. **"The memo table rides the L2-parallel shared structures" — with a
    caveat.** The parallel substrate is deliberately free of shared
    writable maps; the memo table is the *first*, and must import the
    claim/park discipline rather than inherit it for free (§5.3, §11).
-7. **Root-record blobs and the reaper.** The existing `files/`-pack GC
-   does not treat root-record blob references as live (miss + safe
-   fallthrough today); the unified store makes blob-liveness
-   enumeration a record-kind obligation (§4), which MEMO-2 must close
-   rather than inherit.
+7. **Root-record blobs and the reaper — closed.** Root-record file-blob
+   references now participate in live-root snapshots, tail trimming, and
+   repack planning under the same advisory-lock order as artifact roots.
+
+---
+
+## 14. Implementation checklist
+
+- [x] Shared content-key grammar and replay envelope over the existing
+      `DemandCacheKey`, stable expression identity, ordered free-variable
+      hashes, canonical payload, and per-subtree observation slice.
+- [x] MEMO-1 L0/L1 storage and force-path integration: static admission,
+      bounded per-worker and sharded cross-worker tables, promotion, slice
+      revalidation, and `AOS_NIX_MEMO_CHECK=l0,l1`.
+- [x] MEMO-1 economics instrumentation: default-off
+      `AOS_NIX_MEMO_STATS`, pre-table global potential-hit census, exact static
+      repeat-cost mass, and key/probe/hit/record sample + nanosecond totals.
+- [x] MEMO-2 durable tier substrate: secondary latency-class L2 locations,
+      promotion to primary, read-validated L3 with trusted-publisher `rw`,
+      poisoned-record miss behavior, and root-record blob liveness.
+- [x] MEMO-1 final acceptance: serial/K=4/JIT CHECK parity is byte-green on the
+      four-package matrix and wide witness; the focused cold A/B and census
+      record a negative economics result, so active tables remain default-off
+      and the accepted product is counters-only.
+- [ ] MEMO-2 final acceptance: primary/secondary-loss/poisoned-L3 matrix,
+      root-cutoff latency non-regression, repeat-heavy package/CI hit-mass
+      demonstration, and the required cross-machine L3 replay.
+- [ ] Compiled-body records in the unified keyspace when the approved JIT
+      profit-promotion/artifact round lands.

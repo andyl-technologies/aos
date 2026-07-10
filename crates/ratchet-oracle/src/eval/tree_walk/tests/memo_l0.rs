@@ -50,6 +50,51 @@ fn duplicated_subtrees_hit_the_l0_memo_with_identical_output() {
 }
 
 #[test]
+fn stats_only_run_counts_potential_hits_without_building_memo_tables() {
+    let ir = lower(DUPLICATED_SUBTREE);
+    let mut options = TreeWalkOptions::default();
+    options.set_memo_options(MemoOptions {
+        enabled: false,
+        min_cost: 1,
+        stats_enabled: true,
+        ..MemoOptions::default()
+    });
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("census run evaluates");
+    let economics = outcome.stats.memo_economics();
+    assert_eq!(outcome.value.as_int(), Ok(90));
+    assert!(economics.potential_candidates() >= 2, "{economics:?}");
+    assert!(economics.potential_hit_keys() >= 1, "{economics:?}");
+    assert!(economics.potential_hits() >= 1, "{economics:?}");
+    assert!(economics.potential_hit_static_cost_units() >= 1);
+    assert!(economics.key_samples() >= economics.potential_candidates());
+    assert_eq!(economics.probe_samples(), 0, "L0/L1 stayed absent");
+    assert_eq!(economics.hit_samples(), 0);
+    assert_eq!(economics.record_samples(), 0);
+    assert_eq!(outcome.stats.memo_l0_hits(), 0);
+    assert_eq!(outcome.stats.memo_l0_declines(), 0);
+    assert_eq!(outcome.stats.memo_l1_declines(), 0);
+}
+
+#[test]
+fn memo_stats_decompose_key_probe_hit_and_record_stages() {
+    let ir = lower(DUPLICATED_SUBTREE);
+    let mut options = memo_options(1);
+    let mut memo = *options.memo_options();
+    memo.stats_enabled = true;
+    options.set_memo_options(memo);
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("timed memo run evaluates");
+    let economics = outcome.stats.memo_economics();
+    assert_eq!(outcome.value.as_int(), Ok(90));
+    assert!(outcome.stats.memo_l0_hits() >= 1, "{:?}", outcome.stats);
+    assert!(economics.key_samples() >= 1, "{economics:?}");
+    assert!(economics.probe_samples() >= 1, "{economics:?}");
+    assert!(economics.hit_samples() >= 1, "{economics:?}");
+    assert!(economics.record_samples() >= 1, "{economics:?}");
+}
+
+#[test]
 fn admission_floor_gates_probes_entirely() {
     let ir = lower(DUPLICATED_SUBTREE);
     // The duplicated subtree is far below this floor, so no def-site is
@@ -323,6 +368,20 @@ fn parallel_workers_share_l1_entries_with_byte_identical_output() {
         .expect("serial baseline evaluates");
     let (baseline_root, baseline_surfaces) = derivation_surfaces(&baseline);
     assert!(!baseline_surfaces.is_empty());
+
+    let mut census_options = TreeWalkOptions::with_parallel_workers(NonZeroUsize::new(4));
+    census_options.set_memo_options(MemoOptions {
+        enabled: false,
+        min_cost: 1,
+        stats_enabled: true,
+        ..MemoOptions::default()
+    });
+    let census =
+        eval_whnf_owned_with_options(&ir, census_options).expect("parallel census evaluates");
+    let (census_root, census_surfaces) = derivation_surfaces(&census);
+    assert_eq!(baseline_root, census_root);
+    assert_eq!(baseline_surfaces, census_surfaces);
+    assert!(census.stats.memo_economics().potential_hits() >= 1);
 
     // L0 off + L1 auto-on under parallel mode: every probe goes through the
     // shared table, so hits demonstrably cross the worker boundary protocol.

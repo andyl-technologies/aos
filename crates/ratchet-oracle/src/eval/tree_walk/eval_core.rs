@@ -369,17 +369,16 @@ impl TreeWalk {
         let force_cache_active = options.persist_cache_root().is_some()
             || eval_cache.lock().is_ok_and(|runtime| runtime.is_enabled());
         let store_validity_checker = StoreValidityChecker::for_store_dir(options.store_dir());
-        // Parallel forcing allocates a cross-worker wait registry per
-        // evaluator; workers sharing one demand graph replace it with one
-        // shared instance through `set_parallel_force_registry`.
+        // Parallel forcing gives each evaluator a wait registry; demand-graph
+        // workers replace it with one shared through `set_parallel_force_registry`.
         let parallel_force_registry = options
             .parallel_thunk_payloads_enabled()
             .then(|| Arc::new(ParallelForceCycleRegistry::new()));
-        // Per-worker content-memo table (MEMO-1 L0). Allocated only when the
-        // tier is enabled so the memo adds nothing to the force path otherwise.
+        // Allocate the per-worker MEMO-1 L0 table only when its tier is enabled.
         let memo_l0 = options
             .memo_l0_active()
             .then(|| super::memo::MemoL0Table::new(options.memo_options().l0_entries));
+        let memo_economics = options.memo_options().stats_enabled.then(Default::default);
         let attr_shape_mode = options.attr_shape_mode();
         Self {
             modules: vec![TreeWalkModule::new(
@@ -480,6 +479,7 @@ impl TreeWalk {
             tier1_engine: None,
             parallel_force_registry,
             memo_l0,
+            memo_economics,
             memo_def_sites: HashMap::new(),
             memo_unhashable_values: HashSet::new(),
             #[cfg(test)]

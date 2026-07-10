@@ -11,6 +11,71 @@
 
 use super::*;
 
+/// Configuration for the content-keyed memoization tiers.
+///
+/// The store is advisory: none of these performance settings participate in
+/// the result-affecting options fingerprint. The master switch remains off by
+/// default until corpus economics justify enabling it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoOptions {
+    /// Master switch for the content memo (`AOS_NIX_MEMO`).
+    pub enabled: bool,
+    /// Enables the per-worker in-thread tier (`AOS_NIX_MEMO_L0`).
+    pub l0_enabled: bool,
+    /// Enables the in-process shared tier (`AOS_NIX_MEMO_L1`).
+    ///
+    /// `None` selects the default policy: on exactly under parallel evaluation.
+    pub l1_enabled: Option<bool>,
+    /// Static recompute-estimate admission floor (`AOS_NIX_MEMO_MIN_COST`).
+    ///
+    /// Def-sites below this lowered-IR cost estimate are never probed or
+    /// recorded, keeping the memo off the force path for cheap subtrees.
+    pub min_cost: u32,
+    /// Per-worker L0 entry cap (`AOS_NIX_MEMO_L0_ENTRIES`).
+    pub l0_entries: usize,
+    /// L1 retained-bytes budget (`AOS_NIX_MEMO_L1_BYTES`).
+    pub l1_bytes: u64,
+    /// Hits at L1 before an entry also installs at L0.
+    ///
+    /// Configured by `AOS_NIX_MEMO_PROMOTE_HITS`.
+    pub promote_hits: u32,
+    /// Shadow-checks every L0 hit against a fresh evaluation.
+    pub check_l0: bool,
+    /// Shadow-checks every L1 hit against a fresh evaluation.
+    pub check_l1: bool,
+    /// Enables secondary L2 disk locations.
+    ///
+    /// This is the `AOS_NIX_MEMO_L2` kill switch. It governs only additive
+    /// `AOS_NIX_MEMO_DISK` locations; the primary cache remains independent.
+    pub l2_enabled: bool,
+    /// Shadow-checks every secondary-location L2 hit.
+    pub check_l2: bool,
+    /// Shadow-checks every network-tier L3 hit.
+    pub check_l3: bool,
+    /// Enables potential-hit census and stage timing (`AOS_NIX_MEMO_STATS`).
+    pub stats_enabled: bool,
+}
+
+impl Default for MemoOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            l0_enabled: true,
+            l1_enabled: None,
+            min_cost: 64,
+            l0_entries: 65_536,
+            l1_bytes: 256 * 1024 * 1024,
+            promote_hits: 2,
+            check_l0: false,
+            check_l1: false,
+            l2_enabled: true,
+            check_l2: false,
+            check_l3: false,
+            stats_enabled: false,
+        }
+    }
+}
+
 /// Access policy for the L3 network memo tier (`AOS_NIX_MEMO_NET_MODE`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MemoNetMode {

@@ -107,6 +107,7 @@ impl TreeWalk {
             memo_net_misses: self.stats.memo_net_misses,
             memo_net_errors: self.stats.memo_net_errors,
             memo_net_reval_failures: self.stats.memo_net_reval_failures,
+            memo_economics: self.stats.memo_economics,
             campaign,
         }
     }

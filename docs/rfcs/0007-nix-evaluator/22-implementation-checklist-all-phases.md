@@ -4963,6 +4963,29 @@ alone (`M-1`/`Q-A`).
       scheduling, and future value-memoization bypass proof remain open. Gate:
       `cache_validation_side_configs_only_change_native_cache_root`
       ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current doc-29 memo-economics instrumentation precursor:
+      `AOS_NIX_MEMO_STATS=1` derives admitted content keys without requiring
+      L0/L1 allocation, maintains one cross-worker census of unique and repeat
+      keys, attributes repeat mass to the full static subtree cost, and reports
+      separate key-derivation, table-probe, resident-hit, and record-build
+      sample/time totals in `aos_nix_memo_stats` JSON. The knob defaults off,
+      and stats-only mode does not build memo tables. This establishes the
+      measurement substrate only; it makes no MEMO-1 win or acceptance claim.
+      Gates:
+      `stats_only_run_counts_potential_hits_without_building_memo_tables`,
+      `memo_stats_decompose_key_probe_hit_and_record_stages`,
+      `economics_census_distinguishes_unique_keys_and_repeat_mass`, and
+      `parallel_workers_share_l1_entries_with_byte_identical_output`
+      ([29](29-tiered-content-keyed-memoization.md) §14).
+- [x] Current MEMO-1 measured exit ramp: the floor-64 census found zero repeat
+      hits on zlib and `bench.wide`; floor 1 exposed 1,290 and 34,288 potential
+      hits respectively, but stats-off three-sample L0 A/Bs regressed zlib by
+      30.9% cold / 23.3% warm and wide by 25.4% / 30.6%, with unchanged arena
+      peaks. The zlib/openssl/coreutils/bash serial/K=4/JIT CHECK matrix and
+      wide L0 CHECK stayed byte-identical. MEMO-1 therefore takes doc 29's
+      counters-backed negative-result exit: tables remain experimental and
+      default-off; the accepted default is economics counters only
+      ([29](29-tiered-content-keyed-memoization.md) §10.1, §14).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation
@@ -11643,6 +11666,7 @@ checklists are the *fine-grained* trackers the phases aggregate.
 | [25](25-intermediate-representation.md) | The intermediate representation (IR) | [checklist](25-intermediate-representation.md#implementation-checklist) |
 | [26](26-optimization-pass-catalog.md) | The optimization pass catalog (the simplifier) | [per-pass status](26-optimization-pass-catalog.md) |
 | [28](28-generalization-and-language-dialects.md) | Generalization + language dialects (the `ratchet` engine; Core/dialect split; Phase 1b re-layering) | [checklist](28-generalization-and-language-dialects.md#implementation-checklist) |
+| [29](29-tiered-content-keyed-memoization.md) | Tiered content-keyed memoization (L0/L1/L2/L3, economics, CHECK) | [checklist](29-tiered-content-keyed-memoization.md#14-implementation-checklist) |
 | [30](30-flat-value-architecture.md) | The flat-value architecture campaign (flat objects, value-word compression, hybrid closures, arena payloads, memory extensions, unsafe placement) | [checklist](30-flat-value-architecture.md#12-implementation-checklist) |
 
 **Notes.**

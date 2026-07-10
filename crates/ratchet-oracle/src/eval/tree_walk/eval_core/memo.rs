@@ -37,6 +37,8 @@
 //! [`CacheExprIdentity`]: crate::cache::CacheExprIdentity
 //! [`ValueHash`]: crate::cache::ValueHash
 
+use std::time::Instant;
+
 use super::*;
 use super::force_identity::CapturedFreeVariableDependency;
 use crate::cache::{CacheableInputFingerprint, DemandCacheKey};
@@ -64,6 +66,7 @@ const MEMO_DECLINE_GATE: u32 = 1;
 pub(in crate::eval::tree_walk) struct MemoCandidate {
     key: DemandCacheKey,
     subject: ForceCacheSubject,
+    static_cost_units: u32,
 }
 
 /// Static per-node recompute-cost units for the memo admission floor.
@@ -101,6 +104,15 @@ const fn memo_node_cost(kind: IrKind) -> u32 {
     }
 }
 
+fn elapsed_nanos(started: Instant) -> u64 {
+    let nanos = started.elapsed().as_nanos();
+    if nanos > u128::from(u64::MAX) {
+        u64::MAX
+    } else {
+        nanos as u64
+    }
+}
+
 impl TreeWalk {
     /// Runs the content-memo probe/record protocol around a claimed force.
     ///
@@ -123,14 +135,24 @@ impl TreeWalk {
         thunk: &EvalThunk,
         guard: ForceGuard<'_>,
     ) -> Result<Value, TreeWalkError> {
-        if self.memo_l0.is_none() && self.shared_memo_table().is_none() {
+        let tiers_active = self.memo_l0.is_some() || self.shared_memo_table().is_some();
+        let stats_enabled = self.options.memo_options().stats_enabled;
+        if !tiers_active && !stats_enabled {
             return self
                 .force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard);
         }
-        let Some(candidate) = self.memo_candidate_for_thunk(thunk) else {
+        let key_started = stats_enabled.then(Instant::now);
+        let candidate = self.memo_candidate_for_thunk(thunk);
+        self.record_memo_key_timing(key_started);
+        let Some(candidate) = candidate else {
             return self
                 .force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard);
         };
+        self.observe_memo_potential_hit(&candidate);
+        if !tiers_active {
+            return self
+                .force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard);
+        }
         if let Some(value) = self.memo_probe(id, span, thunk, &candidate)? {
             let value = self.finish_forced_value(id, span, source_thunk, guard, value)?;
             self.unmark_lazy_identity_thunk_payload(forced_payload);
@@ -139,13 +161,65 @@ impl TreeWalk {
         let cursor = self.impure_input_trace_cursor();
         let value =
             self.force_memoized_claimed_thunk(id, span, source_thunk, forced_payload, thunk, guard)?;
+        let record_started = stats_enabled.then(Instant::now);
         self.memo_admit(&candidate, value, cursor);
+        self.record_memo_record_timing(record_started);
         Ok(value)
     }
 
     /// Returns the shared L1 table when this evaluation carries one.
     fn shared_memo_table(&self) -> Option<Arc<SharedMemoTable>> {
         self.shared.as_ref()?.memo.as_ref().map(Arc::clone)
+    }
+
+    /// Records one admitted key in the stats-only potential-hit census.
+    fn observe_memo_potential_hit(&mut self, candidate: &MemoCandidate) {
+        let Some(census) = self.memo_economics.as_ref() else {
+            return;
+        };
+        let observation = census.observe(candidate.key);
+        let stats = &mut self.stats.memo_economics;
+        stats.potential_candidates = stats.potential_candidates.saturating_add(1);
+        stats.potential_unique_keys = stats
+            .potential_unique_keys
+            .saturating_add(u64::from(observation.unique_key));
+        stats.potential_hit_keys = stats
+            .potential_hit_keys
+            .saturating_add(u64::from(observation.first_hit_for_key));
+        if observation.potential_hit {
+            stats.potential_hits = stats.potential_hits.saturating_add(1);
+            stats.potential_hit_static_cost_units = stats
+                .potential_hit_static_cost_units
+                .saturating_add(u64::from(candidate.static_cost_units));
+        }
+    }
+
+    fn record_memo_key_timing(&mut self, started: Option<Instant>) {
+        let Some(started) = started else { return };
+        let stats = &mut self.stats.memo_economics;
+        stats.key_samples = stats.key_samples.saturating_add(1);
+        stats.key_nanos = stats.key_nanos.saturating_add(elapsed_nanos(started));
+    }
+
+    fn record_memo_probe_timing(&mut self, started: Option<Instant>) {
+        let Some(started) = started else { return };
+        let stats = &mut self.stats.memo_economics;
+        stats.probe_samples = stats.probe_samples.saturating_add(1);
+        stats.probe_nanos = stats.probe_nanos.saturating_add(elapsed_nanos(started));
+    }
+
+    fn record_memo_hit_timing(&mut self, started: Option<Instant>) {
+        let Some(started) = started else { return };
+        let stats = &mut self.stats.memo_economics;
+        stats.hit_samples = stats.hit_samples.saturating_add(1);
+        stats.hit_nanos = stats.hit_nanos.saturating_add(elapsed_nanos(started));
+    }
+
+    fn record_memo_record_timing(&mut self, started: Option<Instant>) {
+        let Some(started) = started else { return };
+        let stats = &mut self.stats.memo_economics;
+        stats.record_samples = stats.record_samples.saturating_add(1);
+        stats.record_nanos = stats.record_nanos.saturating_add(elapsed_nanos(started));
     }
 
     /// Derives the memo key and replay subject for one claimed thunk.
@@ -162,6 +236,10 @@ impl TreeWalk {
         if decision == MemoDefSiteDecision::Skipped {
             return None;
         }
+        let static_cost_units = self
+            .memo_def_sites
+            .get(&*body)
+            .map_or(0, |state| state.static_cost_units);
         // Environment component first: def-sites whose captured environments
         // never hash never pay identity derivation (the expensive safety walk
         // plus module content hash) at all.
@@ -218,7 +296,11 @@ impl TreeWalk {
             replay_allocation_node: Some(*body),
             memoization_admission: ForceCacheMemoizationAdmission::SelectedSubstrate,
         };
-        Some(MemoCandidate { key, subject })
+        Some(MemoCandidate {
+            key,
+            subject,
+            static_cost_units,
+        })
     }
 
     /// Feeds one derivation decline into a def-site's consecutive-decline
@@ -351,9 +433,11 @@ impl TreeWalk {
         if let Some(state) = self.memo_def_sites.get(&def_site) {
             return state.decision;
         }
-        let decision = self.compute_memo_def_site_decision(def_site);
-        self.memo_def_sites
-            .insert(def_site, MemoDefSiteState::new(decision));
+        let (decision, static_cost_units) = self.compute_memo_def_site_decision(def_site);
+        self.memo_def_sites.insert(
+            def_site,
+            MemoDefSiteState::new(decision, static_cost_units),
+        );
         decision
     }
 
@@ -363,13 +447,49 @@ impl TreeWalk {
     /// configured floor; the expression identity (a full subtree safety walk
     /// plus a module content hash) is derived lazily on the first force whose
     /// environment hashes successfully.
-    fn compute_memo_def_site_decision(&self, def_site: EvalNodeRef) -> MemoDefSiteDecision {
+    fn compute_memo_def_site_decision(
+        &self,
+        def_site: EvalNodeRef,
+    ) -> (MemoDefSiteDecision, u32) {
         let floor = self.options.memo_options().min_cost;
-        if self.memo_static_cost_reaches(def_site, floor) {
-            MemoDefSiteDecision::CostAdmitted
+        if self.options.memo_options().stats_enabled {
+            let Some(cost) = self.memo_static_cost(def_site) else {
+                return (MemoDefSiteDecision::Skipped, 0);
+            };
+            let decision = if cost >= floor {
+                MemoDefSiteDecision::CostAdmitted
+            } else {
+                MemoDefSiteDecision::Skipped
+            };
+            (decision, cost)
+        } else if self.memo_static_cost_reaches(def_site, floor) {
+            (MemoDefSiteDecision::CostAdmitted, floor)
         } else {
-            MemoDefSiteDecision::Skipped
+            (MemoDefSiteDecision::Skipped, 0)
         }
+    }
+
+    /// Returns the full safe-subtree cost used by the opt-in economics census.
+    fn memo_static_cost(&self, def_site: EvalNodeRef) -> Option<u32> {
+        let module = self.modules.get(def_site.module().index())?;
+        let ir = &module.ir;
+        let mut total = 0u32;
+        let mut visited = BTreeSet::new();
+        let mut stack = vec![def_site.id()];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id.as_u32()) {
+                continue;
+            }
+            let node = ir.arena.node(id)?;
+            if !Self::node_is_force_lookup_safe(ir, &self.symbols, node) {
+                return None;
+            }
+            total = total.saturating_add(memo_node_cost(node.kind));
+            if !Self::push_ir_children(ir, node, &mut stack) {
+                return None;
+            }
+        }
+        Some(total)
     }
 
     /// Returns whether the def-site subtree's static cost estimate reaches
@@ -424,15 +544,21 @@ impl TreeWalk {
         thunk: &EvalThunk,
         candidate: &MemoCandidate,
     ) -> Result<Option<Value>, TreeWalkError> {
+        let stats_enabled = self.options.memo_options().stats_enabled;
         if self.memo_l0.is_some() {
+            let probe_started = stats_enabled.then(Instant::now);
             let entry = self
                 .memo_l0
                 .as_ref()
                 .and_then(|table| table.get(&candidate.key).cloned());
+            self.record_memo_probe_timing(probe_started);
             match entry {
                 Some(entry) => {
                     let check = self.options.memo_options().check_l0;
-                    match self.memo_replay_entry(id, span, thunk, candidate, &entry, check)? {
+                    let hit_started = stats_enabled.then(Instant::now);
+                    let replay = self.memo_replay_entry(id, span, thunk, candidate, &entry, check);
+                    self.record_memo_hit_timing(hit_started);
+                    match replay? {
                         Some(value) => {
                             self.stats.memo_l0_hits = self.stats.memo_l0_hits.saturating_add(1);
                             return Ok(Some(value));
@@ -452,10 +578,16 @@ impl TreeWalk {
             }
         }
         if let Some(table) = self.shared_memo_table() {
-            match table.get_and_count_hit(&candidate.key) {
+            let probe_started = stats_enabled.then(Instant::now);
+            let entry = table.get_and_count_hit(&candidate.key);
+            self.record_memo_probe_timing(probe_started);
+            match entry {
                 Some((entry, hits)) => {
                     let check = self.options.memo_options().check_l1;
-                    match self.memo_replay_entry(id, span, thunk, candidate, &entry, check)? {
+                    let hit_started = stats_enabled.then(Instant::now);
+                    let replay = self.memo_replay_entry(id, span, thunk, candidate, &entry, check);
+                    self.record_memo_hit_timing(hit_started);
+                    match replay? {
                         Some(value) => {
                             self.stats.memo_l1_hits = self.stats.memo_l1_hits.saturating_add(1);
                             if hits >= self.options.memo_options().promote_hits
@@ -678,7 +810,7 @@ impl TreeWalk {
     fn increment_memo_declines(&mut self) {
         if self.memo_l0.is_some() {
             self.stats.memo_l0_declines = self.stats.memo_l0_declines.saturating_add(1);
-        } else {
+        } else if self.shared_memo_table().is_some() {
             self.stats.memo_l1_declines = self.stats.memo_l1_declines.saturating_add(1);
         }
     }

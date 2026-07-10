@@ -29,6 +29,10 @@ use super::env::aos_nix_env;
 use super::store::read_drv_closure;
 use crate::nix::NixCli;
 
+mod memo_config;
+use memo_config::{EnvMemoKnobs, NATIVE_MEMO_NET_DEFAULT_TIMEOUT_MS};
+pub use memo_config::{NativeMemoNetSettings, NativeMemoSettings};
+
 #[cfg(feature = "native-eval")]
 use aos_nix::eval::tree_walk::NixSearchPathEntry;
 #[cfg(feature = "native-eval")]
@@ -769,84 +773,6 @@ pub enum NativeAttrShapesMode {
     /// same-key-set `//` results keep the left operand's shape.
     Record,
 }
-
-/// Parsed `AOS_NIX_MEMO*` settings for the native content-keyed memo tiers.
-///
-/// Mirrors the native evaluator's `MemoOptions` with plain types so the
-/// configuration exists independently of the `native-eval` feature. All
-/// fields are advisory performance settings; none affect evaluation results.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeMemoSettings {
-    /// Master switch (`AOS_NIX_MEMO`). Off by default in this landing.
-    pub enabled: bool,
-    /// Per-worker in-thread tier switch (`AOS_NIX_MEMO_L0`).
-    pub l0_enabled: bool,
-    /// In-process shared tier switch (`AOS_NIX_MEMO_L1`); `None` selects the
-    /// default policy (on exactly when parallel workers are configured).
-    pub l1_enabled: Option<bool>,
-    /// Static recompute-estimate admission floor (`AOS_NIX_MEMO_MIN_COST`).
-    pub min_cost: u32,
-    /// Per-worker L0 entry cap (`AOS_NIX_MEMO_L0_ENTRIES`).
-    pub l0_entries: usize,
-    /// L1 retained-bytes budget (`AOS_NIX_MEMO_L1_BYTES`).
-    pub l1_bytes: u64,
-    /// Hits at L1 before an entry also installs at L0
-    /// (`AOS_NIX_MEMO_PROMOTE_HITS`).
-    pub promote_hits: u32,
-    /// Shadow-check every L0 hit (`AOS_NIX_MEMO_CHECK` contains `l0`/`all`).
-    pub check_l0: bool,
-    /// Shadow-check every L1 hit (`AOS_NIX_MEMO_CHECK` contains `l1`/`all`).
-    pub check_l1: bool,
-    /// Secondary L2 disk-location kill switch (`AOS_NIX_MEMO_L2`, default on).
-    ///
-    /// Governs only the additive `AOS_NIX_MEMO_DISK` secondaries; the primary
-    /// `AOS_NIX_CACHE` location keeps its own existing switches.
-    pub l2_enabled: bool,
-    /// Shadow-check every secondary-location root-cutoff hit
-    /// (`AOS_NIX_MEMO_CHECK` contains `l2`/`all`).
-    pub check_l2: bool,
-    /// Shadow-check every network-tier root-cutoff hit
-    /// (`AOS_NIX_MEMO_CHECK` contains `l3`/`all`).
-    pub check_l3: bool,
-}
-
-impl Default for NativeMemoSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            l0_enabled: true,
-            l1_enabled: None,
-            min_cost: 64,
-            l0_entries: 65_536,
-            l1_bytes: 256 * 1024 * 1024,
-            promote_hits: 2,
-            check_l0: false,
-            check_l1: false,
-            l2_enabled: true,
-            check_l2: false,
-            check_l3: false,
-        }
-    }
-}
-
-/// Parsed `AOS_NIX_MEMO_NET*` settings for the L3 network memo tier.
-///
-/// Mirrors the native evaluator's `MemoNetOptions` with plain types so the
-/// configuration exists independently of the `native-eval` feature. The tier
-/// is advisory and read-only by default; it only takes effect alongside a
-/// configured `AOS_NIX_CACHE` root.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativeMemoNetSettings {
-    /// Base endpoint URL (`AOS_NIX_MEMO_NET`).
-    pub endpoint: String,
-    /// Whether publishing is allowed (`AOS_NIX_MEMO_NET_MODE=rw`).
-    pub writable: bool,
-    /// Per-request timeout in milliseconds (`AOS_NIX_MEMO_NET_TIMEOUT_MS`).
-    pub timeout_ms: u64,
-}
-
-/// The default L3 network-tier request timeout in milliseconds.
-const NATIVE_MEMO_NET_DEFAULT_TIMEOUT_MS: u64 = 2_000;
 
 impl Default for NixEvalConfig {
     fn default() -> Self {
@@ -1742,6 +1668,15 @@ impl NixEvalConfig {
         }
         if let Some(value) = knobs.l2.as_deref() {
             memo.l2_enabled = !env_flag_is_falsy(value);
+        }
+        if let Some(value) = knobs.stats.as_deref() {
+            memo.stats_enabled = env_flag_is_truthy(value);
+            if !memo.stats_enabled && !value.trim().is_empty() && !env_flag_is_falsy(value) {
+                tracing::warn!(
+                    value,
+                    "invalid AOS_NIX_MEMO_STATS value; disabling instrumentation"
+                );
+            }
         }
         if let Some(value) = knobs.check.as_deref() {
             memo.check_l0 = false;
@@ -3242,45 +3177,6 @@ fn record_native_cli_fallback(reason: NativeCliFallbackReason) -> u64 {
     counter.fetch_add(1, Ordering::Relaxed) + 1
 }
 
-/// One snapshot of the raw `AOS_NIX_MEMO*` environment values.
-#[derive(Clone, Debug, Default)]
-struct EnvMemoKnobs {
-    master: Option<String>,
-    l0: Option<String>,
-    l1: Option<String>,
-    l2: Option<String>,
-    min_cost: Option<String>,
-    l0_entries: Option<String>,
-    l1_bytes: Option<String>,
-    promote_hits: Option<String>,
-    check: Option<String>,
-    disk: Option<String>,
-    net: Option<String>,
-    net_mode: Option<String>,
-    net_timeout_ms: Option<String>,
-}
-
-impl EnvMemoKnobs {
-    /// Captures the process environment's memo knobs.
-    fn from_process() -> Self {
-        Self {
-            master: std::env::var("AOS_NIX_MEMO").ok(),
-            l0: std::env::var("AOS_NIX_MEMO_L0").ok(),
-            l1: std::env::var("AOS_NIX_MEMO_L1").ok(),
-            l2: std::env::var("AOS_NIX_MEMO_L2").ok(),
-            min_cost: std::env::var("AOS_NIX_MEMO_MIN_COST").ok(),
-            l0_entries: std::env::var("AOS_NIX_MEMO_L0_ENTRIES").ok(),
-            l1_bytes: std::env::var("AOS_NIX_MEMO_L1_BYTES").ok(),
-            promote_hits: std::env::var("AOS_NIX_MEMO_PROMOTE_HITS").ok(),
-            check: std::env::var("AOS_NIX_MEMO_CHECK").ok(),
-            disk: std::env::var("AOS_NIX_MEMO_DISK").ok(),
-            net: std::env::var("AOS_NIX_MEMO_NET").ok(),
-            net_mode: std::env::var("AOS_NIX_MEMO_NET_MODE").ok(),
-            net_timeout_ms: std::env::var("AOS_NIX_MEMO_NET_TIMEOUT_MS").ok(),
-        }
-    }
-}
-
 /// True for the truthy switch spellings accepted by the memo knobs.
 fn env_flag_is_truthy(value: &str) -> bool {
     matches!(value.trim(), "1" | "true" | "on" | "yes")
@@ -3406,6 +3302,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
         l2_enabled: memo.l2_enabled,
         check_l2: memo.check_l2,
         check_l3: memo.check_l3,
+        stats_enabled: memo.stats_enabled,
     });
     options.set_jit_tier1_publish_enabled(config.native_jit());
     if config.native_gc_sweep() {
@@ -3783,6 +3680,7 @@ mod tests {
             l1_bytes: Some("4096".to_owned()),
             promote_hits: Some("3".to_owned()),
             check: Some("l0,l1".to_owned()),
+            stats: Some("yes".to_owned()),
             l2: Some("off".to_owned()),
             disk: Some("hdd:/bulk/cache".to_owned()),
             net: Some("http://memo.example/base/".to_owned()),
@@ -3802,6 +3700,7 @@ mod tests {
         assert!(!memo.l2_enabled);
         assert!(!memo.check_l2);
         assert!(!memo.check_l3);
+        assert!(memo.stats_enabled);
         assert_eq!(config.native_memo_disk_spec(), Some("hdd:/bulk/cache"));
         let net = config.native_memo_net().expect("net settings parse");
         assert_eq!(net.endpoint, "http://memo.example/base");
@@ -3814,6 +3713,7 @@ mod tests {
             master: Some("off".to_owned()),
             min_cost: Some("not-a-number".to_owned()),
             check: Some("all".to_owned()),
+            stats: Some("bogus".to_owned()),
             ..EnvMemoKnobs::default()
         });
         let memo = config.native_memo();
@@ -3823,6 +3723,7 @@ mod tests {
         assert!(memo.check_l1);
         assert!(memo.check_l2);
         assert!(memo.check_l3);
+        assert!(!memo.stats_enabled);
     }
 
     #[test]

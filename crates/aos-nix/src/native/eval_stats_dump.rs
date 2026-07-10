@@ -66,6 +66,9 @@ impl NixNative {
     /// attribute sets, values, function calls, hash-cons reuse, symbols, and
     /// imports — for comparison against C++ Nix's `NIX_SHOW_STATS`.
     pub(super) fn maybe_dump_eval_stats(&self, stats: &EvalStats) {
+        if self.options.memo_options().stats_enabled {
+            dump_memo_economics_stats(stats);
+        }
         if !self.options.eval_stats_dump() {
             return;
         }
@@ -247,5 +250,63 @@ impl NixNative {
             stats.campaign().record_table_records,
             stats.campaign().flat_objects,
         );
+    }
+}
+
+fn dump_memo_economics_stats(stats: &EvalStats) {
+    eprintln!("{}", memo_economics_stats_json(stats));
+}
+
+fn memo_economics_stats_json(stats: &EvalStats) -> String {
+    let memo = stats.memo_economics();
+    format!(
+        "{{\"aos_nix_memo_stats\":{{\
+\"potential_candidates\":{},\
+\"potential_unique_keys\":{},\
+\"potential_hit_keys\":{},\
+\"potential_hits\":{},\
+\"potential_hit_static_cost_units\":{},\
+\"key_samples\":{},\"key_nanos\":{},\
+\"probe_samples\":{},\"probe_nanos\":{},\
+\"hit_samples\":{},\"hit_nanos\":{},\
+\"record_samples\":{},\"record_nanos\":{}\
+}}}}",
+        memo.potential_candidates(),
+        memo.potential_unique_keys(),
+        memo.potential_hit_keys(),
+        memo.potential_hits(),
+        memo.potential_hit_static_cost_units(),
+        memo.key_samples(),
+        memo.key_nanos(),
+        memo.probe_samples(),
+        memo.probe_nanos(),
+        memo.hit_samples(),
+        memo.hit_nanos(),
+        memo.record_samples(),
+        memo.record_nanos(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memo_economics_json_pins_the_standalone_schema() {
+        let rendered = memo_economics_stats_json(&EvalStats::default());
+        let decoded: serde_json::Value =
+            serde_json::from_str(&rendered).expect("memo economics JSON decodes");
+        let memo = decoded
+            .get("aos_nix_memo_stats")
+            .and_then(serde_json::Value::as_object)
+            .expect("standalone memo statistics object exists");
+
+        assert_eq!(memo.len(), 13);
+        assert!(memo.values().all(|value| value.as_u64() == Some(0)));
+        assert!(memo.contains_key("potential_hit_static_cost_units"));
+        assert!(memo.contains_key("key_nanos"));
+        assert!(memo.contains_key("probe_nanos"));
+        assert!(memo.contains_key("hit_nanos"));
+        assert!(memo.contains_key("record_nanos"));
     }
 }

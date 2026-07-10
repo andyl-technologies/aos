@@ -85,15 +85,19 @@ pub(super) enum MemoDefSiteDecision {
 pub(super) struct MemoDefSiteState {
     /// The current admission decision.
     pub(super) decision: MemoDefSiteDecision,
+    /// Full static subtree cost when economics instrumentation is enabled;
+    /// otherwise the admission floor for admitted sites and zero for skips.
+    pub(super) static_cost_units: u32,
     /// Consecutive per-force derivation declines since the last success.
     pub(super) consecutive_declines: u32,
 }
 
 impl MemoDefSiteState {
     /// Creates the initial state for a freshly decided def-site.
-    pub(super) const fn new(decision: MemoDefSiteDecision) -> Self {
+    pub(super) const fn new(decision: MemoDefSiteDecision, static_cost_units: u32) -> Self {
         Self {
             decision,
+            static_cost_units,
             consecutive_declines: 0,
         }
     }
@@ -122,6 +126,46 @@ impl MemoEntry {
         } else {
             len as u64
         }
+    }
+}
+
+/// One admitted-key observation returned by the potential-hit census.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MemoPotentialObservation {
+    /// Whether this is the key's first occurrence.
+    pub(super) unique_key: bool,
+    /// Whether this occurrence makes the key repeated for the first time.
+    pub(super) first_hit_for_key: bool,
+    /// Whether an already-built table could have answered this occurrence.
+    pub(super) potential_hit: bool,
+}
+
+/// Shared admitted-key census used only by `AOS_NIX_MEMO_STATS`.
+///
+/// The table exists independently of L0/L1, so a stats-only run measures the
+/// duplicate `(code, environment)` opportunity before building replay tables.
+/// One mutex makes the census global across parallel workers; it is acceptable
+/// only because the explicit stats knob already opts into instrumentation tax.
+#[derive(Debug, Default)]
+pub(super) struct MemoEconomicsCensus {
+    occurrences: Mutex<HashMap<DemandCacheKey, u64>>,
+}
+
+impl MemoEconomicsCensus {
+    /// Records one successfully derived admitted key.
+    pub(super) fn observe(&self, key: DemandCacheKey) -> MemoPotentialObservation {
+        let mut occurrences = match self.occurrences.lock() {
+            Ok(occurrences) => occurrences,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let seen = occurrences.entry(key).or_insert(0);
+        let observation = MemoPotentialObservation {
+            unique_key: *seen == 0,
+            first_hit_for_key: *seen == 1,
+            potential_hit: *seen > 0,
+        };
+        *seen = seen.saturating_add(1);
+        observation
     }
 }
 
@@ -346,5 +390,29 @@ mod tests {
         let table = SharedMemoTable::new(0);
         assert!(!table.publish(key(1), entry()));
         table.remove(&key(1));
+    }
+
+    #[test]
+    fn economics_census_distinguishes_unique_keys_and_repeat_mass() {
+        let census = MemoEconomicsCensus::default();
+
+        assert_eq!(
+            census.observe(key(1)),
+            MemoPotentialObservation {
+                unique_key: true,
+                first_hit_for_key: false,
+                potential_hit: false,
+            }
+        );
+        assert_eq!(
+            census.observe(key(1)),
+            MemoPotentialObservation {
+                unique_key: false,
+                first_hit_for_key: true,
+                potential_hit: true,
+            }
+        );
+        assert!(census.observe(key(1)).potential_hit);
+        assert!(census.observe(key(2)).unique_key);
     }
 }

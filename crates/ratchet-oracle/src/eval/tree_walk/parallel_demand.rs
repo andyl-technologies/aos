@@ -537,7 +537,6 @@ impl ParallelDemandPool {
             .first()
             .and_then(|module| module.source.clone());
         let realizer = main.ifd_realizer.clone();
-
         let mut handles = Vec::with_capacity(workers - 1);
         for worker_index in 1..workers {
             let Some(worker_id) =
@@ -569,6 +568,7 @@ impl ParallelDemandPool {
             let shared_for_worker = Arc::clone(&shared);
             let root_source = root_source.clone();
             let realizer = realizer.clone();
+            let memo_economics = main.memo_economics.clone();
             let spawned = std::thread::Builder::new()
                 .name(format!("aos-nix-eval-{worker_index}"))
                 // Helpers run full tree-walk recursion over the same package
@@ -592,13 +592,12 @@ impl ParallelDemandPool {
                     walk.heap.set_attrs_hash_cons_enabled(attrs_hash_cons_enabled);
                     walk.adopt_shared_heap_shard(arena, shard);
                     walk.set_parallel_force_registry(registry);
+                    walk.memo_economics = memo_economics;
                     if let Some(realizer) = realizer {
                         walk.set_ifd_realizer(realizer);
                     }
-                    // Replace the fresh local shape table with a replica of
-                    // the shared log so record `Arc`s and dense ids are
-                    // globally consistent; without a shared log, projection
-                    // stays disabled on this worker.
+                    // Replace the shape table with a shared-log replica so record `Arc`s
+                    // and dense ids agree globally; otherwise projection stays disabled.
                     walk.shape_table = shared_for_worker
                         .shapes
                         .as_ref()

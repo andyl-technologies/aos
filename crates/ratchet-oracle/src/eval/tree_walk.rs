@@ -369,7 +369,7 @@ pub use errors::EvalErrorContext;
 pub use errors::{EvalErrorLabel, EvalErrorSource, TreeWalkError};
 pub(crate) use op_types::*;
 pub use options::TreeWalkOptionsError;
-pub use options::{MemoNetMode, MemoNetOptions};
+pub use options::{MemoNetMode, MemoNetOptions, MemoOptions};
 pub use options::{canonicalize_policy_path, normalize_absolute_path_bytes};
 pub(crate) use options::{
     file_type_name, is_valid_store_path, join_path_literal, join_search_path,
@@ -431,83 +431,6 @@ pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
 pub(crate) use version::{
     SplitVersionRanges, base_name_range, compare_version_bytes, parse_drv_name_split,
 };
-
-/// Configuration for the in-process content-keyed memoization tiers (MEMO-1).
-///
-/// Controls the L0 (per-worker, in-thread) and L1 (in-process shared, parallel
-/// mode) content memo tables described by RFC-0007's tiered content-keyed
-/// memoization design. The store is purely advisory: every knob here is a
-/// performance setting that must never change evaluation results, so none of
-/// these fields participate in the result-affecting options fingerprint.
-///
-/// The master switch defaults to **off** for this first landing (the design
-/// document defaults it on; flipping the default is gated on corpus
-/// measurement).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MemoOptions {
-    /// Master switch for the content memo (`AOS_NIX_MEMO`).
-    pub enabled: bool,
-    /// Enables the per-worker in-thread tier (`AOS_NIX_MEMO_L0`).
-    pub l0_enabled: bool,
-    /// Enables the in-process shared tier (`AOS_NIX_MEMO_L1`).
-    ///
-    /// `None` selects the default policy: on exactly when parallel workers are
-    /// configured (the shared tier is pointless in serial mode where L0
-    /// already covers the process).
-    pub l1_enabled: Option<bool>,
-    /// Static recompute-estimate admission floor (`AOS_NIX_MEMO_MIN_COST`).
-    ///
-    /// Def-sites whose lowered-IR static cost estimate falls below this floor
-    /// are never probed or recorded, keeping the memo entirely off the bare
-    /// force path for cheap subtrees.
-    pub min_cost: u32,
-    /// Per-worker L0 entry cap (`AOS_NIX_MEMO_L0_ENTRIES`).
-    pub l0_entries: usize,
-    /// L1 retained-bytes budget (`AOS_NIX_MEMO_L1_BYTES`).
-    pub l1_bytes: u64,
-    /// Hits at L1 before an entry is also installed at L0
-    /// (`AOS_NIX_MEMO_PROMOTE_HITS`).
-    pub promote_hits: u32,
-    /// Shadow-checks every L0 hit against a fresh evaluation
-    /// (`AOS_NIX_MEMO_CHECK=l0` or `all`).
-    pub check_l0: bool,
-    /// Shadow-checks every L1 hit against a fresh evaluation
-    /// (`AOS_NIX_MEMO_CHECK=l1` or `all`).
-    pub check_l1: bool,
-    /// Enables the secondary disk locations of the L2 tier
-    /// (`AOS_NIX_MEMO_L2`, a kill switch defaulting on).
-    ///
-    /// This governs only the additive `AOS_NIX_MEMO_DISK` secondaries; the
-    /// primary `AOS_NIX_CACHE` location keeps its own existing switches
-    /// (root cutoff, force-cache persist layer, parse cache) so disabling L2
-    /// never changes primary-location behavior.
-    pub l2_enabled: bool,
-    /// Shadow-checks every secondary-location (L2) root-cutoff hit
-    /// (`AOS_NIX_MEMO_CHECK=l2` or `all`).
-    pub check_l2: bool,
-    /// Shadow-checks every network-tier (L3) root-cutoff hit
-    /// (`AOS_NIX_MEMO_CHECK=l3` or `all`).
-    pub check_l3: bool,
-}
-
-impl Default for MemoOptions {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            l0_enabled: true,
-            l1_enabled: None,
-            min_cost: 64,
-            l0_entries: 65_536,
-            l1_bytes: 256 * 1024 * 1024,
-            promote_hits: 2,
-            check_l0: false,
-            check_l1: false,
-            l2_enabled: true,
-            check_l2: false,
-            check_l3: false,
-        }
-    }
-}
 
 /// Default worker-record growth between Tier-B quiescent sweeps.
 ///
@@ -1442,6 +1365,9 @@ pub struct TreeWalk {
     // `MemoOptions` enables the L0 tier; `None` keeps the force path free of
     // any memo bookkeeping. See `memo` and `eval_core::memo`.
     memo_l0: Option<memo::MemoL0Table>,
+    // Global admitted-key census under `AOS_NIX_MEMO_STATS`; shared by all
+    // parallel workers and absent from ordinary parity/performance runs.
+    memo_economics: Option<Arc<memo::MemoEconomicsCensus>>,
     // Per-def-site static admission decisions for the content memo, computed
     // once per `(module, node)` body and reused by every later force of any
     // thunk instance of that def-site. This is the runtime realization of the

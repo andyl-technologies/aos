@@ -18,6 +18,9 @@ use crate::eval::heap::{
 use crate::heap::{ArenaStats, HeapGeneration};
 use crate::value::HeapObject;
 
+mod memo_stats;
+pub use memo_stats::{MemoEconomicsStats, MemoTierEvents};
+
 type IfdRealizerCallback =
     dyn for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError> + Send + Sync;
 
@@ -13427,38 +13430,9 @@ pub struct EvalStats {
     pub(crate) memo_net_misses: u64,
     pub(crate) memo_net_errors: u64,
     pub(crate) memo_net_reval_failures: u64,
+    pub(crate) memo_economics: MemoEconomicsStats,
     /// Flat-value campaign work-volume counters (RFC-0007 doc 30 FV-0).
     pub(crate) campaign: CampaignCounters,
-}
-
-/// Durable-tier (L2 secondary-location and L3 network) memo event counts.
-///
-/// The root-cutoff orchestration in `aos-nix` runs *outside* the evaluator —
-/// a warm cutoff never constructs a `TreeWalk` — so its multi-location and
-/// network probe outcomes are collected into this plain struct and folded
-/// into the final [`EvalStats`] through [`EvalStats::merge_memo_tier_events`].
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct MemoTierEvents {
-    /// Records served from a secondary L2 disk location.
-    pub l2_secondary_hits: u64,
-    /// Probes that consulted at least one secondary L2 location and missed
-    /// everywhere on disk.
-    pub l2_secondary_misses: u64,
-    /// Records copied into the primary location after a slower-tier hit.
-    pub l2_promotions: u64,
-    /// Disk-tier records rejected because their impure-input slice failed
-    /// revalidation.
-    pub l2_reval_failures: u64,
-    /// Records fetched, validated, and accepted from the L3 network tier.
-    pub net_hits: u64,
-    /// Network probes the endpoint answered with "no such record".
-    pub net_misses: u64,
-    /// Network probes that failed at the transport or validation layer
-    /// (timeouts, malformed bundles, content-hash mismatches).
-    pub net_errors: u64,
-    /// Network records rejected because their impure-input slice failed
-    /// local revalidation.
-    pub net_reval_failures: u64,
 }
 
 impl EvalStats {
@@ -13823,6 +13797,7 @@ impl EvalStats {
             memo_net_misses,
             memo_net_errors,
             memo_net_reval_failures,
+            memo_economics,
             campaign,
         } = *other;
         self.thunks_forced = self.thunks_forced.saturating_add(thunks_forced);
@@ -13939,6 +13914,7 @@ impl EvalStats {
         self.memo_l1_misses = self.memo_l1_misses.saturating_add(memo_l1_misses);
         self.memo_l1_admissions = self.memo_l1_admissions.saturating_add(memo_l1_admissions);
         self.memo_l1_declines = self.memo_l1_declines.saturating_add(memo_l1_declines);
+        self.memo_economics = self.memo_economics.merged(memo_economics);
         self.merge_memo_tier_events(&MemoTierEvents {
             l2_secondary_hits: memo_l2_secondary_hits,
             l2_secondary_misses: memo_l2_secondary_misses,
@@ -14174,6 +14150,11 @@ impl EvalStats {
     /// Returns L1 content-memo eligibility and record declines.
     pub const fn memo_l1_declines(&self) -> u64 {
         self.memo_l1_declines
+    }
+
+    /// Returns opt-in content-memo economics counters and timings.
+    pub const fn memo_economics(&self) -> MemoEconomicsStats {
+        self.memo_economics
     }
 
     pub(in crate::eval::tree_walk) fn record_heap_tier_b_admission(
