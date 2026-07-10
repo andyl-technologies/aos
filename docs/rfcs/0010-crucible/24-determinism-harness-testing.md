@@ -68,6 +68,7 @@ invariants/requirements it enforces.
 | `gate:patch-microtests` | QEMU patch series (per-patch) | INV-7; HARN-20 | Every patch in the series has a focused, passing behavioral test. |
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
 | `gate:e2e-determinism` | Final acceptance (all layers) | All headline invariants; HARN-22, HARN-23 | A representative multi-VM, fault-injected scenario runs bit-identically across adversarial conditions and reproduces from its artifact. |
+| `gate:basic-block-coverage` | L2/L3 coverage observation | INV-4, INV-7; ADV-21, PLUG-35..PLUG-37 | An opt-in loaded-QEMU run emits the expected guest-PC/block-length coverage stream with no fingerprint effect; off mode installs no callback. |
 | `gate:perf-bench` | Cross-layer (Phase ≥ L2), regression | G-9; PERF-1..PERF-26 | Cost-model metrics meet their baselines and no metric regresses beyond threshold. Unlike every other gate this is a *regression* gate (per-metric baselines), not a byte-identity check; it MUST never trade determinism for speed (defined in [`25-performance-targets.md`](25-performance-targets.md) §25.11). |
 | `gate:fleet-equivalence` | Cross-layer (Phase ≥ L3) | DCE-16, DCE-17, DCE-20; G-6 | Single-host and fleet search over the same `(family, seed, budget)` discover the same content-addressed finding-set with byte-identical artifacts; discovery order may differ. |
 | `gate:campaign-continuity` | Cross-layer (Phase ≥ L3) | DCE-11, DCE-12, DCE-26; PERF-28 | Seeding run N+1 from run N's campaign reproduces each corpus entry bit-identically, accumulated coverage is monotone non-decreasing across runs, and cross-provenance reuse is refused. |
@@ -80,7 +81,9 @@ The first twelve names — `gate:layer0-determinism`, `gate:single-vm-fingerprin
 reference. `gate:abi-conformance`, `gate:patch-microtests`,
 `gate:adversarial-determinism`, and `gate:perf-bench` (the last owned by
 [`25-performance-targets.md`](25-performance-targets.md)) are added here and are
-equally canonical. `gate:fleet-equivalence` and `gate:campaign-continuity` (owned
+equally canonical. `gate:basic-block-coverage` is the Phase-6 coverage boundary;
+it remains red until its loaded-QEMU proof is green. `gate:fleet-equivalence`
+and `gate:campaign-continuity` (owned
 by [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md))
 are likewise canonical.
 
@@ -187,6 +190,18 @@ are likewise canonical.
   scheduler yields at quantum boundaries (INV-8, no long-held locks). The bound is
   measured in **quanta, not wall-clock** (per [HARN-2]). **Guards:** L4 control
   plane. **Enforces:** INV-8 (responsiveness half).
+
+#### `gate:basic-block-coverage`
+
+- **Runs:** an opt-in loaded-QEMU execution that registers the plugin's TB
+  translation, execution, and flush callbacks, exports guest PC and block length
+  through the versioned coverage ring, and consumes that stream in the engine.
+- **Pass/fail:** the observed stream matches the fixed execution corpus, off mode
+  registers no callback, and enabling coverage changes neither canonical state nor
+  any execution fingerprint. Model-only or callback-stub evidence cannot turn the
+  gate green.
+- **Guards:** the L2 plugin-to-L3 exploration boundary. **Enforces:** INV-4,
+  INV-7, ADV-21, and PLUG-35..PLUG-37.
 
 #### `gate:any-guest`
 
@@ -835,6 +850,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase4  gate:e2e-determinism               (mock backend)
   phase5  gate:control-responsive            (control plane)
   phase6  gate:replay-oracle                 (active search)
+  phase6  gate:basic-block-coverage           (loaded-QEMU coverage boundary)
   phase7  gate:perf-bench                    (performance regression)
   phase7  gate:e2e-determinism               (final acceptance)
   phase7  gate:fleet-equivalence             (distributed equivalence)
@@ -882,26 +898,39 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     src_node, seq)` key, advances by a deterministic instruction-budget script,
     and hashes a synthetic register/memory fingerprint with no wall-clock,
     thread RNG, or unordered map dependency.
-- [x] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
+- [ ] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
   cross-check suite. — satisfies [HARN-16]; spec §3.2.
-  - Completed by `checks.crucible.phase1.hostObservableSchedule` and the
-    `host_observable_schedule_cross_checks_sim_double_against_real_plugin_path`
+  - Partial callback-core evidence is provided by
+    `checks.crucible.phase1.hostObservableSchedule` and the
+    `host_observable_schedule_cross_checks_sim_double_against_plugin_projection`
     unit test: `crucible::SimDouble` now records a typed host-observable
     schedule vocabulary for horizon advances, inbound SPSC frame deliveries,
     outbound SPSC frame emissions, I/O completions, and snapshots; the QEMU
-    plugin test constructs the matching real-plugin projection through
+    plugin test constructs the matching callback-model projection through
     `PluginIdleHotLoop`, `PluginVirtualClock`, `PluginNetworkRx`, and
     `PluginNetworkTx` before asserting byte-for-byte schedule equality, with the
     plugin-to-engine dependency documented as a test-only HARN-16 cross-check.
+    This does not execute an installed production plugin, so the live-plugin
+    half remains open.
 - [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
   (twice-reduce digest compare + scheduler-ordering and decision-RNG-stability
   property tests). — satisfies [HARN-3], [HARN-31]; spec §2, §4.5.
-- [x] **T-HARN-6** Implement the execution fingerprint (icount + register +
+- [ ] **T-HARN-6** Implement the execution fingerprint (icount + register +
   memory-region rolling hash) with icount-driven, observation-only sampling via
   plugin/QMP. — satisfies [HARN-4], [HARN-7]; spec §4.
-- [x] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
+  - A provisional periodic trace importer now covers aggregate icount, all-vCPU
+    registers, RR cursor, full-RAM helper output, and ordered CPU-observed MMIO
+    history. Its register/RAM shape is still bound from the first run rather than
+    an independent launch/build contract, and it lacks complete current device
+    state and interaction-boundary samples; therefore this task remains open.
+- [ ] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
   unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
   bisection result). — satisfies [HARN-5]; spec §4.3.
+  - The model comparator and a provenance-bound real-QEMU diagnostic comparison
+    exist, but trace mutations provide only coarse post-processing localization;
+    there is no integrated rerun hook for instruction-exact refinement or
+    both-sides state dumps. `greenBeforeAdvance` and `gate:any-guest` therefore
+    remain blocked on this task.
 - [x] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical
   observed-injection-icount vectors across host interleavings, against the
   double). — satisfies [HARN-8]; spec §4.4.
@@ -991,20 +1020,21 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   well-formed block requests, block responses, and 9p envelopes. Full 9p
   filesystem semantics and block sub-node execution remain owned by the
   `15-io-subnodes.md` implementation tasks.
-- [x] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
+- [ ] **T-HARN-20** Implement the per-patch QEMU micro-test framework and
   `gate:patch-microtests` (each patch has a focused test absent on stock QEMU). —
   satisfies [HARN-20]; spec §10.
-- [x] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally
+- [ ] **T-HARN-21** Implement `gate:qemu-inert` (sim-off patched QEMU behaviorally
   identical to an unpatched reference over the behavioral corpus, all from-source).
   — satisfies [HARN-21]; spec §10.
-  - Completed by `checks.crucible.phase2.gates.qemuInert`, which builds both QEMU
+  - Partial evidence under `checks.crucible.phase2.gates.qemuInert`, which builds both QEMU
     variants from the pinned source and compares normalized boot/device-I/O, QMP,
     migration, and snapshot/restore command surface with sim mode off.
-- [x] **T-HARN-22** Implement the adversarial host-condition harness (randomized
+- [ ] **T-HARN-22** Implement the adversarial host-condition harness (randomized
   host scheduling, wall-clock jitter, varied core counts, induced I/O stalls) and
   `gate:adversarial-determinism` (byte-identical canonical logs/fingerprints). —
   satisfies [HARN-11]; spec §7.
-  Completed by `checks.crucible.phase3.gates.adversarialDeterminism`: the gate
+  Partial modeled evidence is provided by
+  `checks.crucible.phase3.gates.adversarialDeterminism`: the gate
   runs a fixed adversarial scenario corpus through the shared
   `canonical_host_adversary_matrix`, covering randomized task order, logical
   affinity, load/yield jitter, varied worker counts, producer/consumer skew, and
@@ -1013,10 +1043,10 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   fingerprints, observer output, and empty evidence; shared artifact
   machine-profile reproduction is completed by T-HARN-25, while real AOS
   VM/fleet checks remain owned by the packaging tasks.
-- [x] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
+- [ ] **T-HARN-23** Build the representative multi-VM fault-injected e2e scenario
   and implement `gate:e2e-determinism` (adversarial comparison + cross-machine
   reproduce-from-artifact). — satisfies [HARN-22], [HARN-23]; spec §11.
-  Completed by `checks.crucible.phase7.gates.e2eDeterminism`: the `crucible-cli`
+  Partial mock evidence is provided by `checks.crucible.phase7.gates.e2eDeterminism`: the `crucible-cli`
   gate target now runs the representative self-contained mock e2e artifact
   through the shared harness final-acceptance route, exercises the canonical
   adversarial host profile matrix, verifies byte-identical logs/fingerprints,
@@ -1028,7 +1058,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   artifact format and CLI produce/replay seam are completed by T-HARN-24; the
   shared mock artifact machine-profile verifier is completed by T-HARN-25, and
   real AOS VM/fleet wiring remains packaging work.
-- [x] **T-HARN-24** Implement the reproduction-artifact format `(seed,
+- [ ] **T-HARN-24** Implement the reproduction-artifact format `(seed,
   ScenarioDef, Schedule)` with pinned engine/ABI/QEMU identities and
   content-addressed component references, plus produce/reproduce wiring into
   failures and the CLI. — satisfies [HARN-27], [HARN-29]; spec §12.
@@ -1045,7 +1075,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   T-HARN-25 adds the shared mock machine-profile verifier and identity-mismatch
   replay failure; BLAKE3/DagStore-backed durable identities and real AOS fleet
   reproduction remain packaging work.
-- [x] **T-HARN-25** Implement machine-independent reproduction verification
+- [ ] **T-HARN-25** Implement machine-independent reproduction verification
   (re-run from artifact on a different host profile ⇒ byte-identical) and fail
   loudly on engine/ABI/QEMU identity mismatch. — satisfies [HARN-28]; spec §12.
   Completed by `checks.crucible.phase7.machineIndependentReproduction`:
@@ -1063,7 +1093,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   from the selected local replay identity with exit code 3, including QEMU build
   identity drift. This closes the shared mock artifact machine-profile route;
   physical AOS VM/fleet reproduction remains with the packaging and fleet gates.
-- [x] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
+- [ ] **T-HARN-26** Wire the full gate ordering into the phase plan and enforce
   green-before-advance, with `gate:e2e-determinism` terminal and the `SimDouble`
   available from Phase 1. — satisfies [HARN-3], [HARN-30]; spec §13.
   Completed by `checks.crucible.phase1.phaseGateOrdering`:

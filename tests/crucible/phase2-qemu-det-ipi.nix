@@ -15,7 +15,7 @@
   # through the real multi-vCPU S11 trace fixture.
   simS11 = import ./phase0-s11.nix {
     inherit pkgs lib qemuPackage;
-    accelerator = "sim";
+    accelerator = "sim,thread=single";
     cadence = 65536;
     detIpiProbe = true;
     requireGuestPass = false;
@@ -152,7 +152,7 @@ in
 
             s11_result="${simS11}/result"
             require_line "$s11_result" "PASS"
-            require_line "$s11_result" "accelerator=sim"
+            require_line "$s11_result" "accelerator=sim,thread=single"
             require_line "$s11_result" "vcpus=2"
             require_line "$s11_result" "rr_switch_quantum=4096"
             require_line "$s11_result" "run_horizon=plugin-stop_at-4194304"
@@ -224,7 +224,7 @@ in
             gate=gate:layer0-determinism
             gate=gate:single-vm-fingerprint
             patch=${patchName}
-            accelerator=sim
+            accelerator=sim,thread=single
             vcpus=2
             rr_switch_quantum=4096
             deterministic_ipi_queue=sim-only-inter-vcpu
@@ -238,7 +238,7 @@ in
             deterministic_ipi_event_count_match=true
             deterministic_ipi_delivery_icount_trace_match=true
             deterministic_ipi_source_target_distinct=true
-            sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,stop_at=4194304,det_ipi_probe=enabled)
+            sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=4194304,det_ipi_probe=enabled)
             patched_fixture_exercised=true
             stock_negative_control=true
             stock_negative_control_scope=non-sim-and-self-IPI-use-upstream-path

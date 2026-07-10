@@ -65,8 +65,8 @@ region and, once at setup, the control socket.
 
 ### 12.1.2 Single-threaded round-robin ⇒ uncontended state
 
-Every VM runs under single-threaded round-robin TCG (`-accel tcg,thread=single`)
-with N ≥ 1 vCPUs (10/[QEMU-5]). QEMU drives all N vCPUs serially on **one host
+Every simulation VM runs under the single-threaded TCG-derived sim accelerator
+(`-accel sim,thread=single`) with N ≥ 1 vCPUs (10/[QEMU-5]). QEMU drives all N vCPUs serially on **one host
 thread**, so it serializes every vCPU callback — registration, translation-block
 hooks, idle, resume, and the device callbacks that fire on the vCPU thread —
 across all vCPUs onto exactly that one thread. This is the structural fact that
@@ -344,18 +344,20 @@ observes a consistent `(ceiling, pending-inputs)` snapshot ([SCHED-36]).
 
 ### 12.3.5 Advancing and draining
 
-- **[PLUG-16]** When the plugin performs an idle jump it MUST advance virtual
-  time *synchronously* to the authorized wake icount, firing all timers due at or
-  before that point inline and draining any scheduled bottom-halves the advance
-  produces, so that the guest's architectural state at the wake point is the same
-  bit-for-bit regardless of host timing. The advance MUST be performed from the
-  idle callback context (where QEMU's big lock is held) and MUST NOT defer timer
-  firing to an asynchronous host-scheduled point that could reorder relative to
-  the next quantum. *Gate:* `gate:single-vm-fingerprint`,
+- **[PLUG-16]** When the plugin performs an idle jump it MUST enqueue exactly one
+  authorized virtual-time target and return from the vCPU/plugin callback without
+  mutating plugin clock or injection state. QEMU MUST advance the virtual clock
+  and dispatch due timers from queued vCPU work, then deliver completion through
+  the normal main loop only after timer-produced bottom halves. The plugin MUST
+  validate that exact completion before advancing its clock, consuming inbound
+  rings, injecting frames, or republishing the node as running. No next quantum
+  may start while completion is pending. This two-stage barrier makes the wake
+  state bit-for-bit independent of host timing without recursive main-loop
+  polling. *Gate:* `gate:single-vm-fingerprint`,
   `gate:layer0-determinism`. *Spec:* §12.3.5; routes [DET-1], [INV-4],
   [SCHED-28].
 
-The synchronous-drain requirement is what makes idle fast-forward exact: a
+The queued-completion barrier is what makes idle fast-forward exact: a
 60-second idle gap collapses to one virtual-time jump ([G-9],
 [`25-performance-targets.md`](25-performance-targets.md)) and every timer that was
 due in that gap fires at its exact icount, in the same order, on every run.
@@ -897,7 +899,7 @@ component that makes that purity true *inside* the QEMU process.
 > after the shmem ABI ([`13-shmem-abi.md`](13-shmem-abi.md)) and control protocol
 > ([`14-protocol.md`](14-protocol.md)) primitives the plugin depends on.
 
-- [x] **T-PLUG-1** Scaffold the `crucible-qemu-plugin` `cdylib`: the QEMU
+- [ ] **T-PLUG-1** Scaffold the `crucible-qemu-plugin` `cdylib`: the QEMU
   `qemu_plugin_version` and `qemu_plugin_install` exports, inert callback entry
   points, QEMU API/vCPU-count validation from `qemu_info_t`, the
   single-threaded round-robin TCG precondition, and the partition of state into a
@@ -910,83 +912,101 @@ component that makes that purity true *inside* the QEMU process.
   `shmemfd`/`wakefd`, `whitebox`, `coverage`) as a total, fail-closed parser that
   aborts registration on any malformed or missing required key. — satisfies
   [PLUG-5], [PLUG-6]; spec §12.2.1.
-- [x] **T-PLUG-3** Implement the fixed registration order — parse → handshake →
+- [ ] **T-PLUG-3** Implement the fixed registration order — parse → handshake →
   acquire time control before the first instruction → map+validate shmem → arm
   wake fd → register callbacks → `SetupAck` → wait boot barrier — failing
   loudly at each step. — satisfies [PLUG-7], [PLUG-8]; spec §12.2.2.
-- [x] **T-PLUG-4** Implement clock ownership and the no-host-time invariant: the
+- [ ] **T-PLUG-4** Implement clock ownership and the no-host-time invariant: the
   plugin advances virtual time only by guest instructions up to the ceiling and by
   authorized idle jumps; ban host wall-clock/monotonic reads on the time path. —
   satisfies [PLUG-1], [PLUG-9], [PLUG-44]; spec §12.3.1, §12.10.1.
-- [x] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
+- [ ] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
   icount, compute the next local wake from exact timer and inbound delivery
   signals against the scheduler ceiling, park on the wake fd/futex (no busy spin,
   no wall-clock timeout), jump on scheduler release, mark done on shutdown wake,
   inject due frames in deterministic order, and republish running/resume status. —
   satisfies [PLUG-10], [PLUG-11], [PLUG-12], [PLUG-13], [PLUG-17]; spec §12.3.2,
   §12.3.3, §12.4.1.
-- [x] **T-PLUG-6** Implement exact next-deadline introspection (read the next
+- [ ] **T-PLUG-6** Implement exact next-deadline introspection (read the next
   `QEMU_CLOCK_VIRTUAL` deadline via the required plugin export, `ceil`-convert to
   icount) and ban the overshoot-and-correct fallback; fail loudly during callback
   registration if the capability is missing. —
   satisfies [PLUG-14], [PLUG-15]; spec §12.3.4.
-- [x] **T-PLUG-7** Implement synchronous idle-jump advancement through the
-  required direct-advance export that fires due timers inline and drains
-  bottom-halves from the idle context, so the wake-point architectural state is
-  bit-identical regardless of host timing. — satisfies
+- [ ] **T-PLUG-7** Implement idle-jump advancement through the required
+  queued-advance (`qemu_plugin_advance_time_ns`) and normal-main-loop completion
+  (`qemu_plugin_register_time_advance_cb`) exports: keep plugin state
+  unchanged while pending, order timer bottom halves before completion, then
+  validate the exact target before clock/ring/RX commit so the wake-point
+  architectural state is bit-identical regardless of host timing. — satisfies
   [PLUG-16]; spec §12.3.5.
-- [x] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
+- [ ] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
   icount, deliver iff `delivery_icount <= current_icount`, order injections by
   `(delivery_icount, src_node, seq)`, and fail loudly on an already-passed
   delivery icount. — satisfies [PLUG-18], [PLUG-19], [PLUG-20]; spec §12.4.2.
-- [x] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
+- [ ] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
   `device_io_active`/pending-counter, paired one-to-one with submit/completion and
   cleared on burst-done. — satisfies [PLUG-21], [PLUG-22]; spec §12.4.3.
-- [x] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
+- [ ] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
   frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
   rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
   [PLUG-24], [PLUG-25]; spec §12.5.1.
-- [x] **T-PLUG-11** Implement RX injection via the lossless queueing path from
+- [ ] **T-PLUG-11** Implement RX injection via the lossless queueing path from
   the idle context, after the idle jump, gated by the delivery-icount rule. —
   satisfies [PLUG-26], [PLUG-27]; spec §12.5.2.
-- [x] **T-PLUG-12** Implement the block submit/poll callbacks against the
+- [ ] **T-PLUG-12** Implement the block submit/poll callbacks against the
   reserved block slots, freezing time on submit and validating the response's
   delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];
   spec §12.6.
-- [x] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
+- [ ] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
   reserved 9p slots, holding the freeze for the whole burst. — satisfies
   [PLUG-29], [PLUG-30], [PLUG-31]; spec §12.6.
-- [x] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
+- [ ] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
   reserved instruction/port, read guest memory via the plugin API, stamp the
   marker with the exact icount; ensure off-mode installs nothing and black-box is
   fully functional; route white-box inputs through the injection contract. —
   satisfies [PLUG-32], [PLUG-33], [PLUG-34]; spec §12.7.
-- [x] **T-PLUG-15** Implement the optional coverage hook: a registration-time
+- [ ] **T-PLUG-15** Implement the optional coverage hook: a registration-time
   opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
   or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],
   [PLUG-36], [PLUG-37]; spec §12.8.
-- [x] **T-PLUG-16** Implement the handshake and slot cross-check
+  Partial implementation registers QEMU's stock TB translation, execution, and
+  flush callbacks only when coverage is enabled. It derives guest PC and block
+  length at translation, observes exact TB-entry icount without committing timer
+  state, bounds pending observations, and reclaims callback userdata after QEMU
+  destroys generated callbacks during an exclusive TB flush. Rust callback-model
+  tests, an executable C ABI/arithmetic model, and QEMU-10 source-order checks
+  cover those contracts. ABI v2 now release-publishes each novel map entry into
+  a dedicated per-VM SPSC ring whose capacity equals the fixed coverage-map
+  cardinality. The host acquire-drains that ring only at completed quantum
+  boundaries, validates sequence, icount, map index, and novelty, and admits the
+  resulting observations through the generic backend boundary into the
+  scheduler's unified event log before session publication, including a final
+  drain returned through shutdown before the actor publishes its stopped state.
+  No QEMU-local coverage vector is retained as a second record. Real loaded-QEMU
+  coverage-on/off fingerprint evidence is still absent, so this task remains
+  open.
+- [ ] **T-PLUG-16** Implement the handshake and slot cross-check
   (`Hello`/`HelloAck`, exact ABI match, `slot_index < node_count`, launch-arg
   agreement). — satisfies [PLUG-38], [PLUG-39]; spec §12.9.1.
-- [x] **T-PLUG-17** Implement setup completion: receive the two `SCM_RIGHTS` fds,
+- [ ] **T-PLUG-17** Implement setup completion: receive the two `SCM_RIGHTS` fds,
   `mmap` and validate the region header/ABI, arm the wake fd, and reply
   `SetupAck`; refuse to participate on non-zero status. — satisfies [PLUG-40],
   [PLUG-41]; spec §12.9.2.
-- [x] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
+- [ ] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
   publish before the first instruction, using the wake fd/futex (never a
   wall-clock sleep as the gate). — satisfies [PLUG-42]; spec §12.9.3.
-- [x] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
+- [ ] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
   mark done, stop touching shmem, initiate orderly QEMU shutdown so no child
   leaks. — satisfies [PLUG-43]; spec §12.9.4.
 - [x] **T-PLUG-20** Enforce the cross-process atomic-ordering rules on every shmem
   access (acquire loads / release stores matching the ABI) despite the
   single-threaded plugin side, and document that relaxed is only used for
   self-owned counters outside shmem. — satisfies [PLUG-45]; spec §12.10.1.
-- [x] **T-PLUG-21** Audit and minimize every `unsafe` block with a `// SAFETY:`
+- [ ] **T-PLUG-21** Audit and minimize every `unsafe` block with a `// SAFETY:`
   comment (single-vCPU serialization, mmap lifetime, descriptor validity,
   vCPU-thread callback contract); read guest memory only via the plugin API; bounds-
   check all payload copies. — satisfies [PLUG-46], [PLUG-47]; spec §12.10.2.
-- [x] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
+- [ ] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
   failure (broken IPC, missing capability, ABI mismatch, full ring, passed
   delivery icount) with a distinct diagnosable error that the divergence bisector
   can localize; never a wall-clock-dependent fallback. — satisfies [PLUG-48];
@@ -995,21 +1015,21 @@ component that makes that purity true *inside* the QEMU process.
   mode off the plugin is not loaded and has zero effect on QEMU behavior. This
   contributes plugin-half evidence for [PLUG-49]; the full real-QEMU corpus is
   implemented by T-HARN-21/T-PATCH-3. — satisfies [PLUG-49]; spec §12.10.4.
-- [x] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
+- [ ] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
   RUN (fixed `rr_switch_quantum`, fixed ascending vCPU rotation), per-vCPU halt
   tracking, and the all-vCPUs-halted node-idle predicate with
   `idle_wake_icount = min` over vCPUs of the next armed deadline. — satisfies
   [PLUG-3], [PLUG-10], [PLUG-50], [PLUG-52]; spec §12.1.2, §12.3.2,
   §12.3.6.
-- [x] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
+- [ ] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
   vCPU switch / deliver the interrupt at the commanded node-icount via the
   preemption-injection capability (11/[PATCH-47]), failing loud and localizing an
   out-of-`[deadline, ceiling]` command rather than clamping or deferring. —
   satisfies [PLUG-50]; spec §12.3.6.
-- [x] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
+- [ ] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
   (via 11/[PATCH-46]) feeding the N-vCPU fingerprint (10/[QEMU-34]),
   side-effect-free wrt `S`/`T`. — satisfies [PLUG-52]; spec §12.3.2.
-- [x] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
+- [ ] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
   serve a `random_request` by drawing from the seeded decision source and
   replying at the trap icount under the injection contract, record a
   `Decision::AppRandom`, keep it side-effect-free except the requested value, and

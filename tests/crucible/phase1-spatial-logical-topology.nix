@@ -11,7 +11,9 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  deviceSubnode = builtins.readFile ../../crates/crucible/src/device_subnode.rs;
+  worldDevices = builtins.readFile ../../crates/crucible/tests/world_devices.rs;
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   shmemRoot = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -53,16 +55,16 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
       {
-        label = "T-SPAT-9 checked off";
+        label = "T-SPAT-9 checked off after physical-layout invariance proof";
         needle = "- [x] **T-SPAT-9**";
       }
       {
         label = "T-SPAT-9 completion names logical-only world";
-        needle = "`nodes` and `links`, `LinkDef` records logical link characteristics";
+        needle = "`World::nodes` is the one\n    heterogeneous logical VM/block/9p collection";
       }
       {
         label = "T-SPAT-9 completion names physical layout invariance";
-        needle = "host-memory-geometry variants";
+        needle = "vary real shmem layout and host\n    memory geometry";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -72,7 +74,7 @@
       }
       {
         label = "world node accessor";
-        needle = "pub fn nodes(&self) -> &[WorldNode]";
+        needle = "pub fn nodes(&self) -> &[WorldNodeDef]";
       }
       {
         label = "world link accessor";
@@ -96,7 +98,47 @@
       }
       {
         label = "world material is nodes and links";
-        needle = "fn world_material(nodes: &[WorldNode], links: &[LinkDef]) -> String";
+        needle = "fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> String";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/device_subnode.rs" deviceSubnode [
+      {
+        label = "instantiation-time physical layout policy";
+        needle = "pub struct WorldIoLayoutPolicy";
+      }
+      {
+        label = "deterministic logical-to-physical derivation";
+        needle = "pub struct WorldIoInstantiationLayout";
+      }
+      {
+        label = "physical source id outside World";
+        needle = "pub source_node: u32";
+      }
+      {
+        label = "physical request capacity outside World";
+        needle = "pub inbox_capacity: u64";
+      }
+      {
+        label = "physical response capacity outside World";
+        needle = "pub outbox_capacity: u64";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/world_devices.rs" worldDevices [
+      {
+        label = "physical layout identity regression";
+        needle = "transport_layout_is_derived_and_cannot_change_world_or_device_identity";
+      }
+      {
+        label = "serialized World excludes source ids";
+        needle = "assert!(!toml.contains(\"source_node\"))";
+      }
+      {
+        label = "serialized World excludes request capacity";
+        needle = "assert!(!toml.contains(\"inbox_capacity\"))";
+      }
+      {
+        label = "serialized World excludes response capacity";
+        needle = "assert!(!toml.contains(\"outbox_capacity\"))";
       }
     ]
     ++ forbiddenFor "crates/crucible/src/model.rs" model [
@@ -241,6 +283,16 @@ in
               --lib \
               world_logical_topology \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --features test-double \
+              --target-dir "$TMPDIR/crucible-spatial-logical-topology-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --test world_devices \
+              transport_layout_is_derived_and_cannot_change_world_or_device_identity \
+              -- --exact --test-threads=1
           '';
         }
         {

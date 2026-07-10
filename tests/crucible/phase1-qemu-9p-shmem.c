@@ -21,7 +21,14 @@ static int fixture_detach_count;
 static int fixture_error_count;
 static int fixture_pdu_free_count;
 static int fixture_upstream_submit_count;
-static int fixture_main_loop_wait_count;
+static int fixture_wake_notifier_add_count;
+static int fixture_wake_notifier_remove_count;
+static Notifier *fixture_registered_wake_notifier;
+static int fixture_shutdown_request_count;
+static int fixture_shutdown_reason;
+static bool fixture_runstate_shutdown;
+static int fixture_shutdown_requested;
+static int fixture_v9fs_reset_count;
 
 static int fixture_burst_start_count;
 static int fixture_burst_done_count;
@@ -98,6 +105,7 @@ static VirtQueueElement *new_elem(uint8_t *request, size_t request_len,
 static void reset_fixture(void)
 {
     memset(&fixture_device, 0, sizeof(fixture_device));
+    qemu_plugin_register_9p_cb(NULL, NULL, NULL, NULL, NULL);
     fixture_device.vq = &fixture_queue;
     fixture_device.state.tag = "crucible";
     fixture_device.state.fsconf.tag = "crucible";
@@ -111,7 +119,14 @@ static void reset_fixture(void)
     fixture_error_count = 0;
     fixture_pdu_free_count = 0;
     fixture_upstream_submit_count = 0;
-    fixture_main_loop_wait_count = 0;
+    fixture_wake_notifier_add_count = 0;
+    fixture_wake_notifier_remove_count = 0;
+    fixture_registered_wake_notifier = NULL;
+    fixture_shutdown_request_count = 0;
+    fixture_shutdown_reason = -1;
+    fixture_runstate_shutdown = false;
+    fixture_shutdown_requested = SHUTDOWN_CAUSE_NONE;
+    fixture_v9fs_reset_count = 0;
     fixture_burst_start_count = 0;
     fixture_burst_done_count = 0;
     fixture_submit_count = 0;
@@ -130,6 +145,14 @@ static void reset_fixture(void)
     memset(fixture_last_request, 0, sizeof(fixture_last_request));
     memset(fixture_response, 0, sizeof(fixture_response));
     fixture_response_len = 0;
+    fixture_device.crucible_9p_wake_notifier.notify = virtio_9p_crucible_wake;
+}
+
+static void fire_scheduler_wake(QemuPluginWakeEvent event)
+{
+    Notifier *notifier = &fixture_device.crucible_9p_wake_notifier;
+
+    notifier->notify(notifier, (void *)(intptr_t)event);
 }
 
 static void prepare_request(uint8_t *request, size_t request_len, uint8_t id,
@@ -240,6 +263,27 @@ static int run_upstream_fallback(void)
                        "submit callback fired while unregistered");
 }
 
+static int run_sim_off_realize_has_no_wake_notifier(void)
+{
+    reset_fixture();
+    virtio_9p_device_realize((DeviceState *)&fixture_device, NULL);
+
+    if (expect_bool(fixture_wake_notifier_add_count == 0,
+                    "sim-off realize registered a wake notifier") ||
+        expect_bool(!fixture_device.crucible_9p_wake_registered,
+                    "sim-off realize retained wake-registration state")) {
+        return 1;
+    }
+
+    virtio_9p_device_unrealize((DeviceState *)&fixture_device);
+    return expect_bool(fixture_wake_notifier_remove_count == 0,
+                       "sim-off unrealize removed an unregistered notifier") ||
+           expect_bool(fixture_error_count == 0,
+                       "sim-off lifecycle reported a device error") ||
+           expect_bool(fixture_shutdown_request_count == 0,
+                       "sim-off lifecycle requested shutdown");
+}
+
 static int run_forwarding_path(void)
 {
     int userdata_marker = 0;
@@ -262,13 +306,40 @@ static int run_forwarding_path(void)
                                &userdata_marker);
     handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
 
+    if (expect_bool(fixture_poll_count == 1,
+                    "pending request polled more than once before a wake") ||
+        expect_bool(fixture_push_count == 0,
+                    "pending request completed before a scheduler wake") ||
+        expect_bool(fixture_device.crucible_9p_pending_pdu != NULL,
+                    "pending request state was not retained") ||
+        expect_bool(fixture_burst_done_count == 0,
+                    "pending request finished its burst early")) {
+        return 1;
+    }
+
+    fire_scheduler_wake(QEMU_PLUGIN_WAKE_EVENT_DRAINED);
+    if (expect_bool(fixture_poll_count == 2,
+                    "first scheduler wake did not repoll exactly once") ||
+        expect_bool(fixture_push_count == 0,
+                    "still-pending request completed on first wake")) {
+        return 1;
+    }
+    fire_scheduler_wake(QEMU_PLUGIN_WAKE_EVENT_DRAINED);
+    if (expect_bool(fixture_poll_count == 3,
+                    "second scheduler wake did not complete exactly once") ||
+        expect_bool(fixture_burst_done_count == 1,
+                    "completed request did not finish its burst once")) {
+        return 1;
+    }
+    fire_scheduler_wake(QEMU_PLUGIN_WAKE_EVENT_DRAINED);
+
     return expect_bool(userdata_marker == 11, "userdata did not reach burst callbacks") ||
            expect_bool(fixture_burst_start_count == 1, "burst start count mismatch") ||
            expect_bool(fixture_burst_done_count == 1, "burst done count mismatch") ||
            expect_bool(fixture_submit_count == 1, "submit count mismatch") ||
            expect_bool(fixture_poll_count == 3, "poll count mismatch") ||
-           expect_bool(fixture_main_loop_wait_count == 2,
-                       "pending polls did not wait through main loop") ||
+           expect_bool(fixture_device.crucible_9p_pending_pdu == NULL,
+                       "completed request left pending state") ||
            expect_bool(fixture_upstream_submit_count == 0,
                        "upstream pdu_submit used during forwarding") ||
            expect_bool(fixture_push_count == 1, "forwarded response was not pushed") ||
@@ -288,6 +359,230 @@ static int run_forwarding_path(void)
                        "response header length mismatch");
 }
 
+static int run_duplicate_output_while_pending_is_deferred(void)
+{
+    uint8_t request_a[9];
+    uint8_t request_b[9];
+    uint8_t response_a[32] = {0};
+    uint8_t response_b[32] = {0};
+
+    reset_fixture();
+    fixture_alloc_remaining = 2;
+    prepare_request(request_a, sizeof(request_a), 112, 2);
+    prepare_request(request_b, sizeof(request_b), 113, 2);
+    prepare_response(fixture_response, 9, 114, 2);
+    fixture_response_len = 9;
+    fixture_pending_before_ready = 1;
+    fixture_elem = new_elem(request_a, sizeof(request_a), response_a,
+                            sizeof(response_a));
+    fixture_next_elem = new_elem(request_b, sizeof(request_b), response_b,
+                                 sizeof(response_b));
+    if (fixture_elem == NULL || fixture_next_elem == NULL) {
+        return fail("failed to allocate duplicate-output elements");
+    }
+
+    qemu_plugin_register_9p_cb(fixture_burst_start, fixture_submit,
+                               fixture_poll, fixture_burst_done, NULL);
+    handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
+    handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
+    if (expect_bool(fixture_pop_count == 1,
+                    "duplicate output consumed a second request while pending") ||
+        expect_bool(fixture_submit_count == 1,
+                    "duplicate output submitted a second request while pending") ||
+        expect_bool(fixture_poll_count == 1,
+                    "duplicate output repolled without a scheduler wake")) {
+        return 1;
+    }
+
+    fire_scheduler_wake(QEMU_PLUGIN_WAKE_EVENT_DRAINED);
+    return expect_bool(fixture_pop_count == 2,
+                       "wake completion did not resume queued output") ||
+           expect_bool(fixture_submit_count == 2,
+                       "wake completion did not submit the deferred request") ||
+           expect_bool(fixture_poll_count == 3,
+                       "wake completion polled requests out of sequence") ||
+           expect_bool(fixture_push_count == 2,
+                       "wake completion did not complete both requests") ||
+           expect_bool(fixture_burst_start_count == 1,
+                       "deferred request opened a duplicate burst") ||
+           expect_bool(fixture_burst_done_count == 1,
+                       "deferred request did not close exactly one burst");
+}
+
+static int run_wake_failure_abandons_pending(void)
+{
+    uint8_t request[9];
+    uint8_t response[32] = {0};
+
+    reset_fixture();
+    prepare_request(request, sizeof(request), 115, 21);
+    fixture_pending_before_ready = 4;
+    fixture_elem = new_elem(request, sizeof(request), response, sizeof(response));
+    if (fixture_elem == NULL) {
+        return fail("failed to allocate wake-failure element");
+    }
+
+    qemu_plugin_register_9p_cb(fixture_burst_start, fixture_submit,
+                               fixture_poll, fixture_burst_done, NULL);
+    handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
+    fire_scheduler_wake(QEMU_PLUGIN_WAKE_EVENT_FAILED);
+
+    return expect_bool(fixture_error_count == 1,
+                       "terminal wake failure did not fail the device") ||
+           expect_bool(fixture_detach_count == 1,
+                       "terminal wake failure did not detach the request") ||
+           expect_bool(fixture_pdu_free_count == 1,
+                       "terminal wake failure did not free the pdu") ||
+           expect_bool(fixture_device.crucible_9p_pending_pdu == NULL,
+                       "terminal wake failure stranded pending state") ||
+           expect_bool(!fixture_device.crucible_9p_burst_active,
+                       "terminal wake failure left a burst active") ||
+           expect_bool(fixture_burst_done_count == 1,
+                       "terminal wake failure did not close the burst") ||
+           expect_bool(fixture_shutdown_request_count == 0,
+                       "device notifier duplicated wake-fd owner shutdown");
+}
+
+static int run_callback_removal_abandons_pending(void)
+{
+    uint8_t request[9];
+    uint8_t response[32] = {0};
+
+    reset_fixture();
+    prepare_request(request, sizeof(request), 115, 23);
+    fixture_pending_before_ready = 4;
+    fixture_elem = new_elem(request, sizeof(request), response, sizeof(response));
+    if (fixture_elem == NULL) {
+        return fail("failed to allocate callback-removal element");
+    }
+
+    qemu_plugin_register_9p_cb(fixture_burst_start, fixture_submit,
+                               fixture_poll, fixture_burst_done, NULL);
+    handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
+    qemu_plugin_register_9p_cb(NULL, NULL, NULL, NULL, NULL);
+    fire_scheduler_wake(QEMU_PLUGIN_WAKE_EVENT_DRAINED);
+
+    return expect_bool(fixture_poll_count == 1,
+                       "removed callback was invoked after teardown") ||
+           expect_bool(fixture_error_count == 1,
+                       "callback removal did not fail the device") ||
+           expect_bool(fixture_shutdown_request_count == 1,
+                       "callback removal did not request shutdown") ||
+           expect_bool(fixture_shutdown_reason == SHUTDOWN_CAUSE_HOST_ERROR,
+                       "callback removal used the wrong shutdown reason") ||
+           expect_bool(fixture_detach_count == 1,
+                       "callback removal did not detach the request") ||
+           expect_bool(fixture_pdu_free_count == 1,
+                       "callback removal did not free the pdu") ||
+           expect_bool(fixture_device.crucible_9p_pending_pdu == NULL,
+                       "callback removal stranded pending state");
+}
+
+static int run_reset_abandons_pending(void)
+{
+    uint8_t request[9];
+    uint8_t response[32] = {0};
+
+    reset_fixture();
+    prepare_request(request, sizeof(request), 115, 24);
+    fixture_pending_before_ready = 4;
+    fixture_elem = new_elem(request, sizeof(request), response, sizeof(response));
+    if (fixture_elem == NULL) {
+        return fail("failed to allocate reset element");
+    }
+
+    qemu_plugin_register_9p_cb(fixture_burst_start, fixture_submit,
+                               fixture_poll, fixture_burst_done, NULL);
+    handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
+    virtio_9p_reset((VirtIODevice *)&fixture_device);
+
+    return expect_bool(fixture_v9fs_reset_count == 1,
+                       "virtio reset did not reach the upstream reset") ||
+           expect_bool(fixture_error_count == 1,
+                       "reset with pending I/O did not fail the device") ||
+           expect_bool(fixture_shutdown_request_count == 1,
+                       "reset with pending I/O did not request shutdown") ||
+           expect_bool(fixture_detach_count == 1,
+                       "reset did not detach the pending request") ||
+           expect_bool(fixture_pdu_free_count == 1,
+                       "reset did not free the pending pdu") ||
+           expect_bool(fixture_device.crucible_9p_pending_pdu == NULL,
+                       "reset stranded pending state");
+}
+
+static int run_unrealize_abandons_pending(void)
+{
+    uint8_t request[9];
+    uint8_t response[32] = {0};
+
+    reset_fixture();
+    qemu_plugin_register_9p_cb(fixture_burst_start, fixture_submit,
+                               fixture_poll, fixture_burst_done, NULL);
+    virtio_9p_device_realize((DeviceState *)&fixture_device, NULL);
+    prepare_request(request, sizeof(request), 116, 22);
+    fixture_pending_before_ready = 4;
+    fixture_elem = new_elem(request, sizeof(request), response, sizeof(response));
+    if (fixture_elem == NULL) {
+        return fail("failed to allocate unrealize element");
+    }
+
+    handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
+    virtio_9p_device_unrealize((DeviceState *)&fixture_device);
+
+    return expect_bool(fixture_wake_notifier_add_count == 1,
+                       "realize did not register the wake notifier") ||
+           expect_bool(fixture_wake_notifier_remove_count == 1,
+                       "unrealize did not remove the wake notifier") ||
+           expect_bool(fixture_registered_wake_notifier == NULL,
+                       "unrealize retained a wake notifier") ||
+           expect_bool(fixture_detach_count == 1,
+                       "unrealize did not detach the pending request") ||
+           expect_bool(fixture_pdu_free_count == 1,
+                       "unrealize did not free the pending pdu") ||
+           expect_bool(fixture_device.crucible_9p_pending_pdu == NULL,
+                       "unrealize stranded pending state") ||
+           expect_bool(!fixture_device.crucible_9p_burst_active,
+                       "unrealize left a burst active") ||
+           expect_bool(fixture_error_count == 1,
+                       "running unrealize did not fail pending I/O") ||
+           expect_bool(fixture_shutdown_request_count == 1,
+                       "running unrealize did not request shutdown");
+}
+
+static int run_shutdown_unrealize_reclaims_pending_without_new_shutdown(void)
+{
+    uint8_t request[9];
+    uint8_t response[32] = {0};
+
+    reset_fixture();
+    qemu_plugin_register_9p_cb(fixture_burst_start, fixture_submit,
+                               fixture_poll, fixture_burst_done, NULL);
+    virtio_9p_device_realize((DeviceState *)&fixture_device, NULL);
+    prepare_request(request, sizeof(request), 117, 25);
+    fixture_pending_before_ready = 4;
+    fixture_elem = new_elem(request, sizeof(request), response, sizeof(response));
+    if (fixture_elem == NULL) {
+        return fail("failed to allocate shutdown-unrealize element");
+    }
+
+    handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
+    fixture_runstate_shutdown = true;
+    virtio_9p_device_unrealize((DeviceState *)&fixture_device);
+
+    return expect_bool(fixture_wake_notifier_remove_count == 1,
+                       "shutdown unrealize retained the wake notifier") ||
+           expect_bool(fixture_detach_count == 1,
+                       "shutdown unrealize did not detach the pending request") ||
+           expect_bool(fixture_pdu_free_count == 1,
+                       "shutdown unrealize did not free the pending pdu") ||
+           expect_bool(fixture_device.crucible_9p_pending_pdu == NULL,
+                       "shutdown unrealize stranded pending state") ||
+           expect_bool(fixture_error_count == 0,
+                       "shutdown unrealize reported a redundant device error") ||
+           expect_bool(fixture_shutdown_request_count == 0,
+                       "shutdown unrealize requested redundant shutdown");
+}
+
 static int run_two_request_burst(void)
 {
     int userdata_marker = 0;
@@ -298,7 +593,7 @@ static int run_two_request_burst(void)
 
     reset_fixture();
     fixture_alloc_remaining = 2;
-    prepare_request(request_a, sizeof(request_a), 112, 11);
+    prepare_request(request_a, sizeof(request_a), 112, 12);
     prepare_request(request_b, sizeof(request_b), 113, 12);
     prepare_response(fixture_response, 9, 114, 12);
     fixture_response_len = 9;
@@ -357,6 +652,42 @@ static int run_partial_registration_fallback(void)
                        "partial callback registration did not fall back upstream") ||
            expect_bool(fixture_submit_count == 0,
                        "partial callback registration used shmem submit");
+}
+
+static int run_malformed_response_header_fails_closed(bool wrong_tag)
+{
+    uint8_t request[9];
+    uint8_t response_area[16] = {0};
+
+    reset_fixture();
+    prepare_request(request, sizeof(request), 130, 9);
+    prepare_response(fixture_response, 9, 131, 9);
+    fixture_response_len = 9;
+    if (wrong_tag) {
+        store_le16(fixture_response + 5, 10);
+    } else {
+        store_le32(fixture_response, 8);
+    }
+    fixture_elem = new_elem(request, sizeof(request), response_area,
+                            sizeof(response_area));
+    if (fixture_elem == NULL) {
+        return fail("failed to allocate malformed-response element");
+    }
+
+    qemu_plugin_register_9p_cb(fixture_burst_start, fixture_submit,
+                               fixture_poll, fixture_burst_done, NULL);
+    handle_9p_output((VirtIODevice *)&fixture_device, &fixture_queue);
+
+    return expect_bool(fixture_error_count == 1,
+                       "malformed response header did not fail") ||
+           expect_bool(fixture_detach_count == 1,
+                       "malformed response was not detached") ||
+           expect_bool(fixture_push_count == 0,
+                       "malformed response was pushed") ||
+           expect_bool(fixture_device.elems[0] == NULL,
+                       "malformed response left stale pdu slot") ||
+           expect_bool(fixture_burst_done_count == 1,
+                       "malformed response did not finish burst");
 }
 
 static int run_oversized_response_fails_closed(void)
@@ -450,9 +781,18 @@ int main(void)
     }
 
     if (run_upstream_fallback() ||
+        run_sim_off_realize_has_no_wake_notifier() ||
         run_forwarding_path() ||
+        run_duplicate_output_while_pending_is_deferred() ||
+        run_wake_failure_abandons_pending() ||
+        run_callback_removal_abandons_pending() ||
+        run_reset_abandons_pending() ||
+        run_unrealize_abandons_pending() ||
+        run_shutdown_unrealize_reclaims_pending_without_new_shutdown() ||
         run_two_request_burst() ||
         run_partial_registration_fallback() ||
+        run_malformed_response_header_fails_closed(false) ||
+        run_malformed_response_header_fails_closed(true) ||
         run_oversized_response_fails_closed() ||
         run_oversized_request_fails_closed() ||
         run_request_id_overflow_fails_closed()) {
@@ -462,13 +802,25 @@ int main(void)
     printf("virtio_9p_forwarding_path_exercised=true\n");
     printf("plugin_9p_callback_registration_exercised=true\n");
     printf("upstream_9p_fallback_without_callbacks=true\n");
+    printf("sim_off_9p_has_no_wake_notifier=true\n");
     printf("partial_9p_registration_falls_back=true\n");
     printf("raw_9p_request_round_trip=true\n");
     printf("raw_9p_response_delivered=true\n");
     printf("burst_callbacks_exercised=true\n");
     printf("multi_request_burst_exercised=true\n");
-    printf("pending_9p_poll_waits=true\n");
+    printf("pending_9p_poll_event_driven=true\n");
+    printf("scheduler_wake_repolls_pending_9p=true\n");
+    printf("duplicate_output_waits_for_pending_9p=true\n");
+    printf("pending_9p_burst_finishes_exactly_once=true\n");
+    printf("wake_failure_does_not_strand_9p=true\n");
+    printf("wake_failure_defers_shutdown_to_wake_fd_owner=true\n");
+    printf("callback_removal_does_not_call_stale_9p=true\n");
+    printf("reset_does_not_strand_9p=true\n");
+    printf("unrealize_does_not_strand_9p=true\n");
+    printf("shutdown_unrealize_reclaims_9p_without_redundant_shutdown=true\n");
     printf("ninep_pending_sentinel=%d\n", QEMU_PLUGIN_9P_POLL_PENDING);
+    printf("malformed_9p_response_size_fails_closed=true\n");
+    printf("mismatched_9p_response_tag_fails_closed=true\n");
     printf("oversized_9p_response_fails_closed=true\n");
     printf("oversized_9p_request_fails_closed=true\n");
     printf("request_id_overflow_fails_closed=true\n");
@@ -552,9 +904,35 @@ void pdu_submit(V9fsPDU *pdu, P9MsgHeader *hdr)
     fixture_upstream_submit_count++;
 }
 
-void qemu_plugin_main_loop_wait(void)
+void qemu_plugin_wake_notifier_add(Notifier *notifier)
 {
-    fixture_main_loop_wait_count++;
+    fixture_wake_notifier_add_count++;
+    fixture_registered_wake_notifier = notifier;
+}
+
+void qemu_plugin_wake_notifier_remove(Notifier *notifier)
+{
+    fixture_wake_notifier_remove_count++;
+    if (fixture_registered_wake_notifier == notifier) {
+        fixture_registered_wake_notifier = NULL;
+    }
+}
+
+void qemu_system_shutdown_request(int reason)
+{
+    fixture_shutdown_request_count++;
+    fixture_shutdown_reason = reason;
+    fixture_shutdown_requested = reason;
+}
+
+bool runstate_check(RunState state)
+{
+    return state == RUN_STATE_SHUTDOWN && fixture_runstate_shutdown;
+}
+
+int qemu_shutdown_requested_get(void)
+{
+    return fixture_shutdown_requested;
 }
 
 uint64_t qemu_plugin_icount_raw(void)
@@ -626,6 +1004,7 @@ void v9fs_device_unrealize_common(V9fsState *s)
 void v9fs_reset(V9fsState *s)
 {
     (void)s;
+    fixture_v9fs_reset_count++;
 }
 
 ssize_t v9fs_iov_vmarshal(const struct iovec *iov, unsigned int iov_cnt,

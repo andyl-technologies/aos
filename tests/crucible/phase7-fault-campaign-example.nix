@@ -15,8 +15,8 @@
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   exampleCorpus = builtins.readFile ../../crates/crucible/src/example_corpus.rs;
   exampleTest = builtins.readFile ../../crates/crucible/tests/example_corpus.rs;
-  sessionRoot = builtins.readFile ../../crates/crucible-session/src/lib.rs;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  sessionRoot = import ./_crucible-session-source.nix {inherit lib;};
+  cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let

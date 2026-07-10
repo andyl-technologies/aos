@@ -13,7 +13,7 @@
 
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   decision = builtins.readFile ../../crates/crucible/src/decision.rs;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let

@@ -13,7 +13,7 @@
   };
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   forkReplayGateTest = builtins.readFile ../../crates/crucible/tests/gate_fork_replay_oracle.rs;
   defaultChecks = builtins.readFile ./default.nix;
 

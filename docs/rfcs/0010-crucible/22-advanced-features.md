@@ -960,7 +960,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
 > are sequenced strictly after the determinism, save/restore-oracle, and
 > control-plane foundations they depend on ([ADV-1], [G-5], [PLAN-4]).
 
-- [x] **T-ADV-1** Encode and enforce the dependency-order gating: a CI/plan check
+- [ ] **T-ADV-1** Encode and enforce the dependency-order gating: a CI/plan check
   that the advanced-feature phases are sequenced exact-determinism →
   oracle-validated save/restore → fork → search → fuzzing, with no rung's tasks
   scheduled before the lower rung's gate is green. — satisfies [ADV-1], [ADV-2],
@@ -1079,22 +1079,34 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   symmetry representatives at graph scope outside the current candidate set via
   canonical relabeling keys, and gates the behavior as DAG node deduplication
   rather than model checking or spec-language evaluation.
-- [x] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
+- [ ] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
   hook (12 §12.8) as a registration-time opt-in with zero fingerprint effect,
   working on any binary with no guest instrumentation. — satisfies [ADV-21]; spec
   §22.6.1; cross-ref 12 §12.8.
-  Completed by `checks.crucible.phase6.basicBlockCoverage`: the engine now exposes
+  Partial evidence is provided by `checks.crucible.phase6.basicBlockCoverage`:
+  the engine exposes
   a registration-time `BasicBlockCoverageConfig` that defaults off, creates no
   engine coverage consumer in off mode, rejects invalid enabled maps, and
-  produces a consumer token only for enabled coverage. The plugin exports
-  validated TCG-exec coverage observations through the protocol boundary, and the
-  QEMU host bridge maps those `(icount, guest_pc, block_len, map_index)` payloads
-  into black-box `ObservableEvent::coverage_block` entries with no guest source,
-  symbols, or in-guest agent. The gate proves the event is sourced from the
-  external execution trace surface, remains observational in the unified event
-  log, is excluded from the determinism comparison, and compares coverage-off and
-  coverage-on single-VM fingerprint streams so the coverage opt-in has no
-  execution-fingerprint effect.
+  produces a consumer token only for enabled coverage. The plugin coverage model
+  converts validated TCG-exec observations into protocol payloads, and the QEMU
+  host bridge maps modeled `(icount, guest_pc, block_len, map_index)` payloads into
+  black-box `ObservableEvent::coverage_block` entries with no guest source,
+  symbols, or in-guest agent. The gate proves the modeled event is sourced from
+  the external execution trace surface, remains observational in the unified
+  event log, is excluded from the determinism comparison, and compares modeled
+  coverage-off and coverage-on single-VM fingerprint streams. The production
+  plugin now owns stock QEMU TB translation/execution/flush callbacks and exact
+  TB-entry icount observation, with Rust callback-model and executable C ABI
+  evidence. Its bounded callback sink is now connected through the ABI-v2 per-VM
+  SPSC transport: the host drains it at quantum completion, validates the record
+  and boundary, and the generic `SimulationBackend`/`BackendQuantumLoop` path
+  appends the observation to the scheduler log before the session actor publishes
+  that same canonical entry. Shutdown returns any final drained entries through
+  the same dense-sequence admission path before the actor publishes the stopped
+  state. No QEMU-local observation collection survives the boundary as a
+  parallel record. A
+  real loaded-QEMU run must still prove observation of an arbitrary guest and
+  coverage-on/off real-fingerprint equivalence, so this task remains open.
 - [x] **T-ADV-11** Record coverage as observational `coverage` event-log entries
   (19) excluded from the determinism comparison, feeding search/fuzzing and the
   per-checkpoint coverage fingerprint; assert coverage never affects `reduce`. —
@@ -1125,7 +1137,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   fault-plan variation comes through the family density axis; durable DagStore
   corpus admission, pruning, persisted energy state, and throughput measurement
   were completed under the T-ADV-13 scope.
-- [x] **T-ADV-13** Implement content-addressed corpus management (coverage-driven
+- [ ] **T-ADV-13** Implement content-addressed corpus management (coverage-driven
   admission, seeded pruning/energy, each entry a reproduction artifact in the
   DagStore) and meet the fuzzing throughput target of 25 without weakening
   determinism or oracle validation. — satisfies [ADV-26], [ADV-27]; spec §22.7.2;
@@ -1202,7 +1214,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   `GuidanceSignalComposition`, a coverage-only ordering key wired into the
   existing `SearchStrategy::CoverageGuided` checkpoint coverage key, and tests
   proving scoring is readers-only by leaving checkpoint identity unchanged.
-- [x] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
+- [ ] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
   (deterministic multi-armed bandit, default UCB) over a fixed ordered set of
   expansion arms with a deterministic reward model (new coverage, novelty gain,
   assertion-proximity progress, dominantly a confirmed failure; credited in
@@ -1217,7 +1229,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   bonuses, a breadth-first fairness floor, and a campaign identity hash covering
   the signal/bandit configuration while leaving individual reproduction candidates
   as ordinary `(def, schedule)` configurations.
-- [x] **T-ADV-19** Add a determinism lint that bans `f64` on signal/bandit ordering
+- [ ] **T-ADV-19** Add a determinism lint that bans `f64` on signal/bandit ordering
   paths (scores, weights, reward accumulation), enforcing fixed-point/integer
   arithmetic and fixed combination order. — satisfies [ADV-35]; spec §22.5.4;
   cross-ref [INV-9], `gate:harness-lint`.
@@ -1225,7 +1237,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   exploration model exposes `lint_guidance_determinism_source`, and the gate proves
   `f64` score/reward source is rejected while fixed-point `u64` score source is
   accepted.
-- [x] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
+- [ ] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
   interrupt-timing) within the bounded [deadline, horizon] window — working for
   single-vCPU guests — with partial-order reduction over commuting preemptions and
   each preemption-branch child a content-addressed, oracle-validated temporal-graph
@@ -1235,7 +1247,7 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   interrupt-timing decisions, applies the existing frontier reduction policy,
   records content-addressed child configurations, and materializes explored
   children through the replay-oracle-checked fat checkpoint path.
-- [x] **T-ADV-21** Implement optional, additive exploration of app-controlled
+- [ ] **T-ADV-21** Implement optional, additive exploration of app-controlled
   randomness (`Decision::AppRandom`, 16/05) as a mutation/branch dimension over
   served values, bounded by the per-scenario draw cap and a per-draw seeded
   value-sampling budget, recording each alternative as a `Decision`; prove a

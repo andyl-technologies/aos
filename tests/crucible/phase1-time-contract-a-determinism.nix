@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeContractADeterminism",
-  taskIds ? ["T-TIME-8"],
+  taskIds ? [],
+  openTaskIds ? ["T-TIME-8"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -14,11 +15,11 @@
   contractA = builtins.readFile ../../crates/crucible-sim/src/contract_a.rs;
   contractATests = builtins.readFile ../../crates/crucible-sim/tests/contract_a.rs;
   simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  pluginTimeControl = builtins.readFile ../../crates/crucible-qemu-plugin/src/time_control.rs;
+  pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
   harnessLint = builtins.readFile ./phase1-harness-lint.nix;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
@@ -237,8 +238,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-8 checklist complete";
-        needle = "- [x] **T-TIME-8**";
+        label = "T-TIME-8 remains open";
+        needle = "- [ ] **T-TIME-8**";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -322,6 +323,9 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
+            evidence_scope=contract-a-simulation-model
             gate=gate:layer0-determinism
             gate=gate:single-vm-fingerprint
             contract_a_single_node=true

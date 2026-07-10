@@ -106,11 +106,8 @@ in
           require_fixed "$decision_doc" "\`s1_pause_retired=3200000005\`"
           require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
           require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
-          require_fixed "$decision_doc" "\`s11_vcpus=4\`"
-          require_fixed "$decision_doc" "\`s11_block_devices=0\`"
-          require_fixed "$decision_doc" "\`s11_rr_switch_quantum=4096\`"
-          require_fixed "$decision_doc" "\`s11_extended_fingerprint_match=true\`"
-          require_fixed "$decision_doc" "\`s11_horizon_fingerprint_match=true\`"
+          require_fixed "$decision_doc" "PENDING RERUN"
+          require_fixed "$decision_doc" "\`s11_result_status=PENDING_SIM_RERUN\`"
 
           mkdir -p "$out"
           cp qemu.nix "$out/qemu.nix"
@@ -137,20 +134,14 @@ in
             echo single_vcpu_interrupt_variation_distinct=modeled
             echo commanded_preemption_discrimination_witness=crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race
             echo commanded_preemption_injection_witness=checks.crucible.phase2.qemuPreemptionInject
-            echo default_determinism_prereqs_green=true
+            echo default_determinism_prereqs_green=false
             echo default_determinism_prereqs_source=decision_register_s1_s11
             echo s1_decision_entry_consumed=true
             echo s1_result_status=PASS
             echo s1_horizon_extended_hash=9d1e61606ac54920
             echo s1_pause_retired=3200000005
-            echo s11_decision_entry_consumed=true
-            echo s11_result_status=PASS
-            echo s11_vcpus=4
-            echo s11_block_devices=0
-            echo s11_rr_switch_quantum=4096
-            echo s11_extended_fingerprint_match=true
-            echo s11_horizon_fingerprint_match=true
-            echo s11_final_extended_hash=16e7a49bfce0eb0f
+            echo s11_decision_entry_consumed=false
+            echo s11_result_status=PENDING_SIM_RERUN
             echo decision_preemption_exploration_enabled=false
             echo fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending
             echo s12_complete=true

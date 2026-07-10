@@ -12,8 +12,8 @@
   };
 
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   readinessTest = builtins.readFile ../../crates/crucible/tests/guest_host_readiness.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;

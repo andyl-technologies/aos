@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineDecision = builtins.readFile ../../crates/crucible/src/decision.rs;
   channelDeterminismTest = builtins.readFile ../../crates/crucible/tests/guest_host_channel_determinism.rs;
   guestLib = builtins.readFile ../../crates/crucible-guest/src/lib.rs;

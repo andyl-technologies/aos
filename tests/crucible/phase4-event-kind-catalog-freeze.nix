@@ -12,7 +12,7 @@
   };
 
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   catalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   catalogTest = builtins.readFile ../../crates/crucible/tests/event_kind_catalog.rs;
   triggerTest = builtins.readFile ../../crates/crucible/tests/trigger_firing_causal_log.rs;

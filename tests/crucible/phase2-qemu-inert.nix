@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.qemuInert",
-  taskIds ? ["T-HARN-21" "T-PATCH-3"],
+  taskIds ? [],
+  openTaskIds ? ["T-DET-23" "T-HARN-21" "T-PATCH-3"],
   patchMicrotests ? import ./phase2-patch-microtests.nix {inherit pkgs lib;},
   referenceQemu ? pkgs.qemu-crucible-reference,
   patchedQemu ? pkgs.qemu-crucible,
@@ -26,13 +27,20 @@
           #include <string.h>
           #include <unistd.h>
 
-          static uint64_t fnv1a(const unsigned char *buf, ssize_t len) {
-            uint64_t hash = 1469598103934665603ULL;
-            for (ssize_t i = 0; i < len; i++) {
+          enum { RNG_SAMPLE_BYTES = 64 };
+
+          static uint64_t fnv1a_update(uint64_t hash,
+                                       const unsigned char *buf,
+                                       size_t len) {
+            for (size_t i = 0; i < len; i++) {
               hash ^= buf[i];
               hash *= 1099511628211ULL;
             }
             return hash;
+          }
+
+          static uint64_t fnv1a(const unsigned char *buf, size_t len) {
+            return fnv1a_update(1469598103934665603ULL, buf, len);
           }
 
           static int read_prefix(const char *path, unsigned char *buf, size_t len) {
@@ -55,15 +63,111 @@
             return 0;
           }
 
+          static int read_hwrng(unsigned char *buf, size_t len,
+                                uint32_t *read_calls) {
+            int fd = open("/dev/hwrng", O_RDONLY);
+            size_t offset = 0;
+
+            if (fd < 0) {
+              perror("/dev/hwrng");
+              return 1;
+            }
+            while (offset < len) {
+              ssize_t got;
+              *read_calls += 1;
+              got = read(fd, buf + offset, len - offset);
+              if (got < 0) {
+                perror("read /dev/hwrng");
+                close(fd);
+                return 1;
+              }
+              if (got == 0) {
+                fprintf(stderr, "/dev/hwrng: unexpected EOF\n");
+                close(fd);
+                return 1;
+              }
+              offset += (size_t)got;
+            }
+            close(fd);
+            return 0;
+          }
+
+          static uint64_t workload_fingerprint(const unsigned char *block,
+                                               size_t block_len,
+                                               const unsigned char *ninep,
+                                               size_t ninep_len,
+                                               const unsigned char *rng,
+                                               size_t rng_len) {
+            static const unsigned char domain[] =
+              "crucible-qemu-inert-guest-output-v1";
+            uint64_t hash = 1469598103934665603ULL;
+
+            hash = fnv1a_update(hash, domain, sizeof(domain) - 1);
+            hash = fnv1a_update(hash, block, block_len);
+            hash = fnv1a_update(hash, ninep, ninep_len);
+            return fnv1a_update(hash, rng, rng_len);
+          }
+
+          static int write_evidence(const char *path,
+                                    const unsigned char *block,
+                                    size_t block_len,
+                                    const unsigned char *ninep,
+                                    size_t ninep_len,
+                                    const unsigned char *rng,
+                                    size_t rng_len,
+                                    uint32_t read_calls,
+                                    uint64_t execution_fingerprint) {
+            FILE *file = fopen(path, "w");
+            if (file == NULL) {
+              perror(path);
+              return 1;
+            }
+            if (fprintf(file,
+                        "format=crucible-qemu-inert-execution-output-v1\n"
+                        "block_hash=%016llx\n"
+                        "ninep_hash=%016llx\n"
+                        "rng_bytes=",
+                        (unsigned long long)fnv1a(block, block_len),
+                        (unsigned long long)fnv1a(ninep, ninep_len)) < 0) {
+              perror("write evidence");
+              fclose(file);
+              return 1;
+            }
+            for (size_t index = 0; index < rng_len; index++) {
+              if (fprintf(file, "%02x", rng[index]) < 0) {
+                perror("write RNG evidence");
+                fclose(file);
+                return 1;
+              }
+            }
+            if (fprintf(file,
+                        "\nrng_bytes_read=%zu\n"
+                        "rng_read_calls=%u\n"
+                        "guest_output_fingerprint=%016llx\n",
+                        rng_len,
+                        read_calls,
+                        (unsigned long long)execution_fingerprint) < 0 ||
+                fclose(file) != 0) {
+              perror("finish evidence");
+              return 1;
+            }
+            return 0;
+          }
+
           int main(int argc, char **argv) {
             unsigned char block[128];
             unsigned char ninep[128];
-            if (argc != 3) {
-              fprintf(stderr, "usage: inert-workload BLOCK_FILE NINEP_FILE\n");
+            unsigned char rng[RNG_SAMPLE_BYTES];
+            uint32_t rng_read_calls = 0;
+            uint64_t execution_fingerprint;
+            if (argc != 4) {
+              fprintf(stderr,
+                      "usage: inert-workload BLOCK_FILE NINEP_FILE EVIDENCE_FILE\n");
               return 1;
             }
             if (read_prefix(argv[1], block, sizeof(block)) != 0 ||
-                read_prefix(argv[2], ninep, sizeof(ninep)) != 0) {
+                read_prefix(argv[2], ninep, sizeof(ninep)) != 0 ||
+                read_hwrng(rng, sizeof(rng), &rng_read_calls) != 0) {
               return 1;
             }
             const char *block_prefix = "CRUCIBLE_QEMU_INERT_BLOCK";
@@ -73,10 +177,23 @@
               fprintf(stderr, "unexpected device payload\n");
               return 1;
             }
+            execution_fingerprint = workload_fingerprint(
+              block, sizeof(block), ninep, sizeof(ninep), rng, sizeof(rng));
+            if (write_evidence(argv[3], block, sizeof(block), ninep,
+                               sizeof(ninep), rng, sizeof(rng),
+                               rng_read_calls, execution_fingerprint) != 0) {
+              return 1;
+            }
             printf("CRUCIBLE_QEMU_INERT_BLOCK_HASH=%016llx\n",
                    (unsigned long long)fnv1a(block, sizeof(block)));
             printf("CRUCIBLE_QEMU_INERT_9P_HASH=%016llx\n",
                    (unsigned long long)fnv1a(ninep, sizeof(ninep)));
+            printf("CRUCIBLE_QEMU_INERT_RNG_HASH=%016llx\n",
+                   (unsigned long long)fnv1a(rng, sizeof(rng)));
+            printf("CRUCIBLE_QEMU_INERT_RNG_BYTES=%zu\n", sizeof(rng));
+            printf("CRUCIBLE_QEMU_INERT_RNG_READ_CALLS=%u\n", rng_read_calls);
+            printf("CRUCIBLE_QEMU_INERT_GUEST_OUTPUT_FINGERPRINT=%016llx\n",
+                   (unsigned long long)execution_fingerprint);
             printf("CRUCIBLE_QEMU_INERT_DEVICE_IO_DONE\n");
             return 0;
           }
@@ -186,23 +303,28 @@
             echo "CRUCIBLE_QEMU_INERT_READY"
             test_result=0
 
-            for module in 9pnet 9pnet_virtio 9p; do
+            for module in 9pnet 9pnet_virtio 9p virtio_rng; do
               modprobe "$module" || test_result=1
             done
 
             i=0
-            while [ "$i" -lt 100 ] && [ ! -b /dev/vda ]; do
+            while [ "$i" -lt 100 ] && { [ ! -b /dev/vda ] || [ ! -c /dev/hwrng ]; }; do
               sleep 0.05
               i=$((i + 1))
             done
             [ -b /dev/vda ] || test_result=1
+            [ -c /dev/hwrng ] || test_result=1
 
             if [ "$test_result" -eq 0 ]; then
               mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144 crucible_inert /mnt/virtfs || test_result=1
             fi
 
             if [ "$test_result" -eq 0 ]; then
-              inert-workload /dev/vda /mnt/virtfs/payload.txt || test_result=1
+              inert-workload \
+                /dev/vda \
+                /mnt/virtfs/payload.txt \
+                /mnt/virtfs/execution-fingerprint.txt \
+                || test_result=1
             fi
 
             if [ "$test_result" -eq 0 ]; then
@@ -394,14 +516,114 @@ in
             grep -E '^(CRUCIBLE_QEMU_INERT_|TEST_RESULT:)' "$input" > "$output"
           }
 
+          files_identical() {
+            cmp -s "$1" "$2"
+          }
+
           compare_files() {
             label="$1"
             left="$2"
             right="$3"
-            if ! diff -u "$left" "$right" > "$TMPDIR/$label.diff"; then
+            if ! files_identical "$left" "$right"; then
+              diff -u "$left" "$right" > "$TMPDIR/$label.diff" || true
               cat "$TMPDIR/$label.diff" >&2
               fail "$label diverged between unpatched reference and patched sim-off QEMU"
             fi
+          }
+
+          validate_execution_evidence() {
+            label="$1"
+            evidence="$2"
+            grep -F -x -q 'format=crucible-qemu-inert-execution-output-v1' "$evidence" \
+              || fail "$label execution evidence has the wrong format"
+            grep -E -x -q 'block_hash=[0-9a-f]{16}' "$evidence" \
+              || fail "$label execution evidence lacks the block hash"
+            grep -E -x -q 'ninep_hash=[0-9a-f]{16}' "$evidence" \
+              || fail "$label execution evidence lacks the 9p hash"
+            grep -E -x -q 'rng_bytes=[0-9a-f]{128}' "$evidence" \
+              || fail "$label execution evidence lacks 64 raw RNG bytes"
+            grep -F -x -q 'rng_bytes_read=64' "$evidence" \
+              || fail "$label execution evidence has the wrong RNG byte count"
+            grep -E -x -q 'rng_read_calls=[1-9][0-9]*' "$evidence" \
+              || fail "$label execution evidence lacks the RNG read-call count"
+            grep -E -x -q 'guest_output_fingerprint=[0-9a-f]{16}' "$evidence" \
+              || fail "$label execution evidence lacks the guest output fingerprint"
+            grep -E -x -q 'execution_fingerprint_sha256=[0-9a-f]{64}' "$evidence" \
+              || fail "$label execution evidence lacks its composite binding"
+            test "$(wc -l < "$evidence" | tr -d ' ')" -eq 8 \
+              || fail "$label execution evidence has unexpected fields"
+            evidence_body="$TMPDIR/$label.execution-evidence.body"
+            head -n 7 "$evidence" > "$evidence_body"
+            actual_binding=$(sha256sum "$evidence_body" | gawk '{ print $1 }')
+            expected_binding=$(gawk -F= '
+              /^execution_fingerprint_sha256=/ {
+                print $2
+                found += 1
+              }
+              END {
+                if (found != 1) {
+                  exit 1
+                }
+              }
+            ' "$evidence")
+            test "$actual_binding" = "$expected_binding" \
+              || fail "$label execution evidence composite binding is invalid"
+          }
+
+          bind_execution_evidence() {
+            label="$1"
+            source="$2"
+            destination="$3"
+            test "$(wc -l < "$source" | tr -d ' ')" -eq 7 \
+              || fail "$label guest evidence has unexpected fields"
+            binding=$(sha256sum "$source" | gawk '{ print $1 }')
+            {
+              cat "$source"
+              printf 'execution_fingerprint_sha256=%s\n' "$binding"
+            } > "$destination"
+            validate_execution_evidence "$label" "$destination"
+          }
+
+          exercise_rng_leakage_negative_control() {
+            source="$1"
+            mutated="$TMPDIR/rng-leakage-negative-control.txt"
+            mutated_body="$TMPDIR/rng-leakage-negative-control.body"
+            gawk -F= '
+              /^rng_read_calls=/ {
+                printf "rng_read_calls=%u\n", ($2 + 1)
+                changed += 1
+                next
+              }
+              /^execution_fingerprint_sha256=/ { next }
+              { print }
+              END {
+                if (changed != 1) {
+                  exit 1
+                }
+              }
+            ' "$source" > "$mutated_body"
+            mutated_binding=$(sha256sum "$mutated_body" | gawk '{ print $1 }')
+            {
+              cat "$mutated_body"
+              printf 'execution_fingerprint_sha256=%s\n' "$mutated_binding"
+            } > "$mutated"
+            validate_execution_evidence rng-leakage-negative-control "$mutated"
+            if files_identical "$source" "$mutated"; then
+              fail "RNG leakage negative control did not change the request-path evidence"
+            fi
+            source_hash=$(sha256sum "$source" | gawk '{ print $1 }')
+            mutated_hash=$(sha256sum "$mutated" | gawk '{ print $1 }')
+            test "$source_hash" != "$mutated_hash" \
+              || fail "RNG leakage negative control did not change the evidence digest"
+            source_binding=$(gawk -F= '/^execution_fingerprint_sha256=/ { print $2 }' "$source")
+            test "$source_binding" != "$mutated_binding" \
+              || fail "RNG leakage negative control did not change the composite binding"
+            diff -u "$source" "$mutated" \
+              > "$TMPDIR/rng-leakage-negative-control.diff" || true
+            grep -F -q 'rng_read_calls=' "$TMPDIR/rng-leakage-negative-control.diff" \
+              || fail "RNG leakage negative control did not discriminate the RNG behavior field"
+            grep -F -q 'execution_fingerprint_sha256=' "$TMPDIR/rng-leakage-negative-control.diff" \
+              || fail "RNG leakage negative control did not discriminate the composite binding"
           }
 
           vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
@@ -433,7 +655,9 @@ in
             qmp_socket="$TMPDIR/qmp-boot-$label.sock"
             serial="$TMPDIR/serial-$label.log"
             stderr="$TMPDIR/qemu-boot-$label.stderr"
-            rm -f "$qmp_socket" "$serial" "$stderr"
+            evidence_source="$ninep_root/execution-fingerprint.txt"
+            evidence="$TMPDIR/execution-fingerprint-$label.txt"
+            rm -f "$qmp_socket" "$serial" "$stderr" "$evidence_source" "$evidence"
 
             case "$icount_mode" in
               none)
@@ -462,6 +686,8 @@ in
               -rtc base=2026-01-01T00:00:00,clock=vm \
               -seed 0x0010c001 \
               -fw_cfg name=opt/crucible/seed,file="$seed" \
+              -object rng-builtin,id=inert-rng0 \
+              -device virtio-rng-pci,rng=inert-rng0,id=inert-vrng0 \
               -kernel "$vmlinuz" \
               -initrd "$INITRAMFS" \
               -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0" \
@@ -502,6 +728,11 @@ in
             qemu_pid=""
 
             grep -q "CRUCIBLE_QEMU_INERT_DEVICE_IO_DONE" "$serial"
+            test -s "$evidence_source" \
+              || fail "$label guest did not persist execution/output evidence"
+            bind_execution_evidence "$label" "$evidence_source" "$evidence"
+            sha256sum "$evidence" | gawk '{ print $1 }' \
+              > "$TMPDIR/execution-fingerprint-$label.sha256"
             normalize_serial "$serial" "$TMPDIR/normalized-serial-$label.txt"
           }
 
@@ -645,10 +876,15 @@ in
           run_boot_case reference-tcg "$REFERENCE_QEMU" none
           run_boot_case patched-tcg "$PATCHED_QEMU" none
           compare_files boot-tcg "$TMPDIR/normalized-serial-reference-tcg.txt" "$TMPDIR/normalized-serial-patched-tcg.txt"
+          compare_files execution-output-tcg "$TMPDIR/execution-fingerprint-reference-tcg.txt" "$TMPDIR/execution-fingerprint-patched-tcg.txt"
+          compare_files execution-output-tcg-digest "$TMPDIR/execution-fingerprint-reference-tcg.sha256" "$TMPDIR/execution-fingerprint-patched-tcg.sha256"
 
           run_boot_case reference-icount "$REFERENCE_QEMU" plain
           run_boot_case patched-icount "$PATCHED_QEMU" plain
           compare_files boot-plain-icount "$TMPDIR/normalized-serial-reference-icount.txt" "$TMPDIR/normalized-serial-patched-icount.txt"
+          compare_files execution-output-plain-icount "$TMPDIR/execution-fingerprint-reference-icount.txt" "$TMPDIR/execution-fingerprint-patched-icount.txt"
+          compare_files execution-output-plain-icount-digest "$TMPDIR/execution-fingerprint-reference-icount.sha256" "$TMPDIR/execution-fingerprint-patched-icount.sha256"
+          exercise_rng_leakage_negative_control "$TMPDIR/execution-fingerprint-reference-icount.txt"
 
           probe_qmp_surface reference "$REFERENCE_QEMU" "$REFERENCE_QEMU_IMG"
           probe_qmp_surface patched "$PATCHED_QEMU" "$PATCHED_QEMU_IMG"
@@ -668,6 +904,15 @@ in
           cp "$TMPDIR/normalized-serial-patched-tcg.txt" "$out/corpus/boot-tcg-patched.txt"
           cp "$TMPDIR/normalized-serial-reference-icount.txt" "$out/corpus/boot-icount-reference.txt"
           cp "$TMPDIR/normalized-serial-patched-icount.txt" "$out/corpus/boot-icount-patched.txt"
+          cp "$TMPDIR/execution-fingerprint-reference-tcg.txt" "$out/corpus/execution-output-tcg-reference.txt"
+          cp "$TMPDIR/execution-fingerprint-patched-tcg.txt" "$out/corpus/execution-output-tcg-patched.txt"
+          cp "$TMPDIR/execution-fingerprint-reference-tcg.sha256" "$out/corpus/execution-output-tcg-reference.sha256"
+          cp "$TMPDIR/execution-fingerprint-patched-tcg.sha256" "$out/corpus/execution-output-tcg-patched.sha256"
+          cp "$TMPDIR/execution-fingerprint-reference-icount.txt" "$out/corpus/execution-output-icount-reference.txt"
+          cp "$TMPDIR/execution-fingerprint-patched-icount.txt" "$out/corpus/execution-output-icount-patched.txt"
+          cp "$TMPDIR/execution-fingerprint-reference-icount.sha256" "$out/corpus/execution-output-icount-reference.sha256"
+          cp "$TMPDIR/execution-fingerprint-patched-icount.sha256" "$out/corpus/execution-output-icount-patched.sha256"
+          cp "$TMPDIR/rng-leakage-negative-control.diff" "$out/corpus/rng-leakage-negative-control.diff"
           cp "$TMPDIR/qmp-surface-reference.normalized.txt" "$out/corpus/qmp-surface-reference.txt"
           cp "$TMPDIR/qmp-surface-patched.normalized.txt" "$out/corpus/qmp-surface-patched.txt"
           cp "$TMPDIR/migration-reference.sha256" "$out/corpus/migration-reference.sha256"
@@ -679,6 +924,9 @@ in
           PASS
           check=${attrPath}
           tasks=${builtins.concatStringsSep "," taskIds}
+          open_tasks=${builtins.concatStringsSep "," openTaskIds}
+          status=partial
+          evidence_scope=full-stack-sim-off-corpus-without-prefix-attribution
           gate=gate:qemu-inert
           reference_qemu=${referenceQemu}
           patched_qemu=${patchedQemu}
@@ -690,11 +938,27 @@ in
           reference_vs_patched_boot_tcg_identical=true
           reference_vs_patched_boot_plain_icount_identical=true
           reference_vs_patched_device_io_identical=true
+          real_virtio_rng_hwrng_request_exercised=true
+          virtio_rng_seeded_builtin_backend=true
+          reference_vs_patched_rng_output_tcg_identical=true
+          reference_vs_patched_rng_output_plain_icount_identical=true
+          reference_vs_patched_rng_read_call_count_tcg_identical=true
+          reference_vs_patched_rng_read_call_count_plain_icount_identical=true
+          durable_execution_output_evidence=9p-file
+          execution_output_evidence_fields=block-hash,9p-hash,rng-bytes,rng-byte-count,rng-read-call-count,guest-output-fingerprint,sha256-composite-binding
+          execution_output_composite_binding_validated=true
+          reference_vs_patched_execution_output_fingerprint_tcg_identical=true
+          reference_vs_patched_execution_output_fingerprint_plain_icount_identical=true
+          rng_leakage_negative_control=mutated-rng-read-call-count
+          rng_leakage_negative_control_composite_rebound=true
+          rng_leakage_negative_control_discriminated=true
+          rng_completion_icount_equivalence_proven=false
+          rng_completion_timing_residual=open
           qmp_command_set_identical=true
           qmp_introspection_surface_identical=true
           migration_stream_identical=true
           snapshot_restore_surface_identical=true
-          upstream_equivalent_corpus=boot,device-io,qmp,migration,snapshot
+          upstream_equivalent_corpus=boot,device-io,virtio-rng-execution-output,qmp,migration,snapshot
           RESULT
         '';
       }

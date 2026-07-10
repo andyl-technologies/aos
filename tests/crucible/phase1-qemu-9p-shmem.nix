@@ -132,6 +132,50 @@
         label = "per-device request id";
         needle = "next_crucible_9p_request_id";
       }
+      {
+        label = "event-driven wake notifier";
+        needle = "virtio_9p_crucible_wake";
+      }
+      {
+        label = "sim-off wake-notifier registration guard";
+        needle = "crucible_9p_wake_registered";
+      }
+      {
+        label = "pending PDU retention";
+        needle = "crucible_9p_pending_pdu";
+      }
+      {
+        label = "terminal pending cleanup";
+        needle = "virtio_9p_abandon_crucible_pending";
+      }
+      {
+        label = "pending callback teardown guard";
+        needle = "crucible 9p callbacks disappeared with a request pending";
+      }
+      {
+        label = "pending reset cleanup";
+        needle = "virtio-9p reset with a Crucible request pending";
+      }
+      {
+        label = "terminal host-error shutdown";
+        needle = "qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR)";
+      }
+      {
+        label = "shutdown-aware pending cleanup";
+        needle = "crucible_9p_shutdown_underway()";
+      }
+      {
+        label = "response length validation";
+        needle = "le32_to_cpu(response_header.size_le)";
+      }
+      {
+        label = "response tag validation";
+        needle = "le16_to_cpu(response_header.tag_le) != pdu->tag";
+      }
+      {
+        label = "completion clears pending ownership before PDU release";
+        needle = "v->crucible_9p_pending_pdu = NULL;";
+      }
     ];
 
   failures =
@@ -157,8 +201,56 @@
         needle = "upstream_9p_fallback_without_callbacks=true";
       }
       {
+        label = "sim-off notifier inertness exercised";
+        needle = "sim_off_9p_has_no_wake_notifier=true";
+      }
+      {
         label = "9p pending poll exercised";
-        needle = "pending_9p_poll_waits=true";
+        needle = "pending_9p_poll_event_driven=true";
+      }
+      {
+        label = "scheduler wake repoll exercised";
+        needle = "scheduler_wake_repolls_pending_9p=true";
+      }
+      {
+        label = "duplicate output deferral exercised";
+        needle = "duplicate_output_waits_for_pending_9p=true";
+      }
+      {
+        label = "exactly-once burst completion exercised";
+        needle = "pending_9p_burst_finishes_exactly_once=true";
+      }
+      {
+        label = "terminal wake cleanup exercised";
+        needle = "wake_failure_does_not_strand_9p=true";
+      }
+      {
+        label = "wake-fd owner remains the single shutdown authority";
+        needle = "wake_failure_defers_shutdown_to_wake_fd_owner=true";
+      }
+      {
+        label = "callback teardown cleanup exercised";
+        needle = "callback_removal_does_not_call_stale_9p=true";
+      }
+      {
+        label = "reset cleanup exercised";
+        needle = "reset_does_not_strand_9p=true";
+      }
+      {
+        label = "unrealize cleanup exercised";
+        needle = "unrealize_does_not_strand_9p=true";
+      }
+      {
+        label = "shutdown unrealize cleanup exercised";
+        needle = "shutdown_unrealize_reclaims_9p_without_redundant_shutdown=true";
+      }
+      {
+        label = "malformed response size rejection exercised";
+        needle = "malformed_9p_response_size_fails_closed=true";
+      }
+      {
+        label = "mismatched response tag rejection exercised";
+        needle = "mismatched_9p_response_tag_fails_closed=true";
       }
       {
         label = "9p burst callbacks exercised";
@@ -275,6 +367,11 @@ in
             grep -q 'virtio_9p_forward_crucible' hw/9pfs/virtio-9p-device.c
             grep -q 'crucible_9p_callbacks_ready()' hw/9pfs/virtio-9p-device.c
             grep -q 'next_crucible_9p_request_id' hw/9pfs/virtio-9p.h
+            grep -q 'virtio_9p_crucible_wake' hw/9pfs/virtio-9p-device.c
+            grep -q 'crucible_9p_pending_pdu' hw/9pfs/virtio-9p.h
+            grep -q 'virtio-9p reset with a Crucible request pending' hw/9pfs/virtio-9p-device.c
+            grep -q 'qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR)' hw/9pfs/virtio-9p-device.c
+            ! grep -Eq 'main_loop_wait|aio_poll|aio_bh_poll' hw/9pfs/virtio-9p-device.c
 
             mkdir -p fixture-src/hw/9pfs fixture/include/fsdev fixture/include/hw/virtio fixture/include/hw fixture/include/qemu fixture/include/system
             cp hw/9pfs/virtio-9p-device.c fixture-src/hw/9pfs/virtio-9p-device.c
@@ -416,6 +513,39 @@ in
                 static void (*function##_fixture_ref)(void) __attribute__((unused)) = function;
             #endif
             MODULE_FIXTURE
+
+            cat > fixture/include/qemu/notify.h <<'NOTIFY_FIXTURE'
+            #ifndef QEMU_NOTIFY_H
+            #define QEMU_NOTIFY_H
+
+            typedef struct Notifier Notifier;
+            struct Notifier {
+                void (*notify)(Notifier *notifier, void *data);
+            };
+
+            #endif
+            NOTIFY_FIXTURE
+
+            cat > fixture/include/system/runstate.h <<'RUNSTATE_FIXTURE'
+            #ifndef SYSTEM_RUNSTATE_H
+            #define SYSTEM_RUNSTATE_H
+
+            #include <stdbool.h>
+
+            typedef enum RunState {
+                RUN_STATE_RUNNING = 0,
+                RUN_STATE_SHUTDOWN = 1,
+            } RunState;
+
+            #define SHUTDOWN_CAUSE_NONE 0
+            #define SHUTDOWN_CAUSE_HOST_ERROR 1
+
+            bool runstate_check(RunState state);
+            int qemu_shutdown_requested_get(void);
+            void qemu_system_shutdown_request(int reason);
+
+            #endif
+            RUNSTATE_FIXTURE
 
             cat > fixture/include/hw/virtio/virtio.h <<'VIRTIO_FIXTURE'
             #ifndef HW_VIRTIO_VIRTIO_H
@@ -571,6 +701,7 @@ in
             #include <sys/types.h>
             #include <sys/uio.h>
             #include "hw/virtio/virtio.h"
+            #include "qemu/notify.h"
 
             #define MAX_REQ 4
             #define TYPE_VIRTIO_9P "virtio-9p-device"
@@ -627,6 +758,12 @@ in
                 VirtQueue *vq;
                 size_t config_size;
                 uint32_t next_crucible_9p_request_id;
+                bool crucible_9p_burst_active;
+                bool crucible_9p_wake_registered;
+                V9fsPDU *crucible_9p_pending_pdu;
+                uint32_t crucible_9p_pending_request_id;
+                size_t crucible_9p_pending_response_capacity;
+                Notifier crucible_9p_wake_notifier;
                 VirtQueueElement *elems[MAX_REQ];
                 V9fsState state;
             };
@@ -671,13 +808,25 @@ in
             grep -q '^virtio_9p_forwarding_path_exercised=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^plugin_9p_callback_registration_exercised=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^upstream_9p_fallback_without_callbacks=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^sim_off_9p_has_no_wake_notifier=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^partial_9p_registration_falls_back=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^raw_9p_request_round_trip=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^raw_9p_response_delivered=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^burst_callbacks_exercised=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^multi_request_burst_exercised=true$' "$out/qemu-9p-shmem-microtest"
-            grep -q '^pending_9p_poll_waits=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^pending_9p_poll_event_driven=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^scheduler_wake_repolls_pending_9p=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^duplicate_output_waits_for_pending_9p=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^pending_9p_burst_finishes_exactly_once=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^wake_failure_does_not_strand_9p=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^wake_failure_defers_shutdown_to_wake_fd_owner=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^callback_removal_does_not_call_stale_9p=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^reset_does_not_strand_9p=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^unrealize_does_not_strand_9p=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^shutdown_unrealize_reclaims_9p_without_redundant_shutdown=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^ninep_pending_sentinel=-2$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^malformed_9p_response_size_fails_closed=true$' "$out/qemu-9p-shmem-microtest"
+            grep -q '^mismatched_9p_response_tag_fails_closed=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^oversized_9p_response_fails_closed=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^oversized_9p_request_fails_closed=true$' "$out/qemu-9p-shmem-microtest"
             grep -q '^request_id_overflow_fails_closed=true$' "$out/qemu-9p-shmem-microtest"
@@ -700,13 +849,25 @@ in
             virtio_9p_fixture_includes_patched_source=true
             plugin_9p_callback_registration_exercised=true
             upstream_9p_fallback_without_callbacks=true
+            sim_off_9p_has_no_wake_notifier=true
             partial_9p_registration_falls_back=true
             raw_9p_request_round_trip=true
             raw_9p_response_delivered=true
             burst_callbacks_exercised=true
             multi_request_burst_exercised=true
-            pending_9p_poll_waits=true
+            pending_9p_poll_event_driven=true
+            scheduler_wake_repolls_pending_9p=true
+            duplicate_output_waits_for_pending_9p=true
+            pending_9p_burst_finishes_exactly_once=true
+            wake_failure_does_not_strand_9p=true
+            wake_failure_defers_shutdown_to_wake_fd_owner=true
+            callback_removal_does_not_call_stale_9p=true
+            reset_does_not_strand_9p=true
+            unrealize_does_not_strand_9p=true
+            shutdown_unrealize_reclaims_9p_without_redundant_shutdown=true
             ninep_pending_sentinel=-2
+            malformed_9p_response_size_fails_closed=true
+            mismatched_9p_response_tag_fails_closed=true
             fail_closed_9p_microtests=true
             failure_path_clears_pdu_slot=true
             apply_clean_patch_fuzz=0

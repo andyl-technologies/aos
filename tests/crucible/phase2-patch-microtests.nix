@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
+  taskIds ? ["T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
+  openTaskIds ? ["T-PKG-4" "T-HARN-20" "T-PATCH-2"],
   qemuPackage ? pkgs.qemu-crucible,
   dependencies ? [],
 }: let
@@ -18,6 +19,10 @@
   qemuPreemptionInject = import ./phase2-qemu-preemption-inject.nix {inherit pkgs lib;};
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage;
+  };
+  qemuPatchPrefixBuilds = import ./phase2-qemu-patch-prefix-builds.nix {
+    inherit pkgs lib qemuPackage;
+    attrPath = "${attrPath}.prefixBuilds";
   };
   qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib qemuPackage;};
   qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib qemuPackage;};
@@ -258,7 +263,7 @@
     && hasInfix "dependencies = [patchMicrotestsCheck];" defaultNix
     && hasInfix "patchMicrotests = patchMicrotestsCheck;" defaultNix;
   qemuInertImplementedGateWired =
-    hasInfix "qemuInert = greenBeforeAdvance {" defaultNix
+    hasInfix "qemuInert = redBeforeAdvance {" defaultNix
     && hasInfix ''attrPath = "checks.crucible.phase2.gates.qemuInert";'' defaultNix
     && hasInfix "gate = import ./phase2-qemu-inert.nix" defaultNix
     && hasInfix "patchMicrotests = patchMicrotests.rawGate;" defaultNix
@@ -340,12 +345,13 @@ in
               qemu_plugin_net_can_receive \
               qemu_plugin_register_net_tx_cb \
               qemu_plugin_has_time_control \
-              qemu_plugin_advance_virtual_time_direct \
-              qemu_plugin_drain_main_loop \
+              qemu_plugin_register_time_advance_cb \
+              qemu_plugin_advance_time_ns \
               qemu_plugin_icount_raw \
+              qemu_plugin_icount_at_tb_entry \
               qemu_plugin_force_vcpu_exit \
+              qemu_plugin_crucible_single_threaded_rr \
               qemu_plugin_register_wake_fd \
-              qemu_plugin_main_loop_wait \
               qemu_plugin_register_tcg_exec_cb \
               qemu_plugin_register_vcpu_idle_resume_cb \
               qemu_plugin_register_sim_shmem_dispatch_cb \
@@ -361,6 +367,45 @@ in
 
             cp "${qemuPatchSeries}/result" "$out/patch-series.result"
             grep -q '^PASS$' "$out/patch-series.result"
+            cp "${qemuPatchPrefixBuilds}/result" "$out/patch-prefix-builds.result"
+            cp "${qemuPatchPrefixBuilds}/prefix-builds.tsv" "$out/prefix-builds.tsv"
+            grep -q '^PASS$' "$out/patch-prefix-builds.result"
+            grep -q '^gate=gate:patch-microtests$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_count=${toString (builtins.length patchFiles)}$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_model=fresh-source-and-build-tree-per-prefix$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_columns=index,patch,commit,tree,patch_sha256,fresh_source_build,tracked_diff_sha256,shmem_header_sha256,compiler_version,artifact_sha256$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_builds_are_compile_checks=true$' "$out/patch-prefix-builds.result"
+            grep -q '^every_patch_prefix_apply_clean=true$' "$out/patch-prefix-builds.result"
+            grep -q '^every_patch_prefix_qemu_system_build=true$' "$out/patch-prefix-builds.result"
+            grep -q '^qemu_block_utilities_link_at_prefix_15_and_full_series=true$' "$out/patch-prefix-builds.result"
+            grep -q '^crucible_shmem_registration_symbol_present_at_prefix_15_and_full_series=true$' "$out/patch-prefix-builds.result"
+            grep -q '^crucible_shmem_blockdev_realized_at_prefix_15_and_full_series=true$' "$out/patch-prefix-builds.result"
+            grep -q '^every_patch_prefix_fresh_target_absent_before_build=true$' "$out/patch-prefix-builds.result"
+            grep -q '^werror_enabled=true$' "$out/patch-prefix-builds.result"
+            grep -q '^warnings_as_errors_except=known-upstream-gcc14-allowlist$' "$out/patch-prefix-builds.result"
+            grep -q '^known_upstream_warning_allowlist_verified=true$' "$out/patch-prefix-builds.result"
+            grep -q '^warning_allowlist_compiler_version=14.3.0$' "$out/patch-prefix-builds.result"
+            grep -q '^array_bounds_warning_allowlist_scope=block/qed.c,block/qed-check.c,block/qed-cluster.c,block/qed-table.c,hw/scsi/virtio-scsi.c$' "$out/patch-prefix-builds.result"
+            grep -q '^array_bounds_warning_allowlist_count=14$' "$out/patch-prefix-builds.result"
+            grep -q '^stringop_overflow_warning_allowlist_scope=hw/vfio/migration-multifd.c$' "$out/patch-prefix-builds.result"
+            grep -q '^stringop_overflow_warning_allowlist_count=1$' "$out/patch-prefix-builds.result"
+            grep -q '^build_does_not_mutate_source_diff=true$' "$out/patch-prefix-builds.result"
+            grep -q '^tracked_source_diff_compared_byte_for_byte=true$' "$out/patch-prefix-builds.result"
+            grep -q '^tracked_source_diff_preserved_after_configure_and_build=true$' "$out/patch-prefix-builds.result"
+            grep -q '^source_path_set_preserved_outside_build_directory=true$' "$out/patch-prefix-builds.result"
+            grep -q '^generated_shmem_header_hash_verified=true$' "$out/patch-prefix-builds.result"
+            grep -q '^configure_wraplock_validated_and_removed=true$' "$out/patch-prefix-builds.result"
+            grep -q '^every_patch_prefix_source_tree_removed_after_evidence=true$' "$out/patch-prefix-builds.result"
+            grep -q '^every_patch_prefix_commit_verified=true$' "$out/patch-prefix-builds.result"
+            grep -q '^every_patch_prefix_tree_verified=true$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_records_patch_hash=true$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_records_branch_commit=true$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_records_branch_tree=true$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_records_fresh_source_build=true$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_records_tracked_diff_hash=true$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_records_shmem_header_hash=true$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_records_compiler_version=true$' "$out/patch-prefix-builds.result"
+            grep -q '^prefix_manifest_records_artifact_hash=true$' "$out/patch-prefix-builds.result"
             cp "${qemuPatchRegeneration}/result" "$out/patch-regeneration.result"
             grep -q '^PASS$' "$out/patch-regeneration.result"
             grep -q '^gate=gate:patch-microtests$' "$out/patch-regeneration.result"
@@ -382,9 +427,9 @@ in
             grep -q '^wall_clock_fallback=forbidden$' "$out/qemu-plugin-fail-loud.result"
             cp "${qemuRrQuantumIcount}/result" "$out/qemu-rr-quantum-icount.result"
             grep -q '^PASS$' "$out/qemu-rr-quantum-icount.result"
-            grep -q '^accelerator=sim$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^accelerator=sim,thread=single$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^vcpus=2$' "$out/qemu-rr-quantum-icount.result"
-            grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,stop_at=16384)$' "$out/qemu-rr-quantum-icount.result"
+            grep -q '^sim_s11_trace_source=checks.crucible.phase0.s11MultiVcpuFingerprint(accelerator=sim,thread=single,stop_at=16384)$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^cross_run_switch_icount_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^cross_run_per_vcpu_delta_trace_match=true$' "$out/qemu-rr-quantum-icount.result"
             grep -q '^adaptive_realtime_quantum_negative_control=red$' "$out/qemu-rr-quantum-icount.result"
@@ -448,11 +493,46 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
+            evidence_scope=prefix-builds-plus-full-stack-semantics
             gate=gate:patch-microtests
             patch_count=${toString (builtins.length patchFiles)}
             microtest_count=${toString (builtins.length perPatchMicrotests)}
             patches=${builtins.concatStringsSep "," patchFiles}
             patch_series_gate_passed=true
+            patch_prefix_build_gate_passed=true
+            patch_prefix_builds_are_compile_checks=true
+            per_patch_semantic_microtests_target=fully-patched-qemu-package
+            per_patch_semantic_microtests_do_not_claim_prefix_runtime=true
+            every_patch_prefix_apply_clean=true
+            every_patch_prefix_qemu_system_build=true
+            qemu_block_utilities_link_at_prefix_15_and_full_series=true
+            crucible_shmem_registration_symbol_present_at_prefix_15_and_full_series=true
+            crucible_shmem_blockdev_realized_at_prefix_15_and_full_series=true
+            every_patch_prefix_fresh_target_absent_before_build=true
+            werror_enabled=true
+            warnings_as_errors_except=known-upstream-gcc14-allowlist
+            known_upstream_warning_allowlist_verified=true
+            warning_allowlist_compiler_version=14.3.0
+            array_bounds_warning_allowlist_scope=block/qed.c,block/qed-check.c,block/qed-cluster.c,block/qed-table.c,hw/scsi/virtio-scsi.c
+            array_bounds_warning_allowlist_count=14
+            stringop_overflow_warning_allowlist_scope=hw/vfio/migration-multifd.c
+            stringop_overflow_warning_allowlist_count=1
+            build_does_not_mutate_source_diff=true
+            tracked_source_diff_compared_byte_for_byte=true
+            tracked_source_diff_preserved_after_configure_and_build=true
+            source_path_set_preserved_outside_build_directory=true
+            generated_shmem_header_hash_verified=true
+            configure_wraplock_validated_and_removed=true
+            every_patch_prefix_source_tree_removed_after_evidence=true
+            every_patch_prefix_commit_verified=true
+            every_patch_prefix_tree_verified=true
+            prefix_manifest_records_fresh_source_build=true
+            prefix_manifest_records_tracked_diff_hash=true
+            prefix_manifest_records_shmem_header_hash=true
+            prefix_manifest_records_compiler_version=true
+            prefix_manifest=prefix-builds.tsv
             patch_regeneration_gate_passed=true
             patch_regeneration_drift_checked=true
             patch_regeneration_result_consumed=true

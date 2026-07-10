@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliSaveWorkflow",
-  taskIds ? ["T-CLI-9"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-9"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,8 +15,8 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
-  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   apiLifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   apiServer = builtins.readFile ../../crates/crucible-api/src/server.rs;
@@ -53,12 +54,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-9 checklist complete";
-        needle = "- [x] **T-CLI-9** Implement `save`";
+        label = "T-CLI-9 remains open";
+        needle = "- [ ] **T-CLI-9** Implement `save`";
       }
       {
-        label = "T-CLI-9 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliSaveWorkflow`";
+        label = "T-CLI-9 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.cliSaveWorkflow`";
       }
       {
         label = "T-CLI-9 oracle validated save scope";
@@ -80,7 +81,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI save completion note";
-        needle = "`T-CLI-9` is green through `checks.crucible.phase5.cliSaveWorkflow`";
+        needle = "`T-CLI-9` has partial evidence through `checks.crucible.phase5.cliSaveWorkflow`";
       }
       {
         label = "phase5 CLI remote save progress";
@@ -545,6 +546,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -766,6 +768,9 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=partial
+            evidence_scope=save-model-and-qmp-smoke
             component=crucible-cli
             contract=save-workflow-progress
             process_qemu_save=marker-resolved-jsonl-handle

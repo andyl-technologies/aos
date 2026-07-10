@@ -47,8 +47,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-2 checklist complete";
-        needle = "- [x] **T-QEMU-2**";
+        label = "T-QEMU-2 task traceability marker";
+        needle = "**T-QEMU-2**";
       }
       {
         label = "QEMU-2 launch-configuration rejection";
@@ -117,8 +117,8 @@
         needle = "KvmOrHardwareAcceleration";
       }
       {
-        label = "non-TCG rejection";
-        needle = "NonTcgAccelerator";
+        label = "non-sim accelerator rejection";
+        needle = "NonSimAccelerator";
       }
       {
         label = "MTTCG rejection";
@@ -126,7 +126,7 @@
       }
       {
         label = "single-thread pin required";
-        needle = "SingleThreadTcgNotPinned";
+        needle = "SingleThreadSimNotPinned";
       }
       {
         label = "missing icount rejection";
@@ -150,7 +150,7 @@
       }
       {
         label = "machine accelerator rejection";
-        needle = "MachineUsesNonTcgAcceleration";
+        needle = "MachineUsesNonSimAcceleration";
       }
       {
         label = "host timing or entropy rejection";
@@ -179,8 +179,12 @@
         needle = "pre_spawn_launch_validation_accepts_canonical_arguments";
       }
       {
-        label = "KVM non-TCG rejection test";
-        needle = "pre_spawn_launch_validation_rejects_kvm_and_non_tcg";
+        label = "KVM and non-sim rejection test";
+        needle = "pre_spawn_launch_validation_rejects_kvm_and_non_sim_accelerators";
+      }
+      {
+        label = "stock TCG runtime rejection assertion";
+        needle = "QemuPreSpawnLaunchValidationError::NonSimAccelerator";
       }
       {
         label = "icount and MTTCG rejection test";

@@ -89,8 +89,12 @@
         needle = ".format_name            = \"crucible-shmem\"";
       }
       {
-        label = "block meson integration";
-        needle = "'crucible-shmem.c',";
+        label = "system-emulator-only Meson integration";
+        needle = "system_ss.add(files('crucible-shmem.c'))";
+      }
+      {
+        label = "block driver registration";
+        needle = "block_init(bdrv_crucible_shmem_init)";
       }
       {
         label = "plugin block callback registration";
@@ -263,7 +267,8 @@ in
               patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
             done
 
-            grep -q "'crucible-shmem.c'," block/meson.build
+            grep -F -q "system_ss.add(files('crucible-shmem.c'))" block/meson.build
+            grep -F -q 'block_init(bdrv_crucible_shmem_init)' block/crucible-shmem.c
             grep -q 'qemu_plugin_register_blk_cb' include/qemu/qemu-plugin.h
             grep -q '#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)' include/qemu/qemu-plugin.h
             grep -q 'aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self())' block/crucible-shmem.c
@@ -547,6 +552,7 @@ in
             ${qemuPackageResultLines}
             block_driver_fixture_includes_patched_source=true
             block_shmem_driver_registered=true
+            block_shmem_driver_scope=system-emulator-only
             block_shmem_callback_registration_exercised=true
             deterministic_completion_microtest=true
             bounded_poll_cadence_microtest=true

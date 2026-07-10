@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeNoRealtimeWarp",
-  taskIds ? ["T-TIME-5"],
+  taskIds ? [],
+  openTaskIds ? ["T-TIME-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -18,7 +19,7 @@
   qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
   qemuTest = builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs;
   pluginRoot = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginTimeControl = builtins.readFile ../../crates/crucible-qemu-plugin/src/time_control.rs;
+  pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -145,8 +146,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-5 checklist complete";
-        needle = "- [x] **T-TIME-5**";
+        label = "T-TIME-5 remains open";
+        needle = "- [ ] **T-TIME-5**";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -278,6 +279,9 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
+            evidence_scope=launch-policy-and-callback-core-model
             gate=gate:layer0-determinism
             guest_time_sources=rtc,tsc,timer-devices:icount-derived-virtual-time
             guest_time_epoch=fixed-rtc-epoch

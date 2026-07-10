@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   harnessLint = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
   harnessScan = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
   faultRuleTest = builtins.readFile ../../crates/crucible/tests/fault_model_rule.rs;

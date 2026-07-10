@@ -11,9 +11,9 @@
     sourceRoot = "source/crates";
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
   crucibleGate = builtins.readFile ../../crates/crucible/tests/gate_content_address.rs;
   predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;

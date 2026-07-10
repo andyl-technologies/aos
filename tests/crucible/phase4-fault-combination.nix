@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   faultTest = builtins.readFile ../../crates/crucible/tests/fault_combination.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;

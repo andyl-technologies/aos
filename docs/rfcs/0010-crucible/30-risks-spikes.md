@@ -103,7 +103,7 @@ second host model if available.
 
 ```text
 S1 procedure (throwaway; no engine, no scheduler):
-  build launch config: -accel tcg -icount shift=N -smp 1 -cpu <no-rdrand>
+  build launch config: -accel sim,thread=single -icount shift=N -smp 1 -cpu <no-rdrand>
                        -machine <fixed> -m <fixed> -rtc base=<epoch>,clock=vm
                        seeded fw_cfg + virtio-rng, seeded internal PRNG,
                        nokaslr norandmaps, plugin loaded + sim active
@@ -840,7 +840,7 @@ architecture.
 ## 30.11a S11 — deterministic multi-vCPU under single-threaded RR-TCG + icount
 
 This is the Phase-0 blocker that gates the multi-vCPU goal ([G-10]). The bet is
-that single-threaded round-robin TCG (`-accel tcg,thread=single`), where the
+that the single-threaded TCG-derived sim accelerator (`-accel sim,thread=single`), where the
 vCPU-switch boundary is itself an icount-commandable quantum, makes an SMP guest
 as deterministic as a single-vCPU one — the same source-elimination contract,
 extended over N vCPUs and the round-robin cursor. If it does not, the multi-vCPU
@@ -848,7 +848,7 @@ restatement of Contract A is false and [G-10]/[G-11] cannot be built.
 
 ### Assumption under test
 
-An SMP guest under `-accel tcg,thread=single`, `-smp N`, `-icount shift=K`, a
+An SMP guest under `-accel sim,thread=single`, `-smp N`, `-icount shift=K`, a
 fixed content-addressed `rr_switch_quantum` in node-icount, the S11-relevant
 §4.6 launch eliminations (`-cpu` pin, fixed RTC epoch, deterministic seed,
 `nokaslr`/`norandmaps`, no interactive input), and plugin-visible fingerprint
@@ -878,7 +878,7 @@ vCPUs to one host thread, should be irrelevant by construction.
 
 ```text
 S11 procedure (throwaway; no engine, no scheduler):
-  launch: -accel tcg,thread=single -smp 4 -icount shift=K
+  launch: -accel sim,thread=single -smp 4 -icount shift=K
           rr_switch_quantum=Q (fixed, content-addressed), S11 launch eliminations,
           plugin-visible all-vCPU fingerprint capture active
   run A: boot diskless to horizon H; extended fingerprint at cadence C and at H -> EFP_A[]
@@ -901,7 +901,7 @@ first differing node-icount **and the component** — which vCPU's registers, or
 RR cursor — so the leaking source is identified.
 
 - **[RISK-25]** Spike **S11** (Phase-0 blocker ★ for [G-10]) MUST demonstrate
-  that an SMP guest under `-accel tcg,thread=single`, `-smp N`, `-icount`, a fixed
+  that an SMP guest under `-accel sim,thread=single`, `-smp N`, `-icount`, a fixed
   content-addressed `rr_switch_quantum`, diskless launch, the S11-relevant §4.6
   launch eliminations, and plugin-visible all-vCPU fingerprint capture produces a
   **bit-identical aggregate-icount stream and extended fingerprint** (all N vCPUs'
@@ -1307,7 +1307,7 @@ real host-core perf measurement, and `gate:perf-bench` land.
 **RISK-4 / RISK-5** are retired by `T-RISK-1`:
 `checks.crucible.phase0.s1Fingerprint` booted the same stock Linux kernel plus
 diskless initramfs twice with no block devices, `-smp 1`,
-`-accel tcg,thread=single`, `-icount shift=0,sleep=off,align=off`, a fixed RTC,
+`-accel sim,thread=single`, `-icount shift=0,sleep=off,align=off`, a fixed RTC,
 fixed seed material through `fw_cfg`, `virtio-rng`, and the conservative
 `nokaslr norandmaps random.trust_cpu=off` kernel arguments. The second run
 injected host scheduling jitter with CPU load. The plugin sampled the extended
@@ -1345,7 +1345,7 @@ gates/spikes.
 
 **RISK-6 / RISK-7** are retired by `T-RISK-2`:
 `checks.crucible.phase0.s2HltBusyPoll` booted the target stock Linux kernel plus
-initramfs under `-accel tcg,thread=single` and
+initramfs under `-accel sim,thread=single` and
 `-icount shift=0,sleep=off,align=off`, attached a synchronous virtio block read
 device with `throttling.iops-read=20`, attached a virtio-9p tree with
 `throttling.iops-read=20`, and bracketed 32 reads from each path with
@@ -1520,7 +1520,7 @@ the instruction at which the guest observed the entropy — was host-timing
 dependent and forked the fingerprint across otherwise-identical runs (an inherent
 upstream-icount property for asynchronous device completions, present in pristine
 QEMU, not a Crucible regression). This is now sealed by construction (E7a): the
-`crucible-det-virtio-ioeventfd` patch disables ioeventfd under icount for the
+`crucible-det-virtio-ioeventfd` patch disables ioeventfd under sim-mode icount for the
 virtio-rng device so its virtqueue kick dispatches synchronously on the requesting
 vCPU thread, and the `crucible-det-rng-delivery` patch completes builtin-RNG
 entropy inline instead of via a bottom half, so the completion interrupt lands at
@@ -1596,32 +1596,20 @@ reserved-immediate instruction traps precisely; that remains gated on adding an
 AOS-built aarch64 QEMU target, implementing the aarch64 doorbell trap, and
 rerunning S10 (`crucible-guest` itself is now implemented).
 
-**RISK-25** is retired by `T-RISK-17`:
-`checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
-kernel plus diskless initramfs twice with `-smp 4`,
-`-accel tcg,thread=single`, `-icount shift=0,sleep=off,align=off`, and a fixed
-`rr_switch_quantum=4096`. The second run injected host scheduling jitter with
-CPU load. The run reported `block_devices=0`, `vcpus=4`, `samples=33`,
-`extended_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
-`horizon_fingerprint_match=true`, `register_read_failures=0`,
-`register_count_assertion=nonempty_per_vcpu`, `device_event_capture=false`,
-`block_device_assertion=launch_argv_scan`, `mismatch_localization=component`,
-`first_differing_line=none`, `first_differing_component=none`,
-`fallback=smp1_not_needed`, `final_extended_hash=16e7a49bfce0eb0f`,
-`final_register_hash=ba71b2992131002d`,
-`final_ram_hash=6f3239f7118a53e2`, and
-`final_ram_bytes=268967936`. This retires the Phase-0 RR-TCG multi-vCPU
-interleaving risk for the diskless no-block-device proof path. A block-backed
-diagnostic attempt produced a reproducible first-difference artifact and is
-treated as a separate device-path determinism concern, not as an `-smp 1`
-fallback for [G-10].
+**RISK-25** remains open under `T-RISK-17`. The previously recorded S11 hashes
+were produced by a stock-TCG launch and therefore cannot be relabeled as evidence
+for the now-normative `-accel sim,thread=single` path. The updated
+`checks.crucible.phase0.s11MultiVcpuFingerprint` must boot the stock Linux
+diskless initramfs twice under `sim`, including the host-jitter run, before this
+record may report hashes, a match verdict, or an `-smp 1` fallback decision.
 
-**RISK-26** is resolved by `T-RISK-18` with the preemption-injection patch surface landed and explorer enablement still pending:
+**RISK-26** uses the `T-RISK-18` default-only fallback while live preemption
+exploration remains pending:
 `checks.crucible.phase0.s12PreemptionDecision` scanned the current QEMU Nix
 wiring, every local QEMU patch, the production trace plugin, and the Rust crates,
-and found the commanded preemption-injection surface. The spike also required the decision-register
-entries for the green `checks.crucible.phase0.s1Fingerprint` and
-`checks.crucible.phase0.s11MultiVcpuFingerprint` prerequisites, then recorded
+and found the commanded preemption-injection surface. This is capability and
+model evidence, not the live S12 experiment. The S11 sim-mode prerequisite is
+currently pending, so the fallback records
 `preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates`,
 `known_preemption_injection_surface_found=true`,
 `preemption_injection_api_available=qemu_plugin_inject_preemption`,
@@ -1635,11 +1623,9 @@ entries for the green `checks.crucible.phase0.s1Fingerprint` and
 `known_race_manifested_under_one_choice=modeled`,
 `known_race_absent_under_another_choice=modeled`,
 `single_vcpu_interrupt_variation_distinct=modeled`,
-`default_determinism_prereqs_green=true`,
+`default_determinism_prereqs_green=false`,
 `default_determinism_prereqs_source=decision_register_s1_s11`,
-`s1_decision_entry_consumed=true`, `s11_decision_entry_consumed=true`,
-`s11_extended_fingerprint_match=true`,
-`s11_horizon_fingerprint_match=true`,
+`s1_decision_entry_consumed=true`, `s11_decision_entry_consumed=false`,
 `decision_preemption_exploration_enabled=false`, and
 `fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending`.
 The four discrimination fields advanced from `not_tested` to `modeled` once the
@@ -1654,12 +1640,13 @@ Phase 0 therefore has demonstrated commanded-preemption discrimination at the
 model layer but still does **not** enable the **live** `Decision::Preemption`
 campaign explorer: that remains gated on a live race-yield proof under a running
 guest. Until then it keeps the default deterministic interleaving whose
-prerequisites are recorded by S1/S11.
+prerequisites will be recorded by S1/S11 once the sim-mode S11 rerun passes.
 
-**RISK-27** is resolved by `T-RISK-19` with the modeled-throughput default-only fallback:
+**RISK-27** remains open under `T-RISK-19`. The modeled-throughput fallback is
+provisional:
 `checks.crucible.phase0.s13RrSwitchQuantumFallback` consumed the S12 fallback
 result, swept candidate `rr_switch_quantum` values in a deterministic default-only
-RR switch-overhead model, and selected `4096` as the smallest S11-green quantum
+RR switch-overhead model, and selected `4096` as the smallest modeled quantum
 above the throughput floor. The run reported
 `candidate_quantums=1024,2048,4096,8192,16384`,
 `throughput_metric=modeled_retired_instruction_efficiency_x1000`,
@@ -1670,13 +1657,13 @@ above the throughput floor. The run reported
 `coarse_baseline_efficiency_x1000=996`,
 `selected_vs_coarse_efficiency_x1000=987`,
 `selected_phase0_default_rr_switch_quantum=4096`,
-`selected_default_basis=s11_green_smallest_quantum_above_throughput_floor`,
+`selected_default_basis=provisional_modeled_smallest_quantum_above_throughput_floor`,
 `race_yield_tested=false`,
 `race_yield_source=preemption_patch_surface_available_explorer_disabled`,
 `d25_status=open_until_preemption_explorer_enabled`, and
 `fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_explorer`.
-Phase 0 therefore keeps the S11-proven `rr_switch_quantum=4096` as a
-modeled-throughput default-only value, but it does not claim empirical throughput
+Phase 0 may keep `rr_switch_quantum=4096` as a provisional modeled-throughput
+value, but it is not S11-green until the sim-mode rerun passes and does not claim empirical throughput
 against the §25 budget and does not close D-25's race-yield half. The real
 default-selection spike must be rerun after S12 enables commanded preemption
 exploration.
@@ -1734,9 +1721,12 @@ step/reverse-step, but runtime enforcement is not implemented yet.
 `checks.crucible.phase0.riskRegisterGate` verifies that every completed Phase-0
 risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
-dependent work proceeds. The run reported `checked_risk_tasks=20`,
-`checked_task_scope=T-RISK-only`, `retired_decision_entries=20`, and
-`phase0_foundational_blockers_open=0`.
+dependent work proceeds. The current audited state reports
+`checked_risk_tasks=18`, `checked_task_scope=T-RISK-only`,
+`retired_decision_entries=18`, and `phase0_foundational_blockers_open=1` because
+S11/T-RISK-17 is pending its sim-mode rerun. Register consistency can pass while
+the separate Phase-0 exit remains blocked; it must never rewrite that open state
+as a green experiment.
 
 ## 30.14 Summary
 
@@ -1868,8 +1858,8 @@ never tolerated). Results live in the decision register (31).
   block dependent Phase-1 work on the four ★ blockers, and add a new `RISK-n` row
   with an owning spike for any newly-discovered load-bearing assumption. —
   satisfies [RISK-1], [RISK-2], [RISK-3], [RISK-23], [RISK-24]; spec §30.1, §30.13.
-- [x] **T-RISK-17** Run **S11** (Phase-0 blocker ★ for [G-10]): boot a stock
-  Linux `-smp 4` diskless initramfs twice under `-accel tcg,thread=single` with a
+- [ ] **T-RISK-17** Run **S11** (Phase-0 blocker ★ for [G-10]): boot a stock
+  Linux `-smp 4` diskless initramfs twice under `-accel sim,thread=single` with a
   fixed `rr_switch_quantum`, S11-relevant §4.6 launch eliminations, and an
   asserted no-block-device launch; capture the **extended fingerprint** (all N
   vCPUs' nonempty register descriptor sets + RR cursor + RAM hash) at a cadence
@@ -1894,15 +1884,17 @@ never tolerated). Results live in the decision register (31).
   disabling the [G-11] exploration surface for now; satisfies [RISK-26] via the
   accepted fallback; does not yet satisfy [SCHED-46] or [DET-12] for full
   commanded-preemption exploration; spec §30.11b.
-- [x] **T-RISK-19** Run **S13** fallback: consume the S12 fallback, model the
-  default-only `rr_switch_quantum` throughput side, select the S11-green
-  `rr_switch_quantum=4096`, and record `race_yield_tested=false`. The full S13
+- [ ] **T-RISK-19** Run **S13** fallback: consume the S12 fallback, model the
+  default-only `rr_switch_quantum` throughput side, then validate the provisional
+  `rr_switch_quantum=4096` against a green sim-mode S11 result and record
+  `race_yield_tested=false`. The full S13
   sweep that reports empirical multi-vCPU throughput against the
   [`25-performance-targets.md`](25-performance-targets.md) budget, measures
   race-surfacing yield via the S12 explorer, and closes **D-25** remains deferred
-  until S12 passes without fallback. — resolves [RISK-27] by adopting the
-  modeled-throughput default-only fallback; satisfies [RISK-27] via the accepted
-  fallback; does not close [D-25] yet; spec §30.11c.
+  until S12 passes without fallback. The modeled sweep is retained as partial
+  evidence, but this task and [RISK-27] stay open until S11 validates the chosen
+  quantum under sim mode. — satisfies [RISK-27] only after that validation; it
+  does not close [D-25] yet; spec §30.11c.
 - [x] **T-RISK-20** Run **S14** fallback: scan the current debug implementation
   surface, record that no hermetic gdb client package or AOS QEMU gdbstub
   step-mediation hook exists yet, note that the session/backend `open_gdbstub`

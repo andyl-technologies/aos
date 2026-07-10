@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostAppRandomDoorbell",
-  taskIds ? ["T-GHC-16"],
+  taskIds ? [],
+  openTaskIds ? ["T-GHC-16"],
   phase0S5 ? import ./phase0-s5.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,7 +16,7 @@
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
   engineDecision = builtins.readFile ../../crates/crucible/src/decision.rs;
-  engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  engineModel = import ./_crucible-model-source.nix {inherit lib;};
   protocolDoorbellFrame = builtins.readFile ../../crates/crucible-protocol/src/doorbell_frame.rs;
   protocolDoorbellMarker = builtins.readFile ../../crates/crucible-protocol/src/doorbell_marker.rs;
   protocolAbiGate = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
@@ -31,6 +32,7 @@
   };
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -68,12 +70,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-16 checked off";
-        needle = "- [x] **T-GHC-16**";
+        label = "T-GHC-16 remains open";
+        needle = "- [ ] **T-GHC-16**";
       }
       {
-        label = "T-GHC-16 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostAppRandomDoorbell`";
+        label = "T-GHC-16 partial-evidence note";
+        needle = "Partial callback-core and engine-model evidence is provided by";
       }
       {
         label = "random request kind table";
@@ -480,6 +482,9 @@ in
             check=${attrPath}
             gate=gate:abi-conformance
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=callback-core-and-engine-model
             doorbell_kind=random_request
             protocol_version=2
             kind=5

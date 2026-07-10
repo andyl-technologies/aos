@@ -11,8 +11,8 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  model = import ./_crucible-model-source.nix {inherit lib;};
   icountCeilingTest = builtins.readFile ../../crates/crucible/tests/scheduler_icount_ceiling.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;

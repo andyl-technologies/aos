@@ -116,7 +116,7 @@
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 1;";
+        needle = "pub const ABI_VERSION: u32 = 2;";
       }
       {
         label = "physical slot capacity";
@@ -157,6 +157,14 @@
       {
         label = "frame entry ABI";
         needle = "pub struct FrameEntry";
+      }
+      {
+        label = "coverage entry ABI";
+        needle = "pub struct CoverageEntry";
+      }
+      {
+        label = "coverage queue cardinality";
+        needle = "pub const COVERAGE_QUEUE_CAPACITY: u32 = 65_536;";
       }
       {
         label = "region header size";
@@ -243,6 +251,14 @@
         needle = "pub struct RegionAllocation";
       }
       {
+        label = "per-VM coverage ring geometry";
+        needle = "pub coverage_ring_count: u32";
+      }
+      {
+        label = "coverage storage extent";
+        needle = "pub fn coverage_entry_count(&self) -> u64";
+      }
+      {
         label = "layout geometry computation";
         needle = "pub fn for_config(config: RegionConfig)";
       }
@@ -301,6 +317,10 @@
       {
         label = "computed geometry test";
         needle = "region_layout_computes_offsets_and_directed_rings";
+      }
+      {
+        label = "coverage entry layout assertions";
+        needle = "assert_eq!(COVERAGE_ENTRY_SIZE, 64);";
       }
       {
         label = "header records geometry test";
@@ -433,6 +453,7 @@ in
             region_header=true
             region_allocation=true
             directed_rings=vm_to_reserved_executors
+            coverage_rings=one_per_vm_capacity_65536
             RESULT
           '';
         }

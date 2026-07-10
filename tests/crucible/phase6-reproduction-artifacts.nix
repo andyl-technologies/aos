@@ -13,7 +13,7 @@
   };
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
   artifactTest = builtins.readFile ../../crates/crucible/tests/gate_reproduction_artifacts.rs;
   defaultChecks = builtins.readFile ./default.nix;

@@ -2,7 +2,14 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.perfBench",
-  taskIds ? ["T-PLAN-3" "T-PERF-1"],
+  taskIds ? ["T-PERF-26"],
+  openTaskIds ? [
+    "T-PERF-1" "T-PERF-2" "T-PERF-3" "T-PERF-4" "T-PERF-5" "T-PERF-6"
+    "T-PERF-7" "T-PERF-8" "T-PERF-9" "T-PERF-10" "T-PERF-11" "T-PERF-12"
+    "T-PERF-13" "T-PERF-14" "T-PERF-15" "T-PERF-16" "T-PERF-17" "T-PERF-18"
+    "T-PERF-19" "T-PERF-20" "T-PERF-21" "T-PERF-22" "T-PERF-23" "T-PERF-24"
+    "T-PERF-25" "T-PERF-27" "T-PERF-28"
+  ],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -34,6 +41,7 @@
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -68,27 +76,25 @@
     )
     requirements;
 
-  # Each T-PERF task's checklist box MUST be ticked with the perf-bench
-  # completion note before this gate is allowed to claim it.
-  perfTaskCount = 28;
-  perfTaskIndexes = builtins.genList (index: index + 1) perfTaskCount;
+  # The modeled gate remains diagnostic while the live measurements are open.
   perfCheckboxFailures =
-    lib.concatMap (
-      index: let
-        id = "T-PERF-${toString index}";
-      in
-        lib.optionals (!(hasInfix "- [x] **${id}**" perfDoc)) [
-          "docs/rfcs/0010-crucible/25-performance-targets.md: ${id} checklist box must be ticked"
+    lib.optionals (!(hasInfix "- [x] **T-PERF-26**" perfDoc)) [
+      "docs/rfcs/0010-crucible/25-performance-targets.md: T-PERF-26 checklist box must be ticked"
+    ]
+    ++ lib.concatMap (
+      id:
+        lib.optionals (!(hasInfix "- [ ] **${id}**" perfDoc)) [
+          "docs/rfcs/0010-crucible/25-performance-targets.md: ${id} must remain open while live evidence is absent"
         ]
     )
-    perfTaskIndexes;
+    openTaskIds;
 
   failures =
     perfCheckboxFailures
     ++ failuresFor "docs/rfcs/0010-crucible/25-performance-targets.md" perfDoc [
       {
-        label = "perf-bench completion note";
-        needle = "Completed by `checks.crucible.phase7.gates.perfBench`";
+        label = "perf-bench partial-evidence note";
+        needle = "Partial modeled evidence is provided by `checks.crucible.phase7.gates.perfBench`";
       }
       {
         label = "cost-model term attribution";
@@ -387,6 +393,8 @@ in
             check=${attrPath}
             gate=gate:perf-bench
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             owner=crucible-harness
             phase=phase7
             gate_class=regression

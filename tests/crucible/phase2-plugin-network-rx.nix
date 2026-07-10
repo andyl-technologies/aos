@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginNetworkRx",
-  taskIds ? ["T-PLUG-11"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -20,6 +21,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -90,8 +92,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-11 checklist complete";
-        needle = "- [x] **T-PLUG-11**";
+        label = "T-PLUG-11 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-11**";
       }
       {
         label = "network RX wording";
@@ -489,6 +491,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             rx_injection=idle-context-lossless-queue-and-flush
             qemu_rx_api=qemu_plugin_net_send,qemu_plugin_net_flush
             delivery_gate=floor-through-current-inclusive

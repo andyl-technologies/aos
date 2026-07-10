@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  session = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  session = import ./_crucible-session-source.nix {inherit lib;};
   sessionGate = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiStream = builtins.readFile ../../crates/crucible-api/src/event_log_stream.rs;

@@ -11,8 +11,8 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   timeTest = builtins.readFile ../../crates/crucible/tests/condition_time_leaves.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;

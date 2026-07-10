@@ -11,8 +11,8 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
   randomTest = builtins.readFile ../../crates/crucible/tests/random_fault_config.rs;
   faultPlanTest = builtins.readFile ../../crates/crucible/tests/fault_plan.rs;
@@ -56,12 +56,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/17-fault-injection.md" faultDoc [
       {
-        label = "T-FAULT-14 checked off";
-        needle = "- [x] **T-FAULT-14**";
+        label = "T-FAULT-14 remains open pending live campaign proof";
+        needle = "- [ ] **T-FAULT-14**";
       }
       {
-        label = "T-FAULT-14 completion note";
-        needle = "Completed by `checks.crucible.phase4.randomFaultConfig`";
+        label = "T-FAULT-14 open-scope note";
+        needle = "The item remains open pending the full campaign-to-live-";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
@@ -116,6 +116,14 @@
       {
         label = "config validation error";
         needle = "RandomFaultConfigInvalid";
+      }
+      {
+        label = "unbiased rejection sampler";
+        needle = "fn draw_bounded_u64_from(";
+      }
+      {
+        label = "forced rejection regression";
+        needle = "bounded_random_fault_draw_forces_rejection_of_the_biased_prefix";
       }
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
@@ -173,7 +181,19 @@
       }
       {
         label = "device namespace guard test";
-        needle = "random_fault_config_rejects_only_device_weights_until_world_devices_exist";
+        needle = "random_fault_config_rejects_device_only_weights_without_matching_world_devices";
+      }
+      {
+        label = "all weighted device kinds";
+        needle = "random_fault_config_generates_every_weighted_device_fault_kind";
+      }
+      {
+        label = "mixed device weight golden plan";
+        needle = "mixed_device_weights_and_fixed_draw_order_have_a_golden_plan";
+      }
+      {
+        label = "device family target isolation";
+        needle = "device_fault_target_selection_stays_within_the_selected_device_family";
       }
     ]
     ++ failuresFor "crates/crucible/tests/fault_plan.rs" faultPlanTest [

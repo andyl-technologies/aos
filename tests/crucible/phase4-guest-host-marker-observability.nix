@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostMarkerObservability",
-  taskIds ? ["T-GHC-9"],
+  taskIds ? [],
+  openTaskIds ? ["T-GHC-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -11,8 +12,8 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   markerObservabilityTest = builtins.readFile ../../crates/crucible/tests/guest_host_marker_observability.rs;
   eventLogDeterminismTest = builtins.readFile ../../crates/crucible/tests/event_log_determinism.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
@@ -44,15 +45,16 @@
     requirements;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-9 checked off";
-        needle = "- [x] **T-GHC-9**";
+        label = "T-GHC-9 remains open";
+        needle = "- [ ] **T-GHC-9**";
       }
       {
-        label = "T-GHC-9 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostMarkerObservability`";
+        label = "T-GHC-9 partial-evidence note";
+        needle = "Partial model evidence is provided by";
       }
       {
         label = "marker observability implementation note";
@@ -200,7 +202,7 @@
       }
       {
         label = "phase4 marker observability task id";
-        needle = "taskIds = [\"T-GHC-9\"]";
+        needle = "openTaskIds = [\"T-GHC-9\"]";
       }
     ];
 in
@@ -278,6 +280,9 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=marker-observation-model
             gate=gate:single-vm-fingerprint
             marker_event_log_class=observational
             marker_determinism_projection=causal-subsequence

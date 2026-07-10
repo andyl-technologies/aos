@@ -119,6 +119,10 @@
         needle = "crucible_shmem_frame_entry";
       }
       {
+        label = "coverage entry declaration";
+        needle = "crucible_shmem_coverage_entry";
+      }
+      {
         label = "region header size static assert";
         needle = "sizeof(crucible_shmem_region_header) == CRUCIBLE_SHMEM_REGION_HEADER_SIZE";
       }
@@ -133,6 +137,10 @@
       {
         label = "frame entry offset static assert";
         needle = "offsetof(crucible_shmem_frame_entry, data) == CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET";
+      }
+      {
+        label = "coverage entry offset static assert";
+        needle = "offsetof(crucible_shmem_coverage_entry, map_index) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_MAP_INDEX_OFFSET";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/tests/generated_abi_header.rs" headerTest [
@@ -253,6 +261,7 @@ in
                 sizeof(crucible_shmem_node_slot) +
                 sizeof(crucible_shmem_ring_header) +
                 sizeof(crucible_shmem_frame_entry) +
+                sizeof(crucible_shmem_coverage_entry) +
                 offsetof(crucible_shmem_frame_entry, data)
               ) == 0;
             }

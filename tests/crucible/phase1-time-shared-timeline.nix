@@ -11,8 +11,8 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   publicTest = builtins.readFile ../../crates/crucible/tests/time_shared_timeline.rs;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;

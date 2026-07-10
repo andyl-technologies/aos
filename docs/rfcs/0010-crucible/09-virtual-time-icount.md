@@ -23,7 +23,8 @@ QEMU-side mechanisms that make this model real are in
 ## 9.1 The model in one paragraph
 
 Each node has an **instruction counter** — for a VM node, QEMU's executed-guest-
-instruction count under `-accel tcg -icount shift=N`; for an I/O sub-node, a
+instruction count under the TCG-derived `-accel sim,thread=single -icount
+shift=N` Crucible runtime; for an I/O sub-node, a
 host-computed counter advanced by a fixed model
 ([`15-io-subnodes.md`](15-io-subnodes.md)). This counter is the node's *only*
 clock. Virtual nanoseconds are a *derived* view: `ns = icount << shift` for the
@@ -654,27 +655,27 @@ instruction-primary.
   scheduling axis; default perfect clock byte-identical to no-skew; fixed-point
   arithmetic with documented rounding, no `f64` on the path. — satisfies
   [TIME-16], [TIME-17], [TIME-18], [TIME-19]; spec §9.6.
-- [x] **T-TIME-5** Make guest-visible time sources resolve to icount-derived
+- [ ] **T-TIME-5** Make guest-visible time sources resolve to icount-derived
   virtual time from a fixed epoch; suppress idle warp when the plugin holds time
   control; compute the icount budget from the virtual clock only (no realtime
   deadline); acquire time control before the first visible instruction. —
   satisfies [TIME-20], [TIME-21], [TIME-22], [TIME-23]; spec §9.7.
-- [x] **T-TIME-6** Implement exact next-deadline introspection (plugin reads the
+- [ ] **T-TIME-6** Implement exact next-deadline introspection (plugin reads the
   next `QEMU_CLOCK_VIRTUAL` timer deadline) and feed it as the node's exact local
   event to the scheduler horizon; ban the overshoot-and-correct fallback and fail
   loudly if the capability is unavailable. — satisfies [TIME-24], [TIME-25],
   [TIME-26]; spec §9.8.
-- [x] **T-TIME-7** Implement time advancement via the max-advance ceiling: convert
+- [ ] **T-TIME-7** Implement time advancement via the max-advance ceiling: convert
   horizon → ceiling icount ([TIME-4]), publish ceiling and reached-icount in the
   shmem region, coordinate the idle/advance handoff with a futex, and forbid any
   node self-extending past the published ceiling. — satisfies [TIME-27],
   [TIME-28], [TIME-29], [TIME-30]; spec §9.9.
-- [x] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
+- [ ] **T-TIME-8** Verify determinism of time in isolation under Contract A: a
   single node fed a recorded icount-stamped input list produces a bit-identical
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
   fields under adversarial host conditions; lint-ban all host-time reads on the
   time path. — satisfies [TIME-31], [TIME-32], [TIME-33]; spec §9.10.
-- [x] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
+- [ ] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
   the node clock from the aggregate retired-instruction count across all `N`
   vCPUs (no per-vCPU shift/epoch), keep per-vCPU counts plugin-internal, pin the
   node-icount `rr_switch_quantum` into the content hash, and compute the node's

@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeMultiVcpuAggregateClock",
-  taskIds ? ["T-TIME-9"],
+  taskIds ? [],
+  openTaskIds ? ["T-TIME-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -207,11 +208,23 @@
         label = "multi-vCPU spike fingerprints per-vCPU counts";
         needle = "register_count_assertion=nonempty_per_vcpu";
       }
+      {
+        label = "multi-vCPU spike pins the predeclared S11 horizon";
+        needle = "stopAt ? 3300000000";
+      }
+      {
+        label = "multi-vCPU spike sustains four-thread contention";
+        needle = ''puts("CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock")'';
+      }
+      {
+        label = "multi-vCPU spike executes horizon/plugin-exit register comparison";
+        needle = ''[ "$horizon_register_hash" = "$final_register_hash" ]'';
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-9 checklist complete";
-        needle = "- [x] **T-TIME-9**";
+        label = "T-TIME-9 remains open";
+        needle = "- [ ] **T-TIME-9**";
       }
       {
         label = "TIME-24 multi-vCPU deadline minimum";
@@ -342,6 +355,9 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
+            evidence_scope=multi-vcpu-clock-model
             gate=gate:layer0-determinism
             gate=gate:single-vm-fingerprint
             aggregate_node_clock=true

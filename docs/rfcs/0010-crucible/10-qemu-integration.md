@@ -52,8 +52,9 @@ clock — but *only* because TCG emulates rather than delegates. Floating point
 host FPU; the TSC (E4) is icount-derived because TCG owns the cycle counter; the
 CPU model (E10) is whatever `-cpu` says, not the host's.
 
-- **[QEMU-1]** Every VM node MUST run under QEMU with `-accel tcg` (the Tiny
-  Code Generator) and `-icount shift=N` for a fixed integer `N`. Crucible MUST
+- **[QEMU-1]** Every simulation VM node MUST run under QEMU's TCG-derived
+  `sim` accelerator with `-accel sim,thread=single` and `-icount shift=N` for a
+  fixed integer `N`. Crucible MUST
   NOT run a VM node under KVM or any hardware-accelerated backend for a
   simulation run, because hardware virtualization makes guest progress a function
   of host timing and defeats [DET-1] in principle. *Gate:*
@@ -61,8 +62,9 @@ CPU model (E10) is whatever `-cpu` says, not the host's.
   satisfies [DET-1], [TIME-1], references [DET-8].
 
 - **[QEMU-2]** The host launcher MUST reject — at scenario-validation /
-  launch-configuration time, before spawning any child — a configuration that
-  selects KVM, any non-TCG accelerator, `-icount shift=auto`, or omits `-icount`.
+  launch-configuration time, before spawning any child — a Crucible runtime
+  configuration that selects stock `tcg`, KVM, any accelerator other than the
+  TCG-derived `sim` accelerator, `thread=multi`, `-icount shift=auto`, or omits `-icount`.
   The rejection MUST be a loud, early error, never a silent fall-through to a
   non-deterministic run. *Gate:* `gate:layer0-determinism`. *Spec:* §10.1, §10.2;
   satisfies [DET-9], [TIME-5].
@@ -89,8 +91,9 @@ getrandom, etc.) are activated by sim mode and specified in 11.
 The enumerated, REQUIRED launch elements (illustrative command sketch follows
 the requirements):
 
-- **[QEMU-4]** **Execution backend.** `-accel tcg` and `-icount shift=N` with the
-  fixed scenario shift; the icount mode MUST be the precise (fixed-shift) mode,
+- **[QEMU-4]** **Execution backend.** `-accel sim,thread=single` and `-icount
+  shift=N` with the fixed scenario shift; `sim` is the patch series'
+  TCG-derived accelerator and the icount mode MUST be the precise (fixed-shift) mode,
   never `auto` ([QEMU-2]). Idle warp MUST be suppressed when the plugin holds
   time control (the patch-series mechanism E2/[TIME-21]); the host requests the
   no-warp behavior via the icount/plugin configuration so the virtual clock
@@ -100,8 +103,10 @@ the requirements):
 
 - **[QEMU-5]** **vCPUs under single-threaded round-robin TCG.** `-smp N` is
   permitted (N ≥ 1); the accelerator MUST be single-threaded round-robin TCG
-  (`-accel tcg,thread=single`). Multi-threaded TCG (`thread=multi`, MTTCG) MUST
-  be rejected at launch-configuration time, because parallel host threads make
+  (`-accel sim,thread=single`). Stock `-accel tcg` MUST also be rejected for a
+  Crucible run because it leaves the sim-gated RR, IPI, shmem-dispatch, and
+  preemption mechanisms inactive. Multi-threaded TCG (`thread=multi`, MTTCG)
+  MUST be rejected at launch-configuration time, because parallel host threads make
   instruction interleaving a function of host scheduling and defeat [DET-1].
   Under single-threaded round-robin all N vCPUs are driven serially on one host
   thread, so guest progress and the vCPU-switch interleaving remain a pure
@@ -114,9 +119,9 @@ the requirements):
 
 - **[QEMU-43]** **Round-robin single-thread launch validation.** The host MUST
   validate, at launch-configuration time before spawning any child, that the
-  accelerator is single-threaded round-robin TCG: it MUST reject `thread=multi`
-  (MTTCG) loudly and MUST accept `-smp N` only in conjunction with
-  `-accel tcg,thread=single`. The host MUST set the round-robin switch boundary
+  accelerator is the single-threaded TCG-derived sim accelerator: it MUST reject
+  stock `tcg` and `thread=multi` (MTTCG) loudly and MUST accept `-smp N` only in
+  conjunction with `-accel sim,thread=single`. The host MUST set the round-robin switch boundary
   to the scenario's content-addressed `rr_switch_quantum` (in node-icount) via
   the patch-series flag (`crucible-rr-quantum-icount`, 11/[PATCH-44]), MUST
   reject a configuration that leaves the quantum at QEMU's adaptive/realtime
@@ -201,7 +206,7 @@ the requirements):
 # Illustrative launch sketch (CONV-1; the prose requirements are authoritative).
 # The host builds this command line from the node's World entry + scenario pins.
 qemu-system-x86_64 \
-  -accel tcg,thread=single -icount shift=N  # QEMU-4/5 fixed shift, precise mode, no warp,
+  -accel sim,thread=single -icount shift=N  # QEMU-4/5 fixed shift, precise mode, no warp,
                                             #          single-threaded RR-TCG (NOT thread=multi)
   -smp N                               # QEMU-5  N vCPUs under single-threaded RR
   # rr_switch_quantum pinned to node-icount via the patch-series flag (QEMU-43,
@@ -750,8 +755,8 @@ determinism contract (04).
 > populate Phase 1–2 (the determinism/transport foundation and
 > the QEMU layer built on it).
 
-- [x] **T-QEMU-1** Implement the launch-config builder: TCG + fixed
-  `-icount shift=N`, `-accel tcg,thread=single` with `-smp N`, fixed `-cpu` (no
+- [ ] **T-QEMU-1** Implement the launch-config builder: the TCG-derived `sim`
+  accelerator + fixed `-icount shift=N`, `-accel sim,thread=single` with `-smp N`, fixed `-cpu` (no
   RDRAND/RDSEED, never `host`), fixed `-machine`/`-m`/reset, icount-derived RTC,
   seeded `fw_cfg`/virtio-rng, seeded internal PRNG, CoW disks,
   the guest's stock cmdline (no `nokaslr`/`norandmaps` added or required),
@@ -769,8 +774,9 @@ determinism contract (04).
   material for scenario identity. Child ownership/fd-passing remains tracked by
   [T-QEMU-3] and [T-QEMU-7]; the N-vCPU launch extension remains tracked by
   [T-QEMU-15].
-- [x] **T-QEMU-2** Implement launch-config validation that rejects KVM /
-  non-TCG / `shift=auto` / missing-`-icount` / `thread=multi` (MTTCG) /
+- [ ] **T-QEMU-2** Implement launch-config validation that rejects stock TCG,
+  KVM, and every non-`sim` accelerator / `shift=auto` / missing-`-icount` /
+  `thread=multi` (MTTCG) /
   unpinned `rr_switch_quantum` / `-cpu host` / host-timing-or-entropy flags,
   loudly and before spawning. — satisfies [QEMU-1], [QEMU-2], [QEMU-5],
   [QEMU-43], [QEMU-11], [QEMU-15]; spec §10.1, §10.2.
@@ -843,7 +849,7 @@ determinism contract (04).
   close, QMP disconnect) surfaced as a typed crashed-node status distinct from an
   intended crash fault, localized rather than retried on gated paths. —
   satisfies [QEMU-32]; spec §10.6.
-- [x] **T-QEMU-10** Wire the determinism boundary: configure hermeticity entirely
+- [ ] **T-QEMU-10** Wire the determinism boundary: configure hermeticity entirely
   via launch config + sim mode, expose the black-box execution-fingerprint hook
   (periodic icount + register/memory/device digest via the plugin), and add the
   per-elimination micro-tests + inertness checks. — satisfies [QEMU-33],
@@ -853,17 +859,34 @@ determinism contract (04).
   a content-addressed black-box plugin fingerprint definition with periodic
   icount, architectural-register, guest-memory, and device-state components,
   builds the digest consumed by the single-VM fingerprint hook, and requires a
-  per-elimination executable negative microtest matrix for TCG/icount, CPU
+  per-elimination executable negative microtest matrix for the sim accelerator,
+  stock-TCG/MTTCG rejection, icount, CPU
   entropy, RTC, guest entropy, run seed, kernel randomization, input, CoW
   backing, idle-warp, and sim-mode inertness. The full real-QEMU
   `gate:qemu-inert` corpus is implemented by
   `checks.crucible.phase2.gates.qemuInert`; the N-vCPU fingerprint expansion is
   covered by `checks.crucible.phase2.qemuNvcpuFingerprint`.
-- [x] **T-QEMU-11** Implement the single-VM fingerprint hook for
+- [ ] **T-QEMU-11** Implement the single-VM fingerprint hook for
   `gate:single-vm-fingerprint`: run-twice-and-diff under adversarial host
   conditions with first-mismatch icount-window localization and a fixed,
   content-addressed fingerprint definition. — satisfies [QEMU-34]; spec §10.7,
   §24.
+  **Implemented provisional slice:** `crucible-qemu-fingerprint` imports two
+  versioned real-QEMU trace-plugin streams into the canonical Rust stream
+  representation under a separate provisional definition. The definition
+  advertises periodic sampling and `ordered-cpu-mmio-read-write-history`
+  exactly; it does not
+  claim the canonical current-device-state or event-boundary semantics. The
+  Phase 2 gate runs the same bounded VM twice, adds host CPU load around the
+  second run, validates distinct run provenance plus identical launch/QEMU/plugin
+  digests and exact QMP CPU indexes, and routes post-processing
+  register/RR/retired/RAM/device mutations through the run-twice hook for coarse
+  sample-window localization. Those mutations are parser/comparator red controls,
+  not live guest perturbations, and no state-dump or exact-bisection artifact is
+  claimed. The observation shape is derived from run A rather than independently
+  pinned. The task remains open because complete current device state,
+  interaction-boundary samples, instruction-exact bisection, and an integrated
+  fixed `(image, cmdline, seed, I)` launcher remain absent.
 - [x] **T-QEMU-12** Implement the per-quantum data flow at the QEMU level (run to
   ceiling-or-idle → report icount/idle-deadline → scheduler ceiling store →
   futex wake → advance → frame inject/emit / I/O), entirely over shmem with no
@@ -924,25 +947,25 @@ determinism contract (04).
   sleeps, and nondeterministic select APIs in the ordering-significant driver
   path.
 - [x] **T-QEMU-15** Extend the launch-config builder and validator for
-  multi-vCPU single-threaded round-robin: emit `-accel tcg,thread=single` with
+  multi-vCPU single-threaded round-robin: emit `-accel sim,thread=single` with
   `-smp N`, set the round-robin switch boundary to the scenario's
   content-addressed `rr_switch_quantum` (node-icount) via the patch-series flag
   (`crucible-rr-quantum-icount`, 11), reject `thread=multi` and an unpinned
   quantum loudly, and fold N + the pinned `rr_switch_quantum` into the scenario
   content hash. — satisfies [QEMU-5], [QEMU-43]; spec §10.2.
   **Completed:** `DeterministicLaunchProfile` now accepts `smp_vcpus >= 1`,
-  emits `-accel tcg,thread=single` with `-smp N`, pins the
+  emits `-accel sim,thread=single` with `-smp N`, pins the
   `rr_switch_quantum` node-icount boundary in `-icount`, and folds both
   `smp_vcpus=N` and `rr_switch_quantum` plus the ascending vCPU rotation into
   scenario material. The pre-spawn validator rejects MTTCG and unpinned or zero
   RR quantum before QEMU is spawned, while accepting the RFC alias
   `crucible-rr-quantum-icount` for patched QEMU command lines.
-- [x] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
+- [ ] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
   all N vCPUs' register files plus the round-robin cursor (current vCPU +
   position within `rr_switch_quantum`) via the plugin's per-vCPU introspection
   capability (12) and QMP, include them in the digest, and localize a mismatch
   to the first differing icount window. — satisfies [QEMU-34]; spec §10.7.
-  **Completed:** the `crucible-qemu` single-VM fingerprint stream now carries
+  **Implemented but not closed:** the `crucible-qemu` single-VM fingerprint stream now carries
   canonical N-vCPU sample material: sorted register-file digests for exactly
   vCPUs `0..N`, the RR cursor (`current_vcpu`, position inside the pinned
   `rr_switch_quantum`, and the quantum), guest-memory digest, and device-state
@@ -955,6 +978,13 @@ determinism contract (04).
   diagnostics localize the first differing icount window and name the first
   differing component, including per-vCPU register digests and RR cursor
   position. The task check realizes the plugin per-vCPU introspection check and
-  the typed QMP control-boundary check, runs a bounded real-QEMU `-smp 4`
-  RR-TCG trace smoke test, and keeps a source-checked link to the documented
-  Phase 0 multi-vCPU RR-TCG fingerprint spike.
+  the typed QMP control-boundary check, runs the same bounded real-QEMU `-smp 4`
+  sim/RR-TCG workload twice with second-run host load, checks exact sorted QMP
+  CPU indexes on both runs, binds register schemas/bytes and retired-count sums,
+  imports both plugin traces through the provisional Rust path, and executes
+  register/RR/retired post-processing mismatch-localization plus structural red controls. It
+  uses run A as the baseline register/RAM observation shape rather than an
+  independent launch/build contract. It remains open pending a realized green
+  gate for a non-self-derived path and the
+  integrated hook owned with [T-QEMU-11]/[T-DET-8]; the provisional device
+  component remains CPU-observed MMIO history, not complete current device state.

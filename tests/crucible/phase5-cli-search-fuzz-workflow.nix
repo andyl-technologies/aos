@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliSearchFuzzWorkflow",
-  taskIds ? ["T-CLI-13"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-13"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,11 +15,11 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
-  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
-  engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
-  engineTrigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
+  engineModel = import ./_crucible-model-source.nix {inherit lib;};
+  engineTrigger = import ./_crucible-trigger-source.nix {inherit lib;};
   searchStrategiesTest = builtins.readFile ../../crates/crucible/tests/gate_search_strategies.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -49,12 +50,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-13 checklist complete";
-        needle = "- [x] **T-CLI-13** Implement `search`/`fuzz`";
+        label = "T-CLI-13 remains open";
+        needle = "- [ ] **T-CLI-13** Implement `search`/`fuzz`";
       }
       {
-        label = "T-CLI-13 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliSearchFuzzWorkflow`";
+        label = "T-CLI-13 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.cliSearchFuzzWorkflow`";
       }
       {
         label = "T-CLI-13 local-double search progress";
@@ -1038,6 +1039,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -1102,6 +1104,9 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=partial
+            evidence_scope=search-fuzz-model-and-local-double
             component=crucible-cli
             contract=search-fuzz-workflow-progress
             process_search_fuzz=local-double-jsonl-final-outcome

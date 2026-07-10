@@ -44,9 +44,11 @@ all four; the per-patch detail (§11.4–§11.8) states how each one does.
 
 - **[PATCH-1]** Every patch in the series MUST be **inert unless simulation mode
   is active**. "Active" means the plugin (`crucible-qemu-plugin`,
-  [`12-qemu-plugin.md`](12-qemu-plugin.md)) is loaded *and* the sim flags are set
-  (the `sim` TCG accelerator selected via `-accel sim`, or equivalently the
-  plugin acquiring time control via `qemu_plugin_request_time_control`). The same
+  [`12-qemu-plugin.md`](12-qemu-plugin.md)) is loaded, the `sim` TCG accelerator
+  is selected via `-accel sim`, and any mechanism-specific capability such as
+  time-control ownership has also been acquired. Accelerator selection and
+  `qemu_plugin_request_time_control` are complementary requirements, not
+  equivalent activation paths. The same
   AOS QEMU binary, built from the same patched source but launched without sim
   mode, MUST be behaviorally identical to upstream QEMU of the pinned version.
   *Gate:* `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7], [DET-36].
@@ -182,9 +184,9 @@ DETERMINISM (source elimination)                       class  enforces
 
 PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-rr-fingerprint-helpers phase-1 fp helper ABI F    DET-29, QEMU-43
-  crucible-plugin-time-advance .. request+advance vtime     D    TIME-23, TIME-27, DET-1, INV-10
-  crucible-plugin-advance-drain . drain BHs after advance   D    PATCH-19, DET-1, INV-10
-  crucible-plugin-drain-mainloop  drain main loop in cb      D    PATCH-20, DET-1, INV-10
+  crucible-plugin-time-advance .. queued vtime + completion D    TIME-23, TIME-27, DET-1, INV-10
+  crucible-plugin-advance-barrier  order timer BH completion D    PATCH-19, DET-1, INV-10
+  crucible-plugin-device-wake ... event-driven device wake   D    PATCH-20, DET-1, INV-10
   crucible-clock-deadline ....... exact next vtimer deadline D    TIME-24, TIME-25
   crucible-plugin-icount-raw .... raw icount read           F    DET-29, INV-10
   crucible-vcpu-introspect ...... per-vCPU regs + RR cursor  F    PATCH-46, DET-29, INV-10
@@ -206,7 +208,7 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-sim-loop-fix ......... single-vCPU loop fixes     D    PATCH-34, DET-1, NG-1
   crucible-sim-first-exit ....... normalize first exit phase D    PATCH-34, DET-1, INV-10
   crucible-sim-skip-second-events  drop redundant 2nd events D    PATCH-34, DET-1
-  crucible-sim-poll-immediate ... immediate shmem poll        D    PATCH-34, DET-13, E19
+  crucible-sim-poll-immediate ... wake-driven shmem poll      D    PATCH-34, DET-13, E19
   crucible-sim-batch-tcg-exec ... batch TCG exec calls        F    PATCH-35, DET-1, INV-10, PERF
   crucible-sim-idle-callbacks ... idle/resume cb wiring       D    PATCH-34, TIME-24, INV-8
   crucible-sim-shmem-dispatch ... shmem co-sim dispatch glue  F    PATCH-34, SHM-1
@@ -226,8 +228,9 @@ catalog rows are capability subentries implemented by broader shipped patches,
 not additional files:
 
 - `crucible-rr-quantum-icount` -> `0002-crucible-rr-fingerprint-helpers.patch`
-- `crucible-plugin-advance-drain` -> `0010-crucible-plugin-time-advance.patch`
-- `crucible-plugin-drain-mainloop` -> `0010-crucible-plugin-time-advance.patch`
+- `crucible-plugin-advance-barrier` -> `0010-crucible-plugin-time-advance.patch`
+- `crucible-plugin-device-wake` -> `0013-crucible-plugin-wake-fd.patch`,
+  `0019-crucible-9p-shmem.patch`, and `0024-crucible-sim-poll-immediate.patch`
 - `crucible-net-flush-api` -> `0009-crucible-net-deterministic.patch`
 
 - **[PATCH-10]** The catalog above is the **authoritative inventory** of the
@@ -532,71 +535,77 @@ These patches export the plugin-API surface that
 [`12-qemu-plugin.md`](12-qemu-plugin.md) calls to own virtual time and to read the
 exact next deadline. They are additive exports ([PATCH-3](c)) except where noted.
 
-### crucible-plugin-time-advance — request time control + advance virtual time
+### crucible-plugin-time-advance — callback-safe virtual-time handoff
 
 - **Enforces:** [TIME-23], [TIME-27]; the foundation of plugin time ownership.
-- **Mechanism:** wraps QEMU's `qemu_plugin_request_time_control` /
-  `qemu_plugin_update_ns` (QEMU ≥ 9.1) in a Crucible-stable plugin export
-  `qemu_plugin_advance_virtual_time_direct(ns)` that the scheduler-driven plugin
-  uses to advance `qemu_icount_bias` by an explicit delta across an idle gap, and
-  to run due virtual-clock timers inline (`qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)`)
-  so the advance is synchronous. Also exposes `qemu_plugin_has_time_control()` —
-  the predicate the warp patch (§11.4) keys on.
-- **Micro-test:** acquire time control, advance by a known delta, assert the
-  virtual clock moved by exactly the delta and that an armed timer at the delta
-  fired inline.
+- **Mechanism:** exposes `qemu_plugin_has_time_control()` and the callback-safe
+  `qemu_plugin_advance_time_ns(ns)` request, paired with
+  `qemu_plugin_register_time_advance_cb()` for completion delivery. The request
+  entry point only claims a single outstanding slot and queues work on the single RR vCPU. The queued
+  worker, outside the originating plugin/vCPU callback, advances
+  `QEMU_CLOCK_VIRTUAL` and dispatches due virtual timers. A two-stage main-loop
+  BH barrier then invokes the registered completion callback after BHs produced
+  by those timers. The request path MUST NOT call `main_loop_wait`, `aio_poll`,
+  or `aio_bh_poll`.
+- **Micro-test:** acquire time control, enqueue a known target, prove the callback
+  returns before clock movement, run the queued CPU work, and prove timer BHs run
+  in the normal main loop before the completion callback. Negative controls
+  reject missing ownership/callbacks, overlap, negative targets, and backwards
+  targets with explicit status.
 - **Inertness:** [PATCH-3](c).
 - **Risk:** D (it is the mechanism every other time patch composes with).
 
-- **[PATCH-18]** The series MUST export a plugin time-control surface that lets the
-  plugin acquire ownership of the virtual clock and advance it by an explicit
-  delta across idle gaps, running due virtual-clock timers inline so the advance
-  is synchronous; and MUST export the `has_time_control` predicate the warp patch
-  keys on. *Gate:* `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.5;
-  satisfies [TIME-23], [TIME-27], [INV-8].
+- **[PATCH-18]** The series MUST export a plugin time-control surface that lets
+  the plugin acquire ownership and enqueue one explicit absolute virtual-time
+  target across an idle gap. The callback entry point MUST be enqueue-only; the
+  actual clock/timer work MUST execute from queued vCPU work and completion MUST
+  be handed to a normal main-loop callback. The series MUST also export the
+  `has_time_control` predicate the warp patch keys on. *Gate:*
+  `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.5; satisfies
+  [TIME-23], [TIME-27], [INV-8].
 
-### crucible-plugin-advance-drain — drain bottom-halves after advance
+### crucible-plugin-advance-barrier — order timer BHs before completion
 
 - **Enforces:** [DET-1], [INV-10]; closes a BH-delivery-drift hole.
-- **Mechanism:** at the end of `qemu_plugin_advance_virtual_time_direct`, drain
-  pending main-loop bottom halves so any BH scheduled by a timer callback that
-  fired during the advance (e.g. interrupt propagation) runs **synchronously**
-  before the plugin returns. Without the drain, such BHs run asynchronously on a
-  later, wall-clock-sensitive sim-loop iteration, propagating an interrupt to
-  `cpu->interrupt_request` at a *different icount* in each run — a divergence.
-- **Micro-test:** arm a timer whose callback schedules a BH; advance past it; in
-  sim mode assert the BH (and the resulting interrupt-request bit) is visible at
-  the identical icount across two runs; the drain is a no-op when no BH is pending.
+- **Mechanism:** the queued advance worker schedules a barrier BH. Because QEMU
+  captures a BH-list slice before invoking the barrier, the barrier schedules
+  completion onto the next slice; timer-produced BHs already in the current
+  slice run first. No callback recursively polls an AioContext. The vCPU remains
+  halted until normal QEMU wake/interrupt delivery or the completion callback
+  explicitly makes work runnable.
+- **Micro-test:** arm a timer whose callback schedules a BH, enqueue an advance,
+  and assert the timer BH becomes visible before the plugin completion callback
+  and at the same icount. Assert that no nested poll API occurs.
 - **Inertness:** [PATCH-3](c) — only runs inside the plugin-called advance.
 - **Risk:** D.
 
-- **[PATCH-19]** The plugin time-advance path MUST synchronously drain pending
-  main-loop bottom halves before returning, so a BH scheduled by a timer that
-  fired during the advance propagates at a deterministic icount rather than on a
-  later wall-clock-sensitive iteration. *Gate:* `gate:layer0-determinism`,
+- **[PATCH-19]** The queued time-advance path MUST order timer-produced main-loop
+  bottom halves before its completion callback using normal AioContext dispatch,
+  without synchronously draining or recursively entering the main loop from a
+  plugin/vCPU callback. *Gate:* `gate:layer0-determinism`,
   `gate:divergence-bisect`. *Spec:* §11.5; satisfies [DET-1], [INV-10].
 
-### crucible-plugin-drain-mainloop — drain the main loop inside a callback
+### crucible-plugin-device-wake — resume device work from the wake handler
 
 - **Enforces:** [DET-1], [INV-10]; closes an I/O-completion-delivery-drift hole.
-- **Mechanism:** exports `qemu_plugin_drain_main_loop()` running one non-blocking
-  pass of the main loop (`main_loop_wait(true)`) so pending BHs, AIO completions,
-  and expired timers are processed synchronously from within a plugin callback.
-  Used by the plugin after waiting for a block/9p response signal so the device's
-  IRQ propagates at a deterministic icount rather than waiting for its own poll
-  timer to fire on a wall-clock-sensitive iteration.
-- **Micro-test:** complete a block I/O whose response is in shmem; call the drain
-  in sim mode; assert the virtio IRQ is on `cpu->interrupt_request` by the time
-  the drain returns, identically across runs.
+- **Mechanism:** the registered scheduler wake fd is owned by QEMU's normal
+  iohandler. After draining it to `EAGAIN`, the handler notifies block and 9p
+  consumers. Block request coroutines resume from a locked, generation-guarded
+  `CoQueue`; a pending 9p PDU is repolled and completed exactly once. The wake
+  event enum and notifier lifetime API live in the internal
+  `system/crucible-plugin-wake.h` header installed by the patch. Neither path
+  spins, nests the main loop, nor depends on a host-time poll timer.
+- **Micro-test:** leave block and 9p requests pending, signal the scheduler wake
+  fd, and assert normal-handler resumption, exact-once completion, failure/EOF
+  cleanup, and no `main_loop_wait`/`aio_poll`/`aio_bh_poll` call.
 - **Inertness:** [PATCH-3](c).
 - **Risk:** D.
 
-- **[PATCH-20]** The series MUST export a plugin call that runs one non-blocking
-  main-loop pass so pending BHs, AIO completions, and expired timers are processed
-  synchronously from a plugin callback, eliminating a wall-clock-sensitive window
-  between an I/O response arriving in shmem and its IRQ propagating to the guest.
-  *Gate:* `gate:layer1-injection`, `gate:divergence-bisect`. *Spec:* §11.5;
-  satisfies [DET-1], [INV-10], references [DET-18] (E19).
+- **[PATCH-20]** The series MUST deliver scheduler/device completion through the
+  normal wake-fd iohandler and event-driven device handoffs. It MUST NOT expose
+  or use a plugin call that recursively runs or polls QEMU's main loop. *Gate:*
+  `gate:layer1-injection`, `gate:divergence-bisect`. *Spec:* §11.5; satisfies
+  [DET-1], [INV-10], references [DET-18] (E19).
 
 ### crucible-clock-deadline — exact next virtual-timer deadline (REQUIRED)
 
@@ -727,38 +736,56 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
 ### crucible-plugin-wake-fd — cross-process wake-fd into the main loop
 
 - **Enforces:** [SHM-26], [INV-8]; integrates the cross-process wake.
-- **Mechanism:** exports `qemu_plugin_register_wake_fd(fd)` (registers an eventfd
-  through QEMU's iohandler/main-loop fd surface; reads drain it without
-  dispatching) and
-  `qemu_plugin_main_loop_wait()` (drops BQL, runs `aio_poll` blocking, re-acquires
-  BQL). Together they let the plugin's idle callback replace a raw `FUTEX_WAIT` on
-  shmem with a first-class QEMU event-loop wait, so cross-process wakes (the
-  scheduler writing the eventfd) and QEMU's own fd handlers (QMP, chardev)
-  integrate through one mechanism — the single-authority wake of [INV-8].
-- **Micro-test:** register an eventfd, park in `qemu_plugin_main_loop_wait()`,
-  write the eventfd from another process; assert the wait returns; assert QMP
-  remains serviced while parked.
+- **Mechanism:** exports `qemu_plugin_crucible_single_threaded_rr()` as a live
+  proof that the sim accelerator is active with MTTCG disabled, plus
+  `qemu_plugin_register_wake_fd(fd)` (rejects blocking descriptors, registers a
+  nonblocking eventfd or pipe through QEMU's iohandler/main-loop fd surface,
+  accepts idempotent registration of the same descriptor but rejects replacement
+  by a different descriptor while the owner is live,
+  drains it through `EAGAIN`, synchronously notifies registered QEMU device
+  consumers, and reports+unregisters EOF or hard errors). The sim RR loop parks
+  the first vCPU with `qemu_cond_wait_bql(first_cpu->halt_cond)`, whose atomic
+  BQL release-and-wait lets the main thread keep servicing QMP, chardevs, and the
+  wake fd. After draining a scheduler wake, the main-loop handler kicks that
+  vCPU. No plugin callback enters `main_loop_wait` or `aio_poll`; QEMU's main
+  thread remains the sole event-loop owner and the scheduler remains the single
+  wake authority of [INV-8].
+- **Micro-test:** register a nonblocking wake fd, exercise interrupted and short
+  reads through the terminal `EAGAIN`, and assert device notifiers and the vCPU
+  kick happen only after the full drain. Assert spurious `EAGAIN` does not kick,
+  and EOF or a hard error reports the failure, unregisters the fd, notifies
+  pending devices, and requests host-error shutdown. The layer gate separately
+  checks that QMP remains serviced while the vCPU is parked.
 - **Inertness:** [PATCH-3](c).
 - **Risk:** F (loud failure if broken).
 
-- **[PATCH-24]** The series MUST export a wake-fd registration and a main-loop
-  wait so the plugin's idle wait integrates cross-process wakes and QEMU's own fd
-  handlers through QEMU's event loop rather than a raw futex, keeping the scheduler
-  the single wake authority. *Gate:* `gate:layer1-injection`, `gate:qemu-inert`.
-  *Spec:* §11.5; satisfies [SHM-26], [INV-8].
+- **[PATCH-24]** The series MUST export wake-fd registration whose main-thread
+  handler drains scheduler wakes, notifies pending device consumers, and kicks
+  the vCPU parked on QEMU's BQL condition variable. It MUST NOT export or call a
+  blocking main-loop wait from plugin or vCPU callbacks. This integrates
+  cross-process wakes and QEMU's own fd handlers without transferring event-loop
+  ownership away from QEMU's main thread, keeping the scheduler the single wake
+  authority. *Gate:* `gate:layer1-injection`, `gate:qemu-inert`. *Spec:* §11.5;
+  satisfies [SHM-26], [INV-8].
 
 ### crucible-plugin-tcg-exec-cb — TCG-exec callback (coverage)
 
 - **Enforces:** the coverage capability (forward-ref
   [`22-advanced-features.md`](22-advanced-features.md)).
-- **Mechanism:** exports `qemu_plugin_register_tcg_exec_cb()` — a
-  runtime-toggleable hook fired after every `tcg_cpu_exec()` in the sim-mode
-  accel loop, with **zero overhead when no callback is registered** (a single
-  NULL-check per call). This supplies the QEMU-side exec-slice callback boundary
-  used by the plugin; richer basic-block coverage metadata is owned by the later
-  coverage gate.
-- **Micro-test:** register a counting callback; assert it fires exactly once per
-  `tcg_cpu_exec`; assert no measurable overhead with no callback registered.
+- **Mechanism:** retains `qemu_plugin_register_tcg_exec_cb()` as a
+  runtime-toggleable post-`tcg_cpu_exec()` slice hook, and exports
+  `qemu_plugin_icount_at_tb_entry()` for the coverage path. The latter observes
+  committed icount plus the active RR vCPU's executed reservation without
+  committing timer state, subtracts the current TB reservation, and rejects
+  execution outside precise single-threaded sim RR. The plugin combines it with
+  QEMU's stock TB translation, TB execution, and flush callbacks to obtain the
+  guest PC, byte length, exact entry icount, and safe userdata-reclamation point.
+- **Micro-test:** QEMU-10 source-order checks prove that the TB reservation is
+  subtracted before the stock execution callback and that dynamic callbacks are
+  destroyed before the exclusive flush callback. An executable C ABI/arithmetic
+  model covers first, chained, refilled-budget, and next-RR-vCPU entry cases. A
+  real loaded-plugin execution/fingerprint comparison remains required by the
+  coverage tasks.
 - **Inertness:** [PATCH-3](c) — the NULL-check is the only always-present cost and
   is in the sim accelerator (already inert outside sim mode).
 - **Risk:** F.
@@ -783,7 +810,11 @@ deterministic events ([DET-16], E19). They are new files or new device paths
 - **Mechanism:** adds an async block driver (`block/crucible-shmem.c`) that
   forwards each block request to the coordinator via a plugin-registered callback
   (which enqueues to a shmem SPSC ring) and returns immediately; the coroutine
-  yields, and a poll path resumes it when the response lands in the inbound ring.
+  parks on a locked queue, and the scheduler wake handler resumes it when the
+  response lands in the inbound ring. A wake-generation check closes the
+  completion-before-park race, and each handler invocation snapshots the current
+  waiters so a still-pending coroutine can requeue without making wake traversal
+  spin.
   Completions become visible to the guest at virtual-time-determined points
   rather than at host-timing-dependent ones.
 - **Micro-test:** issue a read whose response the harness places in shmem; assert
@@ -844,7 +875,11 @@ deterministic events ([DET-16], E19). They are new files or new device paths
   plugin-registered 9p callback receives raw 9p messages from the virtqueue and
   returns raw responses (no in-QEMU 9p parsing), routing them over a shmem ring to
   a deterministic 9p I/O sub-node ([`15-io-subnodes.md`](15-io-subnodes.md)). The
-  upstream internal 9p server path is taken when no callback is registered.
+  device retains at most one pending PDU and repolls it once for each drained
+  scheduler-wake readiness event delivered by the main-thread notifier; queue
+  processing resumes only after that PDU completes. The upstream internal 9p
+  server path is taken when no callback is registered, and such a device does
+  not register a wake notifier.
 - **Micro-test:** register a callback that echoes a canned 9p response; assert the
   guest's 9p read returns the exact bytes; assert the completion icount is
   deterministic; assert the internal server is used when no callback is registered.
@@ -986,17 +1021,17 @@ patches are dev-only and **not shipped**.
   (bit-identical icount trace) with the no-work second pass removed, and that
   pending CPU lifecycle work still reaches `qemu_wait_io_event_common`.
 
-### crucible-sim-poll-immediate — immediate shmem poll (D)
+### crucible-sim-poll-immediate — wake-driven shmem completion (D)
 
-- **Enforces:** [DET-13], E19. When a shmem response is pending under the sim
-  accelerator and plugin time control is active, runs one nonblocking main-loop
-  drain and re-polls the shmem completion callback before yielding the
-  coroutine. This closes the wall-clock-sensitive window in which a device IRQ
-  would otherwise propagate on a later iteration while still falling back to the
-  normal yield path if the response remains pending or the drain API fails
-  closed outside its permitted BQL/time-control context.
-- **Micro-test:** with a response present in shmem, assert the poll fires on the
-  next drain and the IRQ propagates at a deterministic icount across two runs.
+- **Enforces:** [DET-13], E19. A pending shmem block request parks on a `CoQueue`.
+  QEMU's normal scheduler-wake iohandler snapshots and resumes the current
+  waiters, which re-poll and requeue if still pending. A mutex plus monotonically
+  increasing wake generation prevents a scheduler wake racing between poll and
+  park from being lost. Wake-fd failure resumes all waiters with `-EIO`. No
+  device, plugin, or vCPU callback enters or polls the main loop.
+- **Micro-test:** assert a pending request parks once, a normal scheduler wake
+  resumes and re-polls it, a wake immediately before park is observed through
+  the generation check, and a terminal wake failure releases the waiter.
 
 ### crucible-sim-batch-tcg-exec — batch TCG exec calls (F, perf)
 
@@ -1143,22 +1178,26 @@ time-control primitives the whole design rests on.
     pinned to QEMU 10.0.0, uses stable `NNNN-crucible-*.patch` filenames, records
     per-patch class/invariant metadata, checks package wiring, and rejects added
     record/replay-start scaffolding.
-- [x] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
+- [ ] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
   micro-test + `gate:qemu-inert` + `gate:patch-microtests` aggregate, on every
   series/pin change. — satisfies [PATCH-4], [PATCH-5], [PATCH-8], [PATCH-38];
   spec §11.1.2, §11.9.
-  - Completed by `checks.crucible.phase2.gates.patchMicrotests`: the aggregate
+  - Partial implementation by `checks.crucible.phase2.gates.patchMicrotests`: the aggregate
     unpacks the pinned QEMU source, applies every carried patch with zero fuzz,
     forces the patched `qemu-crucible` build, requires the patch-series manifest
     gate, and requires every per-patch micro-test result to be keyed to that
-    patched QEMU package/version. The `gate:qemu-inert` phase gate depends on
-    the patch-microtests aggregate; the full upstream-equivalence qemu-inert
-    corpus is completed by T-PATCH-3.
-- [x] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
+    patched QEMU package/version. The isolated-prefix build gate proves clean
+    apply and warning-clean compilation for every prefix, but the semantic
+    checks still target the fully patched package. Closure requires
+    prefix-attributed sim-on effects and sim-off inertness so a later patch
+    cannot make an earlier patch's test pass. The `gate:qemu-inert` phase gate
+    depends on the patch-microtests aggregate; its full upstream-equivalence
+    corpus remains owned by T-PATCH-3.
+- [ ] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
   against unpatched-pinned vs AOS-patched-sim-off and assert byte-identical
   guest-visible behavior. — satisfies [PATCH-1], [PATCH-2], [PATCH-3]; spec
   §11.1.1, routes [INV-7], [DET-36].
-  - Completed by `checks.crucible.phase2.gates.qemuInert`: the gate builds an
+  - Partial evidence under `checks.crucible.phase2.gates.qemuInert`: the gate builds an
     unpatched reference QEMU from the same pinned 10.0.0 source/configuration,
     runs it against patched `qemu-crucible` with no plugin, no sim accelerator,
     and no sim flags, and compares normalized boot/device-I/O, plain-icount boot,
@@ -1221,22 +1260,19 @@ time-control primitives the whole design rests on.
     QEMU's incoming queue without guest-visible delivery even when the NIC is
     ready; flush fails loudly while the NIC is not ready or link-down; skewed
     producer timing observes the same guest-visible delivery icount.
-- [x] **T-PATCH-9** Implement the plugin time-control surface
-  `crucible-plugin-time-advance` (+ `has_time_control`) and the drains
-  `crucible-plugin-advance-drain` / `crucible-plugin-drain-mainloop` with
+- [ ] **T-PATCH-9** Implement the plugin time-control surface
+  `crucible-plugin-time-advance` (+ `has_time_control`) and the event-driven
+  `crucible-plugin-advance-barrier` / `crucible-plugin-device-wake` handoffs with
   deterministic-propagation micro-tests. — satisfies [PATCH-18], [PATCH-19],
   [PATCH-20]; spec §11.5.
-  - Completed by `0010-crucible-plugin-time-advance.patch` and
-    `checks.crucible.phase1.pluginTimeAdvance`: QEMU's public plugin header now
-    exports `qemu_plugin_has_time_control`,
-    `qemu_plugin_advance_virtual_time_direct`, and
-    `qemu_plugin_drain_main_loop`; direct advance fails closed without global
-    time-control ownership or outside QEMU's BQL-held idle/main-loop context,
-    advances virtual time synchronously after ownership is acquired, runs due
-    virtual timers inline, and drains timer-produced bottom halves before
-    returning; the fixture proves the timer BH sets `cpu->interrupt_request` at
-    the same icount across skewed producers, and the main-loop drain runs a
-    nonblocking completion-BH pass without advancing virtual time.
+  - Implemented patch slice: `0010-crucible-plugin-time-advance.patch` exports
+    `qemu_plugin_has_time_control`, enqueue-only
+    `qemu_plugin_advance_time_ns`, and completion registration. The focused
+    fixture proves exclusive ownership, overlap/backwards failure, queued CPU
+    work, the two-stage timer-BH ordering barrier, and absence of recursive
+    main-loop/AIO polling. The task remains open until the Rust plugin registers
+    the completion callback and drives its idle state machine only after that
+    completion in a real QEMU run.
 - [x] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
   `QEMU_CLOCK_VIRTUAL` deadline, REQUIRED) and ban the overshoot-and-correct
   fallback; fail loudly if the capability is unavailable. — satisfies [PATCH-21],
@@ -1266,15 +1302,18 @@ time-control primitives the whole design rests on.
     `checks.crucible.phase1.pluginRuntimeApis` and
     `gate:patch-microtests`: QEMU now exports `qemu_plugin_icount_raw`,
     `qemu_plugin_force_vcpu_exit`, `qemu_plugin_register_wake_fd`,
-    `qemu_plugin_main_loop_wait`, and `qemu_plugin_register_tcg_exec_cb`; the
+    `qemu_plugin_register_tcg_exec_cb`, and the live execution-mode proof
+    `qemu_plugin_crucible_single_threaded_rr`; the
     patch-level fixture validates raw icount is bias-independent and
     disabled-safe, forced vCPU exit sets the current CPU's exit request, wake-fd
-    registration drains through QEMU's iohandler/main-loop surface with the BQL
-    guard intact, and the TCG exec callback fires after `icount_process_data()`
-    while retaining a single disabled NULL-check. The full skewed-startup and
-    QMP-service smoke scenarios remain layer-gate evidence rather than claims of
-    this source-level fixture. The Rust plugin now has typed ABI resolvers for
-    all five exports, requires the runtime API bundle at install, provides a
+    registration drains through QEMU's iohandler/main-loop surface, notifies
+    pending device consumers, and kicks the condition-waiting RR vCPU only after
+    the drain; EOF and hard errors unregister and request host-error shutdown.
+    The TCG exec callback fires after `icount_process_data()` while retaining a
+    single disabled NULL-check. The full skewed-startup and QMP-service smoke
+    scenarios remain layer-gate evidence rather than claims of this source-level
+    fixture. The Rust plugin has typed ABI resolvers for every required export,
+    requires the runtime API bundle at install, provides a
     vCPU-init callback body that invokes `qemu_plugin_force_vcpu_exit` when QEMU
     dispatches that callback, registers the wake fd with QEMU before
     `SetupAck(0)`, and calls
@@ -1315,10 +1354,14 @@ time-control primitives the whole design rests on.
     `hw/9pfs/virtio-9p-device.c`, proves stock QEMU lacks the 9p callback
     surface, exercises burst start/done holding across a two-request queue
     drain, pending poll waits with sentinel `-2`, raw request/response copying,
-    partial-registration fallback, and fail-closed oversized request/response
-    plus request-id overflow paths that clear their PDU slots before freeing
-    queue elements. This is source-level patch evidence; full guest 9p mount and
-    layer-1 workload evidence remains a later gate.
+    duplicate queue-kick deferral, exactly-once burst completion, wake-fd failure,
+    callback removal, reset, and unrealize cleanup, shutdown-safe reclamation,
+    no-callback notifier inertness, partial-registration fallback, and fail-closed
+    oversized request/response plus request-id overflow paths that clear their PDU
+    slots before freeing queue elements. A terminal wake event marks and reclaims
+    the device request, while the wake-fd owner remains the single authority that
+    requests host-error shutdown. This is source-level patch evidence; full guest
+    9p mount and layer-1 workload evidence remains a later gate.
 - [x] **T-PATCH-14** Implement the network co-sim patches
   `crucible-net-tx-callback` (TX intercept) and complete
   `crucible-net-flush-api` QEMU patch ABI/Rust resolver integration over the
@@ -1381,17 +1424,17 @@ time-control primitives the whole design rests on.
     `checks.crucible.phase1.qemuSimCorrectness`, and
     `gate:patch-microtests`. The patch stack now names the sim-mode loop
     bookkeeping, first-exit normalization, lifecycle-safe redundant-event-pass
-    suppression, immediate shmem drain/re-poll, idle/resume callback boundary,
+    suppression, wake-driven shmem coroutine resumption, idle/resume callback boundary,
     and shmem
     current-icount / max-advance callback bridge plus callback-registration
     guard and per-run budget clamp explicitly. The shared focused
     gate applies the full carried QEMU patch stack against the pinned QEMU
     source, verifies each named sim-correctness surface, runs a focused C
-    fixture for the new loop/re-poll/time-control-guard/idle/shmem inertness,
+    fixture for the new loop/wake-generation/queued-time-completion/idle/shmem inertness,
     ceiling, and budget-clamp behavior, consumes
     `checks.crucible.phase1.simAccel` for the bit-identical cross-run fixed
-    icount TB trace, consumes `checks.crucible.phase1.pluginTimeAdvance` for the
-    drain/BQL fail-closed evidence, and publishes one per-patch
+    icount TB trace, consumes `checks.crucible.phase1.pluginTimeAdvance` for
+    enqueue-only CPU-work and normal-main-loop completion evidence, and publishes one per-patch
     `gate:patch-microtests` result for each T-PATCH-16 patch.
 - [x] **T-PATCH-17** Implement `crucible-sim-batch-tcg-exec` as a
   determinism-preserving perf patch (fixed N, ceiling/timer discipline) gated by a

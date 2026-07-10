@@ -38,6 +38,27 @@
       rawGate = gate;
       passthru.rawGate = gate;
     };
+  redBeforeAdvance = {
+    attrPath,
+    gate,
+    dependencies,
+    phase,
+    reason,
+    taskIds,
+    gateName ? "gate:single-vm-fingerprint",
+    owner ? "crucible-qemu",
+  }: let
+    blocker = redGate {
+      inherit attrPath phase reason taskIds;
+      inherit gateName owner;
+      dependencies = [gate] ++ dependencies;
+    };
+  in
+    blocker
+    // {
+      rawGate = gate;
+      passthru.rawGate = gate;
+    };
 in rec {
   phase0 = {
     gates = rec {
@@ -139,17 +160,20 @@ in rec {
     qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase1.qemuMultiVcpuLaunch";
-      taskIds = ["T-DET-29" "T-DET-30"];
+      taskIds = ["T-DET-29"];
+      openTaskIds = ["T-DET-30"];
     };
     qemuPluginPreemption = import ./phase2-plugin-preemption.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase1.qemuPluginPreemption";
-      taskIds = ["T-DET-30"];
+      taskIds = [];
+      openTaskIds = ["T-DET-30" "T-PLUG-25"];
     };
     qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase1.qemuPluginAppRandomDoorbell";
-      taskIds = ["T-DET-31"];
+      taskIds = [];
+      openTaskIds = ["T-DET-31" "T-PLUG-27"];
     };
     qemuNetDeterministic = import ./phase1-qemu-net-deterministic.nix {inherit pkgs lib;};
     qemuNetTxCallback = import ./phase1-qemu-net-tx-callback.nix {inherit pkgs lib;};
@@ -209,18 +233,22 @@ in rec {
         };
         dependencies = [phase0.gates.blockers phase0.gates.harnessLint];
       };
-      hostObservableSchedule = greenBeforeAdvance {
+      hostObservableSchedule = redBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.hostObservableSchedule";
         # lint needle: hostObservableSchedule = import ./phase1-host-observable-schedule.nix
         gate = import ./phase1-host-observable-schedule.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase1.gates.hostObservableSchedule";
-          taskIds = ["T-HARN-4"];
+          taskIds = [];
+          openTaskIds = ["T-HARN-4"];
           dependencies = [harnessLint.rawGate];
         };
         dependencies = [harnessLint];
+        phase = "phase1";
+        reason = "the host-observable schedule comparison exercises callback-core models, not an installed production plugin";
+        taskIds = ["T-HARN-4"];
       };
-      layer0Determinism = greenBeforeAdvance {
+      layer0Determinism = redBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.layer0Determinism";
         # lint needle: layer0Determinism = import ./phase1-layer0-determinism.nix
         gate = import ./phase1-layer0-determinism.nix {
@@ -228,7 +256,6 @@ in rec {
           attrPath = "checks.crucible.phase1.gates.layer0Determinism";
           dependencies = [harnessLint.rawGate];
           taskIds = [
-            "T-PLAN-3"
             "T-HARN-5"
             "T-DET-1"
             "T-DET-2"
@@ -239,16 +266,16 @@ in rec {
             "T-DET-7"
             "T-DET-28"
             "T-DET-29"
-            "T-DET-30"
-            "T-DET-31"
             "T-DET-8"
             "T-DET-9"
             "T-DET-10"
-            "T-TIME-8"
-            "T-TIME-9"
           ];
+          openTaskIds = ["T-TIME-5" "T-TIME-6" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"];
         };
         dependencies = [harnessLint];
+        phase = "phase1";
+        reason = "the live QEMU/plugin time, multi-vCPU IPI, and app-random paths are not installed end to end";
+        taskIds = ["T-TIME-5" "T-TIME-6" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"];
       };
       contentAddress = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.contentAddress";
@@ -256,7 +283,7 @@ in rec {
         gate = import ./phase1-content-address.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase1.gates.contentAddress";
-          taskIds = ["T-PLAN-3" "T-ASRT-17" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"];
+          taskIds = ["T-ASRT-17" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"];
           dependencies = [layer0Determinism.rawGate];
         };
         dependencies = [layer0Determinism];
@@ -269,7 +296,6 @@ in rec {
           attrPath = "checks.crucible.phase1.gates.replayOracle";
           dependencies = [contentAddress.rawGate phase1.simDouble];
           taskIds = [
-            "T-PLAN-3"
             "T-DET-18"
             "T-DET-21"
             "T-DET-27"
@@ -288,16 +314,19 @@ in rec {
         };
         dependencies = [contentAddress phase1.simDouble];
       };
-      singleVmFingerprint = greenBeforeAdvance {
+      singleVmFingerprint = redBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
         # lint needle: singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix
         gate = import ./phase1-single-vm-fingerprint-gate.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
-          taskIds = ["T-PLAN-3" "T-ASRT-18" "T-HARN-6" "T-HARN-7" "T-DET-8" "T-DET-9" "T-TIME-8" "T-TIME-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"];
+          taskIds = ["T-ASRT-18" "T-DET-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"];
           dependencies = [replayOracle.rawGate phase1.simDouble];
         };
         dependencies = [replayOracle phase1.simDouble];
+        phase = "phase1";
+        reason = "the live fingerprint remains provisional: its observation contract is first-run-derived and it lacks current device state, interaction samples, and exact refinement";
+        taskIds = ["T-DET-8" "T-HARN-6" "T-HARN-7" "T-TIME-8" "T-TIME-9"];
       };
       divergenceBisect = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.divergenceBisect";
@@ -307,7 +336,6 @@ in rec {
           attrPath = "checks.crucible.phase1.gates.divergenceBisect";
           dependencies = [singleVmFingerprint.rawGate phase1.simDouble];
           taskIds = [
-            "T-PLAN-3"
             "T-DET-20"
             "T-HARN-9"
             "T-HARN-10"
@@ -400,7 +428,7 @@ in rec {
         gate = import ./phase2-abi-conformance.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.abiConformance";
-          taskIds = ["T-PLAN-3" "T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"];
+          taskIds = ["T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"];
           dependencies = [
             phase1.gates.harnessLint.rawGate
             phase1.gates.layer0Determinism.rawGate
@@ -425,44 +453,55 @@ in rec {
         gate = import ./phase1-layer1-injection.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.layer1Injection";
-          taskIds = ["T-PLAN-3" "T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
+          taskIds = ["T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
           dependencies = [abiConformance.rawGate];
         };
         dependencies = [abiConformance];
       };
-      patchMicrotests = greenBeforeAdvance {
+      patchMicrotests = redBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
         # lint needle: patchMicrotests = import ./phase2-patch-microtests.nix
         gate = import ./phase2-patch-microtests.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-          taskIds = ["T-PLAN-3" "T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+          taskIds = ["T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+          openTaskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"];
           dependencies = [layer1Injection.rawGate];
         };
         dependencies = [layer1Injection];
+        phase = "phase2";
+        reason = "prefix builds are proven, but semantic effects and inertness are still tested only on the fully patched stack";
+        taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"];
       };
-      qemuInert = greenBeforeAdvance {
+      qemuInert = redBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.qemuInert";
         # lint needle: qemuInert = import ./phase2-qemu-inert.nix
         gate = import ./phase2-qemu-inert.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.qemuInert";
-          taskIds = ["T-PLAN-3" "T-HARN-21" "T-PATCH-3"];
+          taskIds = [];
+          openTaskIds = ["T-DET-23" "T-HARN-21" "T-PATCH-3"];
           patchMicrotests = patchMicrotests.rawGate;
           dependencies = [patchMicrotests.rawGate];
         };
         dependencies = [patchMicrotests];
+        phase = "phase2";
+        reason = "the sim-off corpus is diagnostic until per-prefix semantic inertness and effect attribution are complete";
+        taskIds = ["T-DET-23" "T-HARN-21" "T-PATCH-3"];
       };
-      singleVmFingerprint = greenBeforeAdvance {
+      singleVmFingerprint = redBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
         # lint needle: singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix
         gate = import ./phase1-single-vm-fingerprint-gate.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
-          taskIds = ["T-PLAN-3" "T-HARN-7"];
-          dependencies = [qemuInert.rawGate];
+          taskIds = [];
+          dependencies = [qemuInert.rawGate phase2.qemuSingleVmFingerprint];
         };
-        dependencies = [qemuInert];
+        dependencies = [qemuInert phase2.qemuSingleVmFingerprint];
+        phase = "phase2";
+        reason = "the real-QEMU fingerprint importer is diagnostic-only and cannot yet certify the canonical gate";
+        taskIds = ["T-DET-8" "T-HARN-6" "T-HARN-7" "T-QEMU-11" "T-QEMU-16"];
       };
       anyGuest = greenBeforeAdvance {
         attrPath = "checks.crucible.phase2.gates.anyGuest";
@@ -470,7 +509,7 @@ in rec {
         gate = import ./phase2-any-guest.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase2.gates.anyGuest";
-          taskIds = ["T-PLAN-3" "T-DET-22" "T-HARN-16"];
+          taskIds = ["T-DET-22" "T-HARN-16"];
           dependencies = [singleVmFingerprint.rawGate];
         };
         dependencies = [singleVmFingerprint];
@@ -645,7 +684,7 @@ in rec {
         gate = import ./phase1-layer1-injection.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase3.gates.layer1Injection";
-          taskIds = ["T-PLAN-3" "T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
+          taskIds = ["T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
           dependencies = [phase2.gates.anyGuest.rawGate];
         };
         dependencies = [phase2.gates.anyGuest];
@@ -656,7 +695,7 @@ in rec {
         gate = import ./phase3-scheduler-liveness.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase3.gates.schedulerLiveness";
-          taskIds = ["T-PLAN-3" "T-HARN-14" "T-SCHED-4"];
+          taskIds = ["T-HARN-14" "T-SCHED-4"];
           dependencies = [layer1Injection.rawGate];
         };
         dependencies = [layer1Injection];
@@ -667,7 +706,7 @@ in rec {
         gate = import ./phase3-adversarial-determinism.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase3.gates.adversarialDeterminism";
-          taskIds = ["T-PLAN-3" "T-HARN-22"];
+          taskIds = ["T-HARN-22"];
           dependencies = [schedulerLiveness.rawGate];
         };
         dependencies = [schedulerLiveness];
@@ -1018,7 +1057,8 @@ in rec {
     guestHostDoorbell = import ./phase4-guest-host-doorbell.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostDoorbell";
-      taskIds = ["T-GHC-4"];
+      taskIds = [];
+      openTaskIds = ["T-GHC-4"];
     };
     guestHostDoorbellAbi = import ./phase4-guest-host-doorbell-abi.nix {
       inherit pkgs lib;
@@ -1028,7 +1068,8 @@ in rec {
     guestHostDoorbellCollisionInertness = import ./phase4-guest-host-doorbell-collision-inertness.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostDoorbellCollisionInertness";
-      taskIds = ["T-GHC-6"];
+      taskIds = [];
+      openTaskIds = ["T-GHC-6"];
     };
     guestHostDoorbellFrame = import ./phase4-guest-host-doorbell-frame.nix {
       inherit pkgs lib;
@@ -1043,7 +1084,8 @@ in rec {
     guestHostMarkerObservability = import ./phase4-guest-host-marker-observability.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostMarkerObservability";
-      taskIds = ["T-GHC-9"];
+      taskIds = [];
+      openTaskIds = ["T-GHC-9"];
     };
     guestHostEmitter = import ./phase4-guest-host-emitter.nix {
       inherit pkgs lib;
@@ -1058,7 +1100,8 @@ in rec {
     guestHostChannelDeterminism = import ./phase4-guest-host-channel-determinism.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostChannelDeterminism";
-      taskIds = ["T-GHC-12"];
+      taskIds = [];
+      openTaskIds = ["T-GHC-12"];
     };
     guestHostVirtualMemorySpike = import ./phase4-guest-host-virtual-memory-spike.nix {
       inherit pkgs lib;
@@ -1074,12 +1117,14 @@ in rec {
     guestHostChannelGateWiring = import ./phase4-guest-host-channel-gate-wiring.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostChannelGateWiring";
-      taskIds = ["T-GHC-15"];
+      taskIds = [];
+      openTaskIds = ["T-GHC-15"];
     };
     guestHostAppRandomDoorbell = import ./phase4-guest-host-app-random-doorbell.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase4.guestHostAppRandomDoorbell";
-      taskIds = ["T-GHC-16"];
+      taskIds = [];
+      openTaskIds = ["T-GHC-16"];
       phase0S5 = phase0.s5VirtualMemory;
     };
     guestHostAppRandomCap = import ./phase4-guest-host-app-random-cap.nix {
@@ -1130,16 +1175,19 @@ in rec {
         };
         dependencies = [phase3.gates.adversarialDeterminism];
       };
-      e2eDeterminism = greenBeforeAdvance {
+      e2eDeterminism = redBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
         # lint needle: e2eDeterminism = import ./phase4-e2e-determinism.nix
         gate = import ./phase4-e2e-determinism.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
-          taskIds = ["T-PLAN-3" "T-DET-26" "T-ASRT-16"];
+          taskIds = ["T-DET-26" "T-ASRT-16"];
           dependencies = [replayOracle.rawGate phase1.simDouble];
         };
         dependencies = [replayOracle phase1.simDouble];
+        phase = "phase4";
+        reason = "the white-box channel evidence is model-only until production plugin callbacks and live on/off fingerprint coverage exist";
+        taskIds = ["T-GHC-4" "T-GHC-6" "T-GHC-9" "T-GHC-12" "T-GHC-15" "T-GHC-16"];
       };
     };
   };
@@ -1176,7 +1224,8 @@ in rec {
     sessionBreakpoints = import ./phase5-session-breakpoints.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.sessionBreakpoints";
-      taskIds = ["T-SESS-7"];
+      taskIds = [];
+      openTaskIds = ["T-SESS-7"];
       dependencies = [phase5.sessionBoundaryControl];
     };
     sessionSaveResumeFork = import ./phase5-session-save-resume-fork.nix {
@@ -1200,7 +1249,8 @@ in rec {
     sessionSimulationBackend = import ./phase5-session-simulation-backend.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.sessionSimulationBackend";
-      taskIds = ["T-SESS-11"];
+      taskIds = [];
+      openTaskIds = ["T-SESS-11"];
       dependencies = [phase5.sessionLockFreeObservation];
     };
     cliSkeleton = import ./phase5-cli-skeleton.nix {
@@ -1209,22 +1259,43 @@ in rec {
       taskIds = ["T-CLI-1"];
     };
     gates = {
-      controlResponsive = greenBeforeAdvance {
+      controlResponsive = redBeforeAdvance {
         attrPath = "checks.crucible.phase5.gates.controlResponsive";
         # lint needle: controlResponsive = import ./phase5-control-responsive.nix
         gate = import ./phase5-control-responsive.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase5.gates.controlResponsive";
-          taskIds = ["T-PLAN-3" "T-HARN-15"];
+          taskIds = ["T-HARN-15"];
           dependencies = [phase4.gates.e2eDeterminism.rawGate];
         };
         dependencies = [phase4.gates.e2eDeterminism];
+        phase = "phase5";
+        reason = "audited session, CLI workflow, exit, and help contracts remain partial until their live backend paths are complete";
+        taskIds = [
+          "T-SESS-7"
+          "T-SESS-11"
+          "T-SESS-12"
+          "T-PAT-6"
+          "T-CLI-3"
+          "T-CLI-6"
+          "T-CLI-7"
+          "T-CLI-8"
+          "T-CLI-9"
+          "T-CLI-10"
+          "T-CLI-11"
+          "T-CLI-12"
+          "T-CLI-13"
+          "T-CLI-14"
+          "T-CLI-15"
+          "T-CLI-16"
+        ];
       };
     };
     sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.sessionSimDoubleSuite";
-      taskIds = ["T-SESS-12" "T-PAT-6"];
+      taskIds = [];
+      openTaskIds = ["T-SESS-12" "T-PAT-6"];
       dependencies = [
         phase5.sessionSimulationBackend
         phase3.gates.schedulerLiveness.rawGate
@@ -1447,7 +1518,8 @@ in rec {
     cliBackendSelection = import ./phase5-cli-backend-selection.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliBackendSelection";
-      taskIds = ["T-CLI-3"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-3"];
       dependencies = [
         phase5.cliThinWrapper
         phase5.apiNondeterminism
@@ -1481,7 +1553,8 @@ in rec {
     cliRunWorkflow = import ./phase5-cli-run-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliRunWorkflow";
-      taskIds = ["T-CLI-6"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-6"];
       dependencies = [
         phase5.cliHermeticDiscovery
         phase4.gates.replayOracle.rawGate
@@ -1492,7 +1565,8 @@ in rec {
     cliSaveWorkflow = import ./phase5-cli-save-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSaveWorkflow";
-      taskIds = ["T-CLI-9"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-9"];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.replayOracle.rawGate
@@ -1502,7 +1576,8 @@ in rec {
     cliResumeWorkflow = import ./phase5-cli-resume-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliResumeWorkflow";
-      taskIds = ["T-CLI-10"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-10"];
       dependencies = [
         phase5.cliSaveWorkflow
         phase5.sessionSaveResumeFork
@@ -1512,7 +1587,8 @@ in rec {
     cliForkWorkflow = import ./phase5-cli-fork-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliForkWorkflow";
-      taskIds = ["T-CLI-11"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-11"];
       dependencies = [
         phase5.cliSaveWorkflow
         phase5.cliResumeWorkflow
@@ -1523,7 +1599,8 @@ in rec {
     cliVerifyWorkflow = import ./phase5-cli-verify-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliVerifyWorkflow";
-      taskIds = ["T-CLI-7"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-7"];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.e2eDeterminism.rawGate
@@ -1533,7 +1610,8 @@ in rec {
     cliSelftest = import ./phase5-cli-selftest.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSelftest";
-      taskIds = ["T-CLI-8"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-8"];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.replayOracle.rawGate
@@ -1543,7 +1621,8 @@ in rec {
     cliReplayCheck = import ./phase5-cli-replay-check.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliReplayCheck";
-      taskIds = ["T-CLI-12"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-12"];
       dependencies = [
         phase5.cliRunWorkflow
         phase4.gates.replayOracle.rawGate
@@ -1553,7 +1632,8 @@ in rec {
     cliSearchFuzzWorkflow = import ./phase5-cli-search-fuzz-workflow.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliSearchFuzzWorkflow";
-      taskIds = ["T-CLI-13"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-13"];
       dependencies = [
         phase5.cliRunWorkflow
         phase5.cliForkWorkflow
@@ -1577,7 +1657,8 @@ in rec {
     cliServeReadOnly = import ./phase5-cli-serve-read-only.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeReadOnly";
-      taskIds = ["T-CLI-14"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-14"];
       dependencies = [
         phase5.cliRunWorkflow
         phase5.cliThinWrapper
@@ -1587,7 +1668,8 @@ in rec {
     cliServeMaxSessions = import ./phase5-cli-serve-max-sessions.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeMaxSessions";
-      taskIds = ["T-CLI-14"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-14"];
       dependencies = [
         phase5.cliServeReadOnly
         phase5.cliRunWorkflow
@@ -1597,7 +1679,8 @@ in rec {
     cliServeMultiClient = import ./phase5-cli-serve-multi-client.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeMultiClient";
-      taskIds = ["T-CLI-14"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-14"];
       dependencies = [
         phase5.cliServeReadOnly
         phase5.cliServeMaxSessions
@@ -1607,7 +1690,8 @@ in rec {
     cliServeShutdown = import ./phase5-cli-serve-shutdown.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliServeShutdown";
-      taskIds = ["T-CLI-14"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-14"];
       dependencies = [
         phase5.cliServeReadOnly
         phase5.cliServeMaxSessions
@@ -1617,7 +1701,8 @@ in rec {
     cliExitMachineReadable = import ./phase5-cli-exit-machine-readable.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliExitMachineReadable";
-      taskIds = ["T-CLI-15"];
+      taskIds = [];
+      openTaskIds = ["T-CLI-15"];
       dependencies = [
         phase5.cliRunWorkflow
         phase5.cliServeShutdown
@@ -1629,6 +1714,7 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliCompletionsHelp";
       taskIds = ["T-CLI-16"];
+      openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow
         phase5.cliThinWrapper
@@ -1831,12 +1917,13 @@ in rec {
         phase6.preemptionBranching
       ];
     };
-    basicBlockCoverage = greenBeforeAdvance {
+    basicBlockCoverage = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.basicBlockCoverage";
       gate = import ./phase6-basic-block-coverage.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.basicBlockCoverage";
-        taskIds = ["T-ADV-10"];
+        taskIds = [];
+        openTaskIds = ["T-ADV-10" "T-PLUG-15"];
         dependencies = [
           phase2.gates.singleVmFingerprint.rawGate
           phase2.gates.anyGuest.rawGate
@@ -1856,6 +1943,11 @@ in rec {
         phase6.stateSpaceSearch
         phase6.searchReductions
       ];
+      phase = "phase6";
+      reason = "coverage is model-only: the production plugin does not register a live TB callback carrying guest PC and block length";
+      taskIds = ["T-ADV-10" "T-PLUG-15"];
+      gateName = "gate:basic-block-coverage";
+      owner = "crucible-qemu-plugin";
     };
     coverageFeedback = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.coverageFeedback";
@@ -2212,12 +2304,13 @@ in rec {
         phase6.minimization
       ];
     };
-    debugAttach = greenBeforeAdvance {
+    debugAttach = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.debugAttach";
       gate = import ./phase6-debug-attach.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.debugAttach";
-        taskIds = ["T-DBG-1"];
+        taskIds = [];
+        openTaskIds = ["T-DBG-1"];
         dependencies = [
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
@@ -2229,13 +2322,17 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.unifyingView
       ];
+      phase = "phase6";
+      reason = "debug attach has model and proxy evidence but lacks the audited live end-to-end proof";
+      taskIds = ["T-DBG-1"];
     };
-    readOnlyDebugInspection = greenBeforeAdvance {
+    readOnlyDebugInspection = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.readOnlyDebugInspection";
       gate = import ./phase6-read-only-debug-inspection.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.readOnlyDebugInspection";
-        taskIds = ["T-DBG-2"];
+        taskIds = [];
+        openTaskIds = ["T-DBG-2"];
         dependencies = [
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
@@ -2247,13 +2344,17 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.debugAttach
       ];
+      phase = "phase6";
+      reason = "read-only debug inspection remains model-side pending live debugger proof";
+      taskIds = ["T-DBG-2"];
     };
-    canonicalDebugBreakpoint = greenBeforeAdvance {
+    canonicalDebugBreakpoint = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.canonicalDebugBreakpoint";
       gate = import ./phase6-canonical-debug-breakpoint.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.canonicalDebugBreakpoint";
-        taskIds = ["T-DBG-3"];
+        taskIds = [];
+        openTaskIds = ["T-DBG-3"];
         dependencies = [
           phase1.layer0Determinism
           phase4.gates.replayOracle.rawGate
@@ -2267,6 +2368,9 @@ in rec {
         phase4.gates.e2eDeterminism
         phase6.readOnlyDebugInspection
       ];
+      phase = "phase6";
+      reason = "canonical breakpoint evidence is model and proxy focused pending live debugger proof";
+      taskIds = ["T-DBG-3"];
     };
     debugTimeTravel = greenBeforeAdvance {
       attrPath = "checks.crucible.phase6.debugTimeTravel";
@@ -2342,12 +2446,13 @@ in rec {
         phase6.debugNonCanonicalBranch
       ];
     };
-    debugCliSurface = greenBeforeAdvance {
+    debugCliSurface = redBeforeAdvance {
       attrPath = "checks.crucible.phase6.debugCliSurface";
       gate = import ./phase6-debug-cli-surface.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.debugCliSurface";
-        taskIds = ["T-DBG-8" "T-CLI-18"];
+        taskIds = [];
+        openTaskIds = ["T-DBG-8" "T-CLI-18"];
         dependencies = [
           phase1.gates.layer0Determinism.rawGate
           phase4.gates.replayOracle.rawGate
@@ -2367,6 +2472,9 @@ in rec {
         phase6.debugNonCanonicalBranch
         phase6.debugTargetResolver
       ];
+      phase = "phase6";
+      reason = "the debug CLI surface remains partial pending audited live debugger behavior";
+      taskIds = ["T-DBG-8" "T-CLI-18"];
     };
     gates = {
       replayOracle = greenBeforeAdvance {
@@ -2441,7 +2549,8 @@ in rec {
     crucibleGateCiWiring = import ./phase7-crucible-gate-ci-wiring.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.crucibleGateCiWiring";
-      taskIds = ["T-PKG-4" "T-PKG-14"];
+      taskIds = ["T-PKG-14"];
+      openTaskIds = ["T-PKG-4"];
     };
     crucibleCas = import ./phase7-crucible-cas.nix {
       inherit pkgs lib;
@@ -2510,7 +2619,8 @@ in rec {
       patchMicrotestsGate = import ./phase2-patch-microtests.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase2.gates.patchMicrotests";
-        taskIds = ["T-PLAN-3" "T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+        taskIds = ["T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
+        openTaskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"];
       };
     };
     crucibleReleaseManifest = import ./phase7-crucible-release-manifest.nix {
@@ -2574,34 +2684,54 @@ in rec {
       ];
     };
     gates = rec {
-      perfBench = greenBeforeAdvance {
+      perfBench = redBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.perfBench";
         # lint needle: perfBench = import ./phase7-perf-bench.nix
         gate = import ./phase7-perf-bench.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.perfBench";
-          taskIds = ["T-PLAN-3" "T-PERF-1"];
+          taskIds = ["T-PERF-26"];
+          openTaskIds = [
+            "T-PERF-1" "T-PERF-2" "T-PERF-3" "T-PERF-4" "T-PERF-5" "T-PERF-6"
+            "T-PERF-7" "T-PERF-8" "T-PERF-9" "T-PERF-10" "T-PERF-11" "T-PERF-12"
+            "T-PERF-13" "T-PERF-14" "T-PERF-15" "T-PERF-16" "T-PERF-17" "T-PERF-18"
+            "T-PERF-19" "T-PERF-20" "T-PERF-21" "T-PERF-22" "T-PERF-23" "T-PERF-24"
+            "T-PERF-25" "T-PERF-27" "T-PERF-28"
+          ];
           dependencies = [phase6.gates.replayOracle.rawGate];
         };
         dependencies = [phase6.gates.replayOracle];
+        phase = "phase7";
+        reason = "the performance substrate is modeled and does not yet measure the live QEMU guest or real fleet";
+        taskIds = [
+          "T-PERF-1" "T-PERF-2" "T-PERF-3" "T-PERF-4" "T-PERF-5" "T-PERF-6"
+          "T-PERF-7" "T-PERF-8" "T-PERF-9" "T-PERF-10" "T-PERF-11" "T-PERF-12"
+          "T-PERF-13" "T-PERF-14" "T-PERF-15" "T-PERF-16" "T-PERF-17" "T-PERF-18"
+          "T-PERF-19" "T-PERF-20" "T-PERF-21" "T-PERF-22" "T-PERF-23" "T-PERF-24"
+          "T-PERF-25" "T-PERF-27" "T-PERF-28"
+        ];
       };
-      e2eDeterminism = greenBeforeAdvance {
+      e2eDeterminism = redBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
         # lint needle: e2eDeterminism = import ./phase7-e2e-determinism.nix
         gate = import ./phase7-e2e-determinism.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
-          taskIds = ["T-PLAN-3" "T-HARN-23"];
+          taskIds = [];
+          openTaskIds = ["T-PLAN-3" "T-HARN-23"];
           dependencies = [perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
         };
         dependencies = [perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];
+        phase = "phase7";
+        reason = "terminal gate wiring and real multi-VM cross-machine acceptance remain incomplete";
+        taskIds = ["T-PLAN-3" "T-HARN-23"];
       };
       fleetEquivalence = greenBeforeAdvance {
         attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
         gate = import ./phase7-crucible-fleet-equivalence.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
-          taskIds = ["T-PLAN-3" "T-DCE-8"];
+          taskIds = ["T-DCE-8"];
           dependencies = [phase2.gates.singleVmFingerprint.rawGate e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];
         };
         dependencies = [phase2.gates.singleVmFingerprint e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];
@@ -2611,7 +2741,7 @@ in rec {
         gate = import ./phase7-crucible-campaign-continuity.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase7.gates.campaignContinuity";
-          taskIds = ["T-PLAN-3" "T-DCE-9"];
+          taskIds = ["T-DCE-9"];
           dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];
         };
         dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];

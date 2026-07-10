@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase5.cliCompletionsHelp",
   taskIds ? ["T-CLI-16"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,7 +15,7 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliImplementation = import ./_cli-source.nix {inherit lib;};
   cliProcessTest = builtins.readFile ../../crates/crucible-cli/tests/help_surface.rs;
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
@@ -55,15 +56,15 @@
       }
       {
         label = "T-CLI-16 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliCompletionsHelp`";
+        needle = "Completed by\n  `checks.crucible.phase5.cliCompletionsHelp`";
       }
       {
         label = "T-CLI-16 process coverage note";
-        needle = "process-tests the real binary's\n  top-level `--help`, `--version`, bash completion script, missing-shell usage";
+        needle = "process-tests the real binary's\n  top-level and §6–§14 `--help`, exact long/short `--version`, Bash, Elvish,";
       }
       {
-        label = "T-CLI-16 certified blocker range";
-        needle = "command-behavior gates (`T-CLI-10 … T-CLI-13`) are green";
+        label = "T-CLI-16 shared Clap definition evidence";
+        needle = "rendered help and parser behavior are\n  now checked from the same Clap command definition";
       }
       {
         label = "CLI help discipline";
@@ -84,7 +85,7 @@
         needle = "clap_complete = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible-cli/src Rust source tree" cliImplementation [
       {
         label = "completion shell argument";
         needle = "shell: Shell";
@@ -111,7 +112,7 @@
       }
       {
         label = "completion generation test";
-        needle = "cli_completions_generates_shell_script";
+        needle = "cli_completions_generates_every_supported_shell_script";
       }
       {
         label = "completion daemon metadata test";
@@ -120,6 +121,22 @@
       {
         label = "help/version surface test";
         needle = "cli_resume_help_and_version_surface_matches_rfc_copy";
+      }
+      {
+        label = "normalized exact help snapshots";
+        needle = "cli_help_surface_matches_normalized_exact_rfc_snapshots";
+      }
+      {
+        label = "normative required-input parser test";
+        needle = "cli_parser_enforces_every_normatively_required_input";
+      }
+      {
+        label = "normative alternative/conflict parser test";
+        needle = "cli_parser_enforces_normative_alternative_and_conflicting_inputs";
+      }
+      {
+        label = "required serve listener";
+        needle = "#[arg(long, value_name = \"addr\", required = true)]";
       }
       {
         label = "future flag rejection test";
@@ -137,7 +154,7 @@
       }
       {
         label = "process completions regression";
-        needle = "cli_completions_process_emits_bash_script";
+        needle = "cli_completions_process_emits_every_supported_shell_script";
       }
       {
         label = "process completions usage regression";
@@ -146,6 +163,18 @@
       {
         label = "process hidden gate flag regression";
         needle = "cli_help_process_hides_gate_only_flags";
+      }
+      {
+        label = "process normative required-input regression";
+        needle = "cli_process_rejects_every_missing_normative_input";
+      }
+      {
+        label = "process normative alternative/conflict regression";
+        needle = "cli_process_rejects_normative_conflicts_and_incomplete_alternatives";
+      }
+      {
+        label = "exact process version regression";
+        needle = "format!(\"crucible {}\\n\", env!(\"CARGO_PKG_VERSION\"))";
       }
       {
         label = "real crucible binary execution";
@@ -163,11 +192,11 @@
       }
       {
         label = "phase5 CLI completions/help process progress";
-        needle = "process-level `--help`, `--version`, bash completion, and\n  missing-shell usage coverage";
+        needle = "process-level help/version/completion and missing-input coverage for the real\n  binary";
       }
       {
-        label = "phase5 CLI completions/help blocker range";
-        needle = "gates `T-CLI-10 … T-CLI-13`";
+        label = "phase5 CLI completions/help exact snapshot scope";
+        needle = "normalized exact §6–§14 subcommand usage/help";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -193,6 +222,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -244,6 +274,34 @@ in
               -p crucible-cli \
               cli_help \
               -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-completions-help-target" \
+              -p crucible-cli \
+              cli_parser_enforces_every_normatively_required_input \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-completions-help-target" \
+              -p crucible-cli \
+              cli_parser_enforces_normative_alternative_and_conflicting_inputs \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-completions-help-target" \
+              -p crucible-cli \
+              cli_process_rejects_every_missing_normative_input \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-completions-help-target" \
+              -p crucible-cli \
+              cli_process_rejects_normative_conflicts_and_incomplete_alternatives \
+              -- --test-threads=1
           '';
         }
         {
@@ -255,9 +313,12 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=complete
+            evidence_scope=exact-help-version-all-completions-required-alternatives-and-conflicts
             component=crucible-cli
             completions=clap_complete
-            help_surface=current-non-overclaiming
+            help_surface=normalized-exact-rfc-copy
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

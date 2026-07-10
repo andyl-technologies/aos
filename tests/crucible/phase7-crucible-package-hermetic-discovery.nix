@@ -9,7 +9,7 @@
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   cliHermeticDiscoveryCheck = builtins.readFile ./phase5-cli-hermetic-discovery.nix;
   workspaceBuildCheck = builtins.readFile ./phase1-aos-workspace-build.nix;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let

@@ -14,8 +14,8 @@
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   branchTest = builtins.readFile ../../crates/crucible/tests/gate_debug_non_canonical_branch.rs;
   defaultChecks = builtins.readFile ./default.nix;

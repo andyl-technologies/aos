@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliResumeWorkflow",
-  taskIds ? ["T-CLI-10"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-10"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,7 +15,7 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   apiVmResume = builtins.readFile ../../crates/crucible-api/src/vm_resume.rs;
   simBackend = builtins.readFile ../../crates/crucible/src/sim_backend.rs;
@@ -61,12 +62,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-10 checklist complete";
-        needle = "- [x] **T-CLI-10** Implement `resume`";
+        label = "T-CLI-10 remains open";
+        needle = "- [ ] **T-CLI-10** Implement `resume`";
       }
       {
-        label = "T-CLI-10 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliResumeWorkflow`";
+        label = "T-CLI-10 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
         label = "T-CLI-10 local resume progress";
@@ -108,7 +109,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 CLI resume completion note";
-        needle = "`T-CLI-10` is green through `checks.crucible.phase5.cliResumeWorkflow`";
+        needle = "`T-CLI-10` has partial evidence through `checks.crucible.phase5.cliResumeWorkflow`";
       }
       {
         label = "phase5 CLI resume local-QEMU coordinator progress";
@@ -573,6 +574,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -876,6 +878,9 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=partial
+            evidence_scope=resume-model-and-qmp-smoke
             component=crucible-cli
             contract=resume-workflow-progress
             process_qemu_resume=marker-resolved-jsonl-oracle

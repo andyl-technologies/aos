@@ -1083,14 +1083,20 @@ authority for its shape. The contract those files may rely on:
   physical-transport-layout leak, and that `ScenarioDef::id` is invariant under
   transport-layout/host-geometry changes. — satisfies [SPAT-14], [SPAT-15]; spec
   §3.3.
-  - Completed by `crates/crucible/src/model.rs`: `World` exposes only logical
-    `nodes` and `links`, `LinkDef` records logical link characteristics, and
-    canonical world material excludes shmem region geometry, queue sizing, slot
-    indices, and host-memory geometry. `crates/crucible/src/lib.rs` covers
-    distinct physical-transport-layout and host-memory-geometry variants that
-    leave `ScenarioDef::id` and baked checkpoint identity unchanged, while the
-    physical layout types remain isolated in `crates/crucible-shmem/src/lib.rs`.
-    `checks.crucible.phase1.spatialLogicalTopology` gates the task.
+  - Completed by
+    `checks.crucible.phase1.spatialLogicalTopology`: `World::nodes` is the one
+    heterogeneous logical VM/block/9p collection and `World::links` holds the
+    logical link characteristics. Canonical World and `DeviceId` material includes
+    only logical clock/artifact/latency fields. Completion-order source numbers
+    and request/response ring capacities live in `WorldIoInstantiationLayout`,
+    derived from canonical node order plus `WorldIoLayoutPolicy` only when the
+    session/scheduler resolves concrete artifacts. VM-only v1 identity, TOML, and
+    binary bytes remain unchanged. Existing tests vary real shmem layout and host
+    memory geometry without changing scenario/bake identity; the World-I/O tests
+    also vary device ring policy without changing World/device identity or the
+    resulting production scheduler effects. This directly proves that the
+    logical identities are invariant under the physical layout inputs accepted
+    at instantiation.
 - [x] **T-SPAT-10** Make the topology static (no add/remove node, no link-set
   mutation) and verify the participant set, RNG-stream set, lookahead graph, and
   bake set are functions of `World` alone. — satisfies [SPAT-16], [SPAT-18]; spec

@@ -13,7 +13,7 @@
 
   manifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   bridge = builtins.readFile ../../crates/crucible/src/tracing_bridge.rs;
   bridgeTest = builtins.readFile ../../crates/crucible/tests/event_log_tracing_bridge.rs;

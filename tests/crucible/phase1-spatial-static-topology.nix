@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
   qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;

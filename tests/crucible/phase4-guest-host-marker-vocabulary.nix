@@ -17,7 +17,7 @@
   protocolGoldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
   protocolCodecTest = builtins.readFile ../../crates/crucible-protocol/tests/codec.rs;
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  engineTrigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  engineTrigger = import ./_crucible-trigger-source.nix {inherit lib;};
   engineGateAbi = builtins.readFile ../../crates/crucible/tests/gate_abi_conformance.rs;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;

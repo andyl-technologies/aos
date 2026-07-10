@@ -7,7 +7,12 @@
   singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
     inherit pkgs lib;
     attrPath = "${attrPath}.gate";
-    taskIds = ["T-QEMU-11" "T-HARN-6" "T-HARN-7" "T-DET-9"];
+    taskIds = ["T-DET-9"];
+  };
+  qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {
+    inherit pkgs lib;
+    attrPath = "${attrPath}.realQemu";
+    taskIds = [];
   };
 
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -49,8 +54,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-11 checklist complete";
-        needle = "- [x] **T-QEMU-11**";
+        label = "T-QEMU-11 checklist entry";
+        needle = "**T-QEMU-11**";
       }
       {
         label = "QEMU-34 single-VM fingerprint requirement";
@@ -144,6 +149,10 @@
         label = "phase2 gate remains wired to canonical single-VM fingerprint gate";
         needle = "attrPath = \"checks.crucible.phase2.gates.singleVmFingerprint\"";
       }
+      {
+        label = "phase2 gate depends on the production real-QEMU importer check";
+        needle = "dependencies = [qemuInert.rawGate phase2.qemuSingleVmFingerprint]";
+      }
     ];
 in
   if failures != []
@@ -157,6 +166,7 @@ in
       buildDeps = [
         pkgs.coreutils
         pkgs.grep
+        qemuNvcpuFingerprint
       ];
 
       phases = [
@@ -177,12 +187,22 @@ in
             grep -q '^execution_fingerprint=icount-registers-ram$' "$gate_result"
             grep -q '^mismatch_policy=first-mismatch-is-failure$' "$gate_result"
             grep -q '^bisection_result=required-on-mismatch$' "$gate_result"
+            real_qemu_result="${qemuNvcpuFingerprint}/result"
+            grep -q '^PASS$' "$real_qemu_result"
+            grep -q '^status=partial$' "$real_qemu_result"
+            grep -q '^real_qemu_runs=two-bounded-sim-smp4-stop-at-traces$' "$real_qemu_result"
+            grep -q '^real_qemu_adversary=second-run-host-cpu-load$' "$real_qemu_result"
+            grep -q '^real_qemu_comparison=canonical-rust-stream$' "$real_qemu_result"
+            grep -q '^real_qemu_gate_hook=run_single_vm_fingerprint_gate$' "$real_qemu_result"
+            grep -q '^postprocessing_negative_controls=register,rr,retired,ram,device,cadence,horizon,ram-bytes,topology$' "$real_qemu_result"
+            grep -q '^fingerprint_definition=provisional-periodic-trace-v2$' "$real_qemu_result"
 
             cp "$gate_result" "$out/single-vm-fingerprint.result"
             cat > "$out/result" <<'RESULT'
             PASS
+            status=partial
             check=${attrPath}
-            tasks=${taskList}
+            provisional_tasks=${taskList}
             gate=gate:single-vm-fingerprint
             hook=crucible-qemu::run_single_vm_fingerprint_gate
             run_model=run-twice-and-diff
@@ -191,6 +211,16 @@ in
             mismatch_policy=first-mismatch-is-failure
             bisection=required-on-mismatch
             real_qemu_source=checks.crucible.phase0.s1Fingerprint
+            provisional_importer=crucible-qemu-fingerprint
+            production_real_qemu_runs=two-under-host-load
+            postprocessing_mismatch_negatives=register,rr,retired,ram,device
+            live_perturbation_controls=second-run-host-cpu-load
+            device_component_scope=ordered-cpu-mmio-read-write-history
+            event_boundary_sampling=false
+            full_device_state_complete=false
+            integrated_fixed_configuration_runner=false
+            independent_observation_contract=false
+            instruction_exact_refinement=false
             RESULT
           '';
         }

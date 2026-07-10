@@ -15,6 +15,7 @@ typedef struct CPUState {
     int exit_request;
     bool stop;
     bool unplug;
+    void *halt_cond;
 } CPUState;
 
 typedef struct Trace {
@@ -22,16 +23,18 @@ typedef struct Trace {
     unsigned int len;
     unsigned int outer_iterations;
     unsigned int timer_runs;
-    unsigned int main_loop_waits;
+    unsigned int ceiling_waits;
 } Trace;
 
 static bool fixture_sim_mode;
 static bool fixture_shmem_dispatch_registered;
+static bool fixture_bql_locked;
 static int fixture_cpu_count;
 static unsigned int fixture_batch_limit;
 static unsigned int fixture_timer_runs;
 static unsigned int fixture_budget_refreshes;
-static unsigned int fixture_main_loop_waits;
+static unsigned int fixture_ceiling_waits;
+static unsigned int fixture_bql_wait_releases;
 static unsigned int fixture_guest_debugs;
 static unsigned int fixture_atomic_steps;
 static unsigned int fixture_exec_callbacks;
@@ -44,6 +47,7 @@ static const uint64_t *fixture_deltas;
 static unsigned int fixture_exit_count;
 static unsigned int fixture_exit_index;
 static Trace *fixture_trace;
+static CPUState *first_cpu;
 
 static void require_bool(bool condition, const char *message)
 {
@@ -75,10 +79,14 @@ static bool icount_enabled(void)
 
 static void bql_unlock(void)
 {
+    require_bool(fixture_bql_locked, "BQL unlocked while already unlocked");
+    fixture_bql_locked = false;
 }
 
 static void bql_lock(void)
 {
+    require_bool(!fixture_bql_locked, "BQL locked while already locked");
+    fixture_bql_locked = true;
 }
 
 static void replay_mutex_lock(void)
@@ -125,6 +133,7 @@ static int tcg_cpu_exec(CPUState *cpu)
     uint64_t delta;
     int exit_reason;
 
+    require_bool(!fixture_bql_locked, "tcg exec ran while holding the BQL");
     require_bool(cpu_can_run(cpu), "tcg exec ran a CPU that cannot run");
     require_bool(fixture_exit_index < fixture_exit_count,
                  "tcg exec consumed past the fixture sequence");
@@ -191,9 +200,16 @@ static int64_t crucible_sim_shmem_clamp_cpu_budget(uint64_t current_icount,
     return (int64_t)remaining;
 }
 
-static void qemu_plugin_main_loop_wait(void)
+static void qemu_cond_wait_bql(void *condition)
 {
-    fixture_main_loop_waits++;
+    require_bool(first_cpu != NULL, "ceiling wait has no first RR vCPU");
+    require_bool(condition == first_cpu->halt_cond,
+                 "ceiling wait did not use the first RR vCPU halt condition");
+    require_bool(fixture_bql_locked, "ceiling condition wait entered without the BQL");
+    fixture_ceiling_waits++;
+    fixture_bql_locked = false;
+    fixture_bql_wait_releases++;
+    fixture_bql_locked = true;
 }
 
 static void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
@@ -282,7 +298,7 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
                                                               *cpu_budget);
             if (*cpu_budget == 0) {
                 crucible_sim_shmem_publish_current_icount(current_icount);
-                qemu_plugin_main_loop_wait();
+                qemu_cond_wait_bql(first_cpu->halt_cond);
                 return true;
             }
         }
@@ -329,11 +345,13 @@ static void reset_fixture(const int *exits, const uint64_t *deltas,
 {
     fixture_sim_mode = true;
     fixture_shmem_dispatch_registered = false;
+    fixture_bql_locked = true;
     fixture_cpu_count = 1;
     fixture_batch_limit = RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT;
     fixture_timer_runs = 0;
     fixture_budget_refreshes = 0;
-    fixture_main_loop_waits = 0;
+    fixture_ceiling_waits = 0;
+    fixture_bql_wait_releases = 0;
     fixture_guest_debugs = 0;
     fixture_atomic_steps = 0;
     fixture_exec_callbacks = 0;
@@ -367,7 +385,7 @@ static void run_trace(unsigned int batch_limit, Trace *trace)
         (void)rr_crucible_sim_run_tcg_batch(&cpu, &cpu_budget);
     }
     trace->timer_runs = fixture_timer_runs;
-    trace->main_loop_waits = fixture_main_loop_waits;
+    trace->ceiling_waits = fixture_ceiling_waits;
 }
 
 static bool traces_match(const Trace *left, const Trace *right)
@@ -398,6 +416,9 @@ int main(void)
     CPUState cpu = {.can_run = true};
     int64_t cpu_budget;
 
+    cpu.halt_cond = &cpu;
+    first_cpu = &cpu;
+
     fixture_sim_mode = true;
     fixture_cpu_count = 1;
     fixture_batch_limit = RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT;
@@ -419,8 +440,8 @@ int main(void)
                  "batching did not reduce outer loop iterations");
     require_bool(batch_on.timer_runs == batch_on.len - batch_on.outer_iterations,
                  "virtual timers did not run between batched TCG slots");
-    require_bool(batch_on.main_loop_waits == 0,
-                 "batching waited on the main loop without a shmem ceiling");
+    require_bool(batch_on.ceiling_waits == 0,
+                 "batching waited on the vCPU condition without a shmem ceiling");
 
     reset_fixture(halted_exits, small_deltas, 3);
     cpu_budget = fixture_next_budget;
@@ -455,8 +476,10 @@ int main(void)
                  "shmem ceiling did not park the batch");
     require_bool(fixture_exit_index == 2,
                  "shmem ceiling allowed execution past max_advance_icount");
-    require_bool(fixture_main_loop_waits == 1,
-                 "shmem ceiling did not wait for scheduler wake");
+    require_bool(fixture_ceiling_waits == 1,
+                 "shmem ceiling did not wait on the first RR vCPU condition");
+    require_bool(fixture_bql_wait_releases == 1,
+                 "shmem ceiling wait did not model atomic BQL release");
     require_bool(fixture_publish_calls >= 3,
                  "shmem ceiling did not publish current icount at boundaries");
 
@@ -469,5 +492,6 @@ int main(void)
     puts("sim_batch_tcg_exec_breaks_on_debug_atomic=true");
     puts("sim_batch_tcg_exec_timer_between_slots=true");
     puts("sim_batch_tcg_exec_shmem_ceiling_guard=true");
+    puts("sim_batch_tcg_exec_ceiling_wait_releases_bql=true");
     return 0;
 }

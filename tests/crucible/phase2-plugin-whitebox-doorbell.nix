@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginWhiteboxDoorbell",
-  taskIds ? ["T-PLUG-14"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-14"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -18,6 +19,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -73,8 +75,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-14 checklist complete";
-        needle = "- [x] **T-PLUG-14**";
+        label = "T-PLUG-14 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-14**";
       }
       {
         label = "white-box doorbell wording";
@@ -364,6 +366,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             off_mode=disabled-plan-installs-no-trap
             black_box_remains_functional=true
             guest_memory=read-through-qemu-plugin-api-trait

@@ -12,7 +12,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
   guestNonModification = import ./phase1-guest-non-modification.nix {inherit pkgs lib;};
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
   modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
@@ -861,7 +861,7 @@
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase6 still marks T-HARN-13 pending";
-        needle = "taskIds = [\"T-PLAN-3\" \"T-HARN-12\" \"T-HARN-13\"];\n        reason = \"search-time replay oracle gate is intentionally pending\";";
+        needle = "taskIds = [\"T-HARN-12\" \"T-HARN-13\"];\n        reason = \"search-time replay oracle gate is intentionally pending\";";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [

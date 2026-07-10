@@ -586,8 +586,8 @@ genuinely unresolved and is tracked as a spike in
 ### D-22 — Deterministic multi-vCPU via single-threaded round-robin TCG; MTTCG rejected
 
 - **Status:** Decided
-- **Decision:** Multi-vCPU determinism is achieved with **single-threaded
-  round-robin TCG** (`-accel tcg,thread=single`): all vCPUs run on one host
+- **Decision:** Multi-vCPU determinism is achieved with the **single-threaded,
+  TCG-derived sim accelerator** (`-accel sim,thread=single`): all vCPUs run on one host
   thread, and the round-robin switch boundary is a fixed, content-addressed
   `rr_switch_quantum` measured in node-icount. The same source-elimination
   contract that makes a single-vCPU guest bit-identical is extended over all N
@@ -602,7 +602,9 @@ genuinely unresolved and is tracked as a spike in
   the interleaving is a pure function of icount. That makes an SMP guest as
   deterministic as a single-vCPU one and lets the vCPU switch be a branchable
   Decision (D-24). The cost is throughput (no real host parallelism *within* a
-  node), which is the right trade for a determinism-first simulator.
+  node), which is the right trade for a determinism-first simulator. Stock
+  `-accel tcg` is not a Crucible runtime option: it deliberately leaves the
+  sim-gated RR, IPI, shmem-dispatch, and preemption paths inert.
 - **Alternatives considered:**
   - *MTTCG (multi-threaded TCG).* Rejected: nondeterministic vCPU interleaving;
     no deterministic memory model at the TCG level (the D-4 rejection, which
@@ -1105,97 +1107,30 @@ genuinely unresolved and is tracked as a spike in
 - **Date:** 2026-07-09.
 - **Decided by:** T-D-1 architecture-matrix spike.
 
-### D-34 — `rr_switch_quantum` default is 4096; commanded-preemption discrimination is demonstrated at the model layer; live-telemetry tuning is post-acceptance follow-up
+### D-34 — Provisional `rr_switch_quantum` 4096 pending live S11/S13 evidence
 
-- **Status:** Decided
-- **Decision:** The shipped default round-robin vCPU-switch quantum (D-22) is
-  **`rr_switch_quantum = 4096`** node-icount. This is the **decision**, not a
-  fallback: S13's deterministic RR-switch-overhead model selected 4096 as the
-  **smallest S11-green quantum above the modeled throughput floor**
-  (modeled efficiency `984/1000` vs the `980/1000` target, against a coarse
-  `16384` baseline at `996/1000`), and — the quantum being **correctness-neutral**
-  (every fixed quantum is deterministic, D-22, [RISK-25]) — the default is a pure
-  throughput/race-surface tuning choice that the modeled analysis is sufficient to
-  settle. Commanded-preemption **discrimination** (the capability that gives a
-  finer quantum its race-surfacing value) is **demonstrated at the deterministic
-  model layer** by the T-D-4 spike, with the QEMU injection surface
-  (`checks.crucible.phase2.qemuPreemptionInject`) as the landing witness.
-  **Further refinement of the default from live campaign telemetry** (measuring
-  real multi-vCPU throughput and empirical race yield under a running guest with
-  the live explorer enabled) is an explicit **post-acceptance follow-up**, **not
-  an open condition** blocking this decision: 4096 ships as the default now, and a
-  future telemetry-driven re-tune is a normal per-branch `rr_switch_quantum`
-  override (the override mechanism is the standing escape hatch), not a reopening
-  of D-34.
-- **Rationale:** D-25 left the default "open until S13 can measure empirical
-  throughput plus race-surfacing yield," which entangled a **correctness-neutral
-  tuning default** with the **live-explorer race-yield proof**. The T-D-4 spike
-  disentangles them. (i) The default value is decidable from the modeled
-  throughput sweep alone, because the quantum cannot affect correctness — S13
-  already computed that 4096 is the smallest quantum clearing the throughput
-  floor, which is exactly the "small enough to surface races, large enough not to
-  crater throughput" criterion D-25 named. (ii) The race-surfacing *capability*
-  the finer quantum buys is now proven to *discriminate*: the model discrimination
-  test resolves a known two-vCPU race to different observable outcomes under
-  different commanded `Decision::Preemption` values (race manifests under one
-  choice, absent under another; distinct replayable schedules), and single-vCPU
-  interrupt-timing variation is distinct — so a smaller quantum demonstrably
-  explores more, which is the whole reason the default matters. (iii) The only
-  thing genuinely requiring a live guest — *empirical* race yield and *empirical*
-  throughput under the live campaign explorer — is a **refinement** of an
-  already-shipping default, so it is correctly classified as post-acceptance work,
-  not a gate on the decision. A decision that says "default is 4096, refinement is
-  future telemetry" is a real, actionable decision; deferring the default
-  indefinitely on a correctness-neutral knob would be the false-openness
-  anti-pattern.
-- **Evidence — code and gate citations:**
-  - *Model discrimination proof (T-D-4):*
-    `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`,
-    `commanded_preemption_discrimination_is_reproducible`, and
-    `single_vcpu_interrupt_timing_variation_is_distinct` in
-    `crates/crucible/src/decision.rs` — built on the real `DecisionRecorder`
-    machinery (`record_preemption_override` appending `Decision::Preemption`,
-    `default_rr_preemption` deriving the RR boundary's `to_vcpu`,
-    `Schedule::content_hash` distinguishing the branches).
-  - *S12 record:* `checks.crucible.phase0.s12PreemptionDecision` now reports
-    `commanded_preemption_discriminating=modeled`,
-    `known_race_manifested_under_one_choice=modeled`,
-    `known_race_absent_under_another_choice=modeled`,
-    `single_vcpu_interrupt_variation_distinct=modeled`, with the model and
-    injection witnesses.
-  - *S13 default derivation:* `checks.crucible.phase0.s13RrSwitchQuantumFallback`
-    selects `selected_phase0_default_rr_switch_quantum=4096` on
-    `selected_default_basis=s11_green_smallest_quantum_above_throughput_floor`.
-  - *Scope boundary:* S13 still records `race_yield_tested=false` and
-    `d25_status=open_until_preemption_explorer_enabled` — these describe the
-    **S13 spike's own** posture (a *modeled* sweep, and the **live**-explorer
-    race-yield refinement being pending), **not** the default-value decision. D-34
-    closes the default-value question; the `d25_status=open…` field refers to the
-    live-telemetry refinement that D-34 reclassifies as post-acceptance follow-up.
-- **Alternatives considered:**
-  - *Leave the default open until live telemetry (D-25's position).* Rejected:
-    the quantum is correctness-neutral, so blocking the default on a live proof
-    conflates a tuning knob with a capability proof; the modeled sweep is
-    sufficient to pick a shippable default, and the per-branch override absorbs any
-    later re-tune.
-  - *Record discrimination as "possible via the existing injection gate" without
-    demonstrating it.* Rejected as the vacuous-gate anti-pattern: a real modeled
-    discrimination test is a genuine artifact; "possible in principle" is not.
-  - *Claim the default is validated by live race yield now.* Rejected as
-    dishonest: no live campaign telemetry exists yet (no live explorer run); the
-    default rests on the modeled throughput analysis, and the live refinement is
-    named as follow-up rather than asserted.
-- **Affects:** [SCHED-45], [PLUG-3], [G-9], [G-11]; [DET-12], [SCHED-46]; files 08,
-  22, 25, 30 (S13 / RISK-27), 03/07 (the `Decision::Preemption` taxonomy);
-  gates `checks.crucible.phase0.s13RrSwitchQuantumFallback`,
-  `checks.crucible.phase0.s12PreemptionDecision`,
-  `checks.crucible.phase2.qemuPreemptionInject`; test
-  `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`.
-  References D-22, D-24, [RISK-25], [RISK-27].
-- **Supersedes:** [D-25] (the Open provisional-default framing that deferred the
-  `rr_switch_quantum` default to a live measurement).
+- **Status:** Open
+- **Provisional choice:** Keep `rr_switch_quantum = 4096` node-icount while the
+  live evidence is collected. The modeled S13 overhead sweep found 4096 to be
+  the smallest modeled candidate above its provisional throughput floor, and
+  the model layer demonstrates that commanded preemption can discriminate
+  schedules. Neither result makes 4096 S11-green under the normative
+  `-accel sim,thread=single` path or measures live campaign race yield.
+- **Open condition:** Rerun S11 twice under sim mode, then run S12/S13 against
+  live QEMU nodes with empirical multi-vCPU throughput and race-yield telemetry.
+  Only that evidence may decide the shipped default or supersede D-25.
+- **Current evidence:**
+  `checks.crucible.phase0.s12PreemptionDecision` reports model discrimination;
+  `checks.crucible.phase0.s13RrSwitchQuantumFallback` reports provisional
+  modeled overhead with `s13_complete=false`; T-RISK-17, T-RISK-19, T-D-3, and
+  T-D-4 remain open.
+- **Affects:** [SCHED-45], [PLUG-3], [G-9], [G-11], [DET-12], [SCHED-46]; files
+  08, 22, 25, and 30; gates `checks.crucible.phase0.s11MultiVcpuFingerprint`,
+  `checks.crucible.phase0.s12PreemptionDecision`, and
+  `checks.crucible.phase0.s13RrSwitchQuantumFallback`.
+- **Supersedes:** nothing; D-25 remains in force.
 - **Date:** 2026-07-09.
-- **Decided by:** T-D-4 preemption-discrimination spike.
+- **Owner:** T-D-3/T-D-4 and T-RISK-17/T-RISK-19.
 
 ### D-35 — Minimum link-latency floor is a strictly-positive `MIN_LINK_LATENCY = 1` ns; sub-floor base latency is rejected, sub-floor latency *faults* are clamped
 
@@ -1402,23 +1337,17 @@ becomes a new `Decided` entry referencing the one it supersedes).
 
 ### D-25 — Default `rr_switch_quantum` value
 
-> **Superseded by [D-34].** The T-D-4 spike decided the default:
-> `rr_switch_quantum = 4096` (S13's smallest S11-green quantum above the modeled
-> throughput floor), demonstrated commanded-preemption discrimination at the
-> deterministic model layer, and reclassified live-telemetry re-tuning as a
-> post-acceptance follow-up rather than an open condition. D-25 is retained below
-> as the original Open provisional framing; D-34 is the current decision. Note the
-> S13 gate still records `d25_status=open_until_preemption_explorer_enabled` for
-> the **live**-explorer race-yield refinement — that field is scoped to the live
-> follow-up, which D-34 addresses; the default-value question is closed.
+> **Still open.** D-34 records `4096` as a provisional modeled choice, not a
+> decision. The sim-mode S11 rerun plus live S12/S13 throughput and race-yield
+> evidence remain the acceptance condition.
 
-- **Status:** Superseded by D-34
+- **Status:** Open
 - **Decision (provisional):** The round-robin vCPU-switch quantum (D-22) ships
   with a **provisional fixed integer** value in node-icount. The choice is
   **correctness-neutral** — any fixed quantum is deterministic — so the question is
   purely the *default*: small enough to surface realistic intra-VM races, large
-  enough not to crater multi-vCPU throughput. The resolved value is established by
-  spike **S13**.
+  enough not to crater multi-vCPU throughput. The value must be established by a
+  completed live spike **S13**.
 - **Rationale:** The quantum trades the round-robin model's race-surfacing power
   (finer ⇒ more interleavings explored) against throughput (finer ⇒ more
   switch overhead). Since every fixed quantum is deterministic (D-22, [RISK-25]),
@@ -1514,7 +1443,7 @@ register.
     `det29_full_device_cadence_complete=false`, `s1_complete=true`,
     `open_gap=paused_qemu_migration_state_timer_icount_hpet`.
   - **Scope:** validates one stock Linux kernel plus diskless initramfs workload
-    launched twice with `-smp 1`, `-accel tcg,thread=single`,
+    launched twice with `-smp 1`, `-accel sim,thread=single`,
     `-icount shift=0,sleep=off,align=off`, no block devices, fixed RTC, fixed
     seed material through `fw_cfg`, `virtio-rng`, and conservative boot entropy
     controls. The second run adds scheduling jitter/load. The proof compares the
@@ -1538,7 +1467,7 @@ register.
     blocking-read path.
   - **Check:** `checks.crucible.phase0.s2HltBusyPoll`.
   - **Result:** `target_guest=stock_linux_initramfs`,
-    `qemu_accel=tcg_thread_single`, `icount=shift0_sleep_off_align_off`,
+    `qemu_accel=sim_tcg_thread_single`, `icount=shift0_sleep_off_align_off`,
     `workload_block_reads=32`, `workload_9p_reads=32`,
     `block_outstanding_wait_source=qemu_block_read_throttle_iops_20`,
     `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
@@ -1729,7 +1658,7 @@ register.
     forked the fingerprint — an inherent upstream-icount property for asynchronous
     device completions (present in pristine QEMU, not a Crucible regression). It
     is now sealed by construction (§4.6 E7a): `crucible-det-virtio-ioeventfd`
-    disables ioeventfd under icount so the virtqueue kick dispatches synchronously
+    disables ioeventfd under sim-mode icount so the virtqueue kick dispatches synchronously
     on the requesting vCPU thread, and `crucible-det-rng-delivery` completes
     builtin-RNG entropy inline instead of via a bottom half, delivering the
     completion interrupt at the exact request icount with no QEMU record/replay
@@ -2074,35 +2003,24 @@ register.
   - **Fallback:** none adopted.
 
 - **RISK-23 / RISK-24 / T-RISK-16 — risk register and Phase-0 checklist guard**
-  - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
-    blocker checklist rule are now enforced by a hermetic doc check.
+  - **Status:** PASS (register consistency only); the Phase-0 exit remains
+    blocked by the open sim-mode S11 experiment.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=20`, `checked_task_scope=T-RISK-only`,
-    `retired_decision_entries=20`, `phase0_foundational_blockers_open=0`.
+  - **Result:** `checked_risk_tasks=18`, `checked_task_scope=T-RISK-only`,
+    `retired_decision_entries=18`, `phase0_foundational_blockers_open=1`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
     has a retirement or fallback-adoption record and a decision-register check
-    name, and all foundational blockers are either passed or fallback-adopted.
+    name. It records, rather than conceals, the open S11 foundational blocker.
     The full RFC coverage/gate catalog lint remains owned by `T-PLAN-1`; this
     check is the narrower RISK-23/RISK-24 guard.
   - **Fallback:** none adopted.
 
 - **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**
-  - **Status:** PASS; risk retired for the diskless no-block-device proof path of
-    deterministic multi-vCPU interleaving under single-threaded RR-TCG.
+  - **Status:** PENDING RERUN; the prior PASS used stock TCG and is not evidence
+    for the now-normative `-accel sim,thread=single` execution path.
   - **Check:** `checks.crucible.phase0.s11MultiVcpuFingerprint`.
-  - **Result:** `boot_medium=initramfs`, `block_devices=0`, `vcpus=4`,
-    `rr_switch_quantum=4096`, `cadence=100000000`, `host_adversary=jitter-load`,
-    `extended_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
-    `horizon_fingerprint_match=true`, `samples=33`,
-    `final_extended_hash=16e7a49bfce0eb0f`,
-    `final_register_hash=ba71b2992131002d`,
-    `final_ram_hash=6f3239f7118a53e2`, `final_ram_bytes=268967936`,
-    `register_read_failures=0`,
-    `register_count_assertion=nonempty_per_vcpu`,
-    `device_event_capture=false`, `block_device_assertion=launch_argv_scan`,
-    `mismatch_localization=component`, `first_differing_line=none`,
-    `first_differing_component=none`, `fallback=smp1_not_needed`.
-  - **Scope:** validates a stock Linux kernel with a diskless initramfs running an
+  - **Result:** no current result. Fresh sim-mode hashes and verdicts are required.
+  - **Scope:** the rerun validates a stock Linux kernel with a diskless initramfs running an
     SMP pthread spinlock workload across four guest vCPUs. The extended samples
     compare the aggregate instruction stream, per-vCPU register hashes, RAM
     hash, RR cursor, RR quantum, and final horizon fingerprint across an
@@ -2116,7 +2034,7 @@ register.
     device-completion timing leak; production device-state hashing and
     block-device determinism remain owned by the later [DET-29] / QEMU-device
     gates.
-  - **Fallback:** no `-smp 1` fallback adopted.
+  - **Fallback:** pending the sim-mode rerun; no fallback decision is recorded.
 
 - **RISK-26 / T-RISK-18 — S12 `Decision::Preemption`**
   - **Status:** PASS WITH PATCH SURFACE; the commanded preemption QEMU/plugin
@@ -2138,16 +2056,12 @@ register.
     `known_race_manifested_under_one_choice=modeled`,
     `known_race_absent_under_another_choice=modeled`,
     `single_vcpu_interrupt_variation_distinct=modeled`,
-    `default_determinism_prereqs_green=true`,
+    `default_determinism_prereqs_green=false`,
     `default_determinism_prereqs_source=decision_register_s1_s11`,
     `s1_decision_entry_consumed=true`, `s1_result_status=PASS`,
     `s1_horizon_extended_hash=9d1e61606ac54920`,
-    `s1_pause_retired=3200000005`, `s11_decision_entry_consumed=true`,
-    `s11_result_status=PASS`, `s11_vcpus=4`, `s11_block_devices=0`,
-    `s11_rr_switch_quantum=4096`,
-    `s11_extended_fingerprint_match=true`,
-    `s11_horizon_fingerprint_match=true`,
-    `s11_final_extended_hash=16e7a49bfce0eb0f`,
+    `s1_pause_retired=3200000005`, `s11_decision_entry_consumed=false`,
+    `s11_result_status=PENDING_SIM_RERUN`,
     `decision_preemption_exploration_enabled=false`,
     `fallback_adopted=preemption_injection_patch_landed_explorer_enablement_pending`,
     `s12_complete=true`.
@@ -2156,8 +2070,9 @@ register.
     `qemu_plugin_inject_preemption`, the Rust plugin resolves the capability, and
     `checks.crucible.phase2.qemuPreemptionInject` covers commanded vCPU-switch
     and interrupt application at fixed icounts with out-of-window rejection. It
-    requires the recorded green S1 and S11 decision-register entries as
-    default-determinism prerequisites. As of the T-D-4 spike it additionally
+    requires green S1 and S11 decision-register entries as
+    default-determinism prerequisites; S11 is currently pending its sim-mode
+    rerun. As of the T-D-4 spike it additionally
     witnesses that commanded preemption **discriminates a known race at the
     deterministic model layer** (the four discrimination fields are `modeled`;
     witness `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`):
@@ -2173,9 +2088,9 @@ register.
     future branch, but does not change this fallback.
 
 - **RISK-27 / T-RISK-19 — S13 `rr_switch_quantum` default**
-  - **Status:** PASS WITH FALLBACK; the throughput side of the default-only RR
-    quantum choice is modeled, but race yield is unavailable because S12 disabled
-    commanded preemption exploration. D-25 remains open.
+  - **Status:** PENDING; the modeled default-only RR overhead data is
+    provisional, and the selected quantum is not S11-green until the sim-mode
+    S11 rerun passes. D-25 remains open.
   - **Check:** `checks.crucible.phase0.s13RrSwitchQuantumFallback`.
   - **Result:** `candidate_quantums=1024,2048,4096,8192,16384`,
     `throughput_metric=modeled_retired_instruction_efficiency_x1000`,
@@ -2186,21 +2101,19 @@ register.
     `coarse_baseline_efficiency_x1000=996`,
     `selected_vs_coarse_efficiency_x1000=987`,
     `selected_phase0_default_rr_switch_quantum=4096`,
-    `selected_default_basis=s11_green_smallest_quantum_above_throughput_floor`,
+    `selected_default_basis=provisional_modeled_smallest_quantum_above_throughput_floor`,
     `race_yield_tested=false`,
     `race_yield_source=preemption_patch_surface_available_explorer_disabled`,
-    `s12_decision_entry_consumed=true`,
+    `s12_decision_entry_consumed=true`, `s11_sim_rerun_green=false`,
     `decision_preemption_exploration_enabled=false`,
     `d25_status=open_until_preemption_explorer_enabled`,
     `fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_explorer`,
-    `s13_complete=true`.
+    `s13_complete=false`.
   - **Scope:** validates only the Phase-0 default-only fallback. It does not
     measure S12 race yield, does not claim the final D-25 default is resolved, and
     does not exercise commanded vCPU-switch or interrupt-timing branches.
-  - **Fallback:** use `rr_switch_quantum=4096` for default deterministic
-    interleaving based on the modeled overhead check until commanded preemption
-    explorer enablement lands; rerun S12 and S13 before closing D-25 or enabling
-    per-branch explorer quantum overrides.
+  - **Fallback:** keep `rr_switch_quantum=4096` provisional while S11 is open;
+    rerun S11, S12, and S13 before closing this task or D-25.
 
 - **RISK-28 / T-RISK-20 — S14 gdbstub attach/step**
   - **Status:** PASS WITH FALLBACK; the live gdbstub attach/step measurement is
@@ -2252,7 +2165,7 @@ register.
 > need a tracked spike before they can move from **Open** to **Decided**. Each is
 > a spike whose home is [`30-risks-spikes.md`](30-risks-spikes.md).
 
-- [x] **T-D-1** Run the architecture-matrix spike: re-derive and gate the §4.6
+- [ ] **T-D-1** Run the architecture-matrix spike: re-derive and gate the §4.6
   entropy-elimination set for **aarch64** (after x86_64 is green) and assess
   riscv64 feasibility; record the resolved matrix as a new Decided entry
   superseding D-19. — resolves [D-19]; satisfies [DET-18] (per-arch); spec
@@ -2274,7 +2187,7 @@ register.
   is the same interface via `SharedDagStore`, and the ratchet substrate is a
   later drop-in behind the unchanged seam — neither a separate store nor a
   ratchet dependency.
-- [x] **T-D-3** Run the lookahead-floor spike: benchmark per-quantum overhead,
+- [ ] **T-D-3** Run the lookahead-floor spike: benchmark per-quantum overhead,
   choose the minimum link-latency floor value, and decide clamp-vs-reject for
   zero-latency links; record the resolution superseding D-21. — resolves [D-21];
   satisfies [DET-12], [G-9]; spec [`30-risks-spikes.md`](30-risks-spikes.md),
@@ -2286,19 +2199,17 @@ register.
   (`LinkLatencyBelowFloor`), a dynamic sub-floor latency **fault** is **clamped**
   to the floor (`subfloor_latency_is_clamped_to_floor`). Already implemented and
   gated (`checks.crucible.phase3.schedulerLinkLatencyFloor`).
-- [x] **T-D-4** After S12 passes without fallback, rerun the
+- [ ] **T-D-4** After S12 passes without fallback, rerun the
   `rr_switch_quantum`-granularity spike (S13): sweep the
   round-robin switch quantum, measure multi-vCPU throughput against the perf budget
   and race-surfacing yield via the S12 explorer, choose the default value, and
   record the resolution superseding D-25 (the per-branch explorer override is the
   fallback). — resolves [D-25]; satisfies [SCHED-45], [G-9]; spec
-  [`30-risks-spikes.md`](30-risks-spikes.md), §30.11c, §22, §25. Resolved by
-  [D-34]: default `rr_switch_quantum=4096` decided from S13's modeled
-  throughput analysis (smallest S11-green quantum above the throughput floor);
-  commanded-preemption discrimination demonstrated at the deterministic model
-  layer (S12 discrimination fields advanced to `modeled`; witness
+  [`30-risks-spikes.md`](30-risks-spikes.md), §30.11c, §22, §25. Partial
+  evidence under [D-34] keeps `rr_switch_quantum=4096` provisional from the
+  modeled throughput analysis; commanded-preemption discrimination is
+  demonstrated only at the deterministic model layer (witness
   `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
-  + `checks.crucible.phase2.qemuPreemptionInject`); live campaign-telemetry
-  re-tuning reclassified as post-acceptance follow-up (the per-branch override is
-  the standing escape hatch), not an open condition. The **live** S12 explorer
-  race-yield run remains a separate future item (`race_yield_tested=false`).
+  + `checks.crucible.phase2.qemuPreemptionInject`). The sim-mode S11 rerun and
+  **live** S12 explorer/S13 telemetry remain open conditions
+  (`race_yield_tested=false`, `s13_complete=false`).

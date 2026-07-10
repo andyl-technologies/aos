@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.e2eDeterminism",
-  taskIds ? ["T-HARN-23"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLAN-3" "T-HARN-23"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -58,12 +59,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-23 checklist complete";
-        needle = "- [x] **T-HARN-23**";
+        label = "T-HARN-23 remains open";
+        needle = "- [ ] **T-HARN-23**";
       }
       {
-        label = "T-HARN-23 phase7 completion note";
-        needle = "Completed by `checks.crucible.phase7.gates.e2eDeterminism`";
+        label = "T-HARN-23 phase7 partial note";
+        needle = "Partial mock evidence is provided by `checks.crucible.phase7.gates.e2eDeterminism`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
@@ -243,6 +244,8 @@ in
             check=${attrPath}
             gate=gate:e2e-determinism
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
             owner=crucible-cli
             phase=phase7
             scenario=shared-mock-multi-node-fault-injected-artifact

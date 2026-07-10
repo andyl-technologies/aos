@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.fleetEquivalence",
-  taskIds ? ["T-PLAN-3" "T-DCE-8"],
+  taskIds ? ["T-DCE-8"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,7 +15,7 @@
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   crucibleManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
-  modelRust = builtins.readFile ../../crates/crucible/src/model.rs;
+  modelRust = import ./_crucible-model-source.nix {inherit lib;};
   libRust = builtins.readFile ../../crates/crucible/src/lib.rs;
   gateTest = builtins.readFile ../../crates/crucible/tests/gate_fleet_equivalence.rs;
   gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;

@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostDoorbell",
-  taskIds ? ["T-GHC-4"],
+  taskIds ? [],
+  openTaskIds ? ["T-GHC-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -51,15 +52,16 @@
     requirements;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
       {
-        label = "T-GHC-4 checked off";
-        needle = "- [x] **T-GHC-4**";
+        label = "T-GHC-4 remains open";
+        needle = "- [ ] **T-GHC-4**";
       }
       {
-        label = "T-GHC-4 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostDoorbell`";
+        label = "T-GHC-4 partial-evidence note";
+        needle = "Partial callback-core evidence is provided by";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -195,7 +197,7 @@
       }
       {
         label = "phase4 doorbell task id";
-        needle = "taskIds = [\"T-GHC-4\"]";
+        needle = "openTaskIds = [\"T-GHC-4\"]";
       }
     ]
     ++ forbiddenFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
@@ -298,6 +300,9 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=doorbell-callback-core-model
             doorbell=synchronous-trapped-instruction
             payload_sources=shared-page,register-pointer-length
             marker_stamp=exact-retirement-icount

@@ -1342,7 +1342,7 @@ application of explorer-supplied preemption decisions
   queued/request controls, deferred-drive responsiveness, and control-only quanta
   with no runnable node all apply only at quantum boundaries and within the
   bound.
-- [x] **T-SCHED-28** Implement RR sub-division inside RUN: divide a multi-vCPU
+- [ ] **T-SCHED-28** Implement RR sub-division inside RUN: divide a multi-vCPU
   node's instruction budget among its vCPUs by `rr_switch_quantum` in fixed
   ascending rotation, plugin-internal and host-timing-independent, with the node
   ceiling unchanged (one ceiling per RUN). — satisfies [SCHED-45]; spec §8.16.
@@ -1357,7 +1357,7 @@ application of explorer-supplied preemption decisions
   nodes use fixed ascending rotation by vCPU index at deterministic RR
   boundaries, and the single-vCPU case consumes the whole RUN budget in one
   slice without publishing any extra ceilings.
-- [x] **T-SCHED-29** Apply explorer-supplied `Decision::Preemption` in RESOLVE
+- [ ] **T-SCHED-29** Apply explorer-supplied `Decision::Preemption` in RESOLVE
   within the bounded `[deadline, horizon]` window, recorded in total order, never
   moving a point past the node's authorized ceiling (Contract B / conservative
   PDES). — satisfies [SCHED-46]; spec §8.16.
@@ -1373,7 +1373,7 @@ application of explorer-supplied preemption decisions
   interleaving the plugin cannot execute. It never clamps or defers a preemption
   past the node ceiling; pending preemptions remain scheduler-owned quiescence
   blockers until applied.
-- [x] **T-SCHED-30** Implement all-vCPUs-idle quiescence for N-vCPU nodes: a node
+- [ ] **T-SCHED-30** Implement all-vCPUs-idle quiescence for N-vCPU nodes: a node
   is idle only when every vCPU is halted with no armed timer and no pending input;
   node `idle_wake` = `min` over vCPUs of next deadline; apply the
   `effective_horizon` projection at the node level. — satisfies [SCHED-47];

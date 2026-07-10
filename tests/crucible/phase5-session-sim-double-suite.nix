@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionSimDoubleSuite",
-  taskIds ? ["T-SESS-12" "T-PAT-6"],
+  taskIds ? [],
+  openTaskIds ? ["T-SESS-12" "T-PAT-6"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -18,7 +19,7 @@
   patternsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   defaultChecks = builtins.readFile ./default.nix;
   sessionManifest = builtins.readFile ../../crates/crucible-session/Cargo.toml;
-  sessionLib = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
   sessionExplorationForkTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
   sessionExplorationLifecycleTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_lifecycle.rs;
@@ -33,6 +34,7 @@
   schedulerLivenessCheck = builtins.readFile ./phase3-scheduler-liveness.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -97,12 +99,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
       {
-        label = "T-SESS-12 checked off";
-        needle = "- [x] **T-SESS-12**";
+        label = "T-SESS-12 remains open";
+        needle = "- [ ] **T-SESS-12**";
       }
       {
-        label = "T-SESS-12 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionSimDoubleSuite`";
+        label = "T-SESS-12 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.sessionSimDoubleSuite`";
       }
       {
         label = "SESS-28 control-plane double rule";
@@ -111,12 +113,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsDoc [
       {
-        label = "T-PAT-6 checked off";
-        needle = "- [x] **T-PAT-6**";
+        label = "T-PAT-6 remains open";
+        needle = "- [ ] **T-PAT-6**";
       }
       {
-        label = "T-PAT-6 session backend completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionSimulationBackend` and";
+        label = "T-PAT-6 session backend partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.sessionSimulationBackend` and";
       }
       {
         label = "T-PAT-6 SimDouble suite completion note";
@@ -138,7 +140,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
         label = "phase5 SimDouble suite status note";
-        needle = "`T-SESS-12` is green through `checks.crucible.phase5.sessionSimDoubleSuite`";
+        needle = "`T-SESS-12` has partial evidence through `checks.crucible.phase5.sessionSimDoubleSuite`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessDoc [
@@ -428,8 +430,8 @@
         needle = "sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix";
       }
       {
-        label = "phase5 SimDouble suite carries T-PAT-6";
-        needle = "taskIds = [\"T-SESS-12\" \"T-PAT-6\"]";
+        label = "phase5 SimDouble suite carries open session and pattern tasks";
+        needle = "openTaskIds = [\"T-SESS-12\" \"T-PAT-6\"]";
       }
       {
         label = "phase5 SimDouble suite attr path";
@@ -545,6 +547,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             component=crucible-session
             backend=crucible-sim-double-adapter
             real_qemu_required_for_control_plane=false

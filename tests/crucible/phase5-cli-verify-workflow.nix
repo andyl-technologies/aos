@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliVerifyWorkflow",
-  taskIds ? ["T-CLI-7"],
+  taskIds ? [],
+  openTaskIds ? ["T-CLI-7"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,7 +15,7 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack: let
@@ -53,38 +54,18 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-7 checklist complete";
-        needle = "- [x] **T-CLI-7** Implement `verify`";
-      }
-      {
-        label = "T-CLI-7 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliVerifyWorkflow`";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "stale T-CLI-7 placeholder";
+        label = "T-CLI-7 remains open";
         needle = "- [ ] **T-CLI-7** Implement `verify`";
       }
       {
-        label = "stale T-CLI-7 work-in-progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliVerifyWorkflow`";
-      }
-      {
-        label = "stale T-CLI-7 real-QEMU blocker";
-        needle = "Full closure remains blocked on\n  the real-QEMU execution-fingerprint runner";
+        label = "T-CLI-7 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase5.cliVerifyWorkflow`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 T-CLI-7 completion note";
-        needle = "`T-CLI-7` is green through `checks.crucible.phase5.cliVerifyWorkflow`";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "stale phase5 T-CLI-7 open note";
-        needle = "`T-CLI-7` remains open. `checks.crucible.phase5.cliVerifyWorkflow`";
+        label = "phase5 T-CLI-7 partial note";
+        needle = "`T-CLI-7` has partial evidence through `checks.crucible.phase5.cliVerifyWorkflow`";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -228,6 +209,7 @@ in
 
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
+      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -285,6 +267,9 @@ in
             PASS
             check=$ATTR_PATH
             tasks=$TASK_IDS
+            open_tasks=$OPEN_TASK_IDS
+            status=partial
+            evidence_scope=verify-model-and-selected-backends
             component=crucible-cli
             contract=verify-workflow-progress
             dependencies=$DEPENDENCY_COUNT

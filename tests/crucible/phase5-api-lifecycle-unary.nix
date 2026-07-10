@@ -17,7 +17,7 @@
   apiCargo = builtins.readFile ../../crates/crucible-api/Cargo.toml;
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
   lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
   lifecycleTest = builtins.readFile ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
   controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;

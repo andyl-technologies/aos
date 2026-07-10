@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginVcpuIntrospection",
-  taskIds ? ["T-PLUG-26"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-26"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -22,6 +23,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -50,8 +52,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-26 checklist complete";
-        needle = "- [x] **T-PLUG-26**";
+        label = "T-PLUG-26 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-26**";
       }
       {
         label = "per-vCPU register wording";
@@ -346,6 +348,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             register_scope=all-vcpus-ascending
             rr_cursor=current-vcpu-position-and-quantum
             side_effects=S-and-T-neutral-reads

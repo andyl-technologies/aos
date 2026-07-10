@@ -11,9 +11,9 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
-  session = builtins.readFile ../../crates/crucible-session/src/lib.rs;
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  session = import ./_crucible-session-source.nix {inherit lib;};
   imperativeTest = builtins.readFile ../../crates/crucible/tests/imperative_fault_control.rs;
   sessionTest = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;

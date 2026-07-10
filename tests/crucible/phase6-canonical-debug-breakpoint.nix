@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.canonicalDebugBreakpoint",
-  taskIds ? ["T-DBG-3"],
+  taskIds ? [],
+  openTaskIds ? ["T-DBG-3"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -13,7 +14,7 @@
   };
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
-  temporalGraph = builtins.readFile ../../crates/crucible/src/model.rs;
+  temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   qemuProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
@@ -22,6 +23,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -59,12 +61,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
       {
-        label = "T-DBG-3 checked off";
-        needle = "- [x] **T-DBG-3**";
+        label = "T-DBG-3 remains open";
+        needle = "- [ ] **T-DBG-3**";
       }
       {
-        label = "T-DBG-3 completion note";
-        needle = "Completed by `checks.crucible.phase6.canonicalDebugBreakpoint`";
+        label = "T-DBG-3 partial-evidence note";
+        needle = "Partial evidence under `checks.crucible.phase6.canonicalDebugBreakpoint`";
       }
       {
         label = "hardware/out-of-band spec";
@@ -285,19 +287,19 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "green canonical debug breakpoint gate";
-        needle = "canonicalDebugBreakpoint = greenBeforeAdvance";
+        label = "red canonical debug breakpoint gate";
+        needle = "canonicalDebugBreakpoint = redBeforeAdvance";
       }
       {
         label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-3\"]";
+        needle = "openTaskIds = [\"T-DBG-3\"]";
       }
       {
         label = "read-only debug raw dependency";
         needle = "phase6.readOnlyDebugInspection.rawGate";
       }
       {
-        label = "read-only debug green dependency";
+        label = "read-only debug blocker dependency";
         needle = "phase6.readOnlyDebugInspection";
       }
     ]
@@ -401,6 +403,9 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
+            evidence_scope=canonical-breakpoint-model-and-proxy
             gate=gate:canonical-debug-breakpoint
             breakpoint=out-of-band
             software_request=transparent-hardware-or-refused

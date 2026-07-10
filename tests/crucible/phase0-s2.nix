@@ -286,7 +286,7 @@ in
           -display none
           -monitor none
           -machine q35
-          -accel tcg,thread=single
+          -accel sim,thread=single
           -icount shift=0,sleep=off,align=off
           -cpu qemu64
           -m 1024
@@ -313,7 +313,7 @@ in
             -display none \
             -monitor none \
             -machine q35 \
-            -accel tcg,thread=single \
+            -accel sim,thread=single \
             -icount shift=0,sleep=off,align=off \
             -cpu qemu64 \
             -m 1024 \
@@ -445,7 +445,7 @@ in
             echo spike=hlt-vs-busy-poll-io-idle
             echo check=checks.crucible.phase0.s2HltBusyPoll
             echo target_guest=stock_linux_initramfs
-            echo qemu_accel=tcg_thread_single
+            echo qemu_accel=sim_tcg_thread_single
             echo icount=shift0_sleep_off_align_off
             echo workload_block_reads="$OPERATION_COUNT"
             echo workload_9p_reads="$OPERATION_COUNT"

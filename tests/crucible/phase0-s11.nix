@@ -2,10 +2,15 @@
   pkgs,
   lib,
   qemuPackage ? pkgs.qemu-crucible,
-  accelerator ? "tcg,thread=single",
+  qemuRuntimeDeps ? [],
+  tracePluginPackage ? pkgs.crucible-qemu-trace-plugin,
+  accelerator ? "sim,thread=single",
   cadence ? 100000000,
   requireGuestPass ? true,
-  stopAt ? null,
+  # The finite four-vCPU workload completed at retired icount 3,215,171,189
+  # during calibration. The fixed default leaves 84,828,811 instructions of
+  # sustained contention before the predeclared fingerprint horizon.
+  stopAt ? 3300000000,
   memoryMib ? 256,
   vcpuCount ? 4,
   detIpiProbe ? false,
@@ -28,6 +33,7 @@
           #include <sched.h>
           #include <stdint.h>
           #include <stdio.h>
+          #include <string.h>
 
           enum {
             THREADS = 4,
@@ -37,6 +43,10 @@
           static volatile int spinlock;
           static volatile uint64_t shared_state = 0x0010c001ULL;
           static uint64_t counters[THREADS];
+          static volatile unsigned int finite_ready;
+          static volatile unsigned int sustain_ready;
+          static volatile unsigned int sustain_release;
+          static int sustain_mode;
 
           static void lock_spin(void) {
             while (__sync_lock_test_and_set(&spinlock, 1) != 0) {
@@ -48,36 +58,87 @@
             __sync_lock_release(&spinlock);
           }
 
+          static void contention_step(
+              uintptr_t id, uint64_t iteration, uint64_t *local) {
+            *local ^= iteration + (id << 32);
+            *local *= 0xbf58476d1ce4e5b9ULL;
+
+            lock_spin();
+            shared_state ^= *local + counters[id] + (shared_state << 7);
+            shared_state = (shared_state << 13) | (shared_state >> 51);
+            counters[id] += shared_state ^ *local;
+            unlock_spin();
+
+            if ((iteration & 127) == 0) {
+              sched_yield();
+            }
+          }
+
           static void *worker(void *arg) {
             const uintptr_t id = (uintptr_t)arg;
             uint64_t local = 0x9e3779b97f4a7c15ULL ^ id;
 
-            for (int i = 0; i < ITERS; i++) {
-              local ^= (uint64_t)i + (id << 32);
-              local *= 0xbf58476d1ce4e5b9ULL;
-
-              lock_spin();
-              shared_state ^= local + counters[id] + (shared_state << 7);
-              shared_state = (shared_state << 13) | (shared_state >> 51);
-              counters[id] += shared_state ^ local;
-              unlock_spin();
-
-              if ((i & 127) == 0) {
-                sched_yield();
-              }
+            for (uint64_t i = 0; i < ITERS; i++) {
+              contention_step(id, i, &local);
             }
 
-            return 0;
+            if (!sustain_mode) {
+              return 0;
+            }
+
+            __sync_fetch_and_add(&finite_ready, 1);
+            while (__atomic_load_n(&sustain_release, __ATOMIC_ACQUIRE) == 0) {
+              sched_yield();
+            }
+
+            for (uint64_t i = ITERS;; i++) {
+              contention_step(id, i, &local);
+              if (i == ITERS) {
+                __sync_fetch_and_add(&sustain_ready, 1);
+              }
+            }
           }
 
-          int main(void) {
+          static void print_finite_result(void) {
+            printf(
+              "CRUCIBLE_S11_DONE shared=%016llx c0=%016llx c1=%016llx c2=%016llx c3=%016llx\n",
+              (unsigned long long)shared_state,
+              (unsigned long long)counters[0],
+              (unsigned long long)counters[1],
+              (unsigned long long)counters[2],
+              (unsigned long long)counters[3]);
+          }
+
+          int main(int argc, char **argv) {
             pthread_t threads[THREADS];
+
+            if (argc == 2 && strcmp(argv[1], "--sustain") == 0) {
+              sustain_mode = 1;
+            } else if (argc != 1) {
+              fputs("usage: smp-contended [--sustain]\n", stderr);
+              return 2;
+            }
 
             for (uintptr_t i = 0; i < THREADS; i++) {
               if (pthread_create(&threads[i], 0, worker, (void *)i) != 0) {
                 puts("CRUCIBLE_S11_PTHREAD_CREATE_FAIL");
                 return 1;
               }
+            }
+
+            if (sustain_mode) {
+              while (__atomic_load_n(&finite_ready, __ATOMIC_ACQUIRE) != THREADS) {
+                sched_yield();
+              }
+              print_finite_result();
+              puts("TEST_RESULT:PASS");
+              fflush(stdout);
+              __atomic_store_n(&sustain_release, 1, __ATOMIC_RELEASE);
+              while (__atomic_load_n(&sustain_ready, __ATOMIC_ACQUIRE) != THREADS) {
+                sched_yield();
+              }
+              puts("CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock");
+              fflush(stdout);
             }
 
             for (int i = 0; i < THREADS; i++) {
@@ -87,13 +148,7 @@
               }
             }
 
-            printf(
-              "CRUCIBLE_S11_DONE shared=%016llx c0=%016llx c1=%016llx c2=%016llx c3=%016llx\n",
-              (unsigned long long)shared_state,
-              (unsigned long long)counters[0],
-              (unsigned long long)counters[1],
-              (unsigned long long)counters[2],
-              (unsigned long long)counters[3]);
+            print_finite_result();
             return 0;
           }
           SMP_C
@@ -200,7 +255,15 @@
 
             echo "CRUCIBLE_S11_READY"
             test_result=0
-            smp-contended || test_result=1
+            if [ "${
+              if stopAt == null
+              then "0"
+              else "1"
+            }" -eq 1 ]; then
+              smp-contended --sustain || test_result=1
+            else
+              smp-contended || test_result=1
+            fi
 
             if [ "$test_result" -eq 0 ]; then
               echo 'TEST_RESULT:PASS'
@@ -236,20 +299,23 @@ in
     version = "0";
     src = null;
 
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.diffutils
-      pkgs.gawk
-      pkgs.grep
-      pkgs.jq
-      qemuPackage
-      pkgs.crucible-qemu-trace-plugin
-      pkgs.socat
-    ];
+    buildDeps =
+      [
+        pkgs.coreutils
+        pkgs.diffutils
+        pkgs.gawk
+        pkgs.grep
+        pkgs.jq
+        qemuPackage
+        tracePluginPackage
+        pkgs.socat
+      ]
+      ++ qemuRuntimeDeps;
 
     INITRAMFS = "${initramfs}/initrd.img";
     KERNEL = builtins.toString pkgs.linux;
-    PLUGIN = "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
+    QEMU = "${qemuPackage}/bin/qemu-system-x86_64";
+    PLUGIN = "${tracePluginPackage}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
     CADENCE = builtins.toString cadence;
     RR_SWITCH_QUANTUM = builtins.toString rrSwitchQuantum;
     VCPU_COUNT = builtins.toString vcpuCount;
@@ -263,6 +329,14 @@ in
       if stopAt == null
       then ""
       else builtins.toString stopAt;
+    STOP_AT_VALUE =
+      if stopAt == null
+      then "0"
+      else builtins.toString stopAt;
+    SUSTAIN_WORKLOAD =
+      if stopAt == null
+      then "0"
+      else "1";
     DET_IPI_PROBE =
       if detIpiProbe
       then "1"
@@ -271,7 +345,7 @@ in
     # patch stack; under plain TCG the plugin reports inert cursor fields and
     # emits no rr_switch rows.
     EXPECT_RR_CURSOR =
-      if accelerator == "sim"
+      if lib.hasPrefix "sim," accelerator || accelerator == "sim"
       then "1"
       else "0";
 
@@ -305,6 +379,50 @@ in
 
           seed="$TMPDIR/seed.bin"
           printf 'crucible-phase0-s11-seed-v1\n' > "$seed"
+
+          qemu_build_digest=$(sha256sum "$QEMU" | gawk '{ print $1 }')
+          trace_plugin_build_digest=$(sha256sum "$PLUGIN" | gawk '{ print $1 }')
+          kernel_digest=$(sha256sum "$vmlinuz" | gawk '{ print $1 }')
+          initramfs_digest=$(sha256sum "$INITRAMFS" | gawk '{ print $1 }')
+          seed_digest=$(sha256sum "$seed" | gawk '{ print $1 }')
+          printf '%s\n' \
+            "qemu_build_digest=$qemu_build_digest" \
+            "trace_plugin_build_digest=$trace_plugin_build_digest" \
+            "kernel_digest=$kernel_digest" \
+            "initramfs_digest=$initramfs_digest" \
+            "seed_digest=$seed_digest" \
+            'machine=q35' \
+            "accelerator=$ACCELERATOR" \
+            "icount=shift=0,sleep=off,align=off,rr_switch_quantum=$RR_SWITCH_QUANTUM" \
+            'cpu=qemu64' \
+            "memory_mib=$MEMORY_MIB" \
+            "vcpus=$VCPU_COUNT" \
+            'rtc=base=2026-01-01T00:00:00,clock=vm' \
+            'seed=0x0010c011' \
+            'kernel_append=console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0' \
+            "plugin_cadence=$CADENCE" \
+            "plugin_stop_at=$STOP_AT" \
+            'plugin_extended=on' \
+            'plugin_mem_events=off' \
+            "plugin_vcpus=$VCPU_COUNT" \
+            "det_ipi_probe=$DET_IPI_PROBE" \
+            "sustain_workload=$SUSTAIN_WORKLOAD" \
+            > "$TMPDIR/launch-definition.txt"
+          launch_definition_digest=$(sha256sum "$TMPDIR/launch-definition.txt" | gawk '{ print $1 }')
+
+          zero_sha256=0000000000000000000000000000000000000000000000000000000000000000
+          for digest in \
+            "$qemu_build_digest" \
+            "$trace_plugin_build_digest" \
+            "$kernel_digest" \
+            "$initramfs_digest" \
+            "$seed_digest" \
+            "$launch_definition_digest"; do
+            printf '%s\n' "$digest" | grep -E -q '^[0-9a-f]{64}$' \
+              || fail "invalid S11 provenance digest: $digest"
+            [ "$digest" != "$zero_sha256" ] \
+              || fail "zero S11 provenance digest is not accepted"
+          done
 
           jitter_pids=""
           start_jitter() {
@@ -452,7 +570,7 @@ in
 
           run_one() {
             label="$1"
-            plugin_arg="$PLUGIN,out=$TMPDIR/trace-$label.jsonl,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT"
+            plugin_arg="$PLUGIN,out=$TMPDIR/trace-$label.jsonl,cadence=$CADENCE,extended=on,mem_events=off,vcpus=$VCPU_COUNT,launch_digest=$launch_definition_digest,qemu_build_digest=$qemu_build_digest,plugin_build_digest=$trace_plugin_build_digest"
             qmp_socket="$TMPDIR/qmp-$label.sock"
 
             if [ "$DET_IPI_PROBE" -eq 1 ]; then
@@ -464,7 +582,7 @@ in
               rm -f "$qmp_socket"
             fi
 
-            set -- qemu-system-x86_64 \
+            set -- "$QEMU" \
               -nodefaults \
               -no-user-config \
               -display none \
@@ -523,46 +641,106 @@ in
                 || fail "guest $label did not report TEST_RESULT:PASS"
               grep -q "CRUCIBLE_S11_DONE" "$TMPDIR/serial-$label.log" \
                 || fail "guest $label did not run the SMP workload"
+              if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
+                grep -q "CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock" \
+                  "$TMPDIR/serial-$label.log" \
+                  || fail "guest $label did not sustain four-thread contention"
+              fi
             fi
             jq -e -s \
               --argjson vcpus "$VCPU_COUNT" \
               --argjson quantum "$RR_SWITCH_QUANTUM" \
+              --argjson stop_at "$STOP_AT_VALUE" \
               --arg expect_rr_cursor "$EXPECT_RR_CURSOR" \
+              --arg sustain_workload "$SUSTAIN_WORKLOAD" \
+              --arg launch_definition_digest "$launch_definition_digest" \
+              --arg qemu_build_digest "$qemu_build_digest" \
+              --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
               '
-                def terminal_stop_sample:
-                  .final == true and .stop_requested == true;
+                def final_sample:
+                  .final == true;
                 def rr_cursor_expectation:
-                  if $expect_rr_cursor != "1" or terminal_stop_sample then
+                  if $expect_rr_cursor != "1" then
                     .rr_switch_quantum == 0
                     and .rr_cursor_valid == false
                   else
                     .rr_switch_quantum == $quantum
                     and .rr_cursor_valid == true
+                    and .rr_current_vcpu >= 0
+                    and .rr_current_vcpu < $vcpus
+                    and .rr_cursor_position >= 0
+                    and .rr_cursor_position < .rr_switch_quantum
+                    and (
+                      if final_sample then
+                        .rr_cursor_source == "last_executed_instruction"
+                      else
+                        .rr_cursor_source == "live_instruction"
+                      end
+                    )
                   end;
                 [ .[] | select((.kind // "sample") == "sample") ] as $samples
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
                 | ($samples | length) >= 4
                 and all($samples[]; (
-                  .tracked_vcpus == $vcpus
+                  .schema == "crucible.qemu.trace-fingerprint.v2"
+                  and .tracked_vcpus == $vcpus
+                  and .launch_definition_digest == $launch_definition_digest
+                  and .qemu_build_digest == $qemu_build_digest
+                  and .trace_plugin_build_digest == $trace_plugin_build_digest
                   and rr_cursor_expectation
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
                   and .ram_bytes > 0
+                  and .ram_hash != "0000000000000000"
                   and .memory_events_enabled == false
                   and .device_event_capture == false
                   and .device_event_hash == null
+                  and .register_hash != "0000000000000000"
                   and (.register_hashes | type == "array")
                   and (.register_hashes | length) == $vcpus
+                  and all(.register_hashes[]; . != "0000000000000000")
                   and (.register_counts | type == "array")
                   and (.register_counts | length) == $vcpus
                   and all(.register_counts[]; . > 0)
+                  and (.register_file_bytes | type == "array")
+                  and (.register_file_bytes | length) == $vcpus
+                  and all(.register_file_bytes[]; . > 0)
+                  and (.register_schema_hashes | type == "array")
+                  and (.register_schema_hashes | length) == $vcpus
+                  and all(.register_schema_hashes[]; . != "0000000000000000")
                 ))
                 and any($samples[]; .final == true)
+                and (
+                  if $sustain_workload == "1" then
+                    ([ $samples[]
+                      | select(.final != true and .retired == $stop_at)
+                    ] | length) == 1
+                    and ([ $samples[]
+                      | select(
+                          .final != true
+                          and .retired == $stop_at
+                          and .stop_at == $stop_at
+                          and .stop_requested == false
+                        )
+                    ] | length) == 1
+                    and ([ $samples[]
+                      | select(
+                          .final == true
+                          and .retired == $stop_at
+                          and .stop_at == $stop_at
+                          and .stop_requested == true
+                        )
+                    ] | length) == 1
+                  else
+                    any($samples[]; .final == true)
+                  end
+                )
                 and (
                   if $expect_rr_cursor == "1" then
                     ($switches | length) > 0
                     and all($switches[]; (
                       .rr_switch_event > 0
+                      and .previous_rr_switch_quantum == $quantum
                       and .rr_switch_quantum == $quantum
                       and .from_vcpu >= 0
                       and .from_vcpu < $vcpus
@@ -673,6 +851,9 @@ in
                     elif $left[0].vcpu != $right[0].vcpu then "vcpu"
                     elif $left[0].rr_current_vcpu != $right[0].rr_current_vcpu then "rr_current_vcpu"
                     elif $left[0].rr_cursor_position != $right[0].rr_cursor_position then "rr_cursor_position"
+                    elif $left[0].launch_definition_digest != $right[0].launch_definition_digest then "launch_definition_digest"
+                    elif $left[0].qemu_build_digest != $right[0].qemu_build_digest then "qemu_build_digest"
+                    elif $left[0].trace_plugin_build_digest != $right[0].trace_plugin_build_digest then "trace_plugin_build_digest"
                     elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
                     elif $left[0].register_counts != $right[0].register_counts then
                       ([range(0; ($left[0].register_counts | length)) | select($left[0].register_counts[.] != $right[0].register_counts[.])]) as $diffs
@@ -701,17 +882,97 @@ in
           fi
 
           final_line=$(grep '"final":true' "$TMPDIR/trace-a.jsonl" | tail -1)
+          [ -n "$final_line" ] || fail "trace a omitted the plugin-exit sample"
+          plugin_exit_retired=$(printf '%s\n' "$final_line" | jq -r '.retired')
+          plugin_exit_stop_requested=$(printf '%s\n' "$final_line" | jq -r '.stop_requested')
           final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.extended_hash')
           final_register_hash=$(printf '%s\n' "$final_line" | jq -r '.register_hash')
+          final_register_hashes=$(printf '%s\n' "$final_line" | jq -c '.register_hashes')
+          final_register_counts=$(printf '%s\n' "$final_line" | jq -c '.register_counts')
+          final_register_file_bytes=$(printf '%s\n' "$final_line" | jq -c '.register_file_bytes')
           final_ram_hash=$(printf '%s\n' "$final_line" | jq -r '.ram_hash')
           final_ram_bytes=$(printf '%s\n' "$final_line" | jq -r '.ram_bytes')
+          final_rr_cursor=$(printf '%s\n' "$final_line" \
+            | jq -c '[.rr_current_vcpu,.rr_cursor_position,.rr_switch_quantum]')
           final_memory_events=$(printf '%s\n' "$final_line" | jq -r '.memory_events')
           final_io_events=$(printf '%s\n' "$final_line" | jq -r '.io_events')
           final_register_read_failures=$(printf '%s\n' "$final_line" | jq -r '.register_read_failures')
+
+          horizon_sample_retired=not-applicable
+          horizon_sample_stop_requested=not-applicable
+          horizon_sample_plugin_exit_retired_match=not-applicable
+          horizon_sample_plugin_exit_stream_match=not-applicable
+          horizon_sample_plugin_exit_register_match=not-applicable
+          horizon_sample_plugin_exit_ram_match=not-applicable
+          horizon_sample_plugin_exit_rr_match=not-applicable
+          horizon_sample_cross_run_match=not-applicable
+          horizon_sample_plugin_exit_state_comparison=not-applicable
+          plugin_exit_fingerprint_compared=true
+          if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
+            horizon_line=$(jq -c --argjson stop_at "$STOP_AT_VALUE" \
+              'select((.kind // "sample") == "sample" and .final != true and .retired == $stop_at)' \
+              "$TMPDIR/trace-a.jsonl" | tail -1)
+            [ -n "$horizon_line" ] || fail "trace a omitted the exact stop_at horizon sample"
+
+            horizon_sample_retired=$(printf '%s\n' "$horizon_line" | jq -r '.retired')
+            horizon_sample_stop_requested=$(printf '%s\n' "$horizon_line" | jq -r '.stop_requested')
+            horizon_stream_hash=$(printf '%s\n' "$horizon_line" | jq -r '.stream_hash')
+            horizon_register_hash=$(printf '%s\n' "$horizon_line" | jq -r '.register_hash')
+            horizon_register_hashes=$(printf '%s\n' "$horizon_line" | jq -c '.register_hashes')
+            horizon_ram_hash=$(printf '%s\n' "$horizon_line" | jq -r '.ram_hash')
+            horizon_ram_bytes=$(printf '%s\n' "$horizon_line" | jq -r '.ram_bytes')
+            horizon_rr_cursor=$(printf '%s\n' "$horizon_line" \
+              | jq -c '[.rr_current_vcpu,.rr_cursor_position,.rr_switch_quantum]')
+            plugin_exit_stream_hash=$(printf '%s\n' "$final_line" | jq -r '.stream_hash')
+
+            [ "$horizon_sample_retired" = "$STOP_AT" ] \
+              || fail "horizon sample retired mismatch: $horizon_sample_retired/$STOP_AT"
+            [ "$plugin_exit_retired" = "$STOP_AT" ] \
+              || fail "plugin-exit retired mismatch: $plugin_exit_retired/$STOP_AT"
+            [ "$horizon_sample_stop_requested" = false ] \
+              || fail "horizon sample unexpectedly postdates the plugin stop request"
+            [ "$plugin_exit_stop_requested" = true ] \
+              || fail "plugin-exit sample omitted the stop request"
+            [ "$horizon_stream_hash" = "$plugin_exit_stream_hash" ] \
+              || fail "horizon/plugin-exit stream hash mismatch"
+
+            horizon_sample_plugin_exit_retired_match=true
+            horizon_sample_plugin_exit_stream_match=true
+            if [ "$horizon_register_hash" = "$final_register_hash" ] \
+              && [ "$horizon_register_hashes" = "$final_register_hashes" ]; then
+              horizon_sample_plugin_exit_register_match=true
+            else
+              horizon_sample_plugin_exit_register_match=false
+            fi
+            if [ "$horizon_ram_hash" = "$final_ram_hash" ] \
+              && [ "$horizon_ram_bytes" = "$final_ram_bytes" ]; then
+              horizon_sample_plugin_exit_ram_match=true
+            else
+              horizon_sample_plugin_exit_ram_match=false
+            fi
+            if [ "$horizon_rr_cursor" = "$final_rr_cursor" ]; then
+              horizon_sample_plugin_exit_rr_match=true
+            else
+              horizon_sample_plugin_exit_rr_match=false
+            fi
+            horizon_sample_cross_run_match=true
+            horizon_sample_plugin_exit_state_comparison=recorded
+          fi
+
+          sustained_workload_active=false
+          if [ "$SUSTAIN_WORKLOAD" -eq 1 ] \
+            && grep -q "CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock" "$TMPDIR/serial-a.log" \
+            && grep -q "CRUCIBLE_S11_SUSTAIN_ACTIVE threads=4 mode=spinlock" "$TMPDIR/serial-b.log"; then
+            sustained_workload_active=true
+          fi
           if [ -n "$STOP_AT" ]; then
             run_horizon="plugin-stop_at-$STOP_AT"
+            result_horizon_icount="$STOP_AT"
+            stop_request=plugin-requested-icount-pause
           else
             run_horizon="guest-complete"
+            result_horizon_icount=not-applicable
+            stop_request=not-requested-guest-reboot
           fi
 
           cp "$TMPDIR/trace-a.jsonl" "$out/trace-a.jsonl"
@@ -724,9 +985,10 @@ in
           cp "$TMPDIR/serial-b.log" "$out/serial-b.log"
           cp "$TMPDIR/qemu-args-a.txt" "$out/qemu-args-a.txt"
           cp "$TMPDIR/qemu-args-b.txt" "$out/qemu-args-b.txt"
+          cp "$TMPDIR/launch-definition.txt" "$out/launch-definition.txt"
           {
             echo PASS
-            echo spike=multi-vcpu-rr-tcg-fingerprint
+            echo spike=multi-vcpu-rr-sim-tcg-fingerprint
             echo scenario=smp-contended-pthread-spinlock
             echo boot_medium=initramfs
             echo block_devices=0
@@ -736,7 +998,11 @@ in
             echo rr_switch_quantum="$RR_SWITCH_QUANTUM"
             echo cadence="$CADENCE"
             echo run_horizon="$run_horizon"
+            echo horizon_icount="$result_horizon_icount"
             echo require_guest_pass="$REQUIRE_GUEST_PASS"
+            echo sustain_workload="$SUSTAIN_WORKLOAD"
+            echo sustained_workload_active="$sustained_workload_active"
+            echo sustained_workload_marker=CRUCIBLE_S11_SUSTAIN_ACTIVE
             if [ "$DET_IPI_PROBE" -eq 1 ]; then
               echo det_ipi_probe=enabled
             else
@@ -745,8 +1011,10 @@ in
             echo host_adversary=jitter-load
             if [ "$EXPECT_RR_CURSOR" -eq 1 ]; then
               echo rr_cursor_export=sim
+              echo rr_cursor_assertion=nonempty_valid_snapshot
             else
               echo rr_cursor_export=inert-non-sim
+              echo rr_cursor_assertion=inert_non_sim
             fi
             echo extended_fingerprint_match=true
             echo aggregate_icount_stream_match=true
@@ -754,9 +1022,36 @@ in
             echo per_vcpu_delta_trace_match=true
             echo rr_switch_events="$rr_switch_events_a"
             echo horizon_fingerprint_match=true
+            echo horizon_sample_retired="$horizon_sample_retired"
+            echo horizon_sample_stop_requested="$horizon_sample_stop_requested"
+            echo plugin_exit_retired="$plugin_exit_retired"
+            echo plugin_exit_stop_requested="$plugin_exit_stop_requested"
+            echo stop_request="$stop_request"
+            echo stop_requested="$plugin_exit_stop_requested"
+            echo plugin_exit_fingerprint_compared="$plugin_exit_fingerprint_compared"
+            echo horizon_sample_cross_run_match="$horizon_sample_cross_run_match"
+            echo plugin_exit_cross_run_match=true
+            echo horizon_sample_plugin_exit_state_comparison="$horizon_sample_plugin_exit_state_comparison"
+            echo horizon_sample_plugin_exit_retired_match="$horizon_sample_plugin_exit_retired_match"
+            echo horizon_sample_plugin_exit_stream_match="$horizon_sample_plugin_exit_stream_match"
+            echo horizon_sample_plugin_exit_register_match="$horizon_sample_plugin_exit_register_match"
+            echo horizon_sample_plugin_exit_ram_match="$horizon_sample_plugin_exit_ram_match"
+            echo horizon_sample_plugin_exit_rr_match="$horizon_sample_plugin_exit_rr_match"
+            if [ "$SUSTAIN_WORKLOAD" -eq 1 ]; then
+              echo horizon_stream_hash="$horizon_stream_hash"
+              echo horizon_register_hash="$horizon_register_hash"
+              echo horizon_ram_hash="$horizon_ram_hash"
+              echo horizon_ram_bytes="$horizon_ram_bytes"
+              echo horizon_rr_cursor="$horizon_rr_cursor"
+              echo plugin_exit_stream_hash="$plugin_exit_stream_hash"
+              echo plugin_exit_rr_cursor="$final_rr_cursor"
+            fi
             echo samples="$samples_a"
             echo final_extended_hash="$final_extended_hash"
             echo final_register_hash="$final_register_hash"
+            echo final_register_hashes="$final_register_hashes"
+            echo final_register_counts="$final_register_counts"
+            echo final_register_file_bytes="$final_register_file_bytes"
             echo final_ram_hash="$final_ram_hash"
             echo final_ram_bytes="$final_ram_bytes"
             echo device_event_capture=false
@@ -765,6 +1060,17 @@ in
             echo final_io_events="$final_io_events"
             echo register_read_failures="$final_register_read_failures"
             echo register_count_assertion=nonempty_per_vcpu
+            echo register_hash_assertion=nonzero_per_vcpu
+            echo register_file_bytes_assertion=nonempty_per_vcpu
+            echo ram_snapshot_assertion=nonempty_nonzero_hash
+            echo qemu_build_digest="$qemu_build_digest"
+            echo trace_plugin_build_digest="$trace_plugin_build_digest"
+            echo launch_definition_digest="$launch_definition_digest"
+            echo kernel_digest="$kernel_digest"
+            echo initramfs_digest="$initramfs_digest"
+            echo seed_digest="$seed_digest"
+            echo provenance_digest_source=external-artifacts-and-canonical-launch-material
+            echo embedded_zero_digests_sufficient=false
             echo block_device_assertion=launch_argv_scan
             echo mismatch_localization=component
             echo first_differing_line=none

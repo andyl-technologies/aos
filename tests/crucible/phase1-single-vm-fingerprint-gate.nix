@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
-  taskIds ? ["T-ASRT-18" "T-HARN-6" "T-HARN-7" "T-DET-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"],
+  taskIds ? ["T-ASRT-18" "T-DET-9" "T-EXEC-17" "T-EXEC-18" "T-PAT-9"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,7 +17,7 @@
 
   phase0S1 = builtins.readFile ./phase0-s1.nix;
   crucibleManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
-  crucibleTrigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
+  crucibleTrigger = import ./_crucible-trigger-source.nix {inherit lib;};
   crucibleModelGate = builtins.readFile ../../crates/crucible/tests/gate_single_vm_fingerprint.rs;
   assertionProximityTest = builtins.readFile ../../crates/crucible/tests/assertion_proximity_gradient.rs;
   harnessAdversarial = builtins.readFile ../../crates/crucible-harness/src/adversarial.rs;
@@ -470,8 +470,14 @@
         needle = "qemu_plugin_register_vcpu_mem_cb";
       }
       {
-        label = "read-only instruction callback";
-        needle = "QEMU_PLUGIN_CB_NO_REGS";
+        label = "register-readable instruction callback";
+        needle = "qemu_plugin_register_vcpu_insn_exec_cb(\n        qinsn, on_insn, QEMU_PLUGIN_CB_R_REGS, insn);";
+      }
+    ]
+    ++ forbiddenFor "pkgs/emulation/crucible-qemu-trace-plugin.c" qemuTracePlugin [
+      {
+        label = "instruction callback that hides architectural register reads";
+        needle = "qemu_plugin_register_vcpu_insn_exec_cb(\n        qinsn, on_insn, QEMU_PLUGIN_CB_NO_REGS, insn);";
       }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
@@ -598,12 +604,12 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
       {
-        label = "T-HARN-6 checklist complete";
-        needle = "- [x] **T-HARN-6**";
+        label = "T-HARN-6 checklist entry";
+        needle = "**T-HARN-6**";
       }
       {
-        label = "T-HARN-7 checklist complete";
-        needle = "- [x] **T-HARN-7**";
+        label = "T-HARN-7 checklist entry";
+        needle = "**T-HARN-7**";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [

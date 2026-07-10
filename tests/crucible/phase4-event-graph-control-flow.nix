@@ -11,8 +11,8 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
-  model = builtins.readFile ../../crates/crucible/src/model.rs;
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
+  model = import ./_crucible-model-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   eventGraphTest = builtins.readFile ../../crates/crucible/tests/event_graph_control_flow.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
@@ -55,11 +55,11 @@
   engineFacingSources = builtins.concatStringsSep "\n" [
     trigger
     libSource
-    (builtins.readFile ../../crates/crucible/src/scheduler.rs)
+    (import ./_crucible-scheduler-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible-api/src/lib.rs)
-    (builtins.readFile ../../crates/crucible-cli/src/main.rs)
+    (import ./_cli-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible-daemon/src/lib.rs)
-    (builtins.readFile ../../crates/crucible-session/src/lib.rs)
+    (import ./_crucible-session-source.nix {inherit lib;})
   ];
   failures =
     failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [

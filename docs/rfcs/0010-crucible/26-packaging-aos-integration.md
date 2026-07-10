@@ -586,15 +586,18 @@ carries findings across an incompatible build.
   - Completed by `checks.crucible.phase2.gates.qemuInert`; the AOS package set now
     exposes `qemu-crucible-reference` from the same pinned source with
     `applyCruciblePatches = false` for the comparison.
-- [x] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
+- [ ] **T-PKG-4** Wire `gate:patch-microtests` as a package check: apply-clean +
   build + every per-patch micro-test (sim-on effect + sim-off inertness), re-run on
   series/pin/header change. — satisfies [PKG-14]; spec §26.3.1.
-  - Completed by `checks.crucible.phase7.crucibleGateCiWiring`: the AOS package
+  - Partial implementation by `checks.crucible.phase7.crucibleGateCiWiring`: the AOS package
     check collector exposes `qemu-crucible.checks.patch-microtests` as
     `checks.integration.qemu-crucible-patch-microtests`, and that integration
     check imports `phase2-patch-microtests.nix` with `qemuPackage = self` so the
-    apply-clean, patched build, and per-patch micro-tests run against the package
-    output on series/pin/header drift.
+    apply-clean, patched build, and fully-patched semantic tests run against the
+    package output on series/pin/header drift. Closure remains blocked on
+    prefix-attributed sim-on and sim-off semantic micro-tests for every patch;
+    the existing semantic tests cannot attribute an effect to an individual
+    patch because they target the fully patched package.
 - [x] **T-PKG-5** Implement the patch regeneration/drift pipeline (reproducible
   patch bytes from the tracked branch) and the QEMU-version-bump re-gate. —
   satisfies [PKG-15], [PKG-16]; spec §26.3.2.
@@ -730,7 +733,7 @@ carries findings across an incompatible build.
     `gate:e2e-determinism`. It fails if the checked canonical gate targets or
     required green-before-advance dependency edges drift from the current wiring.
     `T-PKG-15` remains the concrete TCG-only VM/fleet runner for the e2e scenario.
-- [x] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
+- [ ] **T-PKG-15** Wire `gate:e2e-determinism` as a VM/fleet check that builds the
   whole Crucible closure and runs the adversarial multi-VM + reproduce scenario,
   **without** `requiredSystemFeatures = [ "kvm" ]` (TCG only). — satisfies
   [PKG-29], [PKG-30]; spec §26.8.

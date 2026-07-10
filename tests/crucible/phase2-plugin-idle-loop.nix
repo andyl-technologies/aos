@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginIdleLoop",
-  taskIds ? ["T-PLUG-5"],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -13,13 +14,14 @@
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
-  pluginTimeControl = builtins.readFile ../../crates/crucible-qemu-plugin/src/time_control.rs;
+  pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -71,8 +73,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-5 checklist complete";
-        needle = "- [x] **T-PLUG-5**";
+        label = "T-PLUG-5 remains open until live QEMU callback integration";
+        needle = "- [ ] **T-PLUG-5**";
       }
       {
         label = "idle callback hot loop text";
@@ -318,6 +320,8 @@ in
             PASS
             check=${attrPath}
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             idle_loop=publish-park-authorized-jump-inject-republish
             wake_sources=exact-timer,inbound-delivery,scheduler-ceiling
             wait_primitive=non-private-futex-wake-signal

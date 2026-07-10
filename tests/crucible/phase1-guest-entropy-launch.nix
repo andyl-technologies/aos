@@ -865,7 +865,7 @@ in
                   -display none \
                   -monitor none \
                   -machine q35 \
-                  -accel tcg,thread=single \
+                  -accel sim,thread=single \
                   -icount shift=0,sleep=off,align=off \
                   -cpu qemu64,-rdrand,-rdseed \
                   -m 256 \

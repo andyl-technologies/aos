@@ -3,6 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase1.layer0Determinism",
   taskIds ? ["T-DET-10"],
+  openTaskIds ? ["T-TIME-5" "T-TIME-6" "T-TIME-7" "T-TIME-8" "T-TIME-9" "T-DET-30" "T-DET-31"],
   dependencies ? [],
 }: let
   deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
@@ -13,23 +14,27 @@
   decisionRecording = import ./phase1-decision-recording.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.decisionRecording";
-    taskIds = ["T-DET-31"];
+    taskIds = [];
+    openTaskIds = ["T-DET-31"];
   };
   contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
   qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuMultiVcpuLaunch";
-    taskIds = ["T-DET-29" "T-DET-30"];
+    taskIds = ["T-DET-29"];
+    openTaskIds = ["T-DET-30"];
   };
   qemuPluginPreemption = import ./phase2-plugin-preemption.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuPluginPreemption";
-    taskIds = ["T-DET-30"];
+    taskIds = [];
+    openTaskIds = ["T-DET-30" "T-PLUG-25"];
   };
   qemuPluginAppRandomDoorbell = import ./phase2-plugin-app-random-doorbell.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase1.qemuPluginAppRandomDoorbell";
-    taskIds = ["T-DET-31"];
+    taskIds = [];
+    openTaskIds = ["T-DET-31" "T-PLUG-27"];
   };
   timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix {inherit pkgs lib;};
   timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix {inherit pkgs lib;};
@@ -239,12 +244,12 @@
         needle = "- [x] **T-DET-10**";
       }
       {
-        label = "T-DET-30 checklist complete";
-        needle = "- [x] **T-DET-30**";
+        label = "T-DET-30 remains open";
+        needle = "- [ ] **T-DET-30**";
       }
       {
-        label = "T-DET-31 checklist complete";
-        needle = "- [x] **T-DET-31**";
+        label = "T-DET-31 remains open";
+        needle = "- [ ] **T-DET-31**";
       }
     ];
 in
@@ -291,7 +296,10 @@ in
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-1" \
               "cpu=qemu64,-rdrand,-rdseed" \
-              "accelerator=tcg,thread=single" \
+              "accelerator=sim,thread=single" \
+              "accelerator_family=tcg-derived-sim" \
+              "simulation_mode=on" \
+              "stock_tcg_crucible_runtime=forbidden" \
               "smp_vcpus=1" \
               "icount=shift=0,sleep=off,align=off,rr_switch_quantum=4096" \
               "rtc=base=2026-01-01T00:00:00,clock=vm" \
@@ -334,7 +342,9 @@ in
               "determinism_mechanism=host-side-qemu-icount-seeded-entropy"
             require_leaf ${decisionRecording} \
               "gate=gate:layer0-determinism" \
-              "tasks=T-DET-31" \
+              "tasks=" \
+              "open_tasks=T-DET-31" \
+              "status=partial" \
               "rng_source=crucible-sim::DecisionRng" \
               "app_random_source=single-seeded-decision-rng" \
               "app_random_stream_fork=per-node-stream-name" \
@@ -355,8 +365,12 @@ in
               "recorded_inputs_enforced=monotonic-within-run"
             require_leaf ${qemuMultiVcpuLaunch} \
               "gate=gate:layer0-determinism" \
-              "tasks=T-DET-29,T-DET-30" \
-              "accelerator=tcg,thread=single" \
+              "tasks=T-DET-29" \
+              "open_tasks=T-DET-30" \
+              "status=partial" \
+              "accelerator=sim,thread=single" \
+              "accelerator_family=tcg-derived-sim" \
+              "stock_tcg_crucible_runtime=forbidden" \
               "smp_vcpus=N>=1" \
               "rr_switch_quantum=content-addressed-node-icount" \
               "rr_vcpu_rotation=ascending-vcpu-id" \
@@ -366,7 +380,7 @@ in
               "per_vcpu_rng_timing_axis=node-icount" \
               "vcpu_topology=fixed-at-genesis" \
               "runtime_cpu_hotplug=false" \
-              "secondary_vcpu_bringup=rr-tcg-icount-deterministic" \
+              "secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic" \
               "rejects_mttcg=true" \
               "rejects_unpinned_rr_switch_quantum=true" \
               "rejects_adaptive_rr_quantum=true" \
@@ -374,7 +388,9 @@ in
               "scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation,cpu_model,per_vcpu_entropy,vcpu_topology"
             require_leaf ${qemuPluginPreemption} \
               "gate=gate:layer0-determinism" \
-              "tasks=T-DET-30" \
+              "tasks=" \
+              "open_tasks=T-DET-30,T-PLUG-25" \
+              "status=partial" \
               "preemption_capability=qemu_plugin_inject_preemption" \
               "dispatch=vCPU-switch-or-interrupt-at-commanded-icount" \
               "deterministic_ipi_delivery=sender-icount-plus-fixed-latency-next-rr-switch" \
@@ -383,7 +399,9 @@ in
               "ipi_realtime_delivery=false"
             require_leaf ${qemuPluginAppRandomDoorbell} \
               "gate=gate:layer0-determinism" \
-              "tasks=T-DET-31" \
+              "tasks=" \
+              "open_tasks=T-DET-31,T-PLUG-27" \
+              "status=partial" \
               "doorbell_kind=random_request" \
               "whitebox_opt_in=required" \
               "decision=Decision::AppRandom" \
@@ -394,13 +412,17 @@ in
               "ambient_fw_cfg_entropy=not-app-random-source"
             require_leaf ${timeContractADeterminism} \
               "gate=gate:layer0-determinism" \
-              "tasks=T-TIME-8" \
+              "tasks=" \
+              "open_tasks=T-TIME-8" \
+              "status=partial" \
               "time_trajectory=icount_shift_pure_function" \
               "time_fingerprint_fields=final_icount,final_virtual_time_ns,trajectory_digest,time_derived_fields_digest" \
               "host_time_reads_on_time_path=false"
             require_leaf ${timeMultiVcpuAggregateClock} \
               "gate=gate:layer0-determinism" \
-              "tasks=T-TIME-9" \
+              "tasks=" \
+              "open_tasks=T-TIME-9" \
+              "status=partial" \
               "aggregate_node_clock=true" \
               "per_vcpu_shmem_fields=false" \
               "rr_switch_quantum_units=node-icount" \
@@ -408,7 +430,9 @@ in
             require_leaf ${clockDeadline} \
               "gate=gate:layer0-determinism" \
               "gate=gate:scheduler-liveness" \
-              "tasks=T-TIME-6,T-PATCH-10" \
+              "tasks=T-PATCH-10" \
+              "open_tasks=T-TIME-6" \
+              "status=partial" \
               "deadline_symbol=qemu_plugin_clock_deadline_ns" \
               "deadline_source=QEMU_CLOCK_VIRTUAL" \
               "deadline_delta_ns=123456" \
@@ -434,12 +458,13 @@ in
               "gate.layer0=gate:layer0-determinism" \
               "qemu_time_control_public_predicate=true" \
               "qemu_time_control_single_owner=true" \
-              "qemu_time_advance_synchronous=true" \
+              "qemu_time_advance_callback_enqueue_only=true" \
+              "qemu_time_advance_cpu_work_handoff=true" \
               "qemu_time_advance_runs_virtual_timers=true" \
-              "qemu_time_advance_bh_drain=true" \
-              "qemu_time_advance_bql_context_guard=true" \
-              "timer_bh_interrupt_request_visible=true" \
-              "deterministic_propagation_icount_identical=true"
+              "qemu_time_advance_completion_bh=true" \
+              "qemu_time_advance_two_stage_bh_barrier=true" \
+              "timer_bh_precedes_plugin_completion=true" \
+              "qemu_main_loop_reentry_from_callback=false"
             require_leaf ${icountNoRealtime} \
               "gate=gate:layer0-determinism" \
               "tasks=T-DET-2" \
@@ -467,6 +492,8 @@ in
             check=${attrPath}
             gate=gate:layer0-determinism
             tasks=${builtins.concatStringsSep "," taskIds}
+            open_tasks=${builtins.concatStringsSep "," openTaskIds}
+            status=partial
             crates=crucible-sim,crucible-assert,crucible
             cargo_targets=crucible-sim::gate_layer0_determinism,crucible-assert::gate_layer0_determinism,crucible::gate_layer0_determinism
             aggregate_model=leaf-evidence-plus-crate-gate-targets
@@ -485,7 +512,7 @@ in
             evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng+qemuDeterministicGetrandom.qemu_guest_getrandom_sim_unseeded_policy
             evidence.E10=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E13=deterministicLaunch.smp_vcpus+qemuMultiVcpuLaunch.rr_switch_quantum+qemuMultiVcpuLaunch.rr_vcpu_rotation+qemuMultiVcpuLaunch.rejects_mttcg+contractAIsolation.rr_vcpu_cursor+contractAIsolation.multi_vcpu_fingerprint+timeMultiVcpuAggregateClock.aggregate_node_clock
-            evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control+pluginTimeAdvance.qemu_time_advance_bh_drain+clockDeadline.deadline_source
+            evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control+pluginTimeAdvance.qemu_time_advance_completion_bh+clockDeadline.deadline_source
             evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
             evidence.E16=deterministicLaunch.machine_reset+ram_reset
             evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced

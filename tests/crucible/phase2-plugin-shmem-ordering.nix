@@ -20,7 +20,7 @@
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
   pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
-  pluginSetup = builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs;
+  pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTeardown = builtins.readFile ../../crates/crucible-qemu-plugin/src/teardown.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;

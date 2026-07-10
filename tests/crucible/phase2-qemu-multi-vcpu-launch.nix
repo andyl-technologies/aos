@@ -2,7 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuMultiVcpuLaunch",
-  taskIds ? ["T-QEMU-15" "T-DET-29" "T-DET-30"],
+  taskIds ? ["T-QEMU-15" "T-DET-29"],
+  openTaskIds ? ["T-DET-30"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = pkgs.fetchCargoDeps {
@@ -20,6 +21,7 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
+  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -48,8 +50,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
       {
-        label = "T-DET-29 checklist complete";
-        needle = "- [x] **T-DET-29**";
+        label = "T-DET-29 task traceability marker";
+        needle = "**T-DET-29**";
       }
       {
         label = "T-DET-29 completion note names launch gate";
@@ -60,8 +62,8 @@
         needle = "rejects MTTCG";
       }
       {
-        label = "T-DET-30 checklist complete";
-        needle = "- [x] **T-DET-30**";
+        label = "T-DET-30 task traceability marker";
+        needle = "**T-DET-30**";
       }
       {
         label = "T-DET-30 completion note names launch check";
@@ -74,8 +76,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-15 checklist complete";
-        needle = "- [x] **T-QEMU-15**";
+        label = "T-QEMU-15 task traceability marker";
+        needle = "**T-QEMU-15**";
       }
       {
         label = "T-QEMU-15 completion note names multi-vCPU acceptance";
@@ -179,7 +181,7 @@
       }
       {
         label = "scenario material records deterministic secondary vCPU bringup";
-        needle = "\"secondary_vcpu_bringup=rr-tcg-icount-deterministic\".to_owned(),";
+        needle = "\"secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic\".to_owned(),";
       }
       {
         label = "vCPU count accessor";
@@ -192,8 +194,8 @@
         needle = "QemuPreSpawnLaunchValidationError::MultiThreadTcg";
       }
       {
-        label = "single-threaded TCG must be pinned";
-        needle = "QemuPreSpawnLaunchValidationError::SingleThreadTcgNotPinned";
+        label = "single-threaded sim TCG must be pinned";
+        needle = "QemuPreSpawnLaunchValidationError::SingleThreadSimNotPinned";
       }
       {
         label = "RR quantum validator supports current patch option and RFC alias";
@@ -295,7 +297,7 @@
       }
       {
         label = "multi-vCPU deterministic secondary bringup assertion";
-        needle = "material.contains(\"secondary_vcpu_bringup=rr-tcg-icount-deterministic\")";
+        needle = "material.contains(\"secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic\")";
       }
       {
         label = "vCPU count changes scenario material";
@@ -311,7 +313,7 @@
       }
       {
         label = "duplicate accelerator thread assertion";
-        needle = "tcg,thread=single,thread=multi";
+        needle = "sim,thread=single,thread=multi";
       }
       {
         label = "duplicate RR quantum assertion";
@@ -408,10 +410,14 @@ in
             check=${attrPath}
             gate=gate:layer0-determinism
             tasks=${taskList}
+            open_tasks=${openTaskList}
+            status=partial
             check_scope=task-level
-            qemu_5=single-threaded-round-robin-tcg-with-smp-N
+            qemu_5=single-threaded-round-robin-sim-tcg-with-smp-N
             qemu_43=pre-spawn-rr-quantum-validation
-            accelerator=tcg,thread=single
+            accelerator=sim,thread=single
+            accelerator_family=tcg-derived-sim
+            stock_tcg_crucible_runtime=forbidden
             smp_vcpus=N>=1
             smp_default=1
             smp_multi_vcpu_test=4
@@ -425,7 +431,7 @@ in
             per_vcpu_rng_timing_axis=node-icount
             vcpu_topology=fixed-at-genesis
             runtime_cpu_hotplug=false
-            secondary_vcpu_bringup=rr-tcg-icount-deterministic
+            secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic
             rejects_mttcg=true
             rejects_unpinned_rr_switch_quantum=true
             rejects_adaptive_rr_quantum=true

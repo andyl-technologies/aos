@@ -457,7 +457,7 @@ The control channel is determinism-neutral by construction.
   wake fd, and replies `SetupAck(status)`; host refuses to schedule a node whose
   `SetupAck` is non-zero. — satisfies [PROTO-12], [PROTO-13], [PROTO-19]; spec
   §3.7, §3.8, §5.2.
-- [x] **T-PROTO-6** Wire the lifecycle: connect → Hello/HelloAck → Setup/SetupAck
+- [ ] **T-PROTO-6** Wire the lifecycle: connect → Hello/HelloAck → Setup/SetupAck
   → run-via-shmem (control channel silent) → Quit; assert no control frame is
   exchanged during the run. — satisfies [PROTO-1], [PROTO-2], [PROTO-4],
   [PROTO-18]; spec §2, §5.1.

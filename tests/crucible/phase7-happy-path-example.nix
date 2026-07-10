@@ -14,10 +14,10 @@
   exampleDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   exampleCorpus = builtins.readFile ../../crates/crucible/src/example_corpus.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   exampleTest = builtins.readFile ../../crates/crucible/tests/example_corpus.rs;
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
-  cliMain = builtins.readFile ../../crates/crucible-cli/src/main.rs;
+  cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;

@@ -11,8 +11,8 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  trigger = builtins.readFile ../../crates/crucible/src/trigger.rs;
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  trigger = import ./_crucible-trigger-source.nix {inherit lib;};
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   causalLogTest = builtins.readFile ../../crates/crucible/tests/trigger_firing_causal_log.rs;

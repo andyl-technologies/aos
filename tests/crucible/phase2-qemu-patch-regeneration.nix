@@ -200,7 +200,8 @@ in
               || fail "base tree $base_tree does not match manifest ${series.patchBranchBaseTree}"
 
             git bundle verify ${series.patchBranchBundle} > "$out/patch-branch-bundle.verify"
-            git fetch -q ${series.patchBranchBundle} HEAD:refs/heads/patch-stack
+            git fetch -q ${series.patchBranchBundle} \
+              "refs/heads/${series.patchBranchRef}:refs/heads/patch-stack"
             patch_branch_head=$(git rev-parse refs/heads/patch-stack)
             test "$patch_branch_head" = "${series.patchBranchHeadCommit}" \
               || fail "patch branch head $patch_branch_head does not match manifest ${series.patchBranchHeadCommit}"

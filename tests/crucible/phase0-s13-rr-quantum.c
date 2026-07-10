@@ -115,7 +115,7 @@ main(void)
   }
 
   printf("selected_phase0_default_rr_switch_quantum=%u\n", selected_sample.quantum);
-  puts("selected_default_basis=s11_green_smallest_quantum_above_throughput_floor");
+  puts("selected_default_basis=provisional_modeled_smallest_quantum_above_throughput_floor");
   printf("selected_default_efficiency_x1000=%u\n", selected_sample.efficiency_x1000);
   printf("coarse_baseline_rr_switch_quantum=%u\n", coarse_baseline.quantum);
   printf("coarse_baseline_efficiency_x1000=%u\n", coarse_baseline.efficiency_x1000);
@@ -123,10 +123,11 @@ main(void)
   puts("race_yield_tested=false");
   puts("race_yield_source=preemption_patch_surface_available_explorer_disabled");
   puts("s12_decision_entry_consumed=true");
+  puts("s11_sim_rerun_green=false");
   puts("decision_preemption_exploration_enabled=false");
   puts("d25_status=open_until_preemption_explorer_enabled");
   puts("fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_explorer");
-  puts("s13_complete=true");
+  puts("s13_complete=false");
 
   return pass ? 0 : 1;
 }

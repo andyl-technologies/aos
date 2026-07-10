@@ -4,9 +4,9 @@
 }: let
   cratesDir = ../../crates;
   engineLib = builtins.readFile (cratesDir + "/crucible/src/lib.rs");
-  model = builtins.readFile (cratesDir + "/crucible/src/model.rs");
-  scheduler = builtins.readFile (cratesDir + "/crucible/src/scheduler.rs");
-  sessionLib = builtins.readFile (cratesDir + "/crucible-session/src/lib.rs");
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
+  sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/crucible-session/Cargo.toml"));
 
   hasInfix = needle: haystack: let

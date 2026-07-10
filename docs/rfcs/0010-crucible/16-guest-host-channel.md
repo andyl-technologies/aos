@@ -770,12 +770,13 @@ the transport layer by construction.
   parameters during world validation, rejects network-idle nodes with no
   incident links, and treats the optional `AgentSignal` policy as white-box-only
   rather than black-box resolvable.
-- [x] **T-GHC-4** Implement the synchronous trapped-instruction doorbell in the
+- [ ] **T-GHC-4** Implement the synchronous trapped-instruction doorbell in the
   plugin, serviced inline at the exact retirement icount, with payload via shared
   page or register ptr+len; forbid a virtio-serial/device data channel for the
   reasons of §16.3.1. — satisfies [GHC-10], [GHC-11], [GHC-13], [GHC-14]; spec
   §16.3, §16.3.1, §16.4.
-  Completed by `checks.crucible.phase4.guestHostDoorbell`: the QEMU plugin now
+  Partial callback-core evidence is provided by
+  `checks.crucible.phase4.guestHostDoorbell`: the QEMU plugin model now
   exposes a typed white-box doorbell callback core and registration plan that
   selects the reserved trapped-instruction callback in white-box mode, services
   each trap inline through QEMU guest-memory reads, stamps markers with the exact
@@ -792,10 +793,11 @@ the transport layer by construction.
   vector (`ef`) and aarch64 `hlt #0x04c1` byte vector (`20 98 40 d4`) are frozen,
   the payload register contract is recorded (`rax`/`rcx`, `x0`/`x1`), and plugin
   registration state is built from those ABI trap entries.
-- [x] **T-GHC-6** Implement collision avoidance and inertness for the reserved
+- [ ] **T-GHC-6** Implement collision avoidance and inertness for the reserved
   doorbell port/instruction: validate non-collision at setup; inert when the
   channel is disabled. — satisfies [GHC-17], [GHC-34]; spec §16.4, §16.7.
-  Completed by `checks.crucible.phase4.guestHostDoorbellCollisionInertness`: the
+  Partial callback-core evidence is provided by
+  `checks.crucible.phase4.guestHostDoorbellCollisionInertness`: the
   plugin now validates the configured trap against
   `WhiteboxDoorbellSetupResources`, requires the resulting
   `WhiteboxDoorbellSetupValidation` before installing the white-box trap, rejects
@@ -827,10 +829,11 @@ the transport layer by construction.
   records decoded observational marker payloads, and rejects `random_request` on
   the observational marker path while preserving the existing app-random servicing
   path.
-- [x] **T-GHC-9** Record every marker as an observational, icount-stamped
+- [ ] **T-GHC-9** Record every marker as an observational, icount-stamped
   event-log entry excluded from the determinism comparison; prove markers do not
   move the fingerprint. — satisfies [GHC-24], [GHC-30]; spec §16.5.2, §16.7.
-  Completed by `checks.crucible.phase4.guestHostMarkerObservability`: decoded
+  Partial model evidence is provided by
+  `checks.crucible.phase4.guestHostMarkerObservability`: decoded
   white-box assertion, lifecycle, event, and coverage marker payloads now append
   as observational scheduler event-log entries stamped with the exact marker
   icount and guest source, including through a QEMU-plugin `WhiteboxMarkerSink`
@@ -865,12 +868,13 @@ the transport layer by construction.
   black-box observable-I/O condition firings, and backend fingerprints while
   rejecting any named or guest-marker leaf fallback and any guest-marker event-log
   entry.
-- [x] **T-GHC-12** Enforce channel determinism/safety: side-effect-free payload
+- [ ] **T-GHC-12** Enforce channel determinism/safety: side-effect-free payload
   read at the exact trap icount; host→guest direction (if any) obeys the injection
   contract; fingerprint-identical with markers on vs off. — satisfies [GHC-30],
   [GHC-31], [GHC-32]; spec §16.7.
-  Completed by `checks.crucible.phase4.guestHostChannelDeterminism`: the QEMU
-  plugin now routes generic marker traps through the shared trap-icount payload
+  Partial callback-core and scheduler-model evidence is provided by
+  `checks.crucible.phase4.guestHostChannelDeterminism`: the QEMU plugin model
+  routes generic marker traps through the shared trap-icount payload
   reader, and `whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount`
   pins the safe callback-core contract to a single `current_icount` snapshot whose
   decoded marker is unaffected by later guest-memory mutation in the reader
@@ -916,11 +920,12 @@ the transport layer by construction.
   `WhiteboxDoorbellDecodeDiagnostic` before being dropped, while malformed
   app-random frames are turned into typed decode diagnostics and dropped without
   drawing a decision or writing a reply.
-- [x] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
+- [ ] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
   the channel: black-box sufficiency, opt-in additivity, and fingerprint-equality
   with white-box on/off. — satisfies [GHC-1], [GHC-2], [GHC-30], [G-3]; spec
   §16.1, §16.7.
-  Completed by `checks.crucible.phase4.guestHostChannelGateWiring`: the phase4
+  Partial structural evidence is provided by
+  `checks.crucible.phase4.guestHostChannelGateWiring`: the phase4
   binding gate now carries the relevant gate definition files in lazy passthru,
   statically pins the phase2 canonical gate ordering in `tests/crucible/default.nix`
   including `qemuInert -> singleVmFingerprint -> anyGuest`, enforces their
@@ -933,14 +938,15 @@ the transport layer by construction.
   marker-neutrality proof, so white-box disabled, enabled-but-unused, and
   marker-enabled modes are fingerprint-equal except for observational event-log
   entries.
-- [x] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
+- [ ] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,
   record a `Decision::AppRandom` (05), and write the value back at the trap icount
   as a host→guest reply obeying the injection contract; bounds-check `width` ≤8;
   malformed → decode diagnostic + drop. Reuse the spike-S5 guest-memory path (second
   client, no new spike). — satisfies [GHC-37]; spec §16.5.3, §16.7.
-  Completed by `checks.crucible.phase4.guestHostAppRandomDoorbell`: the phase4
+  Partial callback-core and engine-model evidence is provided by
+  `checks.crucible.phase4.guestHostAppRandomDoorbell`: the phase4
   gate binds the existing golden-vectored kind-5 `random_request` protocol
   surface to the plugin's trap-time guest-memory read and host-to-guest injection
   path, with width `<=8`, bounded decode diagnostics, and malformed-frame drop

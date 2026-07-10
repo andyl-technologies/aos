@@ -14,7 +14,7 @@
   deviceBridge = builtins.readFile ../../crates/crucible/src/device.rs;
   deviceSubnode = builtins.readFile ../../crates/crucible/src/device_subnode.rs;
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  faultModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  faultModel = import ./_crucible-model-source.nix {inherit lib;};
   ioFaults = builtins.readFile ../../crates/crucible-device/src/fault.rs;
   faultTest = builtins.readFile ../../crates/crucible/tests/io_fault_application.rs;
   faultDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17-fault-injection.md;

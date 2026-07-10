@@ -121,24 +121,40 @@
     else if patchName == "0024-crucible-sim-poll-immediate.patch"
     then [
       {
-        label = "immediate poll guard";
-        needle = "crucible_shmem_sim_poll_immediate";
+        label = "event-driven wake callback";
+        needle = "crucible_shmem_wake";
       }
       {
-        label = "sim-only poll mode";
-        needle = ''current_accel_name(), "sim"'';
+        label = "pending request coroutine queue";
+        needle = "CoQueue pending_requests";
       }
       {
-        label = "one-shot immediate re-poll";
-        needle = "crucible_shmem_sim_repoll_once";
+        label = "pending queue cross-context lock";
+        needle = "QemuMutex pending_lock";
       }
       {
-        label = "nonblocking drain before re-poll";
-        needle = "qemu_plugin_drain_main_loop()";
+        label = "lost-wake generation";
+        needle = "uint64_t wake_generation";
       }
       {
-        label = "time-control guard before drain";
-        needle = "qemu_plugin_has_time_control()";
+        label = "wake-driven coroutine resumption";
+        needle = "qemu_co_enter_all(&waiters, NULL)";
+      }
+      {
+        label = "wake snapshot prevents requeue loop";
+        needle = "waiters = s->pending_requests";
+      }
+      {
+        label = "coroutine park without spin";
+        needle = "qemu_co_queue_wait(&s->pending_requests, &s->pending_lock)";
+      }
+      {
+        label = "wake failure propagation";
+        needle = "s->wake_failed = true";
+      }
+      {
+        label = "notifier lifetime cleanup";
+        needle = "qemu_plugin_wake_notifier_remove(&s->wake_notifier)";
       }
     ]
     else if patchName == "0025-crucible-sim-idle-callbacks.patch"
@@ -166,6 +182,18 @@
       {
         label = "missed wake guard";
         needle = "if (!all_cpu_threads_idle())";
+      }
+      {
+        label = "queued idle-advance work handoff";
+        needle = "rr_crucible_sim_process_queued_idle_advance";
+      }
+      {
+        label = "pending advance suppresses resume";
+        needle = "qemu_plugin_time_advance_is_pending()";
+      }
+      {
+        label = "still-idle completion rearm";
+        needle = "rr_crucible_sim_maybe_rearm_idle_callback";
       }
     ]
     else [
@@ -203,7 +231,7 @@
       }
       {
         label = "RR loop ceiling wait";
-        needle = "qemu_plugin_main_loop_wait()";
+        needle = "qemu_cond_wait_bql(first_cpu->halt_cond)";
       }
     ];
 
@@ -215,7 +243,7 @@
     else if patchName == "0023-crucible-sim-skip-second-events.patch"
     then "rr_crucible_sim_skip_second_events_pass"
     else if patchName == "0024-crucible-sim-poll-immediate.patch"
-    then "crucible_shmem_sim_poll_immediate"
+    then "crucible_shmem_wake"
     else if patchName == "0025-crucible-sim-idle-callbacks.patch"
     then "qemu_plugin_register_vcpu_idle_resume_cb"
     else "crucible_sim_shmem_publish_current_icount";
@@ -232,6 +260,14 @@
       tPatch16PatchNames
     )
     ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
+    ++ lib.optionals (
+      patchName == "0024-crucible-sim-poll-immediate.patch"
+      && (hasInfix "main_loop_wait(" patchSource
+        || hasInfix "aio_poll(" patchSource
+        || hasInfix "aio_bh_poll(" patchSource)
+    ) [
+      "pkgs/emulation/qemu-patches/${patchName}: wake-driven block completion must not re-enter or poll the main loop"
+    ]
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
       {
         label = "T-PATCH-16 checklist complete";
@@ -305,16 +341,22 @@ in
               grep -F -q 'rr_crucible_sim_normalize_first_exit' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'rr_crucible_sim_skip_second_events_pass' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'cpu_work_list_empty(cpu)' accel/tcg/tcg-accel-ops-rr.c
-              grep -F -q 'crucible_shmem_sim_repoll_once' block/crucible-shmem.c
+              grep -F -q 'crucible_shmem_wake' block/crucible-shmem.c
+              grep -F -q 'qemu_co_queue_wait(&s->pending_requests, &s->pending_lock)' block/crucible-shmem.c
+              grep -F -q 's->wake_generation != observed_generation' block/crucible-shmem.c
               grep -F -q 'qemu_plugin_register_vcpu_idle_resume_cb' include/qemu/qemu-plugin.h
               grep -F -q 'qemu_plugin_maybe_fire_vcpu_idle_cb' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'if (!all_cpu_threads_idle())' accel/tcg/tcg-accel-ops-rr.c
+              grep -F -q 'rr_crucible_sim_process_queued_idle_advance' accel/tcg/tcg-accel-ops-rr.c
+              grep -F -q 'qemu_plugin_time_advance_is_pending()' accel/tcg/tcg-accel-ops-rr.c
+              grep -F -q 'rr_crucible_sim_maybe_rearm_idle_callback' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'tcg-accel-ops-sim-shmem.c' accel/tcg/meson.build
               grep -F -q 'qemu_plugin_register_sim_shmem_dispatch_cb' include/qemu/qemu-plugin.h
               grep -F -q 'crucible_sim_shmem_publish_current_icount' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'crucible_sim_shmem_dispatch_registered()' accel/tcg/tcg-accel-ops-rr.c
               grep -F -q 'crucible_sim_shmem_clamp_cpu_budget' accel/tcg/tcg-accel-ops-sim-shmem.c
-              grep -F -q 'qemu_plugin_main_loop_wait()' accel/tcg/tcg-accel-ops-rr.c
+              grep -F -q 'qemu_cond_wait_bql(first_cpu->halt_cond)' accel/tcg/tcg-accel-ops-rr.c
+              ! grep -F -q 'qemu_plugin_main_loop_wait()' accel/tcg/tcg-accel-ops-rr.c
             )
 
             cp "$microtestSourcePath" phase1-qemu-sim-correctness.c
@@ -327,9 +369,12 @@ in
             grep -q '^sim_first_exit_microtest=true$' "$out/qemu-sim-correctness-microtest"
             grep -q '^sim_skip_second_events_microtest=true$' "$out/qemu-sim-correctness-microtest"
             grep -q '^sim_second_events_lifecycle_work_microtest=true$' "$out/qemu-sim-correctness-microtest"
-            grep -q '^sim_poll_immediate_repoll_microtest=true$' "$out/qemu-sim-correctness-microtest"
-            grep -q '^sim_poll_immediate_requires_time_control=true$' "$out/qemu-sim-correctness-microtest"
+            grep -q '^sim_block_wake_coqueue_microtest=true$' "$out/qemu-sim-correctness-microtest"
+            grep -q '^sim_block_prepark_wake_not_lost=true$' "$out/qemu-sim-correctness-microtest"
+            grep -q '^sim_block_wake_failure_fails_waiter=true$' "$out/qemu-sim-correctness-microtest"
             grep -q '^sim_idle_callbacks_missed_wake_microtest=true$' "$out/qemu-sim-correctness-microtest"
+            grep -q '^sim_idle_advance_completion_barrier_microtest=true$' "$out/qemu-sim-correctness-microtest"
+            grep -q '^sim_idle_advance_rearms_while_halted=true$' "$out/qemu-sim-correctness-microtest"
             grep -q '^sim_shmem_dispatch_inert_without_callbacks=true$' "$out/qemu-sim-correctness-microtest"
             grep -q '^sim_shmem_dispatch_ceiling_microtest=true$' "$out/qemu-sim-correctness-microtest"
             grep -q '^sim_shmem_budget_clamp_microtest=true$' "$out/qemu-sim-correctness-microtest"
@@ -339,10 +384,10 @@ in
             grep -q '^sim_accel_fixed_icount_tb_trace_identical=true$' "$out/sim-accel.result"
             cp "${pluginTimeAdvanceCheck}/result" "$out/plugin-time-advance.result"
             grep -q '^PASS$' "$out/plugin-time-advance.result"
-            grep -q '^qemu_time_advance_bql_context_guard=true$' "$out/plugin-time-advance.result"
-            grep -q '^qemu_main_loop_drain_nonblocking=true$' "$out/plugin-time-advance.result"
-            grep -q '^main_loop_drain_fails_closed_without_owner=true$' "$out/plugin-time-advance.result"
-            grep -q '^main_loop_drain_fails_closed_outside_bql_context=true$' "$out/plugin-time-advance.result"
+            grep -q '^callback_entry_is_enqueue_only=true$' "$out/plugin-time-advance.result"
+            grep -q '^queued_worker_runs_virtual_timers=true$' "$out/plugin-time-advance.result"
+            grep -q '^completion_uses_normal_main_loop_bh=true$' "$out/plugin-time-advance.result"
+            grep -q '^callback_path_main_loop_reentry_absent=true$' "$out/plugin-time-advance.result"
 
             cat > "$out/result" <<'RESULT'
             PASS
@@ -360,7 +405,7 @@ in
             sim_loop_fix_present=true
             sim_first_exit_present=true
             sim_skip_second_events_present=true
-            sim_poll_immediate_present=true
+            sim_block_wake_coqueue_present=true
             sim_idle_callbacks_present=true
             sim_shmem_dispatch_present=true
             sim_correctness_fixture_exercised=true
@@ -368,10 +413,13 @@ in
             sim_first_exit_microtest=true
             sim_skip_second_events_microtest=true
             sim_second_events_lifecycle_work_microtest=true
-            sim_poll_immediate_repoll_microtest=true
-            sim_poll_immediate_requires_time_control=true
-            sim_poll_immediate_drain_bql_guard_validated=true
+            sim_block_wake_coqueue_microtest=true
+            sim_block_prepark_wake_not_lost=true
+            sim_block_wake_failure_fails_waiter=true
+            sim_block_main_loop_reentry_absent=true
             sim_idle_callbacks_missed_wake_microtest=true
+            sim_idle_advance_completion_barrier_microtest=true
+            sim_idle_advance_rearms_while_halted=true
             sim_shmem_dispatch_inert_without_callbacks=true
             sim_shmem_dispatch_ceiling_microtest=true
             sim_shmem_budget_clamp_microtest=true

@@ -90,20 +90,60 @@
         needle = "qemu_plugin_register_wake_fd";
       }
       {
-        label = "main-loop wait export";
-        needle = "qemu_plugin_main_loop_wait";
+        label = "live single-threaded RR proof export";
+        needle = "qemu_plugin_crucible_single_threaded_rr";
+      }
+      {
+        label = "sim accelerator discrimination";
+        needle = "strcmp(current_accel_name(), \"sim\") == 0";
+      }
+      {
+        label = "MTTCG rejection";
+        needle = "!qemu_tcg_mttcg_enabled()";
       }
       {
         label = "fd handler integration";
         needle = "qemu_set_fd_handler";
       }
       {
-        label = "blocking main-loop wait";
-        needle = "main_loop_wait(false)";
+        label = "device wake notifier header";
+        needle = "include/system/crucible-plugin-wake.h";
       }
       {
-        label = "BQL guard";
-        needle = "bql_locked()";
+        label = "nonblocking descriptor validation";
+        needle = "fcntl(fd, F_GETFL)";
+      }
+      {
+        label = "drain through would-block";
+        needle = "errno == EAGAIN || errno == EWOULDBLOCK";
+      }
+      {
+        label = "first RR vCPU kick after successful drain";
+        needle = "qemu_cpu_kick(first_cpu)";
+      }
+      {
+        label = "spurious readiness does not kick";
+        needle = "if (drained && first_cpu)";
+      }
+      {
+        label = "BQL wake ordering rationale";
+        needle = "atomic BQL release-and-wait";
+      }
+      {
+        label = "device repoll after successful drain";
+        needle = "QEMU_PLUGIN_WAKE_EVENT_DRAINED";
+      }
+      {
+        label = "terminal wake-fd failure event";
+        needle = "QEMU_PLUGIN_WAKE_EVENT_FAILED";
+      }
+      {
+        label = "terminal wake-fd shutdown";
+        needle = "qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR)";
+      }
+      {
+        label = "failed descriptor unregistration";
+        needle = "qemu_plugin_unregister_wake_fd(fd)";
       }
     ]
     else [
@@ -122,6 +162,14 @@
       {
         label = "RR loop callback hook";
         needle = "qemu_plugin_maybe_fire_tcg_exec_cb(cpu)";
+      }
+      {
+        label = "exact non-mutating TB-entry icount export";
+        needle = "qemu_plugin_icount_at_tb_entry";
+      }
+      {
+        label = "non-mutating current-vCPU observation";
+        needle = "icount_get_raw_observed";
       }
     ];
 
@@ -152,12 +200,28 @@
         needle = "wake_fd_drained=true";
       }
       {
-        label = "main-loop wait exercised";
-        needle = "main_loop_wait_blocking=true";
+        label = "execution-mode discriminator fixture exercised";
+        needle = "single_threaded_rr_mode_discriminator_fixture_exercised=true";
+      }
+      {
+        label = "wake fd failure paths exercised";
+        needle = "wake_fd_hard_error_reported_and_unregistered=true";
+      }
+      {
+        label = "wake fd vCPU kick ordering exercised";
+        needle = "wake_fd_kicks_first_vcpu_only_after_drain=true";
       }
       {
         label = "TCG exec callback exercised";
         needle = "tcg_exec_callback_after_icount_process=true";
+      }
+      {
+        label = "exact TB-entry callback icount exercised";
+        needle = "tb_entry_icount_nonmutating=true";
+      }
+      {
+        label = "chained, early-exit, and RR TB-entry math exercised";
+        needle = "tb_entry_icount_chained_early_exit_multi_vcpu=true";
       }
       {
         label = "stock negative control";
@@ -217,15 +281,92 @@ in
           script = ''
             set -eu
 
-            mkdir -p accel/tcg hw include/qemu include/system migration net plugins qapi qemu
+            mkdir -p accel/tcg hw/core include/qemu include/system migration net plugins qapi qemu
             : > hw/boards.h
+            cat > hw/core/cpu.h <<'CPU_CORE_FIXTURE'
+            #ifndef HW_CORE_CPU_H
+            #define HW_CORE_CPU_H
+
+            #include <stdbool.h>
+
+            extern bool mttcg_enabled;
+            #define qemu_tcg_mttcg_enabled() (mttcg_enabled)
+
+            extern CPUState *first_cpu;
+            void qemu_cpu_kick(CPUState *cpu);
+
+            #endif
+            CPU_CORE_FIXTURE
             : > migration/blocker.h
             : > net/net.h
             : > qapi/error.h
+            cat > qemu/error-report.h <<'ERROR_REPORT_FIXTURE'
+            #ifndef QEMU_ERROR_REPORT_H
+            #define QEMU_ERROR_REPORT_H
+
+            void test_error_report(const char *format, ...);
+            #define error_report(...) test_error_report(__VA_ARGS__)
+
+            #endif
+            ERROR_REPORT_FIXTURE
             : > qemu/plugin-memory.h
             : > qemu/timer.h
             : > qemu/lockable.h
-            : > qemu/notify.h
+            cat > qemu/notify.h <<'NOTIFY_FIXTURE'
+            #ifndef QEMU_NOTIFY_H
+            #define QEMU_NOTIFY_H
+
+            typedef struct Notifier Notifier;
+            typedef struct NotifierList NotifierList;
+
+            struct Notifier {
+                void (*notify)(Notifier *notifier, void *data);
+                Notifier *next;
+                NotifierList *list;
+            };
+
+            struct NotifierList {
+                Notifier *head;
+            };
+
+            #define NOTIFIER_LIST_INITIALIZER(_head) { .head = NULL }
+
+            static inline void notifier_list_add(NotifierList *list,
+                                                 Notifier *notifier)
+            {
+                notifier->next = list->head;
+                notifier->list = list;
+                list->head = notifier;
+            }
+
+            static inline void notifier_remove(Notifier *notifier)
+            {
+                Notifier **link;
+                if (notifier->list == NULL) {
+                    return;
+                }
+                link = &notifier->list->head;
+                while (*link != NULL && *link != notifier) {
+                    link = &(*link)->next;
+                }
+                if (*link == notifier) {
+                    *link = notifier->next;
+                }
+                notifier->next = NULL;
+                notifier->list = NULL;
+            }
+
+            static inline void notifier_list_notify(NotifierList *list,
+                                                    void *data)
+            {
+                for (Notifier *notifier = list->head; notifier != NULL;
+                     notifier = notifier->next) {
+                    notifier->notify(notifier, data);
+                }
+            }
+
+            #endif
+            NOTIFY_FIXTURE
             : > qemu/guest-random.h
             : > exec-cpu-common-placeholder
             mkdir -p exec tcg
@@ -234,6 +375,16 @@ in
             : > accel/tcg/tcg-accel-ops.h
             : > accel/tcg/tcg-accel-ops-rr.h
             : > accel/tcg/tcg-accel-ops-icount.h
+
+            cat > include/system/runstate.h <<'RUNSTATE_FIXTURE'
+            #ifndef SYSTEM_RUNSTATE_H
+            #define SYSTEM_RUNSTATE_H
+
+            #define SHUTDOWN_CAUSE_HOST_ERROR 1
+            void qemu_system_shutdown_request(int reason);
+
+            #endif
+            RUNSTATE_FIXTURE
 
             cat > qemu/osdep.h <<'OSDEP_FIXTURE'
             #ifndef QEMU_OSDEP_H
@@ -259,13 +410,20 @@ in
             typedef void IOHandler(void *opaque);
             #endif
 
-            bool bql_locked(void);
-            void main_loop_wait(int nonblocking);
             void qemu_set_fd_handler(int fd, IOHandler *fd_read,
                                      IOHandler *fd_write, void *opaque);
 
             #endif
             MAIN_LOOP_FIXTURE
+
+            cat > qemu/accel.h <<'ACCEL_FIXTURE'
+            #ifndef QEMU_ACCEL_H
+            #define QEMU_ACCEL_H
+
+            const char *current_accel_name(void);
+
+            #endif
+            ACCEL_FIXTURE
 
             cat > include/system/cpu-timers.h <<'CPU_TIMERS_FIXTURE'
             #ifndef SYSTEM_CPU_TIMERS_H
@@ -278,10 +436,70 @@ in
             #define ICOUNT_PRECISE 1
             #define icount_enabled() (use_icount)
 
+            typedef struct CPUState CPUState;
+            void icount_update(CPUState *cpu);
+
+            /* get raw icount value */
             int64_t icount_get_raw(void);
+
+            /* return the virtual CPU time in ns, based on the instruction counter. */
+            int64_t icount_get(void);
+            /*
+             * Remaining timer declarations are outside this focused fixture.
+             */
 
             #endif
             CPU_TIMERS_FIXTURE
+
+            cat > accel/tcg/icount-common.c <<'ICOUNT_COMMON_FIXTURE'
+            struct TestTimersState {
+                unsigned vm_clock_seqlock;
+                int64_t qemu_icount;
+            } timers_state;
+
+            static unsigned seqlock_read_begin(unsigned *seqlock)
+            {
+                return *seqlock;
+            }
+
+            static bool seqlock_read_retry(unsigned *seqlock, unsigned start)
+            {
+                return *seqlock != start;
+            }
+
+            #define qatomic_read_i64(ptr) (*(ptr))
+
+            static int64_t icount_get_executed(CPUState *cpu)
+            {
+                return cpu->icount_budget -
+                    (cpu->neg.icount_decr.u16.low + cpu->icount_extra);
+            }
+
+            static int64_t icount_get_raw_locked(void)
+            {
+                raw_icount_reads++;
+                return raw_icount;
+            }
+
+            int64_t icount_get_raw(void)
+            {
+                int64_t icount;
+                unsigned start;
+
+                do {
+                    start = seqlock_read_begin(&timers_state.vm_clock_seqlock);
+                    icount = icount_get_raw_locked();
+                } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, start));
+
+                return icount;
+            }
+
+            /* Return the virtual CPU time, based on the instruction counter.  */
+            int64_t icount_get(void)
+            {
+                return 0;
+            }
+            ICOUNT_COMMON_FIXTURE
 
             cat > include/qemu/qemu-plugin.h <<'PLUGIN_HEADER_FIXTURE'
             #ifndef QEMU_QEMU_PLUGIN_H
@@ -319,28 +537,20 @@ in
             bool qemu_plugin_has_time_control(void);
 
             /**
-             * qemu_plugin_advance_virtual_time_direct() - advance virtual time directly
+             * typedef qemu_plugin_time_advance_cb_t - queued time-advance completion
+             * @status: zero on success or a negative errno-style failure
              * @time: absolute QEMU_CLOCK_VIRTUAL time in nanoseconds
-             *
-             * Advances virtual time synchronously after plugin time control has been
-             * acquired, runs due virtual-clock timers inline, and drains bottom halves
-             * scheduled by those timers before returning. If no plugin owns time control
-             * or the call is outside QEMU's BQL-held idle/main-loop context, the call
-             * fails closed and leaves virtual time unchanged.
+             * @userdata: opaque pointer supplied at registration
              */
-            QEMU_PLUGIN_API
-            void qemu_plugin_advance_virtual_time_direct(int64_t time);
+            typedef void (*qemu_plugin_time_advance_cb_t)(int status, int64_t time,
+                                                          void *userdata);
 
-            /**
-             * qemu_plugin_drain_main_loop() - run one non-blocking main-loop pass
-             *
-             * Processes pending main-loop work without blocking on host file descriptors or
-             * timers and without implicitly advancing virtual time. If no plugin owns time
-             * control or the call is outside QEMU's BQL-held idle/main-loop context, the
-             * call fails closed and does not enter the main loop.
-             */
             QEMU_PLUGIN_API
-            void qemu_plugin_drain_main_loop(void);
+            int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
+                                                     void *userdata);
+
+            QEMU_PLUGIN_API
+            int qemu_plugin_advance_time_ns(int64_t time);
 
             /**
              * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
@@ -389,6 +599,7 @@ in
             PLUGIN_INTERNAL_FIXTURE
 
             cat > plugins/api-system.c <<'PLUGIN_API_SYSTEM_FIXTURE'
+
             #include "qemu/osdep.h"
             #include "qemu/main-loop.h"
             #include "net/net.h"
@@ -404,7 +615,6 @@ in
              * system-mode plugin API provides control-plane helpers instead.
              */
 
-            typedef struct AioContext AioContext;
             typedef struct CPUState CPUState;
             typedef struct Error Error;
             typedef struct NetClientState NetClientState;
@@ -414,21 +624,23 @@ in
 
             #define RUN_ON_CPU_HOST_ULONG(value) \
                 ((run_on_cpu_data){.host_ulong = (value)})
-            #define QEMU_CLOCK_VIRTUAL 1
-
             extern CPUState *current_cpu;
             void async_run_on_cpu(CPUState *cpu,
                                   void (*fn)(CPUState *, run_on_cpu_data),
                                   run_on_cpu_data data);
             int64_t qemu_clock_advance_virtual_time(int64_t new_time);
-            bool qemu_clock_run_timers(int clock);
-            AioContext *qemu_get_aio_context(void);
-            int aio_bh_poll(AioContext *ctx);
-
             /*
              * Time control
              */
             static bool has_control;
+            static qemu_plugin_time_advance_cb_t qemu_plugin_time_advance_cb;
+            static void *qemu_plugin_time_advance_userdata;
+            static int qemu_plugin_time_advance_pending;
+            static int qemu_plugin_time_advance_status;
+            static int64_t qemu_plugin_time_advance_target;
+
+            static void qemu_plugin_time_advance_barrier_bh(void *opaque);
+            static void qemu_plugin_time_advance_complete_bh(void *opaque);
 
             bool qemu_plugin_has_time_control(void)
             {
@@ -461,42 +673,41 @@ in
                 }
             }
 
-            static bool qemu_plugin_time_control_call_permitted(void)
+            int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
+                                                     void *userdata)
             {
-                return has_control && bql_locked();
+                if (qemu_plugin_time_advance_pending) {
+                    return -EBUSY;
+                }
+                qemu_plugin_time_advance_userdata = userdata;
+                qemu_plugin_time_advance_cb = cb;
+                return 0;
             }
 
-            static void qemu_plugin_drain_bottom_halves(void)
+            static void qemu_plugin_time_advance_barrier_bh(void *opaque)
             {
-                AioContext *aio_context = qemu_get_aio_context();
+                (void)opaque;
+                (void)qemu_plugin_time_advance_complete_bh;
+            }
 
-                if (aio_context == NULL) {
-                    return;
-                }
-
-                while (aio_bh_poll(aio_context)) {
+            static void qemu_plugin_time_advance_complete_bh(void *opaque)
+            {
+                (void)opaque;
+                qemu_plugin_time_advance_pending = 0;
+                if (qemu_plugin_time_advance_cb != NULL) {
+                    qemu_plugin_time_advance_cb(qemu_plugin_time_advance_status,
+                                                qemu_plugin_time_advance_target,
+                                                qemu_plugin_time_advance_userdata);
                 }
             }
 
-            void qemu_plugin_advance_virtual_time_direct(int64_t new_time)
+            int qemu_plugin_advance_time_ns(int64_t new_time)
             {
-                if (!qemu_plugin_time_control_call_permitted()) {
-                    return;
-                }
-
-                qemu_clock_advance_virtual_time(new_time);
-                qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
-                qemu_plugin_drain_bottom_halves();
-            }
-
-            void qemu_plugin_drain_main_loop(void)
-            {
-                if (!qemu_plugin_time_control_call_permitted()) {
-                    return;
-                }
-
-                main_loop_wait(true);
-                qemu_plugin_drain_bottom_halves();
+                qemu_plugin_time_advance_pending = 1;
+                qemu_plugin_time_advance_status = 0;
+                qemu_plugin_time_advance_target = new_time;
+                (void)qemu_plugin_time_advance_barrier_bh;
+                return 0;
             }
 
 
@@ -545,9 +756,10 @@ in
 
             for symbol in \
               qemu_plugin_icount_raw \
+              qemu_plugin_icount_at_tb_entry \
               qemu_plugin_force_vcpu_exit \
+              qemu_plugin_crucible_single_threaded_rr \
               qemu_plugin_register_wake_fd \
-              qemu_plugin_main_loop_wait \
               qemu_plugin_register_tcg_exec_cb
             do
               cat > "stock-plugin-runtime-negative-$symbol.c" <<STOCK_NEGATIVE
@@ -579,9 +791,10 @@ in
             done
 
             grep -q 'qemu_plugin_icount_raw' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_icount_at_tb_entry' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_force_vcpu_exit' include/qemu/qemu-plugin.h
+            grep -q 'qemu_plugin_crucible_single_threaded_rr' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_register_wake_fd' include/qemu/qemu-plugin.h
-            grep -q 'qemu_plugin_main_loop_wait' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_register_tcg_exec_cb' include/qemu/qemu-plugin.h
             grep -q 'qemu_plugin_maybe_fire_tcg_exec_cb(cpu);' accel/tcg/tcg-accel-ops-rr.c
             awk '
@@ -602,11 +815,24 @@ in
             grep -q '^PASS$' "$out/plugin-runtime-apis-microtest"
             grep -q '^raw_icount_bias_independent=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^raw_icount_disabled_returns_zero=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^tb_entry_icount_nonmutating=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^tb_entry_icount_chained_early_exit_multi_vcpu=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^first_exit_phase_normalized=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^single_threaded_rr_mode_discriminator_fixture_exercised=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_registered=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_single_owner=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_same_descriptor_idempotent=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^wake_fd_drained=true$' "$out/plugin-runtime-apis-microtest"
-            grep -q '^main_loop_wait_blocking=true$' "$out/plugin-runtime-apis-microtest"
-            grep -q '^main_loop_wait_bql_guard=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_requires_nonblocking=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_eintr_retried=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_short_reads_drained_to_eagain=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_kicks_first_vcpu_only_after_drain=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_spurious_eagain_does_not_kick=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_failure_kicks_vcpu_for_shutdown=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_notifies_devices_after_drain=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_failure_requests_host_error_shutdown=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_eof_reported_and_unregistered=true$' "$out/plugin-runtime-apis-microtest"
+            grep -q '^wake_fd_hard_error_reported_and_unregistered=true$' "$out/plugin-runtime-apis-microtest"
             grep -q '^tcg_exec_callback_count=1$' "$out/plugin-runtime-apis-microtest"
             grep -q '^tcg_exec_callback_icount=77$' "$out/plugin-runtime-apis-microtest"
             grep -q '^tcg_exec_callback_after_icount_process=true$' "$out/plugin-runtime-apis-microtest"
@@ -630,14 +856,18 @@ in
             raw_icount_symbol=qemu_plugin_icount_raw
             raw_icount_bias_independent=true
             raw_icount_disabled_returns_zero=true
+            tb_entry_icount_symbol=qemu_plugin_icount_at_tb_entry
+            tb_entry_icount_nonmutating=true
+            tb_entry_icount_chained_early_exit_multi_vcpu=true
             force_vcpu_exit_symbol=qemu_plugin_force_vcpu_exit
             first_exit_phase_normalized=true
+            single_threaded_rr_symbol=qemu_plugin_crucible_single_threaded_rr
+            single_threaded_rr_mode_discriminator_fixture_exercised=true
             wake_fd_registration_symbol=qemu_plugin_register_wake_fd
-            main_loop_wait_symbol=qemu_plugin_main_loop_wait
             wake_fd_registered=true
+            wake_fd_single_owner=true
+            wake_fd_same_descriptor_idempotent=true
             wake_fd_drained=true
-            main_loop_wait_blocking=true
-            main_loop_wait_bql_guard=true
             tcg_exec_callback_symbol=qemu_plugin_register_tcg_exec_cb
             tcg_exec_callback_count=1
             tcg_exec_callback_after_icount_process=true

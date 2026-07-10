@@ -11,7 +11,7 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler.rs;
+  scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   eventLogTest = builtins.readFile ../../crates/crucible/tests/event_log_unified.rs;
   emitStepTest = builtins.readFile ../../crates/crucible/tests/scheduler_emit_step.rs;
