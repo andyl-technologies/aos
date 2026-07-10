@@ -46,6 +46,12 @@ use crucible_session::{
 use futures_util::stream;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
-include!("gate_control_client/contract_tests.rs");
-include!("gate_control_client/conformance.rs");
-include!("gate_control_client/http2_fixture.rs");
+#[path = "gate_control_client/conformance.rs"]
+mod conformance;
+#[path = "gate_control_client/contract_tests.rs"]
+mod contract_tests;
+#[path = "gate_control_client/http2_fixture.rs"]
+mod http2_fixture;
+
+use conformance::*;
+use http2_fixture::*;

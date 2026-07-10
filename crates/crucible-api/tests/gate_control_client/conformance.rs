@@ -1,23 +1,27 @@
-fn assert_control_client_trait<C: ControlClient>(client: &C) {
+//! Reference-client conformance helpers and wire-model assertions.
+
+use super::*;
+
+pub(super) fn assert_control_client_trait<C: ControlClient>(client: &C) {
     assert_eq!(client.wire_model(), ControlWireModel::current());
 }
 
-fn assert_rpc_snapshot(name: &str, actual: &str, expected: &str) {
+pub(super) fn assert_rpc_snapshot(name: &str, actual: &str, expected: &str) {
     assert_eq!(actual, expected, "RPC wire snapshot `{name}` drifted");
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ReferenceClientConformanceReport {
-    backend: &'static str,
-    transport: ControlTransportKind,
-    command_statuses: Vec<CommandResultStatus>,
-    state_updates: Vec<LiveStateKind>,
-    reproduction_commands: Vec<SessionCommandKind>,
-    lifecycle: Vec<&'static str>,
+pub(super) struct ReferenceClientConformanceReport {
+    pub(super) backend: &'static str,
+    pub(super) transport: ControlTransportKind,
+    pub(super) command_statuses: Vec<CommandResultStatus>,
+    pub(super) state_updates: Vec<LiveStateKind>,
+    pub(super) reproduction_commands: Vec<SessionCommandKind>,
+    pub(super) lifecycle: Vec<&'static str>,
 }
 
 impl ReferenceClientConformanceReport {
-    fn normalized(&self) -> ReferenceClientConformanceProjection {
+    pub(super) fn normalized(&self) -> ReferenceClientConformanceProjection {
         ReferenceClientConformanceProjection {
             command_statuses: self.command_statuses.clone(),
             state_updates: self.state_updates.clone(),
@@ -28,14 +32,14 @@ impl ReferenceClientConformanceReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ReferenceClientConformanceProjection {
-    command_statuses: Vec<CommandResultStatus>,
-    state_updates: Vec<LiveStateKind>,
-    reproduction_commands: Vec<SessionCommandKind>,
-    lifecycle: Vec<&'static str>,
+pub(super) struct ReferenceClientConformanceProjection {
+    pub(super) command_statuses: Vec<CommandResultStatus>,
+    pub(super) state_updates: Vec<LiveStateKind>,
+    pub(super) reproduction_commands: Vec<SessionCommandKind>,
+    pub(super) lifecycle: Vec<&'static str>,
 }
 
-async fn run_reference_client_conformance<C>(
+pub(super) async fn run_reference_client_conformance<C>(
     client: &C,
     backend: &'static str,
 ) -> ReferenceClientConformanceReport
@@ -326,7 +330,7 @@ where
     report
 }
 
-fn record_accepted_command(
+pub(super) fn record_accepted_command(
     report: &mut ReferenceClientConformanceReport,
     response: &SendResponse,
     expected_update: Option<LiveStateKind>,
@@ -339,7 +343,7 @@ fn record_accepted_command(
     report.command_statuses.push(response.result.status);
 }
 
-fn representative_command(command: SessionCommandKind) -> SessionCommand {
+pub(super) fn representative_command(command: SessionCommandKind) -> SessionCommand {
     if command == SessionCommandKind::Query {
         return query_state_command();
     }
@@ -348,14 +352,14 @@ fn representative_command(command: SessionCommandKind) -> SessionCommand {
         .unwrap_or_else(|| panic!("{command:?} should have a representative command"))
 }
 
-fn query_state_command() -> SessionCommand {
+pub(super) fn query_state_command() -> SessionCommand {
     SessionCommand::Query {
         kind: QueryKind::State,
         reply: CommandReply::discard(),
     }
 }
 
-async fn recv_control_state_update(
+pub(super) async fn recv_control_state_update(
     stream: &mut ClientControlStream,
     expected: LiveStateKind,
 ) -> LiveStateKind {
@@ -372,7 +376,7 @@ async fn recv_control_state_update(
     panic!("Control state-update stream did not report {expected:?}");
 }
 
-async fn recv_watch_state_update(
+pub(super) async fn recv_watch_state_update(
     stream: &mut ClientWatchStream,
     expected: LiveStateKind,
 ) -> LiveStateKind {
@@ -389,7 +393,7 @@ async fn recv_watch_state_update(
     panic!("Watch state-update stream did not report {expected:?}");
 }
 
-fn assert_reference_conformance_equivalent(
+pub(super) fn assert_reference_conformance_equivalent(
     left: &ReferenceClientConformanceReport,
     right: &ReferenceClientConformanceReport,
 ) {
@@ -402,7 +406,7 @@ fn assert_reference_conformance_equivalent(
     );
 }
 
-fn reference_lifecycle_control_plane<L, F>(
+pub(super) fn reference_lifecycle_control_plane<L, F>(
     server_name: &'static str,
     loop_factory: F,
 ) -> LifecycleControlPlane<L, LifecycleLoopFactory<L>>
@@ -423,13 +427,13 @@ where
     )
 }
 
-fn assert_qemu_node_implements_simulation_backend_contract() {
+pub(super) fn assert_qemu_node_implements_simulation_backend_contract() {
     fn assert_backend<T: SimulationBackend>() {}
     assert_backend::<crucible_qemu::QemuNode>();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ApiDeterminismTraffic {
+pub(super) enum ApiDeterminismTraffic {
     Quiet,
     Noisy,
 }
@@ -441,19 +445,19 @@ impl ApiDeterminismTraffic {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ApiDeterminismProjection {
-    transport: ControlTransportKind,
-    final_state: LiveStateKind,
-    final_event_count: u64,
-    causal_event_count: u64,
-    observational_event_count: u64,
-    last_sequence: Option<u64>,
-    reproduction: Vec<ReproductionCommandRecord>,
-    mutating_results: Vec<ApiMutatingCommandResult>,
+pub(super) struct ApiDeterminismProjection {
+    pub(super) transport: ControlTransportKind,
+    pub(super) final_state: LiveStateKind,
+    pub(super) final_event_count: u64,
+    pub(super) causal_event_count: u64,
+    pub(super) observational_event_count: u64,
+    pub(super) last_sequence: Option<u64>,
+    pub(super) reproduction: Vec<ReproductionCommandRecord>,
+    pub(super) mutating_results: Vec<ApiMutatingCommandResult>,
 }
 
 impl ApiDeterminismProjection {
-    fn normalized(&self) -> ApiDeterminismNormalizedProjection {
+    pub(super) fn normalized(&self) -> ApiDeterminismNormalizedProjection {
         ApiDeterminismNormalizedProjection {
             final_state: self.final_state,
             final_event_count: self.final_event_count,
@@ -467,7 +471,7 @@ impl ApiDeterminismProjection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ApiDeterminismNormalizedProjection {
+pub(super) struct ApiDeterminismNormalizedProjection {
     final_state: LiveStateKind,
     final_event_count: u64,
     causal_event_count: u64,
@@ -478,7 +482,7 @@ struct ApiDeterminismNormalizedProjection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ApiMutatingCommandResult {
+pub(super) struct ApiMutatingCommandResult {
     command_id: u64,
     command: SessionCommandKind,
     status: CommandResultStatus,
@@ -486,24 +490,24 @@ struct ApiMutatingCommandResult {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ApiCausalSubsequenceProjection {
+pub(super) struct ApiCausalSubsequenceProjection {
     final_state: LiveStateKind,
     event_count: u64,
     causal_event_count: u64,
     observational_event_count: u64,
     last_sequence: Option<u64>,
-    causal_events: Vec<ApiCausalEventProjection>,
+    pub(super) causal_events: Vec<ApiCausalEventProjection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ApiCausalEventProjection {
+pub(super) struct ApiCausalEventProjection {
     sequence: u64,
     virtual_time_ticks: u64,
     kind: String,
     source: String,
 }
 
-async fn drive_api_nondeterminism_projection<C>(
+pub(super) async fn drive_api_nondeterminism_projection<C>(
     client: &C,
     traffic: ApiDeterminismTraffic,
 ) -> ApiDeterminismProjection
@@ -636,7 +640,7 @@ where
     }
 }
 
-async fn drive_streaming_causal_subsequence_projection(
+pub(super) async fn drive_streaming_causal_subsequence_projection(
     traffic: ApiDeterminismTraffic,
 ) -> ApiCausalSubsequenceProjection {
     let (streaming, actor, session) =
@@ -691,7 +695,7 @@ async fn drive_streaming_causal_subsequence_projection(
     projection
 }
 
-async fn capture_streaming_causal_projection(
+pub(super) async fn capture_streaming_causal_projection(
     streaming: &InProcessStreamingSession,
     session: SessionRef,
 ) -> ApiCausalSubsequenceProjection {
@@ -742,7 +746,7 @@ async fn capture_streaming_causal_projection(
     }
 }
 
-async fn drive_rpc_arrival_permutation_projection(
+pub(super) async fn drive_rpc_arrival_permutation_projection(
     client: &RpcControlClient,
     server: &Http2LifecycleServer,
 ) -> ApiDeterminismProjection {
@@ -946,7 +950,7 @@ async fn drive_rpc_arrival_permutation_projection(
     }
 }
 
-async fn attach_observer_load<C>(
+pub(super) async fn attach_observer_load<C>(
     client: &C,
     session: SessionRef,
     observer_controls: &mut Vec<ClientControlStream>,
@@ -986,7 +990,7 @@ async fn attach_observer_load<C>(
     }
 }
 
-async fn assert_read_only_traffic_is_schedule_neutral<C>(
+pub(super) async fn assert_read_only_traffic_is_schedule_neutral<C>(
     client: &C,
     session: SessionRef,
     phase: &'static str,
@@ -1046,7 +1050,7 @@ async fn assert_read_only_traffic_is_schedule_neutral<C>(
     );
 }
 
-async fn read_api_determinism_observation<C>(
+pub(super) async fn read_api_determinism_observation<C>(
     client: &C,
     session: SessionRef,
     phase: &'static str,
@@ -1099,13 +1103,13 @@ where
     }
 }
 
-async fn simulate_wall_clock_gap_without_scheduler_input() {
+pub(super) async fn simulate_wall_clock_gap_without_scheduler_input() {
     for _ in 0..4 {
         tokio::task::yield_now().await;
     }
 }
 
-fn assert_command_rejection_taxonomy_is_closed() {
+pub(super) fn assert_command_rejection_taxonomy_is_closed() {
     let mappings = [
         (
             CommandRejectionKind::InvalidState,
@@ -1129,7 +1133,7 @@ fn assert_command_rejection_taxonomy_is_closed() {
     assert!(CommandRejectionKind::try_from(RpcStatusCode::Ok).is_err());
 }
 
-fn raw_send_body(session: SessionRef, command_id: u64, command: &str) -> String {
+pub(super) fn raw_send_body(session: SessionRef, command_id: u64, command: &str) -> String {
     format!(
         "crucible.rpc/send-request\nsession-id={}\nepoch={}\nseed={}\nexpected-epoch=none\ncommand-id={}\ncommand={}\n",
         session.id.value,
@@ -1140,7 +1144,7 @@ fn raw_send_body(session: SessionRef, command_id: u64, command: &str) -> String 
     )
 }
 
-async fn assert_raw_send_error(
+pub(super) async fn assert_raw_send_error(
     endpoint: &str,
     body: String,
     expected_status: &str,
@@ -1169,7 +1173,7 @@ async fn assert_raw_send_error(
     assert!(text.contains(&format!("reason={expected_reason}\n")));
 }
 
-async fn assert_raw_send_rejection(
+pub(super) async fn assert_raw_send_rejection(
     endpoint: &str,
     body: String,
     expected_command: &str,
@@ -1199,7 +1203,7 @@ async fn assert_raw_send_rejection(
     assert!(text.contains("state-update=none\n"));
 }
 
-async fn assert_raw_send_accepted(endpoint: &str, body: String, expected_command: &str) {
+pub(super) async fn assert_raw_send_accepted(endpoint: &str, body: String, expected_command: &str) {
     let http = reqwest::Client::builder()
         .http2_prior_knowledge()
         .build()
@@ -1225,7 +1229,10 @@ async fn assert_raw_send_accepted(endpoint: &str, body: String, expected_command
     assert!(text.contains("savepoint-info=none\n"));
 }
 
-fn assert_reproduction_pause_record(record: &ReproductionCommandRecord, at_sequence: u64) {
+pub(super) fn assert_reproduction_pause_record(
+    record: &ReproductionCommandRecord,
+    at_sequence: u64,
+) {
     assert_eq!(record.sequence, 1);
     assert_eq!(record.payload.command, SessionCommandKind::Pause);
     assert!(
@@ -1242,7 +1249,7 @@ fn assert_reproduction_pause_record(record: &ReproductionCommandRecord, at_seque
     assert_eq!(record.observational_order, record.sequence);
 }
 
-fn assert_fault_reproduction_records(records: &[ReproductionCommandRecord]) {
+pub(super) fn assert_fault_reproduction_records(records: &[ReproductionCommandRecord]) {
     let [inject, heal] = records else {
         panic!("expected inject/heal reproduction pair, got {records:?}");
     };
@@ -1270,7 +1277,7 @@ fn assert_fault_reproduction_records(records: &[ReproductionCommandRecord]) {
     );
 }
 
-async fn recv_rpc_control_event(
+pub(super) async fn recv_rpc_control_event(
     stream: &mut crucible_api::ClientControlStream,
 ) -> StreamingEventFrame {
     tokio::time::timeout(Duration::from_millis(100), stream.recv_event())
@@ -1280,7 +1287,7 @@ async fn recv_rpc_control_event(
         .unwrap_or_else(|| panic!("RPC Control event stream should remain open"))
 }
 
-async fn recv_rpc_control_state_update(
+pub(super) async fn recv_rpc_control_state_update(
     stream: &mut crucible_api::ClientControlStream,
 ) -> StreamingStateUpdateFrame {
     tokio::time::timeout(Duration::from_millis(100), stream.recv_state_update())
@@ -1290,7 +1297,9 @@ async fn recv_rpc_control_state_update(
         .unwrap_or_else(|| panic!("RPC Control state update stream should remain open"))
 }
 
-async fn recv_rpc_watch_event(stream: &mut crucible_api::ClientWatchStream) -> StreamingEventFrame {
+pub(super) async fn recv_rpc_watch_event(
+    stream: &mut crucible_api::ClientWatchStream,
+) -> StreamingEventFrame {
     tokio::time::timeout(Duration::from_millis(100), stream.recv_event())
         .await
         .unwrap_or_else(|_| panic!("RPC Watch event should arrive before timeout"))
@@ -1298,7 +1307,7 @@ async fn recv_rpc_watch_event(stream: &mut crucible_api::ClientWatchStream) -> S
         .unwrap_or_else(|| panic!("RPC Watch event stream should remain open"))
 }
 
-async fn recv_rpc_watch_state_update(
+pub(super) async fn recv_rpc_watch_state_update(
     stream: &mut crucible_api::ClientWatchStream,
 ) -> StreamingStateUpdateFrame {
     tokio::time::timeout(Duration::from_millis(100), stream.recv_state_update())

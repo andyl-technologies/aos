@@ -1,4 +1,8 @@
-struct Http2LifecycleServer {
+//! HTTP/2 lifecycle-server fixtures for control-client tests.
+
+use super::*;
+
+pub(super) struct Http2LifecycleServer {
     endpoint: String,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
@@ -6,11 +10,11 @@ struct Http2LifecycleServer {
 }
 
 impl Http2LifecycleServer {
-    fn endpoint(&self) -> &str {
+    pub(super) fn endpoint(&self) -> &str {
         &self.endpoint
     }
 
-    async fn saw_http2_request(&self) -> bool {
+    pub(super) async fn saw_http2_request(&self) -> bool {
         for _ in 0..128 {
             if self.saw_http2.load(std::sync::atomic::Ordering::SeqCst) {
                 return true;
@@ -20,7 +24,11 @@ impl Http2LifecycleServer {
         false
     }
 
-    async fn append_session_events(&self, session: SessionRef, entries: &[SchedulerEventLogEntry]) {
+    pub(super) async fn append_session_events(
+        &self,
+        session: SessionRef,
+        entries: &[SchedulerEventLogEntry],
+    ) {
         let streaming = self
             .control_plane
             .lock()
@@ -37,7 +45,7 @@ impl Http2LifecycleServer {
         }
     }
 
-    async fn take_arrivals(&self) -> Vec<&'static str> {
+    pub(super) async fn take_arrivals(&self) -> Vec<&'static str> {
         let mut arrivals = self.arrival_log.lock().await;
         let snapshot = arrivals.clone();
         arrivals.clear();
@@ -46,26 +54,31 @@ impl Http2LifecycleServer {
 }
 
 #[derive(Clone)]
-struct ScriptedSendResponse {
+pub(super) struct ScriptedSendResponse {
     status: axum::http::StatusCode,
     body: String,
 }
 
-struct ScriptedSendServer {
+pub(super) struct ScriptedSendServer {
     endpoint: String,
 }
 
 impl ScriptedSendServer {
-    fn endpoint(&self) -> &str {
+    pub(super) fn endpoint(&self) -> &str {
         &self.endpoint
     }
 }
 
-fn scripted_send_response(status: axum::http::StatusCode, body: String) -> ScriptedSendResponse {
+pub(super) fn scripted_send_response(
+    status: axum::http::StatusCode,
+    body: String,
+) -> ScriptedSendResponse {
     ScriptedSendResponse { status, body }
 }
 
-async fn spawn_scripted_send_server(responses: Vec<ScriptedSendResponse>) -> ScriptedSendServer {
+pub(super) async fn spawn_scripted_send_server(
+    responses: Vec<ScriptedSendResponse>,
+) -> ScriptedSendServer {
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
@@ -112,7 +125,7 @@ async fn spawn_scripted_send_server(responses: Vec<ScriptedSendResponse>) -> Scr
     }
 }
 
-fn send_response_body(
+pub(super) fn send_response_body(
     command_id: u64,
     command: SessionCommandKind,
     status: CommandResultStatus,
@@ -128,7 +141,7 @@ fn send_response_body(
     output
 }
 
-fn golden_vector_bytes(name: &str) -> &'static [u8] {
+pub(super) fn golden_vector_bytes(name: &str) -> &'static [u8] {
     GOLDEN_RPC_VECTORS
         .iter()
         .find(|vector| vector.name == name)
@@ -136,14 +149,14 @@ fn golden_vector_bytes(name: &str) -> &'static [u8] {
         .bytes
 }
 
-type TestLifecyclePlane =
+pub(super) type TestLifecyclePlane =
     LifecycleControlPlane<ServerQuantumLoop, LifecycleLoopFactory<ServerQuantumLoop>>;
 
-fn test_loop_factory(_: &ScenarioDef, _: Seed) -> ServerQuantumLoop {
+pub(super) fn test_loop_factory(_: &ScenarioDef, _: Seed) -> ServerQuantumLoop {
     ServerQuantumLoop { quanta: 0 }
 }
 
-fn lifecycle_control_plane() -> TestLifecyclePlane {
+pub(super) fn lifecycle_control_plane() -> TestLifecyclePlane {
     LifecycleControlPlane::new(
         "crucible-http2-test-server",
         vec![ScenarioCatalogEntry::from_canonical_material(
@@ -157,7 +170,7 @@ fn lifecycle_control_plane() -> TestLifecyclePlane {
     )
 }
 
-async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
+pub(super) async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
@@ -354,18 +367,18 @@ async fn spawn_http2_lifecycle_server() -> Http2LifecycleServer {
     }
 }
 
-async fn spawn_http2_hello_server() -> Http2LifecycleServer {
+pub(super) async fn spawn_http2_hello_server() -> Http2LifecycleServer {
     spawn_http2_lifecycle_server().await
 }
 
-async fn record_rpc_arrival(
+pub(super) async fn record_rpc_arrival(
     arrival_log: std::sync::Arc<Mutex<Vec<&'static str>>>,
     label: &'static str,
 ) {
     arrival_log.lock().await.push(label);
 }
 
-async fn handle_rpc_hello(
+pub(super) async fn handle_rpc_hello(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -395,7 +408,7 @@ async fn handle_rpc_hello(
     )
 }
 
-async fn handle_list_scenarios(
+pub(super) async fn handle_list_scenarios(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -417,7 +430,7 @@ async fn handle_list_scenarios(
     )
 }
 
-async fn handle_create_session(
+pub(super) async fn handle_create_session(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -442,7 +455,7 @@ async fn handle_create_session(
     )
 }
 
-async fn handle_resume_session(
+pub(super) async fn handle_resume_session(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -465,7 +478,7 @@ async fn handle_resume_session(
     )
 }
 
-async fn handle_list_sessions(
+pub(super) async fn handle_list_sessions(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -487,7 +500,7 @@ async fn handle_list_sessions(
     )
 }
 
-async fn handle_destroy_session(
+pub(super) async fn handle_destroy_session(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -510,7 +523,7 @@ async fn handle_destroy_session(
     )
 }
 
-async fn handle_get_reproduction(
+pub(super) async fn handle_get_reproduction(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -537,7 +550,7 @@ async fn handle_get_reproduction(
     )
 }
 
-async fn handle_control_attach(
+pub(super) async fn handle_control_attach(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -560,7 +573,7 @@ async fn handle_control_attach(
     http2_stream_response(control_event_body(control))
 }
 
-async fn handle_control_send(
+pub(super) async fn handle_control_send(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -568,7 +581,7 @@ async fn handle_control_send(
     handle_streaming_send(request, control_plane, saw_http2).await
 }
 
-async fn handle_watch_attach(
+pub(super) async fn handle_watch_attach(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -591,7 +604,7 @@ async fn handle_watch_attach(
     http2_stream_response(watch_event_body(watch))
 }
 
-async fn handle_send_command(
+pub(super) async fn handle_send_command(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -599,7 +612,7 @@ async fn handle_send_command(
     handle_streaming_send(request, control_plane, saw_http2).await
 }
 
-async fn handle_streaming_send(
+pub(super) async fn handle_streaming_send(
     request: axum::http::Request<axum::body::Body>,
     control_plane: std::sync::Arc<Mutex<TestLifecyclePlane>>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -631,7 +644,7 @@ async fn handle_streaming_send(
     http2_response(axum::http::StatusCode::OK, encode_send_response(&response))
 }
 
-fn send_parse_error_response(error: &str) -> axum::response::Response {
+pub(super) fn send_parse_error_response(error: &str) -> axum::response::Response {
     let (status, reason) = if error.starts_with("unknown command")
         || error.contains("has no representative payload")
     {
@@ -645,7 +658,7 @@ fn send_parse_error_response(error: &str) -> axum::response::Response {
     typed_rpc_status_response(axum::http::StatusCode::BAD_REQUEST, status, reason, error)
 }
 
-async fn read_rpc_body(
+pub(super) async fn read_rpc_body(
     request: axum::http::Request<axum::body::Body>,
     saw_http2: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<u8>, axum::Error> {
@@ -657,7 +670,7 @@ async fn read_rpc_body(
         .map(|body| body.to_vec())
 }
 
-fn encode_list_scenarios_response(response: &ListScenariosResponse) -> String {
+pub(super) fn encode_list_scenarios_response(response: &ListScenariosResponse) -> String {
     let mut output = String::from("crucible.rpc/list-scenarios-response\n");
     for scenario in &response.scenarios {
         output.push_str("scenario=");
@@ -671,14 +684,14 @@ fn encode_list_scenarios_response(response: &ListScenariosResponse) -> String {
     output
 }
 
-fn encode_create_session_response(response: &CreateSessionResponse) -> String {
+pub(super) fn encode_create_session_response(response: &CreateSessionResponse) -> String {
     let mut output = String::from("crucible.rpc/create-session-response\n");
     push_session_ref(&mut output, response.session);
     push_wire_line(&mut output, "state", state_wire_name(response.state));
     output
 }
 
-fn encode_resume_session_response(response: &ResumeSessionResponse) -> String {
+pub(super) fn encode_resume_session_response(response: &ResumeSessionResponse) -> String {
     let mut output = String::from("crucible.rpc/resume-session-response\n");
     push_session_ref(&mut output, response.session);
     push_wire_line(&mut output, "state", state_wire_name(response.state));
@@ -691,7 +704,7 @@ fn encode_resume_session_response(response: &ResumeSessionResponse) -> String {
     output
 }
 
-fn encode_list_sessions_response(response: &ListSessionsResponse) -> String {
+pub(super) fn encode_list_sessions_response(response: &ListSessionsResponse) -> String {
     let mut output = String::from("crucible.rpc/list-sessions-response\n");
     for session in &response.sessions {
         output.push_str("session=");
@@ -717,7 +730,7 @@ fn encode_list_sessions_response(response: &ListSessionsResponse) -> String {
     output
 }
 
-fn encode_destroy_session_response(response: &DestroySessionResponse) -> String {
+pub(super) fn encode_destroy_session_response(response: &DestroySessionResponse) -> String {
     let mut output = String::from("crucible.rpc/destroy-session-response\n");
     push_session_ref(&mut output, response.session);
     push_wire_line(
@@ -737,7 +750,7 @@ fn encode_destroy_session_response(response: &DestroySessionResponse) -> String 
     output
 }
 
-fn encode_get_reproduction_response(response: &GetReproductionResponse) -> String {
+pub(super) fn encode_get_reproduction_response(response: &GetReproductionResponse) -> String {
     let mut output = String::from("crucible.rpc/get-reproduction-response\n");
     push_session_ref(&mut output, response.session);
     for command in &response.commands {
@@ -746,7 +759,7 @@ fn encode_get_reproduction_response(response: &GetReproductionResponse) -> Strin
     output
 }
 
-fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Response {
+pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Response {
     match error {
         LifecycleApiError::EpochMismatch {
             session_id,
@@ -796,7 +809,7 @@ fn lifecycle_error_response(error: LifecycleApiError) -> axum::response::Respons
     }
 }
 
-fn streaming_error_response(error: StreamingApiError) -> axum::response::Response {
+pub(super) fn streaming_error_response(error: StreamingApiError) -> axum::response::Response {
     match error {
         StreamingApiError::EpochMismatch { expected, actual } => {
             streaming_epoch_mismatch_response(expected, actual)
@@ -822,7 +835,7 @@ fn streaming_error_response(error: StreamingApiError) -> axum::response::Respons
     }
 }
 
-fn lifecycle_epoch_mismatch_response(
+pub(super) fn lifecycle_epoch_mismatch_response(
     session_id: SessionId,
     expected: u64,
     actual: u64,
@@ -836,7 +849,9 @@ fn lifecycle_epoch_mismatch_response(
     http2_response(axum::http::StatusCode::PRECONDITION_FAILED, output)
 }
 
-fn lifecycle_session_not_found_response(session: SessionRef) -> axum::response::Response {
+pub(super) fn lifecycle_session_not_found_response(
+    session: SessionRef,
+) -> axum::response::Response {
     let mut output = String::from("crucible.rpc/error\n");
     push_wire_line(&mut output, "status", "not-found");
     push_wire_line(&mut output, "reason", "lifecycle-session-not-found");
@@ -844,7 +859,9 @@ fn lifecycle_session_not_found_response(session: SessionRef) -> axum::response::
     http2_response(axum::http::StatusCode::NOT_FOUND, output)
 }
 
-fn streaming_session_not_found_response(session: SessionRef) -> axum::response::Response {
+pub(super) fn streaming_session_not_found_response(
+    session: SessionRef,
+) -> axum::response::Response {
     let mut output = String::from("crucible.rpc/error\n");
     push_wire_line(&mut output, "status", "not-found");
     push_wire_line(&mut output, "reason", "streaming-session-not-found");
@@ -852,7 +869,10 @@ fn streaming_session_not_found_response(session: SessionRef) -> axum::response::
     http2_response(axum::http::StatusCode::NOT_FOUND, output)
 }
 
-fn streaming_epoch_mismatch_response(expected: u64, actual: u64) -> axum::response::Response {
+pub(super) fn streaming_epoch_mismatch_response(
+    expected: u64,
+    actual: u64,
+) -> axum::response::Response {
     let mut output = String::from("crucible.rpc/error\n");
     push_wire_line(&mut output, "status", "invalid-state");
     push_wire_line(&mut output, "reason", "streaming-epoch-mismatch");
@@ -861,7 +881,7 @@ fn streaming_epoch_mismatch_response(expected: u64, actual: u64) -> axum::respon
     http2_response(axum::http::StatusCode::PRECONDITION_FAILED, output)
 }
 
-fn typed_rpc_status_response(
+pub(super) fn typed_rpc_status_response(
     http_status: axum::http::StatusCode,
     status: crucible_api::RpcStatusCode,
     reason: &'static str,
@@ -874,7 +894,7 @@ fn typed_rpc_status_response(
     http2_response(http_status, output)
 }
 
-fn encode_attached_response(attached: &Attached) -> String {
+pub(super) fn encode_attached_response(attached: &Attached) -> String {
     let mut output = String::from("crucible.rpc/attached-response\n");
     push_session_ref(&mut output, attached.session);
     push_wire_line(
@@ -915,7 +935,7 @@ fn encode_attached_response(attached: &Attached) -> String {
     output
 }
 
-fn snapshot_wire(attached: &Attached) -> String {
+pub(super) fn snapshot_wire(attached: &Attached) -> String {
     let Some(snapshot) = &attached.snapshot else {
         return String::from("none");
     };
@@ -933,7 +953,7 @@ fn snapshot_wire(attached: &Attached) -> String {
     )
 }
 
-fn reproduction_records_wire(commands: &[ReproductionCommandRecord]) -> String {
+pub(super) fn reproduction_records_wire(commands: &[ReproductionCommandRecord]) -> String {
     if commands.is_empty() {
         return String::from("none");
     }
@@ -944,7 +964,7 @@ fn reproduction_records_wire(commands: &[ReproductionCommandRecord]) -> String {
         .join(";")
 }
 
-fn reproduction_record_wire(command: &ReproductionCommandRecord) -> String {
+pub(super) fn reproduction_record_wire(command: &ReproductionCommandRecord) -> String {
     format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
         command.sequence,
@@ -962,17 +982,17 @@ fn reproduction_record_wire(command: &ReproductionCommandRecord) -> String {
     )
 }
 
-fn command_payload_material_wire(material: &str) -> String {
+pub(super) fn command_payload_material_wire(material: &str) -> String {
     hex_encode(material.as_bytes())
 }
 
-fn scheduler_control_wire(control: Option<&String>) -> String {
+pub(super) fn scheduler_control_wire(control: Option<&String>) -> String {
     control
         .map(|material| hex_encode(material.as_bytes()))
         .unwrap_or_else(|| String::from("none"))
 }
 
-fn encode_send_response(response: &SendResponse) -> String {
+pub(super) fn encode_send_response(response: &SendResponse) -> String {
     let mut output = String::from("crucible.rpc/send-response\n");
     push_wire_line(
         &mut output,
@@ -1006,7 +1026,7 @@ fn encode_send_response(response: &SendResponse) -> String {
     output
 }
 
-fn command_status_wire(status: CommandResultStatus) -> String {
+pub(super) fn command_status_wire(status: CommandResultStatus) -> String {
     match status {
         CommandResultStatus::Accepted => String::from("accepted"),
         CommandResultStatus::Rejected { reason } => {
@@ -1018,7 +1038,7 @@ fn command_status_wire(status: CommandResultStatus) -> String {
     }
 }
 
-fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, String> {
+pub(super) fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/create-session-request")?;
@@ -1086,7 +1106,7 @@ fn parse_create_session_request(body: &[u8]) -> Result<CreateSessionRequest, Str
     }
 }
 
-fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, String> {
+pub(super) fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/resume-session-request")?;
@@ -1125,7 +1145,7 @@ fn parse_resume_session_request(body: &[u8]) -> Result<ResumeSessionRequest, Str
     ))
 }
 
-fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {
+pub(super) fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/destroy-session-request")?;
@@ -1139,7 +1159,9 @@ fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, S
     Ok(request)
 }
 
-fn parse_get_reproduction_request(body: &[u8]) -> Result<GetReproductionRequest, String> {
+pub(super) fn parse_get_reproduction_request(
+    body: &[u8],
+) -> Result<GetReproductionRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/get-reproduction-request")?;
@@ -1153,7 +1175,7 @@ fn parse_get_reproduction_request(body: &[u8]) -> Result<GetReproductionRequest,
     Ok(request)
 }
 
-fn parse_attach_request(body: &[u8]) -> Result<AttachRequest, String> {
+pub(super) fn parse_attach_request(body: &[u8]) -> Result<AttachRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/attach-request")?;
@@ -1171,7 +1193,7 @@ fn parse_attach_request(body: &[u8]) -> Result<AttachRequest, String> {
     Ok(request)
 }
 
-fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
+pub(super) fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
     expect_wire_header(lines.next(), "crucible.rpc/send-request")?;
@@ -1223,7 +1245,7 @@ fn parse_send_request(body: &[u8]) -> Result<SendRequest, String> {
     Ok(request)
 }
 
-fn set_unique_payload_line<'a>(
+pub(super) fn set_unique_payload_line<'a>(
     slot: &mut Option<&'a str>,
     line: &'a str,
     label: &'static str,
@@ -1234,7 +1256,7 @@ fn set_unique_payload_line<'a>(
     Ok(())
 }
 
-fn parse_session_ref<'a, I>(lines: &mut I) -> Result<SessionRef, String>
+pub(super) fn parse_session_ref<'a, I>(lines: &mut I) -> Result<SessionRef, String>
 where
     I: Iterator<Item = &'a str>,
 {
@@ -1244,14 +1266,14 @@ where
     Ok(SessionRef::new(SessionId::new(id), epoch, seed))
 }
 
-fn parse_u64_line(line: Option<&str>, prefix: &'static str) -> Result<u64, String> {
+pub(super) fn parse_u64_line(line: Option<&str>, prefix: &'static str) -> Result<u64, String> {
     let value = parse_wire_line(line, prefix)?;
     value
         .parse::<u64>()
         .map_err(|error| format!("invalid integer `{value}` for `{prefix}`: {error}"))
 }
 
-fn parse_optional_epoch_line(
+pub(super) fn parse_optional_epoch_line(
     line: Option<&str>,
     prefix: &'static str,
 ) -> Result<Option<u64>, String> {
@@ -1267,7 +1289,7 @@ fn parse_optional_epoch_line(
 
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
-fn parse_session_command(
+pub(super) fn parse_session_command(
     line: Option<&str>,
     prefix: &'static str,
     query_line: Option<&str>,
@@ -1406,7 +1428,7 @@ fn parse_session_command(
         .ok_or_else(|| format!("command `{command_kind_wire}` has no representative payload"))
 }
 
-fn reject_breakpoint_payload_fields(
+pub(super) fn reject_breakpoint_payload_fields(
     command_kind_wire: &str,
     breakpoint_predicate_line: Option<&str>,
     breakpoint_disposition_line: Option<&str>,
@@ -1423,7 +1445,7 @@ fn reject_breakpoint_payload_fields(
     Ok(())
 }
 
-fn parse_breakpoint_spec_lines(
+pub(super) fn parse_breakpoint_spec_lines(
     command_kind_wire: &str,
     predicate_line: Option<&str>,
     disposition_line: Option<&str>,
@@ -1446,14 +1468,18 @@ fn parse_breakpoint_spec_lines(
     })
 }
 
-fn parse_breakpoint_predicate_line(line: Option<&str>) -> Result<crucible::Predicate, String> {
+pub(super) fn parse_breakpoint_predicate_line(
+    line: Option<&str>,
+) -> Result<crucible::Predicate, String> {
     let value = parse_wire_line(line, "breakpoint-predicate=")?;
     let bytes = parse_hex_bytes(value)?;
     crucible::Predicate::from_compact_binary(&bytes)
         .map_err(|error| format!("invalid breakpoint predicate: {error}"))
 }
 
-fn parse_breakpoint_disposition_line(line: Option<&str>) -> Result<BreakpointDisposition, String> {
+pub(super) fn parse_breakpoint_disposition_line(
+    line: Option<&str>,
+) -> Result<BreakpointDisposition, String> {
     let value = parse_wire_line(line, "breakpoint-disposition=")?;
     if value == "suspend" {
         return Ok(BreakpointDisposition::Suspend);
@@ -1470,7 +1496,7 @@ fn parse_breakpoint_disposition_line(line: Option<&str>) -> Result<BreakpointDis
     Ok(BreakpointDisposition::Action(action))
 }
 
-fn parse_breakpoint_policy_line(line: Option<&str>) -> Result<BreakpointPolicy, String> {
+pub(super) fn parse_breakpoint_policy_line(line: Option<&str>) -> Result<BreakpointPolicy, String> {
     match parse_wire_line(line, "breakpoint-policy=")? {
         "one-shot" => Ok(BreakpointPolicy::OneShot),
         "repeatable" => Ok(BreakpointPolicy::Repeatable),
@@ -1478,7 +1504,7 @@ fn parse_breakpoint_policy_line(line: Option<&str>) -> Result<BreakpointPolicy, 
     }
 }
 
-fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
+pub(super) fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
     let value = parse_wire_line(line, "query=")?;
     let mut fields = value.split('|');
     match fields
@@ -1512,19 +1538,19 @@ fn parse_query_kind_line(line: Option<&str>) -> Result<QueryKind, String> {
     }
 }
 
-fn reject_extra_query_field(field: Option<&str>) -> Result<(), String> {
+pub(super) fn reject_extra_query_field(field: Option<&str>) -> Result<(), String> {
     if field.is_some() {
         return Err(String::from("unexpected extra query fields"));
     }
     Ok(())
 }
 
-fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, String> {
+pub(super) fn parse_seed_line(line: Option<&str>, prefix: &'static str) -> Result<Seed, String> {
     let value = parse_wire_line(line, prefix)?;
     Ok(Seed::from_bytes(parse_hex_32(value, "seed")?))
 }
 
-fn parse_content_hash_line(
+pub(super) fn parse_content_hash_line(
     line: Option<&str>,
     prefix: &'static str,
 ) -> Result<ContentHash, String> {
@@ -1534,13 +1560,16 @@ fn parse_content_hash_line(
     })
 }
 
-fn parse_schedule_line(line: Option<&str>, prefix: &'static str) -> Result<Schedule, String> {
+pub(super) fn parse_schedule_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<Schedule, String> {
     let value = parse_wire_line(line, prefix)?;
     Schedule::from_compact_binary(&parse_hex_bytes(value)?)
         .map_err(|error| format!("invalid compact schedule: {error}"))
 }
 
-fn parse_scenario_form_line(
+pub(super) fn parse_scenario_form_line(
     line: Option<&str>,
     prefix: &'static str,
 ) -> Result<ScenarioDefForm, String> {
@@ -1549,19 +1578,25 @@ fn parse_scenario_form_line(
         .map_err(|error| format!("invalid compact scenario form: {error}"))
 }
 
-fn parse_checkpoint_line(line: Option<&str>, prefix: &'static str) -> Result<Checkpoint, String> {
+pub(super) fn parse_checkpoint_line(
+    line: Option<&str>,
+    prefix: &'static str,
+) -> Result<Checkpoint, String> {
     let value = parse_wire_line(line, prefix)?;
     Checkpoint::from_compact_binary(&parse_hex_bytes(value)?)
         .map_err(|error| format!("invalid compact checkpoint: {error}"))
 }
 
-fn parse_hex_string_field(value: Option<&str>, label: &'static str) -> Result<String, String> {
+pub(super) fn parse_hex_string_field(
+    value: Option<&str>,
+    label: &'static str,
+) -> Result<String, String> {
     let value = value.ok_or_else(|| format!("missing {label}"))?;
     String::from_utf8(parse_hex_bytes(value)?)
         .map_err(|error| format!("invalid UTF-8 {label}: {error}"))
 }
 
-fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
+pub(super) fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
     if value.len() != 64 {
         return Err(format!("{label} hex has length {}", value.len()));
     }
@@ -1576,7 +1611,7 @@ fn parse_hex_32(value: &str, label: &'static str) -> Result<[u8; 32], String> {
     Ok(bytes)
 }
 
-fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
+pub(super) fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
     if !value.len().is_multiple_of(2) {
         return Err(format!("hex string has odd length {}", value.len()));
     }
@@ -1591,7 +1626,7 @@ fn parse_hex_bytes(value: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, String> {
+pub(super) fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, String> {
     match parse_wire_line(line, prefix)? {
         "true" => Ok(true),
         "false" => Ok(false),
@@ -1599,7 +1634,7 @@ fn parse_bool_line(line: Option<&str>, prefix: &'static str) -> Result<bool, Str
     }
 }
 
-fn expect_wire_header(line: Option<&str>, expected: &'static str) -> Result<(), String> {
+pub(super) fn expect_wire_header(line: Option<&str>, expected: &'static str) -> Result<(), String> {
     match line {
         Some(actual) if actual == expected => Ok(()),
         Some(actual) => Err(format!("unexpected RPC message header `{actual}`")),
@@ -1607,33 +1642,36 @@ fn expect_wire_header(line: Option<&str>, expected: &'static str) -> Result<(), 
     }
 }
 
-fn parse_wire_line<'a>(line: Option<&'a str>, prefix: &'static str) -> Result<&'a str, String> {
+pub(super) fn parse_wire_line<'a>(
+    line: Option<&'a str>,
+    prefix: &'static str,
+) -> Result<&'a str, String> {
     let line = line.ok_or_else(|| format!("missing `{prefix}` line"))?;
     line.strip_prefix(prefix)
         .ok_or_else(|| format!("expected `{prefix}` line, got `{line}`"))
 }
 
-fn reject_extra_line(line: Option<&str>) -> Result<(), String> {
+pub(super) fn reject_extra_line(line: Option<&str>) -> Result<(), String> {
     if line.is_some() {
         return Err(String::from("unexpected trailing RPC request fields"));
     }
     Ok(())
 }
 
-fn push_session_ref(output: &mut String, session: SessionRef) {
+pub(super) fn push_session_ref(output: &mut String, session: SessionRef) {
     push_wire_line(output, "session-id", &session.id.value.to_string());
     push_wire_line(output, "epoch", &session.epoch.to_string());
     push_wire_line(output, "seed", &session.seed.to_hex());
 }
 
-fn push_wire_line(output: &mut String, key: &str, value: &str) {
+pub(super) fn push_wire_line(output: &mut String, key: &str, value: &str) {
     output.push_str(key);
     output.push('=');
     output.push_str(value);
     output.push('\n');
 }
 
-fn state_wire_name(state: LiveStateKind) -> &'static str {
+pub(super) fn state_wire_name(state: LiveStateKind) -> &'static str {
     match state {
         LiveStateKind::Loaded => "loaded",
         LiveStateKind::Paused => "paused",
@@ -1642,7 +1680,7 @@ fn state_wire_name(state: LiveStateKind) -> &'static str {
     }
 }
 
-fn outcome_wire_name(outcome: Option<OutcomeKind>) -> &'static str {
+pub(super) fn outcome_wire_name(outcome: Option<OutcomeKind>) -> &'static str {
     match outcome {
         Some(OutcomeKind::Passed) => "passed",
         Some(OutcomeKind::Failed) => "failed",
@@ -1653,14 +1691,14 @@ fn outcome_wire_name(outcome: Option<OutcomeKind>) -> &'static str {
     }
 }
 
-fn content_hash_option_wire(hash: Option<ContentHash>) -> String {
+pub(super) fn content_hash_option_wire(hash: Option<ContentHash>) -> String {
     match hash {
         Some(hash) => hash.to_hex(),
         None => String::from("none"),
     }
 }
 
-fn command_name(command: SessionCommandKind) -> String {
+pub(super) fn command_name(command: SessionCommandKind) -> String {
     open_set_command_kind(command).unwrap_or_else(|| {
         let command_name = API_COMMAND_MAPPINGS
             .iter()
@@ -1671,7 +1709,7 @@ fn command_name(command: SessionCommandKind) -> String {
     })
 }
 
-fn state_update_wire(update: StateUpdate) -> String {
+pub(super) fn state_update_wire(update: StateUpdate) -> String {
     format!(
         "{}|{}|{}|{}",
         update.session.id.value,
@@ -1681,7 +1719,7 @@ fn state_update_wire(update: StateUpdate) -> String {
     )
 }
 
-fn control_event_body(
+pub(super) fn control_event_body(
     control: ControlStream,
 ) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>> {
     let attached = framed_rpc_message(encode_attached_response(control.attached()));
@@ -1703,7 +1741,7 @@ fn control_event_body(
     )
 }
 
-fn watch_event_body(
+pub(super) fn watch_event_body(
     watch: WatchStream,
 ) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>> {
     let attached = framed_rpc_message(encode_attached_response(watch.attached()));
@@ -1722,20 +1760,20 @@ fn watch_event_body(
     })
 }
 
-fn framed_rpc_message(message: String) -> axum::body::Bytes {
+pub(super) fn framed_rpc_message(message: String) -> axum::body::Bytes {
     let mut message = message;
     message.push('\n');
     axum::body::Bytes::from(message)
 }
 
-fn encode_streaming_frame(frame: &StreamingFrame) -> String {
+pub(super) fn encode_streaming_frame(frame: &StreamingFrame) -> String {
     match frame {
         StreamingFrame::Event(frame) => encode_streaming_event_frame(frame),
         StreamingFrame::StateUpdate(frame) => encode_streaming_state_update_frame(*frame),
     }
 }
 
-fn encode_streaming_event_frame(frame: &StreamingEventFrame) -> String {
+pub(super) fn encode_streaming_event_frame(frame: &StreamingEventFrame) -> String {
     let mut output = String::from("crucible.rpc/event-frame\n");
     push_wire_line(&mut output, "generation", &frame.generation.to_string());
     push_wire_line(
@@ -1790,7 +1828,7 @@ fn encode_streaming_event_frame(frame: &StreamingEventFrame) -> String {
     output
 }
 
-fn encode_streaming_state_update_frame(frame: StreamingStateUpdateFrame) -> String {
+pub(super) fn encode_streaming_state_update_frame(frame: StreamingStateUpdateFrame) -> String {
     let mut output = String::from("crucible.rpc/state-update-frame\n");
     push_wire_line(&mut output, "sequence", &frame.sequence.to_string());
     push_wire_line(
@@ -1801,13 +1839,13 @@ fn encode_streaming_state_update_frame(frame: StreamingStateUpdateFrame) -> Stri
     output
 }
 
-fn optional_string_wire(value: Option<&str>) -> String {
+pub(super) fn optional_string_wire(value: Option<&str>) -> String {
     value
         .map(|value| hex_encode(value.as_bytes()))
         .unwrap_or_else(|| String::from("none"))
 }
 
-fn event_source_wire(source: &OpenSetEventSource) -> String {
+pub(super) fn event_source_wire(source: &OpenSetEventSource) -> String {
     match source {
         OpenSetEventSource::Scenario { event } => {
             format!("scenario|{}", hex_encode(event.as_bytes()))
@@ -1819,7 +1857,7 @@ fn event_source_wire(source: &OpenSetEventSource) -> String {
     }
 }
 
-fn event_level_wire(level: EventLevel) -> &'static str {
+pub(super) fn event_level_wire(level: EventLevel) -> &'static str {
     match level {
         EventLevel::Trace => "trace",
         EventLevel::Debug => "debug",
@@ -1829,7 +1867,7 @@ fn event_level_wire(level: EventLevel) -> &'static str {
     }
 }
 
-fn attribute_wire(value: &OpenSetAttributeValue) -> String {
+pub(super) fn attribute_wire(value: &OpenSetAttributeValue) -> String {
     match value {
         OpenSetAttributeValue::Bool(value) => {
             format!("bool|{}", if *value { "true" } else { "false" })
@@ -1843,7 +1881,7 @@ fn attribute_wire(value: &OpenSetAttributeValue) -> String {
     }
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
@@ -1853,7 +1891,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     output
 }
 
-fn http2_stream_response(
+pub(super) fn http2_stream_response(
     body: impl futures_util::Stream<Item = Result<axum::body::Bytes, std::convert::Infallible>>
     + Send
     + 'static,
@@ -1864,7 +1902,7 @@ fn http2_stream_response(
         .unwrap_or_else(|error| panic!("HTTP/2 test streaming response should build: {error}"))
 }
 
-fn http2_response(
+pub(super) fn http2_response(
     status: axum::http::StatusCode,
     body: impl Into<axum::body::Body>,
 ) -> axum::response::Response {
@@ -1874,7 +1912,7 @@ fn http2_response(
         .unwrap_or_else(|error| panic!("HTTP/2 test response should build: {error}"))
 }
 
-fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop>) {
+pub(super) fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop>) {
     let scenario = generated_scenario(1);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1887,7 +1925,7 @@ fn in_process_client_fixture() -> (InProcessControlClient, SessionActor<NoopLoop
     (client, actor)
 }
 
-fn streaming_session_fixture<L>(
+pub(super) fn streaming_session_fixture<L>(
     quantum_loop: L,
     seed: u64,
 ) -> (InProcessStreamingSession, SessionActor<L>, SessionRef)
@@ -1912,7 +1950,7 @@ where
     (streaming, actor, session)
 }
 
-async fn start_and_pause_streaming_actor(
+pub(super) async fn start_and_pause_streaming_actor(
     streaming: &InProcessStreamingSession,
     session: SessionRef,
 ) {
@@ -1928,7 +1966,7 @@ async fn start_and_pause_streaming_actor(
     assert_eq!(paused.result.status, CommandResultStatus::Accepted);
 }
 
-async fn stop_streaming_actor(
+pub(super) async fn stop_streaming_actor(
     streaming: InProcessStreamingSession,
     session: SessionRef,
     command_id: u64,
@@ -1949,7 +1987,7 @@ async fn stop_streaming_actor(
     ));
 }
 
-async fn assert_rejected_send(
+pub(super) async fn assert_rejected_send(
     streaming: &InProcessStreamingSession,
     session: SessionRef,
     command_id: u64,
@@ -1971,7 +2009,7 @@ async fn assert_rejected_send(
     assert!(response.state_update.is_none());
 }
 
-async fn assert_accepted_query_after_rejection(
+pub(super) async fn assert_accepted_query_after_rejection(
     streaming: &InProcessStreamingSession,
     session: SessionRef,
     command_id: u64,
@@ -1987,7 +2025,7 @@ async fn assert_accepted_query_after_rejection(
     assert!(response.state_update.is_none());
 }
 
-fn attach_gdb_command(node_name: &str) -> SessionCommand {
+pub(super) fn attach_gdb_command(node_name: &str) -> SessionCommand {
     SessionCommand::AttachGdb {
         node: NodeId {
             name: node_name.to_owned(),
@@ -1998,7 +2036,7 @@ fn attach_gdb_command(node_name: &str) -> SessionCommand {
     }
 }
 
-fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> {
+pub(super) fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> {
     let frontier = VirtualTime { ticks: quantum };
     let causal = condition_payload_entry_for_test(
         first_sequence,
@@ -2023,7 +2061,11 @@ fn event_pair(first_sequence: u64, quantum: u64) -> Vec<SchedulerEventLogEntry> 
     vec![causal, observational]
 }
 
-fn event_burst(first_sequence: u64, first_quantum: u64, pairs: u64) -> Vec<SchedulerEventLogEntry> {
+pub(super) fn event_burst(
+    first_sequence: u64,
+    first_quantum: u64,
+    pairs: u64,
+) -> Vec<SchedulerEventLogEntry> {
     let mut entries = Vec::new();
     for offset in 0..pairs {
         entries.extend(event_pair(
@@ -2034,8 +2076,8 @@ fn event_burst(first_sequence: u64, first_quantum: u64, pairs: u64) -> Vec<Sched
     entries
 }
 
-struct ServerQuantumLoop {
-    quanta: u64,
+pub(super) struct ServerQuantumLoop {
+    pub(super) quanta: u64,
 }
 
 impl QuantumLoop for ServerQuantumLoop {
@@ -2057,14 +2099,14 @@ impl QuantumLoop for ServerQuantumLoop {
     }
 }
 
-struct ReferenceSimDoubleLoop {
+pub(super) struct ReferenceSimDoubleLoop {
     backend: SimDouble,
     quanta: u64,
     event_log_events: u64,
 }
 
 impl ReferenceSimDoubleLoop {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             backend: ready_reference_sim_double(),
             quanta: 0,
@@ -2120,14 +2162,14 @@ impl ReferenceSimDoubleLoop {
     }
 }
 
-fn ready_reference_sim_double() -> SimDouble {
+pub(super) fn ready_reference_sim_double() -> SimDouble {
     let mut backend = SimDouble::new(SimDoubleConfig::default())
         .unwrap_or_else(|error| panic!("reference SimDouble backend should build: {error}"));
     complete_reference_sim_double_setup(&mut backend);
     backend
 }
 
-fn complete_reference_sim_double_setup(backend: &mut SimDouble) {
+pub(super) fn complete_reference_sim_double_setup(backend: &mut SimDouble) {
     let hello_ack = control_encode_host_msg(&HostMsg::HelloAck {
         proto_version: CONTROL_PROTOCOL_VERSION,
         abi_version: backend.shmem_header_snapshot().abi_version,
@@ -2148,8 +2190,8 @@ fn complete_reference_sim_double_setup(backend: &mut SimDouble) {
     }
 }
 
-struct RejectingGdbLoop {
-    quanta: u64,
+pub(super) struct RejectingGdbLoop {
+    pub(super) quanta: u64,
 }
 
 impl QuantumLoop for RejectingGdbLoop {
@@ -2182,8 +2224,8 @@ impl QuantumLoop for RejectingGdbLoop {
     }
 }
 
-struct InternalGdbLoop {
-    quanta: u64,
+pub(super) struct InternalGdbLoop {
+    pub(super) quanta: u64,
 }
 
 impl QuantumLoop for InternalGdbLoop {
@@ -2215,9 +2257,9 @@ impl QuantumLoop for InternalGdbLoop {
     }
 }
 
-struct RejectingOnceShutdownLoop {
-    quanta: u64,
-    shutdown_rejections: u64,
+pub(super) struct RejectingOnceShutdownLoop {
+    pub(super) quanta: u64,
+    pub(super) shutdown_rejections: u64,
 }
 
 impl QuantumLoop for RejectingOnceShutdownLoop {
@@ -2250,7 +2292,7 @@ impl QuantumLoop for RejectingOnceShutdownLoop {
     }
 }
 
-struct NoopLoop;
+pub(super) struct NoopLoop;
 
 impl QuantumLoop for NoopLoop {
     fn drive_quantum(
@@ -2261,7 +2303,7 @@ impl QuantumLoop for NoopLoop {
     }
 }
 
-fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {
+pub(super) fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {
     let genesis = Configuration::genesis(scenario.clone());
     match TemporalGraph::empty().with_baked_genesis(scenario, genesis_checkpoint(&genesis)) {
         Ok(graph) => graph,
@@ -2269,7 +2311,7 @@ fn graph_with_baked_genesis(scenario: &ScenarioDef) -> TemporalGraph {
     }
 }
 
-fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
+pub(super) fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
     let checkpoint = Checkpoint::from_recorded_configuration(
         configuration,
         None,
@@ -2282,7 +2324,7 @@ fn genesis_checkpoint(configuration: &Configuration) -> GenesisCheckpoint {
     GenesisCheckpoint { checkpoint }
 }
 
-fn generated_scenario(seed: u64) -> ScenarioDef {
+pub(super) fn generated_scenario(seed: u64) -> ScenarioDef {
     ScenarioDef::from_canonical_material_with_seed(
         "crucible.api.gate-control-client.scenario",
         &format!("seed={seed}"),
@@ -2290,7 +2332,7 @@ fn generated_scenario(seed: u64) -> ScenarioDef {
     )
 }
 
-fn resume_session_request(seed: u64) -> ResumeSessionRequest {
+pub(super) fn resume_session_request(seed: u64) -> ResumeSessionRequest {
     let mut scenario = crucible::happy_path_scenario()
         .unwrap_or_else(|error| panic!("happy path scenario should build: {error}"))
         .scenario;
@@ -2310,7 +2352,7 @@ fn resume_session_request(seed: u64) -> ResumeSessionRequest {
     ResumeSessionRequest::new(scenario, schedule, checkpoint, Seed::from_u64(seed))
 }
 
-fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {
+pub(super) fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm {
     ScenarioDefForm::from_components_with_app_random_draw_cap(
         scenario.world(),
         scenario.plan(),
@@ -2321,7 +2363,7 @@ fn scenario_with_seed(scenario: &ScenarioDefForm, seed: Seed) -> ScenarioDefForm
     .unwrap_or_else(|error| panic!("test scenario should rebuild with seed: {error}"))
 }
 
-fn checkpoint_for_configuration(
+pub(super) fn checkpoint_for_configuration(
     configuration: &Configuration,
     frontier: VirtualTime,
 ) -> Checkpoint {
