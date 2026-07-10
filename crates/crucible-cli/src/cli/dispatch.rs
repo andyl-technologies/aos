@@ -6,23 +6,19 @@ use super::*;
 pub(super) fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        Err(error) => handle_cli_parse_error(error),
+        Err(error) => {
+            let exit_code = cli_parse_error_exit_code(&error);
+            if let Err(print_error) = error.print() {
+                eprintln!("crucible: {print_error}");
+                std::process::exit(CliError::Io(print_error).exit_code());
+            }
+            std::process::exit(exit_code);
+        }
     };
     if let Err(error) = dispatch(&cli) {
         eprintln!("crucible: {error}");
         std::process::exit(error.exit_code());
     }
-}
-
-// crucible-lint: allow rust-allow -- this is reachable only through the imported process entrypoint.
-#[cfg_attr(test, allow(dead_code))]
-pub(super) fn handle_cli_parse_error(error: clap::Error) -> ! {
-    let exit_code = cli_parse_error_exit_code(&error);
-    if let Err(print_error) = error.print() {
-        eprintln!("crucible: {print_error}");
-        std::process::exit(CliError::Io(print_error).exit_code());
-    }
-    std::process::exit(exit_code);
 }
 
 pub(super) fn cli_parse_error_exit_code(error: &clap::Error) -> i32 {
