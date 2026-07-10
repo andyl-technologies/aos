@@ -10,6 +10,11 @@
     sourceRoot = "source/crates";
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
+  s11GuestCheck = import ./phase0-s11.nix {
+    inherit pkgs lib;
+    stopAt = 1;
+  };
+  s11Guest = s11GuestCheck.passthru.crucibleSmpGuest;
 
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
@@ -191,6 +196,22 @@
         needle = "plugin tracked {tracked_vcpus} vCPUs but QMP and launch require";
       }
       {
+        label = "trace importer bounds plugin-exit pause overshoot";
+        needle = "exceeds one RR quantum";
+      }
+      {
+        label = "trace importer requires plugin exit to be final";
+        needle = "record appeared after the terminal plugin stop record";
+      }
+      {
+        label = "trace importer rejects zero RAM observation hashes";
+        needle = "field `ram_hash` must be non-zero";
+      }
+      {
+        label = "trace importer rejects zero device observation hashes";
+        needle = "field `device_event_hash` must be non-zero";
+      }
+      {
         label = "first differing sample component enum";
         needle = "pub enum SingleVmFingerprintSampleDifference";
       }
@@ -293,6 +314,10 @@
       {
         label = "real trace vCPU localization test";
         needle = "real_qemu_trace_comparison_localizes_first_vcpu_register_difference";
+      }
+      {
+        label = "bounded post-horizon teardown test";
+        needle = "real_qemu_trace_import_accepts_bounded_post_horizon_teardown";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/vcpu_introspection.rs" pluginVcpu [
@@ -405,6 +430,14 @@
         needle = ''.trace_plugin_build_digest == $trace_plugin_build_digest'';
       }
       {
+        label = "reusable real SMP guest fixture";
+        needle = "crucibleSmpGuest";
+      }
+      {
+        label = "real SMP guest retains stock KASLR and ASLR";
+        needle = "stockEntropyKernelAppend";
+      }
+      {
         label = "real QEMU RR cursor diff localization";
         needle = "\"rr_cursor_position\"";
       }
@@ -448,6 +481,11 @@ in
         pkgs.sed
         pkgs.socat
       ];
+
+      SMP_GUEST_INITRAMFS = "${s11Guest.initramfs}/initrd.img";
+      SMP_GUEST_KERNEL = builtins.toString s11Guest.kernel;
+      SMP_GUEST_KERNEL_APPEND = s11Guest.stockEntropyKernelAppend;
+      SMP_GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
 
       phases = [
         {
@@ -504,18 +542,57 @@ in
             qemu_pid=""
             jitter_pids=""
             fingerprint_cli="$TMPDIR/crucible-qemu-nvcpu-fingerprint-target/debug/examples/crucible-qemu-fingerprint"
-            cadence=4093
-            horizon=8186
+            cadence=600000000
+            horizon=1800000000
             quantum=4096
+            memory_mib=128
             qemu_binary="${pkgs.qemu-crucible}/bin/qemu-system-x86_64"
             trace_plugin="${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so"
+            vmlinuz=$(ls "$SMP_GUEST_KERNEL"/boot/vmlinuz-* | head -1)
+            if [ -z "$vmlinuz" ]; then
+              echo "FAIL: real SMP guest kernel image is absent" >&2
+              exit 1
+            fi
+            seed="$TMPDIR/nvcpu-seed.bin"
+            printf 'crucible-phase2-nvcpu-seed-v1\n' > "$seed"
             qemu_build_digest=$(sha256sum "$qemu_binary" | cut -d ' ' -f 1)
             trace_plugin_build_digest=$(sha256sum "$trace_plugin" | cut -d ' ' -f 1)
+            kernel_digest=$(sha256sum "$vmlinuz" | cut -d ' ' -f 1)
+            initramfs_digest=$(sha256sum "$SMP_GUEST_INITRAMFS" | cut -d ' ' -f 1)
+            firmware_digest=$(sha256sum "$SMP_GUEST_FIRMWARE" | cut -d ' ' -f 1)
+            seed_digest=$(sha256sum "$seed" | cut -d ' ' -f 1)
             launch_definition_digest=$(printf '%s\n' \
-              'machine=q35' 'accel=sim,thread=single' 'icount=shift=0,sleep=off,align=off,rr_switch_quantum=4096' \
-              'cpu=qemu64' 'memory_mib=64' 'smp=4' 'seed=0x0010c016' \
-              "$qemu_build_digest" "$trace_plugin_build_digest" \
+              'nodefaults=true' 'no_user_config=true' 'display=none' 'monitor=none' \
+              'machine=q35' "firmware_digest=$firmware_digest" \
+              'accel=sim,thread=single' \
+              "icount=shift=0,sleep=off,align=off,rr_switch_quantum=$quantum" \
+              'cpu=qemu64,-rdrand,-rdseed' "memory_mib=$memory_mib" 'smp=4' \
+              'rtc=base=2026-01-01T00:00:00,clock=vm' 'seed=0x0010c016' \
+              "fw_cfg=opt/crucible/seed,seed_digest=$seed_digest" \
+              'rng_object=rng-builtin,id=crucible-rng0' \
+              'rng_device=virtio-rng-pci,rng=crucible-rng0' \
+              "kernel_append=$SMP_GUEST_KERNEL_APPEND" \
+              "qemu_build_digest=$qemu_build_digest" \
+              "trace_plugin_build_digest=$trace_plugin_build_digest" \
+              "kernel_digest=$kernel_digest" \
+              "initramfs_digest=$initramfs_digest" \
+              "seed_digest=$seed_digest" \
+              "plugin_cadence=$cadence" "plugin_stop_at=$horizon" \
+              'plugin_extended=on' 'plugin_mem_events=on' 'plugin_rr_switch_events=on' \
+              'plugin_vcpus=4' 'serial_backend=file' 'qmp=unix-server-wait-off' \
+              'no_shutdown=true' 'no_reboot=true' \
               | sha256sum | cut -d ' ' -f 1)
+
+            zero_sha256=0000000000000000000000000000000000000000000000000000000000000000
+            for digest in \
+              "$qemu_build_digest" "$trace_plugin_build_digest" \
+              "$kernel_digest" "$initramfs_digest" "$firmware_digest" "$seed_digest" \
+              "$launch_definition_digest"; do
+              printf '%s\n' "$digest" | grep -E -q '^[0-9a-f]{64}$' \
+                || { echo "FAIL: invalid N-vCPU launch digest: $digest" >&2; exit 1; }
+              [ "$digest" != "$zero_sha256" ] \
+                || { echo "FAIL: zero N-vCPU launch digest is not accepted" >&2; exit 1; }
+            done
 
             cleanup_qemu() {
               if [ -n "$qemu_pid" ]; then
@@ -596,7 +673,7 @@ in
               qmp_socket="$2"
               waited=0
               qmp_failures=0
-              while [ "$waited" -lt 600 ]; do
+              while [ "$waited" -lt 24000 ]; do
                 if qmp_cmd "$qmp_socket" '{"execute":"query-status"}' "$TMPDIR/qmp-status-$label.json"; then
                   qmp_failures=0
                   status=$(jq -r -s '[.[] | select(has("return"))][-1].return.status // empty' "$TMPDIR/qmp-status-$label.json")
@@ -632,19 +709,28 @@ in
               trace="$TMPDIR/qemu-nvcpu-trace-$label.jsonl"
               rm -f "$qmp_socket" "$trace"
 
-              qemu-system-x86_64 \
+              timeout 2400 "$qemu_binary" \
                 -nodefaults \
                 -no-user-config \
                 -display none \
                 -monitor none \
                 -machine q35 \
+                -bios "$SMP_GUEST_FIRMWARE" \
                 -accel sim,thread=single \
                 -icount shift=0,sleep=off,align=off,rr_switch_quantum=4096 \
-                -cpu qemu64 \
-                -m 64 \
+                -cpu qemu64,-rdrand,-rdseed \
+                -m "$memory_mib" \
                 -smp 4 \
                 -rtc base=2026-01-01T00:00:00,clock=vm \
                 -seed 0x0010c016 \
+                -fw_cfg name=opt/crucible/seed,file="$seed" \
+                -object rng-builtin,id=crucible-rng0 \
+                -device virtio-rng-pci,rng=crucible-rng0 \
+                -kernel "$vmlinuz" \
+                -initrd "$SMP_GUEST_INITRAMFS" \
+                -append "$SMP_GUEST_KERNEL_APPEND" \
+                -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
+                -serial chardev:serial0 \
                 -qmp "unix:$qmp_socket,server=on,wait=off" \
                 -plugin "$trace_plugin",out="$trace",cadence="$cadence",stop_at="$horizon",extended=on,mem_events=on,rr_switch_events=on,vcpus=4,launch_digest="$launch_definition_digest",qemu_build_digest="$qemu_build_digest",plugin_build_digest="$trace_plugin_build_digest" \
                 -no-shutdown \
@@ -665,55 +751,70 @@ in
               wait "$qemu_pid" || fail "QEMU run $label exited unsuccessfully"
               qemu_pid=""
 
-              jq -e -s '
+              jq -e -s \
+                --argjson cadence "$cadence" \
+                --argjson horizon "$horizon" \
+                --argjson quantum "$quantum" \
+                '
                 [ .[] | select((.kind // "sample") == "sample" and .final != true) ] as $samples
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
-                | ($samples | map(.retired)) == [4093, 8186]
+                | [ .[] | select((.kind // "sample") == "sample" and .final == true) ] as $finals
+                | ($samples | map(.retired)) == [range($cadence; $horizon + 1; $cadence)]
                 and all($samples[]; (
                   .schema == "crucible.qemu.trace-fingerprint.v2"
                   and .launch_definition_digest != null
                   and .qemu_build_digest != null
                   and .trace_plugin_build_digest != null
                   and .tracked_vcpus == 4
-                  and .rr_switch_quantum == 4096
+                  and .rr_switch_quantum == $quantum
                   and .rr_cursor_valid == true
                   and .rr_cursor_source == "live_instruction"
                   and .memory_events_enabled == true
                   and .device_event_capture == true
                   and .device_event_hash != null
                   and .memory_events > 0
-                  and .io_events > 0
                   and .ram_bytes > 0
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
                   and (.register_hashes | length) == 4
+                  and all(.register_hashes[]; . != "0000000000000000")
                   and (.register_counts | length) == 4
                   and all(.register_counts[]; . > 0)
                   and (.register_file_bytes | length) == 4
                   and all(.register_file_bytes[]; . > 0)
                   and (.register_schema_hashes | length) == 4
+                  and all(.register_schema_hashes[]; . != "0000000000000000")
                   and (.register_retired | length) == 4
                   and (.register_retired | add) == .retired
                   and .rr_current_vcpu >= 0
                   and .rr_current_vcpu < 4
                   and .rr_cursor_position >= 0
                   and .rr_cursor_position < .rr_switch_quantum
+                  and .ram_hash != "0000000000000000"
+                  and .device_event_hash != "0000000000000000"
                 ))
-                and any(.[]; (
-                  (.kind // "sample") == "sample"
-                  and .final == true
+                and (($samples | last) | (
+                  .retired == $horizon
+                  and all(.register_retired[]; . > 0)
+                  and .io_events > 0
+                ))
+                and ($finals | length) == 1
+                and (.[-1] | (
+                  .final == true
                   and .stop_requested == true
-                  and .retired == 8186
+                  and .stop_at == $horizon
+                  and .retired >= $horizon
+                  and (.retired - $horizon) <= $quantum
                   and .rr_cursor_valid == true
                   and .rr_cursor_source == "last_executed_instruction"
                 ))
                 and ($switches | length) > 0
                 and all($switches[]; (
                   .from_vcpu != .to_vcpu
-                  and .previous_rr_switch_quantum == 4096
-                  and .rr_switch_quantum == 4096
+                  and .previous_rr_switch_quantum == $quantum
+                  and .rr_switch_quantum == $quantum
                   and .rr_cursor_position >= 0
-                  and .rr_cursor_position < 4096
+                  and .rr_cursor_position < $quantum
                 ))
               ' "$trace" >/dev/null \
                 || fail "real QEMU N-vCPU trace $label failed structural assertions"
@@ -769,8 +870,8 @@ in
               > "$TMPDIR/fingerprint-compare.result" \
               || fail "canonical real-QEMU N-vCPU fingerprint streams differed"
 
-            jq -c '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == 8186)
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
               then .register_hashes[1] = "00000000000000ff"
               else .
               end
@@ -785,11 +886,13 @@ in
               2> "$TMPDIR/fingerprint-negative.err"; then
               fail "mutated vCPU register trace unexpectedly compared equal"
             fi
-            grep -q '^first_differing_sample=1$' "$TMPDIR/fingerprint-negative.err"
-            grep -q '^previous_matching_icount=4093$' "$TMPDIR/fingerprint-negative.err"
-            grep -q '^first_different_icount=8186$' "$TMPDIR/fingerprint-negative.err"
+            last_sample_index=$((horizon / cadence - 1))
+            previous_icount=$((horizon - cadence))
+            grep -q "^first_differing_sample=$last_sample_index\$" "$TMPDIR/fingerprint-negative.err"
+            grep -q "^previous_matching_icount=$previous_icount\$" "$TMPDIR/fingerprint-negative.err"
+            grep -q "^first_different_icount=$horizon\$" "$TMPDIR/fingerprint-negative.err"
             grep -q '^first_differing_component=vcpu_register_digest\[1\]$' "$TMPDIR/fingerprint-negative.err"
-            grep -q '^bisection_window=4093..8186$' "$TMPDIR/fingerprint-negative.err"
+            grep -q "^bisection_window=$previous_icount..$horizon\$" "$TMPDIR/fingerprint-negative.err"
 
             expect_cli_failure() {
               label="$1"
@@ -808,52 +911,74 @@ in
                 || fail "$label negative control did not report $expected"
             }
 
-            jq -c '
-              if ((.kind // "sample") == "sample" and (.retired == 8186 or .final == true))
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
               then .rr_current_vcpu = ((.rr_current_vcpu + 1) % 4)
+                | .vcpu = .rr_current_vcpu
               else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-rr-mutated.jsonl"
             expect_cli_failure rr-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-rr-mutated.jsonl" '^first_differing_component=rr_current_vcpu$'
 
-            jq -c '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == 8186)
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
               then .register_retired[0] += 1 | .register_retired[1] -= 1
               else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-retired-mutated.jsonl"
             expect_cli_failure retired-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-retired-mutated.jsonl" '^first_differing_component=vcpu_retired_instruction_count\[0\]$'
 
-            jq -c '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == 8186)
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
               then .ram_hash = "00000000000000fe" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-ram-mutated.jsonl"
             expect_cli_failure ram-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-ram-mutated.jsonl" '^first_differing_component=guest_memory_digest$'
 
-            jq -c '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == 8186)
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
               then .device_event_hash = "00000000000000fd" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-device-mutated.jsonl"
             expect_cli_failure device-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-device-mutated.jsonl" '^first_differing_component=device_state_digest$'
 
-            jq -c '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == 4093)
-              then .retired = 4094 else . end
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              then .register_hashes[0] = "0000000000000000" else . end
+            ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-register.jsonl"
+            expect_cli_failure zero-register-reject "$TMPDIR/qmp-cpus-b.json" \
+              "$TMPDIR/trace-zero-register.jsonl" 'register_hashes\[0\] must be non-zero'
+
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              then .ram_hash = "0000000000000000" else . end
+            ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-ram.jsonl"
+            expect_cli_failure zero-ram-reject "$TMPDIR/qmp-cpus-b.json" \
+              "$TMPDIR/trace-zero-ram.jsonl" 'field `ram_hash` must be non-zero'
+
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              then .device_event_hash = "0000000000000000" else . end
+            ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-device.jsonl"
+            expect_cli_failure zero-device-reject "$TMPDIR/qmp-cpus-b.json" \
+              "$TMPDIR/trace-zero-device.jsonl" 'field `device_event_hash` must be non-zero'
+
+            jq -c --argjson cadence "$cadence" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $cadence)
+              then .retired += 1 else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-cadence-mutated.jsonl"
             expect_cli_failure cadence-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-cadence-mutated.jsonl" 'periodic sample icount 4094 does not match expected 4093'
+              "$TMPDIR/trace-cadence-mutated.jsonl" "periodic sample icount $((cadence + 1)) does not match expected $cadence"
 
-            jq -c '
+            jq -c --argjson horizon "$horizon" --argjson quantum "$quantum" '
               if ((.kind // "sample") == "sample" and .final == true)
-              then .retired = 8187 else . end
+              then .retired = ($horizon + $quantum + 1) else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-horizon-mutated.jsonl"
             expect_cli_failure horizon-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-horizon-mutated.jsonl" 'exact configured horizon'
+              "$TMPDIR/trace-horizon-mutated.jsonl" 'exceeds one RR quantum'
 
-            jq -c '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == 8186)
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
               then .ram_bytes += 1 else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-ram-bytes-mutated.jsonl"
             expect_cli_failure ram-bytes-reject "$TMPDIR/qmp-cpus-b.json" \
@@ -915,14 +1040,28 @@ in
             real_qemu_comparison=canonical-rust-stream
             real_qemu_gate_hook=run_single_vm_fingerprint_gate
             qmp_topology=both-runs-exact-sorted-cpu-index-0-through-3
-            run_provenance=distinct-ordinals-plus-trace-bound-launch-and-build-digests
+            guest_fixture=phase0-s11-reusable-real-smp-guest
+            guest_entropy_path=stock-kaslr-aslr-with-fixed-qemu-seed
+            guest_entropy_seal=fw-cfg-plus-seeded-rng-builtin-no-rdrand-rdseed
+            firmware_artifact_digest_bound=true
+            guest_horizon=1800000000
+            all_vcpus_retired_at_horizon=true
+            live_device_io_observed=true
+            zero_observation_hashes_rejected=true
+            exact_horizon_authoritative=true
+            plugin_exit_semantics=bounded-post-stop-request-teardown-observation
+            plugin_exit_pause_overshoot_bound=one-rr-quantum
+            plugin_exit_is_final_record=true
+            run_provenance=distinct-ordinals-plus-trace-bound-canonical-launch-and-build-digests
+            launch_identity=complete-canonical-guest-visible-options-plus-artifact-digests
+            canonical_guest_visible_launch_material_complete=true
             actual_argv_hash_complete=false
             observation_contract_source=first-run-baseline
             independent_observation_contract=false
             fingerprint_definition=provisional-periodic-trace-v2
-            periodic_cadence=4093-off-rr-quantum-boundary
+            periodic_cadence=600000000-real-smp-guest
             live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum
-            postprocessing_negative_controls=register,rr,retired,ram,device,cadence,horizon,ram-bytes,topology
+            postprocessing_negative_controls=register,rr,retired,ram,device,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
             live_perturbation_controls=second-run-host-cpu-load
             device_component_scope=ordered-cpu-mmio-read-write-history
             event_boundary_sampling=false

@@ -72,6 +72,14 @@ fn real_qemu_trace_import_canonicalizes_all_vcpu_rr_ram_and_device_material() {
 
 #[test]
 fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
+    let error = QemuTraceVcpuContract::new(0, 24, 184, 0)
+        .expect_err("zero register-schema hash must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("register-schema hash must be non-zero")
+    );
+
     let error = importer(3)
         .import(Cursor::new(trace(2)))
         .expect_err("plugin/QMP topology mismatch must fail");
@@ -119,11 +127,62 @@ fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
     assert!(error.to_string().contains("register_file_bytes"));
 
     let mut values = trace_values(2);
-    values[2]["retired"] = Value::from(8193);
+    values[0]["register_hashes"][0] = Value::String("0000000000000000".to_owned());
     let error = importer(2)
         .import(Cursor::new(json_lines(&values)))
-        .expect_err("terminal horizon overshoot must fail");
-    assert!(error.to_string().contains("exact configured horizon"));
+        .expect_err("zero register observation hash must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("register_hashes[0] must be non-zero")
+    );
+
+    let mut values = trace_values(2);
+    values[0]["ram_hash"] = Value::String("0000000000000000".to_owned());
+    let error = importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect_err("zero RAM observation hash must fail");
+    assert!(error.to_string().contains("`ram_hash` must be non-zero"));
+
+    let mut values = trace_values(2);
+    values[0]["device_event_hash"] = Value::String("0000000000000000".to_owned());
+    let error = importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect_err("zero device observation hash must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("`device_event_hash` must be non-zero")
+    );
+
+    let mut values = trace_values(2);
+    values[2]["retired"] = Value::from(8192 + 4097);
+    let error = importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect_err("terminal pause overshoot beyond one RR quantum must fail");
+    assert!(error.to_string().contains("exceeds one RR quantum"));
+
+    let mut values = trace_values(2);
+    values[2]["retired"] = Value::from(8191);
+    let error = importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect_err("terminal record before the horizon must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("retired before the configured horizon")
+    );
+
+    let mut values = trace_values(2);
+    values.push(json!({"kind": "rr_switch"}));
+    let error = importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect_err("any record after the terminal record must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("record appeared after the terminal plugin stop record")
+    );
 
     let mut values = trace_values(2);
     values[1]["rr_cursor_position"] = Value::from(4096);
@@ -199,6 +258,24 @@ fn real_qemu_trace_comparison_localizes_first_vcpu_register_difference() {
             ..
         }
     ));
+}
+
+#[test]
+fn real_qemu_trace_import_accepts_bounded_post_horizon_teardown() {
+    for overshoot in [2, 4096] {
+        let mut values = trace_values(2);
+        values[2]["retired"] = Value::from(8192 + overshoot);
+        values[2]["rr_current_vcpu"] = Value::from(0);
+        values[2]["rr_cursor_position"] = Value::from(overshoot % 4096);
+
+        let stream = importer(2)
+            .import(Cursor::new(json_lines(&values)))
+            .expect("bounded post-horizon teardown must preserve the horizon fingerprint");
+
+        assert_eq!(stream.samples.len(), 2);
+        assert_eq!(stream.samples[1].icount, 8192);
+        assert_eq!(stream.final_icount, 8192);
+    }
 }
 
 fn importer(vcpus: usize) -> QemuTraceFingerprintImport {

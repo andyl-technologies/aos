@@ -1382,6 +1382,15 @@ in
       }
     ];
 
+    passthru = {
+      crucibleSmpGuest = {
+        inherit initramfs;
+        kernel = pkgs.linux;
+        kernelAppend = "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0";
+        stockEntropyKernelAppend = "console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0";
+      };
+    };
+
     meta = {
       description = "Crucible Phase 0 S11 multi-vCPU RR-TCG fingerprint spike";
     };
