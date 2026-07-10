@@ -885,7 +885,7 @@ fn validate_baked_genesis_node_blobs(
     snapshot: &QemuBakedGenesisSnapshot,
     world: &World,
 ) -> Result<(), QemuVmRealizationError> {
-    for node in world.nodes() {
+    for node in world.vm_nodes() {
         if !matches!(
             snapshot.checkpoint.node_blob(&node.id),
             Some(NodeBlobRef::Baked(_))
@@ -2395,7 +2395,7 @@ mod tests {
 
     fn qemu_baked_node_blobs(world: &World) -> std::collections::BTreeMap<NodeId, NodeBlobRef> {
         world
-            .nodes()
+            .vm_nodes()
             .iter()
             .map(|node| {
                 let blob = hash(
