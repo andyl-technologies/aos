@@ -189,6 +189,17 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         "patched_non_sim_rr_switch_trace_negative_control=red",
     );
 
+    let s11 = fs::read_to_string(root.join("tests/crucible/phase0-s11.nix"))?;
+    assert_contains(&s11, "diagnose_trace_structure() {");
+    assert_contains(
+        &s11,
+        "limit(10;\n                  inputs\n                  | select((.kind // \"sample\") == \"sample\")",
+    );
+    assert_contains(
+        &s11,
+        "limit(10;\n                  inputs\n                  | select(.kind == \"rr_switch\")",
+    );
+
     let qemu_det_ipi = fs::read_to_string(root.join("tests/crucible/phase2-qemu-det-ipi.nix"))?;
     assert_contains(&qemu_det_ipi, "T-PATCH-22");
     assert_contains(&qemu_det_ipi, "0028-crucible-det-ipi.patch");
