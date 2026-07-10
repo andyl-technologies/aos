@@ -144,10 +144,17 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     assert_contains(&qemu_rr_quantum_icount, "select(.kind == \"rr_switch\")");
     assert_contains(&qemu_rr_quantum_icount, "rr_switch_events=");
     assert_contains(&qemu_rr_quantum_icount, "per_vcpu_delta");
-    assert_contains(&qemu_rr_quantum_icount, "RR switch trace mismatch");
+    assert_contains(&qemu_rr_quantum_icount, "rr_switch_trace_match=false");
+    assert_contains(&qemu_rr_quantum_icount, "per_vcpu_delta_trace_match=false");
+    assert_contains(&qemu_rr_quantum_icount, "localize_first_difference");
+    assert_contains(&qemu_rr_quantum_icount, "first_differing_node_icount");
     assert_contains(
         &qemu_rr_quantum_icount,
-        "per-vCPU icount-delta trace mismatch",
+        "mismatch_localization_vcpu_negative_test=true",
+    );
+    assert_contains(
+        &qemu_rr_quantum_icount,
+        "mismatch_localization_rr_cursor_negative_test=true",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
