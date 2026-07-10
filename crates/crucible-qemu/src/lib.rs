@@ -178,6 +178,16 @@ pub use shutdown::{
     QemuShutdownRung, QemuShutdownTarget, QemuShutdownTargetError, UnixQemuChildShutdownTarget,
     send_control_quit_frame, send_qmp_quit_command, shutdown_qemu_child,
 };
+#[cfg(target_os = "linux")]
+pub use single_vm_fingerprint::{
+    LiveObservationAttempt, LiveObservationProcess, LiveObservationProcessError,
+    LiveObservationShutdown, LiveObservationShutdownPolicy, LiveRunnerArtifactRoot,
+    LiveRunnerArtifacts, LiveRunnerArtifactsError, LiveRunnerConfig, LiveRunnerConfigError,
+    LiveRunnerImmutableInputs, LiveRunnerLaunchFields, LiveRunnerLaunchKind, LiveRunnerLaunchSpec,
+    LiveRunnerQmpConnector, LiveRunnerQmpObservation, LiveRunnerQmpPollError,
+    LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession, LiveRunnerSleeper,
+    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, spawn_live_observation_process,
+};
 pub use single_vm_fingerprint::{
     QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
     QemuTraceFingerprintImport, QemuTraceFingerprintImportError, QemuTraceIdentityContract,
