@@ -33,6 +33,14 @@ fn generated_header_asserts_every_shared_struct_layout() {
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_frame_entry)",
         "offsetof(crucible_shmem_frame_entry, delivery_icount)",
         "offsetof(crucible_shmem_frame_entry, data)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_coverage_entry)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_coverage_entry)",
+        "offsetof(crucible_shmem_coverage_entry, current_icount)",
+        "offsetof(crucible_shmem_coverage_entry, guest_pc)",
+        "offsetof(crucible_shmem_coverage_entry, map_index)",
+        "offsetof(crucible_shmem_coverage_entry, vcpu_index)",
+        "offsetof(crucible_shmem_coverage_entry, block_len)",
+        "offsetof(crucible_shmem_coverage_entry, reserved)",
     ] {
         assert!(
             header.contains(needle),

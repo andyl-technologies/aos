@@ -1,16 +1,17 @@
 //! Owned setup-region mappings and typed accessors.
 
+use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::ptr::NonNull;
 
 use thiserror::Error;
 
 use super::{
-    DirectedRing, FRAME_ENTRY_ALIGN, FRAME_ENTRY_SIZE, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE,
-    NodeSlot, REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE,
-    RegionHeader, RegionLayout, RegionLayoutError, RegionSetupValidationError, RingHeader,
-    ValidatedSetupRegion, directed_rings, layout_from_setup_region_header,
-    validate_setup_region_header,
+    COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing, FRAME_ENTRY_ALIGN,
+    FRAME_ENTRY_SIZE, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot, REGION_HEADER_ALIGN,
+    REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE, RegionHeader, RegionLayout,
+    RegionLayoutError, RegionSetupValidationError, RingHeader, ValidatedSetupRegion,
+    directed_rings, layout_from_setup_region_header, validate_setup_region_header,
 };
 
 /// An owned setup-time `mmap` of the shared-memory region descriptor.
@@ -30,6 +31,21 @@ pub struct MappedDirectedRingMut<'a> {
     pub entries: &'a mut [FrameEntry],
 }
 
+/// A mutable view of one VM's dedicated plugin-to-host coverage ring.
+///
+/// The mapping process must use this view for exactly one SPSC role: the plugin
+/// mutates entry slots and `write_idx`, while the host only copies published
+/// entries and advances `read_idx`. The two processes never take mutable Rust
+/// references to the same mapping inside one address space.
+pub struct MappedCoverageRingMut<'a> {
+    /// VM slot that exclusively produces this ring.
+    pub vm_slot: u32,
+    /// SPSC header shared by the plugin producer and host consumer.
+    pub header: &'a RingHeader,
+    /// Compact coverage-entry backing storage.
+    pub entries: &'a mut [CoverageEntry],
+}
+
 /// A mutable view of two distinct mapped directed rings and one node slot.
 pub struct MappedNodeRingPairMut<'a> {
     /// Node slot associated with the consumer VM.
@@ -47,13 +63,23 @@ impl MappedSetupRegion {
         self.region_len
     }
 
+    /// Borrows the mapped region header for cross-process atomic operations.
+    ///
+    /// The reference remains tied to this mapping's lifetime. Callers must use
+    /// the header's atomic accessors and must not retain the reference after the
+    /// mapping owner is dropped.
+    #[must_use]
+    pub fn header(&self) -> &RegionHeader {
+        // SAFETY: `mmap_setup_region` validates that the live mapping is large
+        // enough and correctly aligned for `RegionHeader` before constructing
+        // `Self`. The returned borrow cannot outlive this mapping owner.
+        unsafe { &*self.ptr.as_ptr().cast::<RegionHeader>() }
+    }
+
     /// Returns an acquire snapshot of the mapped region header.
     #[must_use]
     pub fn header_snapshot(&self) -> super::RegionHeaderSnapshot {
-        // SAFETY: `mmap_setup_region` checks the mapping is large enough for
-        // `RegionHeader` and aligned for the ABI before constructing `Self`.
-        let header = unsafe { &*self.ptr.as_ptr().cast::<RegionHeader>() };
-        header.snapshot()
+        self.header().snapshot()
     }
 
     /// Validates the mapped header against the current shared-memory ABI.
@@ -74,6 +100,28 @@ impl MappedSetupRegion {
     /// matches the current shared-memory ABI or geometry.
     pub fn layout(&self) -> Result<RegionLayout, RegionSetupValidationError> {
         layout_from_setup_region_header(self.header_snapshot(), self.region_len)
+    }
+
+    /// Borrows one mapped node slot after validating the current region geometry.
+    ///
+    /// The returned reference remains tied to this mapping, while the slot's
+    /// interior atomic fields support the plugin and scheduler's cross-process
+    /// publication protocol without requiring a mutable mapping borrow.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, the requested slot is absent, or its typed segment would be out
+    /// of bounds or misaligned.
+    pub fn node_slot(&self, node_slot: u32) -> Result<&NodeSlot, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        let node_slot_offset = mapped_node_slot_offset(layout, self.len, node_slot)?;
+        let base = self.ptr.as_ptr();
+        // SAFETY: `mapped_node_slot_offset` validated the slot index, byte
+        // range, and ABI alignment against this live owned mapping.
+        Ok(unsafe { &*base.add(node_slot_offset).cast::<NodeSlot>() })
     }
 
     /// Borrows one mapped node slot and two distinct directed rings.
@@ -161,6 +209,62 @@ impl MappedSetupRegion {
             },
         })
     }
+
+    /// Borrows one VM's dedicated plugin-to-host coverage ring.
+    ///
+    /// The VM slot is also the coverage-ring index. The current ABI allocates
+    /// exactly one ring per logical VM and fixes its capacity to the coverage-map
+    /// cardinality, so producer overflow indicates an ABI or novelty invariant
+    /// violation rather than normal backpressure.
+    /// The caller must retain the plugin-producer/host-consumer ownership split
+    /// documented on [`MappedCoverageRingMut`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` does not name a logical VM, or a computed coverage
+    /// segment is out of bounds or misaligned.
+    pub fn coverage_ring_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedCoverageRingMut<'_>, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        if vm_slot >= layout.vm_node_count {
+            return Err(MappedSetupRegionAccessError::UnknownCoverageRing {
+                vm_slot,
+                vm_node_count: layout.vm_node_count,
+            });
+        }
+        let header_offset = mapped_coverage_ring_header_offset(layout, self.len, vm_slot)?;
+        let entries_offset = mapped_coverage_ring_entries_offset(layout, self.len, vm_slot)?;
+        let entry_count = usize::try_from(layout.coverage_queue_capacity).map_err(|_error| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "coverage entry",
+                index: vm_slot,
+            }
+        })?;
+        let base = self.ptr.as_ptr();
+        // SAFETY: the coverage offset helpers validate the complete typed ranges
+        // and alignments inside this owned mapping. Each VM slot names a distinct
+        // header and entry slice, and this exclusive mapping borrow prevents a
+        // second safe mutable coverage view while the returned view is live.
+        let (header, entries) = unsafe {
+            (
+                &*base.add(header_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(entries_offset).cast::<CoverageEntry>(),
+                    entry_count,
+                ),
+            )
+        };
+        Ok(MappedCoverageRingMut {
+            vm_slot,
+            header,
+            entries,
+        })
+    }
 }
 
 impl Drop for MappedSetupRegion {
@@ -175,10 +279,18 @@ impl Drop for MappedSetupRegion {
 
 /// Maps a setup shared-memory descriptor for exactly the `Setup.region_len`.
 ///
+/// The descriptor's current length is checked before `mmap`, so an immediately
+/// short backing file is rejected without touching memory beyond the file.
+/// On Linux, a descriptor that supports memfd seals must carry `F_SEAL_SHRINK`
+/// before the mapping is touched. Descriptors that do not support seals retain
+/// a point-in-time size check, so their callers must separately prevent
+/// truncation for the mapping's lifetime.
+///
 /// # Errors
 ///
 /// Returns [`SetupRegionMapError`] when `region_len` cannot fit in `usize`, is
-/// too small for a [`RegionHeader`], or when `mmap` fails or returns a mapping
+/// too small for a [`RegionHeader`], the descriptor cannot be inspected or is
+/// shorter than `region_len`, or when `mmap` fails or returns a mapping
 /// unsuitable for the shared-memory ABI.
 pub fn mmap_setup_region(
     fd: BorrowedFd<'_>,
@@ -193,6 +305,15 @@ pub fn mmap_setup_region(
             minimum_len,
         });
     }
+
+    let backing_len = setup_region_backing_len(fd)?;
+    if backing_len < region_len {
+        return Err(SetupRegionMapError::BackingTooShort {
+            backing_len,
+            region_len,
+        });
+    }
+    verify_setup_region_shrink_seal(fd)?;
 
     // SAFETY: the returned mapping is checked before being wrapped. The fd is
     // borrowed for the syscall only; the mapping owns the resulting address.
@@ -252,6 +373,16 @@ pub enum MappedSetupRegionAccessError {
         src_slot: u32,
         /// Consumer slot.
         dst_slot: u32,
+    },
+    /// A VM slot was outside the dedicated coverage-ring table.
+    #[error(
+        "mapped setup region has no coverage ring for VM slot {vm_slot}; VM count is {vm_node_count}"
+    )]
+    UnknownCoverageRing {
+        /// Rejected VM slot.
+        vm_slot: u32,
+        /// Number of logical VM slots in the region.
+        vm_node_count: u32,
     },
     /// The validated ring topology could not be enumerated.
     #[error("mapped setup region directed-ring topology is invalid")]
@@ -322,6 +453,40 @@ pub enum SetupRegionMapError {
         /// The minimum mappable length required for the header.
         minimum_len: u64,
     },
+    /// The descriptor's current backing length could not be inspected.
+    #[error("setup region fstat failed with errno {errno}")]
+    FstatFailed {
+        /// Raw OS errno value.
+        errno: i32,
+    },
+    /// The descriptor reported a negative backing length.
+    #[error("setup region backing length {backing_len} is negative")]
+    NegativeBackingLength {
+        /// Rejected signed backing length reported by `fstat`.
+        backing_len: i64,
+    },
+    /// The descriptor backing is shorter than the advertised setup region.
+    #[error(
+        "setup region backing length {backing_len} is smaller than advertised length {region_len}"
+    )]
+    BackingTooShort {
+        /// Current descriptor backing length.
+        backing_len: u64,
+        /// Length advertised by the control-protocol `Setup` frame.
+        region_len: u64,
+    },
+    /// A seal-capable Linux memfd could still be shrunk after validation.
+    #[error("setup memfd is missing F_SEAL_SHRINK (reported seals {seals:#x})")]
+    MissingShrinkSeal {
+        /// Seal mask returned by `fcntl(F_GET_SEALS)`.
+        seals: i32,
+    },
+    /// Inspecting Linux memfd seals failed unexpectedly.
+    #[error("setup region seal query failed with errno {errno}")]
+    SealQueryFailed {
+        /// Raw operating-system error number.
+        errno: i32,
+    },
     /// The OS rejected the shared-memory `mmap`.
     #[error("setup region mmap failed with errno {errno}")]
     MmapFailed {
@@ -337,6 +502,46 @@ pub enum SetupRegionMapError {
         /// Required ABI alignment.
         alignment: usize,
     },
+}
+
+fn setup_region_backing_len(fd: BorrowedFd<'_>) -> Result<u64, SetupRegionMapError> {
+    let mut stat = MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `stat` points to valid writable storage and `fd` is borrowed from
+    // a live owned descriptor for the duration of the syscall.
+    let result = unsafe { libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr()) };
+    if result != 0 {
+        return Err(SetupRegionMapError::FstatFailed {
+            errno: last_os_error(),
+        });
+    }
+    // SAFETY: successful `fstat` initialized the output structure.
+    let stat = unsafe { stat.assume_init() };
+    u64::try_from(stat.st_size).map_err(|_| SetupRegionMapError::NegativeBackingLength {
+        backing_len: stat.st_size,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn verify_setup_region_shrink_seal(fd: BorrowedFd<'_>) -> Result<(), SetupRegionMapError> {
+    // SAFETY: `fd` is borrowed and live. `F_GET_SEALS` reads descriptor metadata
+    // without modifying the underlying file.
+    let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+    if seals < 0 {
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        if errno == libc::EINVAL {
+            return Ok(());
+        }
+        return Err(SetupRegionMapError::SealQueryFailed { errno });
+    }
+    if seals & libc::F_SEAL_SHRINK == 0 {
+        return Err(SetupRegionMapError::MissingShrinkSeal { seals });
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn verify_setup_region_shrink_seal(_fd: BorrowedFd<'_>) -> Result<(), SetupRegionMapError> {
+    Ok(())
 }
 
 fn directed_ring_descriptor(
@@ -423,6 +628,48 @@ fn mapped_ring_entries_offset(
     )
 }
 
+fn mapped_coverage_ring_header_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    vm_slot: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    mapped_segment_offset(
+        "coverage ring header",
+        vm_slot,
+        layout.coverage_ring_hdr_off,
+        RING_HEADER_SIZE,
+        RING_HEADER_ALIGN,
+        region_len,
+    )
+}
+
+fn mapped_coverage_ring_entries_offset(
+    layout: RegionLayout,
+    region_len: usize,
+    vm_slot: u32,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    let capacity = usize::try_from(layout.coverage_queue_capacity).map_err(|_error| {
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "coverage entry",
+            index: vm_slot,
+        }
+    })?;
+    let byte_len = capacity.checked_mul(COVERAGE_ENTRY_SIZE).ok_or(
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment: "coverage entry",
+            index: vm_slot,
+        },
+    )?;
+    mapped_segment_offset(
+        "coverage entry",
+        vm_slot,
+        layout.coverage_ring_data_off,
+        byte_len,
+        COVERAGE_ENTRY_ALIGN,
+        region_len,
+    )
+}
+
 fn mapped_segment_offset(
     segment: &'static str,
     index: u32,
@@ -471,4 +718,59 @@ fn unmap_setup_region(ptr: *mut libc::c_void, len: usize) {
 
 fn last_os_error() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::ffi::CString;
+    use std::io;
+    use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+
+    use super::*;
+
+    #[test]
+    fn seal_capable_memfd_must_prevent_shrink_before_mapping()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fd = test_memfd()?;
+        let region_len = REGION_HEADER_SIZE as u64;
+        let truncate = unsafe {
+            // SAFETY: `fd` is live and the header size fits in `off_t`.
+            libc::ftruncate(fd.as_raw_fd(), REGION_HEADER_SIZE as libc::off_t)
+        };
+        if truncate != 0 {
+            return Err(Box::new(io::Error::last_os_error()));
+        }
+
+        assert_eq!(
+            mmap_setup_region(fd.as_fd(), region_len).map(|mapped| mapped.region_len()),
+            Err(SetupRegionMapError::MissingShrinkSeal { seals: 0 })
+        );
+
+        let add_seal = unsafe {
+            // SAFETY: `fd` is a live memfd created with `MFD_ALLOW_SEALING`.
+            libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK)
+        };
+        if add_seal != 0 {
+            return Err(Box::new(io::Error::last_os_error()));
+        }
+
+        let mapped = mmap_setup_region(fd.as_fd(), region_len)?;
+        assert_eq!(mapped.region_len(), region_len);
+        Ok(())
+    }
+
+    fn test_memfd() -> io::Result<OwnedFd> {
+        let name = CString::new("crucible-shmem-seal-test")
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let raw_fd = unsafe {
+            // SAFETY: `name` is a valid NUL-terminated C string.
+            libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
+        };
+        if raw_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: successful `memfd_create` returned a new descriptor whose
+        // ownership is transferred exactly once into `OwnedFd`.
+        Ok(unsafe { OwnedFd::from_raw_fd(raw_fd) })
+    }
 }

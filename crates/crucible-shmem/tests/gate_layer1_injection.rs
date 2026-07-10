@@ -4,7 +4,9 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use crucible_shmem::{FrameEntry, RingHeader, SpscRingError, SpscRingSnapshot};
+use crucible_shmem::{
+    COVERAGE_QUEUE_CAPACITY, CoverageEntry, FrameEntry, RingHeader, SpscRingError, SpscRingSnapshot,
+};
 
 const RING_SOURCE: &str = concat!(
     include_str!("../src/lib.rs"),
@@ -98,6 +100,7 @@ fn gate_layer1_injection_checks_spsc_ring_concurrency_properties() {
         SpscProperty::FullEmpty,
         SpscProperty::Wraparound,
     ]);
+    assert_coverage_ring_fifo_and_fails_loud_at_fixed_capacity();
 
     let producer_skewed = run_two_vm_injection(&[7, 1, 9], false);
     let consumer_skewed = run_two_vm_injection(&[1, 7, 9], false);
@@ -330,6 +333,16 @@ fn random_operation_sequence(rng: &mut SeededPropertyRng, len: usize) -> Vec<boo
 
 fn assert_ring_header_source_uses_rfc_13_6_orderings() {
     assert_function_source_order(
+        "pub fn enqueue_coverage(",
+        &[
+            "let tail = self.write_idx.load(Ordering::Relaxed);",
+            "let head = self.read_idx.load(Ordering::Acquire);",
+            "entries[slot] = entry;",
+            ".store(tail.wrapping_add(1), Ordering::Release);",
+        ],
+        "coverage enqueue must write the entry before release-publishing write_idx",
+    );
+    assert_function_source_order(
         "pub fn enqueue(",
         &[
             "let tail = self.write_idx.load(Ordering::Relaxed);",
@@ -359,6 +372,49 @@ fn assert_ring_header_source_uses_rfc_13_6_orderings() {
             "self.read_idx.store(head.wrapping_add(1), Ordering::Release);",
         ],
         "dequeue must acquire write_idx and reject empty before reading, then release-free read_idx",
+    );
+    assert_function_source_order(
+        "pub fn dequeue_coverage(",
+        &[
+            "let head = self.read_idx.load(Ordering::Relaxed);",
+            "let tail = self.write_idx.load(Ordering::Acquire);",
+            "if live_count(head, tail, capacity)? == 0",
+            "let entry = entries[slot];",
+            "self.read_idx.store(head.wrapping_add(1), Ordering::Release);",
+        ],
+        "coverage dequeue must acquire write_idx before reading, then release-free read_idx",
+    );
+}
+
+fn assert_coverage_ring_fifo_and_fails_loud_at_fixed_capacity() {
+    let ring = RingHeader::new();
+    let mut entries = vec![CoverageEntry::default(); COVERAGE_QUEUE_CAPACITY as usize];
+    for map_index in 0..u64::from(COVERAGE_QUEUE_CAPACITY) {
+        let entry = CoverageEntry::new(map_index, 0, 0x4000 + map_index, 4, map_index)
+            .unwrap_or_else(|error| panic!("fixed-capacity coverage entry should build: {error}"));
+        ring.enqueue_coverage(&mut entries, entry)
+            .unwrap_or_else(|error| panic!("distinct coverage novelty should enqueue: {error}"));
+    }
+    let overflow = CoverageEntry::new(99, 0, 0x9000, 4, 0)
+        .unwrap_or_else(|error| panic!("overflow probe should build: {error}"));
+    assert_eq!(
+        ring.enqueue_coverage(&mut entries, overflow),
+        Err(SpscRingError::QueueFull {
+            capacity: u64::from(COVERAGE_QUEUE_CAPACITY),
+        })
+    );
+    for expected_index in 0..u64::from(COVERAGE_QUEUE_CAPACITY) {
+        let observed = ring
+            .dequeue_coverage(&entries)
+            .unwrap_or_else(|error| panic!("coverage dequeue should succeed: {error}"))
+            .unwrap_or_else(|| panic!("coverage entry {expected_index} should remain queued"));
+        assert_eq!(observed.map_index(), expected_index);
+        assert_eq!(observed.current_icount(), expected_index);
+    }
+    assert_eq!(
+        ring.dequeue_coverage(&entries)
+            .unwrap_or_else(|error| panic!("empty coverage dequeue should succeed: {error}")),
+        None
     );
 }
 

@@ -5,7 +5,9 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crucible_shmem::{
-    ABI_VERSION, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
+    ABI_VERSION, COVERAGE_ENTRY_BLOCK_LEN_OFFSET, COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET,
+    COVERAGE_ENTRY_GUEST_PC_OFFSET, COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_SIZE,
+    COVERAGE_ENTRY_VCPU_INDEX_OFFSET, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
     FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET,
     FrameEntry, MAX_FRAME_DATA, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
@@ -30,7 +32,8 @@ const GOLDEN_ICOUNT_SHIFT: u32 = 4;
 const GOLDEN_NODE_SLOT_BASE: usize = REGION_HEADER_SIZE;
 const GOLDEN_RING_HEADER_BASE: usize = GOLDEN_NODE_SLOT_BASE + NODE_SLOT_SIZE;
 const GOLDEN_FRAME_ENTRY_BASE: usize = GOLDEN_RING_HEADER_BASE + RING_HEADER_SIZE;
-const GOLDEN_TOTAL_LEN: usize = GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_SIZE;
+const GOLDEN_COVERAGE_ENTRY_BASE: usize = GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_SIZE;
+const GOLDEN_TOTAL_LEN: usize = GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_SIZE;
 
 #[test]
 fn gate_abi_conformance_checks_generated_header_and_golden_vectors() {
@@ -97,6 +100,14 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_frame_entry, len)",
         "offsetof(crucible_shmem_frame_entry, pad)",
         "offsetof(crucible_shmem_frame_entry, data)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_coverage_entry)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_coverage_entry)",
+        "offsetof(crucible_shmem_coverage_entry, current_icount)",
+        "offsetof(crucible_shmem_coverage_entry, guest_pc)",
+        "offsetof(crucible_shmem_coverage_entry, map_index)",
+        "offsetof(crucible_shmem_coverage_entry, vcpu_index)",
+        "offsetof(crucible_shmem_coverage_entry, block_len)",
+        "offsetof(crucible_shmem_coverage_entry, reserved)",
     ] {
         assert!(
             header.contains(needle),
@@ -191,6 +202,11 @@ fn assert_structure_aware_fuzz_corpus(fixture: &Fixture, decoded: &GoldenState) 
     assert_eq!(decoded.node.status, STATUS_IDLE);
     assert_eq!(decoded.node.kind, 0);
     assert_eq!(decoded.frame.payload, b"PING");
+    assert_eq!(decoded.coverage.current_icount, 901);
+    assert_eq!(decoded.coverage.guest_pc, 0x4010);
+    assert_eq!(decoded.coverage.map_index, 17);
+    assert_eq!(decoded.coverage.vcpu_index, 2);
+    assert_eq!(decoded.coverage.block_len, 4);
 
     let mut payload_mutation = fixture.bytes.clone();
     payload_mutation[GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET
@@ -422,6 +438,32 @@ fn live_golden_bytes() -> Vec<u8> {
         ..GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET + 4]
         .copy_from_slice(b"PING");
 
+    write_u64(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET,
+        901,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_GUEST_PC_OFFSET,
+        0x4010,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_MAP_INDEX_OFFSET,
+        17,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_VCPU_INDEX_OFFSET,
+        2,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
+        4,
+    );
+
     bytes
 }
 
@@ -577,6 +619,28 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 ..GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET + frame_len_usize]
                 .to_vec(),
         },
+        coverage: CoverageEntryState {
+            current_icount: read_u64(
+                bytes,
+                GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET,
+            ),
+            guest_pc: read_u64(
+                bytes,
+                GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_GUEST_PC_OFFSET,
+            ),
+            map_index: read_u64(
+                bytes,
+                GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_MAP_INDEX_OFFSET,
+            ),
+            vcpu_index: read_u32(
+                bytes,
+                GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_VCPU_INDEX_OFFSET,
+            ),
+            block_len: read_u32(
+                bytes,
+                GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
+            ),
+        },
     })
 }
 
@@ -721,6 +785,32 @@ fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         ..GOLDEN_FRAME_ENTRY_BASE + FRAME_ENTRY_DATA_OFFSET + state.frame.payload.len()]
         .copy_from_slice(&state.frame.payload);
 
+    write_u64(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET,
+        state.coverage.current_icount,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_GUEST_PC_OFFSET,
+        state.coverage.guest_pc,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_MAP_INDEX_OFFSET,
+        state.coverage.map_index,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_VCPU_INDEX_OFFSET,
+        state.coverage.vcpu_index,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_COVERAGE_ENTRY_BASE + COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
+        state.coverage.block_len,
+    );
+
     bytes
 }
 
@@ -774,6 +864,7 @@ struct GoldenState {
     node: NodeSlotState,
     ring: RingHeaderState,
     frame: FrameEntryState,
+    coverage: CoverageEntryState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -817,4 +908,13 @@ struct FrameEntryState {
     src_node: u32,
     seq: u32,
     payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CoverageEntryState {
+    current_icount: u64,
+    guest_pc: u64,
+    map_index: u64,
+    vcpu_index: u32,
+    block_len: u32,
 }

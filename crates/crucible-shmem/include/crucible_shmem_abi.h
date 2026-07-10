@@ -14,9 +14,10 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 1u
+#define CRUCIBLE_SHMEM_ABI_VERSION 2u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
+#define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
 #define CRUCIBLE_SHMEM_MAX_NODES 32u
 #define CRUCIBLE_SHMEM_RESERVED_SLOTS 3u
 #define CRUCIBLE_SHMEM_MAX_VM_NODES 29u
@@ -84,6 +85,16 @@
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_OFFSET 18u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET 24u
 #define CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_LEN 6u
+
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_SIZE 64u
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_ALIGN 64u
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET 0u
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_GUEST_PC_OFFSET 8u
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_MAP_INDEX_OFFSET 16u
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_VCPU_INDEX_OFFSET 24u
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_BLOCK_LEN_OFFSET 28u
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_OFFSET 32u
+#define CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_LEN 32u
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_region_header {
     _Atomic uint64_t magic;
@@ -176,5 +187,23 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, seq) == CRUCIB
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, len) == CRUCIBLE_SHMEM_FRAME_ENTRY_LEN_OFFSET, "crucible_shmem_frame_entry.len offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, pad) == CRUCIBLE_SHMEM_FRAME_ENTRY_PAD_OFFSET, "crucible_shmem_frame_entry.pad offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_frame_entry, data) == CRUCIBLE_SHMEM_FRAME_ENTRY_DATA_OFFSET, "crucible_shmem_frame_entry.data offset");
+
+typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_shmem_coverage_entry {
+    uint64_t current_icount;
+    uint64_t guest_pc;
+    uint64_t map_index;
+    uint32_t vcpu_index;
+    uint32_t block_len;
+    uint8_t reserved[CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_LEN];
+} crucible_shmem_coverage_entry;
+
+CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_coverage_entry) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_SIZE, "crucible_shmem_coverage_entry size");
+CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_coverage_entry) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_ALIGN, "crucible_shmem_coverage_entry alignment");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, current_icount) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, "crucible_shmem_coverage_entry.current_icount offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, guest_pc) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_GUEST_PC_OFFSET, "crucible_shmem_coverage_entry.guest_pc offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, map_index) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_MAP_INDEX_OFFSET, "crucible_shmem_coverage_entry.map_index offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, vcpu_index) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_VCPU_INDEX_OFFSET, "crucible_shmem_coverage_entry.vcpu_index offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, block_len) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_BLOCK_LEN_OFFSET, "crucible_shmem_coverage_entry.block_len offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, reserved) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_OFFSET, "crucible_shmem_coverage_entry.reserved offset");
 
 #endif /* CRUCIBLE_SHMEM_ABI_H */

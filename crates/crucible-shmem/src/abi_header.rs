@@ -1,11 +1,15 @@
 //! Generated C header support for the shared-memory ABI.
 
 use crate::{
-    ABI_VERSION, DEFAULT_QUEUE_CAPACITY, FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET,
-    FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_PAD_OFFSET,
-    FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET, FUTEX_PRIVATE, KIND_9P,
-    KIND_BLK, KIND_NET, KIND_VM, LAYOUT_TARGET_TRIPLE, MAX_FRAME_DATA, MAX_NODES, MAX_VM_NODES,
-    NODE_SLOT_ALIGN, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
+    ABI_VERSION, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
+    COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
+    COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_RESERVED_OFFSET, COVERAGE_ENTRY_SIZE,
+    COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_QUEUE_CAPACITY,
+    FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET,
+    FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_PAD_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE,
+    FRAME_ENTRY_SRC_NODE_OFFSET, FUTEX_PRIVATE, KIND_9P, KIND_BLK, KIND_NET, KIND_VM,
+    LAYOUT_TARGET_TRIPLE, MAX_FRAME_DATA, MAX_NODES, MAX_VM_NODES, NODE_SLOT_ALIGN,
+    NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
     NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PAD0_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET,
     NODE_SLOT_RESERVED_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
@@ -36,6 +40,7 @@ pub fn generated_c_header() -> String {
     emit_node_slot(&mut out);
     emit_ring_header(&mut out);
     emit_frame_entry(&mut out);
+    emit_coverage_entry(&mut out);
     emit_footer(&mut out);
     out
 }
@@ -64,6 +69,11 @@ fn emit_constants(out: &mut String) {
         out,
         "CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY",
         DEFAULT_QUEUE_CAPACITY,
+    );
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY",
+        COVERAGE_QUEUE_CAPACITY,
     );
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_NODES", MAX_NODES);
     emit_define_usize(out, "CRUCIBLE_SHMEM_RESERVED_SLOTS", RESERVED_SLOTS);
@@ -189,6 +199,27 @@ fn emit_constants(out: &mut String) {
         FRAME_ENTRY_DATA_OFFSET - FRAME_ENTRY_PAD_OFFSET,
     );
     out.push('\n');
+
+    emit_layout_constant_group(
+        out,
+        "COVERAGE_ENTRY",
+        COVERAGE_ENTRY_SIZE,
+        COVERAGE_ENTRY_ALIGN,
+        &[
+            ("CURRENT_ICOUNT", COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET),
+            ("GUEST_PC", COVERAGE_ENTRY_GUEST_PC_OFFSET),
+            ("MAP_INDEX", COVERAGE_ENTRY_MAP_INDEX_OFFSET),
+            ("VCPU_INDEX", COVERAGE_ENTRY_VCPU_INDEX_OFFSET),
+            ("BLOCK_LEN", COVERAGE_ENTRY_BLOCK_LEN_OFFSET),
+            ("RESERVED", COVERAGE_ENTRY_RESERVED_OFFSET),
+        ],
+    );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_LEN",
+        COVERAGE_ENTRY_SIZE - COVERAGE_ENTRY_RESERVED_OFFSET,
+    );
+    out.push('\n');
 }
 
 fn emit_region_header(out: &mut String) {
@@ -307,6 +338,33 @@ fn emit_frame_entry(out: &mut String) {
             ("len", "LEN"),
             ("pad", "PAD"),
             ("data", "DATA"),
+        ],
+    );
+}
+
+fn emit_coverage_entry(out: &mut String) {
+    out.push_str(&format!(
+        "typedef struct CRUCIBLE_SHMEM_ALIGNED({COVERAGE_ENTRY_ALIGN}) crucible_shmem_coverage_entry {{\n"
+    ));
+    out.push_str("    uint64_t current_icount;\n");
+    out.push_str("    uint64_t guest_pc;\n");
+    out.push_str("    uint64_t map_index;\n");
+    out.push_str("    uint32_t vcpu_index;\n");
+    out.push_str("    uint32_t block_len;\n");
+    out.push_str("    uint8_t reserved[CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_LEN];\n");
+    out.push_str("} crucible_shmem_coverage_entry;\n\n");
+
+    emit_static_asserts(
+        out,
+        "crucible_shmem_coverage_entry",
+        "COVERAGE_ENTRY",
+        &[
+            ("current_icount", "CURRENT_ICOUNT"),
+            ("guest_pc", "GUEST_PC"),
+            ("map_index", "MAP_INDEX"),
+            ("vcpu_index", "VCPU_INDEX"),
+            ("block_len", "BLOCK_LEN"),
+            ("reserved", "RESERVED"),
         ],
     );
 }
