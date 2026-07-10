@@ -9,7 +9,8 @@
 //!
 //! Module map: `launch` owns the deterministic Contract-A launch profile and
 //! canonical QEMU argument construction; `single_vm_fingerprint` owns the
-//! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`;
+//! safe run-twice-and-diff hook and real trace-plugin importer consumed by
+//! `gate:single-vm-fingerprint`;
 //! `shutdown` owns the graceful QEMU child shutdown escalation ladder;
 //! `setup_failure` owns setup-abort classification and teardown; `coverage`
 //! owns host-side plugin coverage observation bridging; `host_setup` owns the
@@ -168,7 +169,9 @@ pub use shutdown::{
     send_control_quit_frame, send_qmp_quit_command, shutdown_qemu_child,
 };
 pub use single_vm_fingerprint::{
-    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
+    QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceFingerprintDefinition, QemuTraceFingerprintImport,
+    QemuTraceFingerprintImportError, QemuTraceIdentityContract, QemuTraceObservationContract,
+    QemuTraceVcpuContract, SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
     SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
     SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
     SingleVmFingerprintMismatch, SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError,
