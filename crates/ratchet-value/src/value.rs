@@ -259,11 +259,50 @@ impl Value {
         self.tag
     }
 
-    /// Returns the raw payload bits.
+    /// Returns raw payload bits for scalar decoding and diagnostics.
     ///
     /// In debug builds this asserts that the payload is valid for the tag so
     /// callers do not accidentally treat malformed values as trusted bits.
+    /// Heap-address identities that outlive the immediate expression must use
+    /// [`Value::relocation_sensitive_identity_bits`], while collector-free
+    /// recursive walks use [`Value::address_identity_bits`].
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds when the tag and payload violate the value ABI.
     pub const fn payload_bits(self) -> u64 {
+        self.debug_assert_payload_invariant();
+        self.payload
+    }
+
+    /// Returns the representation bits used as identity within a no-relocation interval.
+    ///
+    /// Heap-backed values use their current address as representation identity. Callers
+    /// must not retain this result across a moving-collector safepoint. Data structures
+    /// that can survive such a safepoint must use
+    /// [`Value::relocation_sensitive_identity_bits`] and participate in the collector's
+    /// rekey or writeback protocol instead.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds when this is not a valid heap-backed value.
+    pub const fn address_identity_bits(self) -> u64 {
+        self.debug_assert_payload_invariant();
+        debug_assert!(self.tag.is_heap());
+        self.payload
+    }
+
+    /// Returns representation-identity bits that require relocation repair.
+    ///
+    /// This accessor marks a raw address-derived key or reference as live across a
+    /// possible moving-collector safepoint. Every caller is part of the checked-in
+    /// payload-identity audit and must be handled by B2 through root writeback,
+    /// side-table rekeying, or structural-hash rebuilding.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds when the tag and payload violate the value ABI.
+    pub const fn relocation_sensitive_identity_bits(self) -> u64 {
         self.debug_assert_payload_invariant();
         self.payload
     }
@@ -760,6 +799,29 @@ mod tests {
     fn raw_equality_is_explicitly_representation_level() {
         assert!(Value::int(7).raw_eq(Value::int(7)));
         assert!(!Value::int(7).raw_eq(Value::float(7.0)));
+    }
+
+    #[test]
+    fn payload_identity_accessors_preserve_the_active_value_abi() {
+        let ptr = NonNull::<HeapObject>::dangling();
+        let thunk = Value::thunk(ptr).expect("aligned thunk pointer");
+
+        assert_eq!(thunk.address_identity_bits(), ptr.as_ptr() as usize as u64);
+        assert_eq!(
+            thunk.relocation_sensitive_identity_bits(),
+            ptr.as_ptr() as usize as u64
+        );
+        assert_eq!(
+            Value::int(i64::MIN).relocation_sensitive_identity_bits(),
+            i64::MIN as u64
+        );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn address_identity_rejects_inline_values_in_debug_builds() {
+        let _ = Value::int(0).address_identity_bits();
     }
 
     #[test]

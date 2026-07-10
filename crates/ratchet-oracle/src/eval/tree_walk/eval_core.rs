@@ -825,7 +825,7 @@ impl TreeWalk {
         span: Span,
         value: Value,
     ) -> Result<bool, TreeWalkError> {
-        if !value.is_thunk() || !self.lazy_identity_thunks.contains(&value.payload_bits()) {
+        if !value.is_thunk() || !self.lazy_identity_thunks.contains(&value.relocation_sensitive_identity_bits()) {
             return Ok(false);
         }
         let thunk = self
@@ -841,7 +841,7 @@ impl TreeWalk {
 
     pub(super) fn mark_lazy_identity_thunk(&mut self, value: Value) {
         if value.is_thunk() {
-            self.lazy_identity_thunks.insert(value.payload_bits());
+            self.lazy_identity_thunks.insert(value.relocation_sensitive_identity_bits());
         }
     }
 
@@ -863,7 +863,7 @@ impl TreeWalk {
     pub(super) fn mark_lazy_foldl_initial_thunk(&mut self, value: Value) {
         self.mark_lazy_identity_thunk(value);
         if value.is_thunk() {
-            self.lazy_foldl_initial_thunks.insert(value.payload_bits());
+            self.lazy_foldl_initial_thunks.insert(value.relocation_sensitive_identity_bits());
         }
     }
 
@@ -919,7 +919,7 @@ impl TreeWalk {
         value: Value,
     ) -> Result<bool, TreeWalkError> {
         if self.is_suspended_lazy_identity_thunk(id, span, value)? {
-            self.unmark_lazy_identity_thunk_payload(value.payload_bits());
+            self.unmark_lazy_identity_thunk_payload(value.relocation_sensitive_identity_bits());
             return Ok(true);
         }
         Ok(false)
@@ -934,9 +934,9 @@ impl TreeWalk {
         if self.is_suspended_lazy_identity_thunk(id, span, value)?
             && self
                 .lazy_foldl_initial_thunks
-                .contains(&value.payload_bits())
+                .contains(&value.relocation_sensitive_identity_bits())
         {
-            self.unmark_lazy_identity_thunk_payload(value.payload_bits());
+            self.unmark_lazy_identity_thunk_payload(value.relocation_sensitive_identity_bits());
             return self.force_value(id, span, value);
         }
         Ok(value)

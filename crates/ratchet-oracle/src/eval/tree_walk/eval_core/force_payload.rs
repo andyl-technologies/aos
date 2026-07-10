@@ -580,7 +580,7 @@ impl TreeWalk {
                 payload.with_attr_repr_metadata(metadata.repr()).ok()?
             }
             ValueTag::Thunk => {
-                let thunk_key = value.payload_bits();
+                let thunk_key = value.address_identity_bits();
                 if !seen_thunks.insert(thunk_key) {
                     return None;
                 }

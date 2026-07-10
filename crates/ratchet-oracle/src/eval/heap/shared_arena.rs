@@ -853,12 +853,7 @@ fn handle(address: usize) -> Result<NonNull<HeapObject>, SharedHeapError> {
 ///
 /// Returns [`SharedHeapError::Value`] if `value` is an inline (non-heap) value.
 fn heap_ptr(value: Value) -> Result<NonNull<HeapObject>, SharedHeapError> {
-    let tag = value.tag();
-    let address = value.payload_bits() as usize;
-    if !tag.is_heap() {
-        return Err(SharedHeapError::Value(ValueError::NotHeapTag { tag }));
-    }
-    handle(address)
+    value.as_heap_ptr().map_err(SharedHeapError::Value)
 }
 
 #[cfg(test)]

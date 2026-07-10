@@ -223,9 +223,12 @@ impl TreeWalk {
         let Some(plan) = self.current_ir().facts.capture_plan(site) else {
             return;
         };
-        state
-            .borrow_mut()
-            .record_alloc(value.payload_bits(), site, self.current_module, plan);
+        state.borrow_mut().record_alloc(
+            value.relocation_sensitive_identity_bits(),
+            site,
+            self.current_module,
+            plan,
+        );
     }
 
     /// Force hook: arms validation before a `Node` thunk body runs.
@@ -234,7 +237,9 @@ impl TreeWalk {
             return;
         };
         if matches!(kind, EvalThunkKind::Node { .. }) {
-            state.borrow_mut().arm_force(source_thunk.payload_bits());
+            state
+                .borrow_mut()
+                .arm_force(source_thunk.relocation_sensitive_identity_bits());
         }
     }
 

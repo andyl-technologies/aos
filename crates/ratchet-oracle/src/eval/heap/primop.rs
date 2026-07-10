@@ -49,8 +49,7 @@ impl EvalPrimOp {
                 left.module == right.module
                     && left.id == right.id
                     && left.span == right.span
-                    && left.value.tag() == right.value.tag()
-                    && left.value.payload_bits() == right.value.payload_bits()
+                    && left.value.raw_eq(right.value)
             })
     }
 

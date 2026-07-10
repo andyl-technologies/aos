@@ -1639,7 +1639,7 @@ impl TreeWalk {
             WhnfTagFastPath::AlreadyWhnf(value) => return Ok(value),
             WhnfTagFastPath::RequiresThunkProtocol(value) => value,
         };
-        let forced_payload = value.payload_bits();
+        let forced_payload = value.relocation_sensitive_identity_bits();
         let thunk = self
             .heap
             .clone_thunk(value)

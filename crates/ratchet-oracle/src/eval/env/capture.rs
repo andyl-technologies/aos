@@ -68,8 +68,7 @@ impl EvalFlatCapture {
     fn raw_eq(&self, other: &Self) -> bool {
         self.allocation_site == other.allocation_site
             && self.frame_count == other.frame_count
-            && self.owner.tag() == other.owner.tag()
-            && self.owner.payload_bits() == other.owner.payload_bits()
+            && self.owner.raw_eq(other.owner)
             && self.tail == other.tail
     }
 }

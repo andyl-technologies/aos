@@ -3208,7 +3208,7 @@ pub(super) fn list_structural_hash(list: &NixList) -> HotXxh3Hash {
     list.len().hash(&mut hasher);
     for value in list {
         value.tag().hash(&mut hasher);
-        value.payload_bits().hash(&mut hasher);
+        value.relocation_sensitive_identity_bits().hash(&mut hasher);
     }
     HotXxh3Hash::from_xxh3(hasher.finish())
 }
@@ -3223,7 +3223,7 @@ pub(super) fn attrs_structural_hash(metadata: EvalHeapAttrsMetadata, attrs: &Fla
     for entry in attrs.entries_by_symbol() {
         entry.key.hash(&mut hasher);
         entry.value.tag().hash(&mut hasher);
-        entry.value.payload_bits().hash(&mut hasher);
+        entry.value.relocation_sensitive_identity_bits().hash(&mut hasher);
         match entry.position {
             Some(position) => {
                 true.hash(&mut hasher);

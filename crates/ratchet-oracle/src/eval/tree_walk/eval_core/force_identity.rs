@@ -480,7 +480,7 @@ impl TreeWalk {
         if value.tag() != ValueTag::Thunk {
             return Some(value);
         }
-        let thunk_key = value.payload_bits();
+        let thunk_key = value.address_identity_bits();
         if !seen_thunks.insert(thunk_key) {
             return None;
         }
@@ -565,7 +565,7 @@ impl TreeWalk {
                 self.cache_force_capture_hash(value, ForceCapturedValueHash::from_hasher(hasher))
             }
             ValueTag::Thunk => {
-                let thunk_key = value.payload_bits();
+                let thunk_key = value.address_identity_bits();
                 if !seen_thunks.insert(thunk_key) {
                     return None;
                 }
@@ -629,7 +629,7 @@ impl TreeWalk {
         if !value.is_thunk() {
             return None;
         }
-        let thunk_key = value.payload_bits();
+        let thunk_key = value.address_identity_bits();
         let mut seen_thunks = BTreeSet::new();
         seen_thunks.insert(thunk_key);
         let thunk = self.heap.get_thunk(value).ok()?;

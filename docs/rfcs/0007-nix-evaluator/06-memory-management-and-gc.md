@@ -435,9 +435,14 @@ across requests. That case is Tier B.
 > FV-6 now stores thunk/lambda/primop payloads directly in the flat arena and
 > leaves only independently live thunk-state/parallel cells side-owned with
 > sweep release. This closes the value-representation prerequisite. The
-> copying nursery remains mandated and unimplemented, and stays gated on a
-> full-corpus B1 stress proof plus the still-open checked-in `payload_bits`
-> identity classification table. This staging follows `S-8`'s
+> copying nursery remains mandated and unimplemented. The checked-in
+> `payload_bits` identity gate is now closed: 40 raw scalar/diagnostic reads,
+> four collector-free address identities, and 24 relocation-sensitive
+> identities are count-pinned with explicit root-writeback/rekey/rebuild
+> dispositions. B2 still has to implement those repair hooks, mutable root
+> slots/JIT stack maps, and pass the full-corpus moving-collector stress gate;
+> the table makes that remaining work finite rather than implicit. This
+> staging follows `S-8`'s
 > alloc-via-symbols swap-ability and `C-10`'s measure-gated daemon framing
 > (see [decision register](19-decision-register.md)).
 
@@ -2421,9 +2426,9 @@ GC must be observationally invisible (§8): every item is gated by the different
       reissued). Harness byte-green under Tier A and under `AOS_NIX_GC=sweep`
       (x4 packages serial + stress-threshold-0, K=4 parallel pin, compute
       suite, `bench.wide`, cache-on cold/warm). FV-6 subsequently closed the
-      value-representation prerequisite. Full-corpus B1 stress and the FV-0
-      identity classification table remain open gates, along with the
-      copying-nursery implementation itself in the row above.
+      value-representation prerequisite. The FV-0 identity table is now
+      executable and closed; full-corpus B1 stress and the copying-nursery
+      implementation itself remain open in the row above.
 - [x] Current minor-GC frontier precursor:
       `ratchet-value::heap::gc::MinorGcPlan` builds the future minor
       collection's initial young-object survivor frontier from precise roots

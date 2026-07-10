@@ -333,7 +333,7 @@ impl TreeWalk {
         value: Value,
         unhashable: &mut HashSet<u64>,
     ) -> Option<ValueHash> {
-        let bits = value.payload_bits();
+        let bits = value.relocation_sensitive_identity_bits();
         if unhashable.contains(&bits) {
             return None;
         }

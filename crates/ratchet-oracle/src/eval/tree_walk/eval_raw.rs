@@ -45,7 +45,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let value = self.force_value(value_id, value_span, value)?;
         let tag = value.tag();
-        let key = (tag, value.payload_bits());
+        let key = (tag, value.relocation_sensitive_identity_bits());
         let tracks_repeated = match tag {
             ValueTag::Attrs => !self
                 .heap
@@ -69,7 +69,8 @@ impl TreeWalk {
                     ValueTag::List
                         if Self::raw_active_value_contains(active, key)
                             && *active_list_expansion_depth == 0
-                            && !expanded_active_lists.contains(&value.payload_bits())
+                            && !expanded_active_lists
+                                .contains(&value.relocation_sensitive_identity_bits())
                             && self
                                 .raw_repeated_list_can_expand(value_id, value_span, value)? =>
                     {
@@ -80,7 +81,7 @@ impl TreeWalk {
                                 span,
                             )
                         })?;
-                        expanded_active_lists.push(value.payload_bits());
+                        expanded_active_lists.push(value.relocation_sensitive_identity_bits());
                         *active_list_expansion_depth += 1;
                         let result = self.write_raw_list(
                             id,

@@ -211,10 +211,14 @@ begins.
 ### 2.4 The parity-critical identity audit (`payload_bits`)
 
 The record side table is not only overhead — it is where **address
-identity** is currently anchored, and `Value::payload_bits()` is used as
-an identity key across the evaluator. The B1 commit counted ~30 such
-sites; the current tree has ~66 uses across 24 non-test files. The
-families (the B2-gate audit list, enumerated):
+identity** is currently anchored. The executable audit now classifies 68
+accessor sites across 21 source files: 40 raw scalar/diagnostic reads, four
+address-only reads confined to collector-free recursive walks, and 24
+relocation-sensitive identities. The production subset is 66 sites across 20
+files (40/4/22); the two additional relocation-sensitive sites are the
+`cfg(test)` capture-plan validator, retained in the B2 worklist so moving-GC
+tests cannot silently use stale identities. The families (the B2 repair
+worklist, enumerated):
 
 - **Force-cache and memo identity:**
   `eval/tree_walk/eval_core/force_identity.rs`, `eval_core/memo.rs`,
@@ -242,13 +246,16 @@ families (the B2-gate audit list, enumerated):
 - **Shape instances:** `ratchet-value/src/attrs/shape/instance.rs`.
 
 The campaign's §2 stages **preserve** this invariant: flat objects keep
-the arena's stable, never-reissued addresses, so every `payload_bits`
-site keeps working unchanged through the whole Tier-A campaign. The
-audit's obligation is *forward-looking*: each site must be classified
-(pure identity vs. identity-that-survives-relocation) so that B2's
-moving nursery — which this campaign unblocks — knows exactly which keys
-need rehash hooks. That classification list is the deliverable, per the
-gate stated in [06](06-memory-management-and-gc.md) §4.
+the arena's stable, never-reissued addresses through the whole Tier-A
+campaign. `Value` now names the distinction directly:
+`payload_bits` is reserved for scalar decoding and diagnostics,
+`address_identity_bits` marks a heap identity whose whole use lies in a
+no-relocation interval, and `relocation_sensitive_identity_bits` marks a
+key/reference that B2 must repair. The checked-in table at
+`eval/heap/tests/payload_identity.rs` discovers Rust sources in
+`ratchet-value`, `ratchet-oracle`, and `ratchet-jit`, pins per-file counts,
+and gives every relocation-sensitive family a concrete B2 disposition.
+Any new or reclassified production caller fails the audit until reviewed.
 
 ### 2.5 GC integration: header-resident marks
 
@@ -870,13 +877,15 @@ shipped this way):
 
 ### 9.4 Risks
 
-- **The `payload_bits` identity audit** (§2.4): ~30 semantic sites /
-  24 files. Stable Tier-A addresses keep them sound through the
-  campaign, but every stage must re-verify no site depended on *record
+- **The payload-identity audit** (§2.4): 68 audited sites across 21 files,
+  mechanically split 40 raw / 4 address-only / 24 relocation-sensitive
+  (66 production sites; two `cfg(test)` validator sites). Stable Tier-A
+  addresses keep them sound through the campaign, but every stage must
+  re-verify no site depended on *record
   table* semantics (e.g. `UnknownPointer` fail-loud shape changes under
-  header-based retirement, §2.5). Mitigation: the audit is a per-stage
-  checklist item, and the stress-mode loud-failure discipline B1 built
-  is the proving tool.
+  header-based retirement, §2.5). Mitigation: source discovery and exact
+  per-file counts make drift fail the unit suite, and B1's stress-mode
+  loud-failure discipline remains the proving tool.
 - **Parallel shared-arena interplay.** The L2-P3a design
   (`eval/heap/shared_arena.rs`) exists precisely because payloads are
   *not* at their addresses: per-worker shards with stable record
@@ -1049,10 +1058,19 @@ list only their *additional* gates.
       count+bytes, frame-allocation count+bytes, and per-kind payload
       byte mass with the store-path split. Environment-allocation
       *size-class histograms* remain open.*
-- [ ] The `payload_bits` identity classification table: every §2.4 site
+- [x] The `payload_bits` identity classification table: every §2.4 site
       tagged {address-identity-only | relocation-sensitive}, checked in
       as a reviewed table (extends the B1 audit). Exit: table complete;
       B2's rehash-hook worklist derivable from it.
+      *Landed: the sealed `Value` API distinguishes raw scalar/diagnostic
+      bits, address-only identities, and relocation-sensitive identities.
+      The executable audit pins 40/4/24 sites respectively across 21 source
+      files and records the required root writeback, side-table rekey,
+      structural-hash rebuild, compiled-constant patch/reject, or no-repair
+      disposition for every family. The production subset is 40/4/22 across
+      20 files; two `cfg(test)` capture-validator sites remain deliberately in
+      the worklist. Test directories and `tests.rs` modules are excluded;
+      UFCS and method-call spellings are both counted.*
 - [x] P4 **Chunk D** — per-def-site free-variable sets, capture
       publication-boundary proof, single-use/escape refinement
       (`ratchet-core/src/analysis/` beside `strictness/` and

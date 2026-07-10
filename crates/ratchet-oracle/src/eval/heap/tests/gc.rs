@@ -4,6 +4,9 @@
 use super::*;
 use crate::eval::heap::EvalGcMode;
 
+#[path = "payload_identity.rs"]
+mod payload_identity;
+
 /// Allocates a suspended thunk that captures one env frame.
 fn alloc_capturing_thunk(heap: &mut EvalHeap) -> (Value, Arc<EvalFrame>) {
     let frame = EvalFrame::new(1).expect("frame allocates");

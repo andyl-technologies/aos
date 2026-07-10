@@ -19,7 +19,7 @@
 //!   `Suspended` is never published over, so publish always loses to force.
 //!
 //! ```text
-//! install:  side_table[thunk.payload_bits()] = OpaqueTier1Slot{ entry, owner, Empty }
+//! install:  side_table[thunk identity] = OpaqueTier1Slot{ entry, owner, Empty }
 //! publish:  if cell.state() == Suspended (Acquire) { slot: Empty -> Published (Release) }
 //! dispatch: if slot.is_published() { downcast owner -> finalization -> native call }
 //! ```
@@ -466,7 +466,7 @@ impl TreeWalk {
         if !thunk.is_thunk() {
             return false;
         }
-        let key = thunk.payload_bits();
+        let key = thunk.relocation_sensitive_identity_bits();
         if self.tier1_publish_slots.contains_key(&key) {
             return false;
         }
@@ -528,7 +528,8 @@ impl TreeWalk {
         if !thunk.is_thunk() {
             return None;
         }
-        self.tier1_publish_slots.get(&thunk.payload_bits())
+        self.tier1_publish_slots
+            .get(&thunk.relocation_sensitive_identity_bits())
     }
 
     /// Publishes the installed tier-1 slot for `thunk`, behind the publish flag.
@@ -556,7 +557,10 @@ impl TreeWalk {
         if !thunk.is_thunk() {
             return Ok(false);
         }
-        let Some(slot) = self.tier1_publish_slots.get(&thunk.payload_bits()) else {
+        let Some(slot) = self
+            .tier1_publish_slots
+            .get(&thunk.relocation_sensitive_identity_bits())
+        else {
             return Ok(false);
         };
         // Acquire-load the thunk's own state and publish only over a still

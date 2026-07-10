@@ -2433,7 +2433,7 @@ fn emit_value_return(
     value: Value,
 ) {
     let tag_word = value.tag() as u64;
-    let payload_word = value.payload_bits();
+    let payload_word = value.relocation_sensitive_identity_bits();
     let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
     let tag = cursor.ins().iconst(types::I64, tag_word as i64);
     let payload = cursor.ins().iconst(types::I64, payload_word as i64);
@@ -3036,7 +3036,7 @@ fn emit_attr_select_default_local_slot_return(
         .iconst(types::I64, default_value.tag() as u64 as i64);
     let payload = cursor
         .ins()
-        .iconst(types::I64, default_value.payload_bits() as i64);
+        .iconst(types::I64, default_value.relocation_sensitive_identity_bits() as i64);
     cursor.ins().return_(&[tag, payload]);
 
     Ok(())

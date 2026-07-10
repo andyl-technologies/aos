@@ -489,13 +489,16 @@ impl AtomicValueCell {
     pub(crate) fn filled(value: Value) -> Self {
         Self {
             tag: AtomicU64::new(value.tag() as u64),
-            payload: AtomicU64::new(value.payload_bits()),
+            payload: AtomicU64::new(value.relocation_sensitive_identity_bits()),
         }
     }
 
     /// Stores `value`, publishing the payload before the tag.
     pub(crate) fn store(&self, value: Value) {
-        self.payload.store(value.payload_bits(), Ordering::Relaxed);
+        self.payload.store(
+            value.relocation_sensitive_identity_bits(),
+            Ordering::Relaxed,
+        );
         self.tag.store(value.tag() as u64, Ordering::Release);
     }
 

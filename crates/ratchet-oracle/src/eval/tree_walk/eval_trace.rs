@@ -16,7 +16,7 @@ impl TreeWalk {
     ) -> Result<(), TreeWalkError> {
         let tag = value.tag();
         let entered = if Self::trace_recursive_value_tag(tag) {
-            let key = (tag, value.payload_bits());
+            let key = (tag, value.relocation_sensitive_identity_bits());
             if visited.contains(&key) {
                 return Self::extend_bytes_for_node(id, span, out, "«repeated»".as_bytes());
             }

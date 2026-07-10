@@ -5099,10 +5099,14 @@ and helps the oracle directly.
       memory win without perturbing `payload_bits` identity, and B1's loud
       missed-root failure mode (no address reuse) is the staging gate that
       proves precise-root completeness before B2 ever moves an object.
-      **The value-rep-flattening gate B2 waits on is now designed and
-      scheduled as the flat-value campaign
-      ([30](30-flat-value-architecture.md); stages FV-1..FV-6, with the
-      `payload_bits` classification table as deliverable FV-0).**
+      **The value-rep-flattening and identity-audit gates are now closed by
+      the flat-value campaign** ([30](30-flat-value-architecture.md);
+      stages FV-1..FV-6 plus FV-0's executable `payload_bits` table). The
+      table mechanically pins 40 raw scalar/diagnostic readers, four
+      collector-free address identities, and 24 relocation-sensitive
+      identities with explicit B2 repair dispositions. The moving collector
+      itself, mutable root-slot/JIT stack-map integration, and those repair
+      hooks remain open.
 - [x] Current #52 registered-root mid-operation sweep precursor:
       strict raw rendering now publishes every pending list element and attr
       value through the transient safepoint root stack, including nested
@@ -11506,10 +11510,14 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
 
 **Summary rows (fine-grained items in doc 30 §12).**
 
-- [ ] FV-0 — instrumentation (capture/env/payload-mass counters), the
+- [x] FV-0 — instrumentation (capture/env/payload-mass counters), the
       `payload_bits` identity classification table, and P4 **Chunk D**
       (per-def-site free-var/escape facts)
-      ([30](30-flat-value-architecture.md) §2.4, §4.4).
+      ([30](30-flat-value-architecture.md) §2.4, §4.4). Campaign counters
+      reproduce the allocation/deref columns; analysis version 7 persists
+      capture plans and Chunk-D facts; the executable identity audit discovers
+      the three representation-owning crates and rejects any drift from its
+      reviewed 40/4/24 raw/address-only/relocation-sensitive inventory.
 - [x] FV-1 — flat strings/paths/lists: header + inline payload in the
       Tier-A arena; hash-cons key migration; `heap/safety.rs` audit-table
       extension ([30](30-flat-value-architecture.md) §2).
