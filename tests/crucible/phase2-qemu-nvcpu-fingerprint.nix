@@ -237,6 +237,14 @@
         label = "bounded QMP command timeout";
         needle = "QMP_COMMAND_TIMEOUT";
       }
+      {
+        label = "typed QMP run-state observation";
+        needle = "pub fn query_status";
+      }
+      {
+        label = "typed QMP vCPU topology observation";
+        needle = "pub fn query_cpus_fast";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/tests/gate_single_vm_fingerprint.rs" qemuGateTest [
       {

@@ -35,11 +35,12 @@ use super::*;
 
 #[test]
 fn qmp_shutdown_only_rejects_generic_snapshot_restore_but_quits() -> Result<(), Box<dyn Error>> {
-    let qmp = QemuQmpVmStateControlChannel::connect(scripted_qmp([
+    let (stream, written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
-    ]))?;
+    ]);
+    let qmp = QemuQmpVmStateControlChannel::connect(stream)?;
     let mut control = QemuQmpShutdownOnlyControlChannel::new(qmp);
     let checkpoint = checkpoint_with_hash_byte(0xab);
 
@@ -59,8 +60,8 @@ fn qmp_shutdown_only_rejects_generic_snapshot_restore_but_quits() -> Result<(), 
     ));
     QemuQmpMachineControlChannel::quit(&mut control)?;
 
-    let stream = control.into_inner().into_inner().into_inner();
-    let lines = written_json_lines(&stream)?;
+    drop(control);
+    let lines = written_json_lines_from_shared(&written)?;
     assert_eq!(
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)

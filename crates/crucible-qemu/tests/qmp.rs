@@ -6,14 +6,17 @@
 
 use std::error::Error;
 use std::io::{self, Cursor, Read, Write};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_QUERY_JOBS_COMMAND,
+    QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT,
+    QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUERY_STATUS_COMMAND,
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
     QMP_SNAPSHOT_VMSTATE_DEVICE, QemuSavevmCompletenessPolicy, QmpClient, QmpCommandKind, QmpError,
-    QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpSnapshotTag, QmpTimeoutStream,
+    QmpGreeting, QmpIoTimeoutPolicy, QmpJobPollPolicy, QmpRunStateKind, QmpSnapshotTag,
+    QmpTimeoutStream,
 };
 use serde_json::Value;
 
@@ -26,10 +29,12 @@ const HASH_EF_TAG: &str =
 
 #[test]
 fn qmp_connect_reads_greeting_and_negotiates_capabilities() -> Result<(), Box<dyn Error>> {
-    let client = QmpClient::connect(scripted_qmp([
+    let stream = scripted_qmp([
         r#"{"QMP":{"version":{"qemu":{"major":10,"minor":0,"micro":0}},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-    ]))?;
+    ]);
+    let audit = stream.audit_handle();
+    let client = QmpClient::connect(stream)?;
 
     assert_eq!(
         client.greeting(),
@@ -38,46 +43,50 @@ fn qmp_connect_reads_greeting_and_negotiates_capabilities() -> Result<(), Box<dy
             capabilities_present: true,
         }
     );
-    let stream = client.into_inner();
-    let lines = written_json_lines(&stream)?;
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    let lines = written_json_lines(&audit)?;
     assert_eq!(
         execute_name(json_line(&lines, 0)),
         Some(QMP_CAPABILITIES_COMMAND)
     );
-    assert!(!stream.read_timeouts.is_empty());
+    assert!(!audit.read_timeouts.is_empty());
     assert!(
-        stream
+        audit
             .read_timeouts
             .iter()
             .all(|timeout| !timeout.is_zero() && *timeout <= QMP_GREETING_TIMEOUT)
     );
-    assert_timeout_budget(&stream.write_timeouts, QMP_COMMAND_TIMEOUT);
+    assert_timeout_budget(&audit.write_timeouts, QMP_COMMAND_TIMEOUT);
     Ok(())
 }
 
 #[test]
 fn qmp_client_installs_explicit_stream_timeouts() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+    ]);
+    let audit = stream.audit_handle();
     let mut client = QmpClient::connect_with_policies(
-        scripted_qmp([
-            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
-            r#"{"return":{}}"#,
-            r#"{"return":{}}"#,
-        ]),
+        stream,
         QmpJobPollPolicy::fast_test(1),
         QmpIoTimeoutPolicy::new(Duration::from_millis(7), Duration::from_millis(11)),
     )?;
 
     assert_eq!(client.quit()?.command, QmpCommandKind::Quit);
-    let stream = client.into_inner();
-    assert!(!stream.read_timeouts.is_empty());
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    assert!(!audit.read_timeouts.is_empty());
     assert!(
-        stream
+        audit
             .read_timeouts
             .iter()
             .all(|timeout| !timeout.is_zero() && *timeout <= Duration::from_millis(11))
     );
-    assert!(stream.read_timeouts[0] <= Duration::from_millis(7));
-    assert_timeout_budget(&stream.write_timeouts, Duration::from_millis(11));
+    assert!(audit.read_timeouts[0] <= Duration::from_millis(7));
+    assert_timeout_budget(&audit.write_timeouts, Duration::from_millis(11));
     Ok(())
 }
 
@@ -155,6 +164,95 @@ fn qmp_client_bounds_partial_line_progress() {
 }
 
 #[test]
+fn query_status_and_cpus_fast_are_typed_and_bounded() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"running":false,"status":"paused"}}"#,
+        r#"{"return":[{"cpu-index":2},{"cpu-index":0},{"cpu-index":1}]}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
+
+    let status = client.query_status()?;
+    assert!(!status.running);
+    assert_eq!(status.status, QmpRunStateKind::Paused);
+    assert_eq!(client.query_cpus_fast()?.cpu_indexes(), &[0, 1, 2]);
+
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    let lines = written_json_lines(&audit)?;
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_QUERY_STATUS_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 2)),
+        Some(QMP_QUERY_CPUS_FAST_COMMAND)
+    );
+    assert_timeout_budget(&audit.read_timeouts, QMP_COMMAND_TIMEOUT);
+    assert_timeout_budget(&audit.write_timeouts, QMP_COMMAND_TIMEOUT);
+    Ok(())
+}
+
+#[test]
+fn typed_queries_reject_missing_contradictory_and_noncontiguous_fields()
+-> Result<(), Box<dyn Error>> {
+    let mut status_client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"status":"paused"}}"#,
+    ]))?;
+    assert!(matches!(
+        status_client.query_status(),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::QueryStatus,
+            ..
+        })
+    ));
+
+    let mut contradictory_status_client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"running":true,"status":"paused"}}"#,
+    ]))?;
+    assert!(matches!(
+        contradictory_status_client.query_status(),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::QueryStatus,
+            ..
+        })
+    ));
+
+    let mut topology_client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"cpu-index":0},{"cpu-index":0}]}"#,
+    ]))?;
+    assert!(matches!(
+        topology_client.query_cpus_fast(),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::QueryCpusFast,
+            ..
+        })
+    ));
+
+    let mut gapped_topology_client = QmpClient::connect(scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"cpu-index":0},{"cpu-index":2}]}"#,
+    ]))?;
+    assert!(matches!(
+        gapped_topology_client.query_cpus_fast(),
+        Err(QmpError::MalformedTypedResponse {
+            command: QmpCommandKind::QueryCpusFast,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
 fn qmp_timeout_errors_classify_node_channel_timeouts() {
     let error = crucible_qemu::QemuNodeChannelError::from(QmpError::Timeout {
         operation: "QMP command",
@@ -167,20 +265,23 @@ fn qmp_timeout_errors_classify_node_channel_timeouts() {
 
 #[test]
 fn savevm_uses_snapshot_save_with_checkpoint_derived_tag() -> Result<(), Box<dyn Error>> {
-    let mut client = QmpClient::connect(scripted_qmp([
+    let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-save-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-    ]))?;
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
     let checkpoint = checkpoint_with_hash_byte(0xab);
     let tag = QmpSnapshotTag::from_checkpoint(&checkpoint);
 
     let complete = client.savevm(&tag)?;
     assert_eq!(complete.command, QmpCommandKind::SaveVm);
 
-    let stream = client.into_inner();
-    let lines = written_json_lines(&stream)?;
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    let lines = written_json_lines(&audit)?;
     let request = json_line(&lines, 1);
     assert_eq!(execute_name(request), Some(QMP_SNAPSHOT_SAVE_COMMAND));
     assert_eq!(
@@ -208,13 +309,15 @@ fn savevm_uses_snapshot_save_with_checkpoint_derived_tag() -> Result<(), Box<dyn
 
 #[test]
 fn loadvm_and_quit_are_typed_qmp_commands() -> Result<(), Box<dyn Error>> {
-    let mut client = QmpClient::connect(scripted_qmp([
+    let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
         r#"{"return":{}}"#,
         r#"{"return":[{"id":"crucible-load-crucible-cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd","status":"concluded"}]}"#,
         r#"{"return":{}}"#,
-    ]))?;
+    ]);
+    let audit = stream.audit_handle();
+    let mut client = QmpClient::connect(stream)?;
     let tag = QmpSnapshotTag::from_checkpoint_content_address(content_hash_with_byte(0xcd));
 
     assert_eq!(
@@ -223,8 +326,9 @@ fn loadvm_and_quit_are_typed_qmp_commands() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(client.quit()?.command, QmpCommandKind::Quit);
 
-    let stream = client.into_inner();
-    let lines = written_json_lines(&stream)?;
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    let lines = written_json_lines(&audit)?;
     assert_eq!(
         execute_name(json_line(&lines, 1)),
         Some(QMP_SNAPSHOT_LOAD_COMMAND)
@@ -289,22 +393,23 @@ fn qmp_snapshot_job_error_is_typed_result_error() -> Result<(), Box<dyn Error>> 
 
 #[test]
 fn qmp_snapshot_job_polling_waits_until_concluded() -> Result<(), Box<dyn Error>> {
-    let mut client = QmpClient::connect_with_job_poll_policy(
-        scripted_qmp([
-            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
-            r#"{"return":{}}"#,
-            r#"{"return":{}}"#,
-            r#"{"return":[{"id":"crucible-save-crucible-efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","status":"running"}]}"#,
-            r#"{"return":[{"id":"crucible-save-crucible-efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","status":"concluded"}]}"#,
-        ]),
-        QmpJobPollPolicy::fast_test(4),
-    )?;
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":[{"id":"crucible-save-crucible-efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","status":"running"}]}"#,
+        r#"{"return":[{"id":"crucible-save-crucible-efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef","status":"concluded"}]}"#,
+    ]);
+    let audit = stream.audit_handle();
+    let mut client =
+        QmpClient::connect_with_job_poll_policy(stream, QmpJobPollPolicy::fast_test(4))?;
     let tag = QmpSnapshotTag::from_checkpoint_content_address(content_hash_with_byte(0xef));
 
     assert_eq!(client.savevm(&tag)?.command, QmpCommandKind::SaveVm);
 
-    let stream = client.into_inner();
-    let lines = written_json_lines(&stream)?;
+    drop(client);
+    let audit = audit_snapshot(&audit);
+    let lines = written_json_lines(&audit)?;
     assert_eq!(
         execute_name(json_line(&lines, 2)),
         Some(QMP_QUERY_JOBS_COMMAND)
@@ -434,17 +539,22 @@ fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {
     }
     ScriptedQmpStream {
         read: Cursor::new(input),
-        written: Vec::new(),
-        read_timeouts: Vec::new(),
-        write_timeouts: Vec::new(),
+        audit: Arc::new(Mutex::new(ScriptedQmpAudit::default())),
     }
 }
 
-fn written_json_lines(stream: &ScriptedQmpStream) -> Result<Vec<Value>, serde_json::Error> {
-    String::from_utf8_lossy(&stream.written)
+fn written_json_lines(audit: &ScriptedQmpAudit) -> Result<Vec<Value>, serde_json::Error> {
+    String::from_utf8_lossy(&audit.written)
         .lines()
         .map(serde_json::from_str)
         .collect()
+}
+
+fn audit_snapshot(handle: &Arc<Mutex<ScriptedQmpAudit>>) -> ScriptedQmpAudit {
+    handle
+        .lock()
+        .expect("scripted QMP audit lock should remain available")
+        .clone()
 }
 
 fn json_line(lines: &[Value], index: usize) -> &Value {
@@ -482,6 +592,17 @@ fn content_hash_with_byte(byte: u8) -> ContentHash {
 #[derive(Debug)]
 struct ScriptedQmpStream {
     read: Cursor<Vec<u8>>,
+    audit: Arc<Mutex<ScriptedQmpAudit>>,
+}
+
+impl ScriptedQmpStream {
+    fn audit_handle(&self) -> Arc<Mutex<ScriptedQmpAudit>> {
+        Arc::clone(&self.audit)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct ScriptedQmpAudit {
     written: Vec<u8>,
     read_timeouts: Vec<Duration>,
     write_timeouts: Vec<Duration>,
@@ -495,7 +616,11 @@ impl Read for ScriptedQmpStream {
 
 impl Write for ScriptedQmpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.written.extend_from_slice(buf);
+        self.audit
+            .lock()
+            .map_err(|_| io::Error::other("scripted QMP audit lock poisoned"))?
+            .written
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
 
@@ -506,12 +631,20 @@ impl Write for ScriptedQmpStream {
 
 impl QmpTimeoutStream for ScriptedQmpStream {
     fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
-        self.read_timeouts.push(timeout);
+        self.audit
+            .lock()
+            .map_err(|_| io::Error::other("scripted QMP audit lock poisoned"))?
+            .read_timeouts
+            .push(timeout);
         Ok(())
     }
 
     fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
-        self.write_timeouts.push(timeout);
+        self.audit
+            .lock()
+            .map_err(|_| io::Error::other("scripted QMP audit lock poisoned"))?
+            .write_timeouts
+            .push(timeout);
         Ok(())
     }
 }
