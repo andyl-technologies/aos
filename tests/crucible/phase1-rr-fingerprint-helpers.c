@@ -16,6 +16,7 @@
 #define GPOINTER_TO_INT(pointer) ((int)(uintptr_t)(pointer))
 #define g_autoptr(type) type *
 #define g_assert(condition) ((void)sizeof(condition))
+#define G_CHECKSUM_SHA256 2
 
 typedef enum ICountMode {
   ICOUNT_DISABLED = 0,
@@ -40,6 +41,8 @@ typedef struct Error {
   char message[128];
 } Error;
 
+typedef struct MigrationIncomingState MigrationIncomingState;
+
 typedef struct QemuOpts {
   const char *shift;
   bool align;
@@ -59,6 +62,13 @@ typedef struct GByteArray {
   unsigned char data[32];
 } GByteArray;
 
+typedef size_t gsize;
+
+typedef struct GChecksum {
+  uint64_t state;
+  uint64_t bytes;
+} GChecksum;
+
 struct qemu_plugin_register;
 struct qemu_plugin_scoreboard {
   size_t element_size;
@@ -68,6 +78,7 @@ typedef struct RAMBlock {
   const char *idstr;
   uint64_t used_length;
   uint8_t *host;
+  void *mr;
 } RAMBlock;
 
 typedef struct QIOChannelBuffer {
@@ -144,6 +155,11 @@ static unsigned int qemu_ram_foreach_block_calls;
 static int64_t qemu_file_last_put_value;
 static int qemu_save_device_state_status;
 static int qemu_file_close_status;
+static int schema_digest_status;
+static uint64_t schema_sections = 3;
+static unsigned int schema_variant;
+static int64_t observed_icount = 9876;
+static bool observed_running;
 static unsigned int qemu_save_device_state_calls;
 static uint8_t serialized_device_state[] = {0x51, 0x45, 0x56, 0x4d, 0x01};
 static QIOChannelBuffer device_state_buffer;
@@ -153,9 +169,50 @@ static GArray cpu1_registers = {.cpu_index = 7, .len = 4};
 static uint8_t ram0[] = {0x10, 0x20, 0x30};
 static uint8_t ram1[] = {0x40, 0x50};
 static RAMBlock ram_blocks[] = {
-    {.idstr = "ram.low", .used_length = sizeof(ram0), .host = ram0},
-    {.idstr = "ram.high", .used_length = sizeof(ram1), .host = ram1},
+    {.idstr = "ram.low", .used_length = sizeof(ram0), .host = ram0, .mr = &ram0},
+    {.idstr = "ram.high", .used_length = sizeof(ram1), .host = ram1, .mr = &ram1},
 };
+
+static GChecksum *
+g_checksum_new(int type)
+{
+  static GChecksum checksum;
+
+  if (type != G_CHECKSUM_SHA256) {
+    return NULL;
+  }
+  checksum.state = 14695981039346656037ULL;
+  checksum.bytes = 0;
+  return &checksum;
+}
+
+static void
+g_checksum_update(GChecksum *checksum, const unsigned char *data, size_t len)
+{
+  for (size_t index = 0; index < len; index++) {
+    checksum->state ^= data[index];
+    checksum->state *= 1099511628211ULL;
+  }
+  checksum->bytes += len;
+}
+
+static void
+g_checksum_get_digest(GChecksum *checksum, unsigned char *digest, gsize *len)
+{
+  const gsize output_len = *len < 32 ? *len : 32;
+
+  for (gsize index = 0; index < output_len; index++) {
+    digest[index] = (unsigned char)(checksum->state >> ((index % 8) * 8));
+    digest[index] ^= (unsigned char)(checksum->bytes + index);
+  }
+  *len = output_len;
+}
+
+static void
+g_checksum_free(GChecksum *checksum)
+{
+  (void)checksum;
+}
 
 static const char *
 current_accel_name(void)
@@ -251,7 +308,8 @@ rr_start_kick_timer(void)
 {
 }
 
-#define CPU_FOREACH(cpu) for ((cpu) = NULL; (cpu) != NULL;)
+#define CPU_FOREACH(cpu) \
+  for ((cpu) = first_cpu; (cpu) != NULL; (cpu) = NULL)
 
 static void
 qemu_wait_io_event_common(CPUState *cpu)
@@ -336,6 +394,26 @@ qemu_ram_foreach_block(int (*callback)(RAMBlock *block, void *opaque),
   }
 }
 
+static bool
+memory_region_is_ram(void *mr)
+{
+  return mr != NULL;
+}
+
+static bool
+memory_region_is_rom(void *mr)
+{
+  (void)mr;
+  return false;
+}
+
+static bool
+memory_region_is_ram_device(void *mr)
+{
+  (void)mr;
+  return false;
+}
+
 static int
 vm_stop(int run_state)
 {
@@ -408,6 +486,37 @@ static void
 object_unref(void *object)
 {
   (void)object;
+}
+
+int
+qemu_savevm_crucible_schema_sha256(uint8_t digest[32],
+                                   uint64_t *sections_out)
+{
+  if (digest == NULL || sections_out == NULL) {
+    return -EINVAL;
+  }
+  memset(digest, 0, 32);
+  *sections_out = 0;
+  if (schema_digest_status != 0) {
+    return schema_digest_status;
+  }
+  for (size_t index = 0; index < 32; index++) {
+    digest[index] = (unsigned char)(0x80U + index + schema_variant);
+  }
+  *sections_out = schema_sections;
+  return 0;
+}
+
+static uint64_t
+qemu_plugin_icount_raw(void)
+{
+  return observed_icount < 0 ? 0 : (uint64_t)observed_icount;
+}
+
+static bool
+runstate_is_running(void)
+{
+  return observed_running;
 }
 
 static void
@@ -718,6 +827,12 @@ test_plugin_fingerprint_exports(void)
   uint64_t ram_bytes = 0;
   uint64_t device_hash = 0;
   uint64_t device_bytes = 0;
+  uint64_t crypto_ram_bytes = 0;
+  uint64_t crypto_device_bytes = 0;
+  uint64_t device_sections = 0;
+  uint8_t ram_digest[32] = {0};
+  uint8_t device_digest[32] = {0};
+  uint8_t schema_digest[32] = {0};
   const uint64_t expected_hash = expected_ram_hash();
   const uint64_t expected_device_hash = expected_fnv1a_bytes(
       14695981039346656037ULL,
@@ -809,6 +924,70 @@ test_plugin_fingerprint_exports(void)
   }
   qemu_file_close_status = 0;
 
+  if (qemu_plugin_crucible_guest_ram_sha256(
+          ram_digest, &crypto_ram_bytes) != 0 ||
+      crypto_ram_bytes != sizeof(ram0) + sizeof(ram1) ||
+      ram_digest[0] == 0) {
+    fputs("guest RAM SHA-256 export did not cover framed guest RAM\n", stderr);
+    return 1;
+  }
+  if (qemu_plugin_crucible_device_state_sha256(
+          device_digest, &crypto_device_bytes) != 0 ||
+      crypto_device_bytes != sizeof(serialized_device_state) ||
+      device_digest[0] == 0) {
+    fputs("device VMState SHA-256 export did not cover serialized state\n",
+          stderr);
+    return 1;
+  }
+  schema_digest_status = 0;
+  if (qemu_plugin_crucible_device_state_schema_sha256(
+          schema_digest, &device_sections) != 0 ||
+      device_sections != schema_sections || schema_digest[0] != 0x80) {
+    fputs("device VMState schema digest/count export failed\n", stderr);
+    return 1;
+  }
+  schema_variant = 1;
+  if (qemu_plugin_crucible_device_state_schema_sha256(
+          schema_digest, &device_sections) != 0 || schema_digest[0] != 0x81) {
+    fputs("device VMState field mutation did not change schema digest\n", stderr);
+    return 1;
+  }
+  schema_variant = 2;
+  if (qemu_plugin_crucible_device_state_schema_sha256(
+          schema_digest, &device_sections) != 0 || schema_digest[0] != 0x82) {
+    fputs("device VMState subsection mutation did not change schema digest\n",
+          stderr);
+    return 1;
+  }
+  schema_variant = 0;
+
+  memset(device_digest, 0xff, sizeof(device_digest));
+  crypto_device_bytes = UINT64_MAX;
+  qemu_save_device_state_status = -EIO;
+  if (qemu_plugin_crucible_device_state_sha256(
+          device_digest, &crypto_device_bytes) != -EIO ||
+      crypto_device_bytes != 0 || device_digest[0] != 0) {
+    fputs("device VMState SHA-256 export did not clear outputs on error\n",
+          stderr);
+    return 1;
+  }
+  qemu_save_device_state_status = 0;
+
+  observed_icount = 9876;
+  observed_running = false;
+  if (qemu_plugin_crucible_icount() != 9876 ||
+      !qemu_plugin_crucible_vm_non_running()) {
+    fputs("observed icount/runstate exports returned stale constants\n", stderr);
+    return 1;
+  }
+  observed_icount = -1;
+  observed_running = true;
+  if (qemu_plugin_crucible_icount() != 0 ||
+      qemu_plugin_crucible_vm_non_running()) {
+    fputs("observed icount/runstate exports missed negative controls\n", stderr);
+    return 1;
+  }
+
   qemu_plugin_crucible_pause_vm();
   if (vm_stop_calls != 1 || vm_stop_run_state != RUN_STATE_PAUSED) {
     fputs("pause export did not request a paused VM stop\n", stderr);
@@ -884,6 +1063,10 @@ main(void)
   puts("ram_hash_includes_block_id_length_and_bytes=true");
   puts("device_state_hash_covers_serialized_non_ram_vmstate=true");
   puts("device_state_error_status_clears_outputs=true");
+  puts("crypto_component_digests_are_32_bytes=true");
+  puts("device_state_schema_digest_and_count=true");
+  puts("device_state_schema_field_and_subsection_mutations=true");
+  puts("observed_icount_and_runstate=true");
   puts("pause_vm_requests_run_state_paused=true");
   puts("migration_host_timer_zeroed_under_icount=true");
   puts("migration_host_timer_preserved_without_icount=true");

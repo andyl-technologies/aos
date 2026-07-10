@@ -25,10 +25,11 @@ fn canonical_trace_definition_pins_complete_preflight_observation_semantics() {
     assert!(material.contains("trigger[1]=horizon-advance"));
     assert!(material.contains("trigger[2]=frame-delivery"));
     assert!(material.contains("trigger[3]=fault-activation"));
-    assert!(material.contains("component[3]=qemu-non-ram-vmstate"));
+    assert!(material.contains("component[3]=qemu-non-ram-vmstate-sha256"));
     assert!(material.contains("rr_switch_quantum=4096"));
     assert!(material.contains("guest_ram_bytes=67108864"));
-    assert!(material.contains("device_state_bytes=4096"));
+    assert!(material.contains("device_state_sections=5"));
+    assert!(material.contains("device_state_schema_digest="));
     assert!(material.contains("launch_definition_digest="));
     assert!(material.contains("complete_current_device_state=true"));
     assert!(material.contains("event_boundary_sampling=true"));
@@ -53,7 +54,7 @@ fn definition_preflight_is_independent_complete_and_instruction_free() {
     assert!(
         definition
             .canonical_material()
-            .contains("device_state_bytes=4096")
+            .contains("device_state_sections=5")
     );
 
     let mut incomplete = definition_preflight(2);
@@ -63,10 +64,28 @@ fn definition_preflight_is_independent_complete_and_instruction_free() {
     assert!(error.to_string().contains("device_state_failures"));
 
     let mut executed = definition_preflight(2);
-    executed["retired"] = Value::from(1);
+    executed["observed_icount"] = Value::from(1);
     let error = QemuTraceDefinitionPreflight::import(Cursor::new(executed.to_string()))
         .expect_err("preflight after guest execution must fail closed");
-    assert!(error.to_string().contains("`retired` must be zero"));
+    assert!(error.to_string().contains("`observed_icount` must be zero"));
+
+    let mut running = definition_preflight(2);
+    running["observed_non_running"] = Value::Bool(false);
+    let error = QemuTraceDefinitionPreflight::import(Cursor::new(running.to_string()))
+        .expect_err("a running preflight must fail closed");
+    assert!(error.to_string().contains("observed_non_running"));
+
+    let mut zero_register_digest = definition_preflight(2);
+    zero_register_digest["register_digests"][0] = Value::from("00".repeat(32));
+    let error = QemuTraceDefinitionPreflight::import(Cursor::new(zero_register_digest.to_string()))
+        .expect_err("zero register digest must fail the preflight");
+    assert!(error.to_string().contains("register_digests[0]"));
+
+    let mut schema_failure = definition_preflight(2);
+    schema_failure["device_state_schema_status"] = Value::from(1);
+    let error = QemuTraceDefinitionPreflight::import(Cursor::new(schema_failure.to_string()))
+        .expect_err("failed VMState schema observation must fail closed");
+    assert!(error.to_string().contains("device_state_schema_status"));
 }
 
 #[test]
@@ -103,12 +122,12 @@ fn real_qemu_trace_import_canonicalizes_all_vcpu_rr_ram_and_device_material() {
 
 #[test]
 fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
-    let error = QemuTraceVcpuContract::new(0, 24, 184, 0)
-        .expect_err("zero register-schema hash must fail closed");
+    let error = QemuTraceVcpuContract::new(0, 24, 184, [0; 32])
+        .expect_err("zero register-schema digest must fail closed");
     assert!(
         error
             .to_string()
-            .contains("register-schema hash must be non-zero")
+            .contains("register-schema digest must be non-zero")
     );
 
     let error = importer(3)
@@ -158,32 +177,32 @@ fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
     assert!(error.to_string().contains("register_file_bytes"));
 
     let mut values = trace_values(2);
-    values[0]["register_hashes"][0] = Value::String("0000000000000000".to_owned());
+    values[0]["register_digests"][0] = Value::String("00".repeat(32));
     let error = importer(2)
         .import(Cursor::new(json_lines(&values)))
         .expect_err("zero register observation hash must fail");
     assert!(
         error
             .to_string()
-            .contains("register_hashes[0] must be non-zero")
+            .contains("register_digests[0]` must be non-zero")
     );
 
     let mut values = trace_values(2);
-    values[0]["ram_hash"] = Value::String("0000000000000000".to_owned());
+    values[0]["ram_digest"] = Value::String("00".repeat(32));
     let error = importer(2)
         .import(Cursor::new(json_lines(&values)))
         .expect_err("zero RAM observation hash must fail");
-    assert!(error.to_string().contains("`ram_hash` must be non-zero"));
+    assert!(error.to_string().contains("`ram_digest` must be non-zero"));
 
     let mut values = trace_values(2);
-    values[0]["device_state_hash"] = Value::String("0000000000000000".to_owned());
+    values[0]["device_state_digest"] = Value::String("00".repeat(32));
     let error = importer(2)
         .import(Cursor::new(json_lines(&values)))
         .expect_err("zero device observation hash must fail");
     assert!(
         error
             .to_string()
-            .contains("`device_state_hash` must be non-zero")
+            .contains("`device_state_digest` must be non-zero")
     );
 
     let mut values = trace_values(2);
@@ -272,7 +291,7 @@ fn real_qemu_trace_comparison_localizes_first_vcpu_register_difference() {
         .import(Cursor::new(trace(2)))
         .expect("baseline trace should import");
     let mut changed_values = trace_values(2);
-    changed_values[1]["register_hashes"][1] = Value::String("00000000000000ff".to_owned());
+    changed_values[1]["register_digests"][1] = Value::String("ff".repeat(32));
     let second = importer(2)
         .import(Cursor::new(json_lines(&changed_values)))
         .expect("mutated trace should remain structurally valid");
@@ -307,6 +326,22 @@ fn real_qemu_trace_import_accepts_bounded_post_horizon_teardown() {
         assert_eq!(stream.samples[1].icount, 8192);
         assert_eq!(stream.final_icount, 8192);
     }
+}
+
+#[test]
+fn real_qemu_trace_import_pins_vmstate_schema_not_serialized_value_length() {
+    let mut values = trace_values(2);
+    values[0]["device_state_bytes"] = Value::from(4100);
+    values[1]["device_state_bytes"] = Value::from(4200);
+    importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect("value-dependent VMState lengths may vary under one pinned schema");
+
+    values[1]["device_state_schema_digest"] = Value::String("55".repeat(32));
+    let error = importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect_err("VMState section/schema drift must fail closed");
+    assert!(error.to_string().contains("section/schema coverage"));
 }
 
 #[test]
@@ -358,7 +393,7 @@ fn importer(vcpus: usize) -> QemuTraceFingerprintImport {
 fn observation(vcpus: usize) -> QemuTraceObservationContract {
     let vcpu_contracts = (0..vcpus)
         .map(|vcpu| {
-            QemuTraceVcpuContract::new(vcpu as u64, 24, 184, 0x100 + vcpu as u64)
+            QemuTraceVcpuContract::new(vcpu as u64, 24, 184, [(vcpu + 1) as u8; 32])
                 .expect("test vCPU contract should validate")
         })
         .collect();
@@ -369,7 +404,8 @@ fn observation(vcpus: usize) -> QemuTraceObservationContract {
         (0..vcpus as u64).collect(),
         4096,
         64 * 1024 * 1024,
-        4096,
+        5,
+        [0x44; 32],
         vcpu_contracts,
         identity,
     )
@@ -393,9 +429,10 @@ fn definition_preflight(vcpus: usize) -> Value {
         "kind": "definition",
         "schema": QEMU_TRACE_FINGERPRINT_SCHEMA,
         "definition_only": true,
-        "paused_before_guest_execution": true,
+        "observed_non_running": true,
         "device_state_complete": true,
         "retired": 0,
+        "observed_icount": 0,
         "tracked_vcpus": vcpus,
         "rr_switch_quantum": 4096,
         "launch_definition_digest": "10".repeat(32),
@@ -403,11 +440,21 @@ fn definition_preflight(vcpus: usize) -> Value {
         "trace_plugin_build_digest": "30".repeat(32),
         "register_counts": (0..vcpus).map(|_| 24).collect::<Vec<_>>(),
         "register_file_bytes": (0..vcpus).map(|_| 184).collect::<Vec<_>>(),
-        "register_schema_hashes": (0..vcpus)
-            .map(|vcpu| format!("{:016x}", 0x100 + vcpu as u64))
+        "register_digests": (0..vcpus)
+            .map(|vcpu| format!("{:02x}", vcpu + 3).repeat(32))
+            .collect::<Vec<_>>(),
+        "register_schema_digests": (0..vcpus)
+            .map(|vcpu| format!("{:02x}", vcpu + 1).repeat(32))
             .collect::<Vec<_>>(),
         "ram_bytes": 64 * 1024 * 1024,
+        "ram_digest": "33".repeat(32),
+        "ram_status": 0,
         "device_state_bytes": 4096,
+        "device_state_digest": "43".repeat(32),
+        "device_state_sections": 5,
+        "device_state_schema_digest": "44".repeat(32),
+        "device_state_status": 0,
+        "device_state_schema_status": 0,
         "sample_register_failures": 0,
         "register_read_failures": 0,
         "device_state_failures": 0
@@ -415,8 +462,8 @@ fn definition_preflight(vcpus: usize) -> Value {
 }
 
 fn sample(retired: u64, current_vcpu: u64, vcpus: usize) -> Value {
-    let hashes = (0..vcpus)
-        .map(|vcpu| format!("{:016x}", retired + vcpu as u64))
+    let digests = (0..vcpus)
+        .map(|vcpu| format!("{:02x}", ((retired + vcpu as u64) % 255 + 1) as u8).repeat(32))
         .collect::<Vec<_>>();
     let register_counts = (0..vcpus).map(|_| 24).collect::<Vec<_>>();
     let register_file_bytes = (0..vcpus).map(|_| 184).collect::<Vec<_>>();
@@ -425,8 +472,8 @@ fn sample(retired: u64, current_vcpu: u64, vcpus: usize) -> Value {
     let register_retired = (0..vcpus)
         .map(|vcpu| base + u64::from((vcpu as u64) < remainder))
         .collect::<Vec<_>>();
-    let register_schema_hashes = (0..vcpus)
-        .map(|vcpu| format!("{:016x}", 0x100 + vcpu as u64))
+    let register_schema_digests = (0..vcpus)
+        .map(|vcpu| format!("{:02x}", vcpu + 1).repeat(32))
         .collect::<Vec<_>>();
     json!({
         "schema": QEMU_TRACE_FINGERPRINT_SCHEMA,
@@ -434,6 +481,7 @@ fn sample(retired: u64, current_vcpu: u64, vcpus: usize) -> Value {
         "qemu_build_digest": "20".repeat(32),
         "trace_plugin_build_digest": "30".repeat(32),
         "retired": retired,
+        "observed_icount": retired,
         "vcpu": current_vcpu,
         "final": false,
         "tracked_vcpus": vcpus,
@@ -447,18 +495,22 @@ fn sample(retired: u64, current_vcpu: u64, vcpus: usize) -> Value {
         "rr_cursor_valid": true,
         "rr_cursor_source": "live_instruction",
         "stream_hash": format!("{retired:016x}"),
-        "register_hash": format!("{:016x}", retired + 1),
-        "register_hashes": hashes,
+        "register_digests": digests,
         "register_counts": register_counts,
         "register_file_bytes": register_file_bytes,
-        "register_schema_hashes": register_schema_hashes,
+        "register_schema_digests": register_schema_digests,
         "register_retired": register_retired,
-        "ram_hash": format!("{:016x}", retired + 2),
-        "device_state_hash": format!("{:016x}", retired + 3),
+        "ram_digest": format!("{:02x}", (retired % 255 + 1) as u8).repeat(32),
+        "ram_status": 0,
+        "device_state_digest": format!("{:02x}", ((retired + 1) % 255 + 1) as u8).repeat(32),
         "device_state_bytes": 4096,
+        "device_state_sections": 5,
+        "device_state_schema_digest": "44".repeat(32),
+        "device_state_status": 0,
+        "device_state_schema_status": 0,
         "device_state_complete": true,
         "device_state_failures": 0,
-        "extended_hash": format!("{:016x}", retired + 4),
+        "diagnostic_extended_fnv": format!("{:016x}", retired + 4),
         "ram_bytes": 64 * 1024 * 1024,
         "memory_events": retired,
         "io_events": retired / 2,

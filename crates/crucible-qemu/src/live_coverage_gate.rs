@@ -9,7 +9,8 @@
 //! observation without changing the host execution fingerprint. An independent
 //! observation plugin also compares the instruction stream, all vCPU registers,
 //! round-robin cursor, RAM, and current serialized non-RAM VMState across the
-//! two runs; device-I/O history remains an additional diagnostic. Both runs
+//! two runs through a cryptographic acceptance projection and chained execution
+//! trajectory. Noncryptographic rolling hashes remain diagnostics only. Both runs
 //! admit their live observations and exact quantum boundary through one
 //! [`EventLog`], then compare its canonical causal projection byte-for-byte.
 

@@ -686,13 +686,17 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     trace-plugin observations into a separately content-addressed stream. A
     definition-only QEMU preflight pauses before guest execution and pins the
     exact QMP CPU set, register schemas and byte counts, RAM coverage,
-    serialized non-RAM VMState coverage, RR quantum, and launch/QEMU/plugin
-    identities independently of both comparison runs. Each run then validates
-    monotonic per-vCPU retired counts, current registers, RAM, non-RAM VMState,
-    the RR cursor, periodic cadence, and the exact horizon boundary. The
-    scenario also content-addresses the exact guest image, command line, seed,
-    injected-input sequence, and launch definition. The live path still samples
-    only the horizon interaction boundary; frame-delivery and fault-activation
+    registered non-RAM VMState section schema, RR quantum, and
+    launch/QEMU/plugin identities independently of both comparison runs. The
+    preflight must observe an actually stopped VM at aggregate icount zero.
+    Each run then validates monotonic per-vCPU retired counts, current
+    registers, RAM, non-RAM VMState, the RR cursor, periodic cadence, and the
+    exact horizon boundary. The scenario also content-addresses the exact guest
+    image, command line, seed,
+    injected-input sequence, and launch definition. Register-file, writable-RAM,
+    and serialized non-RAM VMState components use SHA-256; the old 64-bit
+    rolling values remain diagnostics only. The live path still samples only
+    the horizon interaction boundary; frame-delivery and fault-activation
     sampling and an integrated launcher/rerun adapter for instruction-exact
     bisection and both-side state dumps remain absent, so this task remains open.
 - [x] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a

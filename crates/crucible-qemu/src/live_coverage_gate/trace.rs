@@ -4,15 +4,12 @@ use std::fs;
 use std::path::Path;
 
 use crucible::ContentHash;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::{
     GATE_DOMAIN, GUEST_POST_IO_PC, LoadedQemuCoverageGateConfig, LoadedQemuCoverageGateError,
 };
 
-const FNV1A64_OFFSET: u64 = 14_695_981_039_346_656_037;
-const FNV1A64_OFFSET_HEX: &str = "cbf29ce484222325";
-const FNV1A64_PRIME: u64 = 1_099_511_628_211;
 const EXPECTED_VCPUS: u64 = 1;
 const EXPECTED_GUEST_RAM_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -81,7 +78,7 @@ pub(super) fn read_trace_sample(
         let value: Value = serde_json::from_str(line)
             .map_err(|source| LoadedQemuCoverageGateError::TraceDecode { mode, source })?;
         if value.get("retired").and_then(Value::as_u64) == Some(config.horizon_icount)
-            && value.get("observer_icount").and_then(Value::as_u64) == Some(config.horizon_icount)
+            && value.get("observed_icount").and_then(Value::as_u64) == Some(config.horizon_icount)
             && value.get("final").and_then(Value::as_bool) == Some(false)
             && value.get("post_boundary_sample").and_then(Value::as_bool) == Some(true)
         {
@@ -99,7 +96,65 @@ pub(super) fn read_trace_sample(
         horizon_icount: config.horizon_icount,
     })?;
     validate_trace_sample(&sample, config, mode)?;
-    Ok(sample)
+    Ok(canonical_acceptance_sample(&sample))
+}
+
+/// Projects a validated trace sample onto cryptographic acceptance fields.
+fn canonical_acceptance_sample(sample: &Value) -> Value {
+    let mut projection = Map::new();
+    for field in [
+        "schema",
+        "retired",
+        "vcpu",
+        "final",
+        "tracked_vcpus",
+        "stop_at",
+        "stop_requested",
+        "trigger",
+        "event_boundary",
+        "observed_icount",
+        "post_boundary_sample",
+        "trajectory_steps",
+        "trajectory_digest",
+        "required_pc",
+        "required_pc_seen",
+        "required_pc_first_retired",
+        "rr_current_vcpu",
+        "rr_cursor_position",
+        "rr_switch_quantum",
+        "rr_cursor_valid",
+        "rr_cursor_source",
+        "launch_definition_digest",
+        "qemu_build_digest",
+        "trace_plugin_build_digest",
+        "register_digests",
+        "register_counts",
+        "register_file_bytes",
+        "register_schema_digests",
+        "register_retired",
+        "ram_digest",
+        "ram_status",
+        "ram_bytes",
+        "device_state_digest",
+        "device_state_schema_digest",
+        "device_state_sections",
+        "device_state_bytes",
+        "device_state_status",
+        "device_state_schema_status",
+        "device_state_complete",
+        "memory_events",
+        "io_events",
+        "memory_events_enabled",
+        "sample_register_failures",
+        "register_read_failures",
+        "device_state_failures",
+        "trajectory_digest_failures",
+    ] {
+        if let Some(value) = sample.get(field) {
+            projection.insert(field.to_owned(), value.clone());
+        }
+    }
+    Value::Object(projection)
 }
 
 fn validate_trace_sample(
@@ -108,7 +163,7 @@ fn validate_trace_sample(
     mode: &'static str,
 ) -> Result<(), LoadedQemuCoverageGateError> {
     for (field, expected) in [
-        ("schema", "crucible.qemu.trace-fingerprint.v3"),
+        ("schema", "crucible.qemu.trace-fingerprint.v4"),
         ("rr_cursor_source", "live_instruction"),
     ] {
         if sample.get(field).and_then(Value::as_str) != Some(expected) {
@@ -136,7 +191,7 @@ fn validate_trace_sample(
         || sample.get("stop_requested").and_then(Value::as_bool) != Some(false)
         || u64_field(sample, "stop_at") != Some(0)
         || u64_field(sample, "retired") != Some(config.horizon_icount)
-        || u64_field(sample, "observer_icount") != Some(config.horizon_icount)
+        || u64_field(sample, "observed_icount") != Some(config.horizon_icount)
     {
         return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
             mode,
@@ -168,13 +223,16 @@ fn validate_trace_sample(
     for field in [
         "sample_register_failures",
         "register_read_failures",
+        "ram_status",
         "device_state_failures",
         "device_state_status",
+        "device_state_schema_status",
+        "trajectory_digest_failures",
     ] {
         if u64_field(sample, field) != Some(0) {
             return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
                 mode,
-                reason: "one or more register or device-state observations failed",
+                reason: "one or more register, RAM, or device-state observations failed",
             });
         }
     }
@@ -215,16 +273,18 @@ fn validate_trace_sample(
         });
     }
     for field in [
-        "stream_hash",
-        "register_hash",
-        "trajectory_hash",
-        "memory_event_hash",
-        "ram_hash",
-        "device_state_hash",
-        "device_event_hash",
-        "extended_hash",
+        "trajectory_digest",
+        "ram_digest",
+        "device_state_digest",
+        "device_state_schema_digest",
     ] {
-        require_nonzero_hex(sample, field, 16, mode)?;
+        require_nonzero_hex(sample, field, 64, mode)?;
+    }
+    if u64_field(sample, "device_state_sections").is_none_or(|sections| sections == 0) {
+        return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
+            mode,
+            reason: "serialized non-RAM VMState schema coverage is absent",
+        });
     }
     for field in [
         "launch_definition_digest",
@@ -249,15 +309,6 @@ fn validate_trace_sample(
             reason: "trace provenance differs from the immutable gate inputs",
         });
     }
-    if sample.get("memory_event_hash").and_then(Value::as_str) == Some(FNV1A64_OFFSET_HEX)
-        || sample.get("device_event_hash").and_then(Value::as_str) == Some(FNV1A64_OFFSET_HEX)
-    {
-        return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
-            mode,
-            reason: "memory or device-I/O hash remained at its empty initial value",
-        });
-    }
-    validate_extended_hash(sample, mode)?;
     Ok(())
 }
 
@@ -284,69 +335,23 @@ fn validate_register_arrays(
             reason: "register counts, canonical bytes, or retired vectors are incomplete",
         });
     }
-    for field in ["register_hashes", "register_schema_hashes"] {
+    for field in ["register_digests", "register_schema_digests"] {
         let Some(values) = sample.get(field).and_then(Value::as_array) else {
             return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
                 mode,
-                reason: "a per-vCPU register hash vector is absent",
+                reason: "a per-vCPU register digest vector is absent",
             });
         };
         if values.len() != 1
             || values
                 .iter()
-                .any(|value| !is_nonzero_lower_hex(value.as_str(), 16))
+                .any(|value| !is_nonzero_lower_hex(value.as_str(), 64))
         {
             return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
                 mode,
-                reason: "a per-vCPU register hash vector is malformed or empty",
+                reason: "a per-vCPU register digest vector is malformed or empty",
             });
         }
-    }
-    Ok(())
-}
-
-fn validate_extended_hash(
-    sample: &Value,
-    mode: &'static str,
-) -> Result<(), LoadedQemuCoverageGateError> {
-    let mut expected = FNV1A64_OFFSET;
-    for value in [
-        parsed_hex_field(sample, "stream_hash"),
-        parsed_hex_field(sample, "register_hash"),
-        parsed_hex_field(sample, "ram_hash"),
-        parsed_hex_field(sample, "device_state_hash"),
-        u64_field(sample, "device_state_bytes"),
-        u64_field(sample, "device_state_status"),
-        Some(1),
-        parsed_hex_field(sample, "device_event_hash"),
-        u64_field(sample, "rr_current_vcpu"),
-        u64_field(sample, "rr_cursor_position"),
-        u64_field(sample, "rr_switch_quantum"),
-        Some(1),
-        Some(0),
-        u64_field(sample, "tracked_vcpus"),
-        u64_field(sample, "stop_at"),
-        parsed_hex_field(sample, "trajectory_hash"),
-        parsed_hex_field(sample, "memory_event_hash"),
-        Some(1),
-        u64_field(sample, "observer_icount"),
-        u64_field(sample, "required_pc"),
-        Some(1),
-        u64_field(sample, "required_pc_first_retired"),
-    ] {
-        let Some(value) = value else {
-            return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
-                mode,
-                reason: "an extended-hash component has the wrong type",
-            });
-        };
-        expected = fnv1a_u64(expected, value);
-    }
-    if parsed_hex_field(sample, "extended_hash") != Some(expected) {
-        return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
-            mode,
-            reason: "the extended hash is inconsistent with its component fields",
-        });
     }
     Ok(())
 }
@@ -387,10 +392,6 @@ fn is_nonzero_lower_hex(value: Option<&str>, width: usize) -> bool {
     })
 }
 
-fn parsed_hex_field(sample: &Value, field: &str) -> Option<u64> {
-    u64::from_str_radix(sample.get(field)?.as_str()?, 16).ok()
-}
-
 fn u64_field(sample: &Value, field: &str) -> Option<u64> {
     sample.get(field)?.as_u64()
 }
@@ -404,14 +405,6 @@ fn u64_array(sample: &Value, field: &str) -> Option<Vec<u64>> {
         .collect()
 }
 
-fn fnv1a_u64(mut hash: u64, value: u64) -> u64 {
-    for byte in value.to_le_bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV1A64_PRIME);
-    }
-    hash
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -419,35 +412,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extended_hash_rejects_a_component_mismatch() {
+    fn acceptance_projection_excludes_noncryptographic_diagnostics() {
         let sample = json!({
             "stream_hash": "0000000000000001",
-            "register_hash": "0000000000000002",
-            "ram_hash": "0000000000000003",
-            "device_state_hash": "0000000000000008",
-            "device_state_bytes": 4096,
-            "device_state_status": 0,
+            "trajectory_hash": "0000000000000002",
+            "memory_event_hash": "0000000000000003",
             "device_event_hash": "0000000000000004",
-            "rr_current_vcpu": 0,
-            "rr_cursor_position": 1,
-            "rr_switch_quantum": 1024,
-            "tracked_vcpus": 1,
-            "stop_at": 0,
-            "trajectory_hash": "0000000000000005",
-            "memory_event_hash": "0000000000000006",
-            "observer_icount": 32768,
-            "required_pc": 1050624,
-            "required_pc_first_retired": 2048,
-            "extended_hash": "0000000000000007"
+            "diagnostic_extended_fnv": "0000000000000005",
+            "trajectory_digest": "11".repeat(32),
+            "ram_digest": "22".repeat(32),
+            "device_state_digest": "33".repeat(32)
         });
+        let projection = canonical_acceptance_sample(&sample);
 
-        assert!(matches!(
-            validate_extended_hash(&sample, "coverage-on"),
-            Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
-                reason: "the extended hash is inconsistent with its component fields",
-                ..
-            })
-        ));
+        assert!(projection.get("stream_hash").is_none());
+        assert!(projection.get("trajectory_hash").is_none());
+        assert!(projection.get("memory_event_hash").is_none());
+        assert!(projection.get("device_event_hash").is_none());
+        assert!(projection.get("diagnostic_extended_fnv").is_none());
+        assert_eq!(projection["trajectory_digest"], sample["trajectory_digest"]);
     }
 
     #[test]
@@ -456,8 +439,8 @@ mod tests {
             "register_counts": [0],
             "register_file_bytes": [512],
             "register_retired": [32768],
-            "register_hashes": ["0000000000000001"],
-            "register_schema_hashes": ["0000000000000002"]
+            "register_digests": ["0000000000000000000000000000000000000000000000000000000000000001"],
+            "register_schema_digests": ["0000000000000000000000000000000000000000000000000000000000000002"]
         });
 
         assert!(validate_register_arrays(&sample, 32_768, "coverage-on").is_err());
@@ -465,8 +448,17 @@ mod tests {
 
     #[test]
     fn fingerprint_hash_validation_rejects_uppercase_and_empty_values() {
-        assert!(!is_nonzero_lower_hex(Some("0000000000000000"), 16));
-        assert!(!is_nonzero_lower_hex(Some("000000000000000A"), 16));
-        assert!(is_nonzero_lower_hex(Some("000000000000000a"), 16));
+        assert!(!is_nonzero_lower_hex(
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            64
+        ));
+        assert!(!is_nonzero_lower_hex(
+            Some("000000000000000000000000000000000000000000000000000000000000000A"),
+            64
+        ));
+        assert!(is_nonzero_lower_hex(
+            Some("000000000000000000000000000000000000000000000000000000000000000a"),
+            64
+        ));
     }
 }

@@ -471,12 +471,20 @@
         needle = "validate_trace_sample(&sample, config, mode)?";
       }
       {
-        label = "full fingerprint component requirement";
-        needle = ''"extended_hash",'';
+        label = "cryptographic trajectory component requirement";
+        needle = ''"trajectory_digest",'';
       }
       {
-        label = "current serialized device-state hash requirement";
-        needle = ''"device_state_hash",'';
+        label = "noncryptographic diagnostics excluded from acceptance";
+        needle = "canonical_acceptance_sample";
+      }
+      {
+        label = "current serialized device-state digest requirement";
+        needle = ''"device_state_digest",'';
+      }
+      {
+        label = "cryptographic per-vCPU register digest requirement";
+        needle = ''"register_digests", "register_schema_digests"'';
       }
       {
         label = "serialized device-state byte coverage requirement";
@@ -505,22 +513,30 @@
         needle = "post_boundary_samples && required_pc_seen";
       }
       {
-        label = "trace hashes writable guest RAM instead of firmware or device RAM";
-        needle = "qemu_plugin_crucible_guest_ram_hash(&ram_bytes)";
+        label = "cryptographic execution trajectory chain";
+        needle = "crucible.qemu.execution-trajectory.v1";
       }
       {
-        label = "trace fingerprints current non-RAM device state";
-        needle = "qemu_plugin_crucible_device_state_hash(";
+        label = "cryptographic trajectory failure latch";
+        needle = "trajectory_digest_failures";
+      }
+      {
+        label = "trace digests writable guest RAM instead of firmware or device RAM";
+        needle = "qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes)";
+      }
+      {
+        label = "trace cryptographically fingerprints current non-RAM device state";
+        needle = "qemu_plugin_crucible_device_state_sha256(";
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/0002-crucible-rr-fingerprint-helpers.patch" qemuFingerprintPatch [
       {
-        label = "writable guest-RAM fingerprint API";
-        needle = "qemu_plugin_crucible_guest_ram_hash";
+        label = "writable guest-RAM cryptographic fingerprint API";
+        needle = "qemu_plugin_crucible_guest_ram_sha256";
       }
       {
-        label = "non-RAM VMState fingerprint API";
-        needle = "qemu_plugin_crucible_device_state_hash";
+        label = "non-RAM VMState cryptographic fingerprint API";
+        needle = "qemu_plugin_crucible_device_state_sha256";
       }
       {
         label = "guest-RAM fingerprint excludes ROM";

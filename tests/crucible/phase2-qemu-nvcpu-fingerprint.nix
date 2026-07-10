@@ -205,11 +205,11 @@
       }
       {
         label = "trace importer rejects zero RAM observation hashes";
-        needle = "field `ram_hash` must be non-zero";
+        needle = "field `ram_digest` must be non-zero";
       }
       {
         label = "trace importer rejects zero device observation hashes";
-        needle = "field `device_state_hash` must be non-zero";
+        needle = "field `device_state_digest` must be non-zero";
       }
       {
         label = "first differing sample component enum";
@@ -341,7 +341,7 @@
     ++ failuresFor "pkgs/emulation/crucible-qemu-trace-plugin.c" qemuTracePlugin [
       {
         label = "trace plugin all-vCPU register hashes";
-        needle = "register_hashes.per_vcpu";
+        needle = "register_digests.per_vcpu";
       }
       {
         label = "trace plugin RR current vCPU";
@@ -365,11 +365,11 @@
       }
       {
         label = "trace plugin versioned schema";
-        needle = "crucible.qemu.trace-fingerprint.v3";
+        needle = "crucible.qemu.trace-fingerprint.v4";
       }
       {
         label = "trace plugin register schema hashes";
-        needle = "register_schema_hashes";
+        needle = "register_schema_digests";
       }
       {
         label = "terminal cursor source";
@@ -393,11 +393,11 @@
       }
       {
         label = "current serialized device state";
-        needle = "qemu_plugin_crucible_device_state_hash(";
+        needle = "qemu_plugin_crucible_device_state_sha256(";
       }
       {
         label = "device-state hash in trace samples";
-        needle = "device_state_hash";
+        needle = "device_state_digest";
       }
       {
         label = "device-state byte count in trace samples";
@@ -421,7 +421,7 @@
       }
       {
         label = "definition records pre-execution pause";
-        needle = "paused_before_guest_execution";
+        needle = "observed_non_running";
       }
       {
         label = "definition records serialized device-state status";
@@ -760,6 +760,7 @@ in
                 -no-user-config \
                 -display none \
                 -monitor none \
+                -S \
                 -machine q35 \
                 -bios "$SMP_GUEST_FIRMWARE" \
                 -accel sim,thread=single \
@@ -798,9 +799,10 @@ in
                 --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
                 'length == 1 and (.[0] | (
                   .kind == "definition"
-                  and .schema == "crucible.qemu.trace-fingerprint.v3"
+                  and .schema == "crucible.qemu.trace-fingerprint.v4"
                   and .definition_only == true
-                  and .paused_before_guest_execution == true
+                  and .observed_non_running == true
+                  and .observed_icount == 0
                   and .retired == 0
                   and .tracked_vcpus == 4
                   and .rr_switch_quantum == $quantum
@@ -808,20 +810,33 @@ in
                   and .qemu_build_digest == $qemu_build_digest
                   and .trace_plugin_build_digest == $trace_plugin_build_digest
                   and .ram_bytes > 0
-                  and .ram_hash != "0000000000000000"
+                  and .ram_status == 0
+                  and (.ram_digest | test("^[0-9a-f]{64}$"))
+                  and .ram_digest != "0000000000000000000000000000000000000000000000000000000000000000"
                   and .device_state_complete == true
                   and .device_state_status == 0
+                  and .device_state_schema_status == 0
                   and .device_state_failures == 0
                   and .device_state_bytes > 0
-                  and .device_state_hash != "0000000000000000"
+                  and .device_state_sections > 0
+                  and (.device_state_digest | test("^[0-9a-f]{64}$"))
+                  and .device_state_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                  and (.device_state_schema_digest | test("^[0-9a-f]{64}$"))
+                  and .device_state_schema_digest != "0000000000000000000000000000000000000000000000000000000000000000"
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
                   and (.register_counts | length) == 4
                   and all(.register_counts[]; . > 0)
                   and (.register_file_bytes | length) == 4
                   and all(.register_file_bytes[]; . > 0)
-                  and (.register_schema_hashes | length) == 4
-                  and all(.register_schema_hashes[]; . != "0000000000000000")
+                  and (.register_digests | length) == 4
+                  and all(.register_digests[];
+                    test("^[0-9a-f]{64}$")
+                    and . != "0000000000000000000000000000000000000000000000000000000000000000")
+                  and (.register_schema_digests | length) == 4
+                  and all(.register_schema_digests[];
+                    test("^[0-9a-f]{64}$")
+                    and . != "0000000000000000000000000000000000000000000000000000000000000000")
                 ))' "$trace" >/dev/null \
                 || fail "definition-only QEMU did not emit one complete paused preflight"
               qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-definition.json" || true
@@ -881,13 +896,15 @@ in
                 --argjson cadence "$cadence" \
                 --argjson horizon "$horizon" \
                 --argjson quantum "$quantum" \
+                --slurpfile definition "$TMPDIR/qemu-nvcpu-definition.jsonl" \
                 '
-                [ .[] | select((.kind // "sample") == "sample" and .final != true) ] as $samples
+                ([$definition[] | select(.kind == "definition")][0]) as $contract
+                | [ .[] | select((.kind // "sample") == "sample" and .final != true) ] as $samples
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
                 | [ .[] | select((.kind // "sample") == "sample" and .final == true) ] as $finals
                 | ($samples | map(.retired)) == [range($cadence; $horizon + 1; $cadence)]
                 and all($samples[]; (
-                  .schema == "crucible.qemu.trace-fingerprint.v3"
+                  .schema == "crucible.qemu.trace-fingerprint.v4"
                   and .launch_definition_digest != null
                   and .qemu_build_digest != null
                   and .trace_plugin_build_digest != null
@@ -900,28 +917,36 @@ in
                   and .device_event_hash != null
                   and .device_state_complete == true
                   and .device_state_status == 0
+                  and .device_state_schema_status == 0
                   and .device_state_failures == 0
                   and .device_state_bytes > 0
+                  and .device_state_sections == $contract.device_state_sections
+                  and .device_state_schema_digest == $contract.device_state_schema_digest
+                  and .observed_icount == .retired
                   and .memory_events > 0
                   and .ram_bytes > 0
+                  and .ram_status == 0
                   and .sample_register_failures == 0
                   and .register_read_failures == 0
-                  and (.register_hashes | length) == 4
-                  and all(.register_hashes[]; . != "0000000000000000")
+                  and (.register_digests | length) == 4
+                  and all(.register_digests[];
+                    test("^[0-9a-f]{64}$")
+                    and . != "0000000000000000000000000000000000000000000000000000000000000000")
                   and (.register_counts | length) == 4
                   and all(.register_counts[]; . > 0)
                   and (.register_file_bytes | length) == 4
                   and all(.register_file_bytes[]; . > 0)
-                  and (.register_schema_hashes | length) == 4
-                  and all(.register_schema_hashes[]; . != "0000000000000000")
+                  and .register_schema_digests == $contract.register_schema_digests
                   and (.register_retired | length) == 4
                   and (.register_retired | add) == .retired
                   and .rr_current_vcpu >= 0
                   and .rr_current_vcpu < 4
                   and .rr_cursor_position >= 0
                   and .rr_cursor_position < .rr_switch_quantum
-                  and .ram_hash != "0000000000000000"
-                  and .device_state_hash != "0000000000000000"
+                  and (.ram_digest | test("^[0-9a-f]{64}$"))
+                  and .ram_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                  and (.device_state_digest | test("^[0-9a-f]{64}$"))
+                  and .device_state_digest != "0000000000000000000000000000000000000000000000000000000000000000"
                   and .device_event_hash != "0000000000000000"
                 ))
                 and (($samples | last) | (
@@ -991,10 +1016,11 @@ in
               '([$trace[] | select(.kind == "definition")][0]) as $sample
                | {schema:$schema,node:$node,cadence_icount:$cadence_icount,horizon_icount:$horizon_icount,
                   rr_switch_quantum:$rr_switch_quantum,baseline_ram_bytes:$sample.ram_bytes,
-                  device_state_bytes:$sample.device_state_bytes,
+                  device_state_sections:$sample.device_state_sections,
+                  device_state_schema_digest:$sample.device_state_schema_digest,
                   register_counts:$sample.register_counts,
                   register_file_bytes:$sample.register_file_bytes,
-                  register_schema_hashes:$sample.register_schema_hashes,
+                  register_schema_digests:$sample.register_schema_digests,
                   launch_definition_digest:$launch_definition_digest,
                   guest_image_digest:$guest_image_digest,
                   kernel_cmdline:$kernel_cmdline,
@@ -1016,7 +1042,7 @@ in
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
-              then .register_hashes[1] = "00000000000000ff"
+              then .register_digests[1] = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
               else .
               end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/qemu-nvcpu-trace-mutated.jsonl"
@@ -1076,38 +1102,46 @@ in
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
-              then .ram_hash = "00000000000000fe" else . end
+              then .ram_digest = "0000000000000000000000000000000000000000000000000000000000000001" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-ram-mutated.jsonl"
             expect_cli_failure ram-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-ram-mutated.jsonl" '^first_differing_component=guest_memory_digest$'
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
-              then .device_state_hash = "00000000000000fd" else . end
+              then .device_state_digest = "0000000000000000000000000000000000000000000000000000000000000002" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-device-mutated.jsonl"
             expect_cli_failure device-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-device-mutated.jsonl" '^first_differing_component=device_state_digest$'
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
-              then .register_hashes[0] = "0000000000000000" else . end
+              then .register_digests[0] = "0000000000000000000000000000000000000000000000000000000000000000" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-register.jsonl"
             expect_cli_failure zero-register-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-zero-register.jsonl" 'register_hashes\[0\] must be non-zero'
+              "$TMPDIR/trace-zero-register.jsonl" 'register_digests\[0\] must be non-zero'
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
-              then .ram_hash = "0000000000000000" else . end
+              then .ram_digest = "0000000000000000000000000000000000000000000000000000000000000000" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-ram.jsonl"
             expect_cli_failure zero-ram-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-zero-ram.jsonl" 'field `ram_hash` must be non-zero'
+              "$TMPDIR/trace-zero-ram.jsonl" 'field `ram_digest` must be non-zero'
 
             jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
-              then .device_state_hash = "0000000000000000" else . end
+              then .device_state_digest = "0000000000000000000000000000000000000000000000000000000000000000" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-device.jsonl"
             expect_cli_failure zero-device-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-zero-device.jsonl" 'field `device_state_hash` must be non-zero'
+              "$TMPDIR/trace-zero-device.jsonl" 'field `device_state_digest` must be non-zero'
+
+            jq -c --argjson horizon "$horizon" '
+              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              then .device_state_schema_digest = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+              else . end
+            ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-device-schema-mutated.jsonl"
+            expect_cli_failure device-schema-reject "$TMPDIR/qmp-cpus-b.json" \
+              "$TMPDIR/trace-device-schema-mutated.jsonl" 'differs from the independent preflight schema'
 
             jq -c --argjson cadence "$cadence" '
               if ((.kind // "sample") == "sample" and .final != true and .retired == $cadence)
@@ -1206,12 +1240,14 @@ in
             actual_argv_hash_complete=false
             observation_contract_source=independent-definition-only-qemu-preflight
             independent_observation_contract=true
-            fingerprint_definition=canonical-periodic-and-event-boundary-trace-v3
+            fingerprint_definition=canonical-periodic-and-event-boundary-trace-v4
             periodic_cadence=600000000-real-smp-guest
             live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum
-            postprocessing_negative_controls=register,rr,retired,ram,device,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
+            postprocessing_negative_controls=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology
             live_perturbation_controls=second-run-host-cpu-load
             device_component_scope=current-non-ram-qemu-vmstate
+            component_digest_strength=sha256
+            device_schema_contract=registered-non-ram-vmstate-sections
             event_boundary_sampling=horizon-advance-live;frame-and-fault-model-only
             full_device_state_complete=true
             integrated_fixed_configuration_runner=false

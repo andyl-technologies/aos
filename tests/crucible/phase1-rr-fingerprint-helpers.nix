@@ -119,6 +119,70 @@
       label = "pause VM plugin export";
       needle = "qemu_plugin_crucible_pause_vm";
     }
+    {
+      label = "cryptographic guest RAM export";
+      needle = "qemu_plugin_crucible_guest_ram_sha256";
+    }
+    {
+      label = "cryptographic device VMState export";
+      needle = "qemu_plugin_crucible_device_state_sha256";
+    }
+    {
+      label = "recursive device VMState schema digest";
+      needle = "qemu_savevm_crucible_schema_sha256";
+    }
+    {
+      label = "VMState field schema identity";
+      needle = "field->name";
+    }
+    {
+      label = "VMState field storage offset";
+      needle = "field->offset";
+    }
+    {
+      label = "VMState subarray start";
+      needle = "field->start";
+    }
+    {
+      label = "VMState dynamic element-count source";
+      needle = "field->num_offset";
+    }
+    {
+      label = "VMState dynamic byte-size source";
+      needle = "field->size_offset";
+    }
+    {
+      label = "VMState conditional field presence";
+      needle = "field->field_exists != NULL";
+    }
+    {
+      label = "VMState conditional subsection presence";
+      needle = "vmsd->needed != NULL";
+    }
+    {
+      label = "nested VMState field description";
+      needle = "crucible_checksum_vmsd(checksum, field->vmsd)";
+    }
+    {
+      label = "recursive VMState subsection description";
+      needle = "crucible_checksum_vmsd(checksum, *subsection)";
+    }
+    {
+      label = "SHA-256 checksum selection";
+      needle = "g_checksum_new(G_CHECKSUM_SHA256)";
+    }
+    {
+      label = "length-framed checksum input";
+      needle = "crucible_checksum_u64(checksum, length)";
+    }
+    {
+      label = "aggregate icount observation export";
+      needle = "qemu_plugin_crucible_icount";
+    }
+    {
+      label = "observed runstate export";
+      needle = "qemu_plugin_crucible_vm_non_running";
+    }
   ];
 
   microtestRequirements = [
@@ -191,6 +255,22 @@
       needle = "device_state_error_status_clears_outputs=true";
     }
     {
+      label = "SHA-256 component assertion";
+      needle = "crypto_component_digests_are_32_bytes=true";
+    }
+    {
+      label = "schema digest/count assertion";
+      needle = "device_state_schema_digest_and_count=true";
+    }
+    {
+      label = "observed icount/runstate assertion";
+      needle = "observed_icount_and_runstate=true";
+    }
+    {
+      label = "schema mutation assertion";
+      needle = "device_state_schema_field_and_subsection_mutations=true";
+    }
+    {
       label = "migration normalizer assertion";
       needle = "migration_host_timer_zeroed_under_icount=true";
     }
@@ -230,6 +310,7 @@ in
               exec/cpu-common.h \
               exec/exec-all.h \
               exec/gdbstub.h \
+              exec/memory.h \
               exec/ram_addr.h \
               exec/ramblock.h \
               exec/ramlist.h \
@@ -417,6 +498,8 @@ in
             #include <stdint.h>
             #define QEMU_PLUGIN_API
             QEMU_PLUGIN_API
+            uint64_t qemu_plugin_icount_raw(void);
+            QEMU_PLUGIN_API
             int qemu_plugin_read_register(struct qemu_plugin_register *handle,
                                           GByteArray *buf);
 
@@ -464,6 +547,27 @@ in
             struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
             {
                 return plugin_scoreboard_new(element_size);
+            }
+            QEMU_FIXTURE
+
+            cat > migration/savevm.h <<'QEMU_FIXTURE'
+            void qemu_savevm_send_colo_enable(QEMUFile *f);
+            void qemu_savevm_live_state(QEMUFile *f);
+            int qemu_save_device_state(QEMUFile *f);
+
+            int qemu_loadvm_state(QEMUFile *f);
+            void qemu_loadvm_state_cleanup(MigrationIncomingState *mis);
+            QEMU_FIXTURE
+
+            cat > migration/savevm.c <<'QEMU_FIXTURE'
+            int qemu_save_device_state(QEMUFile *f)
+            {
+                return qemu_file_get_error(f);
+            }
+
+            static SaveStateEntry *find_se(const char *idstr, uint32_t instance_id)
+            {
+                return NULL;
             }
             QEMU_FIXTURE
 
@@ -566,6 +670,10 @@ in
             grep -q '^ram_hash_includes_block_id_length_and_bytes=true$' "$out/result"
             grep -q '^device_state_hash_covers_serialized_non_ram_vmstate=true$' "$out/result"
             grep -q '^device_state_error_status_clears_outputs=true$' "$out/result"
+            grep -q '^crypto_component_digests_are_32_bytes=true$' "$out/result"
+            grep -q '^device_state_schema_digest_and_count=true$' "$out/result"
+            grep -q '^device_state_schema_field_and_subsection_mutations=true$' "$out/result"
+            grep -q '^observed_icount_and_runstate=true$' "$out/result"
             grep -q '^pause_vm_requests_run_state_paused=true$' "$out/result"
             grep -q '^migration_host_timer_zeroed_under_icount=true$' "$out/result"
             grep -q '^migration_host_timer_preserved_without_icount=true$' "$out/result"
