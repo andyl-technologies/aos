@@ -9,10 +9,13 @@
 //!
 //! Module map: [`types`] owns the public scenario, stream, runner, and error
 //! data contracts; [`compare`] owns first-mismatch localization; [`run`] owns
-//! the run-twice gate driver; [`trace`] imports the real QEMU trace plugin's
-//! host-observed samples into the canonical stream contract.
+//! the run-twice gate driver; [`probe`] owns fallible instruction-exact
+//! refinement; [`state_dump`] owns both-side architectural diagnostics; and
+//! [`trace`] imports the real QEMU trace plugin's host-observed samples into the
+//! canonical stream contract.
 
 mod compare;
+mod probe;
 mod run;
 mod state_dump;
 mod trace;
@@ -22,8 +25,13 @@ pub use compare::{
     SingleVmFingerprintMismatch, SingleVmFingerprintMismatchKind,
     SingleVmFingerprintSampleDifference, compare_single_vm_fingerprint_streams,
 };
+pub use probe::{
+    SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest, SingleVmFingerprintProbeRunner,
+    SingleVmFingerprintStateDumpProbe, bisect_single_vm_fingerprint_with_probes,
+};
 pub use run::run_single_vm_fingerprint_gate;
 pub use state_dump::{
+    SINGLE_VM_FINGERPRINT_STATE_DUMP_EVENT_LIMIT, SingleVmFingerprintCanonicalEvent,
     SingleVmFingerprintDivergenceStateDump, SingleVmFingerprintMemoryRegionState,
     SingleVmFingerprintRunStateDump, SingleVmFingerprintVcpuState,
 };

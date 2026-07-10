@@ -6,22 +6,28 @@
 
 use std::collections::VecDeque;
 
+use crucible::{
+    EventLog, SchedulerEvaluationBoundaryKind, VirtualTime, event_log_causal_projection,
+};
 use crucible_protocol::{
     PluginNvcpuFingerprintSnapshot, PluginRoundRobinCursorSnapshot, PluginVcpuRegisterSnapshot,
 };
 use crucible_qemu::{
     SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,
     SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
-    SingleVmFingerprintDivergenceStateDump, SingleVmFingerprintGateError,
-    SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError, SingleVmFingerprintRunInputs,
+    SingleVmFingerprintCanonicalEvent, SingleVmFingerprintDivergenceStateDump,
+    SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError,
+    SingleVmFingerprintMismatchKind, SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest,
+    SingleVmFingerprintProbeRunner, SingleVmFingerprintRunError, SingleVmFingerprintRunInputs,
     SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunStateDump,
     SingleVmFingerprintRunner, SingleVmFingerprintSample, SingleVmFingerprintSampleDifference,
-    SingleVmFingerprintSampleMaterial, SingleVmFingerprintScenario, SingleVmFingerprintStream,
-    SingleVmFingerprintTrigger, SingleVmFingerprintVcpuState, SingleVmHostProfile,
-    SingleVmNvcpuFingerprintContract, SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology,
-    SingleVmRoundRobinCursor, SingleVmVcpuRegisterDigest, compare_single_vm_fingerprint_streams,
-    compute_single_vm_sample_rolling_fingerprint, initial_single_vm_rolling_fingerprint,
-    run_single_vm_fingerprint_gate,
+    SingleVmFingerprintSampleMaterial, SingleVmFingerprintScenario,
+    SingleVmFingerprintStateDumpProbe, SingleVmFingerprintStream, SingleVmFingerprintTrigger,
+    SingleVmFingerprintVcpuState, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
+    SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor,
+    SingleVmVcpuRegisterDigest, bisect_single_vm_fingerprint_with_probes,
+    compare_single_vm_fingerprint_streams, compute_single_vm_sample_rolling_fingerprint,
+    initial_single_vm_rolling_fingerprint, run_single_vm_fingerprint_gate,
 };
 
 #[test]
@@ -145,8 +151,8 @@ fn gate_single_vm_fingerprint_reports_first_sample_window() {
     assert_eq!(bisection.last_matching_icount(), 6144);
     assert_eq!(bisection.first_different_icount(), 6145);
     assert_eq!(
-        bisection.state_dump_artifact(),
-        "artifact://single-vm-bisect"
+        bisection.state_dump_content_address(),
+        "blake3:ef829453fdf1558415de033f71f36740c3610012904f986bdec775b4fd096621"
     );
     assert_eq!(runner.bisection_requests.len(), 1);
     assert_eq!(
@@ -156,6 +162,119 @@ fn gate_single_vm_fingerprint_reports_first_sample_window() {
     assert_eq!(runner.bisection_requests[0].mismatch().sample_index, 1);
     assert_eq!(runner.bisection_requests[0].first_stream(), &first);
     assert_eq!(runner.bisection_requests[0].second_stream(), &second);
+}
+
+#[test]
+fn exact_probe_bisection_refines_to_one_instruction_and_content_addresses_dump() {
+    let scenario = scenario();
+    let first = stream(&[1, 2, 3], 9);
+    let second = stream(&[1, 7, 3], 9);
+    let mismatch = compare_single_vm_fingerprint_streams(&first, &second, 12_288)
+        .expect_err("changed second sample should define a coarse mismatch");
+    let request = SingleVmFingerprintBisectionRequest::new(scenario, mismatch, first, second);
+    let mut runner = ExactProbeRunner::new(6145);
+
+    let report = bisect_single_vm_fingerprint_with_probes(&mut runner, &request)
+        .expect("fallible live probes should refine the coarse mismatch");
+
+    assert_eq!(report.last_matching_icount(), 6144);
+    assert_eq!(report.first_different_icount(), 6145);
+    assert_eq!(report.responsible_node(), "node-a");
+    assert!(report.state_dump_content_address().starts_with("blake3:"));
+    assert_eq!(report.state_dump_content_address().len(), 71);
+    assert!(runner.probes.iter().any(|(_, icount)| *icount == 6144));
+    assert!(runner.probes.iter().any(|(_, icount)| *icount == 6145));
+    assert_eq!(runner.dumps.len(), 2);
+}
+
+#[test]
+fn exact_probe_bisection_propagates_backend_failure() {
+    let scenario = scenario();
+    let first = stream(&[1, 2, 3], 9);
+    let second = stream(&[1, 7, 3], 9);
+    let mismatch = compare_single_vm_fingerprint_streams(&first, &second, 12_288)
+        .expect_err("changed second sample should define a coarse mismatch");
+    let request = SingleVmFingerprintBisectionRequest::new(scenario, mismatch, first, second);
+    let mut runner = ExactProbeRunner::new(6145);
+    runner.fail_at = Some(6144);
+
+    let error = bisect_single_vm_fingerprint_with_probes(&mut runner, &request)
+        .expect_err("a failed live probe must not be treated as a comparison result");
+
+    assert!(error.message().contains("injected probe failure"));
+    assert!(runner.dumps.is_empty());
+}
+
+#[test]
+fn exact_probe_bisection_rejects_pre_execution_divergence() {
+    let scenario = scenario();
+    let first = stream(&[1, 2, 3], 9);
+    let second = stream(&[7, 2, 3], 9);
+    let mismatch = compare_single_vm_fingerprint_streams(&first, &second, 12_288)
+        .expect_err("changed first sample should define a genesis-based window");
+    assert_eq!(mismatch.previous_matching_icount, None);
+    let request = SingleVmFingerprintBisectionRequest::new(scenario, mismatch, first, second);
+    let mut runner = ExactProbeRunner::new(6145);
+    runner.genesis_differs = true;
+
+    let error = bisect_single_vm_fingerprint_with_probes(&mut runner, &request)
+        .expect_err("different paused genesis states must fail before instruction attribution");
+
+    assert!(error.message().contains("low endpoint 0 already differs"));
+    assert!(runner.dumps.is_empty());
+}
+
+#[test]
+fn exact_probe_bisection_rejects_nonreproducible_final_endpoint() {
+    let scenario = scenario();
+    let first = stream(&[1, 2, 3], 9);
+    let second = stream(&[1, 7, 3], 9);
+    let mismatch = compare_single_vm_fingerprint_streams(&first, &second, 12_288)
+        .expect_err("changed second sample should define a coarse mismatch");
+    let request = SingleVmFingerprintBisectionRequest::new(scenario, mismatch, first, second);
+    let mut runner = ExactProbeRunner::new(6145);
+    runner.unstable_at = Some(6145);
+
+    let error = bisect_single_vm_fingerprint_with_probes(&mut runner, &request)
+        .expect_err("a changing final endpoint must invalidate refinement");
+
+    assert!(error.message().contains("not reproducible"));
+    assert!(runner.dumps.is_empty());
+}
+
+#[test]
+fn exact_probe_bisection_rejects_dump_topology_shorter_than_scenario() {
+    let scenario = scenario();
+    let first = stream(&[1, 2, 3], 9);
+    let second = stream(&[1, 7, 3], 9);
+    let mismatch = compare_single_vm_fingerprint_streams(&first, &second, 12_288)
+        .expect_err("changed second sample should define a coarse mismatch");
+    let request = SingleVmFingerprintBisectionRequest::new(scenario, mismatch, first, second);
+    let mut runner = ExactProbeRunner::new(6145);
+    runner.truncate_dump_topology = true;
+
+    let error = bisect_single_vm_fingerprint_with_probes(&mut runner, &request)
+        .expect_err("a partial vCPU dump must fail scenario admission");
+
+    assert!(error.message().contains("topology"));
+}
+
+#[test]
+fn state_dump_accepts_empty_suffix_for_empty_causal_log() {
+    let dump = SingleVmFingerprintRunStateDump::new(
+        "node-a",
+        1,
+        vec![
+            SingleVmFingerprintVcpuState::new(0, [0x10])
+                .unwrap_or_else(|error| panic!("test vCPU state should validate: {error}")),
+        ],
+        Vec::new(),
+        [0x40],
+        0,
+        Vec::new(),
+    );
+
+    assert!(dump.is_ok());
 }
 
 #[test]
@@ -172,8 +291,21 @@ fn gate_single_vm_fingerprint_reports_final_mismatch_at_horizon() {
         SingleVmFingerprintMismatchKind::Final { .. }
     ));
     assert_eq!(mismatch.sample_index, 3);
-    assert_eq!(mismatch.previous_matching_icount, Some(12_288));
+    assert_eq!(mismatch.previous_matching_icount, Some(8192));
     assert_eq!(mismatch.first_different_icount, Some(12_288));
+}
+
+#[test]
+fn same_icount_event_mismatch_uses_previous_strictly_lower_boundary() {
+    let first = stream_with_same_icount_event(0x21);
+    let second = stream_with_same_icount_event(0x22);
+
+    let mismatch = compare_single_vm_fingerprint_streams(&first, &second, 8192)
+        .expect_err("same-icount event state difference must be localized");
+
+    assert_eq!(mismatch.sample_index, 1);
+    assert_eq!(mismatch.first_different_icount, Some(4096));
+    assert_eq!(mismatch.previous_matching_icount, None);
 }
 
 #[test]
@@ -472,7 +604,7 @@ fn gate_single_vm_fingerprint_reports_final_icount_mismatch() {
         SingleVmFingerprintMismatchKind::Final { .. }
     ));
     assert_eq!(mismatch.sample_index, 3);
-    assert_eq!(mismatch.previous_matching_icount, Some(12_288));
+    assert_eq!(mismatch.previous_matching_icount, Some(8192));
     assert_eq!(mismatch.first_different_icount, Some(12_288));
 }
 
@@ -558,6 +690,35 @@ fn gate_single_vm_fingerprint_rejects_misaligned_bisection_report() {
     );
 }
 
+#[test]
+fn gate_single_vm_fingerprint_rejects_direct_partial_dump_report() {
+    let scenario = scenario();
+    let report_scenario = scenario_nvcpu(1, 8);
+    let first = stream(&[1, 2, 3], 9);
+    let second = stream(&[1, 7, 3], 9);
+    let report = SingleVmFingerprintBisectionReport::new(
+        1,
+        Some(4096),
+        8192,
+        6144,
+        6145,
+        &report_scenario,
+        partial_divergence_state_dump(6145),
+    )
+    .unwrap_or_else(|error| panic!("partial test report should validate internally: {error}"));
+    let mut runner = FakeRunner::with_bisections(vec![Ok(first), Ok(second)], vec![Ok(report)]);
+
+    let error = run_single_vm_fingerprint_gate(&mut runner, &scenario)
+        .expect_err("the final gate must reject a topology-short dump from a custom runner");
+
+    assert_eq!(
+        error,
+        SingleVmFingerprintGateError::InvalidBisectionReport {
+            reason: "bisection state dump must match the scenario definition, inputs, and vCPU topology",
+        }
+    );
+}
+
 #[derive(Debug)]
 struct FakeRunner {
     streams: VecDeque<Result<SingleVmFingerprintStream, SingleVmFingerprintRunError>>,
@@ -613,6 +774,118 @@ impl SingleVmFingerprintRunner for FakeRunner {
     }
 }
 
+#[derive(Debug)]
+struct ExactProbeRunner {
+    first_different_icount: u64,
+    fail_at: Option<u64>,
+    genesis_differs: bool,
+    unstable_at: Option<u64>,
+    truncate_dump_topology: bool,
+    probes: Vec<(SingleVmFingerprintRunOrdinal, u64)>,
+    dumps: Vec<(SingleVmFingerprintRunOrdinal, u64)>,
+}
+
+impl ExactProbeRunner {
+    fn new(first_different_icount: u64) -> Self {
+        Self {
+            first_different_icount,
+            fail_at: None,
+            genesis_differs: false,
+            unstable_at: None,
+            truncate_dump_topology: false,
+            probes: Vec::new(),
+            dumps: Vec::new(),
+        }
+    }
+}
+
+impl SingleVmFingerprintProbeRunner for ExactProbeRunner {
+    fn probe_single_vm_fingerprint(
+        &mut self,
+        request: &SingleVmFingerprintProbeRequest,
+    ) -> Result<SingleVmFingerprintProbe, SingleVmFingerprintBisectionError> {
+        let prior_observations = self
+            .probes
+            .iter()
+            .filter(|(ordinal, icount)| {
+                *ordinal == request.ordinal() && *icount == request.target_icount()
+            })
+            .count();
+        self.probes
+            .push((request.ordinal(), request.target_icount()));
+        if self.fail_at == Some(request.target_icount()) {
+            return Err(SingleVmFingerprintBisectionError::new(
+                "injected probe failure",
+            ));
+        }
+        let mut differs = (request.target_icount() == 0 && self.genesis_differs)
+            || request.target_icount() >= self.first_different_icount;
+        if self.unstable_at == Some(request.target_icount()) && prior_observations > 0 {
+            differs = !differs;
+        }
+        let byte = if !differs || request.ordinal() == SingleVmFingerprintRunOrdinal::First {
+            0x51
+        } else {
+            0x52
+        };
+        SingleVmFingerprintProbe::new(
+            request.ordinal(),
+            "node-a",
+            request.target_icount(),
+            request
+                .scenario()
+                .fingerprint_definition_digest()
+                .try_into()
+                .unwrap_or_else(|_| panic!("test definition digest should have fixed width")),
+            request.scenario().run_inputs().content_digest(),
+            [byte; SINGLE_VM_FINGERPRINT_DIGEST_BYTES],
+        )
+    }
+
+    fn dump_single_vm_fingerprint_state(
+        &mut self,
+        request: &SingleVmFingerprintProbeRequest,
+    ) -> Result<SingleVmFingerprintStateDumpProbe, SingleVmFingerprintBisectionError> {
+        self.dumps
+            .push((request.ordinal(), request.target_icount()));
+        let dump = divergence_state_dump(request.target_icount());
+        let mut state = match request.ordinal() {
+            SingleVmFingerprintRunOrdinal::First => dump.first().clone(),
+            SingleVmFingerprintRunOrdinal::Second => dump.second().clone(),
+        };
+        if self.truncate_dump_topology {
+            let device_byte = match request.ordinal() {
+                SingleVmFingerprintRunOrdinal::First => 0x40,
+                SingleVmFingerprintRunOrdinal::Second => 0x41,
+            };
+            state = SingleVmFingerprintRunStateDump::new(
+                "node-a",
+                request.target_icount(),
+                vec![
+                    SingleVmFingerprintVcpuState::new(0, [0x10, 0x11]).unwrap_or_else(|error| {
+                        panic!("truncated vCPU state should validate: {error}")
+                    }),
+                ],
+                Vec::new(),
+                [device_byte],
+                1,
+                vec![canonical_event()],
+            )
+            .unwrap_or_else(|error| panic!("truncated state dump should validate alone: {error}"));
+        }
+        Ok(SingleVmFingerprintStateDumpProbe::new(
+            request.ordinal(),
+            request
+                .scenario()
+                .fingerprint_definition_digest()
+                .try_into()
+                .unwrap_or_else(|_| panic!("test definition digest should have fixed width")),
+            request.scenario().run_inputs().content_digest(),
+            state,
+        ))
+    }
+}
+
 fn scenario() -> SingleVmFingerprintScenario {
     scenario_nvcpu(2, 8)
 }
@@ -648,6 +921,41 @@ fn stream(sample_bytes: &[u8], final_byte: u8) -> SingleVmFingerprintStream {
         Ok(stream) => stream,
         Err(error) => panic!("test stream should be valid: {error}"),
     }
+}
+
+fn stream_with_same_icount_event(event_state_byte: u8) -> SingleVmFingerprintStream {
+    let definition_digest = digest(1);
+    let mut previous = initial_rolling(&definition_digest);
+    let mut samples = Vec::new();
+    for (seq, icount, trigger, state_byte) in [
+        (0, 4096, SingleVmFingerprintTrigger::Periodic, 0x20),
+        (
+            1,
+            4096,
+            SingleVmFingerprintTrigger::Event(SingleVmFingerprintEventBoundary::FrameDelivery),
+            event_state_byte,
+        ),
+        (
+            2,
+            8192,
+            SingleVmFingerprintTrigger::Event(SingleVmFingerprintEventBoundary::HorizonAdvance),
+            0x23,
+        ),
+    ] {
+        let material = SingleVmFingerprintSampleMaterial::new(
+            seq,
+            "node-a",
+            icount,
+            trigger,
+            nvcpu_material_with_register_bytes([0x11, state_byte], rr_cursor(0, 0, 8)),
+        )
+        .unwrap_or_else(|error| panic!("same-icount material should validate: {error}"));
+        let sample = sample_from_material(&definition_digest, &previous, material);
+        previous = sample.rolling_fingerprint.clone();
+        samples.push(sample);
+    }
+    SingleVmFingerprintStream::new(definition_digest, samples, 8192, digest(9), 8192)
+        .unwrap_or_else(|error| panic!("same-icount stream should validate: {error}"))
 }
 
 fn stream_with_cursors(cursors: &[SingleVmRoundRobinCursor]) -> SingleVmFingerprintStream {
@@ -819,14 +1127,15 @@ fn bisection_report(
     last_matching_icount: u64,
     first_different_icount: u64,
 ) -> SingleVmFingerprintBisectionReport {
+    let scenario = scenario();
     match SingleVmFingerprintBisectionReport::new(
         sample_index,
         previous_matching_icount,
         first_different_sample_icount,
         last_matching_icount,
         first_different_icount,
+        &scenario,
         divergence_state_dump(first_different_icount),
-        "artifact://single-vm-bisect",
     ) {
         Ok(report) => report,
         Err(error) => panic!("test bisection report should be valid: {error}"),
@@ -845,7 +1154,8 @@ fn divergence_state_dump(icount: u64) -> SingleVmFingerprintDivergenceStateDump 
         ],
         Vec::new(),
         [0x40, 0x41],
-        vec!["quantum-boundary".to_owned()],
+        1,
+        vec![canonical_event()],
     )
     .unwrap_or_else(|error| panic!("first state dump should validate: {error}"));
     let second = SingleVmFingerprintRunStateDump::new(
@@ -859,11 +1169,45 @@ fn divergence_state_dump(icount: u64) -> SingleVmFingerprintDivergenceStateDump 
         ],
         Vec::new(),
         [0x40, 0x41],
-        vec!["quantum-boundary".to_owned()],
+        1,
+        vec![canonical_event()],
     )
     .unwrap_or_else(|error| panic!("second state dump should validate: {error}"));
     SingleVmFingerprintDivergenceStateDump::new(first, second)
         .unwrap_or_else(|error| panic!("both-sides state dump should validate: {error}"))
+}
+
+fn partial_divergence_state_dump(icount: u64) -> SingleVmFingerprintDivergenceStateDump {
+    let side = |register_byte| {
+        SingleVmFingerprintRunStateDump::new(
+            "node-a",
+            icount,
+            vec![
+                SingleVmFingerprintVcpuState::new(0, [register_byte])
+                    .unwrap_or_else(|error| panic!("partial vCPU state should validate: {error}")),
+            ],
+            Vec::new(),
+            [0x40],
+            1,
+            vec![canonical_event()],
+        )
+        .unwrap_or_else(|error| panic!("partial run dump should validate alone: {error}"))
+    };
+    SingleVmFingerprintDivergenceStateDump::new(side(0x10), side(0x11))
+        .unwrap_or_else(|error| panic!("partial dump pair should validate internally: {error}"))
+}
+
+fn canonical_event() -> SingleVmFingerprintCanonicalEvent {
+    let mut log = EventLog::new();
+    let append = log
+        .append_evaluation_boundary(
+            VirtualTime { ticks: 0 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        )
+        .unwrap_or_else(|error| panic!("test causal event should append: {error}"));
+    let projection = event_log_causal_projection(&append.entries);
+    SingleVmFingerprintCanonicalEvent::from_causal_projection_entry(&projection.entries()[0])
+        .unwrap_or_else(|error| panic!("test canonical event should validate: {error}"))
 }
 
 fn digest(byte: u8) -> Vec<u8> {

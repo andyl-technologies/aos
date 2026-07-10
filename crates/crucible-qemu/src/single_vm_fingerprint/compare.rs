@@ -202,6 +202,7 @@ pub fn compare_single_vm_fingerprint_streams(
     {
         if first_sample != second_sample {
             let difference = first_sample_difference(first_sample, second_sample);
+            let first_different_icount = first_sample.icount.min(second_sample.icount);
             return Err(SingleVmFingerprintMismatch {
                 sample_index,
                 kind: SingleVmFingerprintMismatchKind::Sample {
@@ -209,8 +210,12 @@ pub fn compare_single_vm_fingerprint_streams(
                     second: Box::new(second_sample.clone()),
                     difference,
                 },
-                previous_matching_icount: previous_icount(first, sample_index),
-                first_different_icount: Some(first_sample.icount.min(second_sample.icount)),
+                previous_matching_icount: previous_icount_before(
+                    first,
+                    sample_index,
+                    first_different_icount,
+                ),
+                first_different_icount: Some(first_different_icount),
             });
         }
     }
@@ -229,7 +234,11 @@ pub fn compare_single_vm_fingerprint_streams(
                 first_len: first.samples.len(),
                 second_len: second.samples.len(),
             },
-            previous_matching_icount: previous_icount(first, sample_index),
+            previous_matching_icount: previous_icount_before(
+                first,
+                sample_index,
+                first_different_icount.unwrap_or(run_horizon_icount),
+            ),
             first_different_icount,
         });
     }
@@ -237,6 +246,10 @@ pub fn compare_single_vm_fingerprint_streams(
     if first.final_icount != second.final_icount
         || first.final_fingerprint != second.final_fingerprint
     {
+        let first_different_icount = first
+            .final_icount
+            .min(second.final_icount)
+            .max(run_horizon_icount);
         return Err(SingleVmFingerprintMismatch {
             sample_index: first.samples.len(),
             kind: SingleVmFingerprintMismatchKind::Final {
@@ -245,23 +258,29 @@ pub fn compare_single_vm_fingerprint_streams(
                 first: first.final_fingerprint.clone(),
                 second: second.final_fingerprint.clone(),
             },
-            previous_matching_icount: first.samples.last().map(|sample| sample.icount),
-            first_different_icount: Some(
-                first
-                    .final_icount
-                    .min(second.final_icount)
-                    .max(run_horizon_icount),
+            previous_matching_icount: previous_icount_before(
+                first,
+                first.samples.len(),
+                first_different_icount,
             ),
+            first_different_icount: Some(first_different_icount),
         });
     }
 
     Ok(())
 }
 
-fn previous_icount(stream: &SingleVmFingerprintStream, sample_index: usize) -> Option<u64> {
-    sample_index
-        .checked_sub(1)
-        .and_then(|index| stream.samples.get(index))
+fn previous_icount_before(
+    stream: &SingleVmFingerprintStream,
+    sample_index: usize,
+    first_different_icount: u64,
+) -> Option<u64> {
+    stream
+        .samples
+        .iter()
+        .take(sample_index)
+        .rev()
+        .find(|sample| sample.icount < first_different_icount)
         .map(|sample| sample.icount)
 }
 
