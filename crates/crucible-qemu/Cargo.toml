@@ -13,6 +13,7 @@ crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

@@ -732,6 +732,11 @@ impl QmpCpuTopology {
     pub fn cpu_indexes(&self) -> &[u64] {
         &self.cpu_indexes
     }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn from_test_cpu_indexes(cpu_indexes: Vec<u64>) -> Self {
+        Self { cpu_indexes }
+    }
 }
 
 /// Supported QMP command kind.

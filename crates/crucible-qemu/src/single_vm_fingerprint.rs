@@ -12,9 +12,12 @@
 //! the run-twice gate driver; [`probe`] owns fallible instruction-exact
 //! refinement; [`state_dump`] owns both-side architectural diagnostics; and
 //! [`trace`] imports the real QEMU trace plugin's host-observed samples into the
-//! canonical stream contract.
+//! canonical stream contract; and Linux-only [`live_runner`] owns fresh launch,
+//! artifact, typed-QMP, and bounded process-lifecycle primitives.
 
 mod compare;
+#[cfg(target_os = "linux")]
+mod live_runner;
 mod probe;
 mod run;
 mod state_dump;
@@ -24,6 +27,16 @@ mod types;
 pub use compare::{
     SingleVmFingerprintMismatch, SingleVmFingerprintMismatchKind,
     SingleVmFingerprintSampleDifference, compare_single_vm_fingerprint_streams,
+};
+#[cfg(target_os = "linux")]
+pub use live_runner::{
+    LiveObservationAttempt, LiveObservationProcess, LiveObservationProcessError,
+    LiveObservationShutdown, LiveObservationShutdownPolicy, LiveRunnerArtifactRoot,
+    LiveRunnerArtifacts, LiveRunnerArtifactsError, LiveRunnerConfig, LiveRunnerConfigError,
+    LiveRunnerImmutableInputs, LiveRunnerLaunchFields, LiveRunnerLaunchKind, LiveRunnerLaunchSpec,
+    LiveRunnerQmpConnector, LiveRunnerQmpObservation, LiveRunnerQmpPollError,
+    LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession, LiveRunnerSleeper,
+    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, spawn_live_observation_process,
 };
 pub use probe::{
     SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest, SingleVmFingerprintProbeRunner,
