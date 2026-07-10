@@ -1651,6 +1651,7 @@ dependencies = [
  "crucible-protocol",
  "crucible-shmem",
  "libc",
+ "rustix 1.1.4",
  "serde_json",
  "thiserror",
 ]

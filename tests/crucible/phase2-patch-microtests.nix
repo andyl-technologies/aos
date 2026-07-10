@@ -225,6 +225,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0033-crucible-sim-observer.patch";
+      check = import ./phase2-qemu-sim-observer.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -352,9 +358,11 @@ in
               qemu_plugin_force_vcpu_exit \
               qemu_plugin_crucible_single_threaded_rr \
               qemu_plugin_register_wake_fd \
+              qemu_plugin_request_shutdown \
               qemu_plugin_register_tcg_exec_cb \
               qemu_plugin_register_vcpu_idle_resume_cb \
               qemu_plugin_register_sim_shmem_dispatch_cb \
+              qemu_plugin_register_sim_shmem_observer_cb \
               qemu_plugin_crucible_register_ipi_delivery_cb \
               qemu_plugin_read_vcpu_regs \
               qemu_plugin_rr_cursor \

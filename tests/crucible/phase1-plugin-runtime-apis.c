@@ -485,6 +485,32 @@ test_wake_fd_integrates_with_main_loop(void)
 }
 
 static int
+test_plugin_shutdown_selects_clean_and_fail_loud_causes(void)
+{
+  shutdown_request_calls = 0;
+  shutdown_request_reason = -1;
+  cpu_kick_calls = 0;
+  first_cpu = &fake_cpu;
+
+  qemu_plugin_request_shutdown(0);
+  if (shutdown_request_calls != 1 ||
+      shutdown_request_reason != SHUTDOWN_CAUSE_HOST_QMP_QUIT ||
+      cpu_kick_calls != 1) {
+    fprintf(stderr, "clean plugin shutdown did not use QMP-quit cause\n");
+    return 1;
+  }
+
+  qemu_plugin_request_shutdown(1);
+  if (shutdown_request_calls != 2 ||
+      shutdown_request_reason != SHUTDOWN_CAUSE_HOST_ERROR ||
+      cpu_kick_calls != 2) {
+    fprintf(stderr, "fail-loud plugin shutdown did not use host-error cause\n");
+    return 1;
+  }
+  return 0;
+}
+
+static int
 test_single_threaded_rr_mode_discriminator_fixture(void)
 {
   active_accel_name = "sim";
@@ -549,6 +575,7 @@ main(void)
       test_tb_entry_icount_chains_early_exits_and_rr_switches() != 0 ||
       test_force_vcpu_exit_sets_current_cpu_phase() != 0 ||
       test_wake_fd_integrates_with_main_loop() != 0 ||
+      test_plugin_shutdown_selects_clean_and_fail_loud_causes() != 0 ||
       test_single_threaded_rr_mode_discriminator_fixture() != 0 ||
       test_tcg_exec_callback_fires_after_raw_icount_update() != 0) {
     return 1;
@@ -582,6 +609,9 @@ main(void)
   puts("wake_fd_failure_requests_host_error_shutdown=true");
   puts("wake_fd_eof_reported_and_unregistered=true");
   puts("wake_fd_hard_error_reported_and_unregistered=true");
+  puts("plugin_shutdown_symbol=qemu_plugin_request_shutdown");
+  puts("plugin_shutdown_clean_exit_cause=true");
+  puts("plugin_shutdown_fail_loud_cause=true");
   puts("tcg_exec_callback_symbol=qemu_plugin_register_tcg_exec_cb");
   puts("tcg_exec_callback_count=1");
   puts("tcg_exec_callback_icount=77");

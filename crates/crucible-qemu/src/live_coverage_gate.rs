@@ -16,8 +16,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible::{
-    BasicBlockCoverageConfig, ContentHash, ExecutionFingerprint, ExecutionHorizon, Icount, NodeId,
-    SchedulerError, SchedulerNodeId, SchedulerSendAuthorization, SchedulerSendAuthorizer,
+    BasicBlockCoverageConfig, ContentHash, EventLog, EventLogCoverageObservation,
+    ExecutionFingerprint, ExecutionHorizon, Icount, NodeId, SchedulerError,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerNodeId,
+    SchedulerSendAuthorization, SchedulerSendAuthorizer, VirtualTime,
+    compare_event_log_determinism, event_log_coverage_projection,
 };
 use crucible_shmem::{
     RegionAllocation, RegionConfig, RegionLayoutError, SLOT_NET_ROUTER, SetupRegionMapError,
@@ -44,6 +47,9 @@ const GATE_ROUTER: &str = "coverage-gate-router";
 const GATE_SLOT: u32 = 0;
 const GATE_QUEUE_CAPACITY: u32 = 4;
 const DEFAULT_HORIZON_ICOUNT: u64 = 32_768;
+const GUEST_TEXT_START: u64 = 0x0010_0000;
+const GUEST_TEXT_END_EXCLUSIVE: u64 = 0x0010_1000;
+const GUEST_POST_IO_PC: u64 = 0x0010_0800;
 const DEFAULT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
@@ -114,10 +120,20 @@ pub struct LoadedQemuCoverageGateReport {
     pub completed_icount: u64,
     /// Number of novel basic-block observations drained from the live callback.
     pub coverage_observation_count: usize,
+    /// Number of live observations whose block starts in the standalone guest text.
+    pub guest_coverage_observation_count: usize,
+    /// Canonical causal event-log fingerprint shared by coverage-off and coverage-on.
+    pub canonical_event_log_fingerprint: ContentHash,
     /// Production plugin argument used for the coverage-disabled run.
     pub coverage_off_plugin_argument: String,
     /// Production plugin argument used for the coverage-enabled run.
     pub coverage_on_plugin_argument: String,
+    /// Both runs proved that the RUN control channel was silent before Quit.
+    pub run_control_silent: bool,
+    /// Both runs observed plugin `Done` after sending control `Quit`.
+    pub plugin_quit_consumed: bool,
+    /// Both QEMU children exited naturally with status zero after plugin teardown.
+    pub orderly_child_exit: bool,
 }
 
 /// Failure returned by the production loaded-QEMU coverage gate.
@@ -215,6 +231,48 @@ pub enum LoadedQemuCoverageGateError {
         /// Host-side diagnostic timeout.
         timeout: Duration,
     },
+    /// The plugin did not publish `Done` after consuming control `Quit`.
+    #[error("{mode} plugin did not publish teardown Done within {timeout:?}")]
+    PluginQuitTimeout {
+        /// Coverage mode being exercised.
+        mode: &'static str,
+        /// Host-side diagnostic timeout.
+        timeout: Duration,
+    },
+    /// The QEMU child did not exit naturally after plugin teardown.
+    #[error("{mode} QEMU did not exit naturally within {timeout:?}")]
+    ChildExitTimeout {
+        /// Coverage mode being exercised.
+        mode: &'static str,
+        /// Host-side diagnostic timeout.
+        timeout: Duration,
+    },
+    /// Polling the QEMU child failed.
+    #[error("poll {mode} QEMU natural exit failed: {source}")]
+    ChildWait {
+        /// Coverage mode being exercised.
+        mode: &'static str,
+        /// Underlying child wait error.
+        source: crate::QemuShutdownTargetError,
+    },
+    /// QEMU exited naturally but reported failure or signal termination.
+    #[error("{mode} QEMU teardown exit was not clean: {status}")]
+    ChildExitUnclean {
+        /// Coverage mode being exercised.
+        mode: &'static str,
+        /// Exact platform exit-status diagnostic.
+        status: String,
+    },
+    /// Appending the live run boundary or callback observations to the unified log failed.
+    #[error("append {mode} loaded-QEMU {operation} to the unified event log failed: {source}")]
+    EventLogAppend {
+        /// Coverage mode being exercised.
+        mode: &'static str,
+        /// Event-log operation that failed.
+        operation: &'static str,
+        /// Underlying canonical event-log error.
+        source: SchedulerError,
+    },
     /// A run crossed rather than stopped at the requested exact boundary.
     #[error("{mode} loaded QEMU completed at icount {actual}, expected {expected}")]
     InexactBoundary {
@@ -234,9 +292,17 @@ pub enum LoadedQemuCoverageGateError {
     /// Coverage-on failed to produce a live basic-block observation.
     #[error("coverage-on loaded QEMU produced no basic-block observations")]
     CoverageOnEmpty,
+    /// Coverage-on produced observations, but none came from the standalone guest.
+    #[error(
+        "coverage-on loaded QEMU produced no block in standalone guest text {GUEST_TEXT_START:#x}..{GUEST_TEXT_END_EXCLUSIVE:#x}"
+    )]
+    CoverageOnGuestUnattributed,
     /// Enabling coverage changed the execution fingerprint.
     #[error("loaded-QEMU coverage opt-in changed the execution fingerprint")]
     FingerprintMismatch,
+    /// Coverage changed the canonical causal event-log bytes.
+    #[error("loaded-QEMU coverage opt-in changed the canonical causal event log")]
+    CanonicalEventLogMismatch,
     /// Reading the independent fingerprint trace failed.
     #[error("read {mode} independent fingerprint trace `{path}` failed: {source}")]
     TraceRead {
@@ -294,16 +360,28 @@ pub fn run_loaded_qemu_coverage_gate(
     let off = run_loaded_qemu_once(config, QemuLaunchPluginSwitch::Off)?;
     let on = run_loaded_qemu_once(config, QemuLaunchPluginSwitch::On)?;
 
-    if !off.observations.is_empty() {
+    let off_coverage = event_log_coverage_projection(&off.event_log_entries);
+    let on_coverage = event_log_coverage_projection(&on.event_log_entries);
+    if !off_coverage.is_empty() {
         return Err(LoadedQemuCoverageGateError::CoverageOffPublished {
-            observations: off.observations.len(),
+            observations: off_coverage.len(),
         });
     }
-    if on.observations.is_empty() {
+    if on_coverage.is_empty() {
         return Err(LoadedQemuCoverageGateError::CoverageOnEmpty);
+    }
+    let guest_coverage_observation_count =
+        guest_coverage_observation_count(&on_coverage, config.horizon_icount);
+    if guest_coverage_observation_count == 0 {
+        return Err(LoadedQemuCoverageGateError::CoverageOnGuestUnattributed);
     }
     if off.fingerprint != on.fingerprint {
         return Err(LoadedQemuCoverageGateError::FingerprintMismatch);
+    }
+    let event_log_comparison =
+        compare_event_log_determinism(&off.event_log_entries, &on.event_log_entries);
+    if !event_log_comparison.passes() {
+        return Err(LoadedQemuCoverageGateError::CanonicalEventLogMismatch);
     }
     if off.trace_sample != on.trace_sample {
         return Err(LoadedQemuCoverageGateError::IndependentFingerprintMismatch);
@@ -316,9 +394,14 @@ pub fn run_loaded_qemu_coverage_gate(
         coverage_on_fingerprint: on.fingerprint,
         independent_trace_fingerprint,
         completed_icount: off.completed_icount,
-        coverage_observation_count: on.observations.len(),
+        coverage_observation_count: on_coverage.len(),
+        guest_coverage_observation_count,
+        canonical_event_log_fingerprint: event_log_comparison.expected().content_hash(),
         coverage_off_plugin_argument: off.plugin_argument,
         coverage_on_plugin_argument: on.plugin_argument,
+        run_control_silent: off.run_control_silent && on.run_control_silent,
+        plugin_quit_consumed: off.plugin_quit_consumed && on.plugin_quit_consumed,
+        orderly_child_exit: off.orderly_child_exit && on.orderly_child_exit,
     })
 }
 
@@ -337,9 +420,12 @@ fn validate_gate_config(
 struct LoadedQemuRun {
     fingerprint: ExecutionFingerprint,
     completed_icount: u64,
-    observations: Vec<crucible::ObservableEvent>,
+    event_log_entries: Vec<SchedulerEventLogEntry>,
     plugin_argument: String,
     trace_sample: Value,
+    run_control_silent: bool,
+    plugin_quit_consumed: bool,
+    orderly_child_exit: bool,
 }
 
 fn run_loaded_qemu_once(
@@ -388,7 +474,7 @@ fn run_loaded_qemu_once(
         allocation.layout().region_size,
     )
     .map_err(|source| LoadedQemuCoverageGateError::Spawn { mode, source })?;
-    let (child, resources) = spawned.into_parts();
+    let (mut child, resources) = spawned.into_parts();
     let mut setup =
         complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
             .map_err(|source| LoadedQemuCoverageGateError::HostSetup { mode, source })?;
@@ -431,22 +517,145 @@ fn run_loaded_qemu_once(
         .map_err(|source| channel_error(mode, "read execution fingerprint", source))?;
     let observations = QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
         .map_err(|source| channel_error(mode, "drain live coverage observations", source))?;
-    let trace_sample = read_trace_sample(&trace_path, config.horizon_icount, mode)?;
+    let event_log_entries = record_loaded_run_event_log(mode, config.horizon_icount, observations)?;
+    let trace_sample = read_trace_sample(&trace_path, config, mode)?;
 
+    setup
+        .assert_run_control_silent()
+        .map_err(|source| channel_error(mode, "prove run control silence", source))?;
     QemuPluginIpcControlChannel::send_quit(&mut setup)
         .map_err(|source| channel_error(mode, "send plugin Quit", source))?;
+    wait_for_plugin_quit_consumption(&hot_path, config, mode)?;
+    let exit_status = wait_for_natural_child_exit(&mut child, config, mode)?;
+    if !exit_status.success() {
+        return Err(LoadedQemuCoverageGateError::ChildExitUnclean {
+            mode,
+            status: exit_status.to_string(),
+        });
+    }
     drop(setup);
     drop(child);
 
     Ok(LoadedQemuRun {
         fingerprint,
         completed_icount,
-        observations,
+        event_log_entries,
         plugin_argument,
         trace_sample,
+        run_control_silent: true,
+        plugin_quit_consumed: true,
+        orderly_child_exit: true,
     })
 }
 
+// crucible-lint: allow clippy-disallowed-method -- loaded-gate host timeout bounds plugin teardown only.
+#[allow(clippy::disallowed_methods)]
+fn wait_for_plugin_quit_consumption(
+    hot_path: &QemuMappedQuantumShmemHotPath,
+    config: &LoadedQemuCoverageGateConfig,
+    mode: &'static str,
+) -> Result<(), LoadedQemuCoverageGateError> {
+    let started = Instant::now();
+    loop {
+        if hot_path
+            .plugin_teardown_done()
+            .map_err(|source| LoadedQemuCoverageGateError::MappedHotPath { mode, source })?
+        {
+            return Ok(());
+        }
+        if started.elapsed() >= config.completion_timeout {
+            return Err(LoadedQemuCoverageGateError::PluginQuitTimeout {
+                mode,
+                timeout: config.completion_timeout,
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+// crucible-lint: allow clippy-disallowed-method -- loaded-gate host timeout bounds child reap only.
+#[allow(clippy::disallowed_methods)]
+fn wait_for_natural_child_exit(
+    child: &mut crate::QemuNodeChild,
+    config: &LoadedQemuCoverageGateConfig,
+    mode: &'static str,
+) -> Result<std::process::ExitStatus, LoadedQemuCoverageGateError> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait_natural_exit()
+            .map_err(|source| LoadedQemuCoverageGateError::ChildWait { mode, source })?
+        {
+            return Ok(status);
+        }
+        if started.elapsed() >= config.completion_timeout {
+            return Err(LoadedQemuCoverageGateError::ChildExitTimeout {
+                mode,
+                timeout: config.completion_timeout,
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn record_loaded_run_event_log(
+    mode: &'static str,
+    horizon_icount: u64,
+    observations: Vec<crucible::ObservableEvent>,
+) -> Result<Vec<SchedulerEventLogEntry>, LoadedQemuCoverageGateError> {
+    let mut event_log = EventLog::new();
+    let mut entries = event_log
+        .append_observable_events(observations)
+        .map_err(|source| LoadedQemuCoverageGateError::EventLogAppend {
+            mode,
+            operation: "callback observation batch",
+            source,
+        })?
+        .entries;
+    let boundary = event_log
+        .append_evaluation_boundary(
+            VirtualTime {
+                ticks: horizon_icount,
+            },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        )
+        .map_err(|source| LoadedQemuCoverageGateError::EventLogAppend {
+            mode,
+            operation: "causal quantum boundary",
+            source,
+        })?
+        .entries;
+    entries.extend(boundary);
+    Ok(entries)
+}
+
+fn guest_coverage_observation_count(
+    coverage: &crucible::EventLogCoverageProjection,
+    horizon_icount: u64,
+) -> usize {
+    coverage
+        .entries()
+        .iter()
+        .filter(|entry| {
+            let EventLogCoverageObservation::BasicBlock {
+                node,
+                guest_pc,
+                block_len,
+            } = &entry.observation
+            else {
+                return false;
+            };
+            let block_end = guest_pc.saturating_add(u64::from(*block_len));
+            node.name == GATE_NODE
+                && entry.at.icount.retired <= horizon_icount
+                && *guest_pc >= GUEST_TEXT_START
+                && block_end <= GUEST_TEXT_END_EXCLUSIVE
+        })
+        .count()
+}
+
+// crucible-lint: allow clippy-disallowed-method -- loaded-gate host timeout bounds QEMU liveness only.
+#[allow(clippy::disallowed_methods)]
 fn wait_for_exact_boundary(
     hot_path: &mut QemuMappedQuantumShmemHotPath,
     config: &LoadedQemuCoverageGateConfig,
@@ -552,3 +761,6 @@ impl SchedulerSendAuthorizer for GateSendAuthorizer {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

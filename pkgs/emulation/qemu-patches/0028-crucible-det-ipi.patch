@@ -17,7 +17,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
      cpu_count = rr_cpu_count();
      *cpu_budget = icount_percpu_budget(cpu_count);
  
-@@ -487,12 +489,16 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -538,12 +540,16 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -294,7 +294,7 @@ diff --git a/hw/intc/apic.c b/hw/intc/apic.c
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
-@@ -185,6 +185,16 @@ extern void *qemu_plugin_vcpu_idle_resume_userdata;
+@@ -187,6 +187,16 @@ extern void *qemu_plugin_vcpu_idle_resume_userdata;
  void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu);
  void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu);
  
@@ -311,7 +311,7 @@ diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
  static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
  {
      if (qemu_plugin_tcg_exec_cb) {
-@@ -206,6 +216,17 @@ static inline void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
+@@ -208,6 +218,17 @@ static inline void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
      }
  }
  
@@ -329,7 +329,7 @@ diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -310,6 +331,11 @@ static inline void qemu_plugin_maybe_fire_vcpu_idle_cb(CPUState *cpu)
+@@ -317,6 +338,11 @@ static inline void qemu_plugin_maybe_fire_vcpu_idle_cb(CPUState *cpu)
  static inline void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
  { }
  
@@ -369,7 +369,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * typedef qemu_plugin_sim_shmem_publish_icount_cb_t - publish sim icount
   * @current_icount: the raw bias-excluded icount reached by the sim vCPU loop
-@@ -1338,6 +1356,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
+@@ -1384,6 +1402,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
  
@@ -405,16 +405,16 @@ new file mode 100644
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -109,6 +109,8 @@ void *qemu_plugin_tcg_exec_userdata;
+@@ -121,6 +121,8 @@ void *qemu_plugin_tcg_exec_userdata;
  qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_idle_cb;
  qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_resume_cb;
  void *qemu_plugin_vcpu_idle_resume_userdata;
 +qemu_plugin_crucible_ipi_delivery_cb_t qemu_plugin_crucible_ipi_delivery_cb;
 +void *qemu_plugin_crucible_ipi_delivery_userdata;
  
- bool qemu_plugin_has_time_control(void)
- {
-@@ -280,6 +282,30 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
+ static void qemu_plugin_time_advance_barrier_bh(void *opaque);
+ static void qemu_plugin_time_advance_complete_bh(void *opaque);
+@@ -426,6 +428,30 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
      }
  }
  

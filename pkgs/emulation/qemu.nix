@@ -182,6 +182,7 @@
   # patch -p1 < ${./qemu-patches/0030-crucible-preemption-inject.patch}
   # patch -p1 < ${./qemu-patches/0031-crucible-det-rng-delivery.patch}
   # patch -p1 < ${./qemu-patches/0032-crucible-det-virtio-ioeventfd.patch}
+  # patch -p1 < ${./qemu-patches/0033-crucible-sim-observer.patch}
 in
   mkDerivation {
     inherit pname;

@@ -1,24 +1,25 @@
 diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
 --- a/hw/virtio/virtio-pci.c
 +++ b/hw/virtio/virtio-pci.c
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,8 @@
   */
  
  #include "qemu/osdep.h"
++#include "qemu/accel.h"
 +#include "system/cpu-timers.h"
  
  #include "exec/memop.h"
  #include "standard-headers/linux/virtio_pci.h"
-@@ -313,6 +314,34 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
+@@ -313,6 +315,34 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
  {
      VirtIOPCIProxy *proxy = to_virtio_pci_proxy(d);
  
 +    /*
-+     * Under Crucible's deterministic icount, ioeventfd would dispatch the
-+     * guest's virtqueue kick asynchronously on the main loop, so the device
-+     * handler (and any completion interrupt it raises) runs at an icount that
-+     * races the vCPU thread rather than one fixed by the kick -- the
-+     * host-timing-vs-virtual-time completion hazard of RFC-0010
++     * Under the Crucible sim accelerator's deterministic icount, ioeventfd
++     * would dispatch the guest's virtqueue kick asynchronously on the main
++     * loop, so the device handler (and any completion interrupt it raises) runs
++     * at an icount that races the vCPU thread rather than one fixed by the kick
++     * -- the host-timing-vs-virtual-time completion hazard of RFC-0010
 +     * 15-io-subnodes.md, an inherent upstream icount limitation for async
 +     * device dispatch (determinism-contract 4.6/E7).  Disable ioeventfd so the
 +     * kick is serviced synchronously on the requesting vCPU thread at a
@@ -33,7 +34,7 @@ diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
 +     * double-synchronize a kick path they rely on being async and perturb their
 +     * throttled-IO idle timing for no determinism gain, so leave them stock.
 +     */
-+    if (icount_enabled()) {
++    if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0) {
 +        VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
 +
 +        if (vdev != NULL && vdev->device_id == VIRTIO_ID_RNG) {
@@ -44,3 +45,8 @@ diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
      return (proxy->flags & VIRTIO_PCI_FLAG_USE_IOEVENTFD) != 0;
  }
  
+@@ -2630,4 +2660,3 @@ static void virtio_pci_register_types(void)
+ }
+ 
+ type_init(virtio_pci_register_types)
+-

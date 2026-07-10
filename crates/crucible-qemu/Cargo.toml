@@ -14,3 +14,6 @@ crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+rustix = { workspace = true, features = ["process"] }

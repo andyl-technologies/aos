@@ -19,7 +19,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
  /* Kick all RR vCPUs */
  void rr_kick_vcpu_thread(CPUState *unused)
-@@ -348,6 +349,19 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -399,6 +400,19 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
  
@@ -31,7 +31,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +                                                                 cpu_budget);
 +                if (cpu_budget == 0) {
 +                    crucible_sim_shmem_publish_current_icount(current_icount);
-+                    qemu_plugin_main_loop_wait();
++                    qemu_cond_wait_bql(first_cpu->halt_cond);
 +                    break;
 +                }
 +            }
@@ -39,7 +39,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
              if (cpu_can_run(cpu)) {
                  int r;
  
-@@ -359,6 +373,10 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -410,6 +424,10 @@ static void *rr_cpu_thread_fn(void *arg)
                  if (icount_enabled()) {
                      icount_process_data(cpu);
                  }
@@ -174,7 +174,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
   * @request_id: driver-assigned request id
-@@ -934,6 +950,24 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
+@@ -980,6 +996,24 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
                                                qemu_plugin_vcpu_idle_resume_cb_t resume_cb,
                                                void *userdata);
  

@@ -1,9 +1,9 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -762,6 +762,16 @@ void qemu_plugin_advance_virtual_time_direct(int64_t time);
+@@ -777,6 +777,16 @@ int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
  QEMU_PLUGIN_API
- void qemu_plugin_drain_main_loop(void);
+ int qemu_plugin_advance_time_ns(int64_t time);
  
 +/**
 + * qemu_plugin_icount_raw() - return raw retired-instruction count
@@ -29,8 +29,8 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -172,6 +173,21 @@ void qemu_plugin_drain_main_loop(void)
-     qemu_plugin_drain_bottom_halves();
+@@ -226,6 +227,21 @@ int qemu_plugin_advance_time_ns(int64_t new_time)
+     return 0;
  }
  
 +uint64_t qemu_plugin_icount_raw(void)

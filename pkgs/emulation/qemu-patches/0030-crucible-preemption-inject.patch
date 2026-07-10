@@ -219,7 +219,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +                if (crucible_sim_preemption_apply_due(cpu_ptr)) {
 +                    return true;
 +                }
-                 qemu_plugin_main_loop_wait();
+                 qemu_cond_wait_bql(first_cpu->halt_cond);
                  return true;
              }
 @@ -203,6 +211,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
@@ -235,7 +235,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
          runs++;
  
          if (r == EXCP_DEBUG) {
-@@ -471,15 +485,20 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -522,15 +536,20 @@ static void *rr_cpu_thread_fn(void *arg)
  
                  cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
                                                                   cpu_budget);
@@ -246,7 +246,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +                    if (crucible_sim_preemption_apply_due(&cpu)) {
 +                        break;
 +                    }
-                     qemu_plugin_main_loop_wait();
+                     qemu_cond_wait_bql(first_cpu->halt_cond);
                      break;
                  }
              }
@@ -315,9 +315,9 @@ diff --git a/hw/intc/apic.c b/hw/intc/apic.c
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -916,6 +916,35 @@ uint64_t qemu_plugin_icount_raw(void);
+@@ -959,6 +959,35 @@ void qemu_plugin_force_vcpu_exit(void);
  QEMU_PLUGIN_API
- void qemu_plugin_force_vcpu_exit(void);
+ int qemu_plugin_crucible_single_threaded_rr(void);
  
 +#define QEMU_PLUGIN_PREEMPTION_KIND_VCPU_SWITCH 1U
 +#define QEMU_PLUGIN_PREEMPTION_KIND_INTERRUPT_AT 2U
@@ -392,7 +392,7 @@ new file mode 100644
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -20,6 +20,7 @@
+@@ -25,6 +25,7 @@
  #include "qemu/plugin-memory.h"
  #include "qemu/plugin.h"
  #include "system/cpu-timers.h"
@@ -400,8 +400,8 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -203,6 +204,17 @@ void qemu_plugin_force_vcpu_exit(void)
-     }
+@@ -308,6 +309,17 @@ void qemu_plugin_wake_notifier_remove(Notifier *notifier)
+     notifier_remove(notifier);
  }
  
 +int qemu_plugin_inject_preemption(uint64_t at_icount,

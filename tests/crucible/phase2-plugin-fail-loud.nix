@@ -12,7 +12,10 @@
     hash = "sha256-6Ig56XHLaW8Ow70BXh/oVSblxDoU4dkK5XqZJmd2RUw=";
   };
 
-  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginAbi = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs)
+  ];
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
@@ -24,8 +27,14 @@
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
   pluginBlockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
   pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
-  pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
-  pluginCoverage = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs;
+  pluginWhitebox = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
+  ];
+  pluginCoverage = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs)
+    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs)
+  ];
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 

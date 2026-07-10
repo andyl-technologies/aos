@@ -16,7 +16,8 @@
   pluginTeardown = builtins.readFile ../../crates/crucible-qemu-plugin/src/teardown.rs;
   pluginIdleLoop = builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
   protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  shmem = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
+  shmemRegion = builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
+  shmemFrameNode = builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -115,7 +116,7 @@
         needle = "ControlLifecycleState::QuitSent";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible-shmem/src/shmem/region.rs" shmemRegion [
       {
         label = "shutdown request API";
         needle = "pub fn request_shutdown";
@@ -124,6 +125,8 @@
         label = "shutdown acquire load";
         needle = "pub fn shutdown_requested";
       }
+    ]
+    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "done marker";
         needle = "pub fn mark_done";

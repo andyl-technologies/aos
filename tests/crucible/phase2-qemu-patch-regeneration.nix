@@ -199,7 +199,14 @@ in
             test "$base_tree" = "${series.patchBranchBaseTree}" \
               || fail "base tree $base_tree does not match manifest ${series.patchBranchBaseTree}"
 
-            git bundle verify ${series.patchBranchBundle} > "$out/patch-branch-bundle.verify"
+            git bundle verify ${series.patchBranchBundle} \
+              > "$out/patch-branch-bundle.verify" 2>&1
+            grep -q '${series.patchBranchBaseCommit}' \
+              "$out/patch-branch-bundle.verify" \
+              || fail "patch branch bundle must record the pinned QEMU base as a thin-bundle prerequisite"
+            bundle_bytes=$(wc -c < ${series.patchBranchBundle})
+            test "$bundle_bytes" -lt 100000000 \
+              || fail "patch branch bundle is $bundle_bytes bytes; repository artifacts must remain below GitHub's 100 MB limit"
             git fetch -q ${series.patchBranchBundle} \
               "refs/heads/${series.patchBranchRef}:refs/heads/patch-stack"
             patch_branch_head=$(git rev-parse refs/heads/patch-stack)
@@ -345,6 +352,8 @@ in
             qemu_source_hash=${series.qemuSourceHash}
             patch_regeneration_from_tracked_stack=true
             patch_branch_bundle_verified=true
+            patch_branch_bundle_is_thin=true
+            patch_branch_bundle_bytes=$bundle_bytes
             patch_branch_bundle_hash=${patchBranchBundleHash}
             patch_branch_ref=${series.patchBranchRef}
             patch_branch_model=${series.patchBranchModel}

@@ -7,6 +7,7 @@ use crucible::{
 use crucible_protocol::PluginBasicBlockCoverageObservation;
 use crucible_shmem::{
     MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion, MappedSetupRegionAccessError,
+    STATUS_DONE,
 };
 use thiserror::Error;
 
@@ -31,6 +32,19 @@ pub struct QemuMappedQuantumShmemHotPath {
 }
 
 impl QemuMappedQuantumShmemHotPath {
+    /// Returns whether the plugin published terminal `Done` for this VM slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the retained mapping
+    /// no longer validates or the configured slot is absent.
+    pub fn plugin_teardown_done(&self) -> Result<bool, QemuMappedQuantumShmemHotPathError> {
+        self.region
+            .node_slot(self.config.vm_slot)
+            .map(|slot| slot.snapshot().status == STATUS_DONE)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
+    }
+
     /// Binds one QEMU quantum channel to an owned mapped shared-memory region.
     ///
     /// # Errors

@@ -76,6 +76,56 @@ impl QemuHostPluginSetup {
     pub fn wake_fd(&self) -> RawFd {
         self.wake_fd.as_raw_fd()
     }
+
+    /// Proves that the plugin sent no unsolicited run-phase control bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when bytes are pending, the plugin has
+    /// already closed the control socket, or the nonblocking peek fails.
+    pub fn assert_run_control_silent(&self) -> Result<(), QemuNodeChannelError> {
+        let mut byte = [0_u8; 1];
+        loop {
+            // SAFETY: the control stream owns a live Unix socket and `byte` is
+            // writable for the single requested peek byte. `MSG_PEEK` leaves
+            // lifecycle framing untouched and `MSG_DONTWAIT` changes no fd flag.
+            let result = unsafe {
+                libc::recv(
+                    self.control_socket_fd(),
+                    byte.as_mut_ptr().cast::<libc::c_void>(),
+                    byte.len(),
+                    libc::MSG_PEEK | libc::MSG_DONTWAIT,
+                )
+            };
+            if result > 0 {
+                return Err(QemuNodeChannelError::new(
+                    "assert run control silence",
+                    "plugin sent an unsolicited run-phase control frame",
+                ));
+            }
+            if result == 0 {
+                return Err(QemuNodeChannelError::new(
+                    "assert run control silence",
+                    "plugin closed the run control socket before Quit",
+                ));
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            if error.kind() == io::ErrorKind::WouldBlock {
+                return Ok(());
+            }
+            return Err(QemuNodeChannelError::new(
+                "assert run control silence",
+                error.to_string(),
+            ));
+        }
+    }
+
+    fn control_socket_fd(&self) -> RawFd {
+        self.control.as_raw_fd()
+    }
 }
 
 impl QemuPluginIpcControlChannel for QemuHostPluginSetup {

@@ -51,10 +51,20 @@ fn run() -> Result<(), String> {
     println!("gate=gate:basic-block-coverage");
     println!("loaded_qemu_callback_evidence=present");
     println!("guest_instrumentation=none");
+    println!("guest_post_io_reached=true");
     println!("completed_icount={}", report.completed_icount);
     println!(
         "coverage_observation_count={}",
         report.coverage_observation_count
+    );
+    println!(
+        "guest_coverage_observation_count={}",
+        report.guest_coverage_observation_count
+    );
+    println!("canonical_event_log_match=true");
+    println!(
+        "canonical_event_log_fingerprint={}",
+        report.canonical_event_log_fingerprint.to_hex()
     );
     println!(
         "coverage_off_plugin={}",
@@ -63,6 +73,9 @@ fn run() -> Result<(), String> {
     println!("coverage_on_plugin={}", report.coverage_on_plugin_argument);
     println!("coverage_on_off_fingerprint_match=true");
     println!("independent_trace_fingerprint_match=true");
+    println!("run_control_silent={}", report.run_control_silent);
+    println!("plugin_quit_consumed={}", report.plugin_quit_consumed);
+    println!("orderly_child_exit={}", report.orderly_child_exit);
     println!("trace_components=instruction-stream,all-vcpu-registers,rr-cursor,ram,device-io");
     println!(
         "independent_trace_fingerprint={}",

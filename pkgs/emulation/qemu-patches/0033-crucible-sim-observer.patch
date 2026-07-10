@@ -1,0 +1,62 @@
+diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
+--- a/accel/tcg/tcg-accel-ops-sim-shmem.c
++++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
+@@ -10,6 +10,8 @@ static uint64_t crucible_current_icount;
+ static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_publish_icount_cb;
+ static qemu_plugin_sim_shmem_max_advance_icount_cb_t crucible_max_advance_icount_cb;
+ static void *crucible_sim_shmem_userdata;
++static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_observe_icount_cb;
++static void *crucible_sim_observer_userdata;
+ 
+ void qemu_plugin_register_sim_shmem_dispatch_cb(
+     qemu_plugin_sim_shmem_publish_icount_cb_t publish_icount_cb,
+@@ -21,6 +23,14 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
+     crucible_publish_icount_cb = publish_icount_cb;
+ }
+ 
++void qemu_plugin_register_sim_shmem_observer_cb(
++    qemu_plugin_sim_shmem_publish_icount_cb_t observe_icount_cb,
++    void *userdata)
++{
++    crucible_sim_observer_userdata = userdata;
++    crucible_observe_icount_cb = observe_icount_cb;
++}
++
+ bool crucible_sim_shmem_dispatch_registered(void)
+ {
+     return crucible_max_advance_icount_cb != NULL;
+@@ -29,6 +39,9 @@ bool crucible_sim_shmem_dispatch_registered(void)
+ void crucible_sim_shmem_publish_current_icount(uint64_t current_icount)
+ {
+     crucible_current_icount = current_icount;
++    if (crucible_observe_icount_cb) {
++        crucible_observe_icount_cb(current_icount, crucible_sim_observer_userdata);
++    }
+     if (crucible_publish_icount_cb) {
+         crucible_publish_icount_cb(current_icount, crucible_sim_shmem_userdata);
+     }
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1061,6 +1061,21 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
+     qemu_plugin_sim_shmem_max_advance_icount_cb_t max_advance_icount_cb,
+     void *userdata);
+ 
++/**
++ * qemu_plugin_register_sim_shmem_observer_cb() - observe exact sim boundaries
++ * @observe_icount_cb: callback invoked after a sim vCPU execution window
++ * @userdata: opaque pointer passed to @observe_icount_cb
++ *
++ * This observation-only callback is independent of the single scheduler-owned
++ * shmem dispatch registration. It runs after icount processing and before the
++ * RR loop resumes, so an auxiliary plugin can sample post-execution CPU, RAM,
++ * and device-I/O state without replacing or perturbing the control plugin.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_sim_shmem_observer_cb(
++    qemu_plugin_sim_shmem_publish_icount_cb_t observe_icount_cb,
++    void *userdata);
++
+ /**
+  * qemu_plugin_register_blk_cb() - register shmem block callbacks
+  * @submit_cb: request submit callback, or NULL to disable shmem forwarding

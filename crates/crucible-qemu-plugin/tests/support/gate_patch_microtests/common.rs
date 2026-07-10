@@ -49,6 +49,7 @@ pub(super) const EXPECTED_PATCHES: &[&str] = &[
     "0030-crucible-preemption-inject.patch",
     "0031-crucible-det-rng-delivery.patch",
     "0032-crucible-det-virtio-ioeventfd.patch",
+    "0033-crucible-sim-observer.patch",
 ];
 
 /// Collects the `.patch` file names carried under `path`, validating each
