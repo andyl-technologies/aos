@@ -205,7 +205,30 @@ fn write_scheduler_state(hasher: &mut MaterialHasher, state: &SchedulerState) {
             write_pending_frame(hasher, frame);
         }
     }
+    hasher.write_u64(state.network_link_cursors.len() as u64);
+    for (link, cursor) in &state.network_link_cursors {
+        hasher.write_bytes(link.name.as_bytes());
+        hasher.write_u64(cursor.current_icount);
+        hasher.write_u64(u64::from(cursor.next_sequence));
+        hasher.write_u64(cursor.rng_position);
+        hasher.write_u64(cursor.inflight.len() as u64);
+        for pending in &cursor.inflight {
+            hasher.write_u64(u64::from(pending.sequence));
+            write_icount(hasher, pending.delivery_icount);
+            hasher.write_u64(u64::from(pending.frame_id));
+            write_content_hash(hasher, &pending.payload);
+        }
+    }
     write_event_sequence_state(hasher, &state.event_sequences);
+    hasher.write_u64(state.topology_epoch);
+    hasher.write_u64(state.effective_topology_edges.len() as u64);
+    for edge in &state.effective_topology_edges {
+        write_scheduler_lookahead_edge(hasher, edge);
+    }
+    hasher.write_u64(state.pending_topology_changes.len() as u64);
+    for change in &state.pending_topology_changes {
+        write_scheduler_topology_change(hasher, change);
+    }
     write_timer_registry(hasher, &state.timers);
     hasher.write_u64(state.active_faults.len() as u64);
     for (fault, state) in &state.active_faults {
@@ -218,11 +241,76 @@ fn write_scheduler_state(hasher: &mut MaterialHasher, state: &SchedulerState) {
         hasher.write_bytes(super::membership_fault_material(fault).as_bytes());
     }
     write_active_fault_table(hasher, &state.active_fault_table);
+    hasher.write_u64(state.pending_device_decisions.len() as u64);
+    for decision in &state.pending_device_decisions {
+        write_decision(hasher, decision);
+    }
     hasher.write_u64(state.search_frontier.choices().len() as u64);
     for choice in state.search_frontier.choices() {
         hasher.write_u64(choice.decisions().len() as u64);
         for decision in choice.decisions() {
             write_decision(hasher, decision);
+        }
+    }
+}
+
+fn write_scheduler_lookahead_edge(
+    hasher: &mut MaterialHasher,
+    edge: &crate::scheduler::SchedulerLookaheadEdge,
+) {
+    write_scheduler_node_id(hasher, &edge.from);
+    write_scheduler_node_id(hasher, &edge.to);
+    hasher.write_u64(edge.minimum_latency.nanos);
+}
+
+fn write_scheduler_topology_change(
+    hasher: &mut MaterialHasher,
+    change: &crate::scheduler::SchedulerTopologyChange,
+) {
+    use crate::scheduler::{SchedulerTopologyChangeEffect, SchedulerTopologyChangeTrigger};
+
+    hasher.write_u64(change.sequence);
+    hasher.write_u64(match change.trigger {
+        SchedulerTopologyChangeTrigger::FaultActivation => 0,
+        SchedulerTopologyChangeTrigger::Heal => 1,
+        SchedulerTopologyChangeTrigger::LatencyChange => 2,
+    });
+    match change.activation_time {
+        Some(at) => {
+            hasher.write_bool(true);
+            hasher.write_u64(at.nanos);
+        }
+        None => hasher.write_bool(false),
+    }
+    match &change.effect {
+        SchedulerTopologyChangeEffect::ReplaceEffectiveEdges(edges) => {
+            hasher.write_u64(0);
+            hasher.write_u64(edges.len() as u64);
+            for edge in edges {
+                write_scheduler_lookahead_edge(hasher, edge);
+            }
+        }
+        SchedulerTopologyChangeEffect::UpdateEffectiveEdges(edges) => {
+            hasher.write_u64(1);
+            hasher.write_u64(edges.len() as u64);
+            for edge in edges {
+                write_scheduler_lookahead_edge(hasher, edge);
+            }
+        }
+        SchedulerTopologyChangeEffect::RemoveEffectiveEdges(endpoints) => {
+            hasher.write_u64(2);
+            hasher.write_u64(endpoints.len() as u64);
+            for endpoint in endpoints {
+                write_scheduler_node_id(hasher, &endpoint.from);
+                write_scheduler_node_id(hasher, &endpoint.to);
+            }
+        }
+        SchedulerTopologyChangeEffect::RestoreEffectiveEdges(edges) => {
+            hasher.write_u64(3);
+            hasher.write_u64(edges.len() as u64);
+            for edge in edges {
+                write_scheduler_lookahead_edge(hasher, edge);
+            }
         }
     }
 }
