@@ -28,14 +28,13 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     assert_contains(&abi, "pub type QemuIcountRawFn");
     assert_contains(&abi, "pub type QemuForceVcpuExitFn");
     assert_contains(&abi, "pub type QemuRegisterWakeFdFn");
-    assert_contains(&abi, "pub type QemuMainLoopWaitFn");
     assert_contains(&abi, "pub type QemuRegisterTcgExecCbFn");
     assert_contains(&abi, "pub type QemuRegisterBlkCbFn");
     assert_contains(&abi, "pub type QemuRegisterNinePCbFn");
     assert_contains(&abi, "resolve_qemu_icount_raw_symbol");
+    assert_contains(&abi, "QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL_C");
     assert_contains(&abi, "resolve_qemu_force_vcpu_exit_symbol");
     assert_contains(&abi, "resolve_qemu_register_wake_fd_symbol");
-    assert_contains(&abi, "resolve_qemu_main_loop_wait_symbol");
     assert_contains(&abi, "resolve_qemu_register_tcg_exec_cb_symbol");
     assert_contains(&abi, "resolve_qemu_register_blk_cb_symbol");
     assert_contains(&abi, "resolve_qemu_register_9p_cb_symbol");
@@ -315,11 +314,11 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     assert_contains(&setup, "register_with_qemu");
     assert_contains(&setup, "QemuRegisterWakeFdFn");
 
-    let registration =
-        fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/registration.rs"))?;
-    assert_contains(&registration, "register_tcg_exec_cb(");
-    assert_contains(&registration, "Some(");
-    assert_contains(&registration, "crucible_qemu_plugin_coverage_exec_cb");
+    let coverage = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/coverage.rs"))?;
+    assert_contains(&coverage, "register_tb_trans_cb");
+    assert_contains(&coverage, "register_tb_exec_cb");
+    assert_contains(&coverage, "icount_at_tb_entry");
+    assert_contains(&coverage, "register_flush_cb");
 
     for patch in EXPECTED_PATCHES {
         assert_contains(&aggregate, patch);

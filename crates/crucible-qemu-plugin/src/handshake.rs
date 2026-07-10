@@ -225,21 +225,27 @@ mod tests {
 
     #[test]
     fn plugin_handshake_preserves_protocol_failures() {
-        let ack = control_encode_host_msg(&HostMsg::HelloAck {
-            proto_version: CONTROL_PROTOCOL_VERSION,
-            abi_version: ABI_VERSION + 1,
-            slot_index: 0,
-            node_count: 1,
-        });
-        let mut io = ScriptedIo::from_input(ack);
-        let args = plugin_args("simfd=3,slot=0");
+        assert_eq!(ABI_VERSION, 2);
+        for host_abi in [1, ABI_VERSION + 1] {
+            let ack = control_encode_host_msg(&HostMsg::HelloAck {
+                proto_version: CONTROL_PROTOCOL_VERSION,
+                abi_version: host_abi,
+                slot_index: 0,
+                node_count: 1,
+            });
+            let mut io = ScriptedIo::from_input(ack);
+            let args = plugin_args("simfd=3,slot=0");
 
-        assert!(matches!(
-            perform_plugin_handshake(&mut io, &args),
-            Err(PluginHandshakeError::Protocol {
-                source: HandshakeError::AbiMismatch { .. },
-            })
-        ));
+            assert!(matches!(
+                perform_plugin_handshake(&mut io, &args),
+                Err(PluginHandshakeError::Protocol {
+                    source: HandshakeError::AbiMismatch {
+                        plugin_abi: ABI_VERSION,
+                        host_abi: rejected,
+                    },
+                }) if rejected == host_abi
+            ));
+        }
     }
 
     struct ScriptedIo {

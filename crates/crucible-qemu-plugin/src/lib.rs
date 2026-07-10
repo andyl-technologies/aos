@@ -7,8 +7,8 @@
 //! specified by its indexed RFC-0010 files. It is an unsafe-boundary crate
 //! because the plugin speaks QEMU's C ABI and may read guest memory.
 //!
-//! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and inert
-//! callback scaffold; `args` owns fail-closed `-plugin` argument parsing;
+//! Module map: `abi` owns the raw QEMU plugin `cdylib` entry point and capability
+//! resolution; `args` owns fail-closed `-plugin` argument parsing;
 //! `boot_barrier` owns the initial scheduler-ceiling futex wait before first
 //! guest instruction;
 //! `handshake` owns plugin-side control-protocol version negotiation and slot
@@ -33,6 +33,7 @@
 //! optional app-controlled randomness request/reply path;
 //! `round_robin` owns fixed-quantum vCPU rotation and per-vCPU halt tracking;
 //! `preemption` owns scheduler-commanded vCPU switch and interrupt injection;
+//! `runtime` owns live fail-closed installation and process-lifetime active state;
 //! `vcpu_introspection` owns side-effect-free per-vCPU register and RR cursor
 //! reads for N-vCPU fingerprinting;
 //! `coverage` owns optional TCG-exec coverage planning and observational
@@ -68,6 +69,8 @@ pub mod ninep_io;
 pub mod preemption;
 pub mod registration;
 pub mod round_robin;
+#[cfg(unix)]
+pub mod runtime;
 pub mod setup;
 pub mod shmem_ordering;
 pub mod teardown;
@@ -80,29 +83,35 @@ pub use abi::{
     PluginDeviceCallbackKind, PluginLifecycleCore, PluginLifecyclePhase, PluginRuntimeApis,
     PluginStatePartition, QEMU_PLUGIN_API_VERSION, QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL,
     QEMU_PLUGIN_ICOUNT_RAW_SYMBOL, QEMU_PLUGIN_INSTALL_ERROR, QEMU_PLUGIN_INSTALL_OK,
-    QEMU_PLUGIN_INSTALL_SYMBOL, QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL,
-    QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL, QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL,
-    QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL, QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL,
-    QEMU_PLUGIN_VERSION_SYMBOL, QemuBlkPollCbFn, QemuBlkSubmitCbFn, QemuForceVcpuExitFn,
-    QemuIcountRawFn, QemuMainLoopWaitFn, QemuNinePBurstCbFn, QemuNinePPollCbFn,
+    QEMU_PLUGIN_INSTALL_SYMBOL, QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL, QEMU_PLUGIN_REGISTER_ENTRYPOINT_SYMBOL,
+    QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL, QEMU_PLUGIN_VERSION_SYMBOL, QemuBlkPollCbFn,
+    QemuBlkSubmitCbFn, QemuForceVcpuExitFn, QemuIcountRawFn, QemuNinePBurstCbFn, QemuNinePPollCbFn,
     QemuNinePSubmitCbFn, QemuPluginAbiError, QemuPluginExecutionModel, QemuPluginId,
-    QemuPluginInfo, QemuRegisterBlkCbFn, QemuRegisterNinePCbFn, QemuRegisterTcgExecCbFn,
-    QemuRegisterWakeFdFn, QemuTcgExecCbFn, QemuTcgThreading, RegisteredDeviceCallbacks,
-    execution_model_from_qemu_info, install_inert_scaffold, install_inert_scaffold_from_qemu_info,
-    install_required_deadline_scaffold, install_required_deadline_scaffold_from_qemu_info,
-    install_required_preemption_scaffold, install_required_preemption_scaffold_from_qemu_info,
-    install_required_runtime_api_scaffold, install_required_runtime_api_scaffold_from_qemu_info,
+    QemuPluginInfo, QemuRegisterBlkCbFn, QemuRegisterNinePCbFn, QemuRegisterSimShmemDispatchCbFn,
+    QemuRegisterTcgExecCbFn, QemuRegisterVcpuIdleResumeCbFn, QemuRegisterVcpuInitCbFn,
+    QemuRegisterWakeFdFn, QemuSimShmemMaxAdvanceIcountCbFn, QemuSimShmemPublishIcountCbFn,
+    QemuTcgExecCbFn, QemuTcgThreading, QemuVcpuIdleResumeCbFn, QemuVcpuSimpleCbFn,
+    RegisteredDeviceCallbacks, execution_model_from_qemu_info, install_inert_scaffold,
+    install_inert_scaffold_from_qemu_info, install_required_deadline_scaffold,
+    install_required_deadline_scaffold_from_qemu_info, install_required_preemption_scaffold,
+    install_required_preemption_scaffold_from_qemu_info, install_required_runtime_api_scaffold,
+    install_required_runtime_api_scaffold_from_qemu_info,
     install_required_time_capability_scaffold,
     install_required_time_capability_scaffold_from_qemu_info,
     install_required_vcpu_introspection_scaffold,
     install_required_vcpu_introspection_scaffold_from_qemu_info, qemu_plugin_install,
-    qemu_plugin_version, resolve_qemu_advance_virtual_time_direct_symbol,
-    resolve_qemu_clock_deadline_symbol, resolve_qemu_force_vcpu_exit_symbol,
-    resolve_qemu_icount_raw_symbol, resolve_qemu_inject_preemption_symbol,
-    resolve_qemu_main_loop_wait_symbol, resolve_qemu_read_vcpu_regs_symbol,
+    qemu_plugin_version, resolve_qemu_advance_time_ns_symbol, resolve_qemu_clock_deadline_symbol,
+    resolve_qemu_force_vcpu_exit_symbol, resolve_qemu_icount_raw_symbol,
+    resolve_qemu_inject_preemption_symbol, resolve_qemu_read_vcpu_regs_symbol,
     resolve_qemu_register_9p_cb_symbol, resolve_qemu_register_blk_cb_symbol,
-    resolve_qemu_register_tcg_exec_cb_symbol, resolve_qemu_register_wake_fd_symbol,
-    resolve_qemu_rr_cursor_symbol, validate_install_boundary,
+    resolve_qemu_register_sim_shmem_dispatch_cb_symbol, resolve_qemu_register_tcg_exec_cb_symbol,
+    resolve_qemu_register_time_advance_cb_symbol, resolve_qemu_register_vcpu_idle_resume_cb_symbol,
+    resolve_qemu_register_vcpu_init_cb_symbol, resolve_qemu_register_wake_fd_symbol,
+    resolve_qemu_request_time_control_symbol, resolve_qemu_rr_cursor_symbol,
+    validate_install_boundary,
 };
 pub use args::{
     PLUGIN_ARG_COVERAGE, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD,
@@ -121,8 +130,15 @@ pub use boot_barrier::{
 pub use coverage::{
     CoverageBlockEvent, CoverageCallback, CoverageCapabilities, CoverageError, CoverageMap,
     CoverageObservation, CoverageRegistrationPlan, CoverageSink, CoverageSinkError,
-    DEFAULT_COVERAGE_MAP_ENTRIES, PluginCoverage, QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL,
-    crucible_qemu_plugin_coverage_exec_cb, fold_basic_block_pc, handle_coverage_exec_callback,
+    DEFAULT_COVERAGE_MAP_ENTRIES, PluginCoverage, QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL,
+    QEMU_PLUGIN_INSN_SIZE_SYMBOL, QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL, QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL,
+    QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL, QEMU_PLUGIN_TB_GET_INSN_SYMBOL,
+    QEMU_PLUGIN_TB_N_INSNS_SYMBOL, QEMU_PLUGIN_TB_VADDR_SYMBOL, QemuBasicBlockCoverageApis,
+    QemuIcountAtTbEntryFn, QemuInsnSizeFn, QemuPluginInsn, QemuPluginSimpleCbFn, QemuPluginTb,
+    QemuRegisterFlushCbFn, QemuRegisterVcpuTbExecCbFn, QemuRegisterVcpuTbTransCbFn,
+    QemuTbGetInsnFn, QemuTbNInsnsFn, QemuTbVaddrFn, QemuVcpuTbExecCbFn, QemuVcpuTbTransCbFn,
+    fold_basic_block_pc, handle_coverage_exec_callback,
 };
 pub use deadline::{
     ClockDeadlineSource, DeadlineFallbackPolicy, ExactDeadlineError, ExactDeadlineIntrospection,
@@ -185,12 +201,19 @@ pub use round_robin::{
     RoundRobinConfig, RoundRobinError, RoundRobinRunState, RoundRobinTurn, VcpuHaltTracker,
     compute_all_halted_idle_wake_plan,
 };
+#[cfg(unix)]
+pub use runtime::{
+    LiveDeviceCallbackError, LiveVcpuTimeCallbackError, OwnedCallbackRegistrationError,
+    PluginRuntimeInstallError, PluginRuntimeOwner, REQUIRED_OWNED_CALLBACK_FAMILIES,
+    RequiredOwnedCallbacksRegistered, active_runtime_is_published,
+};
 pub use setup::PluginReadySetupAck;
 #[cfg(unix)]
 pub use setup::{
-    ArmedWakeFd, PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage,
-    RegisteredWakeFd, WakeFdArmError, WakeFdRegisterError, prepare_setup_completion,
-    receive_and_prepare_setup_completion, receive_setup_with_descriptors, send_ready_setup_ack,
+    ArmedWakeFd, PluginSetupBootBarrierError, PluginSetupCompletion, PluginSetupError,
+    PluginSetupFailureStage, RegisteredWakeFd, WakeFdArmError, WakeFdRegisterError,
+    prepare_setup_completion, receive_and_prepare_setup_completion, receive_setup_with_descriptors,
+    send_callback_registration_failure_ack, send_ready_setup_ack,
 };
 pub use shmem_ordering::PluginShmemOrdering;
 pub use teardown::{
@@ -199,12 +222,14 @@ pub use teardown::{
     PluginTeardownTrigger,
 };
 pub use time_control::{
-    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, MAX_PLUGIN_ICOUNT_SHIFT, PluginClockAdvance,
-    PluginClockAdvanceSource, PluginClockError, PluginRegistrationStep, PluginTimeControlOwnership,
-    PluginVirtualClock, QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
-    QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL, QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL,
-    QEMU_PLUGIN_UPDATE_NS_SYMBOL, QemuAdvanceVirtualTimeDirectFn, SchedulerAuthorizedIdleJump,
-    SchedulerCeiling, SynchronousIdleAdvance, SynchronousIdleAdvanceError, SynchronousIdleDrain,
+    CANONICAL_TIME_CONTROL_REGISTRATION_ORDER, MAX_PLUGIN_ICOUNT_SHIFT, PendingIdleAdvance,
+    PluginClockAdvance, PluginClockAdvanceSource, PluginClockError, PluginRegistrationStep,
+    PluginTimeControlOwnership, PluginTimeControlRequestError, PluginVirtualClock,
+    QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL, QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL,
+    QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL, QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL,
+    QEMU_PLUGIN_UPDATE_NS_SYMBOL, QemuAdvanceTimeNsFn, QemuRegisterTimeAdvanceCbFn,
+    QemuRequestTimeControlFn, QemuTimeAdvanceCompletionCbFn, QueuedIdleAdvance,
+    QueuedIdleAdvanceError, SchedulerAuthorizedIdleJump, SchedulerCeiling, TimeAdvanceCompletion,
     TimeControlRegistrationError, TimeControlRegistrationPlan,
 };
 pub use vcpu_introspection::{

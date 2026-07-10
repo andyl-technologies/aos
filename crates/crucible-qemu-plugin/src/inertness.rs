@@ -31,7 +31,7 @@ pub struct PluginPatchCapabilityCalls {
     pub virtual_clock_updates: u32,
     /// Reads through the exact virtual-clock deadline capability.
     pub exact_deadline_reads: u32,
-    /// Direct virtual-time advances through the idle advance capability.
+    /// Queued virtual-time advances through the idle advance capability.
     pub direct_virtual_time_advances: u32,
     /// Commanded vCPU-switch or interrupt preemption injections.
     pub preemption_injections: u32,

@@ -15,12 +15,16 @@
 //! plugin callback state is not accessed concurrently.
 
 use std::ffi::CStr;
+#[cfg(unix)]
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 
 use crate::{
-    ExactDeadlineError, ExactDeadlineReader, QemuAdvanceVirtualTimeDirectFn, QemuClockDeadlineFn,
-    QemuInjectPreemptionFn, QemuReadRrCursorFn, QemuReadVcpuRegsFn, SynchronousIdleAdvance,
-    SynchronousIdleAdvanceError,
+    ExactDeadlineError, ExactDeadlineReader, QemuAdvanceTimeNsFn, QemuClockDeadlineFn,
+    QemuInjectPreemptionFn, QemuReadRrCursorFn, QemuReadVcpuRegsFn, QemuRegisterTimeAdvanceCbFn,
+    QemuRequestTimeControlFn, QueuedIdleAdvance, QueuedIdleAdvanceError,
 };
 use crate::{PLUGIN_ARG_SIMFD, PluginArgs, PluginArgsParseError};
 use crate::{PluginPreemptionInjector, PreemptionError};
@@ -75,27 +79,54 @@ pub const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL: &str = "qemu_plugin_icount_raw";
 pub const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL: &str = "qemu_plugin_force_vcpu_exit";
 /// QEMU plugin API symbol used to register the setup wake fd with QEMU.
 pub const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL: &str = "qemu_plugin_register_wake_fd";
-/// QEMU plugin API symbol used to block through QEMU's main loop.
-pub const QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL: &str = "qemu_plugin_main_loop_wait";
 /// QEMU plugin API symbol used to register shmem block submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL: &str = "qemu_plugin_register_blk_cb";
 /// QEMU plugin API symbol used to register shmem 9p burst/submit/poll callbacks.
 pub const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL: &str = "qemu_plugin_register_9p_cb";
+/// QEMU plugin API symbol used to register the standard vCPU-init callback.
+pub const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL: &str = "qemu_plugin_register_vcpu_init_cb";
+/// QEMU plugin API symbol used to register Crucible all-idle/resume callbacks.
+pub const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL: &str =
+    "qemu_plugin_register_vcpu_idle_resume_cb";
+/// QEMU plugin API symbol used to connect the sim loop to shared-memory time state.
+pub const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL: &str =
+    "qemu_plugin_register_sim_shmem_dispatch_cb";
 /// Minimum supported vCPU count under single-threaded round-robin TCG.
 pub const MIN_SUPPORTED_VCPU_COUNT: u32 = 1;
 const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL_C: &[u8] = b"qemu_plugin_clock_deadline_ns\0";
-const QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL_C: &[u8] =
-    b"qemu_plugin_advance_virtual_time_direct\0";
+const QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL_C: &[u8] = b"qemu_plugin_advance_time_ns\0";
+const QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_time_advance_cb\0";
 const QEMU_PLUGIN_INJECT_PREEMPTION_SYMBOL_C: &[u8] = b"qemu_plugin_inject_preemption\0";
 const QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL_C: &[u8] = b"qemu_plugin_read_vcpu_regs\0";
 const QEMU_PLUGIN_RR_CURSOR_SYMBOL_C: &[u8] = b"qemu_plugin_rr_cursor\0";
 const QEMU_PLUGIN_ICOUNT_RAW_SYMBOL_C: &[u8] = b"qemu_plugin_icount_raw\0";
 const QEMU_PLUGIN_FORCE_VCPU_EXIT_SYMBOL_C: &[u8] = b"qemu_plugin_force_vcpu_exit\0";
 const QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL_C: &[u8] = b"qemu_plugin_register_wake_fd\0";
-const QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL_C: &[u8] = b"qemu_plugin_main_loop_wait\0";
 const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_tcg_exec_cb\0";
+const QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_vcpu_tb_trans_cb\0";
+const QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_vcpu_tb_exec_cb\0";
+const QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL_C: &[u8] = b"qemu_plugin_icount_at_tb_entry\0";
+const QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_flush_cb\0";
+const QEMU_PLUGIN_TB_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_tb_vaddr\0";
+const QEMU_PLUGIN_TB_N_INSNS_SYMBOL_C: &[u8] = b"qemu_plugin_tb_n_insns\0";
+const QEMU_PLUGIN_TB_GET_INSN_SYMBOL_C: &[u8] = b"qemu_plugin_tb_get_insn\0";
+const QEMU_PLUGIN_INSN_SIZE_SYMBOL_C: &[u8] = b"qemu_plugin_insn_size\0";
 const QEMU_PLUGIN_REGISTER_BLK_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_blk_cb\0";
 const QEMU_PLUGIN_REGISTER_9P_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_9p_cb\0";
+const QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_init_cb\0";
+const QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_vcpu_idle_resume_cb\0";
+const QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_sim_shmem_dispatch_cb\0";
+const QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL_C: &[u8] = b"qemu_plugin_request_time_control\0";
+const QEMU_PLUGIN_SINGLE_THREADED_RR_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_single_threaded_rr\0";
+/// QEMU capability required to observe the callback serialization mode.
+pub const QEMU_PLUGIN_SINGLE_THREADED_RR_SYMBOL: &str = "qemu_plugin_crucible_single_threaded_rr";
+/// QEMU callback-serialization proof returning one only for single-threaded RR.
+pub type QemuSingleThreadedRrFn = extern "C" fn() -> c_int;
 
 #[cfg(test)]
 static TEST_CLOCK_DEADLINE_SYMBOL: std::sync::Mutex<Option<QemuClockDeadlineFn>> =
@@ -217,6 +248,11 @@ impl PluginLifecycleCore {
     pub const fn execution_model(&self) -> QemuPluginExecutionModel {
         self.execution_model
     }
+
+    /// Marks the lifecycle active after the full registration sequence succeeds.
+    const fn activate(&mut self) {
+        self.phase = PluginLifecyclePhase::Active;
+    }
 }
 
 /// A callback family owned by the QEMU plugin.
@@ -261,8 +297,6 @@ pub type QemuIcountRawFn = extern "C" fn() -> u64;
 pub type QemuForceVcpuExitFn = extern "C" fn();
 /// QEMU wake-fd registration exported by `crucible-plugin-wake-fd`.
 pub type QemuRegisterWakeFdFn = extern "C" fn(c_int) -> c_int;
-/// QEMU blocking main-loop wait exported by `crucible-plugin-wake-fd`.
-pub type QemuMainLoopWaitFn = extern "C" fn();
 /// TCG-exec callback body passed to QEMU's registration export.
 pub type QemuTcgExecCbFn = extern "C" fn(c_uint, u64, *mut c_void);
 /// QEMU TCG-exec callback registration exported by `crucible-plugin-tcg-exec-cb`.
@@ -288,6 +322,25 @@ pub type QemuRegisterNinePCbFn = extern "C" fn(
     Option<QemuNinePBurstCbFn>,
     *mut c_void,
 );
+/// Standard QEMU vCPU lifecycle callback body.
+pub type QemuVcpuSimpleCbFn = extern "C" fn(QemuPluginId, c_uint);
+/// Standard QEMU vCPU-init callback registration function.
+pub type QemuRegisterVcpuInitCbFn = extern "C" fn(QemuPluginId, QemuVcpuSimpleCbFn);
+/// Crucible all-vCPUs-idle or resume callback body.
+pub type QemuVcpuIdleResumeCbFn = extern "C" fn(c_uint, u64, *mut c_void);
+/// QEMU registration function for Crucible all-idle and resume callbacks.
+pub type QemuRegisterVcpuIdleResumeCbFn =
+    extern "C" fn(Option<QemuVcpuIdleResumeCbFn>, Option<QemuVcpuIdleResumeCbFn>, *mut c_void);
+/// Sim-loop callback that publishes the raw aggregate instruction count.
+pub type QemuSimShmemPublishIcountCbFn = extern "C" fn(u64, *mut c_void);
+/// Sim-loop callback that reads the scheduler-published instruction ceiling.
+pub type QemuSimShmemMaxAdvanceIcountCbFn = extern "C" fn(*mut c_void) -> u64;
+/// QEMU registration function for sim-loop shared-memory time dispatch.
+pub type QemuRegisterSimShmemDispatchCbFn = extern "C" fn(
+    Option<QemuSimShmemPublishIcountCbFn>,
+    Option<QemuSimShmemMaxAdvanceIcountCbFn>,
+    *mut c_void,
+);
 
 /// Required runtime APIs added by the T-PATCH-11 QEMU patch group.
 #[derive(Clone, Copy, Debug)]
@@ -295,7 +348,6 @@ pub struct PluginRuntimeApis {
     icount_raw: QemuIcountRawFn,
     force_vcpu_exit: QemuForceVcpuExitFn,
     register_wake_fd: QemuRegisterWakeFdFn,
-    main_loop_wait: QemuMainLoopWaitFn,
     register_tcg_exec_cb: QemuRegisterTcgExecCbFn,
 }
 
@@ -310,7 +362,6 @@ impl PluginRuntimeApis {
         icount_raw: Option<QemuIcountRawFn>,
         force_vcpu_exit: Option<QemuForceVcpuExitFn>,
         register_wake_fd: Option<QemuRegisterWakeFdFn>,
-        main_loop_wait: Option<QemuMainLoopWaitFn>,
         register_tcg_exec_cb: Option<QemuRegisterTcgExecCbFn>,
     ) -> Result<Self, QemuPluginAbiError> {
         Ok(Self {
@@ -323,7 +374,6 @@ impl PluginRuntimeApis {
                 register_wake_fd,
                 QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL,
             )?,
-            main_loop_wait: require_runtime_api(main_loop_wait, QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL)?,
             register_tcg_exec_cb: require_runtime_api(
                 register_tcg_exec_cb,
                 crate::QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL,
@@ -347,12 +397,6 @@ impl PluginRuntimeApis {
     #[must_use]
     pub const fn register_wake_fd(self) -> QemuRegisterWakeFdFn {
         self.register_wake_fd
-    }
-
-    /// Returns QEMU's blocking main-loop wait function.
-    #[must_use]
-    pub const fn main_loop_wait(self) -> QemuMainLoopWaitFn {
-        self.main_loop_wait
     }
 
     /// Returns QEMU's TCG-exec callback registration function.
@@ -415,7 +459,7 @@ pub struct PluginStatePartition {
     lifecycle_core: PluginLifecycleCore,
     device_callbacks: RegisteredDeviceCallbacks,
     exact_deadline_reader: Option<ExactDeadlineReader>,
-    synchronous_idle_advance: Option<SynchronousIdleAdvance>,
+    queued_idle_advance: Option<QueuedIdleAdvance>,
     preemption_injector: Option<PluginPreemptionInjector>,
     vcpu_introspector: Option<PluginVcpuIntrospector>,
     runtime_apis: Option<PluginRuntimeApis>,
@@ -429,7 +473,7 @@ impl PluginStatePartition {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: None,
-            synchronous_idle_advance: None,
+            queued_idle_advance: None,
             preemption_injector: None,
             vcpu_introspector: None,
             runtime_apis: None,
@@ -446,7 +490,7 @@ impl PluginStatePartition {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: Some(exact_deadline_reader),
-            synchronous_idle_advance: None,
+            queued_idle_advance: None,
             preemption_injector: None,
             vcpu_introspector: None,
             runtime_apis: None,
@@ -458,13 +502,13 @@ impl PluginStatePartition {
     pub const fn with_required_time_capabilities(
         execution_model: QemuPluginExecutionModel,
         exact_deadline_reader: ExactDeadlineReader,
-        synchronous_idle_advance: SynchronousIdleAdvance,
+        queued_idle_advance: QueuedIdleAdvance,
     ) -> Self {
         Self {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: Some(exact_deadline_reader),
-            synchronous_idle_advance: Some(synchronous_idle_advance),
+            queued_idle_advance: Some(queued_idle_advance),
             preemption_injector: None,
             vcpu_introspector: None,
             runtime_apis: None,
@@ -476,14 +520,14 @@ impl PluginStatePartition {
     pub const fn with_required_preemption_capabilities(
         execution_model: QemuPluginExecutionModel,
         exact_deadline_reader: ExactDeadlineReader,
-        synchronous_idle_advance: SynchronousIdleAdvance,
+        queued_idle_advance: QueuedIdleAdvance,
         preemption_injector: PluginPreemptionInjector,
     ) -> Self {
         Self {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: Some(exact_deadline_reader),
-            synchronous_idle_advance: Some(synchronous_idle_advance),
+            queued_idle_advance: Some(queued_idle_advance),
             preemption_injector: Some(preemption_injector),
             vcpu_introspector: None,
             runtime_apis: None,
@@ -495,7 +539,7 @@ impl PluginStatePartition {
     pub const fn with_required_vcpu_introspection_capabilities(
         execution_model: QemuPluginExecutionModel,
         exact_deadline_reader: ExactDeadlineReader,
-        synchronous_idle_advance: SynchronousIdleAdvance,
+        queued_idle_advance: QueuedIdleAdvance,
         preemption_injector: PluginPreemptionInjector,
         vcpu_introspector: PluginVcpuIntrospector,
     ) -> Self {
@@ -503,7 +547,7 @@ impl PluginStatePartition {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: Some(exact_deadline_reader),
-            synchronous_idle_advance: Some(synchronous_idle_advance),
+            queued_idle_advance: Some(queued_idle_advance),
             preemption_injector: Some(preemption_injector),
             vcpu_introspector: Some(vcpu_introspector),
             runtime_apis: None,
@@ -515,7 +559,7 @@ impl PluginStatePartition {
     pub const fn with_required_runtime_api_capabilities(
         execution_model: QemuPluginExecutionModel,
         exact_deadline_reader: ExactDeadlineReader,
-        synchronous_idle_advance: SynchronousIdleAdvance,
+        queued_idle_advance: QueuedIdleAdvance,
         preemption_injector: PluginPreemptionInjector,
         vcpu_introspector: PluginVcpuIntrospector,
         runtime_apis: PluginRuntimeApis,
@@ -524,7 +568,7 @@ impl PluginStatePartition {
             lifecycle_core: PluginLifecycleCore::installed_inert(execution_model),
             device_callbacks: RegisteredDeviceCallbacks::inert(),
             exact_deadline_reader: Some(exact_deadline_reader),
-            synchronous_idle_advance: Some(synchronous_idle_advance),
+            queued_idle_advance: Some(queued_idle_advance),
             preemption_injector: Some(preemption_injector),
             vcpu_introspector: Some(vcpu_introspector),
             runtime_apis: Some(runtime_apis),
@@ -549,10 +593,10 @@ impl PluginStatePartition {
         self.exact_deadline_reader.as_ref()
     }
 
-    /// Returns the synchronous direct-advance handle resolved during install, if present.
+    /// Returns the queued idle-advance handle resolved during install, if present.
     #[must_use]
-    pub const fn synchronous_idle_advance(&self) -> Option<&SynchronousIdleAdvance> {
-        self.synchronous_idle_advance.as_ref()
+    pub const fn queued_idle_advance(&self) -> Option<&QueuedIdleAdvance> {
+        self.queued_idle_advance.as_ref()
     }
 
     /// Returns the commanded-preemption injector resolved during install, if present.
@@ -571,6 +615,15 @@ impl PluginStatePartition {
     #[must_use]
     pub const fn runtime_apis(&self) -> Option<PluginRuntimeApis> {
         self.runtime_apis
+    }
+
+    /// Marks this state active after setup, callback registration, and the boot barrier.
+    pub(crate) const fn activate(
+        &mut self,
+        _ready: &crate::PluginRegistrationReady,
+        _owned_callbacks: &crate::RequiredOwnedCallbacksRegistered,
+    ) {
+        self.lifecycle_core.activate();
     }
 }
 
@@ -623,6 +676,9 @@ pub enum QemuPluginAbiError {
     /// QEMU reported zero guest vCPUs.
     #[error("QEMU plugin execution model has no vCPUs")]
     NoVcpus,
+    /// QEMU loaded the plugin outside system emulation.
+    #[error("QEMU plugin requires system emulation")]
+    NotSystemEmulation,
     /// QEMU is using multi-threaded TCG, which can re-enter plugin state concurrently.
     #[error("QEMU plugin requires single-threaded round-robin TCG, not MTTCG")]
     MultiThreadedTcg,
@@ -632,11 +688,11 @@ pub enum QemuPluginAbiError {
         /// Underlying exact deadline error.
         source: ExactDeadlineError,
     },
-    /// The required synchronous idle-advance capability is unavailable.
-    #[error("QEMU plugin synchronous idle-advance capability failed")]
-    SynchronousIdleAdvanceCapability {
-        /// Underlying synchronous idle-advance error.
-        source: SynchronousIdleAdvanceError,
+    /// The required queued idle-advance capability is unavailable.
+    #[error("QEMU plugin queued idle-advance capability failed")]
+    QueuedIdleAdvanceCapability {
+        /// Underlying queued idle-advance error.
+        source: QueuedIdleAdvanceError,
     },
     /// The required commanded preemption-injection capability is unavailable.
     #[error("QEMU plugin preemption-injection capability failed")]
@@ -698,17 +754,12 @@ pub fn validate_install_boundary(
 /// boundary, an argv entry is null or non-UTF-8, or the parsed plugin arguments
 /// omit required Crucible keys such as `simfd` and `slot`.
 ///
-/// # ABI contract
+/// # Safety
 ///
-/// This is a boundary shim: the raw `argv` pointer is dereferenced only inside
-/// narrow `unsafe` blocks whose safety rests on QEMU's plugin ABI, which
-/// guarantees that for positive `argc` the vector holds at least `argc` live,
-/// NUL-terminated C-string entries for the duration of `qemu_plugin_install`.
-/// Null-pointer shapes are rejected before any dereference, so the signature is
-/// safe to call from Rust that already holds QEMU's argument vector. It is
-/// crate-internal (`pub(crate)`): the only real caller is `qemu_plugin_install`
-/// in this crate, which keeps the raw-pointer boundary confined here.
-pub(crate) fn parse_install_plugin_args(
+/// For positive `argc`, `argv` must point to at least `argc` live pointers to
+/// NUL-terminated C strings for the duration of this call. Null pointer shapes
+/// are rejected, but pointer provenance and allocation extent cannot be checked.
+pub(crate) unsafe fn parse_install_plugin_args(
     argc: c_int,
     argv: *mut *mut c_char,
 ) -> Result<PluginArgs, QemuPluginAbiError> {
@@ -766,6 +817,9 @@ pub fn execution_model_from_qemu_info(
     threading: QemuTcgThreading,
 ) -> Result<QemuPluginExecutionModel, QemuPluginAbiError> {
     validate_qemu_plugin_api_range(info)?;
+    if !info.system_emulation {
+        return Err(QemuPluginAbiError::NotSystemEmulation);
+    }
     let smp_vcpus =
         u32::try_from(info.system.smp_vcpus).map_err(|_error| QemuPluginAbiError::NoVcpus)?;
     QemuPluginExecutionModel::validate(smp_vcpus, threading)
@@ -808,21 +862,21 @@ pub fn install_required_deadline_scaffold(
 ///
 /// Returns [`QemuPluginAbiError::ExactDeadlineCapability`] when the exact
 /// deadline export is unavailable, or
-/// [`QemuPluginAbiError::SynchronousIdleAdvanceCapability`] when the direct
-/// advance/drain export is unavailable.
+/// [`QemuPluginAbiError::QueuedIdleAdvanceCapability`] when the queued advance
+/// export is unavailable.
 pub fn install_required_time_capability_scaffold(
     execution_model: QemuPluginExecutionModel,
     clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    advance_time_ns: Option<QemuAdvanceTimeNsFn>,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
         .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
-    let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
-        .map_err(|source| QemuPluginAbiError::SynchronousIdleAdvanceCapability { source })?;
+    let queued_idle_advance = QueuedIdleAdvance::require(advance_time_ns)
+        .map_err(|source| QemuPluginAbiError::QueuedIdleAdvanceCapability { source })?;
     Ok(PluginStatePartition::with_required_time_capabilities(
         execution_model,
         exact_deadline_reader,
-        synchronous_idle_advance,
+        queued_idle_advance,
     ))
 }
 
@@ -832,26 +886,26 @@ pub fn install_required_time_capability_scaffold(
 ///
 /// Returns [`QemuPluginAbiError::ExactDeadlineCapability`] when the exact
 /// deadline export is unavailable,
-/// [`QemuPluginAbiError::SynchronousIdleAdvanceCapability`] when the direct
-/// advance/drain export is unavailable, or
+/// [`QemuPluginAbiError::QueuedIdleAdvanceCapability`] when the queued advance
+/// export is unavailable, or
 /// [`QemuPluginAbiError::PreemptionInjectionCapability`] when the commanded
 /// preemption-injection export is unavailable.
 pub fn install_required_preemption_scaffold(
     execution_model: QemuPluginExecutionModel,
     clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     inject_preemption: Option<QemuInjectPreemptionFn>,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
         .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
-    let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
-        .map_err(|source| QemuPluginAbiError::SynchronousIdleAdvanceCapability { source })?;
+    let queued_idle_advance = QueuedIdleAdvance::require(advance_time_ns)
+        .map_err(|source| QemuPluginAbiError::QueuedIdleAdvanceCapability { source })?;
     let preemption_injector = PluginPreemptionInjector::require(inject_preemption)
         .map_err(|source| QemuPluginAbiError::PreemptionInjectionCapability { source })?;
     Ok(PluginStatePartition::with_required_preemption_capabilities(
         execution_model,
         exact_deadline_reader,
-        synchronous_idle_advance,
+        queued_idle_advance,
         preemption_injector,
     ))
 }
@@ -865,15 +919,15 @@ pub fn install_required_preemption_scaffold(
 pub fn install_required_vcpu_introspection_scaffold(
     execution_model: QemuPluginExecutionModel,
     clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     inject_preemption: Option<QemuInjectPreemptionFn>,
     read_vcpu_regs: Option<QemuReadVcpuRegsFn>,
     read_rr_cursor: Option<QemuReadRrCursorFn>,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
         .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
-    let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
-        .map_err(|source| QemuPluginAbiError::SynchronousIdleAdvanceCapability { source })?;
+    let queued_idle_advance = QueuedIdleAdvance::require(advance_time_ns)
+        .map_err(|source| QemuPluginAbiError::QueuedIdleAdvanceCapability { source })?;
     let preemption_injector = PluginPreemptionInjector::require(inject_preemption)
         .map_err(|source| QemuPluginAbiError::PreemptionInjectionCapability { source })?;
     let vcpu_introspector = PluginVcpuIntrospector::require(read_vcpu_regs, read_rr_cursor)
@@ -882,7 +936,7 @@ pub fn install_required_vcpu_introspection_scaffold(
         PluginStatePartition::with_required_vcpu_introspection_capabilities(
             execution_model,
             exact_deadline_reader,
-            synchronous_idle_advance,
+            queued_idle_advance,
             preemption_injector,
             vcpu_introspector,
         ),
@@ -900,20 +954,19 @@ pub fn install_required_vcpu_introspection_scaffold(
 pub fn install_required_runtime_api_scaffold(
     execution_model: QemuPluginExecutionModel,
     clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     inject_preemption: Option<QemuInjectPreemptionFn>,
     read_vcpu_regs: Option<QemuReadVcpuRegsFn>,
     read_rr_cursor: Option<QemuReadRrCursorFn>,
     icount_raw: Option<QemuIcountRawFn>,
     force_vcpu_exit: Option<QemuForceVcpuExitFn>,
     register_wake_fd: Option<QemuRegisterWakeFdFn>,
-    main_loop_wait: Option<QemuMainLoopWaitFn>,
     register_tcg_exec_cb: Option<QemuRegisterTcgExecCbFn>,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
         .map_err(|source| QemuPluginAbiError::ExactDeadlineCapability { source })?;
-    let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
-        .map_err(|source| QemuPluginAbiError::SynchronousIdleAdvanceCapability { source })?;
+    let queued_idle_advance = QueuedIdleAdvance::require(advance_time_ns)
+        .map_err(|source| QemuPluginAbiError::QueuedIdleAdvanceCapability { source })?;
     let preemption_injector = PluginPreemptionInjector::require(inject_preemption)
         .map_err(|source| QemuPluginAbiError::PreemptionInjectionCapability { source })?;
     let vcpu_introspector = PluginVcpuIntrospector::require(read_vcpu_regs, read_rr_cursor)
@@ -922,14 +975,13 @@ pub fn install_required_runtime_api_scaffold(
         icount_raw,
         force_vcpu_exit,
         register_wake_fd,
-        main_loop_wait,
         register_tcg_exec_cb,
     )?;
     Ok(
         PluginStatePartition::with_required_runtime_api_capabilities(
             execution_model,
             exact_deadline_reader,
-            synchronous_idle_advance,
+            queued_idle_advance,
             preemption_injector,
             vcpu_introspector,
             runtime_apis,
@@ -971,20 +1023,16 @@ pub fn install_required_deadline_scaffold_from_qemu_info(
 /// # Errors
 ///
 /// Returns [`QemuPluginAbiError`] when the execution model is unsupported, the
-/// exact-deadline symbol is unavailable, or the synchronous direct-advance
+/// exact-deadline symbol is unavailable, or the queued idle-advance
 /// symbol is unavailable.
 pub fn install_required_time_capability_scaffold_from_qemu_info(
     info: &QemuPluginInfo,
     threading: QemuTcgThreading,
     clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    advance_time_ns: Option<QemuAdvanceTimeNsFn>,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     let execution_model = execution_model_from_qemu_info(info, threading)?;
-    install_required_time_capability_scaffold(
-        execution_model,
-        clock_deadline_ns,
-        advance_virtual_time_direct,
-    )
+    install_required_time_capability_scaffold(execution_model, clock_deadline_ns, advance_time_ns)
 }
 
 /// Builds required preemption capability scaffold state from QEMU install information.
@@ -992,20 +1040,20 @@ pub fn install_required_time_capability_scaffold_from_qemu_info(
 /// # Errors
 ///
 /// Returns [`QemuPluginAbiError`] when the execution model is unsupported, the
-/// exact-deadline symbol is unavailable, the synchronous direct-advance symbol
+/// exact-deadline symbol is unavailable, the queued idle-advance symbol
 /// is unavailable, or the commanded preemption-injection symbol is unavailable.
 pub fn install_required_preemption_scaffold_from_qemu_info(
     info: &QemuPluginInfo,
     threading: QemuTcgThreading,
     clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     inject_preemption: Option<QemuInjectPreemptionFn>,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     let execution_model = execution_model_from_qemu_info(info, threading)?;
     install_required_preemption_scaffold(
         execution_model,
         clock_deadline_ns,
-        advance_virtual_time_direct,
+        advance_time_ns,
         inject_preemption,
     )
 }
@@ -1020,7 +1068,7 @@ pub fn install_required_vcpu_introspection_scaffold_from_qemu_info(
     info: &QemuPluginInfo,
     threading: QemuTcgThreading,
     clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     inject_preemption: Option<QemuInjectPreemptionFn>,
     read_vcpu_regs: Option<QemuReadVcpuRegsFn>,
     read_rr_cursor: Option<QemuReadRrCursorFn>,
@@ -1029,7 +1077,7 @@ pub fn install_required_vcpu_introspection_scaffold_from_qemu_info(
     install_required_vcpu_introspection_scaffold(
         execution_model,
         clock_deadline_ns,
-        advance_virtual_time_direct,
+        advance_time_ns,
         inject_preemption,
         read_vcpu_regs,
         read_rr_cursor,
@@ -1048,28 +1096,26 @@ pub fn install_required_runtime_api_scaffold_from_qemu_info(
     info: &QemuPluginInfo,
     threading: QemuTcgThreading,
     clock_deadline_ns: Option<QemuClockDeadlineFn>,
-    advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+    advance_time_ns: Option<QemuAdvanceTimeNsFn>,
     inject_preemption: Option<QemuInjectPreemptionFn>,
     read_vcpu_regs: Option<QemuReadVcpuRegsFn>,
     read_rr_cursor: Option<QemuReadRrCursorFn>,
     icount_raw: Option<QemuIcountRawFn>,
     force_vcpu_exit: Option<QemuForceVcpuExitFn>,
     register_wake_fd: Option<QemuRegisterWakeFdFn>,
-    main_loop_wait: Option<QemuMainLoopWaitFn>,
     register_tcg_exec_cb: Option<QemuRegisterTcgExecCbFn>,
 ) -> Result<PluginStatePartition, QemuPluginAbiError> {
     let execution_model = execution_model_from_qemu_info(info, threading)?;
     install_required_runtime_api_scaffold(
         execution_model,
         clock_deadline_ns,
-        advance_virtual_time_direct,
+        advance_time_ns,
         inject_preemption,
         read_vcpu_regs,
         read_rr_cursor,
         icount_raw,
         force_vcpu_exit,
         register_wake_fd,
-        main_loop_wait,
         register_tcg_exec_cb,
     )
 }
@@ -1110,18 +1156,49 @@ pub const fn resolve_qemu_clock_deadline_symbol() -> Option<QemuClockDeadlineFn>
     None
 }
 
-/// Resolves QEMU's required synchronous direct-advance export from the loaded process.
+/// Resolves QEMU's required queued idle-advance export from the loaded process.
 #[cfg(unix)]
 #[must_use]
-pub fn resolve_qemu_advance_virtual_time_direct_symbol() -> Option<QemuAdvanceVirtualTimeDirectFn> {
+pub fn resolve_qemu_advance_time_ns_symbol() -> Option<QemuAdvanceTimeNsFn> {
     // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
     // either null or a process symbol address. QEMU's patch defines this symbol
-    // with the exact `extern "C" fn(i64)` ABI used by
-    // `QemuAdvanceVirtualTimeDirectFn`; callers fail closed when absent.
+    // with the exact `extern "C" fn(i64) -> c_int` ABI used by
+    // `QemuAdvanceTimeNsFn`; callers fail closed when absent.
     let symbol = unsafe {
         libc::dlsym(
             libc::RTLD_DEFAULT,
-            QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL_C
+            QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: Non-null `symbol` was resolved for
+        // `qemu_plugin_advance_time_ns`, whose patched QEMU
+        // declaration is `int qemu_plugin_advance_time_ns(int64_t)`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuAdvanceTimeNsFn>(symbol) })
+    }
+}
+
+/// Resolves QEMU's required queued idle-advance export from the loaded process.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_advance_time_ns_symbol() -> Option<QemuAdvanceTimeNsFn> {
+    None
+}
+
+/// Resolves QEMU's required queued-advance completion registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_time_advance_cb_symbol() -> Option<QemuRegisterTimeAdvanceCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. QEMU's patch defines this symbol
+    // with the exact `extern "C"` registration ABI used by
+    // `QemuRegisterTimeAdvanceCbFn`; callers fail closed when absent.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_TIME_ADVANCE_CB_SYMBOL_C
                 .as_ptr()
                 .cast(),
         )
@@ -1130,17 +1207,16 @@ pub fn resolve_qemu_advance_virtual_time_direct_symbol() -> Option<QemuAdvanceVi
         None
     } else {
         // SAFETY: Non-null `symbol` was resolved for
-        // `qemu_plugin_advance_virtual_time_direct`, whose patched QEMU
-        // declaration is `void qemu_plugin_advance_virtual_time_direct(int64_t)`.
-        Some(unsafe { std::mem::transmute::<*mut c_void, QemuAdvanceVirtualTimeDirectFn>(symbol) })
+        // `qemu_plugin_register_time_advance_cb`, whose patched QEMU declaration
+        // accepts the matching callback and userdata pointer and returns `int`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterTimeAdvanceCbFn>(symbol) })
     }
 }
 
-/// Resolves QEMU's required synchronous direct-advance export from the loaded process.
+/// Resolves QEMU's required queued-advance completion registration export.
 #[cfg(not(unix))]
 #[must_use]
-pub const fn resolve_qemu_advance_virtual_time_direct_symbol()
--> Option<QemuAdvanceVirtualTimeDirectFn> {
+pub const fn resolve_qemu_register_time_advance_cb_symbol() -> Option<QemuRegisterTimeAdvanceCbFn> {
     None
 }
 
@@ -1328,37 +1404,6 @@ pub const fn resolve_qemu_register_wake_fd_symbol() -> Option<QemuRegisterWakeFd
     None
 }
 
-/// Resolves QEMU's blocking main-loop wait export from the loaded process.
-#[cfg(unix)]
-#[must_use]
-pub fn resolve_qemu_main_loop_wait_symbol() -> Option<QemuMainLoopWaitFn> {
-    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
-    // either null or a process symbol address. QEMU's patch defines this symbol
-    // with the exact `extern "C" fn()` ABI used by `QemuMainLoopWaitFn`;
-    // callers fail closed when absent.
-    let symbol = unsafe {
-        libc::dlsym(
-            libc::RTLD_DEFAULT,
-            QEMU_PLUGIN_MAIN_LOOP_WAIT_SYMBOL_C.as_ptr().cast(),
-        )
-    };
-    if symbol.is_null() {
-        None
-    } else {
-        // SAFETY: Non-null `symbol` was resolved for
-        // `qemu_plugin_main_loop_wait`, whose patched QEMU declaration is
-        // `void qemu_plugin_main_loop_wait(void)`.
-        Some(unsafe { std::mem::transmute::<*mut c_void, QemuMainLoopWaitFn>(symbol) })
-    }
-}
-
-/// Resolves QEMU's blocking main-loop wait export from the loaded process.
-#[cfg(not(unix))]
-#[must_use]
-pub const fn resolve_qemu_main_loop_wait_symbol() -> Option<QemuMainLoopWaitFn> {
-    None
-}
-
 /// Resolves QEMU's TCG-exec callback registration export from the loaded process.
 #[cfg(unix)]
 #[must_use]
@@ -1388,6 +1433,85 @@ pub fn resolve_qemu_register_tcg_exec_cb_symbol() -> Option<QemuRegisterTcgExecC
 #[must_use]
 pub const fn resolve_qemu_register_tcg_exec_cb_symbol() -> Option<QemuRegisterTcgExecCbFn> {
     None
+}
+
+#[cfg(unix)]
+fn resolve_process_symbol(symbol_name: &'static [u8]) -> *mut c_void {
+    // SAFETY: every caller supplies a static NUL-terminated symbol name. The
+    // returned address is checked for null and converted only to the exact ABI
+    // type declared by QEMU 10's public plugin header.
+    unsafe { libc::dlsym(libc::RTLD_DEFAULT, symbol_name.as_ptr().cast()) }
+}
+
+/// Resolves the complete QEMU API for live basic-block coverage.
+#[cfg(unix)]
+pub(crate) fn resolve_qemu_basic_block_coverage_apis()
+-> Result<crate::QemuBasicBlockCoverageApis, QemuPluginAbiError> {
+    let register_tb_trans_cb =
+        resolve_process_symbol(QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL_C);
+    let register_tb_exec_cb = resolve_process_symbol(QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL_C);
+    let tb_vaddr = resolve_process_symbol(QEMU_PLUGIN_TB_VADDR_SYMBOL_C);
+    let tb_n_insns = resolve_process_symbol(QEMU_PLUGIN_TB_N_INSNS_SYMBOL_C);
+    let tb_get_insn = resolve_process_symbol(QEMU_PLUGIN_TB_GET_INSN_SYMBOL_C);
+    let insn_size = resolve_process_symbol(QEMU_PLUGIN_INSN_SIZE_SYMBOL_C);
+    let icount_at_tb_entry = resolve_process_symbol(QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL_C);
+    let register_flush_cb = resolve_process_symbol(QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL_C);
+    let require = |symbol: *mut c_void, name| {
+        if symbol.is_null() {
+            Err(QemuPluginAbiError::RuntimeApiCapability { symbol: name })
+        } else {
+            Ok(symbol)
+        }
+    };
+    let register_tb_trans_cb = require(
+        register_tb_trans_cb,
+        crate::QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL,
+    )?;
+    let register_tb_exec_cb = require(
+        register_tb_exec_cb,
+        crate::QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL,
+    )?;
+    let tb_vaddr = require(tb_vaddr, crate::QEMU_PLUGIN_TB_VADDR_SYMBOL)?;
+    let tb_n_insns = require(tb_n_insns, crate::QEMU_PLUGIN_TB_N_INSNS_SYMBOL)?;
+    let tb_get_insn = require(tb_get_insn, crate::QEMU_PLUGIN_TB_GET_INSN_SYMBOL)?;
+    let insn_size = require(insn_size, crate::QEMU_PLUGIN_INSN_SIZE_SYMBOL)?;
+    let icount_at_tb_entry = require(
+        icount_at_tb_entry,
+        crate::QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL,
+    )?;
+    let register_flush_cb = require(
+        register_flush_cb,
+        crate::QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL,
+    )?;
+
+    // SAFETY: all non-null addresses were resolved by their exact QEMU 10
+    // public-plugin symbol names and are converted to matching `extern "C"`
+    // function-pointer types.
+    Ok(unsafe {
+        crate::QemuBasicBlockCoverageApis::new(
+            std::mem::transmute::<*mut c_void, crate::QemuRegisterVcpuTbTransCbFn>(
+                register_tb_trans_cb,
+            ),
+            std::mem::transmute::<*mut c_void, crate::QemuRegisterVcpuTbExecCbFn>(
+                register_tb_exec_cb,
+            ),
+            std::mem::transmute::<*mut c_void, crate::QemuTbVaddrFn>(tb_vaddr),
+            std::mem::transmute::<*mut c_void, crate::QemuTbNInsnsFn>(tb_n_insns),
+            std::mem::transmute::<*mut c_void, crate::QemuTbGetInsnFn>(tb_get_insn),
+            std::mem::transmute::<*mut c_void, crate::QemuInsnSizeFn>(insn_size),
+            std::mem::transmute::<*mut c_void, crate::QemuIcountAtTbEntryFn>(icount_at_tb_entry),
+            std::mem::transmute::<*mut c_void, crate::QemuRegisterFlushCbFn>(register_flush_cb),
+        )
+    })
+}
+
+/// Resolves the complete QEMU API for live basic-block coverage.
+#[cfg(not(unix))]
+pub(crate) const fn resolve_qemu_basic_block_coverage_apis()
+-> Result<crate::QemuBasicBlockCoverageApis, QemuPluginAbiError> {
+    Err(QemuPluginAbiError::RuntimeApiCapability {
+        symbol: crate::QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL,
+    })
 }
 
 /// Resolves QEMU's shmem block callback registration export from the loaded process.
@@ -1450,6 +1574,303 @@ pub const fn resolve_qemu_register_9p_cb_symbol() -> Option<QemuRegisterNinePCbF
     None
 }
 
+/// Resolves QEMU's standard vCPU-init callback registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_vcpu_init_cb_symbol() -> Option<QemuRegisterVcpuInitCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. QEMU 10.0.0 declares this name
+    // with the exact `QemuRegisterVcpuInitCbFn` ABI.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_VCPU_INIT_CB_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null address was resolved by the exact standard QEMU
+        // API name whose declaration matches `QemuRegisterVcpuInitCbFn`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterVcpuInitCbFn>(symbol) })
+    }
+}
+
+/// Resolves no vCPU-init registration export outside Unix QEMU environments.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_vcpu_init_cb_symbol() -> Option<QemuRegisterVcpuInitCbFn> {
+    None
+}
+
+/// Resolves QEMU's Crucible all-idle/resume callback registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_vcpu_idle_resume_cb_symbol() -> Option<QemuRegisterVcpuIdleResumeCbFn>
+{
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The
+    // Crucible patch declares this symbol with the exact callback ABI above.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_VCPU_IDLE_RESUME_CB_SYMBOL_C
+                .as_ptr()
+                .cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the exact patched API name establishes the function type.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRegisterVcpuIdleResumeCbFn>(symbol) })
+    }
+}
+
+/// Resolves no all-idle/resume registration export outside Unix QEMU environments.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_vcpu_idle_resume_cb_symbol()
+-> Option<QemuRegisterVcpuIdleResumeCbFn> {
+    None
+}
+
+/// Resolves QEMU's sim-loop shared-memory dispatch registration export.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_register_sim_shmem_dispatch_cb_symbol()
+-> Option<QemuRegisterSimShmemDispatchCbFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name. The
+    // Crucible patch declares this symbol with the exact callback ABI above.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REGISTER_SIM_SHMEM_DISPATCH_CB_SYMBOL_C
+                .as_ptr()
+                .cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the exact patched API name establishes the function type.
+        Some(unsafe {
+            std::mem::transmute::<*mut c_void, QemuRegisterSimShmemDispatchCbFn>(symbol)
+        })
+    }
+}
+
+/// Resolves no sim-loop shmem registration export outside Unix QEMU environments.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_register_sim_shmem_dispatch_cb_symbol()
+-> Option<QemuRegisterSimShmemDispatchCbFn> {
+    None
+}
+
+/// Resolves QEMU's virtual-time ownership request from the loaded process.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_request_time_control_symbol() -> Option<QemuRequestTimeControlFn> {
+    // SAFETY: `dlsym` receives a static NUL-terminated symbol name and returns
+    // either null or a process symbol address. QEMU declares this symbol as a
+    // no-argument function returning a borrowed opaque pointer.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_REQUEST_TIME_CONTROL_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the non-null symbol was resolved by its exact QEMU API name,
+        // whose declaration is `const void *qemu_plugin_request_time_control(void)`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuRequestTimeControlFn>(symbol) })
+    }
+}
+
+/// Resolves no time-control request outside Unix QEMU plugin environments.
+#[cfg(not(unix))]
+#[must_use]
+pub const fn resolve_qemu_request_time_control_symbol() -> Option<QemuRequestTimeControlFn> {
+    None
+}
+
+/// Resolves QEMU's observable single-threaded round-robin mode proof.
+#[cfg(unix)]
+#[must_use]
+pub fn resolve_qemu_single_threaded_rr_symbol() -> Option<QemuSingleThreadedRrFn> {
+    // SAFETY: the symbol name is static and NUL-terminated. A non-null result
+    // is invoked only with the required `int fn(void)` ABI.
+    let symbol = unsafe {
+        libc::dlsym(
+            libc::RTLD_DEFAULT,
+            QEMU_PLUGIN_SINGLE_THREADED_RR_SYMBOL_C.as_ptr().cast(),
+        )
+    };
+    if symbol.is_null() {
+        None
+    } else {
+        // SAFETY: the required export has the exact ABI above.
+        Some(unsafe { std::mem::transmute::<*mut c_void, QemuSingleThreadedRrFn>(symbol) })
+    }
+}
+
+#[cfg(not(unix))]
+const fn resolve_qemu_single_threaded_rr_symbol() -> Option<QemuSingleThreadedRrFn> {
+    None
+}
+
+fn observed_execution_model<F>(
+    info: &QemuPluginInfo,
+    resolve_single_threaded_rr: F,
+) -> Result<QemuPluginExecutionModel, QemuPluginAbiError>
+where
+    F: FnOnce() -> Option<QemuSingleThreadedRrFn>,
+{
+    let execution_model =
+        execution_model_from_qemu_info(info, QemuTcgThreading::SingleThreadedRoundRobin)?;
+    let single_threaded_rr =
+        resolve_single_threaded_rr().ok_or(QemuPluginAbiError::RuntimeApiCapability {
+            symbol: QEMU_PLUGIN_SINGLE_THREADED_RR_SYMBOL,
+        })?;
+    if single_threaded_rr() != 1 {
+        return Err(QemuPluginAbiError::MultiThreadedTcg);
+    }
+    Ok(execution_model)
+}
+
+/// Duplicates the inherited control descriptor into an owned Unix stream.
+///
+/// # Errors
+///
+/// Returns the operating-system error from `fcntl(F_DUPFD_CLOEXEC)` when the
+/// inherited descriptor is invalid or cannot be duplicated.
+#[cfg(unix)]
+pub(crate) fn duplicate_control_stream(fd: c_int) -> std::io::Result<UnixStream> {
+    // SAFETY: `fcntl(F_DUPFD_CLOEXEC)` accepts an integer descriptor and either
+    // fails without creating a resource or returns a new live owned descriptor.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: a successful `F_DUPFD_CLOEXEC` return is a new descriptor whose
+    // ownership is transferred exactly once into `OwnedFd`.
+    let owned = unsafe { OwnedFd::from_raw_fd(duplicate) };
+    Ok(UnixStream::from(owned))
+}
+
+#[cfg(unix)]
+struct OwnedInstallBoundary {
+    args: PluginArgs,
+    execution_model: QemuPluginExecutionModel,
+}
+
+#[cfg(unix)]
+/// Copies QEMU-owned install inputs into process-owned Rust values.
+///
+/// # Safety
+///
+/// `info` and the positive-length `argv` vector must satisfy the same lifetime,
+/// layout, and NUL-termination contract as [`qemu_plugin_install`].
+unsafe fn copy_install_boundary(
+    info: *const QemuPluginInfo,
+    argc: c_int,
+    argv: *mut *mut c_char,
+) -> Result<OwnedInstallBoundary, QemuPluginAbiError> {
+    validate_install_boundary(info, argc, argv)?;
+    // SAFETY: the caller guarantees the positive-length QEMU argument vector is
+    // live and contains NUL-terminated entries for this install call.
+    let args = unsafe { parse_install_plugin_args(argc, argv) }?;
+    // SAFETY: boundary shape validation rejected null. QEMU's plugin ABI
+    // guarantees a live info object; only scalar data is copied into owned state.
+    let info = unsafe { &*info };
+    let execution_model = observed_execution_model(info, resolve_qemu_single_threaded_rr_symbol)?;
+    Ok(OwnedInstallBoundary {
+        args,
+        execution_model,
+    })
+}
+
+#[cfg(unix)]
+fn install_owned_boundary(
+    plugin_id: QemuPluginId,
+    boundary: OwnedInstallBoundary,
+    reservation: &mut crate::runtime::PluginRuntimeReservation,
+) -> Result<crate::PluginRuntimeOwner, crate::runtime::PluginLiveBoundaryError> {
+    let clock_deadline_ns = resolve_qemu_clock_deadline_symbol();
+    let advance_time_ns = resolve_qemu_advance_time_ns_symbol();
+    let register_time_advance_cb = resolve_qemu_register_time_advance_cb_symbol();
+    let inject_preemption = resolve_qemu_inject_preemption_symbol();
+    let read_vcpu_regs = resolve_qemu_read_vcpu_regs_symbol();
+    let read_rr_cursor = resolve_qemu_rr_cursor_symbol();
+    let icount_raw = resolve_qemu_icount_raw_symbol();
+    let force_vcpu_exit = resolve_qemu_force_vcpu_exit_symbol();
+    let register_wake_fd = resolve_qemu_register_wake_fd_symbol();
+    let register_tcg_exec_cb = resolve_qemu_register_tcg_exec_cb_symbol();
+    let register_vcpu_init = resolve_qemu_register_vcpu_init_cb_symbol();
+    let register_vcpu_idle_resume = resolve_qemu_register_vcpu_idle_resume_cb_symbol();
+    let register_sim_shmem_dispatch = resolve_qemu_register_sim_shmem_dispatch_cb_symbol();
+    let register_net_tx = crate::resolve_qemu_register_net_tx_cb_symbol();
+    let net_send = crate::resolve_qemu_net_send_symbol();
+    let net_flush = crate::resolve_qemu_net_flush_symbol();
+    let register_block = resolve_qemu_register_blk_cb_symbol();
+    let register_ninep = resolve_qemu_register_9p_cb_symbol();
+    let state = install_required_runtime_api_scaffold(
+        boundary.execution_model,
+        clock_deadline_ns,
+        advance_time_ns,
+        inject_preemption,
+        read_vcpu_regs,
+        read_rr_cursor,
+        icount_raw,
+        force_vcpu_exit,
+        register_wake_fd,
+        register_tcg_exec_cb,
+    )?;
+    let runtime_apis = state
+        .runtime_apis()
+        .ok_or(QemuPluginAbiError::RuntimeApiCapability {
+            symbol: QEMU_PLUGIN_REGISTER_WAKE_FD_SYMBOL,
+        })?;
+    let basic_block_coverage = if boundary.args.coverage().is_on() {
+        Some(resolve_qemu_basic_block_coverage_apis()?)
+    } else {
+        None
+    };
+    let capabilities = crate::runtime::LiveInstallCapabilities {
+        icount_raw: runtime_apis.icount_raw(),
+        request_time_control: resolve_qemu_request_time_control_symbol(),
+        clock_deadline_ns,
+        advance_time_ns,
+        register_time_advance_cb,
+        register_wake_fd: runtime_apis.register_wake_fd(),
+        basic_block_coverage,
+        register_vcpu_init,
+        register_vcpu_idle_resume,
+        register_sim_shmem_dispatch,
+        register_net_tx,
+        net_send,
+        net_flush,
+        register_block,
+        register_ninep,
+    };
+    let callback_registrar = crate::runtime::FailClosedOwnedCallbackRegistrar::production(
+        plugin_id,
+        boundary.execution_model,
+        &capabilities,
+    );
+    crate::runtime::install_live_runtime(
+        plugin_id,
+        boundary.args,
+        state,
+        capabilities,
+        &callback_registrar,
+        reservation,
+    )
+    .map_err(Into::into)
+}
+
 fn validate_qemu_plugin_api_range(info: &QemuPluginInfo) -> Result<(), QemuPluginAbiError> {
     if info.version.min > QEMU_PLUGIN_API_VERSION || info.version.cur < QEMU_PLUGIN_API_VERSION {
         return Err(QemuPluginAbiError::UnsupportedPluginApi {
@@ -1461,69 +1882,68 @@ fn validate_qemu_plugin_api_range(info: &QemuPluginInfo) -> Result<(), QemuPlugi
     Ok(())
 }
 
-fn install_required_runtime_api_scaffold_from_boundary(
-    info: *const QemuPluginInfo,
-    argc: c_int,
-    argv: *mut *mut c_char,
-) -> Result<PluginStatePartition, QemuPluginAbiError> {
-    validate_install_boundary(info, argc, argv)?;
-    // `parse_install_plugin_args` is a boundary shim: it rejects null shapes and
-    // confines its `argv` dereferences to `// SAFETY`-justified `unsafe` blocks,
-    // so it is called without an outer `unsafe` here.
-    let _args = parse_install_plugin_args(argc, argv)?;
-    // SAFETY: `validate_install_boundary` rejected null, and QEMU's plugin ABI
-    // guarantees `info` points at a live `qemu_info_t` for this install call.
-    // Only scalar fields are copied before the pointer lifetime ends.
-    let info = unsafe { &*info };
-
-    install_required_runtime_api_scaffold_from_qemu_info(
-        info,
-        QemuTcgThreading::SingleThreadedRoundRobin,
-        resolve_qemu_clock_deadline_symbol(),
-        resolve_qemu_advance_virtual_time_direct_symbol(),
-        resolve_qemu_inject_preemption_symbol(),
-        resolve_qemu_read_vcpu_regs_symbol(),
-        resolve_qemu_rr_cursor_symbol(),
-        resolve_qemu_icount_raw_symbol(),
-        resolve_qemu_force_vcpu_exit_symbol(),
-        resolve_qemu_register_wake_fd_symbol(),
-        resolve_qemu_main_loop_wait_symbol(),
-        resolve_qemu_register_tcg_exec_cb_symbol(),
-    )
-}
-
 /// QEMU plugin API version exported for QEMU's loader compatibility check.
 #[unsafe(no_mangle)]
 pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;
 
 /// QEMU `cdylib` install entry point.
 ///
-/// The install path validates the raw ABI shape and execution model, then fails
-/// closed unless QEMU exposes the required exact-deadline, synchronous
-/// direct-advance, commanded-preemption, vCPU-introspection, and T-PATCH-11
-/// runtime API capabilities. Device callbacks remain inert until later tasks
-/// replace the callback bodies.
+/// The install path validates the raw ABI shape and execution model, requires
+/// every deterministic QEMU capability, and executes the typed control/setup
+/// sequence. It fails closed at callback registration until every plugin-owned
+/// device adapter is live; only a fully registered runtime may acknowledge
+/// readiness and be retained for process lifetime.
 ///
-/// # ABI contract
+/// # Safety
 ///
-/// QEMU's `dlopen` loader calls this symbol, passing either a null `info`
-/// pointer for an error result or a pointer to a live `qemu_info_t` with the AOS
-/// QEMU 10.0.0 layout, and (for positive `argc`) this plugin's argument vector,
-/// all valid for the duration of the call. The body forwards those raw inputs to
-/// `install_required_runtime_api_scaffold_from_boundary`, which validates the
-/// null shapes and confines every dereference to `// SAFETY`-justified `unsafe`
-/// blocks, so this entry point needs no `unsafe` of its own. It keeps
-/// `#[unsafe(no_mangle)] extern "C"` to satisfy QEMU's symbol-lookup contract.
+/// `info` must point to a live QEMU 10.0.0 `qemu_info_t` for the duration of
+/// this call. When `argc` is positive, `argv` must point to at least `argc`
+/// live pointers to NUL-terminated C strings for the same duration.
 #[unsafe(no_mangle)]
-pub extern "C" fn qemu_plugin_install(
-    _id: QemuPluginId,
+pub unsafe extern "C" fn qemu_plugin_install(
+    id: QemuPluginId,
     info: *const QemuPluginInfo,
     argc: c_int,
     argv: *mut *mut c_char,
 ) -> c_int {
-    match install_required_runtime_api_scaffold_from_boundary(info, argc, argv) {
-        Ok(_state) => QEMU_PLUGIN_INSTALL_OK,
-        Err(_error) => QEMU_PLUGIN_INSTALL_ERROR,
+    #[cfg(unix)]
+    {
+        run_install_trampoline(|| {
+            let mut reservation = crate::runtime::reserve_runtime()?;
+            // SAFETY: the exported function's caller contract guarantees the
+            // QEMU info and argv allocations remain live for this call.
+            let boundary = unsafe { copy_install_boundary(info, argc, argv) }?;
+            let runtime = install_owned_boundary(id, boundary, &mut reservation)?;
+            reservation.publish(runtime);
+            Ok(())
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (id, info, argc, argv);
+        QEMU_PLUGIN_INSTALL_ERROR
+    }
+}
+
+#[cfg(unix)]
+fn run_install_trampoline<F>(install: F) -> c_int
+where
+    F: FnOnce() -> Result<(), crate::runtime::PluginLiveBoundaryError>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(install)) {
+        Ok(Ok(())) => QEMU_PLUGIN_INSTALL_OK,
+        Ok(Err(error)) => {
+            crate::runtime::emit_install_failure_diagnostic(&error);
+            QEMU_PLUGIN_INSTALL_ERROR
+        }
+        Err(_panic) => {
+            use std::io::Write as _;
+
+            let _write_result = std::io::stderr()
+                .lock()
+                .write_all(b"crucible-qemu-plugin: install panicked; registration aborted\n");
+            QEMU_PLUGIN_INSTALL_ERROR
+        }
     }
 }
 
@@ -1565,10 +1985,9 @@ mod tests {
         argc: c_int,
         argv: *mut *mut c_char,
     ) -> c_int {
-        // Tests pass either live fixture pointers or boundary cases that
-        // `validate_install_boundary` rejects before `info` is dereferenced; the
-        // entry point is now a safe call.
-        qemu_plugin_install(7, info, argc, argv)
+        // SAFETY: tests pass live fixture pointers and `CString`-backed argv,
+        // or null boundary cases rejected before either pointer is dereferenced.
+        unsafe { qemu_plugin_install(7, info, argc, argv) }
     }
 
     fn plugin_argv(args: &[&str]) -> (Vec<CString>, Vec<*mut c_char>) {
@@ -1607,10 +2026,9 @@ mod tests {
         argc: c_int,
         argv: *mut *mut c_char,
     ) -> Result<PluginArgs, QemuPluginAbiError> {
-        // Tests pass either argv vectors backed by live `CString` fixtures, or
-        // boundary cases that the parser rejects before reading; the shim is now
-        // a safe call.
-        parse_install_plugin_args(argc, argv)
+        // SAFETY: tests pass argv vectors backed by live `CString` fixtures, or
+        // null boundary cases rejected before reading.
+        unsafe { parse_install_plugin_args(argc, argv) }
     }
 
     #[test]
@@ -1686,8 +2104,30 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn abi_install_diagnostics_preserve_distinct_typed_failure_causes() {
+        let boundary = crate::runtime::PluginLiveBoundaryError::Abi(QemuPluginAbiError::NoVcpus);
+        let callbacks = crate::runtime::PluginLiveBoundaryError::Runtime(
+            crate::PluginRuntimeInstallError::OwnedCallbacks {
+                source: crate::OwnedCallbackRegistrationError::AdaptersUnavailable {
+                    families: crate::REQUIRED_OWNED_CALLBACK_FAMILIES,
+                },
+            },
+        );
+
+        let boundary_diagnostic = crate::runtime::install_failure_diagnostic(&boundary);
+        let callback_diagnostic = crate::runtime::install_failure_diagnostic(&callbacks);
+        assert!(boundary_diagnostic.contains("execution model has no vCPUs"));
+        assert!(callback_diagnostic.contains("required callback adapters are unavailable"));
+        assert!(callback_diagnostic.contains("network TX/RX"));
+        assert_ne!(boundary_diagnostic, callback_diagnostic);
+    }
+
     #[test]
     fn abi_install_entrypoint_validates_raw_boundary_and_builds_inert_model() {
+        #[cfg(unix)]
+        let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
         let info = NonNull::<QemuPluginInfo>::dangling().as_ptr();
         let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
 
@@ -1718,6 +2158,38 @@ mod tests {
             call_qemu_plugin_install(info, 1, std::ptr::null_mut()),
             QEMU_PLUGIN_INSTALL_ERROR
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn abi_install_trampoline_contains_panics_and_releases_reversible_reservation() {
+        let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
+        let status =
+            run_install_trampoline(|| -> Result<_, crate::runtime::PluginLiveBoundaryError> {
+                let _reservation = crate::runtime::reserve_runtime()?;
+                panic!("injected install panic");
+            });
+
+        assert_eq!(status, QEMU_PLUGIN_INSTALL_ERROR);
+        assert!(crate::runtime::reserve_runtime().is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn abi_install_trampoline_contains_panics_and_blocks_irreversible_retry() {
+        let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
+        let status =
+            run_install_trampoline(|| -> Result<_, crate::runtime::PluginLiveBoundaryError> {
+                let mut reservation = crate::runtime::reserve_runtime()?;
+                reservation.mark_irreversible();
+                panic!("injected install panic after irreversible side effect");
+            });
+
+        assert_eq!(status, QEMU_PLUGIN_INSTALL_ERROR);
+        assert!(matches!(
+            crate::runtime::reserve_runtime(),
+            Err(crate::PluginRuntimeInstallError::RuntimeAlreadyReserved)
+        ));
     }
 
     #[test]
@@ -1771,10 +2243,11 @@ mod tests {
     }
 
     #[test]
-    fn abi_install_entrypoint_fails_closed_without_exact_deadline_or_direct_advance_symbols() {
+    fn abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols() {
         let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
 
-        assert!(resolve_qemu_advance_virtual_time_direct_symbol().is_none());
+        assert!(resolve_qemu_advance_time_ns_symbol().is_none());
+        assert!(resolve_qemu_register_time_advance_cb_symbol().is_none());
         assert_eq!(
             call_qemu_plugin_install_with_valid_args(&valid_info),
             QEMU_PLUGIN_INSTALL_ERROR
@@ -1795,7 +2268,7 @@ mod tests {
     }
 
     #[test]
-    fn abi_install_entrypoint_requires_direct_advance_after_deadline_resolution() {
+    fn abi_install_entrypoint_requires_queued_advance_after_deadline_resolution() {
         let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
         let _deadline_guard = TestClockDeadlineSymbolGuard::install(abi_test_deadline);
         let Some(deadline) = resolve_qemu_clock_deadline_symbol() else {
@@ -1803,7 +2276,7 @@ mod tests {
         };
 
         assert_eq!(deadline(), 4096);
-        assert!(resolve_qemu_advance_virtual_time_direct_symbol().is_none());
+        assert!(resolve_qemu_advance_time_ns_symbol().is_none());
         assert_eq!(
             call_qemu_plugin_install_with_valid_args(&valid_info),
             QEMU_PLUGIN_INSTALL_ERROR
@@ -1811,7 +2284,7 @@ mod tests {
     }
 
     #[test]
-    fn abi_install_requires_synchronous_idle_advance_symbol() {
+    fn abi_install_requires_queued_idle_advance_symbol() {
         let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
 
         assert_eq!(
@@ -1824,7 +2297,7 @@ mod tests {
             .map(|state| {
                 (
                     state.exact_deadline_reader().is_some(),
-                    state.synchronous_idle_advance().is_some(),
+                    state.queued_idle_advance().is_some(),
                 )
             }),
             Ok((true, true))
@@ -1837,9 +2310,9 @@ mod tests {
                 None,
             )
             .map(|_state| ()),
-            Err(QemuPluginAbiError::SynchronousIdleAdvanceCapability {
-                source: SynchronousIdleAdvanceError::CapabilityUnavailable {
-                    symbol: crate::QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL,
+            Err(QemuPluginAbiError::QueuedIdleAdvanceCapability {
+                source: QueuedIdleAdvanceError::CapabilityUnavailable {
+                    symbol: crate::QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL,
                 },
             })
         );
@@ -1861,7 +2334,7 @@ mod tests {
             .map(|state| {
                 (
                     state.exact_deadline_reader().is_some(),
-                    state.synchronous_idle_advance().is_some(),
+                    state.queued_idle_advance().is_some(),
                     state.preemption_injector().is_some(),
                 )
             }),
@@ -1903,7 +2376,7 @@ mod tests {
             .map(|state| {
                 (
                     state.exact_deadline_reader().is_some(),
-                    state.synchronous_idle_advance().is_some(),
+                    state.queued_idle_advance().is_some(),
                     state.preemption_injector().is_some(),
                     state.vcpu_introspector().is_some(),
                 )
@@ -1961,7 +2434,6 @@ mod tests {
             Some(abi_test_icount_raw),
             Some(abi_test_force_vcpu_exit),
             Some(abi_test_register_wake_fd),
-            Some(abi_test_main_loop_wait),
             Some(abi_test_register_tcg_exec_cb),
         )
         .unwrap_or_else(|error| panic!("runtime API scaffold should install: {error}"));
@@ -1972,10 +2444,9 @@ mod tests {
         assert_eq!((runtime_apis.icount_raw())(), 17);
         (runtime_apis.force_vcpu_exit())();
         assert_eq!((runtime_apis.register_wake_fd())(42), 0);
-        (runtime_apis.main_loop_wait())();
         (runtime_apis.register_tcg_exec_cb())(None, std::ptr::null_mut());
         assert!(state.exact_deadline_reader().is_some());
-        assert!(state.synchronous_idle_advance().is_some());
+        assert!(state.queued_idle_advance().is_some());
         assert!(state.preemption_injector().is_some());
         assert!(state.vcpu_introspector().is_some());
 
@@ -1991,7 +2462,6 @@ mod tests {
                 None,
                 Some(abi_test_force_vcpu_exit),
                 Some(abi_test_register_wake_fd),
-                Some(abi_test_main_loop_wait),
                 Some(abi_test_register_tcg_exec_cb),
             )
             .map(|_state| ()),
@@ -2011,7 +2481,6 @@ mod tests {
                 Some(abi_test_icount_raw),
                 Some(abi_test_force_vcpu_exit),
                 Some(abi_test_register_wake_fd),
-                Some(abi_test_main_loop_wait),
                 None,
             )
             .map(|_state| ()),
@@ -2041,6 +2510,51 @@ mod tests {
                     symbol: crate::QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
                 },
             })
+        );
+    }
+
+    #[test]
+    fn abi_observed_execution_model_accepts_only_exact_single_threaded_rr_proof() {
+        let valid_info = qemu_info_fixture(4, 1, QEMU_PLUGIN_API_VERSION);
+
+        assert_eq!(
+            observed_execution_model(&valid_info, || Some(abi_test_single_threaded_rr)),
+            QemuPluginExecutionModel::validate(4, QemuTcgThreading::SingleThreadedRoundRobin)
+        );
+        assert_eq!(
+            observed_execution_model(&valid_info, || Some(abi_test_not_single_threaded_rr)),
+            Err(QemuPluginAbiError::MultiThreadedTcg)
+        );
+        assert_eq!(
+            observed_execution_model(&valid_info, || {
+                Some(abi_test_noncanonical_threading_proof)
+            }),
+            Err(QemuPluginAbiError::MultiThreadedTcg)
+        );
+    }
+
+    #[test]
+    fn abi_observed_execution_model_fails_closed_without_threading_proof() {
+        let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
+
+        assert_eq!(
+            observed_execution_model(&valid_info, || None),
+            Err(QemuPluginAbiError::RuntimeApiCapability {
+                symbol: QEMU_PLUGIN_SINGLE_THREADED_RR_SYMBOL,
+            })
+        );
+    }
+
+    #[test]
+    fn abi_observed_execution_model_rejects_user_mode_before_capability_lookup() {
+        let mut user_mode_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
+        user_mode_info.system_emulation = false;
+
+        assert_eq!(
+            observed_execution_model(&user_mode_info, || {
+                panic!("user-mode validation must precede capability lookup")
+            }),
+            Err(QemuPluginAbiError::NotSystemEmulation)
         );
     }
 
@@ -2135,7 +2649,7 @@ mod tests {
         );
         assert_eq!(state.lifecycle_core().execution_model(), model);
         assert!(state.exact_deadline_reader().is_none());
-        assert!(state.synchronous_idle_advance().is_none());
+        assert!(state.queued_idle_advance().is_none());
         assert!(state.preemption_injector().is_none());
         assert!(state.vcpu_introspector().is_none());
         for kind in OWNED_DEVICE_CALLBACK_KINDS {
@@ -2148,7 +2662,21 @@ mod tests {
         4096
     }
 
-    extern "C" fn abi_test_direct_advance(_target_virtual_ns: i64) {}
+    extern "C" fn abi_test_single_threaded_rr() -> c_int {
+        1
+    }
+
+    extern "C" fn abi_test_not_single_threaded_rr() -> c_int {
+        0
+    }
+
+    extern "C" fn abi_test_noncanonical_threading_proof() -> c_int {
+        2
+    }
+
+    extern "C" fn abi_test_direct_advance(_target_virtual_ns: i64) -> c_int {
+        0
+    }
 
     extern "C" fn abi_test_inject_preemption(
         _at_icount: u64,
@@ -2185,8 +2713,6 @@ mod tests {
     extern "C" fn abi_test_register_wake_fd(_fd: c_int) -> c_int {
         0
     }
-
-    extern "C" fn abi_test_main_loop_wait() {}
 
     extern "C" fn abi_test_register_tcg_exec_cb(
         _callback: Option<QemuTcgExecCbFn>,

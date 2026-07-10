@@ -16,10 +16,10 @@ use crucible_shmem::{
 use crate::{
     ExactDeadlineError, ExactDeadlineReader, ExactDeadlineReport, InboundFrameError,
     InboundFrameRing, LosslessNetworkRxQueue, NetworkRxError, NetworkRxInjection,
-    PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze, PluginInboundFrames,
-    PluginNetworkRx, PluginVirtualClock, SchedulerCeiling, SynchronousIdleAdvance,
-    SynchronousIdleAdvanceError, SynchronousIdleDrain, handle_network_rx_idle_callback,
-    shmem_ordering::PluginShmemOrdering,
+    PendingIdleAdvance, PluginClockAdvance, PluginClockError, PluginDeviceIoFreeze,
+    PluginInboundFrames, PluginNetworkRx, PluginVirtualClock, QueuedIdleAdvance,
+    QueuedIdleAdvanceError, SchedulerCeiling, TimeAdvanceCompletion,
+    handle_network_rx_idle_callback, shmem_ordering::PluginShmemOrdering,
 };
 
 /// The source that determined the node's next idle wake.
@@ -105,6 +105,11 @@ pub struct IdleParkRequest {
 }
 
 impl IdleParkRequest {
+    /// Retains an already-published idle plan and its race-free futex precondition.
+    pub(crate) const fn from_published(plan: IdleWakePlan, futex_wait: FutexWait) -> Self {
+        Self { plan, futex_wait }
+    }
+
     /// Returns the wake plan associated with this park request.
     #[must_use]
     pub const fn plan(&self) -> IdleWakePlan {
@@ -132,7 +137,7 @@ pub enum IdleWaitOutcome {
 pub struct IdleHotLoopResult {
     wake_plan: IdleWakePlan,
     advance: PluginClockAdvance,
-    synchronous_drain: SynchronousIdleDrain,
+    pending_advance: PendingIdleAdvance,
     injected_frames: Vec<FrameEntry>,
     network_rx_injection: Option<NetworkRxInjection>,
 }
@@ -150,10 +155,10 @@ impl IdleHotLoopResult {
         self.advance
     }
 
-    /// Returns the synchronous QEMU timer/BH drain performed for the idle jump.
+    /// Returns the QEMU advance token after normal-main-loop completion.
     #[must_use]
-    pub const fn synchronous_drain(&self) -> SynchronousIdleDrain {
-        self.synchronous_drain
+    pub const fn pending_advance(&self) -> PendingIdleAdvance {
+        self.pending_advance
     }
 
     /// Returns due inbound frames in deterministic injection order.
@@ -358,14 +363,14 @@ impl PluginIdleHotLoop {
     pub fn complete_after_scheduler_wake(
         slot: &NodeSlot,
         clock: &mut PluginVirtualClock,
-        synchronous_idle_advance: &SynchronousIdleAdvance,
+        queued_idle_advance: &QueuedIdleAdvance,
         request: IdleParkRequest,
         candidate_frames: impl IntoIterator<Item = FrameEntry>,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
         let candidate_frames = candidate_frames.into_iter().collect::<Vec<_>>();
         reject_passed_materialized_frames(&candidate_frames, request.plan.current_icount)?;
-        let (advance, synchronous_drain) =
-            Self::advance_after_scheduler_wake(slot, clock, synchronous_idle_advance, &request)?;
+        let (advance, pending_advance) =
+            Self::advance_after_scheduler_wake(slot, clock, queued_idle_advance, &request)?;
         let injected_frames = PluginInboundFrames::select_deliverable_frames_since(
             candidate_frames,
             clock.current_icount(),
@@ -377,7 +382,53 @@ impl PluginIdleHotLoop {
             clock,
             request,
             advance,
-            synchronous_drain,
+            pending_advance,
+            injected_frames,
+            None,
+        )
+    }
+
+    /// Finishes a materialized-frame idle turn after QEMU reports time completion.
+    ///
+    /// The initial [`Self::complete_after_scheduler_wake`] call must have
+    /// returned [`IdleHotLoopError::TimeAdvanceCompletionPending`]. This method
+    /// validates that exact pending token and completion before advancing the
+    /// plugin clock, selecting frames, or republishing the node as running.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when completion failed or names another
+    /// target, authorization changed, frame validation fails, or running-state
+    /// publication fails.
+    pub fn complete_after_time_advance(
+        slot: &NodeSlot,
+        clock: &mut PluginVirtualClock,
+        request: IdleParkRequest,
+        pending_advance: PendingIdleAdvance,
+        completion: TimeAdvanceCompletion,
+        candidate_frames: impl IntoIterator<Item = FrameEntry>,
+    ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
+        let candidate_frames = candidate_frames.into_iter().collect::<Vec<_>>();
+        reject_passed_materialized_frames(&candidate_frames, request.plan.current_icount)?;
+        let (advance, completed_advance) = Self::finish_advance_after_completion(
+            slot,
+            clock,
+            &request,
+            pending_advance,
+            completion,
+        )?;
+        let injected_frames = PluginInboundFrames::select_deliverable_frames_since(
+            candidate_frames,
+            clock.current_icount(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        Self::publish_completed_idle(
+            slot,
+            clock,
+            request,
+            advance,
+            completed_advance,
             injected_frames,
             None,
         )
@@ -397,7 +448,7 @@ impl PluginIdleHotLoop {
     pub fn complete_after_scheduler_wake_from_inbound_rings<'a>(
         slot: &NodeSlot,
         clock: &mut PluginVirtualClock,
-        synchronous_idle_advance: &SynchronousIdleAdvance,
+        queued_idle_advance: &QueuedIdleAdvance,
         request: IdleParkRequest,
         inbound_rings: impl IntoIterator<Item = InboundFrameRing<'a>>,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
@@ -407,8 +458,8 @@ impl PluginIdleHotLoop {
             request.plan.current_icount,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
-        let (advance, synchronous_drain) =
-            Self::advance_after_scheduler_wake(slot, clock, synchronous_idle_advance, &request)?;
+        let (advance, pending_advance) =
+            Self::advance_after_scheduler_wake(slot, clock, queued_idle_advance, &request)?;
         let inbound_batch = PluginInboundFrames::drain_deliverable_since(
             inbound_rings,
             clock.current_icount(),
@@ -420,7 +471,51 @@ impl PluginIdleHotLoop {
             clock,
             request,
             advance,
-            synchronous_drain,
+            pending_advance,
+            inbound_batch.into_frames(),
+            None,
+        )
+    }
+
+    /// Finishes an inbound-ring idle turn after QEMU reports time completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when completion validation, scheduler
+    /// authorization, inbound-ring draining, or running-state publication fails.
+    pub fn complete_after_time_advance_from_inbound_rings<'a>(
+        slot: &NodeSlot,
+        clock: &mut PluginVirtualClock,
+        request: IdleParkRequest,
+        pending_advance: PendingIdleAdvance,
+        completion: TimeAdvanceCompletion,
+        inbound_rings: impl IntoIterator<Item = InboundFrameRing<'a>>,
+    ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
+        let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
+        PluginInboundFrames::reject_already_passed_ring_heads(
+            inbound_rings.iter().copied(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        let (advance, completed_advance) = Self::finish_advance_after_completion(
+            slot,
+            clock,
+            &request,
+            pending_advance,
+            completion,
+        )?;
+        let inbound_batch = PluginInboundFrames::drain_deliverable_since(
+            inbound_rings,
+            clock.current_icount(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        Self::publish_completed_idle(
+            slot,
+            clock,
+            request,
+            advance,
+            completed_advance,
             inbound_batch.into_frames(),
             None,
         )
@@ -429,9 +524,9 @@ impl PluginIdleHotLoop {
     /// Completes the idle jump, drains due inbound frames, and injects them via RX.
     ///
     /// Ring heads behind the authorized wake are rejected before QEMU virtual time
-    /// is advanced. After the direct idle jump completes, due heads at the reached
-    /// icount are consumed, queued through the lossless network RX backend, flushed,
-    /// and then the node is republished as running.
+    /// is advanced. After queued idle-jump completion, due heads at the reached
+    /// icount are consumed, queued through the lossless network RX backend,
+    /// flushed, and then the node is republished as running.
     ///
     /// # Errors
     ///
@@ -441,7 +536,7 @@ impl PluginIdleHotLoop {
     pub fn complete_after_scheduler_wake_from_inbound_rings_with_rx_injection<'a, Q>(
         slot: &NodeSlot,
         clock: &mut PluginVirtualClock,
-        synchronous_idle_advance: &SynchronousIdleAdvance,
+        queued_idle_advance: &QueuedIdleAdvance,
         request: IdleParkRequest,
         inbound_rings: impl IntoIterator<Item = InboundFrameRing<'a>>,
         network_rx: &PluginNetworkRx,
@@ -456,8 +551,8 @@ impl PluginIdleHotLoop {
             request.plan.current_icount,
         )
         .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
-        let (advance, synchronous_drain) =
-            Self::advance_after_scheduler_wake(slot, clock, synchronous_idle_advance, &request)?;
+        let (advance, pending_advance) =
+            Self::advance_after_scheduler_wake(slot, clock, queued_idle_advance, &request)?;
         let inbound_batch = PluginInboundFrames::preview_deliverable_since(
             inbound_rings.iter().copied(),
             clock.current_icount(),
@@ -499,7 +594,92 @@ impl PluginIdleHotLoop {
             clock,
             request,
             advance,
-            synchronous_drain,
+            pending_advance,
+            injected_frames,
+            Some(network_rx_injection),
+        )
+    }
+
+    /// Finishes an RX-injecting idle turn after QEMU reports time completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdleHotLoopError`] when completion validation, scheduler
+    /// authorization, inbound preview/drain, RX injection, or running-state
+    /// publication fails.
+    // crucible-lint: allow rust-allow -- this boundary carries the exact request, completion, ring, and RX owners.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the completion boundary must carry the exact request, token, QEMU completion, rings, and RX owner"
+    )]
+    pub fn complete_after_time_advance_from_inbound_rings_with_rx_injection<'a, Q>(
+        slot: &NodeSlot,
+        clock: &mut PluginVirtualClock,
+        request: IdleParkRequest,
+        pending_advance: PendingIdleAdvance,
+        completion: TimeAdvanceCompletion,
+        inbound_rings: impl IntoIterator<Item = InboundFrameRing<'a>>,
+        network_rx: &PluginNetworkRx,
+        rx_queue: &mut Q,
+    ) -> Result<IdleHotLoopResult, IdleHotLoopError>
+    where
+        Q: LosslessNetworkRxQueue + ?Sized,
+    {
+        let inbound_rings = inbound_rings.into_iter().collect::<Vec<_>>();
+        PluginInboundFrames::reject_already_passed_ring_heads(
+            inbound_rings.iter().copied(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        let (advance, completed_advance) = Self::finish_advance_after_completion(
+            slot,
+            clock,
+            &request,
+            pending_advance,
+            completion,
+        )?;
+        let inbound_batch = PluginInboundFrames::preview_deliverable_since(
+            inbound_rings.iter().copied(),
+            clock.current_icount(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        let injected_frames = inbound_batch.into_frames();
+        let network_rx_injection = handle_network_rx_idle_callback(
+            network_rx,
+            rx_queue,
+            request.plan.current_icount,
+            clock.current_icount(),
+            &injected_frames,
+        )
+        .map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?;
+        let committed_batch = PluginInboundFrames::drain_deliverable_since(
+            inbound_rings,
+            clock.current_icount(),
+            request.plan.current_icount,
+        )
+        .map_err(|source| IdleHotLoopError::InboundFrames { source })?;
+        if committed_batch.frames() != injected_frames.as_slice() {
+            return Err(IdleHotLoopError::InboundFrames {
+                source: InboundFrameError::CommittedBatchMismatch {
+                    expected: injected_frames
+                        .iter()
+                        .map(FrameEntry::delivery_key)
+                        .collect(),
+                    actual: committed_batch
+                        .frames()
+                        .iter()
+                        .map(FrameEntry::delivery_key)
+                        .collect(),
+                },
+            });
+        }
+        Self::publish_completed_idle(
+            slot,
+            clock,
+            request,
+            advance,
+            completed_advance,
             injected_frames,
             Some(network_rx_injection),
         )
@@ -508,9 +688,9 @@ impl PluginIdleHotLoop {
     fn advance_after_scheduler_wake(
         slot: &NodeSlot,
         clock: &mut PluginVirtualClock,
-        synchronous_idle_advance: &SynchronousIdleAdvance,
+        queued_idle_advance: &QueuedIdleAdvance,
         request: &IdleParkRequest,
-    ) -> Result<(PluginClockAdvance, SynchronousIdleDrain), IdleHotLoopError> {
+    ) -> Result<(PluginClockAdvance, PendingIdleAdvance), IdleHotLoopError> {
         let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(slot);
         if ceiling_icount < request.plan.desired_wake_icount {
             return Err(IdleHotLoopError::WakeNotAuthorized {
@@ -528,13 +708,51 @@ impl PluginIdleHotLoop {
         let target_virtual_ns = authorization
             .target_virtual_ns(clock.icount_shift())
             .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
-        let synchronous_drain = synchronous_idle_advance
-            .advance_and_drain(target_virtual_ns)
-            .map_err(|source| IdleHotLoopError::SynchronousIdleAdvance { source })?;
+        let pending_advance = queued_idle_advance
+            .enqueue(target_virtual_ns)
+            .map_err(|source| IdleHotLoopError::QueuedIdleAdvance { source })?;
+        Err(IdleHotLoopError::TimeAdvanceCompletionPending {
+            target_virtual_ns,
+            pending_advance,
+        })
+    }
+
+    fn finish_advance_after_completion(
+        slot: &NodeSlot,
+        clock: &mut PluginVirtualClock,
+        request: &IdleParkRequest,
+        pending_advance: PendingIdleAdvance,
+        completion: TimeAdvanceCompletion,
+    ) -> Result<(PluginClockAdvance, PendingIdleAdvance), IdleHotLoopError> {
+        let completed_advance = pending_advance
+            .validate_completion(completion)
+            .map_err(|source| IdleHotLoopError::QueuedIdleAdvance { source })?;
+        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(slot);
+        if ceiling_icount < request.plan.desired_wake_icount {
+            return Err(IdleHotLoopError::WakeNotAuthorized {
+                desired_wake_icount: request.plan.desired_wake_icount,
+                ceiling_icount,
+            });
+        }
+        let authorization = clock
+            .authorize_idle_jump(
+                request.plan.desired_wake_icount,
+                SchedulerCeiling::new(ceiling_icount),
+            )
+            .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
+        let target_virtual_ns = authorization
+            .target_virtual_ns(clock.icount_shift())
+            .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
+        if target_virtual_ns != completed_advance.target_virtual_ns() {
+            return Err(IdleHotLoopError::TimeAdvanceTargetDrift {
+                authorized_target_virtual_ns: target_virtual_ns,
+                completed_target_virtual_ns: completed_advance.target_virtual_ns(),
+            });
+        }
         let advance = clock
             .advance_authorized_idle_jump(authorization)
             .map_err(|source| IdleHotLoopError::AdvanceClock { source })?;
-        Ok((advance, synchronous_drain))
+        Ok((advance, completed_advance))
     }
 
     fn publish_completed_idle(
@@ -542,7 +760,7 @@ impl PluginIdleHotLoop {
         clock: &PluginVirtualClock,
         request: IdleParkRequest,
         advance: PluginClockAdvance,
-        synchronous_drain: SynchronousIdleDrain,
+        pending_advance: PendingIdleAdvance,
         injected_frames: Vec<FrameEntry>,
         network_rx_injection: Option<NetworkRxInjection>,
     ) -> Result<IdleHotLoopResult, IdleHotLoopError> {
@@ -556,7 +774,7 @@ impl PluginIdleHotLoop {
         Ok(IdleHotLoopResult {
             wake_plan: request.plan,
             advance,
-            synchronous_drain,
+            pending_advance,
             injected_frames,
             network_rx_injection,
         })
@@ -790,11 +1008,29 @@ pub enum IdleHotLoopError {
         /// The plugin clock error.
         source: PluginClockError,
     },
-    /// Synchronously advancing QEMU virtual time or draining timer/BH work failed.
-    #[error("synchronous idle advance failed: {source}")]
-    SynchronousIdleAdvance {
-        /// The synchronous direct-advance error.
-        source: SynchronousIdleAdvanceError,
+    /// Enqueueing QEMU virtual time failed before ownership transferred.
+    #[error("queued idle advance failed: {source}")]
+    QueuedIdleAdvance {
+        /// The queued-advance error.
+        source: QueuedIdleAdvanceError,
+    },
+    /// QEMU accepted the advance, so this callback must return until completion.
+    #[error("queued idle advance to {target_virtual_ns}ns awaits normal-main-loop completion")]
+    TimeAdvanceCompletionPending {
+        /// Absolute target accepted by QEMU.
+        target_virtual_ns: u64,
+        /// Token that must be matched by the later completion callback.
+        pending_advance: PendingIdleAdvance,
+    },
+    /// The retained idle request no longer derives the target QEMU completed.
+    #[error(
+        "authorized idle target {authorized_target_virtual_ns}ns differs from completed target {completed_target_virtual_ns}ns"
+    )]
+    TimeAdvanceTargetDrift {
+        /// Virtual time derived again from the retained scheduler request.
+        authorized_target_virtual_ns: u64,
+        /// Virtual time named by the validated completed request.
+        completed_target_virtual_ns: u64,
     },
     /// Inbound frame polling or deterministic injection failed.
     #[error("inbound frame handling failed: {source}")]
@@ -1026,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_loop_release_advances_injects_due_frames_and_republishes_running() {
+    fn idle_loop_release_waits_for_qemu_completion_before_mutating_state() {
         let slot = NodeSlot::new(KIND_VM);
         let clock = owned_clock(10, 1);
         publish_ceiling(&slot, ceiling(0, 10));
@@ -1045,11 +1281,11 @@ mod tests {
         publish_ceiling(&slot, ceiling(10, 20));
         let mut clock = clock;
         set_last_direct_advance_ns(-1);
-        let synchronous_idle_advance = synchronous_idle_advance();
-        let result = match PluginIdleHotLoop::complete_after_scheduler_wake(
+        let queued_idle_advance = queued_idle_advance();
+        let pending = expect_pending(PluginIdleHotLoop::complete_after_scheduler_wake(
             &slot,
             &mut clock,
-            &synchronous_idle_advance,
+            &queued_idle_advance,
             request,
             [
                 frame(20, 9, 4, b"late-by-key"),
@@ -1057,18 +1293,33 @@ mod tests {
                 frame(20, 1, 7, b"first"),
                 frame(21, 1, 8, b"future"),
             ],
-        ) {
-            Ok(result) => result,
-            Err(error) => panic!("idle completion should succeed: {error}"),
-        };
+        ));
+        assert_eq!(last_direct_advance_ns(), 40);
+        assert_eq!(clock.current_icount(), 10);
 
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.current_icount, 10);
+        assert_eq!(snapshot.current_ns, 20);
+        assert_eq!(snapshot.status, STATUS_IDLE);
+
+        let result = PluginIdleHotLoop::complete_after_time_advance(
+            &slot,
+            &mut clock,
+            request,
+            pending,
+            successful_completion(pending),
+            [
+                frame(20, 9, 4, b"late-by-key"),
+                frame(15, 4, 1, b"jumped-over"),
+                frame(20, 1, 7, b"first"),
+                frame(21, 1, 8, b"future"),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("idle completion should succeed: {error}"));
         assert_eq!(result.advance().from_icount(), 10);
         assert_eq!(result.advance().to_icount(), 20);
         assert_eq!(result.advance().virtual_ns(), 40);
-        assert_eq!(result.synchronous_drain().target_virtual_ns(), 40);
-        assert!(result.synchronous_drain().drained_bottom_halves());
-        assert_eq!(last_direct_advance_ns(), 40);
-        assert_eq!(clock.current_icount(), 20);
+        assert!(!result.pending_advance().completion_pending());
         assert_eq!(
             result
                 .injected_frames()
@@ -1081,15 +1332,12 @@ mod tests {
                 frame(20, 9, 4, b"late-by-key").delivery_key(),
             ]
         );
-
-        let snapshot = slot.snapshot();
-        assert_eq!(snapshot.current_icount, 20);
-        assert_eq!(snapshot.current_ns, 40);
-        assert_eq!(snapshot.status, STATUS_RUNNING);
+        assert_eq!(clock.current_icount(), 20);
+        assert_eq!(slot.snapshot().status, STATUS_RUNNING);
     }
 
     #[test]
-    fn idle_loop_with_inbound_rings_peeks_drains_and_republishes_running() {
+    fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
         let slot = NodeSlot::new(KIND_VM);
         let clock = owned_clock(10, 1);
         let ring_a = RingHeader::new();
@@ -1121,22 +1369,43 @@ mod tests {
         publish_ceiling(&slot, ceiling(10, 20));
         let mut clock = clock;
         set_last_direct_advance_ns(-1);
-        let result = match PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings(
+        let pending = expect_pending(
+            PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings(
+                &slot,
+                &mut clock,
+                &queued_idle_advance(),
+                request,
+                [
+                    InboundFrameRing::new(0, &ring_a, &entries_a),
+                    InboundFrameRing::new(1, &ring_b, &entries_b),
+                ],
+            ),
+        );
+
+        assert_eq!(last_direct_advance_ns(), 40);
+        assert_eq!(clock.current_icount(), 10);
+        assert_eq!(ring_a.read_index(), 0);
+        assert_eq!(ring_b.read_index(), 0);
+        let snapshot = slot.snapshot();
+        assert_eq!(snapshot.current_icount, 10);
+        assert_eq!(snapshot.current_ns, 20);
+        assert_eq!(snapshot.status, STATUS_IDLE);
+
+        let result = PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings(
             &slot,
             &mut clock,
-            &synchronous_idle_advance(),
             request,
+            pending,
+            successful_completion(pending),
             [
                 InboundFrameRing::new(0, &ring_a, &entries_a),
                 InboundFrameRing::new(1, &ring_b, &entries_b),
             ],
-        ) {
-            Ok(result) => result,
-            Err(error) => panic!("idle completion should drain inbound rings: {error}"),
-        };
-
-        assert_eq!(last_direct_advance_ns(), 40);
+        )
+        .unwrap_or_else(|error| panic!("completed idle turn should drain rings: {error}"));
         assert_eq!(clock.current_icount(), 20);
+        assert_eq!(ring_a.read_index(), 2);
+        assert_eq!(ring_b.read_index(), 1);
         assert_eq!(
             result
                 .injected_frames()
@@ -1149,16 +1418,10 @@ mod tests {
                 frame(20, 9, 4, b"third").delivery_key(),
             ]
         );
-        assert_eq!(ring_a.read_index(), 2);
-        assert_eq!(ring_b.read_index(), 1);
-        let snapshot = slot.snapshot();
-        assert_eq!(snapshot.current_icount, 20);
-        assert_eq!(snapshot.current_ns, 40);
-        assert_eq!(snapshot.status, STATUS_RUNNING);
     }
 
     #[test]
-    fn idle_loop_rx_injection_runs_after_direct_advance_and_before_republish() {
+    fn idle_loop_rx_injection_waits_for_qemu_completion() {
         let slot = NodeSlot::new(KIND_VM);
         let clock = owned_clock(10, 1);
         let ring_a = RingHeader::new();
@@ -1190,11 +1453,11 @@ mod tests {
         set_last_direct_advance_ns(-1);
         let network_rx = PluginNetworkRx::new();
         let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
-        let result =
-            match PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
+        let pending = expect_pending(
+            PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
                 &slot,
                 &mut clock,
-                &synchronous_idle_advance(),
+                &queued_idle_advance(),
                 request,
                 [
                     InboundFrameRing::new(0, &ring_a, &entries_a),
@@ -1202,12 +1465,34 @@ mod tests {
                 ],
                 &network_rx,
                 &mut rx_queue,
-            ) {
-                Ok(result) => result,
-                Err(error) => panic!("idle completion should inject RX frames: {error}"),
-            };
+            ),
+        );
 
         assert_eq!(last_direct_advance_ns(), 40);
+        assert!(rx_queue.direct_advance_ns_at_queue.is_empty());
+        assert!(rx_queue.slot_status_at_queue.is_empty());
+        assert!(rx_queue.queued_payloads.is_empty());
+        assert_eq!(rx_queue.flush_count, 0);
+        assert_eq!(ring_a.read_index(), 0);
+        assert_eq!(ring_b.read_index(), 0);
+        assert_eq!(clock.current_icount(), 10);
+        assert_eq!(slot.snapshot().status, STATUS_IDLE);
+
+        let result =
+            PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
+                &slot,
+                &mut clock,
+                request,
+                pending,
+                successful_completion(pending),
+                [
+                    InboundFrameRing::new(0, &ring_a, &entries_a),
+                    InboundFrameRing::new(1, &ring_b, &entries_b),
+                ],
+                &network_rx,
+                &mut rx_queue,
+            )
+            .unwrap_or_else(|error| panic!("completed idle turn should inject RX: {error}"));
         assert_eq!(rx_queue.direct_advance_ns_at_queue, vec![40, 40, 40]);
         assert_eq!(
             rx_queue.slot_status_at_queue,
@@ -1218,30 +1503,11 @@ mod tests {
             vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
         );
         assert_eq!(rx_queue.flush_count, 1);
-
-        let injection = match result.network_rx_injection() {
-            Some(injection) => injection,
-            None => panic!("RX injection metadata should be present"),
-        };
-        assert_eq!(injection.current_icount(), 20);
-        assert_eq!(
-            injection.frame_keys(),
-            &[
-                frame(20, 1, 7, b"first").delivery_key(),
-                frame(20, 4, 1, b"second").delivery_key(),
-                frame(20, 9, 4, b"third").delivery_key(),
-            ]
-        );
-        assert!(injection.flushed());
-        assert_eq!(
-            result
-                .injected_frames()
-                .iter()
-                .map(FrameEntry::delivery_key)
-                .collect::<Vec<_>>(),
-            injection.frame_keys()
-        );
+        assert_eq!(ring_a.read_index(), 2);
+        assert_eq!(ring_b.read_index(), 1);
+        assert_eq!(clock.current_icount(), 20);
         assert_eq!(slot.snapshot().status, STATUS_RUNNING);
+        assert!(result.network_rx_injection().is_some());
     }
 
     #[test]
@@ -1270,12 +1536,32 @@ mod tests {
         let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
         rx_queue.queue_error_at = Some(0);
 
-        assert_eq!(
+        let pending = expect_pending(
             PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
                 &slot,
                 &mut clock,
-                &synchronous_idle_advance(),
+                &queued_idle_advance(),
                 request,
+                [InboundFrameRing::new(0, &ring, &entries)],
+                &network_rx,
+                &mut rx_queue,
+            ),
+        );
+
+        assert_eq!(last_direct_advance_ns(), 40);
+        assert_eq!(clock.current_icount(), 10);
+        assert_eq!(ring.read_index(), 0);
+        assert!(rx_queue.queued_payloads.is_empty());
+        assert_eq!(rx_queue.flush_count, 0);
+        assert_eq!(slot.snapshot().status, STATUS_IDLE);
+
+        assert_eq!(
+            PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
+                &slot,
+                &mut clock,
+                request,
+                pending,
+                successful_completion(pending),
                 [InboundFrameRing::new(0, &ring, &entries)],
                 &network_rx,
                 &mut rx_queue,
@@ -1287,12 +1573,8 @@ mod tests {
                 },
             })
         );
-
-        assert_eq!(last_direct_advance_ns(), 40);
         assert_eq!(clock.current_icount(), 20);
         assert_eq!(ring.read_index(), 0);
-        assert!(rx_queue.queued_payloads.is_empty());
-        assert_eq!(rx_queue.flush_count, 0);
         assert_eq!(slot.snapshot().status, STATUS_IDLE);
     }
 
@@ -1323,7 +1605,7 @@ mod tests {
             PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings(
                 &slot,
                 &mut clock,
-                &blocked_synchronous_idle_advance(),
+                &blocked_queued_idle_advance(),
                 request,
                 [InboundFrameRing::new(3, &ring, &entries)]
             ),
@@ -1366,7 +1648,7 @@ mod tests {
             PluginIdleHotLoop::complete_after_scheduler_wake(
                 &slot,
                 &mut clock,
-                &blocked_synchronous_idle_advance(),
+                &blocked_queued_idle_advance(),
                 request,
                 [frame(9, 7, 2, b"late")]
             ),
@@ -1469,7 +1751,7 @@ mod tests {
             PluginIdleHotLoop::complete_after_scheduler_wake(
                 &slot,
                 &mut clock,
-                &synchronous_idle_advance(),
+                &queued_idle_advance(),
                 request,
                 []
             ),
@@ -1504,12 +1786,12 @@ mod tests {
             PluginIdleHotLoop::complete_after_scheduler_wake(
                 &slot,
                 &mut clock,
-                &blocked_synchronous_idle_advance(),
+                &blocked_queued_idle_advance(),
                 request,
                 [frame(1, 1, 1, b"would-be-due")]
             ),
-            Err(IdleHotLoopError::SynchronousIdleAdvance {
-                source: SynchronousIdleAdvanceError::VirtualTimeOutOfRange {
+            Err(IdleHotLoopError::QueuedIdleAdvance {
+                source: QueuedIdleAdvanceError::VirtualTimeOutOfRange {
                     target_virtual_ns: i64::MAX as u64 + 1,
                 },
             })
@@ -1567,18 +1849,34 @@ mod tests {
         }
     }
 
-    fn synchronous_idle_advance() -> SynchronousIdleAdvance {
-        match SynchronousIdleAdvance::require(Some(test_direct_advance)) {
+    fn queued_idle_advance() -> QueuedIdleAdvance {
+        match QueuedIdleAdvance::require(Some(test_direct_advance)) {
             Ok(advance) => advance,
-            Err(error) => panic!("test direct advance should require symbol: {error}"),
+            Err(error) => panic!("test queued advance should require symbol: {error}"),
         }
     }
 
-    fn blocked_synchronous_idle_advance() -> SynchronousIdleAdvance {
-        match SynchronousIdleAdvance::require(Some(test_blocked_direct_advance)) {
+    fn blocked_queued_idle_advance() -> QueuedIdleAdvance {
+        match QueuedIdleAdvance::require(Some(test_blocked_direct_advance)) {
             Ok(advance) => advance,
-            Err(error) => panic!("test blocked direct advance should require symbol: {error}"),
+            Err(error) => panic!("test blocked queued advance should require symbol: {error}"),
         }
+    }
+
+    fn expect_pending(result: Result<IdleHotLoopResult, IdleHotLoopError>) -> PendingIdleAdvance {
+        match result {
+            Err(IdleHotLoopError::TimeAdvanceCompletionPending {
+                pending_advance, ..
+            }) => pending_advance,
+            Ok(_result) => panic!("queued advance must not complete inside the idle callback"),
+            Err(error) => panic!("queued advance should return a pending token: {error}"),
+        }
+    }
+
+    fn successful_completion(pending: PendingIdleAdvance) -> TimeAdvanceCompletion {
+        let target = i64::try_from(pending.target_virtual_ns())
+            .unwrap_or_else(|error| panic!("test target should fit QEMU ABI: {error}"));
+        TimeAdvanceCompletion::from_qemu(0, target)
     }
 
     extern "C" fn deadline_10() -> i64 {
@@ -1597,12 +1895,14 @@ mod tests {
         80
     }
 
-    extern "C" fn test_direct_advance(target_virtual_ns: i64) {
+    extern "C" fn test_direct_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
         set_last_direct_advance_ns(target_virtual_ns);
+        0
     }
 
-    extern "C" fn test_blocked_direct_advance(target_virtual_ns: i64) {
+    extern "C" fn test_blocked_direct_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
         set_blocked_direct_advance_ns(target_virtual_ns);
+        0
     }
 
     fn set_last_direct_advance_ns(value: i64) {
@@ -1633,7 +1933,7 @@ mod tests {
         for step in CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == crate::PluginRegistrationStep::RegisterCallbacks {
                 sequence
-                    .register_callbacks_with_exact_deadline(
+                    .register_callbacks_for_test(
                         &args,
                         Some(idle_loop_test_deadline),
                         Some(idle_loop_test_direct_advance),
@@ -1668,7 +1968,9 @@ mod tests {
         1
     }
 
-    extern "C" fn idle_loop_test_direct_advance(_target_virtual_ns: i64) {}
+    extern "C" fn idle_loop_test_direct_advance(_target_virtual_ns: i64) -> std::os::raw::c_int {
+        0
+    }
 
     fn ceiling(current_icount: u64, max_advance_icount: u64) -> AdvanceCeiling {
         match authorize_advance_ceiling(current_icount, max_advance_icount, None) {

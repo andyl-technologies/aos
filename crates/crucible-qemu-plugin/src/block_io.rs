@@ -143,7 +143,7 @@ impl PluginBlockIo {
         let frame = FrameEntry::new(submit_icount, self.vm_slot, request_id, &payload)
             .map_err(|source| BlockIoError::Frame { source })?;
         let device_token = freeze
-            .begin_submit(slot, submit_icount)
+            .begin_independent_submit(slot, submit_icount)
             .map_err(|source| BlockIoError::DeviceIoFreeze { source })?;
 
         if let Err(source) = PluginShmemOrdering::enqueue_outbound_frame(

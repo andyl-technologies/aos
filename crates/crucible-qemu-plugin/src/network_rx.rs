@@ -522,7 +522,7 @@ mod tests {
 
     use crate::{
         ExactDeadlineReader, IdleWakeCause, InboundFrameRing, PluginIdleHotLoop,
-        PluginShmemOrdering, SynchronousIdleAdvance,
+        PluginShmemOrdering, QueuedIdleAdvance,
         network_tx::{NetworkTxRing, PluginNetworkTx, handle_network_tx_callback},
     };
 
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn host_observable_schedule_cross_checks_sim_double_against_real_plugin_path() {
+    fn host_observable_schedule_cross_checks_sim_double_against_plugin_projection() {
         let requested_horizon = 20;
         let mut double = sim_double_for_schedule_cross_check();
         complete_sim_double_setup(&mut double);
@@ -579,8 +579,51 @@ mod tests {
 
         assert_eq!(
             double.host_observable_schedule(),
-            real_plugin_host_observable_schedule(requested_horizon).as_slice()
+            plugin_projection_host_observable_schedule(requested_horizon).as_slice()
         );
+    }
+
+    #[test]
+    fn host_observable_schedule_projection_waits_for_qemu_advance_completion() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut clock = owned_clock(0, 0);
+        let ring = RingHeader::new();
+        let mut entries = vec![FrameEntry::default(); 1];
+        enqueue_plugin_projection_inbound_frame(
+            &ring,
+            &mut entries,
+            frame(12, SLOT_NET_ROUTER as u32, 7, b"router-first"),
+        );
+        publish_ceiling(&slot, ceiling(0, 0));
+        let request = PluginIdleHotLoop::begin_idle_with_inbound_rings(
+            &slot,
+            &clock,
+            &deadline_reader(),
+            [InboundFrameRing::new(0, &ring, &entries)],
+            None,
+        )
+        .unwrap_or_else(|error| panic!("idle begin should select inbound frame: {error}"));
+        publish_ceiling(&slot, ceiling(0, 12));
+        let mut queue = RecordingRxQueue::ready();
+
+        assert!(matches!(
+            PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
+                &slot,
+                &mut clock,
+                &queued_idle_advance(),
+                request,
+                [InboundFrameRing::new(0, &ring, &entries)],
+                &PluginNetworkRx::new(),
+                &mut queue,
+            ),
+            Err(crate::IdleHotLoopError::TimeAdvanceCompletionPending {
+                target_virtual_ns: 12,
+                ..
+            })
+        ));
+        assert_eq!(clock.current_icount(), 0);
+        assert_eq!(ring.read_index(), 0);
+        assert!(queue.queued_payloads.is_empty());
     }
 
     #[test]
@@ -911,7 +954,7 @@ mod tests {
         }
     }
 
-    fn real_plugin_host_observable_schedule(
+    fn plugin_projection_host_observable_schedule(
         requested_horizon: u64,
     ) -> Vec<SimDoubleHostScheduleEvent> {
         let mut schedule = Vec::new();
@@ -920,18 +963,18 @@ mod tests {
         let network_rx = PluginNetworkRx::new();
         let inbound_ring = RingHeader::new();
         let mut inbound_entries = vec![FrameEntry::default(); 4];
-        enqueue_real_inbound_frame(
+        enqueue_plugin_projection_inbound_frame(
             &inbound_ring,
             &mut inbound_entries,
             frame(12, SLOT_NET_ROUTER as u32, 7, b"router-first"),
         );
-        enqueue_real_inbound_frame(
+        enqueue_plugin_projection_inbound_frame(
             &inbound_ring,
             &mut inbound_entries,
             frame(15, SLOT_NET_ROUTER as u32, 8, b"router-second"),
         );
 
-        append_real_idle_rx_delivery(
+        append_plugin_projection_idle_rx_delivery(
             &mut schedule,
             &slot,
             &mut clock,
@@ -945,7 +988,7 @@ mod tests {
             },
         );
 
-        append_real_idle_rx_delivery(
+        append_plugin_projection_idle_rx_delivery(
             &mut schedule,
             &slot,
             &mut clock,
@@ -959,20 +1002,20 @@ mod tests {
             },
         );
 
-        push_real_guest_horizon(
+        push_plugin_projection_guest_horizon(
             &mut schedule,
             &mut clock,
             requested_horizon,
             20,
             AdvanceOutcome::ReachedHorizon,
         );
-        push_real_tx_emission(&mut schedule, 20, b"guest-to-router");
+        push_plugin_projection_tx_emission(&mut schedule, 20, b"guest-to-router");
         schedule
     }
 
     // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
     #[allow(clippy::too_many_arguments)]
-    fn append_real_idle_rx_delivery(
+    fn append_plugin_projection_idle_rx_delivery(
         schedule: &mut Vec<SimDoubleHostScheduleEvent>,
         slot: &NodeSlot,
         clock: &mut crate::PluginVirtualClock,
@@ -993,26 +1036,48 @@ mod tests {
             None,
         ) {
             Ok(request) => request,
-            Err(error) => panic!("real plugin idle begin should select inbound frame: {error}"),
+            Err(error) => {
+                panic!("plugin projection idle begin should select inbound frame: {error}")
+            }
         };
         assert_eq!(request.plan().cause(), IdleWakeCause::InboundFrame);
         assert_eq!(request.plan().desired_wake_icount(), reached_icount);
 
         publish_ceiling(slot, ceiling(from_icount, reached_icount));
         let mut rx_queue = RecordingRxQueue::ready();
-        let result =
+        let pending =
             match PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
                 slot,
                 clock,
-                &synchronous_idle_advance(),
+                &queued_idle_advance(),
                 request,
                 [InboundFrameRing::new(0, inbound_ring, inbound_entries)],
                 network_rx,
                 &mut rx_queue,
             ) {
-                Ok(result) => result,
-                Err(error) => panic!("real plugin idle completion should inject RX frame: {error}"),
+                Err(crate::IdleHotLoopError::TimeAdvanceCompletionPending {
+                    pending_advance,
+                    ..
+                }) => pending_advance,
+                Ok(_result) => panic!("plugin projection must wait for QEMU completion"),
+                Err(error) => panic!("plugin projection should queue time advance: {error}"),
             };
+        let completion_target = i64::try_from(pending.target_virtual_ns())
+            .unwrap_or_else(|error| panic!("completion target should fit: {error}"));
+        let result =
+            PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
+                slot,
+                clock,
+                request,
+                pending,
+                crate::TimeAdvanceCompletion::from_qemu(0, completion_target),
+                [InboundFrameRing::new(0, inbound_ring, inbound_entries)],
+                network_rx,
+                &mut rx_queue,
+            )
+            .unwrap_or_else(|error| {
+                panic!("plugin projection idle completion should inject RX frame: {error}")
+            });
         assert_eq!(
             result.advance().source(),
             crate::PluginClockAdvanceSource::SchedulerAuthorizedIdleJump
@@ -1028,13 +1093,13 @@ mod tests {
         });
         let injection = match result.network_rx_injection() {
             Some(injection) => injection.clone(),
-            None => panic!("real plugin idle completion should report RX injection"),
+            None => panic!("plugin projection idle completion should report RX injection"),
         };
         assert_eq!(result.injected_frames().len(), injection.frame_keys().len());
-        append_real_rx_delivery(schedule, (injection, rx_queue.queued_payloads));
+        append_plugin_projection_rx_delivery(schedule, (injection, rx_queue.queued_payloads));
     }
 
-    fn push_real_guest_horizon(
+    fn push_plugin_projection_guest_horizon(
         schedule: &mut Vec<SimDoubleHostScheduleEvent>,
         clock: &mut crate::PluginVirtualClock,
         requested_icount: u64,
@@ -1049,7 +1114,7 @@ mod tests {
             .advance_guest_instructions(delta_icount, crate::SchedulerCeiling::new(reached_icount))
         {
             Ok(advance) => advance,
-            Err(error) => panic!("real plugin clock should advance: {error}"),
+            Err(error) => panic!("plugin projection clock should advance: {error}"),
         };
         assert_eq!(
             advance.source(),
@@ -1064,7 +1129,7 @@ mod tests {
         });
     }
 
-    fn append_real_rx_delivery(
+    fn append_plugin_projection_rx_delivery(
         schedule: &mut Vec<SimDoubleHostScheduleEvent>,
         (injection, queued_payloads): (NetworkRxInjection, Vec<Vec<u8>>),
     ) {
@@ -1079,7 +1144,7 @@ mod tests {
         }
     }
 
-    fn push_real_tx_emission(
+    fn push_plugin_projection_tx_emission(
         schedule: &mut Vec<SimDoubleHostScheduleEvent>,
         emit_icount: u64,
         payload: &[u8],
@@ -1091,7 +1156,7 @@ mod tests {
             let mut ring = NetworkTxRing::new(0, 0, SLOT_NET_ROUTER as u32, &header, &mut entries);
             match handle_network_tx_callback(&tx, &mut ring, emit_icount, payload) {
                 Ok(enqueue) => enqueue,
-                Err(error) => panic!("real plugin network TX should enqueue frame: {error}"),
+                Err(error) => panic!("plugin projection network TX should enqueue frame: {error}"),
             }
         };
         assert_eq!(header.write_index(), 1);
@@ -1105,34 +1170,34 @@ mod tests {
         });
     }
 
-    fn enqueue_real_inbound_frame(
+    fn enqueue_plugin_projection_inbound_frame(
         header: &RingHeader,
         entries: &mut [FrameEntry],
         frame: FrameEntry,
     ) {
         if let Err(error) = PluginShmemOrdering::enqueue_outbound_frame(header, entries, &frame) {
-            panic!("real plugin inbound frame should enqueue into SPSC ring: {error}");
+            panic!("plugin projection inbound frame should enqueue into SPSC ring: {error}");
         }
     }
 
     fn owned_clock(initial_icount: u64, icount_shift: u8) -> crate::PluginVirtualClock {
         match crate::PluginVirtualClock::new(initial_icount, icount_shift, ownership()) {
             Ok(clock) => clock,
-            Err(error) => panic!("real plugin clock should construct: {error}"),
+            Err(error) => panic!("plugin projection clock should construct: {error}"),
         }
     }
 
     fn deadline_reader() -> ExactDeadlineReader {
         match ExactDeadlineReader::require(Some(host_schedule_no_deadline)) {
             Ok(reader) => reader,
-            Err(error) => panic!("real plugin deadline reader should bind: {error}"),
+            Err(error) => panic!("plugin projection deadline reader should bind: {error}"),
         }
     }
 
-    fn synchronous_idle_advance() -> SynchronousIdleAdvance {
-        match SynchronousIdleAdvance::require(Some(host_schedule_test_direct_advance)) {
+    fn queued_idle_advance() -> QueuedIdleAdvance {
+        match QueuedIdleAdvance::require(Some(host_schedule_test_direct_advance)) {
             Ok(advance) => advance,
-            Err(error) => panic!("real plugin direct advance should bind: {error}"),
+            Err(error) => panic!("plugin projection queued advance should bind: {error}"),
         }
     }
 
@@ -1148,7 +1213,7 @@ mod tests {
         for step in crate::CANONICAL_TIME_CONTROL_REGISTRATION_ORDER {
             let result = if step == crate::PluginRegistrationStep::RegisterCallbacks {
                 sequence
-                    .register_callbacks_with_exact_deadline(
+                    .register_callbacks_for_test(
                         &args,
                         Some(host_schedule_test_deadline),
                         Some(host_schedule_test_direct_advance),
@@ -1188,14 +1253,14 @@ mod tests {
     fn ceiling(current_icount: u64, max_advance_icount: u64) -> AdvanceCeiling {
         match authorize_advance_ceiling(current_icount, max_advance_icount, None) {
             Ok(ceiling) => ceiling,
-            Err(error) => panic!("real plugin scheduler ceiling should authorize: {error}"),
+            Err(error) => panic!("plugin projection scheduler ceiling should authorize: {error}"),
         }
     }
 
     fn publish_ceiling(slot: &NodeSlot, ceiling: AdvanceCeiling) {
         slot.publish_scheduler_ceiling(ceiling)
             .unwrap_or_else(|error| {
-                panic!("real plugin scheduler ceiling should publish: {error}")
+                panic!("plugin projection scheduler ceiling should publish: {error}")
             });
     }
 
@@ -1207,7 +1272,11 @@ mod tests {
         1
     }
 
-    extern "C" fn host_schedule_test_direct_advance(_target_virtual_ns: i64) {}
+    extern "C" fn host_schedule_test_direct_advance(
+        _target_virtual_ns: i64,
+    ) -> std::os::raw::c_int {
+        0
+    }
 
     #[derive(Debug)]
     struct RecordingRxQueue {

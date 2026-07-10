@@ -5,19 +5,87 @@
 //! per-block branch. When enabled, the safe callback body folds each executed
 //! guest basic-block PC into a fixed-size map and records an observational event.
 
-use std::os::raw::{c_uint, c_void};
+use std::borrow::Cow;
+use std::marker::PhantomPinned;
+use std::os::raw::{c_int, c_uint, c_void};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use crucible_protocol::{
     PluginBasicBlockCoverageObservation, PluginBasicBlockCoverageObservationError,
 };
+use crucible_shmem::{CoverageEntry, RingHeader, SpscRingError};
 use thiserror::Error;
 
-use crate::{PluginSwitch, QemuRegisterTcgExecCbFn};
+use crate::{PluginSwitch, QemuPluginId};
 
-/// QEMU capability label for registering the TCG-exec coverage callback.
+/// QEMU runtime hook retained for non-coverage post-exec integration.
 pub const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL: &str = "qemu_plugin_register_tcg_exec_cb";
+/// QEMU capability label for registering the translation callback.
+pub const QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL: &str =
+    "qemu_plugin_register_vcpu_tb_trans_cb";
+/// QEMU capability label for registering a translated-block execution callback.
+pub const QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL: &str =
+    "qemu_plugin_register_vcpu_tb_exec_cb";
+/// QEMU capability label for observing the exact icount at TB entry.
+pub const QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL: &str = "qemu_plugin_icount_at_tb_entry";
+/// QEMU capability label for observing translation-cache flushes.
+pub const QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL: &str = "qemu_plugin_register_flush_cb";
+/// QEMU capability label for reading a translated block's start address.
+pub const QEMU_PLUGIN_TB_VADDR_SYMBOL: &str = "qemu_plugin_tb_vaddr";
+/// QEMU capability label for reading a translated block's instruction count.
+pub const QEMU_PLUGIN_TB_N_INSNS_SYMBOL: &str = "qemu_plugin_tb_n_insns";
+/// QEMU capability label for retrieving one translated instruction.
+pub const QEMU_PLUGIN_TB_GET_INSN_SYMBOL: &str = "qemu_plugin_tb_get_insn";
+/// QEMU capability label for reading a translated instruction's byte length.
+pub const QEMU_PLUGIN_INSN_SIZE_SYMBOL: &str = "qemu_plugin_insn_size";
 /// Default number of entries in the fixed-size coverage map.
 pub const DEFAULT_COVERAGE_MAP_ENTRIES: usize = 65_536;
+
+/// Opaque translated-block handle owned by QEMU.
+#[repr(C)]
+pub struct QemuPluginTb {
+    _private: [u8; 0],
+}
+
+/// Opaque translated-instruction handle owned by QEMU.
+#[repr(C)]
+pub struct QemuPluginInsn {
+    _private: [u8; 0],
+}
+
+/// QEMU callback invoked when one translation block is created.
+pub type QemuVcpuTbTransCbFn = extern "C" fn(plugin_id: QemuPluginId, tb: *mut QemuPluginTb);
+/// QEMU callback invoked when one translated block executes.
+pub type QemuVcpuTbExecCbFn = extern "C" fn(vcpu_index: c_uint, userdata: *mut c_void);
+/// QEMU callback invoked after dynamic callbacks have been removed for a flush.
+pub type QemuPluginSimpleCbFn = extern "C" fn(plugin_id: QemuPluginId);
+/// QEMU function that registers the plugin-wide translation callback.
+pub type QemuRegisterVcpuTbTransCbFn =
+    extern "C" fn(plugin_id: QemuPluginId, callback: Option<QemuVcpuTbTransCbFn>);
+/// QEMU function that registers an execution callback on one translated block.
+pub type QemuRegisterVcpuTbExecCbFn = extern "C" fn(
+    tb: *mut QemuPluginTb,
+    callback: Option<QemuVcpuTbExecCbFn>,
+    flags: c_int,
+    userdata: *mut c_void,
+);
+/// QEMU function that registers a plugin-wide translation-cache flush callback.
+pub type QemuRegisterFlushCbFn =
+    extern "C" fn(plugin_id: QemuPluginId, callback: QemuPluginSimpleCbFn);
+/// QEMU function that reads a translated block's start address.
+pub type QemuTbVaddrFn = extern "C" fn(tb: *const QemuPluginTb) -> u64;
+/// QEMU function that reads a translated block's instruction count.
+pub type QemuTbNInsnsFn = extern "C" fn(tb: *const QemuPluginTb) -> usize;
+/// QEMU function that retrieves an instruction from a translated block.
+pub type QemuTbGetInsnFn =
+    extern "C" fn(tb: *const QemuPluginTb, index: usize) -> *mut QemuPluginInsn;
+/// QEMU function that reads a translated instruction's byte length.
+pub type QemuInsnSizeFn = extern "C" fn(insn: *const QemuPluginInsn) -> usize;
+/// QEMU function that observes the exact pre-execution icount for one TB.
+pub type QemuIcountAtTbEntryFn = extern "C" fn(tb_insns: u64, entry_icount: *mut u64) -> c_int;
+
+const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
 
 /// Registration-time-fixed coverage callback state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,9 +139,9 @@ impl PluginCoverage {
         }
 
         validate_map_entries(self.map_entries)?;
-        if !capabilities.register_tcg_exec_cb() {
+        if !capabilities.basic_block_callbacks() {
             return Err(CoverageError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL,
+                symbol: QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL,
             });
         }
 
@@ -101,10 +169,54 @@ where
     callback.record_basic_block(map, sink, event)
 }
 
+/// Complete QEMU API used by live basic-block coverage callbacks.
+#[derive(Clone, Copy, Debug)]
+pub struct QemuBasicBlockCoverageApis {
+    register_tb_trans_cb: QemuRegisterVcpuTbTransCbFn,
+    register_tb_exec_cb: QemuRegisterVcpuTbExecCbFn,
+    tb_vaddr: QemuTbVaddrFn,
+    tb_n_insns: QemuTbNInsnsFn,
+    tb_get_insn: QemuTbGetInsnFn,
+    insn_size: QemuInsnSizeFn,
+    icount_at_tb_entry: QemuIcountAtTbEntryFn,
+    register_flush_cb: QemuRegisterFlushCbFn,
+}
+
+impl QemuBasicBlockCoverageApis {
+    /// Builds a complete QEMU basic-block callback API table.
+    #[must_use]
+    // crucible-lint: allow rust-allow -- the constructor mirrors eight independent QEMU callback ABI exports.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the constructor mirrors the eight independent QEMU callback ABI exports"
+    )]
+    pub const fn new(
+        register_tb_trans_cb: QemuRegisterVcpuTbTransCbFn,
+        register_tb_exec_cb: QemuRegisterVcpuTbExecCbFn,
+        tb_vaddr: QemuTbVaddrFn,
+        tb_n_insns: QemuTbNInsnsFn,
+        tb_get_insn: QemuTbGetInsnFn,
+        insn_size: QemuInsnSizeFn,
+        icount_at_tb_entry: QemuIcountAtTbEntryFn,
+        register_flush_cb: QemuRegisterFlushCbFn,
+    ) -> Self {
+        Self {
+            register_tb_trans_cb,
+            register_tb_exec_cb,
+            tb_vaddr,
+            tb_n_insns,
+            tb_get_insn,
+            insn_size,
+            icount_at_tb_entry,
+            register_flush_cb,
+        }
+    }
+}
+
 /// QEMU capabilities needed by the optional coverage hook.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CoverageCapabilities {
-    register_tcg_exec_cb: Option<QemuRegisterTcgExecCbFn>,
+    basic_block_callbacks: Option<QemuBasicBlockCoverageApis>,
 }
 
 impl CoverageCapabilities {
@@ -112,43 +224,29 @@ impl CoverageCapabilities {
     #[must_use]
     pub const fn none() -> Self {
         Self {
-            register_tcg_exec_cb: None,
+            basic_block_callbacks: None,
         }
     }
 
     /// Returns capabilities sufficient for coverage registration.
     #[must_use]
-    pub const fn tcg_exec(register_tcg_exec_cb: QemuRegisterTcgExecCbFn) -> Self {
+    pub const fn basic_blocks(apis: QemuBasicBlockCoverageApis) -> Self {
         Self {
-            register_tcg_exec_cb: Some(register_tcg_exec_cb),
+            basic_block_callbacks: Some(apis),
         }
     }
 
-    /// Returns whether QEMU can register the TCG-exec callback.
+    /// Returns whether QEMU can register live basic-block callbacks.
     #[must_use]
-    pub const fn register_tcg_exec_cb(self) -> bool {
-        self.register_tcg_exec_cb.is_some()
+    pub const fn basic_block_callbacks(self) -> bool {
+        self.basic_block_callbacks.is_some()
     }
 
-    /// Returns QEMU's TCG-exec callback registration function, if available.
+    /// Returns QEMU's live basic-block callback API table, if available.
     #[must_use]
-    pub const fn register_tcg_exec_cb_fn(self) -> Option<QemuRegisterTcgExecCbFn> {
-        self.register_tcg_exec_cb
+    pub const fn basic_block_apis(self) -> Option<QemuBasicBlockCoverageApis> {
+        self.basic_block_callbacks
     }
-}
-
-/// Minimal QEMU-facing TCG-exec callback registered by T-PATCH-11.
-///
-/// This callback proves that QEMU can call back into the plugin after
-/// `tcg_cpu_exec` with the current vCPU and raw icount. The later coverage gate
-/// owns the richer basic-block event path that supplies guest PC and block
-/// length to [`handle_coverage_exec_callback`].
-pub extern "C" fn crucible_qemu_plugin_coverage_exec_cb(
-    vcpu_index: c_uint,
-    icount: u64,
-    userdata: *mut c_void,
-) {
-    let _ = (vcpu_index, icount, userdata);
 }
 
 /// A registration decision for the optional coverage hook.
@@ -302,6 +400,358 @@ impl CoverageMap {
     }
 }
 
+static LIVE_COVERAGE_STATE: AtomicPtr<LiveCoverageInner> = AtomicPtr::new(std::ptr::null_mut());
+
+#[derive(Debug)]
+struct LiveCoverageBlock {
+    state: *mut LiveCoverageInner,
+    instruction_count: u64,
+    guest_pc: u64,
+    block_len: u32,
+}
+
+/// Pinned raw view of one ABI-validated plugin-to-host coverage ring.
+#[derive(Debug)]
+pub(crate) struct LiveCoverageShmemProducer {
+    header: *const RingHeader,
+    entries: *mut CoverageEntry,
+    capacity: usize,
+}
+
+impl LiveCoverageShmemProducer {
+    /// Builds a producer view retained by the process-lifetime callback owner.
+    ///
+    /// # Safety
+    ///
+    /// `header` and the `capacity` entries starting at `entries` must remain
+    /// mapped, aligned, and exclusively producer-owned until the coverage
+    /// callback owner is destroyed. The host may access the same objects only as
+    /// the SPSC consumer through [`RingHeader::dequeue_coverage`].
+    pub(crate) unsafe fn from_raw_parts(
+        header: *const RingHeader,
+        entries: *mut CoverageEntry,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            header,
+            entries,
+            capacity,
+        }
+    }
+
+    const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn ring_parts(&mut self) -> (&RingHeader, &mut [CoverageEntry]) {
+        // SAFETY: construction requires both raw ranges to remain valid and
+        // producer-exclusive for this owner's lifetime. The validated sim RR
+        // execution model serializes every callback invocation.
+        unsafe {
+            (
+                &*self.header,
+                std::slice::from_raw_parts_mut(self.entries, self.capacity),
+            )
+        }
+    }
+
+    #[cfg(test)]
+    fn drain(&mut self) -> Result<Vec<CoverageObservation>, CoverageSinkError> {
+        let (header, entries) = self.ring_parts();
+        let mut observations = Vec::new();
+        loop {
+            let Some(entry) = header
+                .dequeue_coverage(entries)
+                .map_err(|error| CoverageSinkError::new(error.to_string()))?
+            else {
+                break;
+            };
+            let entry = entry
+                .validate()
+                .map_err(|error| CoverageSinkError::new(error.to_string()))?;
+            let map_index = usize::try_from(entry.map_index())
+                .map_err(|error| CoverageSinkError::new(error.to_string()))?;
+            observations.push(CoverageObservation {
+                current_icount: entry.current_icount(),
+                vcpu_index: entry.vcpu_index(),
+                guest_pc: entry.guest_pc(),
+                block_len: entry.block_len(),
+                map_index,
+                was_new: true,
+            });
+        }
+        Ok(observations)
+    }
+}
+
+impl CoverageSink for LiveCoverageShmemProducer {
+    fn record_coverage(
+        &mut self,
+        observation: &CoverageObservation,
+    ) -> Result<(), CoverageSinkError> {
+        if !observation.was_new() {
+            return Ok(());
+        }
+        let entry = CoverageEntry::new(
+            observation.current_icount(),
+            observation.vcpu_index(),
+            observation.guest_pc(),
+            observation.block_len(),
+            observation.map_index() as u64,
+        )
+        .map_err(|_error| CoverageSinkError::from_static("invalid live coverage entry"))?;
+        let (header, entries) = self.ring_parts();
+        header.enqueue_coverage(entries, entry).map_err(|error| {
+            if matches!(error, SpscRingError::QueueFull { .. }) {
+                CoverageSinkError::from_static("live coverage queue is full")
+            } else {
+                CoverageSinkError::from_static("live coverage queue rejected entry")
+            }
+        })
+    }
+}
+
+#[derive(Debug)]
+struct LiveCoverageInner {
+    plugin_id: QemuPluginId,
+    apis: QemuBasicBlockCoverageApis,
+    callback: CoverageCallback,
+    map: CoverageMap,
+    sink: LiveCoverageShmemProducer,
+    // crucible-lint: allow rust-allow -- boxed entries keep QEMU userdata stable when the outer vector grows.
+    #[allow(
+        clippy::vec_box,
+        reason = "QEMU retains stable userdata addresses while the outer vector may grow"
+    )]
+    translated_blocks: Vec<Box<LiveCoverageBlock>>,
+    _pin: PhantomPinned,
+}
+
+/// Process-lifetime owner for QEMU basic-block coverage callbacks.
+///
+/// The owner exists only for `coverage=on`. It keeps every per-translation
+/// metadata allocation stable for as long as QEMU can execute the translated
+/// block. The active runtime intentionally retains this owner for process
+/// lifetime; QEMU destroys generated callbacks before the flush hook releases
+/// their userdata and removes all plugin callbacks before unloading the plugin.
+/// The shared output ring retains each newly reached map entry exactly once, so
+/// it is bounded by the configured map size without silent eviction.
+pub(crate) struct LiveBasicBlockCoverage {
+    state: Pin<Box<LiveCoverageInner>>,
+}
+
+impl LiveBasicBlockCoverage {
+    /// Registers the translation callback and takes ownership of its live state.
+    pub(crate) fn register(
+        plugin_id: QemuPluginId,
+        callback: CoverageCallback,
+        apis: QemuBasicBlockCoverageApis,
+        sink: LiveCoverageShmemProducer,
+    ) -> Result<Self, CoverageError> {
+        let map_entries = callback.map_entries();
+        if sink.capacity() != map_entries {
+            return Err(CoverageError::CoverageQueueCapacityMismatch {
+                map_entries,
+                queue_capacity: sink.capacity(),
+            });
+        }
+        let mut state = Box::pin(LiveCoverageInner {
+            plugin_id,
+            apis,
+            callback,
+            map: CoverageMap::new(map_entries)?,
+            sink,
+            translated_blocks: Vec::new(),
+            _pin: PhantomPinned,
+        });
+        // SAFETY: obtaining the address does not move the pinned state. QEMU's
+        // validated single-threaded round-robin mode serializes every access to
+        // the published pointer for the process-lifetime owner.
+        let state_ptr = unsafe { state.as_mut().get_unchecked_mut() } as *mut LiveCoverageInner;
+        if LIVE_COVERAGE_STATE
+            .compare_exchange(
+                std::ptr::null_mut(),
+                state_ptr,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err(CoverageError::LiveRegistrationAlreadyExists { plugin_id });
+        }
+        (apis.register_flush_cb)(plugin_id, live_coverage_flush);
+        (apis.register_tb_trans_cb)(plugin_id, Some(live_coverage_tb_translate));
+        Ok(Self { state })
+    }
+
+    #[cfg(test)]
+    fn drain_observations(&mut self) -> Vec<CoverageObservation> {
+        // SAFETY: this test helper is called only after synchronous fake
+        // callback invocation while the test holds the sole owner.
+        unsafe { self.state.as_mut().get_unchecked_mut() }
+            .sink
+            .drain()
+            .unwrap_or_else(|error| panic!("coverage test ring should drain: {error}"))
+    }
+
+    #[cfg(test)]
+    fn map_entries(&self) -> Vec<u8> {
+        self.state.as_ref().get_ref().map.entries().to_vec()
+    }
+
+    #[cfg(test)]
+    fn translated_block_count(&self) -> usize {
+        self.state.as_ref().get_ref().translated_blocks.len()
+    }
+}
+
+impl Drop for LiveBasicBlockCoverage {
+    fn drop(&mut self) {
+        let state_ptr = std::ptr::from_ref(self.state.as_ref().get_ref()).cast_mut();
+        if LIVE_COVERAGE_STATE
+            .compare_exchange(
+                state_ptr,
+                std::ptr::null_mut(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            abort_live_coverage_callback(CoverageError::LiveRegistrationOwnershipLost);
+        }
+    }
+}
+
+extern "C" fn live_coverage_tb_translate(plugin_id: QemuPluginId, tb: *mut QemuPluginTb) {
+    if tb.is_null() {
+        abort_live_coverage_callback(CoverageError::NullTranslatedBlock);
+    }
+    let state = LIVE_COVERAGE_STATE.load(Ordering::Acquire);
+    if state.is_null() {
+        return;
+    }
+    // SAFETY: registration publishes a fully initialized pinned state and the
+    // plugin rejects QEMU modes that could invoke these callbacks concurrently.
+    let state = unsafe { &mut *state };
+    if state.plugin_id != plugin_id {
+        abort_live_coverage_callback(CoverageError::PluginIdMismatch {
+            expected: state.plugin_id,
+            actual: plugin_id,
+        });
+    }
+    let instruction_count = (state.apis.tb_n_insns)(tb.cast_const());
+    if instruction_count == 0 {
+        abort_live_coverage_callback(CoverageError::EmptyTranslatedBlock);
+    }
+    let instruction_count_u64 = match u64::try_from(instruction_count) {
+        Ok(instruction_count) => instruction_count,
+        Err(_error) => {
+            abort_live_coverage_callback(CoverageError::TranslatedBlockInstructionCountOverflow)
+        }
+    };
+    let guest_pc = (state.apis.tb_vaddr)(tb.cast_const());
+    let block_len = (0..instruction_count).try_fold(0_usize, |length, index| {
+        let insn = (state.apis.tb_get_insn)(tb.cast_const(), index);
+        if insn.is_null() {
+            return Err(CoverageError::NullTranslatedInstruction { index });
+        }
+        length
+            .checked_add((state.apis.insn_size)(insn.cast_const()))
+            .ok_or(CoverageError::TranslatedBlockLengthOverflow)
+    });
+    let block_len = match block_len.and_then(|length| {
+        u32::try_from(length).map_err(|_error| CoverageError::TranslatedBlockLengthOverflow)
+    }) {
+        Ok(block_len) if block_len != 0 => block_len,
+        Ok(block_len) => {
+            abort_live_coverage_callback(CoverageError::InvalidBlockLength { block_len })
+        }
+        Err(error) => abort_live_coverage_callback(error),
+    };
+
+    let mut metadata = Box::new(LiveCoverageBlock {
+        state: std::ptr::from_mut(state),
+        instruction_count: instruction_count_u64,
+        guest_pc,
+        block_len,
+    });
+    let userdata = std::ptr::from_mut(metadata.as_mut()).cast::<c_void>();
+    state.translated_blocks.push(metadata);
+    (state.apis.register_tb_exec_cb)(
+        tb,
+        Some(live_coverage_tb_exec),
+        QEMU_PLUGIN_CB_NO_REGS,
+        userdata,
+    );
+}
+
+extern "C" fn live_coverage_tb_exec(vcpu_index: c_uint, userdata: *mut c_void) {
+    if userdata.is_null() {
+        abort_live_coverage_callback(CoverageError::NullExecutionUserdata);
+    }
+    // SAFETY: `live_coverage_tb_translate` registers only pointers to boxed
+    // `LiveCoverageBlock` values retained until QEMU first destroys every
+    // dynamic callback that can refer to them. QEMU invokes this callback with
+    // that exact userdata.
+    let block = unsafe { &*userdata.cast::<LiveCoverageBlock>() };
+    if block.state.is_null() || LIVE_COVERAGE_STATE.load(Ordering::Acquire) != block.state {
+        return;
+    }
+    // SAFETY: translation metadata points back to the same pinned owner and
+    // the validated execution model serializes translation and execution.
+    let state = unsafe { &mut *block.state };
+    // QEMU 10 emits the standard TB execution callback after `gen_tb_start`
+    // subtracts the full TB reservation. The helper observes
+    // `committed + budget - remaining` without committing it, then subtracts
+    // this TB's instruction count to recover the exact entry boundary.
+    let mut current_icount = 0_u64;
+    let status = (state.apis.icount_at_tb_entry)(
+        block.instruction_count,
+        std::ptr::from_mut(&mut current_icount),
+    );
+    if status != 0 {
+        abort_live_coverage_callback(CoverageError::TbEntryIcountUnavailable {
+            instruction_count: block.instruction_count,
+            status,
+        });
+    }
+    let event =
+        CoverageBlockEvent::new(current_icount, vcpu_index, block.guest_pc, block.block_len);
+    let callback = state.callback;
+    let LiveCoverageInner { map, sink, .. } = state;
+    if let Err(error) = callback.record_basic_block(map, sink, event) {
+        abort_live_coverage_callback(error);
+    }
+}
+
+extern "C" fn live_coverage_flush(plugin_id: QemuPluginId) {
+    let state = LIVE_COVERAGE_STATE.load(Ordering::Acquire);
+    if state.is_null() {
+        return;
+    }
+    // SAFETY: QEMU 10's `plugins/core.c:qemu_plugin_flush_cb` removes and resets
+    // the dynamic-callback array table before `QEMU_PLUGIN_EV_FLUSH`, while
+    // `accel/tcg/tb-maint.c:tb_flush` runs the operation in a serial context or
+    // dispatches it through `async_safe_run_on_cpu`. Consequently no generated
+    // code can retain the userdata freed here, and the validated execution
+    // model prevents concurrent access to the owner.
+    let state = unsafe { &mut *state };
+    if state.plugin_id != plugin_id {
+        abort_live_coverage_callback(CoverageError::PluginIdMismatch {
+            expected: state.plugin_id,
+            actual: plugin_id,
+        });
+    }
+    state.translated_blocks.clear();
+}
+
+fn abort_live_coverage_callback(error: CoverageError) -> ! {
+    // Callback failures are fatal invariants. Do not format, allocate, lock, or
+    // perform diagnostic I/O on this FFI path, and never unwind into QEMU.
+    let _error = error;
+    std::process::abort();
+}
+
 /// One executed guest basic-block event from QEMU's TCG-exec callback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoverageBlockEvent {
@@ -435,15 +885,23 @@ pub trait CoverageSink {
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("coverage sink failed: {message}")]
 pub struct CoverageSinkError {
-    message: String,
+    message: Cow<'static, str>,
 }
 
 impl CoverageSinkError {
     /// Builds a coverage-sink error.
     #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
+    pub fn new(message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             message: message.into(),
+        }
+    }
+
+    /// Builds a borrowed coverage-sink error without allocating.
+    #[must_use]
+    pub const fn from_static(message: &'static str) -> Self {
+        Self {
+            message: Cow::Borrowed(message),
         }
     }
 
@@ -463,6 +921,69 @@ pub enum CoverageError {
         /// The missing capability label.
         symbol: &'static str,
     },
+    /// A live callback owner was already registered for this QEMU plugin ID.
+    #[error("live coverage callbacks are already registered for plugin {plugin_id}")]
+    LiveRegistrationAlreadyExists {
+        /// Conflicting QEMU plugin identifier.
+        plugin_id: QemuPluginId,
+    },
+    /// The process-lifetime owner no longer matched the published callback state.
+    #[error("live coverage callback ownership was lost before teardown")]
+    LiveRegistrationOwnershipLost,
+    /// The shared-memory queue does not match the fixed coverage map.
+    #[error("coverage map has {map_entries} entries but plugin-to-host queue has {queue_capacity}")]
+    CoverageQueueCapacityMismatch {
+        /// Registration-time coverage-map cardinality.
+        map_entries: usize,
+        /// Mapped plugin-to-host queue capacity.
+        queue_capacity: usize,
+    },
+    /// The setup mapping could not expose the assigned VM's coverage queue.
+    #[error("mapped plugin-to-host coverage queue is invalid")]
+    MappedCoverageQueue {
+        /// Mapped shared-memory access failure.
+        #[source]
+        source: crucible_shmem::MappedSetupRegionAccessError,
+    },
+    /// QEMU invoked the translation callback without a translated-block handle.
+    #[error("QEMU invoked coverage translation with a null block handle")]
+    NullTranslatedBlock,
+    /// QEMU invoked the singleton translation callback for another plugin ID.
+    #[error("coverage callback plugin ID mismatch: expected {expected}, got {actual}")]
+    PluginIdMismatch {
+        /// Registered QEMU plugin identifier.
+        expected: QemuPluginId,
+        /// Identifier supplied to the callback.
+        actual: QemuPluginId,
+    },
+    /// QEMU supplied a translation block without instructions.
+    #[error("QEMU supplied an empty translated block")]
+    EmptyTranslatedBlock,
+    /// QEMU returned a null instruction handle for a valid block index.
+    #[error("QEMU returned a null translated instruction at index {index}")]
+    NullTranslatedInstruction {
+        /// Index whose instruction handle was null.
+        index: usize,
+    },
+    /// Summing translated instruction sizes overflowed the protocol block length.
+    #[error("translated block length does not fit the coverage protocol")]
+    TranslatedBlockLengthOverflow,
+    /// QEMU's translated-block instruction count did not fit the public ABI.
+    #[error("translated block instruction count does not fit the coverage ABI")]
+    TranslatedBlockInstructionCountOverflow,
+    /// QEMU could not provide an exact, non-mutating TB-entry icount.
+    #[error(
+        "exact TB-entry icount is unavailable for {instruction_count} instructions (status {status})"
+    )]
+    TbEntryIcountUnavailable {
+        /// Instruction count supplied when the execution callback was registered.
+        instruction_count: u64,
+        /// Status returned by QEMU's exact-entry helper.
+        status: c_int,
+    },
+    /// QEMU invoked a block execution callback without its registered metadata.
+    #[error("QEMU invoked coverage execution with null userdata")]
+    NullExecutionUserdata,
     /// The fixed coverage map size is invalid.
     #[error("coverage map entries {entries} must be a nonzero power of two")]
     InvalidMapEntries {
@@ -539,9 +1060,30 @@ fn validate_map_entries(entries: usize) -> Result<(), CoverageError> {
 mod tests {
     use super::*;
 
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
+
+    static CALLBACK_MODEL_TRANSLATION_PLUGIN_ID: AtomicU64 = AtomicU64::new(0);
+    static CALLBACK_MODEL_TRANSLATION_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+    static CALLBACK_MODEL_EXEC_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+    static CALLBACK_MODEL_FLUSH_PLUGIN_ID: AtomicU64 = AtomicU64::new(0);
+    static CALLBACK_MODEL_FLUSH_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+    static CALLBACK_MODEL_EXEC_FLAGS: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static CALLBACK_MODEL_EXEC_USERDATA: AtomicUsize = AtomicUsize::new(0);
+    static CALLBACK_MODEL_ICOUNT: AtomicU64 = AtomicU64::new(0);
+    static CALLBACK_MODEL_TB_INSNS: AtomicU64 = AtomicU64::new(0);
+
+    struct TestInsn {
+        size: usize,
+    }
+
+    struct TestTb {
+        guest_pc: u64,
+        insns: Vec<TestInsn>,
+    }
+
     fn coverage_callback(coverage: PluginCoverage) -> CoverageCallback {
         let plan = coverage
-            .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb))
+            .registration_plan(test_coverage_capabilities())
             .unwrap_or_else(|error| panic!("enabled coverage should register: {error}"));
         plan.require_callback()
             .unwrap_or_else(|error| panic!("enabled coverage should expose callback: {error}"))
@@ -566,17 +1108,17 @@ mod tests {
     }
 
     #[test]
-    fn coverage_registration_on_mode_requires_tcg_exec_capability() {
+    fn coverage_registration_on_mode_requires_basic_block_callback_capability() {
         let coverage = PluginCoverage::new(PluginSwitch::On, 1024);
 
         assert_eq!(
             coverage.registration_plan(CoverageCapabilities::none()),
             Err(CoverageError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL,
+                symbol: QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL,
             })
         );
         let plan = coverage
-            .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb))
+            .registration_plan(test_coverage_capabilities())
             .unwrap_or_else(|error| panic!("coverage registration should succeed: {error}"));
         assert_eq!(
             plan,
@@ -594,12 +1136,12 @@ mod tests {
     fn coverage_registration_rejects_invalid_enabled_map_size() {
         assert_eq!(
             PluginCoverage::new(PluginSwitch::On, 0)
-                .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb)),
+                .registration_plan(test_coverage_capabilities()),
             Err(CoverageError::InvalidMapEntries { entries: 0 })
         );
         assert_eq!(
             PluginCoverage::new(PluginSwitch::On, 1000)
-                .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb)),
+                .registration_plan(test_coverage_capabilities()),
             Err(CoverageError::InvalidMapEntries { entries: 1000 })
         );
     }
@@ -652,10 +1194,55 @@ mod tests {
     }
 
     #[test]
+    fn live_coverage_sink_retains_each_novelty_without_silent_eviction() {
+        let header = RingHeader::new();
+        let mut entries = vec![CoverageEntry::default(); 1];
+        let mut sink = callback_model_shmem_producer(&header, &mut entries);
+        let repeat = CoverageObservation {
+            current_icount: 1,
+            vcpu_index: 0,
+            guest_pc: 0x1000,
+            block_len: 4,
+            map_index: 0,
+            was_new: false,
+        };
+        sink.record_coverage(&repeat)
+            .unwrap_or_else(|error| panic!("repeat coverage should be coalesced: {error}"));
+        assert!(
+            sink.drain()
+                .unwrap_or_else(|error| panic!("repeat coverage drain should succeed: {error}"))
+                .is_empty()
+        );
+
+        let first = CoverageObservation {
+            was_new: true,
+            ..repeat
+        };
+        sink.record_coverage(&first)
+            .unwrap_or_else(|error| panic!("novel coverage should be retained: {error}"));
+        let second = CoverageObservation {
+            current_icount: 2,
+            guest_pc: 0x2000,
+            map_index: 1,
+            ..first
+        };
+        let error = match sink.record_coverage(&second) {
+            Ok(()) => panic!("full novelty sink must fail instead of evicting"),
+            Err(error) => error,
+        };
+        assert!(error.message().contains("full"));
+        assert_eq!(
+            sink.drain()
+                .unwrap_or_else(|error| panic!("novel coverage should drain: {error}")),
+            vec![first]
+        );
+    }
+
+    #[test]
     fn coverage_disabled_plan_cannot_build_hot_callback_and_does_not_touch_map() {
         let coverage = PluginCoverage::new(PluginSwitch::Off, 16);
         let plan = coverage
-            .registration_plan(CoverageCapabilities::tcg_exec(test_register_tcg_exec_cb))
+            .registration_plan(test_coverage_capabilities())
             .unwrap_or_else(|error| panic!("off-mode coverage should not validate caps: {error}"));
         let map = CoverageMap::new(16)
             .unwrap_or_else(|error| panic!("coverage map should build: {error}"));
@@ -691,9 +1278,61 @@ mod tests {
         assert!(sink.observations.is_empty());
     }
 
-    extern "C" fn test_register_tcg_exec_cb(
-        _callback: Option<crate::QemuTcgExecCbFn>,
-        _userdata: *mut std::os::raw::c_void,
+    fn test_coverage_capabilities() -> CoverageCapabilities {
+        CoverageCapabilities::basic_blocks(QemuBasicBlockCoverageApis::new(
+            test_register_tb_trans_cb,
+            test_register_tb_exec_cb,
+            test_tb_vaddr,
+            test_tb_n_insns,
+            test_tb_get_insn,
+            test_insn_size,
+            test_icount_at_tb_entry,
+            test_register_flush_cb,
+        ))
+    }
+
+    extern "C" fn test_register_tb_trans_cb(
+        _plugin_id: QemuPluginId,
+        _callback: Option<QemuVcpuTbTransCbFn>,
+    ) {
+    }
+
+    extern "C" fn test_register_tb_exec_cb(
+        _tb: *mut QemuPluginTb,
+        _callback: Option<QemuVcpuTbExecCbFn>,
+        _flags: c_int,
+        _userdata: *mut c_void,
+    ) {
+    }
+
+    extern "C" fn test_tb_vaddr(_tb: *const QemuPluginTb) -> u64 {
+        0
+    }
+
+    extern "C" fn test_tb_n_insns(_tb: *const QemuPluginTb) -> usize {
+        0
+    }
+
+    extern "C" fn test_tb_get_insn(_tb: *const QemuPluginTb, _index: usize) -> *mut QemuPluginInsn {
+        std::ptr::null_mut()
+    }
+
+    extern "C" fn test_insn_size(_insn: *const QemuPluginInsn) -> usize {
+        0
+    }
+
+    extern "C" fn test_icount_at_tb_entry(_tb_insns: u64, entry_icount: *mut u64) -> c_int {
+        if entry_icount.is_null() {
+            return -1;
+        }
+        // SAFETY: this test stub just validated the caller-provided output.
+        unsafe { *entry_icount = 0 };
+        0
+    }
+
+    extern "C" fn test_register_flush_cb(
+        _plugin_id: QemuPluginId,
+        _callback: QemuPluginSimpleCbFn,
     ) {
     }
 
@@ -746,6 +1385,293 @@ mod tests {
             fold_basic_block_pc(0x4010, 1024) as u64
         );
         assert!(protocol_observation.was_new());
+    }
+
+    #[test]
+    fn coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount() {
+        let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
+        CALLBACK_MODEL_TRANSLATION_CALLBACK.store(0, Ordering::SeqCst);
+        CALLBACK_MODEL_EXEC_CALLBACK.store(0, Ordering::SeqCst);
+        CALLBACK_MODEL_FLUSH_CALLBACK.store(0, Ordering::SeqCst);
+        CALLBACK_MODEL_ICOUNT.store(91, Ordering::SeqCst);
+        CALLBACK_MODEL_TB_INSNS.store(0, Ordering::SeqCst);
+        let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 16));
+        let coverage_header = RingHeader::new();
+        let mut coverage_entries = vec![CoverageEntry::default(); 16];
+        let output = callback_model_shmem_producer(&coverage_header, &mut coverage_entries);
+        let mut owner =
+            LiveBasicBlockCoverage::register(0xC0DE, callback, callback_model_apis(), output)
+                .unwrap_or_else(|error| panic!("coverage callback model should register: {error}"));
+        let plugin_id = CALLBACK_MODEL_TRANSLATION_PLUGIN_ID.load(Ordering::SeqCst);
+        let translate_address = CALLBACK_MODEL_TRANSLATION_CALLBACK.swap(0, Ordering::SeqCst);
+        assert_ne!(translate_address, 0);
+        let translate =
+            // SAFETY: the registration stub stores exactly one
+            // `QemuVcpuTbTransCbFn` address in this integer slot.
+            unsafe { std::mem::transmute::<usize, QemuVcpuTbTransCbFn>(translate_address) };
+        assert_eq!(plugin_id, 0xC0DE);
+        assert_eq!(
+            CALLBACK_MODEL_FLUSH_PLUGIN_ID.load(Ordering::SeqCst),
+            0xC0DE
+        );
+        assert_ne!(CALLBACK_MODEL_FLUSH_CALLBACK.load(Ordering::SeqCst), 0);
+
+        let mut tb = TestTb {
+            guest_pc: 0x4010,
+            insns: vec![
+                TestInsn { size: 2 },
+                TestInsn { size: 3 },
+                TestInsn { size: 5 },
+            ],
+        };
+        translate(
+            plugin_id,
+            std::ptr::from_mut(&mut tb).cast::<QemuPluginTb>(),
+        );
+        let execute_address = CALLBACK_MODEL_EXEC_CALLBACK.swap(0, Ordering::SeqCst);
+        assert_ne!(execute_address, 0);
+        // SAFETY: the execution-registration stub stores exactly one
+        // `QemuVcpuTbExecCbFn` address in this integer slot.
+        let execute = unsafe { std::mem::transmute::<usize, QemuVcpuTbExecCbFn>(execute_address) };
+        let flags = CALLBACK_MODEL_EXEC_FLAGS.load(Ordering::SeqCst) as c_int;
+        let userdata = CALLBACK_MODEL_EXEC_USERDATA.load(Ordering::SeqCst);
+        assert_eq!(flags, QEMU_PLUGIN_CB_NO_REGS);
+        assert_eq!(owner.translated_block_count(), 1);
+
+        execute(2, userdata as *mut c_void);
+        assert_eq!(CALLBACK_MODEL_TB_INSNS.load(Ordering::SeqCst), 3);
+        let observations = owner.drain_observations();
+        assert_eq!(observations.len(), 1);
+        let observation = observations[0];
+        assert_eq!(observation.current_icount(), 91);
+        assert_eq!(observation.vcpu_index(), 2);
+        assert_eq!(observation.guest_pc(), 0x4010);
+        assert_eq!(observation.block_len(), 10);
+        assert_eq!(observation.map_index(), fold_basic_block_pc(0x4010, 16));
+        assert!(observation.was_new());
+        assert_eq!(owner.map_entries()[fold_basic_block_pc(0x4010, 16)], 1);
+    }
+
+    #[test]
+    fn coverage_flush_reclaims_metadata_before_retranslation() {
+        let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
+        CALLBACK_MODEL_TRANSLATION_CALLBACK.store(0, Ordering::SeqCst);
+        CALLBACK_MODEL_EXEC_CALLBACK.store(0, Ordering::SeqCst);
+        CALLBACK_MODEL_FLUSH_CALLBACK.store(0, Ordering::SeqCst);
+        CALLBACK_MODEL_ICOUNT.store(125, Ordering::SeqCst);
+        let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 16));
+        let coverage_header = RingHeader::new();
+        let mut coverage_entries = vec![CoverageEntry::default(); 16];
+        let output = callback_model_shmem_producer(&coverage_header, &mut coverage_entries);
+        let mut owner =
+            LiveBasicBlockCoverage::register(0xC0DE, callback, callback_model_apis(), output)
+                .unwrap_or_else(|error| panic!("coverage callback model should register: {error}"));
+        let translate_address = CALLBACK_MODEL_TRANSLATION_CALLBACK.load(Ordering::SeqCst);
+        let flush_address = CALLBACK_MODEL_FLUSH_CALLBACK.load(Ordering::SeqCst);
+        assert_ne!(translate_address, 0);
+        assert_ne!(flush_address, 0);
+        // SAFETY: the registration stubs store callbacks with these exact ABI
+        // types in their integer slots.
+        let translate =
+            unsafe { std::mem::transmute::<usize, QemuVcpuTbTransCbFn>(translate_address) };
+        // SAFETY: see the callback registration invariant above.
+        let flush = unsafe { std::mem::transmute::<usize, QemuPluginSimpleCbFn>(flush_address) };
+
+        let mut first_tb = TestTb {
+            guest_pc: 0x5000,
+            insns: vec![TestInsn { size: 4 }],
+        };
+        translate(
+            0xC0DE,
+            std::ptr::from_mut(&mut first_tb).cast::<QemuPluginTb>(),
+        );
+        assert_eq!(owner.translated_block_count(), 1);
+
+        // This models QEMU's documented ordering: generated callbacks have
+        // already been destroyed before the plugin flush callback fires.
+        flush(0xC0DE);
+        assert_eq!(owner.translated_block_count(), 0);
+
+        let mut second_tb = TestTb {
+            guest_pc: 0x6000,
+            insns: vec![TestInsn { size: 2 }, TestInsn { size: 3 }],
+        };
+        translate(
+            0xC0DE,
+            std::ptr::from_mut(&mut second_tb).cast::<QemuPluginTb>(),
+        );
+        assert_eq!(owner.translated_block_count(), 1);
+        let execute_address = CALLBACK_MODEL_EXEC_CALLBACK.load(Ordering::SeqCst);
+        let userdata = CALLBACK_MODEL_EXEC_USERDATA.load(Ordering::SeqCst);
+        assert_ne!(execute_address, 0);
+        // SAFETY: the execution-registration stub stores exactly this callback
+        // ABI, and only the post-flush callback is invoked here.
+        let execute = unsafe { std::mem::transmute::<usize, QemuVcpuTbExecCbFn>(execute_address) };
+        execute(1, userdata as *mut c_void);
+
+        let observations = owner.drain_observations();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].current_icount(), 125);
+        assert_eq!(observations[0].guest_pc(), 0x6000);
+        assert_eq!(observations[0].block_len(), 5);
+    }
+
+    #[test]
+    fn coverage_owner_unpublishes_callbacks_before_state_is_freed_and_can_reinstall() {
+        let _callback_model_guard = crate::runtime::isolate_coverage_callback_model_for_test();
+        CALLBACK_MODEL_TRANSLATION_CALLBACK.store(0, Ordering::SeqCst);
+        CALLBACK_MODEL_FLUSH_CALLBACK.store(0, Ordering::SeqCst);
+        let callback = coverage_callback(PluginCoverage::new(PluginSwitch::On, 16));
+        let first_header = RingHeader::new();
+        let mut first_entries = vec![CoverageEntry::default(); 16];
+        let first_output = callback_model_shmem_producer(&first_header, &mut first_entries);
+        let first_owner =
+            LiveBasicBlockCoverage::register(0xC0DE, callback, callback_model_apis(), first_output)
+                .unwrap_or_else(|error| panic!("first coverage owner should register: {error}"));
+        let translate_address = CALLBACK_MODEL_TRANSLATION_CALLBACK.load(Ordering::SeqCst);
+        let flush_address = CALLBACK_MODEL_FLUSH_CALLBACK.load(Ordering::SeqCst);
+        assert_ne!(translate_address, 0);
+        assert_ne!(flush_address, 0);
+        drop(first_owner);
+        assert!(LIVE_COVERAGE_STATE.load(Ordering::Acquire).is_null());
+
+        // QEMU removes dynamic TB callbacks before releasing the process owner.
+        // Plugin-wide translation/flush callbacks can still race with teardown;
+        // both observe the null published owner and return without dereference.
+        let mut stale_tb = TestTb {
+            guest_pc: 0x7000,
+            insns: vec![TestInsn { size: 4 }],
+        };
+        let stale_translate =
+            // SAFETY: the registration stubs stored callbacks with these exact ABI
+            // types and the nonnull TB handle remains live for this invocation.
+            unsafe { std::mem::transmute::<usize, QemuVcpuTbTransCbFn>(translate_address) };
+        let stale_flush =
+            // SAFETY: the flush callback address has the declared simple-callback ABI.
+            unsafe { std::mem::transmute::<usize, QemuPluginSimpleCbFn>(flush_address) };
+        stale_translate(
+            0xC0DE,
+            std::ptr::from_mut(&mut stale_tb).cast::<QemuPluginTb>(),
+        );
+        stale_flush(0xC0DE);
+
+        let second_header = RingHeader::new();
+        let mut second_entries = vec![CoverageEntry::default(); 16];
+        let second_output = callback_model_shmem_producer(&second_header, &mut second_entries);
+        let second_owner = LiveBasicBlockCoverage::register(
+            0xC0DE,
+            callback,
+            callback_model_apis(),
+            second_output,
+        )
+        .unwrap_or_else(|error| panic!("coverage owner should reinstall after teardown: {error}"));
+        drop(second_owner);
+        assert!(LIVE_COVERAGE_STATE.load(Ordering::Acquire).is_null());
+    }
+
+    fn callback_model_apis() -> QemuBasicBlockCoverageApis {
+        QemuBasicBlockCoverageApis::new(
+            callback_model_register_tb_trans_cb,
+            callback_model_register_tb_exec_cb,
+            callback_model_tb_vaddr,
+            callback_model_tb_n_insns,
+            callback_model_tb_get_insn,
+            callback_model_insn_size,
+            callback_model_icount_at_tb_entry,
+            callback_model_register_flush_cb,
+        )
+    }
+
+    fn callback_model_shmem_producer(
+        header: &RingHeader,
+        entries: &mut [CoverageEntry],
+    ) -> LiveCoverageShmemProducer {
+        // SAFETY: every caller declares the header and backing vector before the
+        // producer/owner and retains both until that owner is dropped.
+        unsafe {
+            LiveCoverageShmemProducer::from_raw_parts(
+                std::ptr::from_ref(header),
+                entries.as_mut_ptr(),
+                entries.len(),
+            )
+        }
+    }
+
+    extern "C" fn callback_model_register_tb_trans_cb(
+        plugin_id: QemuPluginId,
+        callback: Option<QemuVcpuTbTransCbFn>,
+    ) {
+        CALLBACK_MODEL_TRANSLATION_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
+        CALLBACK_MODEL_TRANSLATION_CALLBACK.store(
+            callback.map_or(0, |callback| callback as usize),
+            Ordering::SeqCst,
+        );
+    }
+
+    extern "C" fn callback_model_register_tb_exec_cb(
+        _tb: *mut QemuPluginTb,
+        callback: Option<QemuVcpuTbExecCbFn>,
+        flags: c_int,
+        userdata: *mut c_void,
+    ) {
+        CALLBACK_MODEL_EXEC_CALLBACK.store(
+            callback.map_or(0, |callback| callback as usize),
+            Ordering::SeqCst,
+        );
+        CALLBACK_MODEL_EXEC_FLAGS.store(flags as usize, Ordering::SeqCst);
+        CALLBACK_MODEL_EXEC_USERDATA.store(userdata as usize, Ordering::SeqCst);
+    }
+
+    extern "C" fn callback_model_register_flush_cb(
+        plugin_id: QemuPluginId,
+        callback: QemuPluginSimpleCbFn,
+    ) {
+        CALLBACK_MODEL_FLUSH_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
+        CALLBACK_MODEL_FLUSH_CALLBACK.store(callback as usize, Ordering::SeqCst);
+    }
+
+    extern "C" fn callback_model_tb_vaddr(tb: *const QemuPluginTb) -> u64 {
+        // SAFETY: the callback ABI model passes a `TestTb` cast to the opaque
+        // QEMU handle for the duration of the callback.
+        unsafe { &*tb.cast::<TestTb>() }.guest_pc
+    }
+
+    extern "C" fn callback_model_tb_n_insns(tb: *const QemuPluginTb) -> usize {
+        // SAFETY: the callback ABI model passes a `TestTb` cast to the opaque
+        // QEMU handle for the duration of the callback.
+        unsafe { &*tb.cast::<TestTb>() }.insns.len()
+    }
+
+    extern "C" fn callback_model_tb_get_insn(
+        tb: *const QemuPluginTb,
+        index: usize,
+    ) -> *mut QemuPluginInsn {
+        // SAFETY: the callback ABI model passes a valid `TestTb`; `index` comes
+        // from the length returned by `callback_model_tb_n_insns`.
+        let tb = unsafe { &*tb.cast::<TestTb>() };
+        tb.insns.get(index).map_or(std::ptr::null_mut(), |insn| {
+            std::ptr::from_ref(insn).cast_mut().cast::<QemuPluginInsn>()
+        })
+    }
+
+    extern "C" fn callback_model_insn_size(insn: *const QemuPluginInsn) -> usize {
+        // SAFETY: `callback_model_tb_get_insn` returns only pointers to valid
+        // `TestInsn` values retained by the test translation block.
+        unsafe { &*insn.cast::<TestInsn>() }.size
+    }
+
+    extern "C" fn callback_model_icount_at_tb_entry(
+        tb_insns: u64,
+        entry_icount: *mut u64,
+    ) -> c_int {
+        if entry_icount.is_null() {
+            return -1;
+        }
+        CALLBACK_MODEL_TB_INSNS.store(tb_insns, Ordering::SeqCst);
+        // SAFETY: this callback model just validated the output pointer supplied
+        // by the production callback body.
+        unsafe { *entry_icount = CALLBACK_MODEL_ICOUNT.load(Ordering::SeqCst) };
+        0
     }
 
     #[derive(Default)]

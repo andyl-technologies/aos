@@ -176,6 +176,99 @@ impl PluginNetworkTx {
         })
     }
 
+    /// Enqueues a deterministic batch at one completion-boundary icount.
+    ///
+    /// The complete batch is validated against payload, sequence, and ring
+    /// capacity limits before the first shared-memory write. This is used for
+    /// frames emitted by timer bottom halves while a queued idle advance is
+    /// pending: none become visible to the router until QEMU validates the
+    /// exact completed target.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::enqueue_guest_frame`]. Capacity and
+    /// sequence exhaustion are checked for the whole batch before any enqueue.
+    pub fn enqueue_guest_frame_batch(
+        &self,
+        ring: &mut NetworkTxRing<'_>,
+        emit_icount: u64,
+        payloads: &[Vec<u8>],
+    ) -> Result<Vec<NetworkTxEnqueue>, NetworkTxError> {
+        self.check_ring(ring)?;
+        let capacity = validated_batch_capacity(ring, payloads.len())?;
+        let first_seq = self.next_seq.get();
+        let batch_len =
+            u32::try_from(payloads.len()).map_err(|_error| NetworkTxError::SequenceOverflow {
+                ring_index: self.ring_index,
+                next_seq: first_seq,
+            })?;
+        let final_next_seq =
+            first_seq
+                .checked_add(batch_len)
+                .ok_or(NetworkTxError::SequenceOverflow {
+                    ring_index: self.ring_index,
+                    next_seq: first_seq,
+                })?;
+
+        let mut frames = Vec::with_capacity(payloads.len());
+        for (offset, payload) in payloads.iter().enumerate() {
+            let offset =
+                u32::try_from(offset).map_err(|_error| NetworkTxError::SequenceOverflow {
+                    ring_index: self.ring_index,
+                    next_seq: first_seq,
+                })?;
+            let seq = first_seq
+                .checked_add(offset)
+                .ok_or(NetworkTxError::SequenceOverflow {
+                    ring_index: self.ring_index,
+                    next_seq: first_seq,
+                })?;
+            let frame = FrameEntry::new(emit_icount, self.src_slot, seq, payload).map_err(
+                |crucible_shmem::FrameEntryError::PayloadLengthExceedsCapacity {
+                     len,
+                     capacity,
+                 }| NetworkTxError::PayloadTooLarge { len, capacity },
+            )?;
+            frames.push((seq, frame, payload.len()));
+        }
+
+        let mut enqueues = Vec::with_capacity(frames.len());
+        for (seq, frame, payload_len) in frames {
+            PluginShmemOrdering::enqueue_outbound_frame(ring.header, ring.entries, &frame)
+                .map_err(|source| NetworkTxError::RingOperation {
+                    ring_index: self.ring_index,
+                    source,
+                })?;
+            enqueues.push(NetworkTxEnqueue {
+                ring_index: self.ring_index,
+                emit_icount,
+                src_slot: self.src_slot,
+                dst_slot: self.dst_slot,
+                seq,
+                payload_len,
+                next_seq: seq + 1,
+            });
+        }
+        debug_assert_eq!(capacity, ring.entries.len() as u64);
+        self.next_seq.set(final_next_seq);
+        Ok(enqueues)
+    }
+
+    /// Checks whether a pending completion batch still fits without mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetworkTxError::WrongOutboundRing`] for another ring or
+    /// [`NetworkTxError::RingOperation`] for invalid/full ring state.
+    pub fn preflight_guest_frame_batch(
+        &self,
+        ring: &NetworkTxRing<'_>,
+        batch_len: usize,
+    ) -> Result<(), NetworkTxError> {
+        self.check_ring(ring)?;
+        validated_batch_capacity(ring, batch_len).map(|_capacity| ())
+    }
+
     fn check_ring(&self, ring: &NetworkTxRing<'_>) -> Result<(), NetworkTxError> {
         if ring.ring_index != self.ring_index
             || ring.src_slot != self.src_slot
@@ -193,6 +286,41 @@ impl PluginNetworkTx {
             Ok(())
         }
     }
+}
+
+fn validated_batch_capacity(
+    ring: &NetworkTxRing<'_>,
+    batch_len: usize,
+) -> Result<u64, NetworkTxError> {
+    let capacity = ring.entries.len();
+    if !capacity.is_power_of_two() {
+        return Err(NetworkTxError::RingOperation {
+            ring_index: ring.ring_index,
+            source: SpscRingError::InvalidCapacity { capacity },
+        });
+    }
+    let capacity = capacity as u64;
+    let read_idx = ring.header.read_index();
+    let write_idx = ring.header.write_index();
+    let live = write_idx.wrapping_sub(read_idx);
+    if live > capacity {
+        return Err(NetworkTxError::RingOperation {
+            ring_index: ring.ring_index,
+            source: SpscRingError::CorruptIndices {
+                read_idx,
+                write_idx,
+                capacity,
+            },
+        });
+    }
+    let batch_len = u64::try_from(batch_len).unwrap_or(u64::MAX);
+    if batch_len > capacity - live {
+        return Err(NetworkTxError::RingOperation {
+            ring_index: ring.ring_index,
+            source: SpscRingError::QueueFull { capacity },
+        });
+    }
+    Ok(capacity)
 }
 
 /// Handles one guest network-TX callback using registration-fixed state.
@@ -572,6 +700,35 @@ mod tests {
         assert_eq!(tx.next_seq(), 2);
         assert_frame(&ring.entries[0], 88, 2, 0, b"timer-frame");
         assert_frame(&ring.entries[1], 89, 2, 1, b"guest-frame");
+    }
+
+    #[test]
+    fn network_tx_completion_batch_is_all_preflighted_before_visibility() {
+        let header = RingHeader::new();
+        let mut entries = empty_entries(2);
+        let tx = PluginNetworkTx::new(2, 12);
+        let mut ring = ring_view(12, 2, &header, &mut entries);
+        let too_large = vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()];
+
+        assert!(matches!(
+            tx.enqueue_guest_frame_batch(&mut ring, 90, &too_large),
+            Err(NetworkTxError::RingOperation {
+                source: SpscRingError::QueueFull { capacity: 2 },
+                ..
+            })
+        ));
+        assert_eq!(header.write_index(), 0);
+        assert_eq!(tx.next_seq(), 0);
+
+        let payloads = vec![b"one".to_vec(), b"two".to_vec()];
+        let enqueues = tx
+            .enqueue_guest_frame_batch(&mut ring, 90, &payloads)
+            .unwrap_or_else(|error| panic!("completion batch should enqueue: {error}"));
+        assert_eq!(enqueues.len(), 2);
+        assert_eq!(header.write_index(), 2);
+        assert_eq!(tx.next_seq(), 2);
+        assert_frame(&ring.entries[0], 90, 2, 0, b"one");
+        assert_frame(&ring.entries[1], 90, 2, 1, b"two");
     }
 
     fn emit_from_idle_handler(

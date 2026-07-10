@@ -1,9 +1,6 @@
 //! Fail-stop sequencing for QEMU plugin registration.
 //!
-//! The QEMU FFI entry point will eventually call into this module around each
-//! side-effecting operation. Keeping the ordering state machine safe and
-//! testable here ensures the registration path remains:
-//!
+//! The QEMU FFI entry point uses it around each side effect to preserve:
 //! ```text
 //! parse -> handshake -> time control -> setup -> callbacks -> ready ack -> boot barrier -> guest code
 //! ```
@@ -23,9 +20,9 @@ use crate::{
     CoverageCallback, CoverageCapabilities, CoverageError, CoverageRegistrationPlan,
     ExactDeadlineError, ExactDeadlineReader, PluginArgs, PluginArgsParseError, PluginBootBarrier,
     PluginControlHandshake, PluginCoverage, PluginHandshakeError, PluginReadySetupAck,
-    PluginRegistrationStep, QemuAdvanceVirtualTimeDirectFn, QemuClockDeadlineFn,
-    QemuRegisterWakeFdFn, SynchronousIdleAdvance, SynchronousIdleAdvanceError,
-    TimeControlRegistrationPlan, crucible_qemu_plugin_coverage_exec_cb, perform_plugin_handshake,
+    PluginRegistrationStep, QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QueuedIdleAdvance,
+    QueuedIdleAdvanceError, RequiredOwnedCallbacksRegistered, TimeControlRegistrationPlan,
+    perform_plugin_handshake,
 };
 #[cfg(unix)]
 use crate::{
@@ -35,11 +32,13 @@ use crate::{
     send_ready_setup_ack as plugin_send_ready_setup_ack,
 };
 
+mod live;
+
 /// QEMU capabilities captured at callback registration.
 #[derive(Clone, Debug)]
 pub struct PluginCallbackCapabilities {
     exact_deadline_reader: ExactDeadlineReader,
-    synchronous_idle_advance: SynchronousIdleAdvance,
+    queued_idle_advance: QueuedIdleAdvance,
     coverage_registration_plan: CoverageRegistrationPlan,
     coverage_callback: Option<CoverageCallback>,
 }
@@ -49,13 +48,13 @@ impl PluginCallbackCapabilities {
     #[must_use]
     const fn new(
         exact_deadline_reader: ExactDeadlineReader,
-        synchronous_idle_advance: SynchronousIdleAdvance,
+        queued_idle_advance: QueuedIdleAdvance,
         coverage_registration_plan: CoverageRegistrationPlan,
         coverage_callback: Option<CoverageCallback>,
     ) -> Self {
         Self {
             exact_deadline_reader,
-            synchronous_idle_advance,
+            queued_idle_advance,
             coverage_registration_plan,
             coverage_callback,
         }
@@ -67,10 +66,10 @@ impl PluginCallbackCapabilities {
         &self.exact_deadline_reader
     }
 
-    /// Returns the synchronous direct-advance handle required by the idle callback.
+    /// Returns the queued idle-advance handle required by the idle callback.
     #[must_use]
-    pub const fn synchronous_idle_advance(&self) -> &SynchronousIdleAdvance {
-        &self.synchronous_idle_advance
+    pub const fn queued_idle_advance(&self) -> &QueuedIdleAdvance {
+        &self.queued_idle_advance
     }
 
     /// Returns the registration-time coverage decision.
@@ -205,15 +204,13 @@ impl PluginRegistrationSequence {
         writer: &mut W,
         setup: ReceivedSetup,
         handshake: PluginControlHandshake,
-        register_wake_fd: QemuRegisterWakeFdFn,
     ) -> Result<PluginSetupCompletion, PluginRegistrationSequenceError>
     where
         W: Write,
     {
         self.ensure_next_step(PluginRegistrationStep::MapSharedMemory)?;
-        let completion =
-            plugin_prepare_setup_completion(writer, setup, handshake, register_wake_fd)
-                .map_err(|source| self.fail_setup_preparation(source))?;
+        let completion = plugin_prepare_setup_completion(writer, setup, handshake)
+            .map_err(|source| self.fail_setup_preparation(source))?;
         self.record_step_unchecked(PluginRegistrationStep::MapSharedMemory)?;
         self.record_step_unchecked(PluginRegistrationStep::ArmWakeFd)?;
         Ok(completion)
@@ -229,14 +226,14 @@ impl PluginRegistrationSequence {
     pub fn send_ready_setup_ack<W>(
         &mut self,
         writer: &mut W,
-        completion: &PluginSetupCompletion,
         callbacks: &PluginCallbackCapabilities,
+        owned_callbacks: &RequiredOwnedCallbacksRegistered,
     ) -> Result<PluginReadySetupAck, PluginRegistrationSequenceError>
     where
         W: Write,
     {
         self.ensure_next_step(PluginRegistrationStep::SendSetupAck)?;
-        let setup_ack = plugin_send_ready_setup_ack(writer, completion, callbacks)
+        let setup_ack = plugin_send_ready_setup_ack(writer, callbacks, owned_callbacks)
             .map_err(|source| self.fail_ready_setup_ack(source))?;
         self.record_step_unchecked(PluginRegistrationStep::SendSetupAck)?;
         Ok(setup_ack)
@@ -282,7 +279,7 @@ impl PluginRegistrationSequence {
         if step == PluginRegistrationStep::RegisterCallbacks {
             return Err(self.fail_step(
                 PluginRegistrationStep::RegisterCallbacks,
-                "exact deadline and synchronous idle-advance capabilities, plus optional coverage callback planning, must be required before registering callbacks",
+                "exact deadline and queued idle-advance capabilities, plus optional coverage callback planning, must be required before registering callbacks",
             ));
         }
         if step == PluginRegistrationStep::SendSetupAck {
@@ -347,21 +344,57 @@ impl PluginRegistrationSequence {
     ///
     /// Returns [`PluginRegistrationSequenceError`] when
     /// `qemu_plugin_clock_deadline_ns` or
-    /// `qemu_plugin_advance_virtual_time_direct` is unavailable, when
-    /// `coverage=on` but QEMU's TCG-exec callback export is unavailable, when
+    /// `qemu_plugin_advance_time_ns` is unavailable, when
+    /// `coverage=on` but QEMU's stock TB translation/execution APIs are unavailable, when
     /// the registration order is wrong, or when registration has already
     /// failed.
     pub fn register_callbacks_with_exact_deadline(
         &mut self,
+        plugin_id: crate::QemuPluginId,
+        args: &PluginArgs,
+        owned_callbacks: &mut RequiredOwnedCallbacksRegistered,
+        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+        advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+        coverage_capabilities: CoverageCapabilities,
+    ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
+        self.register_callbacks_with_exact_deadline_inner(
+            Some((plugin_id, owned_callbacks)),
+            args,
+            clock_deadline_ns,
+            advance_time_ns,
+            coverage_capabilities,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_callbacks_for_test(
+        &mut self,
         args: &PluginArgs,
         clock_deadline_ns: Option<QemuClockDeadlineFn>,
-        advance_virtual_time_direct: Option<QemuAdvanceVirtualTimeDirectFn>,
+        advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+        coverage_capabilities: CoverageCapabilities,
+    ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
+        self.register_callbacks_with_exact_deadline_inner(
+            None,
+            args,
+            clock_deadline_ns,
+            advance_time_ns,
+            coverage_capabilities,
+        )
+    }
+
+    fn register_callbacks_with_exact_deadline_inner(
+        &mut self,
+        live_owner: Option<(crate::QemuPluginId, &mut RequiredOwnedCallbacksRegistered)>,
+        args: &PluginArgs,
+        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+        advance_time_ns: Option<QemuAdvanceTimeNsFn>,
         coverage_capabilities: CoverageCapabilities,
     ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
         let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
             .map_err(|source| self.fail_exact_deadline_capability(source))?;
-        let synchronous_idle_advance = SynchronousIdleAdvance::require(advance_virtual_time_direct)
-            .map_err(|source| self.fail_synchronous_idle_advance_capability(source))?;
+        let queued_idle_advance = QueuedIdleAdvance::require(advance_time_ns)
+            .map_err(|source| self.fail_queued_idle_advance_capability(source))?;
         let coverage_registration_plan = PluginCoverage::with_default_map(args.coverage())
             .registration_plan(coverage_capabilities)
             .map_err(|source| self.fail_coverage_capability(source))?;
@@ -371,12 +404,17 @@ impl PluginRegistrationSequence {
                 let callback = coverage_registration_plan
                     .require_callback()
                     .map_err(|source| self.fail_coverage_capability(source))?;
-                if let Some(register_tcg_exec_cb) = coverage_capabilities.register_tcg_exec_cb_fn()
-                {
-                    register_tcg_exec_cb(
-                        Some(crucible_qemu_plugin_coverage_exec_cb),
-                        std::ptr::null_mut(),
-                    );
+                if let Some((plugin_id, owned_callbacks)) = live_owner {
+                    let Some(apis) = coverage_capabilities.basic_block_apis() else {
+                        return Err(self.fail_coverage_capability(
+                            CoverageError::CapabilityUnavailable {
+                                symbol: crate::QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL,
+                            },
+                        ));
+                    };
+                    owned_callbacks
+                        .register_basic_block_coverage(plugin_id, args.slot(), callback, apis)
+                        .map_err(|source| self.fail_coverage_capability(source))?;
                 }
                 Some(callback)
             }
@@ -384,7 +422,7 @@ impl PluginRegistrationSequence {
         self.record_step_unchecked(PluginRegistrationStep::RegisterCallbacks)?;
         Ok(PluginCallbackCapabilities::new(
             exact_deadline_reader,
-            synchronous_idle_advance,
+            queued_idle_advance,
             coverage_registration_plan,
             coverage_callback,
         ))
@@ -559,13 +597,13 @@ impl PluginRegistrationSequence {
         )
     }
 
-    fn fail_synchronous_idle_advance_capability(
+    fn fail_queued_idle_advance_capability(
         &mut self,
-        source: SynchronousIdleAdvanceError,
+        source: QueuedIdleAdvanceError,
     ) -> PluginRegistrationSequenceError {
         self.fail_step(
             PluginRegistrationStep::RegisterCallbacks,
-            format!("synchronous idle advance failed: {source}"),
+            format!("queued idle advance failed: {source}"),
         )
     }
 
@@ -605,7 +643,9 @@ const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegis
         PluginSetupError::ArmWakeFd { .. } | PluginSetupError::RegisterWakeFd { .. } => {
             PluginRegistrationStep::ArmWakeFd
         }
-        PluginSetupError::SendReadyAck { .. } => PluginRegistrationStep::SendSetupAck,
+        PluginSetupError::WakeFdNotRegistered | PluginSetupError::SendReadyAck { .. } => {
+            PluginRegistrationStep::SendSetupAck
+        }
         PluginSetupError::SendFailureAck { stage, .. } => match stage {
             PluginSetupFailureStage::ReceiveSetup => PluginRegistrationStep::ReceiveSetup,
             PluginSetupFailureStage::MapRegion
@@ -614,6 +654,7 @@ const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegis
             PluginSetupFailureStage::ArmWakeFd | PluginSetupFailureStage::RegisterWakeFd => {
                 PluginRegistrationStep::ArmWakeFd
             }
+            PluginSetupFailureStage::RegisterCallbacks => PluginRegistrationStep::RegisterCallbacks,
         },
     }
 }
@@ -695,7 +736,6 @@ mod tests {
     use super::*;
 
     use std::io::{Cursor, Read, Write};
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
     use crucible_shmem::{ABI_VERSION, KIND_VM, NodeSlot, authorize_advance_ceiling};
@@ -959,7 +999,7 @@ mod tests {
         record_steps_through_wake_fd(&mut sequence);
         let args = registration_args("simfd=3,slot=0");
         sequence
-            .register_callbacks_with_exact_deadline(
+            .register_callbacks_for_test(
                 &args,
                 Some(registration_test_deadline),
                 Some(registration_test_direct_advance),
@@ -999,7 +1039,7 @@ mod tests {
         };
         assert_eq!(failure.step(), PluginRegistrationStep::RegisterCallbacks);
         assert!(failure.diagnostic().contains("exact deadline"));
-        assert!(failure.diagnostic().contains("synchronous idle-advance"));
+        assert!(failure.diagnostic().contains("queued idle-advance"));
         assert_eq!(
             sequence.record_step(PluginRegistrationStep::SendSetupAck),
             Err(PluginRegistrationSequenceError::AfterFailure {
@@ -1027,7 +1067,7 @@ mod tests {
         record_steps_through_wake_fd(&mut sequence);
         let args = registration_args("simfd=3,slot=0");
 
-        let capabilities = match sequence.register_callbacks_with_exact_deadline(
+        let capabilities = match sequence.register_callbacks_for_test(
             &args,
             Some(registration_test_deadline),
             Some(registration_test_direct_advance),
@@ -1067,7 +1107,7 @@ mod tests {
         let args = registration_args("simfd=3,slot=0");
 
         let error = sequence
-            .register_callbacks_with_exact_deadline(
+            .register_callbacks_for_test(
                 &args,
                 None,
                 Some(registration_test_direct_advance),
@@ -1095,20 +1135,20 @@ mod tests {
     }
 
     #[test]
-    fn registration_order_fails_loud_when_synchronous_idle_advance_missing() {
+    fn registration_order_fails_loud_when_queued_idle_advance_missing() {
         let mut sequence = PluginRegistrationSequence::new();
         record_steps_through_wake_fd(&mut sequence);
         let args = registration_args("simfd=3,slot=0");
 
         let error = sequence
-            .register_callbacks_with_exact_deadline(
+            .register_callbacks_for_test(
                 &args,
                 Some(registration_test_deadline),
                 None,
                 CoverageCapabilities::none(),
             )
             .err()
-            .unwrap_or_else(|| panic!("missing synchronous idle advance should fail"));
+            .unwrap_or_else(|| panic!("missing queued idle advance should fail"));
         let PluginRegistrationSequenceError::StepFailed { failure } = error else {
             panic!("expected registration step failure, got {error:?}");
         };
@@ -1117,7 +1157,7 @@ mod tests {
         assert!(
             failure
                 .diagnostic()
-                .contains(crate::QEMU_PLUGIN_ADVANCE_VIRTUAL_TIME_DIRECT_SYMBOL)
+                .contains(crate::QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL)
         );
         assert_eq!(
             sequence.record_step(PluginRegistrationStep::SendSetupAck),
@@ -1135,7 +1175,7 @@ mod tests {
         let args = registration_args("simfd=3,slot=0,coverage=off");
 
         let capabilities = sequence
-            .register_callbacks_with_exact_deadline(
+            .register_callbacks_for_test(
                 &args,
                 Some(registration_test_deadline),
                 Some(registration_test_direct_advance),
@@ -1156,13 +1196,13 @@ mod tests {
     }
 
     #[test]
-    fn registration_coverage_on_requires_tcg_exec_callback_capability() {
+    fn registration_coverage_on_requires_basic_block_callback_capability() {
         let mut sequence = PluginRegistrationSequence::new();
         record_steps_through_wake_fd(&mut sequence);
         let args = registration_args("simfd=3,slot=0,coverage=on");
 
         let error = sequence
-            .register_callbacks_with_exact_deadline(
+            .register_callbacks_for_test(
                 &args,
                 Some(registration_test_deadline),
                 Some(registration_test_direct_advance),
@@ -1178,7 +1218,7 @@ mod tests {
         assert!(
             failure
                 .diagnostic()
-                .contains(crate::QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL)
+                .contains(crate::QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL)
         );
         assert_eq!(
             sequence.record_step(PluginRegistrationStep::SendSetupAck),
@@ -1190,18 +1230,16 @@ mod tests {
     }
 
     #[test]
-    fn registration_coverage_on_installs_tcg_exec_callback_token() {
+    fn registration_coverage_on_builds_basic_block_callback_token() {
         let mut sequence = PluginRegistrationSequence::new();
         record_steps_through_wake_fd(&mut sequence);
         let args = registration_args("simfd=3,slot=0,coverage=on");
-        TCG_EXEC_REGISTRATION_CALLS.store(0, Ordering::SeqCst);
-
         let capabilities = sequence
-            .register_callbacks_with_exact_deadline(
+            .register_callbacks_for_test(
                 &args,
                 Some(registration_test_deadline),
                 Some(registration_test_direct_advance),
-                CoverageCapabilities::tcg_exec(registration_test_register_tcg_exec_cb),
+                registration_test_coverage_capabilities(),
             )
             .unwrap_or_else(|error| panic!("coverage on should register TCG exec: {error}"));
 
@@ -1222,7 +1260,6 @@ mod tests {
                 .map(CoverageCallback::map_entries),
             Some(crate::DEFAULT_COVERAGE_MAP_ENTRIES)
         );
-        assert_eq!(TCG_EXEC_REGISTRATION_CALLS.load(Ordering::SeqCst), 1);
     }
 
     fn record_steps_through_wake_fd(sequence: &mut PluginRegistrationSequence) {
@@ -1245,7 +1282,7 @@ mod tests {
     ) -> PluginReadySetupAck {
         record_steps_through_wake_fd(sequence);
         let args = registration_args("simfd=3,slot=0");
-        if let Err(error) = sequence.register_callbacks_with_exact_deadline(
+        if let Err(error) = sequence.register_callbacks_for_test(
             &args,
             Some(registration_test_deadline),
             Some(registration_test_direct_advance),
@@ -1273,17 +1310,72 @@ mod tests {
         777
     }
 
-    extern "C" fn registration_test_direct_advance(_target_virtual_ns: i64) {}
+    extern "C" fn registration_test_direct_advance(_target_virtual_ns: i64) -> std::os::raw::c_int {
+        0
+    }
 
-    static TCG_EXEC_REGISTRATION_CALLS: AtomicUsize = AtomicUsize::new(0);
+    fn registration_test_coverage_capabilities() -> CoverageCapabilities {
+        CoverageCapabilities::basic_blocks(crate::QemuBasicBlockCoverageApis::new(
+            registration_test_register_tb_trans_cb,
+            registration_test_register_tb_exec_cb,
+            registration_test_tb_vaddr,
+            registration_test_tb_n_insns,
+            registration_test_tb_get_insn,
+            registration_test_insn_size,
+            registration_test_icount_at_tb_entry,
+            registration_test_register_flush_cb,
+        ))
+    }
 
-    extern "C" fn registration_test_register_tcg_exec_cb(
-        callback: Option<crate::QemuTcgExecCbFn>,
-        userdata: *mut std::os::raw::c_void,
+    extern "C" fn registration_test_register_tb_trans_cb(
+        _plugin_id: crate::QemuPluginId,
+        _callback: Option<crate::QemuVcpuTbTransCbFn>,
     ) {
-        assert!(callback.is_some());
-        assert!(userdata.is_null());
-        TCG_EXEC_REGISTRATION_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    extern "C" fn registration_test_register_tb_exec_cb(
+        _tb: *mut crate::QemuPluginTb,
+        _callback: Option<crate::QemuVcpuTbExecCbFn>,
+        _flags: std::os::raw::c_int,
+        _userdata: *mut std::os::raw::c_void,
+    ) {
+    }
+
+    extern "C" fn registration_test_tb_vaddr(_tb: *const crate::QemuPluginTb) -> u64 {
+        0
+    }
+
+    extern "C" fn registration_test_tb_n_insns(_tb: *const crate::QemuPluginTb) -> usize {
+        0
+    }
+
+    extern "C" fn registration_test_tb_get_insn(
+        _tb: *const crate::QemuPluginTb,
+        _index: usize,
+    ) -> *mut crate::QemuPluginInsn {
+        std::ptr::null_mut()
+    }
+
+    extern "C" fn registration_test_insn_size(_insn: *const crate::QemuPluginInsn) -> usize {
+        0
+    }
+
+    extern "C" fn registration_test_icount_at_tb_entry(
+        _tb_insns: u64,
+        entry_icount: *mut u64,
+    ) -> std::os::raw::c_int {
+        if entry_icount.is_null() {
+            return -1;
+        }
+        // SAFETY: this test stub just validated the output pointer.
+        unsafe { *entry_icount = 0 };
+        0
+    }
+
+    extern "C" fn registration_test_register_flush_cb(
+        _plugin_id: crate::QemuPluginId,
+        _callback: crate::QemuPluginSimpleCbFn,
+    ) {
     }
 
     fn registration_args(raw: &str) -> PluginArgs {
