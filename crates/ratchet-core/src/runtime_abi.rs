@@ -15,9 +15,13 @@ use thiserror::Error;
 use crate::builtins::BUILTINS;
 
 mod stack_map;
+mod value_layout;
 
 use stack_map::{
     RUNTIME_JIT_STACK_MAP_ENTER_CALL_SIGNATURE, RUNTIME_JIT_STACK_MAP_EXIT_CALL_SIGNATURE,
+};
+pub use value_layout::{
+    RuntimeAbiValueLayout, candidate_c_runtime_abi_value_layout, runtime_abi_value_layout,
 };
 
 /// The stable prefix for builtin runtime symbol names.
@@ -155,8 +159,6 @@ pub const fn runtime_helper_symbols() -> &'static [RuntimeHelperSymbol] {
 
 /// The maximum builtin arity covered by the frozen primop ABI metadata today.
 pub const MAX_RUNTIME_PRIMOP_ABI_ARITY: usize = 3;
-
-const RUNTIME_ABI_VALUE_LAYOUT: RuntimeAbiValueLayout = RuntimeAbiValueLayout::new(16, 2, 8);
 
 const THUNK_CALL_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
@@ -549,11 +551,6 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_UPVAL_GET_CALL_SIGNATURE,
 ];
 
-/// Returns the by-value runtime value layout assumed by native call metadata.
-pub const fn runtime_abi_value_layout() -> RuntimeAbiValueLayout {
-    RUNTIME_ABI_VALUE_LAYOUT
-}
-
 /// Returns the frozen runtime-call signature for compiled thunk bodies.
 pub const fn runtime_thunk_call_signature() -> RuntimeCallSignature {
     RUNTIME_THUNK_CALL_SIGNATURE
@@ -656,39 +653,6 @@ pub enum RuntimeCallableKind {
 pub enum RuntimeAbiCallingConvention {
     /// The platform C ABI reserved for future Cranelift and exported wrappers.
     ExternC,
-}
-
-/// The by-value layout assumed for the runtime `Value` ABI.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RuntimeAbiValueLayout {
-    size_bytes: usize,
-    register_words: usize,
-    register_word_bytes: usize,
-}
-
-impl RuntimeAbiValueLayout {
-    const fn new(size_bytes: usize, register_words: usize, register_word_bytes: usize) -> Self {
-        Self {
-            size_bytes,
-            register_words,
-            register_word_bytes,
-        }
-    }
-
-    /// Returns the by-value `Value` size expected at native call boundaries.
-    pub const fn size_bytes(self) -> usize {
-        self.size_bytes
-    }
-
-    /// Returns the number of machine words used to pass a `Value` in registers.
-    pub const fn register_words(self) -> usize {
-        self.register_words
-    }
-
-    /// Returns the byte width of each register-passed `Value` word.
-    pub const fn register_word_bytes(self) -> usize {
-        self.register_word_bytes
-    }
 }
 
 /// One parameter in a frozen runtime-call signature.

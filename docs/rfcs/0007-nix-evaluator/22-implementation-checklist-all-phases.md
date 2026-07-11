@@ -11883,6 +11883,25 @@ it ships).**
       A three-sample changed-tree confirmation kept output parity and identical
       cache counters across all nine mutations, but its wall times were
       discarded because co-measured stock-Nix medians moved by up to 153%.
+- [x] Current Candidate-C native ABI layout precursor: core metadata exposes
+      the unchanged active 16-byte/two-word layout separately from an inactive
+      8-byte/one-word Candidate-C descriptor. The JIT CLIF signature adapter
+      accepts only self-consistent one- or two-`i64` value layouts and directly
+      proves a Candidate-C lambda parameter and result lower to one word. The
+      public path still selects the active descriptor, generated code and
+      runtime-FFI wrappers remain two-word, and the active `Value` remains 16
+      bytes. The frozen oversized core ABI file shrank by 36 lines; the new
+      module is 71 lines and the JIT ABI file stays below 800. The isolated
+      battery passed 371 value, 355 core, 262 JIT, 3,040 active oracle (34
+      ignored), 80 active runtime-FFI tests (26 ignored) plus its two
+      integrations, cache 112, aos-nix 336, and the 38-test language aggregate.
+      It was byte-green across all 16 package legs, compute x9 under JIT, wide
+      serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and 648 strict-JSON
+      expressions in all four modes. The known pristine `node_trace_log_compat`
+      malformed-record assertion remained unrelated red. Three balanced
+      release pairs against pushed `e2dcfc477` moved native medians
+      0.529 -> 0.440 s cold and 0.413 -> 0.427 s warm; retained-RSS medians were
+      slightly lower in both temperatures despite one 7.13 s stock-Nix outlier.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay

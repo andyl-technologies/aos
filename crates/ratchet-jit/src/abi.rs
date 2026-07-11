@@ -24,9 +24,8 @@ use ratchet_core::{
 use ratchet_value::value::Value;
 use target_lexicon::{CallingConvention, Triple};
 
-const RUNTIME_VALUE_CLIF_SIZE_BYTES: usize = 16;
-const RUNTIME_VALUE_CLIF_WORDS: usize = 2;
 const RUNTIME_VALUE_CLIF_WORD_BYTES: usize = 8;
+const RUNTIME_VALUE_CLIF_MAX_WORDS: usize = 2;
 
 /// Opaque pointer to evaluator runtime context state passed to compiled code.
 ///
@@ -129,15 +128,14 @@ pub fn jit_runtime_abi_inventory() -> JitRuntimeAbiInventory {
 ///
 /// Runtime context, environment, code, and heap-object pointer parameters become
 /// host-pointer-sized CLIF parameters. Each by-value runtime `Value` parameter
-/// or result is expanded to the frozen two-word `i64, i64` ABI shape recorded by
-/// `ratchet-core`; fixed `u32`-sized fields lower to `i32`, and `usize` lowers
-/// to the host pointer type.
+/// or result is expanded to the active one- or two-word `i64` ABI shape recorded
+/// by `ratchet-core`; fixed `u32`-sized fields lower to `i32`, and `usize`
+/// lowers to the host pointer type.
 ///
 /// # Errors
 ///
 /// Returns [`JitClifSignatureError::UnsupportedRuntimeValueLayout`] if the
-/// frozen runtime `Value` ABI is no longer the two 8-byte words that this CLIF
-/// lowering slice pins. Returns
+/// frozen runtime `Value` ABI is not one or two 8-byte words. Returns
 /// [`JitClifSignatureError::UnsupportedHostPointerWidth`] if the host target is
 /// neither 32-bit nor 64-bit. Returns
 /// [`JitClifSignatureError::UnsupportedHostCallingConvention`] if the host target
@@ -146,18 +144,31 @@ pub fn jit_runtime_abi_inventory() -> JitRuntimeAbiInventory {
 pub fn clif_signature_for_runtime_call(
     signature: RuntimeCallSignature,
 ) -> Result<Signature, JitClifSignatureError> {
-    validate_runtime_value_layout(runtime_abi_value_layout())?;
+    clif_signature_for_runtime_call_with_layout(signature, runtime_abi_value_layout())
+}
+
+fn clif_signature_for_runtime_call_with_layout(
+    signature: RuntimeCallSignature,
+    value_layout: RuntimeAbiValueLayout,
+) -> Result<Signature, JitClifSignatureError> {
+    validate_runtime_value_layout(value_layout)?;
 
     let mut clif_signature = Signature::new(clif_call_conv_for(signature.convention())?);
     let pointer_type = host_pointer_type()?;
 
     for parameter in signature.parameters() {
-        append_parameter(&mut clif_signature.params, *parameter, pointer_type);
+        append_parameter(
+            &mut clif_signature.params,
+            *parameter,
+            pointer_type,
+            value_layout,
+        );
     }
     append_return_kind(
         &mut clif_signature.returns,
         signature.return_kind(),
         pointer_type,
+        value_layout,
     );
 
     Ok(clif_signature)
@@ -166,7 +177,7 @@ pub fn clif_signature_for_runtime_call(
 /// A failure while converting frozen runtime-call metadata to CLIF signatures.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JitClifSignatureError {
-    /// The runtime `Value` ABI is not the two 8-byte words this adapter lowers.
+    /// The runtime `Value` ABI is not one or two 8-byte words.
     UnsupportedRuntimeValueLayout {
         /// The observed by-value `Value` size in bytes.
         size_bytes: usize,
@@ -197,7 +208,8 @@ impl fmt::Display for JitClifSignatureError {
             } => write!(
                 formatter,
                 "runtime Value ABI layout {size_bytes} bytes, {register_words} register words, \
-                 {register_word_bytes} bytes per word is not lowerable as two Cranelift i64 words"
+                 {register_word_bytes} bytes per word is not lowerable as one or two Cranelift \
+                 i64 words"
             ),
             Self::UnsupportedHostPointerWidth { pointer_width_bits } => write!(
                 formatter,
@@ -256,6 +268,7 @@ fn append_parameter(
     params: &mut Vec<AbiParam>,
     parameter: RuntimeAbiParameter,
     pointer_type: Type,
+    value_layout: RuntimeAbiValueLayout,
 ) {
     match parameter.kind() {
         RuntimeAbiParameterKind::RuntimeContext
@@ -271,7 +284,7 @@ fn append_parameter(
         | RuntimeAbiParameterKind::RawPointer => {
             params.push(AbiParam::new(pointer_type));
         }
-        RuntimeAbiParameterKind::Value => append_value_words(params),
+        RuntimeAbiParameterKind::Value => append_value_words(params, value_layout),
         RuntimeAbiParameterKind::ShapeId
         | RuntimeAbiParameterKind::SymbolId
         | RuntimeAbiParameterKind::InlineCacheSiteId
@@ -285,9 +298,10 @@ fn append_return_kind(
     returns: &mut Vec<AbiParam>,
     return_kind: RuntimeAbiReturnKind,
     pointer_type: Type,
+    value_layout: RuntimeAbiValueLayout,
 ) {
     match return_kind {
-        RuntimeAbiReturnKind::Value => append_value_words(returns),
+        RuntimeAbiReturnKind::Value => append_value_words(returns, value_layout),
         RuntimeAbiReturnKind::Unit | RuntimeAbiReturnKind::Diverges => {}
         RuntimeAbiReturnKind::ThunkPointer
         | RuntimeAbiReturnKind::LambdaPointer
@@ -298,8 +312,8 @@ fn append_return_kind(
     }
 }
 
-fn append_value_words(params: &mut Vec<AbiParam>) {
-    for _ in 0..RUNTIME_VALUE_CLIF_WORDS {
+fn append_value_words(params: &mut Vec<AbiParam>, layout: RuntimeAbiValueLayout) {
+    for _ in 0..layout.register_words() {
         params.push(AbiParam::new(types::I64));
     }
 }
@@ -331,9 +345,12 @@ impl From<RuntimeAbiValueLayout> for ObservedRuntimeValueLayout {
 fn validate_observed_value_layout(
     layout: ObservedRuntimeValueLayout,
 ) -> Result<(), JitClifSignatureError> {
-    if layout.size_bytes == RUNTIME_VALUE_CLIF_SIZE_BYTES
-        && layout.register_words == RUNTIME_VALUE_CLIF_WORDS
+    if (1..=RUNTIME_VALUE_CLIF_MAX_WORDS).contains(&layout.register_words)
         && layout.register_word_bytes == RUNTIME_VALUE_CLIF_WORD_BYTES
+        && layout
+            .register_words
+            .checked_mul(layout.register_word_bytes)
+            == Some(layout.size_bytes)
     {
         return Ok(());
     }
@@ -351,8 +368,8 @@ mod tests {
 
     use cranelift_codegen::ir::{Type, types};
     use ratchet_core::{
-        RuntimeCallableKind, RuntimeHelperRole, runtime_abi_value_layout,
-        runtime_helper_call_signature, runtime_helper_call_signatures,
+        RuntimeCallableKind, RuntimeHelperRole, candidate_c_runtime_abi_value_layout,
+        runtime_abi_value_layout, runtime_helper_call_signature, runtime_helper_call_signatures,
         runtime_lambda_call_signature, runtime_primop_call_signature,
         runtime_primop_call_signatures, runtime_thunk_call_signature,
     };
@@ -695,28 +712,47 @@ mod tests {
     }
 
     #[test]
-    fn runtime_value_layout_guard_pins_two_i64_abi_words() {
+    fn runtime_value_layout_guard_accepts_baseline_and_candidate_c_words() {
         let layout = runtime_abi_value_layout();
 
-        assert_eq!(layout.size_bytes(), RUNTIME_VALUE_CLIF_SIZE_BYTES);
-        assert_eq!(layout.register_words(), RUNTIME_VALUE_CLIF_WORDS);
+        assert_eq!(layout.size_bytes(), 16);
+        assert_eq!(layout.register_words(), 2);
         assert_eq!(layout.register_word_bytes(), RUNTIME_VALUE_CLIF_WORD_BYTES);
         validate_runtime_value_layout(layout).expect("current runtime value layout is supported");
 
+        let candidate = candidate_c_runtime_abi_value_layout();
+        validate_runtime_value_layout(candidate)
+            .expect("Candidate-C one-word runtime value layout is supported");
+
         let error = validate_observed_value_layout(ObservedRuntimeValueLayout {
-            size_bytes: 8,
+            size_bytes: 16,
             register_words: 1,
             register_word_bytes: 8,
         })
-        .expect_err("single-word values must fail the two-word CLIF layout guard");
+        .expect_err("word count and byte size must agree");
         assert_eq!(
             error,
             JitClifSignatureError::UnsupportedRuntimeValueLayout {
-                size_bytes: 8,
+                size_bytes: 16,
                 register_words: 1,
                 register_word_bytes: 8,
             }
         );
+    }
+
+    #[test]
+    fn candidate_c_layout_lowers_value_parameters_and_results_to_one_i64() {
+        let layout = candidate_c_runtime_abi_value_layout();
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+        let signature =
+            clif_signature_for_runtime_call_with_layout(runtime_lambda_call_signature(), layout)
+                .expect("Candidate-C lambda signature lowers");
+
+        assert_eq!(
+            param_types(&signature),
+            vec![pointer_type, pointer_type, types::I64]
+        );
+        assert_eq!(return_types(&signature), vec![types::I64]);
     }
 
     fn param_types(signature: &Signature) -> Vec<Type> {

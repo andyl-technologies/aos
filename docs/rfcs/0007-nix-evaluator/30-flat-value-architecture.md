@@ -1626,6 +1626,29 @@ value word (Candidates B and C) remains open and separately gated:**
       confirmation preserved output parity and identical cache counters in all
       nine mutation scenarios; its wall times were not used because co-measured
       stock-Nix medians moved by as much as 153% under host contention.
+- [x] **Candidate-C native ABI layout prerequisite:** `ratchet-core` now owns
+      separate active and Candidate-C by-value layout descriptors. The active
+      descriptor remains 16 bytes as two 8-byte register words; the inactive
+      Candidate-C descriptor is 8 bytes as one 8-byte register word. The JIT
+      CLIF signature adapter accepts only self-consistent one- or two-word
+      layouts and has a direct witness that a Candidate-C lambda argument and
+      result each lower to one `i64`. The public lowering path still selects the
+      active descriptor, all existing code generation remains two-word, and no
+      runtime-FFI wrapper or active `Value` changed. The oversized core ABI file
+      shrank by 36 lines; the new layout module is 71 lines and the JIT ABI file
+      remains below 800. The isolated landing battery passed 371 value, 355
+      core, 262 JIT, 3,040 active oracle (34 ignored), 80 active runtime-FFI
+      tests (26 ignored) plus its 2- and 6-test integrations, cache 112, aos-nix
+      336, and the 38-test language aggregate. It was byte-green across all 16
+      package legs, compute x9 under JIT, wide-eval in
+      serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and all 648 strict
+      JSON expressions in those four modes. The known pristine
+      `node_trace_log_compat` malformed-record assertion remained unrelated red.
+      Three balanced release A/B pairs against pushed `e2dcfc477` measured
+      native medians of 0.529 -> 0.440 s cold (-16.9%) and
+      0.413 -> 0.427 s warm (+3.4%); retained-RSS medians were slightly lower
+      in both temperatures. One co-measured stock-Nix sample took 7.13 s, so
+      order was reversed and medians, not that outlier, were used.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
