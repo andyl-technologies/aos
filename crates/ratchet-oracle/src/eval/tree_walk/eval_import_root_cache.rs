@@ -3,6 +3,18 @@
 use super::*;
 
 impl TreeWalk {
+    fn pure_import_root_payload_is_scalar(value: Value) -> bool {
+        matches!(
+            value.tag(),
+            ValueTag::Int
+                | ValueTag::Float
+                | ValueTag::Bool
+                | ValueTag::Null
+                | ValueTag::String
+                | ValueTag::Path
+        )
+    }
+
     fn lookup_pure_import_root_cache(
         &mut self,
         subject: Option<ForceCacheSubject>,
@@ -40,18 +52,21 @@ impl TreeWalk {
     pub(super) fn eval_import_root_with_cache(
         &mut self,
         root: IrId,
+        path: &[u8],
     ) -> Result<Value, TreeWalkError> {
-        if !self.force_cache_active {
+        if !self.force_cache_active || self.text_store.contains_key(path) {
             return self.eval_node(root);
         }
 
         let body = EvalNodeRef::new(self.current_module, root);
         let subject = self.pure_import_root_cache_subject(body);
-        let memoization_decision = subject
+        let admitted = subject
             .as_ref()
-            .map(|subject| self.record_force_cache_memoization_demand(subject))
-            .unwrap_or(MemoizationDecision::Admit);
-        let admitted = subject.is_some() && memoization_decision == MemoizationDecision::Admit;
+            .is_some_and(|subject| self.force_cache_has_prior_persistent_demand(subject));
+        if admitted && let Some(subject) = &subject {
+            let decision = self.record_force_cache_memoization_demand(subject);
+            debug_assert_eq!(decision, MemoizationDecision::Admit);
+        }
         if admitted && let Some(value) = self.lookup_pure_import_root_cache(subject.clone()) {
             return Ok(value);
         }
@@ -59,7 +74,13 @@ impl TreeWalk {
         let thunks_forced_before = self.stats.thunks_forced;
         let trace_cursor = admitted.then(|| self.impure_input_trace_cursor());
         let value = self.eval_node(root)?;
+        if !Self::pure_import_root_payload_is_scalar(value) {
+            return Ok(value);
+        }
         if let Some(subject) = &subject {
+            if !admitted {
+                self.record_force_cache_memoization_demand(subject);
+            }
             self.record_forced_expression_demand(subject);
         }
         if let Some(trace_cursor) = trace_cursor {
