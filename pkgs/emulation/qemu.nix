@@ -191,6 +191,7 @@
   # patch -p1 < ${./qemu-patches/0032-crucible-det-virtio-ioeventfd.patch}
   # patch -p1 < ${./qemu-patches/0033-crucible-sim-observer.patch}
   # patch -p1 < ${./qemu-patches/0034-crucible-safe-fingerprint-boundary.patch}
+  # patch -p1 < ${./qemu-patches/0035-crucible-process-argv-attestation.patch}
 in
   mkDerivation {
     inherit pname;

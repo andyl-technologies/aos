@@ -495,8 +495,8 @@
         needle = ''"device_state_status"'';
       }
       {
-        label = "per-instruction guest architectural trajectory requirement";
-        needle = ''"trajectory_hash",'';
+        label = "noncryptographic trajectory diagnostic excluded from acceptance";
+        needle = ''projection.get("trajectory_hash").is_none()'';
       }
       {
         label = "guest trajectory begins at the proven post-I/O boundary";

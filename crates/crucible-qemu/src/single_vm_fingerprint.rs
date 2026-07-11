@@ -55,7 +55,7 @@ pub use state_dump::{
 pub use trace::{
     QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
     QemuTraceFingerprintImport, QemuTraceFingerprintImportError, QemuTraceIdentityContract,
-    QemuTraceObservationContract, QemuTraceVcpuContract,
+    QemuTraceObservationContract, QemuTraceProcessArgvContract, QemuTraceVcpuContract,
 };
 pub use types::{
     SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintBisectionError,

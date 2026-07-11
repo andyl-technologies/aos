@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "53b822dd6e9c7f5b70cef6abf038d6d699f907475db6fb515c1649d97fc1156c";
+  patchBranchBundleSha256 = "cf0c6e7956c26bad0c76aa48ebfda70f6b22e9bedc9f646e02ab3a3b2f23479c";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "8a83cb1e9a35c5e2be8b40ed89e616d34154818a";
+  patchBranchHeadCommit = "c676ed7e9cd9808e863765e2369a2b042fa6cd84";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -321,6 +321,15 @@ let
       class = "F";
       enforces = "DET-29,PLUG-35";
       capability = "exact observer budget clamp and BQL-held fingerprint capture boundary";
+    }
+    {
+      file = "0035-crucible-process-argv-attestation.patch";
+      branchCommit = "c676ed7e9cd9808e863765e2369a2b042fa6cd84";
+      branchTree = "c3e014f4bd7099d860afa6e0503cc07ad78d1aee";
+      catalogName = "crucible-process-argv-attestation";
+      class = "F";
+      enforces = "DET-31,QEMU-34";
+      capability = "process-entry raw Unix argc/argv v2 SHA-256 self-attestation exposed to observation plugins";
     }
   ];
   catalogOnlyCapabilities = [

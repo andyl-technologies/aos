@@ -1,17 +1,18 @@
 //! Checks real-QEMU trace import into canonical execution-fingerprint streams.
 
 #![forbid(unsafe_code)]
+#![recursion_limit = "256"]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use std::io::Cursor;
+use std::io::{BufRead, Cursor};
 
 use crucible_qemu::{
     QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
     QemuTraceFingerprintImport, QemuTraceFingerprintImportError, QemuTraceIdentityContract,
-    QemuTraceObservationContract, QemuTraceVcpuContract, SINGLE_VM_FINGERPRINT_DIGEST_BYTES,
-    SingleVmFingerprintMismatchKind, SingleVmFingerprintSampleDifference,
-    compare_single_vm_fingerprint_streams,
+    QemuTraceObservationContract, QemuTraceProcessArgvContract, QemuTraceVcpuContract,
+    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintMismatchKind,
+    SingleVmFingerprintSampleDifference, compare_single_vm_fingerprint_streams,
 };
 use serde_json::{Value, json};
 
@@ -45,9 +46,8 @@ fn canonical_trace_definition_pins_complete_preflight_observation_semantics() {
 
 #[test]
 fn definition_preflight_is_independent_complete_and_instruction_free() {
-    let preflight =
-        QemuTraceDefinitionPreflight::import(Cursor::new(definition_preflight(2).to_string()))
-            .expect("independent definition preflight should import");
+    let preflight = import_preflight(Cursor::new(definition_preflight(2).to_string()))
+        .expect("independent definition preflight should import");
     let definition = QemuTraceFingerprintDefinition::new(4096, preflight.observation())
         .expect("preflight should build the canonical definition");
     assert!(definition.canonical_material().contains("vcpu[1].cpu_id=1"));
@@ -59,33 +59,66 @@ fn definition_preflight_is_independent_complete_and_instruction_free() {
 
     let mut incomplete = definition_preflight(2);
     incomplete["device_state_failures"] = Value::from(1);
-    let error = QemuTraceDefinitionPreflight::import(Cursor::new(incomplete.to_string()))
+    let error = import_preflight(Cursor::new(incomplete.to_string()))
         .expect_err("failed VMState preflight must fail closed");
     assert!(error.to_string().contains("device_state_failures"));
 
     let mut executed = definition_preflight(2);
     executed["observed_icount"] = Value::from(1);
-    let error = QemuTraceDefinitionPreflight::import(Cursor::new(executed.to_string()))
+    let error = import_preflight(Cursor::new(executed.to_string()))
         .expect_err("preflight after guest execution must fail closed");
     assert!(error.to_string().contains("`observed_icount` must be zero"));
 
     let mut running = definition_preflight(2);
     running["observed_non_running"] = Value::Bool(false);
-    let error = QemuTraceDefinitionPreflight::import(Cursor::new(running.to_string()))
+    let error = import_preflight(Cursor::new(running.to_string()))
         .expect_err("a running preflight must fail closed");
     assert!(error.to_string().contains("observed_non_running"));
 
     let mut zero_register_digest = definition_preflight(2);
     zero_register_digest["register_digests"][0] = Value::from("00".repeat(32));
-    let error = QemuTraceDefinitionPreflight::import(Cursor::new(zero_register_digest.to_string()))
+    let error = import_preflight(Cursor::new(zero_register_digest.to_string()))
         .expect_err("zero register digest must fail the preflight");
     assert!(error.to_string().contains("register_digests[0]"));
 
     let mut schema_failure = definition_preflight(2);
     schema_failure["device_state_schema_status"] = Value::from(1);
-    let error = QemuTraceDefinitionPreflight::import(Cursor::new(schema_failure.to_string()))
+    let error = import_preflight(Cursor::new(schema_failure.to_string()))
         .expect_err("failed VMState schema observation must fail closed");
     assert!(error.to_string().contains("device_state_schema_status"));
+
+    let mut missing_encoding = definition_preflight(2);
+    missing_encoding
+        .as_object_mut()
+        .expect("definition fixture is an object")
+        .remove("process_argv_encoding");
+    let error = import_preflight(Cursor::new(missing_encoding.to_string()))
+        .expect_err("missing process argv encoding must fail closed");
+    assert!(error.to_string().contains("process_argv_encoding"));
+
+    let mut wrong_digest = definition_preflight(2);
+    wrong_digest["process_argv_digest"] = Value::String("56".repeat(32));
+    let error = import_preflight(Cursor::new(wrong_digest.to_string()))
+        .expect_err("mismatched process argv digest must fail closed");
+    assert!(error.to_string().contains("process_argv_digest"));
+}
+
+#[test]
+fn observation_import_rejects_process_argv_self_attestation_drift() {
+    for (field, value) in [
+        ("process_argv_attestation_version", Value::from(1)),
+        ("process_argv_argc", Value::from(4)),
+        ("process_argv_raw_bytes", Value::from(13)),
+        ("process_argv_digest", Value::String("56".repeat(32))),
+        ("process_argv_status", Value::from(1)),
+    ] {
+        let mut values = trace_values(2);
+        values[0][field] = value;
+        let error = importer(2)
+            .import(Cursor::new(json_lines(&values)))
+            .expect_err("process argv self-attestation drift must fail closed");
+        assert!(error.to_string().contains(field));
+    }
 }
 
 #[test]
@@ -363,6 +396,7 @@ fn real_qemu_trace_import_accepts_instruction_probe_between_periodic_samples() {
         4096,
         6145,
         observation,
+        process_argv_contract(),
     )
     .expect("instruction probe importer should validate");
     let mut values = vec![sample(4096, 0, 2), sample(6145, 1, 2), terminal(2)];
@@ -395,6 +429,7 @@ fn importer(vcpus: usize) -> QemuTraceFingerprintImport {
         4096,
         8192,
         observation,
+        process_argv_contract(),
     )
     .expect("test import contract should validate")
 }
@@ -419,6 +454,17 @@ fn observation(vcpus: usize) -> QemuTraceObservationContract {
         identity,
     )
     .expect("test observation contract should validate")
+}
+
+fn process_argv_contract() -> QemuTraceProcessArgvContract {
+    QemuTraceProcessArgvContract::new(3, 12, [0x55; 32])
+        .expect("test process argv contract should validate")
+}
+
+fn import_preflight<R: BufRead>(
+    reader: R,
+) -> Result<QemuTraceDefinitionPreflight, QemuTraceFingerprintImportError> {
+    QemuTraceDefinitionPreflight::import(reader, process_argv_contract())
 }
 
 fn trace(vcpus: usize) -> String {
@@ -447,6 +493,12 @@ fn definition_preflight(vcpus: usize) -> Value {
         "launch_definition_digest": "10".repeat(32),
         "qemu_build_digest": "20".repeat(32),
         "trace_plugin_build_digest": "30".repeat(32),
+        "process_argv_attestation_version": 2,
+        "process_argv_encoding": "raw-unix-argv-v2",
+        "process_argv_argc": 3,
+        "process_argv_raw_bytes": 12,
+        "process_argv_digest": "55".repeat(32),
+        "process_argv_status": 0,
         "register_counts": (0..vcpus).map(|_| 24).collect::<Vec<_>>(),
         "register_file_bytes": (0..vcpus).map(|_| 184).collect::<Vec<_>>(),
         "register_digests": (0..vcpus)
@@ -489,6 +541,12 @@ fn sample(retired: u64, current_vcpu: u64, vcpus: usize) -> Value {
         "launch_definition_digest": "10".repeat(32),
         "qemu_build_digest": "20".repeat(32),
         "trace_plugin_build_digest": "30".repeat(32),
+        "process_argv_attestation_version": 2,
+        "process_argv_encoding": "raw-unix-argv-v2",
+        "process_argv_argc": 3,
+        "process_argv_raw_bytes": 12,
+        "process_argv_digest": "55".repeat(32),
+        "process_argv_status": 0,
         "retired": retired,
         "observed_icount": retired,
         "vcpu": current_vcpu,
@@ -535,6 +593,12 @@ fn terminal(vcpus: usize) -> Value {
         "launch_definition_digest": "10".repeat(32),
         "qemu_build_digest": "20".repeat(32),
         "trace_plugin_build_digest": "30".repeat(32),
+        "process_argv_attestation_version": 2,
+        "process_argv_encoding": "raw-unix-argv-v2",
+        "process_argv_argc": 3,
+        "process_argv_raw_bytes": 12,
+        "process_argv_digest": "55".repeat(32),
+        "process_argv_status": 0,
         "retired": 8192,
         "observed_icount": 8192,
         "vcpu": 1,
