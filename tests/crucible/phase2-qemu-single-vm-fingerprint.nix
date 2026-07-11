@@ -196,7 +196,7 @@ in
             grep -q '^real_qemu_comparison=canonical-rust-stream$' "$real_qemu_result"
             grep -q '^real_qemu_gate_hook=run_single_vm_fingerprint_gate$' "$real_qemu_result"
             grep -q '^postprocessing_negative_controls=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology$' "$real_qemu_result"
-            grep -q '^fingerprint_definition=canonical-periodic-and-event-boundary-trace-v4$' "$real_qemu_result"
+            grep -q '^fingerprint_definition=canonical-periodic-and-event-boundary-trace-v6$' "$real_qemu_result"
             grep -q '^independent_observation_contract=true$' "$real_qemu_result"
             grep -q '^full_device_state_complete=true$' "$real_qemu_result"
 

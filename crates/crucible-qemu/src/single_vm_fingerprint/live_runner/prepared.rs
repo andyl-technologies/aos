@@ -155,6 +155,14 @@ fn validate_request(
             Ok(())
         }
         (
+            LiveRunnerLaunchKind::Genesis,
+            LiveObservationMode::ExactTarget {
+                cadence_icount,
+                target_icount: 0,
+                ..
+            },
+        ) if cadence_icount == config.cadence_icount() => Ok(()),
+        (
             LiveRunnerLaunchKind::Observation,
             LiveObservationMode::ObservationHorizon { cadence_icount, .. },
         ) if cadence_icount == config.cadence_icount() => Ok(()),
@@ -356,6 +364,98 @@ mod tests {
             ),
             Err(LivePreparationError::ModeMismatch { .. })
         ));
+        std::fs::remove_dir_all(root.path())?;
+        Ok(())
+    }
+
+    #[test]
+    fn exact_zero_prepares_an_ordinal_bound_non_running_genesis() -> Result<(), Box<dyn Error>> {
+        let config = config()?;
+        let root = artifact_root("prepared-genesis")?;
+        let first = LivePreparedLaunch::new(
+            &config,
+            LiveRunnerLaunchKind::Genesis,
+            &root.create_attempt(1)?,
+            LivePreparationRequest {
+                node: "node-a".to_owned(),
+                mode: LiveObservationMode::ExactTarget {
+                    cadence_icount: config.cadence_icount(),
+                    target_icount: 0,
+                    ordinal: SingleVmFingerprintRunOrdinal::First,
+                },
+                definition_digest: Some([9; 32]),
+            },
+        )?;
+        let second = LivePreparedLaunch::new(
+            &config,
+            LiveRunnerLaunchKind::Genesis,
+            &root.create_attempt(2)?,
+            LivePreparationRequest {
+                node: "node-a".to_owned(),
+                mode: LiveObservationMode::ExactTarget {
+                    cadence_icount: config.cadence_icount(),
+                    target_icount: 0,
+                    ordinal: SingleVmFingerprintRunOrdinal::Second,
+                },
+                definition_digest: Some([9; 32]),
+            },
+        )?;
+
+        for prepared in [&first, &second] {
+            let argv = prepared
+                .spec()
+                .argv()
+                .iter()
+                .map(|argument| argument.to_string_lossy())
+                .collect::<Vec<_>>();
+            assert!(argv.iter().any(|argument| argument == "-S"));
+            assert!(argv.iter().any(|argument| {
+                argument.contains("definition_only=on")
+                    && !argument.contains("stop_at=")
+                    && !argument.contains("cadence=")
+            }));
+            assert_eq!(prepared.kind(), LiveRunnerLaunchKind::Genesis);
+            assert_eq!(
+                prepared.kind().expected_stopped_state(),
+                crate::QmpRunStateKind::Prelaunch
+            );
+        }
+        assert_eq!(
+            first.control().fields().mode.ordinal(),
+            Some(SingleVmFingerprintRunOrdinal::First)
+        );
+        assert_eq!(
+            second.control().fields().mode.ordinal(),
+            Some(SingleVmFingerprintRunOrdinal::Second)
+        );
+        assert_ne!(
+            first.argv_identity().digest(),
+            second.argv_identity().digest()
+        );
+        assert_ne!(first.control().digest(), second.control().digest());
+
+        for (kind, target_icount) in [
+            (LiveRunnerLaunchKind::Observation, 0),
+            (LiveRunnerLaunchKind::Genesis, 1),
+        ] {
+            assert!(matches!(
+                LivePreparedLaunch::new(
+                    &config,
+                    kind,
+                    &root.create_attempt(target_icount as u32 + 10)?,
+                    LivePreparationRequest {
+                        node: "node-a".to_owned(),
+                        mode: LiveObservationMode::ExactTarget {
+                            cadence_icount: config.cadence_icount(),
+                            target_icount,
+                            ordinal: SingleVmFingerprintRunOrdinal::First,
+                        },
+                        definition_digest: Some([9; 32]),
+                    },
+                ),
+                Err(LivePreparationError::ModeMismatch { .. })
+            ));
+        }
         std::fs::remove_dir_all(root.path())?;
         Ok(())
     }

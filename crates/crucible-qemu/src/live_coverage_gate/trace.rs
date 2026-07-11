@@ -200,7 +200,7 @@ fn validate_trace_sample(
     mode: &'static str,
 ) -> Result<(), LoadedQemuCoverageGateError> {
     for (field, expected) in [
-        ("schema", "crucible.qemu.trace-fingerprint.v5"),
+        ("schema", "crucible.qemu.trace-fingerprint.v6"),
         ("process_argv_encoding", "raw-unix-argv-v2"),
         ("rr_cursor_source", "live_instruction"),
     ] {
@@ -630,7 +630,7 @@ mod tests {
     fn valid_trace_sample(config: &LoadedQemuCoverageGateConfig, retired: u64) -> Value {
         let provenance = trace_provenance(config);
         let mut sample = json!({
-            "schema": "crucible.qemu.trace-fingerprint.v5",
+            "schema": "crucible.qemu.trace-fingerprint.v6",
             "retired": retired,
             "vcpu": 0,
             "final": false,

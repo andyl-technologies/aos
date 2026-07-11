@@ -13,7 +13,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define FNV1A64_OFFSET 14695981039346656037ULL
 #define FNV1A64_PRIME 1099511628211ULL
 #define MAX_TRACKED_VCPUS 256U
-#define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v5"
+#define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v6"
 #define ZERO_SHA256_HEX \
   "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -541,13 +541,24 @@ record_definition(void)
 
   const struct register_digest_summary register_digests =
       compute_register_digests();
-  const struct device_state_summary device_state = capture_device_state();
   unsigned char ram_digest[32] = {0};
   uint64_t ram_bytes = 0;
   const int ram_status =
       qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes);
   const uint64_t rr_switch_quantum =
       qemu_plugin_crucible_rr_switch_quantum();
+  const uint64_t rr_current_vcpu =
+      qemu_plugin_crucible_rr_current_vcpu();
+  const uint64_t rr_cursor_position =
+      qemu_plugin_crucible_rr_cursor_position();
+  const bool rr_current_vcpu_present = rr_current_vcpu != UINT64_MAX;
+  const int rr_state_status =
+      rr_switch_quantum == 0 || rr_cursor_position != 0 ||
+              (rr_current_vcpu_present && rr_current_vcpu >= tracked_vcpus)
+          ? -1
+          : 0;
+  /* Terminal VMState serialization may run mutating pre_save hooks. */
+  const struct device_state_summary device_state = capture_device_state();
   const bool device_state_complete =
       device_state.status == 0 && device_state.bytes != 0 &&
       device_state.schema_status == 0 && device_state.sections != 0;
@@ -575,6 +586,10 @@ record_definition(void)
       ",\"observed_non_running\":%s"
       ",\"tracked_vcpus\":%u"
       ",\"rr_switch_quantum\":%" PRIu64
+      ",\"rr_state_status\":%d"
+      ",\"rr_current_vcpu_present\":%s"
+      ",\"rr_current_vcpu\":%" PRIu64
+      ",\"rr_cursor_position\":%" PRIu64
       ",\"launch_definition_digest\":\"%s\""
       ",\"qemu_build_digest\":\"%s\""
       ",\"trace_plugin_build_digest\":\"%s\""
@@ -590,6 +605,10 @@ record_definition(void)
       observed_non_running ? "true" : "false",
       tracked_vcpus,
       rr_switch_quantum,
+      rr_state_status,
+      rr_current_vcpu_present ? "true" : "false",
+      rr_current_vcpu_present ? rr_current_vcpu : 0,
+      rr_cursor_position,
       launch_definition_digest,
       qemu_build_digest,
       trace_plugin_build_digest,

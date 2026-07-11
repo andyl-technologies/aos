@@ -25,6 +25,8 @@ use super::{
 pub enum LiveRunnerLaunchKind {
     /// Captures the independent definition-only preflight without guest execution.
     DefinitionPreflight,
+    /// Captures one ordinal-bound, definition-shaped genesis state without execution.
+    Genesis,
     /// Captures one fixed-cadence run through the configured horizon.
     Observation,
 }
@@ -32,7 +34,7 @@ pub enum LiveRunnerLaunchKind {
 impl LiveRunnerLaunchKind {
     pub(super) const fn expected_stopped_state(self) -> crate::QmpRunStateKind {
         match self {
-            Self::DefinitionPreflight => crate::QmpRunStateKind::Prelaunch,
+            Self::DefinitionPreflight | Self::Genesis => crate::QmpRunStateKind::Prelaunch,
             Self::Observation => crate::QmpRunStateKind::Paused,
         }
     }
@@ -233,7 +235,9 @@ impl LiveRunnerConfig {
             "trace",
             match kind {
                 LiveRunnerLaunchKind::DefinitionPreflight => artifacts.preflight_trace(),
-                LiveRunnerLaunchKind::Observation => artifacts.trace(),
+                LiveRunnerLaunchKind::Genesis | LiveRunnerLaunchKind::Observation => {
+                    artifacts.trace()
+                }
             },
         )?;
 
@@ -246,7 +250,10 @@ impl LiveRunnerConfig {
                 self.immutable.seed_file.display()
             ),
         )?;
-        if kind == LiveRunnerLaunchKind::DefinitionPreflight {
+        if matches!(
+            kind,
+            LiveRunnerLaunchKind::DefinitionPreflight | LiveRunnerLaunchKind::Genesis
+        ) {
             argv.push("-S".to_owned());
         }
         argv.extend([
@@ -275,7 +282,7 @@ impl LiveRunnerConfig {
 
     fn plugin_argument(&self, kind: LiveRunnerLaunchKind, trace: &str) -> String {
         let mode = match kind {
-            LiveRunnerLaunchKind::DefinitionPreflight => {
+            LiveRunnerLaunchKind::DefinitionPreflight | LiveRunnerLaunchKind::Genesis => {
                 format!("out={trace},definition_only=on,vcpus={}", self.vcpus())
             }
             LiveRunnerLaunchKind::Observation => format!(
