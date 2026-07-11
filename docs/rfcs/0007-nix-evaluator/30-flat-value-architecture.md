@@ -99,9 +99,9 @@ measured its ceiling:
 4. **The tier-2 JIT landings** (`8c0680193`..`b307bbb53`): compiled Nix
    beats C++ Nix by 20–25x exactly where the grammar escapes the value
    plumbing — self-recursive arithmetic with zero helper calls, fused
-   fold/genList loops, filter seams. `bench.compute.fib` collapsing from
-   650 MB to 30 MB RSS under JIT is the same fact from the other side:
-   the cost was never the arithmetic, it was the per-value machinery.
+   fold/genList loops, filter and `all`/`any` seams. `bench.compute.fib`
+   collapsing from 650 MB to 30 MB RSS under JIT is the same fact from the
+   other side: the cost was never the arithmetic, it was the per-value machinery.
    Extending the compiled grammar to allocating bodies (the alloc-family
    FFI the tier-2 handoffs name as the next unlock) requires objects
    with *fixed field offsets native code can write* — which the record
@@ -317,6 +317,15 @@ and the expanded runtime-context pointer decodes are count-pinned by the unsafe
 audit. The landing remained byte-green across the 16 package legs, seven
 wide/shape modes, compute x8, cache validation, and all 648 strict-JSON seeds in
 serial/K=4/JIT/sweep-zero.
+
+The follow-up strict-collection landing (`cffda6a76`) reuses the filter
+predicate compiler for `builtins.all` and `builtins.any`, but gives them a
+dedicated runtime loop so native execution stops at the exact short-circuit
+element. A new `bench.compute.all-any` fixture makes the standing compute suite
+x9. Five-sample medians against pristine `5179fb1c2` moved from 582.1 to
+266.7 ms cold and 810.1 to 261.5 ms warm-mode; stock C++ Nix in the candidate
+run measured 234.1/220.9 ms. Thus this seam closes the cold gap from roughly
+2.5x to 1.14x while preserving byte identity and lazy error behavior.
 
 ### 2.5 GC integration: header-resident marks
 
@@ -892,7 +901,7 @@ shipped this way):
 - **Byte-parity x4** (zlib/openssl/bash/coreutils): serial, `K=4`
   parallel, and `AOS_NIX_JIT=1`; plus `AOS_NIX_GC=sweep` and
   stress-threshold configurations for stages touching reclamation.
-- **Compute suite x8** (`bench.compute.*`, `21bfe153a`) under default
+- **Compute suite x9** (`bench.compute.*`, including `all-any`) under default
   and force-promote JIT configs.
 - **`bench.wide` / `bench.wide-eval`** (the 273-package root) in-bench
   parity.
@@ -1100,7 +1109,7 @@ they conflict.
 Per the [22](22-implementation-checklist-all-phases.md) conventions:
 deliverables with module paths, per-stage gates, and falsifiable exit
 criteria. The **standing gate battery** for every `[ ]` below is §9.2
-(byte-parity x4 serial/K=4/JIT, compute x8, `bench.wide`, eval-json
+(byte-parity x4 serial/K=4/JIT, compute x9, `bench.wide`, eval-json
 corpus, nix-bench perf+memory A/B, no size-gate offender growth); items
 list only their *additional* gates.
 

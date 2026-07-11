@@ -11316,6 +11316,27 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       unchanged. Cranelift user-stack-map emission, live compiled-frame binding,
       allocation-capable bodies, OSR, and the persistent compiled-body cache
       remain open.
+- [x] Tier-2 strict `all`/`any` collection seam (`cffda6a76`): the tree-walk
+      loops consult the engine at most twice per call and reuse the landed
+      arity-1 filter-predicate scanner, lowering, pin validation, and compiled
+      entry table. A dedicated runtime-FFI loop pins the context and trap scope
+      once, calls the predicate natively per element, preserves `all`/`any`
+      short-circuit laziness, and returns the first deoptimized element to the
+      authoritative interpreted path. Its single unsafe call is source-line,
+      count, and `SAFETY`-comment pinned. Tests cover exhaustion, a short
+      circuit that must skip a later division-by-zero, and mid-run deopt.
+      `bench.compute.all-any` adds four 600,000-element exhaustion/last-element
+      cases to the standing suite. On the noisy local Darwin host, five-sample
+      medians moved from 582.1 ms to 266.7 ms cold and 810.1 ms to 261.5 ms
+      warm-mode versus pristine `5179fb1c2`; the same candidate run measured
+      C++ Nix 2.24.12 at 234.1/220.9 ms, leaving aos-nix 1.14x/1.18x slower
+      instead of the prior roughly 2.5x cold gap. The landing passed the 80
+      active runtime-FFI tests, 3,033 active oracle tests, 255 JIT tests, 328
+      `aos-nix` tests, 38 language tests, the 16-leg package byte matrix, compute
+      x9, `bench.wide-eval`, and all 645 generated strict-JSON seeds in
+      serial/K=4/JIT/sweep-zero. The moved `all`/`any` module removes
+      `eval_list_filter.rs` from the source-size offender set while every other
+      touched offender stays at or below its baseline size.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling
