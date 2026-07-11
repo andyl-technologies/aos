@@ -206,21 +206,28 @@ fn real_qemu_trace_import_rejects_qmp_topology_or_incomplete_observation() {
     );
 
     let mut values = trace_values(2);
-    values[2]["retired"] = Value::from(8192 + 4097);
+    values[2]["observed_icount"] = Value::from(8193);
     let error = importer(2)
         .import(Cursor::new(json_lines(&values)))
-        .expect_err("terminal pause overshoot beyond one RR quantum must fail");
-    assert!(error.to_string().contains("exceeds one RR quantum"));
+        .expect_err("terminal logical-time overshoot must fail");
+    assert!(error.to_string().contains("differs from exact horizon"));
+
+    let mut values = trace_values(2);
+    values[2]["observed_icount"] = Value::from(8191);
+    let error = importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect_err("terminal logical time before the horizon must fail");
+    assert!(error.to_string().contains("differs from exact horizon"));
 
     let mut values = trace_values(2);
     values[2]["retired"] = Value::from(8191);
     let error = importer(2)
         .import(Cursor::new(json_lines(&values)))
-        .expect_err("terminal record before the horizon must fail");
+        .expect_err("terminal retired count regression must fail");
     assert!(
         error
             .to_string()
-            .contains("retired before the configured horizon")
+            .contains("differs from the horizon sample")
     );
 
     let mut values = trace_values(2);
@@ -311,21 +318,22 @@ fn real_qemu_trace_comparison_localizes_first_vcpu_register_difference() {
 }
 
 #[test]
-fn real_qemu_trace_import_accepts_bounded_post_horizon_teardown() {
-    for overshoot in [2, 4096] {
-        let mut values = trace_values(2);
-        values[2]["retired"] = Value::from(8192 + overshoot);
-        values[2]["rr_current_vcpu"] = Value::from(0);
-        values[2]["rr_cursor_position"] = Value::from(overshoot % 4096);
+fn real_qemu_trace_import_accepts_retired_offset_at_exact_observed_horizon() {
+    let mut values = trace_values(2);
+    values[0]["retired"] = Value::from(4080);
+    values[0]["register_retired"] = json!([2040, 2040]);
+    values[1]["retired"] = Value::from(8176);
+    values[1]["register_retired"] = json!([4088, 4088]);
+    values[2]["retired"] = Value::from(8176);
 
-        let stream = importer(2)
-            .import(Cursor::new(json_lines(&values)))
-            .expect("bounded post-horizon teardown must preserve the horizon fingerprint");
+    let stream = importer(2)
+        .import(Cursor::new(json_lines(&values)))
+        .expect("retired counts may trail the exact QEMU logical-time boundary");
 
-        assert_eq!(stream.samples.len(), 2);
-        assert_eq!(stream.samples[1].icount, 8192);
-        assert_eq!(stream.final_icount, 8192);
-    }
+    assert_eq!(stream.samples.len(), 2);
+    assert_eq!(stream.samples[0].icount, 4096);
+    assert_eq!(stream.samples[1].icount, 8192);
+    assert_eq!(stream.final_icount, 8192);
 }
 
 #[test]
@@ -365,6 +373,7 @@ fn real_qemu_trace_import_accepts_instruction_probe_between_periodic_samples() {
     values[1]["event_boundary"] = Value::String("horizon-advance".to_owned());
     values[2]["stop_at"] = Value::from(6145);
     values[2]["retired"] = Value::from(6145);
+    values[2]["observed_icount"] = Value::from(6145);
 
     let stream = importer
         .import(Cursor::new(json_lines(&values)))
@@ -527,6 +536,7 @@ fn terminal(vcpus: usize) -> Value {
         "qemu_build_digest": "20".repeat(32),
         "trace_plugin_build_digest": "30".repeat(32),
         "retired": 8192,
+        "observed_icount": 8192,
         "vcpu": 1,
         "final": true,
         "tracked_vcpus": vcpus,

@@ -1,7 +1,7 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1370,6 +1370,48 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -1402,6 +1402,48 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
                                              struct qemu_plugin_register *handle,
                                              GByteArray *buf);
  
@@ -53,7 +53,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 diff --git a/plugins/api.c b/plugins/api.c
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -493,6 +493,163 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+@@ -497,6 +497,163 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
      return gdb_read_register(cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
  
@@ -217,7 +217,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  uint64_t qemu_plugin_crucible_rr_current_vcpu(void)
  {
      if (!current_cpu) {
-@@ -627,4 +784,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
+@@ -838,4 +995,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
      }
      return total;
  }

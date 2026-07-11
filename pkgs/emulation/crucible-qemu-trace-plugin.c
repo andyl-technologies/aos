@@ -73,6 +73,7 @@ static bool trace_rr_switch_events = true;
 static bool det_ipi_probe;
 static bool det_ipi_probe_commanded;
 static bool stop_requested;
+static bool horizon_emitted;
 static unsigned int tracked_vcpus = 1;
 static struct register_set register_sets[MAX_TRACKED_VCPUS];
 static uint64_t per_vcpu_retired[MAX_TRACKED_VCPUS];
@@ -107,6 +108,17 @@ on_sim_max_advance_icount(void *userdata)
 {
   (void)userdata;
   return UINT64_MAX;
+}
+
+static uint64_t
+on_sim_observer_max_advance_icount(void *userdata)
+{
+  (void)userdata;
+
+  if (stop_at != 0 && !horizon_emitted && stop_at < next_sample) {
+    return stop_at;
+  }
+  return next_sample;
 }
 
 static uint64_t
@@ -378,8 +390,6 @@ digest_registers_for_vcpu(
     return false;
   }
 
-  const struct register_set *set = &register_sets[vcpu_index];
-
   /*
    * The batched export already canonicalizes every register name, feature,
    * width, and value. Hash it once instead of reading the same register file
@@ -472,7 +482,7 @@ compute_register_digests(void)
       failures++;
       memset(summary.register_schema[vcpu], 0, 32);
     }
-    summary.register_retired[vcpu] = canonical_retired;
+    summary.register_retired[vcpu] = per_vcpu_retired[vcpu];
     summary.sample_failures += failures;
   }
 
@@ -544,7 +554,6 @@ record_definition(void)
 
   definition_emitted = true;
   stop_requested = true;
-  qemu_plugin_crucible_pause_vm();
   const uint64_t observed_icount = qemu_plugin_crucible_icount();
   const bool observed_non_running =
       qemu_plugin_crucible_vm_non_running();
@@ -761,8 +770,9 @@ record_sample(unsigned int vcpu_index, bool final)
       capture_memory_events ? current_device_event_hash() : 0;
   uint64_t register_diagnostic_fnv = FNV1A64_OFFSET;
   uint64_t diagnostic_extended_fnv = FNV1A64_OFFSET;
-  const bool horizon_boundary = !final && stop_at != 0 && retired >= stop_at;
   const uint64_t observed_icount = qemu_plugin_crucible_icount();
+  const bool horizon_boundary =
+      !final && stop_at != 0 && observed_icount >= stop_at;
   char ram_digest_hex[65];
   char device_state_digest_hex[65];
   char device_state_schema_digest_hex[65];
@@ -1251,17 +1261,19 @@ on_insn(unsigned int vcpu_index, void *userdata)
     stop_requested = true;
   }
 
-  if (!post_boundary_samples && retired >= next_sample) {
+  if (!extended_fingerprint && retired >= next_sample) {
     record_sample(vcpu_index, false);
     sampled_this_instruction = true;
     next_sample += cadence;
   }
   if (reached_stop) {
-    if (!sampled_this_instruction) {
+    if (!extended_fingerprint && !sampled_this_instruction) {
       record_sample(vcpu_index, false);
     }
     qemu_plugin_outs("crucible-qemu-trace-plugin: stop_at reached\n");
-    qemu_plugin_crucible_pause_vm();
+    if (!extended_fingerprint) {
+      qemu_plugin_crucible_pause_vm();
+    }
   }
 }
 
@@ -1270,38 +1282,63 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
 {
   (void)userdata;
 
-  if (!post_boundary_samples || current_icount < next_sample) {
+  const bool periodic_due = current_icount >= next_sample;
+  const bool horizon_due =
+      stop_at != 0 && !horizon_emitted && current_icount >= stop_at;
+
+  if (!periodic_due && !horizon_due) {
     return;
   }
 
-  const struct register_digest_summary register_digests =
-      compute_register_digests();
-  unsigned char ram_digest[32] = {0};
-  uint64_t ram_bytes = 0;
-  const int ram_status =
-      qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes);
-  uint64_t rr_current_vcpu;
-  uint64_t rr_cursor_position;
-  uint64_t rr_switch_quantum;
-  const bool rr_cursor_valid = read_rr_cursor_snapshot(
-      &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum);
+  if (post_boundary_samples) {
+    const struct register_digest_summary register_digests =
+        compute_register_digests();
+    unsigned char ram_digest[32] = {0};
+    uint64_t ram_bytes = 0;
+    const int ram_status =
+        qemu_plugin_crucible_guest_ram_sha256(ram_digest, &ram_bytes);
+    uint64_t rr_current_vcpu;
+    uint64_t rr_cursor_position;
+    uint64_t rr_switch_quantum;
+    const bool rr_cursor_valid = read_rr_cursor_snapshot(
+        &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum);
 
-  fold_trajectory_state(
-      current_icount,
-      UINT_MAX,
-      &register_digests,
-      ram_status == 0 ? ram_digest : NULL,
-      NULL,
-      rr_current_vcpu,
-      rr_cursor_position,
-      rr_switch_quantum,
-      rr_cursor_valid,
-      true);
-  record_sample(UINT_MAX, false);
-  if (UINT64_MAX - next_sample < cadence) {
+    fold_trajectory_state(
+        current_icount,
+        UINT_MAX,
+        &register_digests,
+        ram_status == 0 ? ram_digest : NULL,
+        NULL,
+        rr_current_vcpu,
+        rr_cursor_position,
+        rr_switch_quantum,
+        rr_cursor_valid,
+        true);
+  }
+
+  if (last_valid_rr_current_vcpu >= tracked_vcpus) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: missing exact-boundary RR cursor\n");
+    stop_requested = true;
+    horizon_emitted = true;
     next_sample = UINT64_MAX;
-  } else {
-    next_sample += cadence;
+    qemu_plugin_crucible_pause_vm();
+    return;
+  }
+  if (horizon_due) {
+    stop_requested = true;
+    qemu_plugin_crucible_pause_vm();
+  }
+  record_sample((unsigned int)last_valid_rr_current_vcpu, false);
+  if (horizon_due) {
+    horizon_emitted = true;
+  }
+  if (periodic_due) {
+    if (UINT64_MAX - next_sample < cadence) {
+      next_sample = UINT64_MAX;
+    } else {
+      next_sample += cadence;
+    }
   }
 }
 
@@ -1344,9 +1381,6 @@ on_vcpu_init(qemu_plugin_id_t id, unsigned int vcpu_index)
   if (extended_fingerprint) {
     (void)init_register_set(vcpu_index);
   }
-  if (definition_only) {
-    record_definition();
-  }
 }
 
 static void
@@ -1361,9 +1395,12 @@ on_plugin_exit(qemu_plugin_id_t id, void *userdata)
 
   if (!definition_only) {
     record_sample(UINT_MAX, true);
-  } else if (!definition_emitted) {
-    qemu_plugin_outs(
-        "crucible-qemu-trace-plugin: definition record was not emitted\n");
+  } else {
+    record_definition();
+    if (!definition_emitted) {
+      qemu_plugin_outs(
+          "crucible-qemu-trace-plugin: definition record was not emitted\n");
+    }
   }
   fclose(trace_file);
   trace_file = NULL;
@@ -1490,8 +1527,9 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
   if (!definition_only) {
     qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate);
     qemu_plugin_crucible_register_ipi_delivery_cb(on_det_ipi_delivery, NULL);
-    if (post_boundary_samples) {
-      qemu_plugin_register_sim_shmem_observer_cb(on_sim_observe_icount, NULL);
+    if (extended_fingerprint) {
+      qemu_plugin_register_sim_shmem_observer_cb(
+          on_sim_observe_icount, on_sim_observer_max_advance_icount, NULL);
     }
     if (det_ipi_probe) {
       qemu_plugin_register_sim_shmem_dispatch_cb(

@@ -251,6 +251,13 @@
       enforces = "DET-29,PLUG-35";
       capability = "observation-only post-execution sim-boundary callback alongside the scheduler-owned dispatch";
     }
+    {
+      file = "0034-crucible-safe-fingerprint-boundary.patch";
+      catalogName = "crucible-safe-fingerprint-boundary";
+      class = "F";
+      enforces = "DET-29,PLUG-35";
+      capability = "exact observer budget clamp and BQL-held fingerprint capture boundary";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

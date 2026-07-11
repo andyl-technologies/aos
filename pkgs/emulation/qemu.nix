@@ -133,8 +133,16 @@
     qemu_patch_branch_base_tree=${series.patchBranchBaseTree}
     qemu_patch_branch_head_commit=${series.patchBranchHeadCommit}
     qemu_patch_branch_material_hash=${patchBranchMaterialHash}
-    qemu_plugins_enabled=${if enablePlugins then "true" else "false"}
-    qemu_crucible_patches_applied=${if applyCruciblePatches then "true" else "false"}
+    qemu_plugins_enabled=${
+      if enablePlugins
+      then "true"
+      else "false"
+    }
+    qemu_crucible_patches_applied=${
+      if applyCruciblePatches
+      then "true"
+      else "false"
+    }
     qemu_sim_capability=${qemuSimCapability}
     qemu_shmem_abi_version=${shmemAbiVersion}
     qemu_shmem_abi=${shmemAbi}
@@ -147,7 +155,6 @@
     if applyCruciblePatches
     then builtins.concatStringsSep "" (map patchCommand series.patchFiles)
     else "";
-
   # Compatibility inventory for legacy static gates. The executable patch phase
   # above is generated from series.patchFiles.
   # patch -p1 < ${./qemu-patches/0001-crucible-sim-accel.patch}
@@ -183,6 +190,7 @@
   # patch -p1 < ${./qemu-patches/0031-crucible-det-rng-delivery.patch}
   # patch -p1 < ${./qemu-patches/0032-crucible-det-virtio-ioeventfd.patch}
   # patch -p1 < ${./qemu-patches/0033-crucible-sim-observer.patch}
+  # patch -p1 < ${./qemu-patches/0034-crucible-safe-fingerprint-boundary.patch}
 in
   mkDerivation {
     inherit pname;
@@ -310,8 +318,16 @@ in
           qemu_patch_branch_base_tree=${series.patchBranchBaseTree}
           qemu_patch_branch_head_commit=${series.patchBranchHeadCommit}
           qemu_patch_branch_material_hash=${patchBranchMaterialHash}
-          qemu_plugins_enabled=${if enablePlugins then "true" else "false"}
-          qemu_crucible_patches_applied=${if applyCruciblePatches then "true" else "false"}
+          qemu_plugins_enabled=${
+            if enablePlugins
+            then "true"
+            else "false"
+          }
+          qemu_crucible_patches_applied=${
+            if applyCruciblePatches
+            then "true"
+            else "false"
+          }
           qemu_sim_capability=${qemuSimCapability}
           qemu_shmem_abi_version=${shmemAbiVersion}
           qemu_shmem_abi=${shmemAbi}
@@ -347,7 +363,11 @@ in
         ;
     };
 
-    checks = {testing, self, pkgs}:
+    checks = {
+      testing,
+      self,
+      pkgs,
+    }:
       if pname == "qemu-crucible"
       then let
         patchMicrotests = import ../../tests/crucible/phase2-patch-microtests.nix {

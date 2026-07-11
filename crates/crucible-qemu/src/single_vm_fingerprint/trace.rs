@@ -574,10 +574,10 @@ impl QemuTraceFingerprintImport {
     /// is always represented by its event-boundary sample. When the horizon
     /// lands on a cadence, that one event sample satisfies both observations.
     /// The terminal plugin exit record is required as evidence that QEMU
-    /// reached its requested stop, but is not fingerprinted because it is a
-    /// bounded post-stop-request teardown observation rather than the
-    /// authoritative horizon state. It must be the final JSON-lines record and
-    /// may retire at most one RR quantum beyond the horizon sample.
+    /// reached its requested stop, but is not fingerprinted because the event
+    /// sample is the authoritative horizon state. The terminal record must be
+    /// final, report the exact horizon on QEMU's logical icount axis, and repeat
+    /// the horizon sample's aggregate plugin-retired instruction count.
     ///
     /// # Errors
     ///
@@ -596,6 +596,7 @@ impl QemuTraceFingerprintImport {
             })?;
         let mut terminal_stop_seen = false;
         let mut previous_retired: Option<Vec<u64>> = None;
+        let mut last_aggregate_retired = None;
         let mut periodic_sample_count = 0_u64;
         let mut horizon_boundary_seen = false;
 
@@ -646,26 +647,36 @@ impl QemuTraceFingerprintImport {
                 require_true(&value, "stop_requested", line_number)?;
                 require_u64(&value, "stop_at", self.run_horizon_icount, line_number)?;
                 let terminal_retired = u64_field(&value, "retired", line_number)?;
-                let terminal_overshoot = terminal_retired
-                    .checked_sub(self.run_horizon_icount)
-                    .ok_or_else(|| QemuTraceFingerprintImportError::MalformedTrace {
-                        line: line_number,
-                        reason: "terminal plugin record retired before the configured horizon"
-                            .to_owned(),
-                    })?;
-                if terminal_overshoot > self.nvcpu_contract.rr_switch_quantum() {
+                let terminal_observed = u64_field(&value, "observed_icount", line_number)?;
+                if terminal_observed != self.run_horizon_icount {
                     return Err(QemuTraceFingerprintImportError::MalformedTrace {
                         line: line_number,
                         reason: format!(
-                            "terminal plugin record pause overshoot {terminal_overshoot} exceeds one RR quantum {}",
-                            self.nvcpu_contract.rr_switch_quantum()
+                            "terminal observed icount {terminal_observed} differs from exact horizon {}",
+                            self.run_horizon_icount
                         ),
+                    });
+                }
+                if terminal_retired > terminal_observed {
+                    return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                        line: line_number,
+                        reason:
+                            "terminal retired instruction count exceeds the observed QEMU icount"
+                                .to_owned(),
                     });
                 }
                 if samples.last().map(|sample| sample.icount) != Some(self.run_horizon_icount) {
                     return Err(QemuTraceFingerprintImportError::MalformedTrace {
                         line: line_number,
                         reason: "terminal plugin record preceded the horizon sample".to_owned(),
+                    });
+                }
+                if last_aggregate_retired != Some(terminal_retired) {
+                    return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                        line: line_number,
+                        reason:
+                            "terminal retired instruction count differs from the horizon sample"
+                                .to_owned(),
                     });
                 }
                 require_true(&value, "rr_cursor_valid", line_number)?;
@@ -699,7 +710,7 @@ impl QemuTraceFingerprintImport {
                 continue;
             }
             require_u64(&value, "stop_at", self.run_horizon_icount, line_number)?;
-            let observed_icount = u64_field(&value, "retired", line_number)?;
+            let observed_icount = u64_field(&value, "observed_icount", line_number)?;
             let trigger = sample_trigger(&value, line_number)?;
             if observed_icount > self.run_horizon_icount {
                 return Err(QemuTraceFingerprintImportError::MalformedTrace {
@@ -761,6 +772,7 @@ impl QemuTraceFingerprintImport {
             })?;
             previous = sample.rolling_fingerprint.clone();
             previous_retired = Some(retired_counts);
+            last_aggregate_retired = Some(u64_field(&value, "retired", line_number)?);
             samples.push(sample);
         }
 
@@ -937,7 +949,14 @@ impl QemuTraceFingerprintImport {
             );
         }
         let aggregate_retired = u64_field(value, "retired", line)?;
-        require_u64(value, "observed_icount", aggregate_retired, line)?;
+        let observed_icount = u64_field(value, "observed_icount", line)?;
+        if aggregate_retired > observed_icount {
+            return Err(QemuTraceFingerprintImportError::MalformedTrace {
+                line,
+                reason: "aggregate retired instruction count exceeds the observed QEMU icount"
+                    .to_owned(),
+            });
+        }
         if retired_sum != aggregate_retired {
             return Err(QemuTraceFingerprintImportError::MalformedTrace {
                 line,
@@ -1040,7 +1059,7 @@ impl QemuTraceFingerprintImport {
         let material = SingleVmFingerprintSampleMaterial::new(
             seq,
             self.node.clone(),
-            aggregate_retired,
+            observed_icount,
             trigger,
             nvcpu_fingerprint,
         )

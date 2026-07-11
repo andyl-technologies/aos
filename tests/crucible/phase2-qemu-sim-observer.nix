@@ -33,7 +33,7 @@
     ++ lib.optionals (!(hasInfix "crucible_observe_icount_cb(current_icount" patchSource)) [
       "${patchName}: missing post-execution observer dispatch"
     ]
-    ++ lib.optionals (!(hasInfix "qemu_plugin_register_sim_shmem_observer_cb(on_sim_observe_icount" tracePluginSource)) [
+    ++ lib.optionals (!(hasInfix "on_sim_observe_icount, on_sim_observer_max_advance_icount" tracePluginSource)) [
       "crucible-qemu-trace-plugin.c: loaded-QEMU trace does not consume the observer API"
     ];
 in
@@ -70,6 +70,12 @@ in
               (void)userdata;
             }
 
+            static uint64_t max_advance(void *userdata)
+            {
+              (void)userdata;
+              return UINT64_MAX;
+            }
+
             QEMU_PLUGIN_EXPORT int
             qemu_plugin_install(qemu_plugin_id_t id,
                                 const qemu_info_t *info,
@@ -80,7 +86,8 @@ in
               (void)info;
               (void)argc;
               (void)argv;
-              qemu_plugin_register_sim_shmem_observer_cb(observe, 0);
+              qemu_plugin_register_sim_shmem_observer_cb(
+                  observe, max_advance, 0);
               return 0;
             }
             PROBE
@@ -106,7 +113,7 @@ in
             qemu_package=${qemuPackage}
             qemu_package_version=${qemuPackage.version}
             observer_runs_alongside_scheduler_dispatch=true
-            observer_boundary=post-execution-icount-publication
+            observer_boundary=exact-budget-clamped-bql-held
             RESULT
           '';
         }
