@@ -2,9 +2,11 @@
 
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use super::*;
+use crate::heap::ReservedArena;
 use crate::value::HeapObject;
 
 fn store() -> SharedFlatObjectStore<String> {
@@ -102,10 +104,7 @@ fn iter_yields_every_published_object_with_its_address() {
         .collect();
     assert_eq!(
         entries,
-        vec![
-            (first.as_ptr() as usize, 7),
-            (second.as_ptr() as usize, 8)
-        ]
+        vec![(first.as_ptr() as usize, 7), (second.as_ptr() as usize, 8)]
     );
 }
 
@@ -158,4 +157,131 @@ fn attrs_kind_publishes_and_resolves_across_threads() {
     })
     .join()
     .expect("reader thread joins");
+}
+
+#[test]
+fn reservation_stores_share_one_offset_space_with_typed_membership() {
+    let arena = Arc::new(ReservedArena::new().expect("shared reservation maps"));
+    let strings = SharedFlatObjectStore::with_reservation(
+        Arc::clone(&arena),
+        64,
+        FlatKindSet::of(&[FlatObjectKind::String, FlatObjectKind::Path]),
+    );
+    let lists = SharedFlatObjectStore::with_reservation(
+        Arc::clone(&arena),
+        64,
+        FlatKindSet::of(&[FlatObjectKind::List]),
+    );
+    let string = strings
+        .publish(FlatObjectKind::String, 11, 5, "hello".to_owned())
+        .expect("string publishes");
+    let list = lists
+        .publish(FlatObjectKind::List, 12, 16, vec![1_u64, 2])
+        .expect("list publishes");
+
+    assert!(strings.uses_reservation());
+    assert!(lists.uses_reservation());
+    assert_ne!(
+        arena
+            .index_for_pointer(string)
+            .expect("string has compressed index"),
+        arena
+            .index_for_pointer(list)
+            .expect("list has compressed index")
+    );
+    assert_eq!(
+        strings
+            .resolve(string, FlatObjectKind::String)
+            .expect("string resolves")
+            .payload(),
+        "hello"
+    );
+    assert_eq!(
+        lists
+            .resolve(list, FlatObjectKind::List)
+            .expect("list resolves")
+            .payload(),
+        &[1, 2]
+    );
+    assert!(strings.resolve_any(list).is_none());
+    assert!(lists.resolve_any(string).is_none());
+    let interior = NonNull::new((string.as_ptr() as usize + 8) as *mut HeapObject)
+        .expect("interior is non-null");
+    assert!(strings.resolve_any(interior).is_none());
+    assert_eq!(strings.iter().count(), 1);
+    assert_eq!(lists.iter().count(), 1);
+}
+
+#[test]
+fn reservation_store_publishes_disjoint_objects_from_multiple_writers() {
+    let arena = Arc::new(ReservedArena::new().expect("shared reservation maps"));
+    let store = Arc::new(SharedFlatObjectStore::with_reservation(
+        arena,
+        2048,
+        FlatKindSet::of(&[FlatObjectKind::String]),
+    ));
+    let writers: Vec<_> = (0..8)
+        .map(|worker| {
+            let store = Arc::clone(&store);
+            thread::spawn(move || {
+                (0..128)
+                    .map(|index| {
+                        let payload = format!("{worker}:{index}");
+                        store
+                            .publish(
+                                FlatObjectKind::String,
+                                (worker * 128 + index) as u64,
+                                payload.len(),
+                                payload,
+                            )
+                            .map(|ptr| ptr.as_ptr() as usize)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+        })
+        .collect();
+    let mut addresses = Vec::new();
+    for writer in writers {
+        let pointers = writer
+            .join()
+            .expect("publication worker joins")
+            .expect("publication worker succeeds");
+        addresses.extend(pointers);
+    }
+    addresses.sort_unstable();
+    addresses.dedup();
+    assert_eq!(addresses.len(), 8 * 128);
+    assert_eq!(store.len(), 8 * 128);
+    assert_eq!(store.iter().count(), 8 * 128);
+}
+
+#[derive(Debug)]
+struct DropWitness(Arc<AtomicUsize>);
+
+impl Drop for DropWitness {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn reservation_store_drops_each_published_payload_before_unmapping() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let arena = Arc::new(ReservedArena::new().expect("shared reservation maps"));
+    let store = SharedFlatObjectStore::with_reservation(
+        Arc::clone(&arena),
+        4,
+        FlatKindSet::of(&[FlatObjectKind::String]),
+    );
+    store
+        .publish(
+            FlatObjectKind::String,
+            0,
+            0,
+            DropWitness(Arc::clone(&drops)),
+        )
+        .expect("witness publishes");
+    drop(store);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+    assert_eq!(Arc::strong_count(&arena), 1);
 }

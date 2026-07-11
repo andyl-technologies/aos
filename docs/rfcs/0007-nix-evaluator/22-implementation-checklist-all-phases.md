@@ -11774,6 +11774,27 @@ it ships).**
       landing battery is green; baseline-first release A/B kept zlib and wide
       medians plus retained RSS within the 10% no-regression gate, and wide
       arena peak was byte-identical at 83,361,792 bytes.
+- [x] Current Candidate-C shared flat-store adoption precursor:
+      the reservation bump allocator is now multi-writer atomic, and one
+      production `SharedHeapArena` shares the same 4 GiB reservation across
+      every worker shard's typed flat stores. Geometric object runs use compact
+      `AtomicU8` Release/Acquire publication sidecars and exact range/stride
+      membership, so foreign or interior addresses are rejected before the
+      typed cast without a hot-path registry lock. Drop destroys published
+      payloads before unmapping; the unsafe manifest pins the three reviewed
+      placement/resolution/drop operations. Tests cover eight concurrent
+      allocators, shared typed-store membership, payload destruction, and
+      cross-shard resolution through one compressed-offset space. The active
+      evaluator handle remains a native pointer in the 16-byte `Value`. The
+      full parity gate passed the value/core/JIT/oracle/runtime-FFI/cache/aos-nix
+      suites, the 38-test language aggregate, all 16 package byte legs, compute
+      x9 under JIT, wide serial/K=4/JIT/sweep-zero, zlib/wide cache validation,
+      and 648 strict-JSON expressions in those four modes. The pre-existing
+      global source-size gate is still red, but both touched production files
+      remain below 1,000 lines. A three-sample K=4 wide release A/B against the
+      pristine parent improved native means 3.515 -> 3.415 s cold and
+      3.247 -> 2.903 s warm, while retained-RSS maxima fell
+      629.1 -> 562.8 MiB cold and 642.1 -> 527.7 MiB warm.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay
@@ -11938,10 +11959,11 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       P8 mandate — this executes the P8 pointer-tagging row and
       `M-4`/`Q-E` ([30](30-flat-value-architecture.md) §3).
       *The Candidate-C substrate is now landed: a real 4 GiB contiguous
-      reservation, checked byte-offset index space, and sealed 64-bit codec.
-      Shared-store publication migration, active evaluator/FFI/JIT ABI
-      conversion, Candidate-B construction, and the measured head-to-head
-      remain, so FV-4 is intentionally unchecked.*
+      reservation, checked byte-offset index space, sealed 64-bit codec, and
+      reservation-backed shared flat-store publication. Serial-store
+      migration, active evaluator/FFI/JIT ABI conversion, Candidate-B
+      construction, and the measured head-to-head remain, so FV-4 is
+      intentionally unchecked.*
 - [x] FV-5 — hybrid closures: flat inline free-var capture
       (`|FV| <= K`) + linked persistent frame chains; persistent
       `with`/scoped-global lists; delete the generation-keyed capture

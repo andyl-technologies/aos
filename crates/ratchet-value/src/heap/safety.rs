@@ -31,6 +31,7 @@ pub const HEAP_INNATE_UNSAFE_OPERATIONS: &[HeapInnateUnsafeOperation] = &[
     HeapInnateUnsafeOperation::AllocatorFreeMemoryRelease,
     HeapInnateUnsafeOperation::FlatObjectPayloadAccess,
     HeapInnateUnsafeOperation::ContiguousAddressReservation,
+    HeapInnateUnsafeOperation::SharedReservationObjectPublication,
 ];
 
 /// Required audit tools for heap and GC unsafe code.
@@ -70,6 +71,9 @@ pub enum HeapInnateUnsafeOperation {
     /// Reserves one contiguous virtual range, derives checked in-range
     /// addresses from compressed offsets, and releases the exact mapping.
     ContiguousAddressReservation,
+    /// Places, resolves, and drops immutable shared objects after compact
+    /// reservation-index registry publication proves their exact type.
+    SharedReservationObjectPublication,
 }
 
 /// Standing controls required before unsafe heap or GC code can land.
@@ -335,6 +339,11 @@ mod tests {
         // compressed-index decode), the exact-range drop unmap, and the
         // mapping owner's Send/Sync contracts, all under the reviewed
         // `ContiguousAddressReservation` operation.
+        // flat/shared.rs count 0 -> 3 (doc 30 Candidate-C shared adoption):
+        // object placement, exact-slot typed resolution, and payload
+        // destruction before unmapping are one reviewed lifecycle operation,
+        // all under
+        // `SharedReservationObjectPublication`.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 13usize),
@@ -342,6 +351,7 @@ mod tests {
             ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
             ("flat/slice.rs", 5usize),
+            ("flat/shared.rs", 3usize),
             ("flat/value_tail.rs", 3usize),
             ("resident.rs", 6usize),
             ("reservation.rs", 7usize),
@@ -414,6 +424,7 @@ mod tests {
                     | "flat/alloc.rs"
                     | "flat/bytes.rs"
                     | "flat/slice.rs"
+                    | "flat/shared.rs"
                     | "flat/value_tail.rs"
                     | "reservation.rs"
                     | "resident.rs"

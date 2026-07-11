@@ -11,6 +11,7 @@
 //! index space without exposing raw references or unchecked pointer decoding.
 
 use std::ptr::{self, NonNull};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use thiserror::Error;
 
@@ -87,17 +88,19 @@ impl ReservedArenaMark {
 pub struct ReservedArena {
     base: NonNull<u8>,
     capacity: usize,
-    cursor: usize,
+    cursor: AtomicUsize,
 }
 
 // SAFETY: The arena uniquely owns its anonymous mapping, which is not tied to
-// the creating thread. Allocation and rewind require exclusive `&mut` access,
-// and moving the owner preserves the base address and mapping lifetime.
+// the creating thread. Shared allocation claims disjoint ranges atomically;
+// rewind requires exclusive `&mut` access, and moving the owner preserves the
+// base address and mapping lifetime.
 unsafe impl Send for ReservedArena {}
 
-// SAFETY: Shared access exposes only accounting or checked opaque addresses;
-// it cannot mutate the bump cursor or mapped bytes. Allocation, rewind, and
-// unmapping require exclusive access or ownership.
+// SAFETY: Shared allocation mutates only the atomic cursor and returns a
+// uniquely claimed opaque range. Checked pointer/index conversion and
+// accounting do not mutate mapped bytes; rewind and unmapping require
+// exclusive access or ownership.
 unsafe impl Sync for ReservedArena {}
 
 impl ReservedArena {
@@ -161,7 +164,7 @@ impl ReservedArena {
         Ok(Self {
             base,
             capacity,
-            cursor: 0,
+            cursor: AtomicUsize::new(0),
         })
     }
 
@@ -175,7 +178,7 @@ impl ReservedArena {
         Err(ReservedArenaError::UnsupportedPlatform)
     }
 
-    /// Allocates an aligned opaque object range and returns both handle forms.
+    /// Atomically allocates an aligned opaque range and returns both handles.
     ///
     /// Zero-sized requests consume one byte so every successful allocation has
     /// a unique index. Alignment is applied to the absolute mapped address,
@@ -186,7 +189,7 @@ impl ReservedArena {
     /// Returns an error for a non-power-of-two alignment, arithmetic overflow,
     /// or an allocation that exceeds the reservation or 32-bit offset space.
     pub fn alloc(
-        &mut self,
+        &self,
         requested_size: usize,
         align: usize,
     ) -> Result<ReservedArenaAllocation, ReservedArenaError> {
@@ -195,23 +198,33 @@ impl ReservedArena {
         }
         let reserved_size = requested_size.max(1);
         let base_address = self.base.as_ptr() as usize;
-        let cursor_address = base_address
-            .checked_add(self.cursor)
-            .ok_or(ReservedArenaError::SizeOverflow)?;
-        let aligned_address = align_up(cursor_address, align)?;
-        let start = aligned_address
-            .checked_sub(base_address)
-            .ok_or(ReservedArenaError::SizeOverflow)?;
-        let end = start
-            .checked_add(reserved_size)
-            .ok_or(ReservedArenaError::SizeOverflow)?;
-        if end > self.capacity || start > u32::MAX as usize {
-            return Err(ReservedArenaError::OutOfSpace {
-                requested_size,
-                align,
-                available_bytes: self.capacity.saturating_sub(self.cursor),
-            });
-        }
+        let start = loop {
+            let cursor = self.cursor.load(Ordering::Relaxed);
+            let cursor_address = base_address
+                .checked_add(cursor)
+                .ok_or(ReservedArenaError::SizeOverflow)?;
+            let aligned_address = align_up(cursor_address, align)?;
+            let start = aligned_address
+                .checked_sub(base_address)
+                .ok_or(ReservedArenaError::SizeOverflow)?;
+            let end = start
+                .checked_add(reserved_size)
+                .ok_or(ReservedArenaError::SizeOverflow)?;
+            if end > self.capacity || start > u32::MAX as usize {
+                return Err(ReservedArenaError::OutOfSpace {
+                    requested_size,
+                    align,
+                    available_bytes: self.capacity.saturating_sub(cursor),
+                });
+            }
+            if self
+                .cursor
+                .compare_exchange_weak(cursor, end, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break start;
+            }
+        };
 
         // SAFETY: `start < end <= capacity`, so the computed address remains
         // inside the live mapping (or at its first byte for a one-byte object).
@@ -219,7 +232,6 @@ impl ReservedArena {
         let Some(ptr) = NonNull::new(address.cast::<HeapObject>()) else {
             return Err(ReservedArenaError::NullAllocationPointer);
         };
-        self.cursor = end;
         Ok(ReservedArenaAllocation {
             index: ArenaIndex::new(start as u32),
             ptr,
@@ -244,10 +256,11 @@ impl ReservedArena {
     ) -> Result<ArenaIndex, ReservedArenaError> {
         let base_address = self.base.as_ptr() as usize;
         let address = ptr.as_ptr() as usize;
+        let cursor = self.cursor.load(Ordering::Acquire);
         let Some(offset) = address.checked_sub(base_address) else {
             return Err(ReservedArenaError::PointerOutsideUsedPrefix { address });
         };
-        if offset >= self.cursor || offset > u32::MAX as usize {
+        if offset >= cursor || offset > u32::MAX as usize {
             return Err(ReservedArenaError::PointerOutsideUsedPrefix { address });
         }
         Ok(ArenaIndex::new(offset as u32))
@@ -267,10 +280,11 @@ impl ReservedArena {
         index: ArenaIndex,
     ) -> Result<NonNull<HeapObject>, ReservedArenaError> {
         let offset = index.raw() as usize;
-        if offset >= self.cursor {
+        let cursor = self.cursor.load(Ordering::Acquire);
+        if offset >= cursor {
             return Err(ReservedArenaError::IndexOutsideUsedPrefix {
                 index: index.raw(),
-                used_bytes: self.cursor,
+                used_bytes: cursor,
             });
         }
         // SAFETY: The used-prefix check proves `offset < cursor <= capacity`,
@@ -283,7 +297,7 @@ impl ReservedArena {
     pub fn mark(&self) -> ReservedArenaMark {
         ReservedArenaMark {
             base_address: self.base.as_ptr() as usize,
-            cursor: self.cursor,
+            cursor: self.cursor.load(Ordering::Acquire),
         }
     }
 
@@ -301,20 +315,22 @@ impl ReservedArena {
         &mut self,
         mark: ReservedArenaMark,
     ) -> Result<usize, ReservedArenaError> {
-        if mark.base_address != self.base.as_ptr() as usize || mark.cursor > self.cursor {
+        let cursor = self.cursor.get_mut();
+        if mark.base_address != self.base.as_ptr() as usize || mark.cursor > *cursor {
             return Err(ReservedArenaError::InvalidMark);
         }
-        let released = self.cursor - mark.cursor;
-        self.cursor = mark.cursor;
+        let released = *cursor - mark.cursor;
+        *cursor = mark.cursor;
         Ok(released)
     }
 
     /// Returns current virtual-reservation and bump-prefix accounting.
     pub fn stats(&self) -> ReservedArenaStats {
+        let used_bytes = self.cursor.load(Ordering::Acquire);
         ReservedArenaStats {
             virtual_reserved_bytes: self.capacity,
-            used_bytes: self.cursor,
-            available_bytes: self.capacity - self.cursor,
+            used_bytes,
+            available_bytes: self.capacity - used_bytes,
         }
     }
 }
@@ -427,11 +443,14 @@ pub enum ReservedArenaError {
 
 #[cfg(all(test, unix, target_pointer_width = "64"))]
 mod tests {
+    use std::sync::Arc;
+    use std::thread;
+
     use super::*;
 
     #[test]
     fn full_reservation_exposes_the_complete_u32_offset_space() {
-        let mut arena = ReservedArena::new().expect("4 GiB virtual reservation is available");
+        let arena = ReservedArena::new().expect("4 GiB virtual reservation is available");
         assert_eq!(
             arena.stats().virtual_reserved_bytes as u64,
             CANDIDATE_C_ADDRESS_SPACE_BYTES
@@ -452,7 +471,7 @@ mod tests {
 
     #[test]
     fn allocations_align_absolute_addresses_and_roundtrip_indices() {
-        let mut arena = ReservedArena::with_capacity(4096).expect("small reservation maps");
+        let arena = ReservedArena::with_capacity(4096).expect("small reservation maps");
         let first = arena.alloc(3, 1).expect("first object fits");
         let aligned = arena.alloc(16, 64).expect("aligned object fits");
         assert_eq!(aligned.ptr.as_ptr() as usize % 64, 0);
@@ -477,7 +496,7 @@ mod tests {
 
     #[test]
     fn bounds_checks_reject_exhaustion_and_unused_offsets() {
-        let mut arena = ReservedArena::with_capacity(64).expect("small reservation maps");
+        let arena = ReservedArena::with_capacity(64).expect("small reservation maps");
         let allocation = arena.alloc(64, 1).expect("exact capacity fits");
         assert!(matches!(
             arena.alloc(1, 1),
@@ -521,5 +540,34 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
 
         assert_send_sync::<ReservedArena>();
+    }
+
+    #[test]
+    fn concurrent_allocations_claim_disjoint_aligned_offsets() {
+        let arena =
+            Arc::new(ReservedArena::with_capacity(1 << 20).expect("concurrent reservation maps"));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let arena = Arc::clone(&arena);
+                thread::spawn(move || {
+                    (0..128)
+                        .map(|_| arena.alloc(24, 8).map(|allocation| allocation.index.raw()))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+            })
+            .collect();
+        let mut indices = Vec::new();
+        for worker in workers {
+            let claimed = worker
+                .join()
+                .expect("allocation worker joins")
+                .expect("allocation worker succeeds");
+            indices.extend(claimed);
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        assert_eq!(indices.len(), 8 * 128);
+        assert!(indices.iter().all(|index| index % 8 == 0));
+        assert_eq!(arena.stats().used_bytes, 8 * 128 * 24);
     }
 }

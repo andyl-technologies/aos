@@ -1086,10 +1086,11 @@ they conflict.
 5. **Candidate C's arena prerequisite.** Compressed indices require a
    single contiguous reservation; the Tier-A arena is chunked mmap
    (`c11acc759`). *FV-4 resolution:* the real 4 GiB reservation,
-   byte-offset index space, and codec are now landed (§12 FV-4). Active
-   adoption still requires the shared-mode redesign: its `OnceLock` slot
-   addresses are not reservation offsets and cannot be named by the
-   current `u32` codec without migrating publication into that arena.
+   byte-offset index space, codec, and shared-mode flat-store migration
+   are now landed (§12 FV-4). Every production shared flat store publishes
+   geometric object runs into one common reservation, so those addresses
+   now have checked `u32` offsets. Active adoption still requires migrating
+   the serial flat arena and changing the evaluator/FFI/JIT value ABI.
 6. **B1's fail-loud shape changes under flat objects.** Today a stale
    handle to a retired record fails as an `UnknownPointer` map miss;
    with the index gone, §2.5 substitutes header epoch/kind checks. This
@@ -1400,15 +1401,16 @@ value word (Candidates B and C) remains open and separately gated:**
    the exact mapping. `value/compressed.rs` seals the corresponding
    high-32-bit kind/metadata + low-32-bit payload word, including inline
    `i32`, typed boxed-scalar/heap indices, and the thunk `FORCED` bit.
-2. *Shared mode is the structural blocker.* Compressed indices address
-   "one reserved arena base"; shared-mode values are published at
-   `OnceLock` slot addresses inside per-shard boxed slot levels
-   (`heap/flat/shared.rs`) — not arena offsets, and not coverable by a
-   `u32` offset without re-architecting per-shard publication into
-   reservation-backed arenas plus a shard-id index space, which §3.5
-   never designed. The honest fallback — compressed words in serial
-   mode, 16-byte words in shared mode — forks the value ABI (and the
-   tier-2 FFI/JIT ABI with it) across modes for one mode's benefit.
+2. *The shared-mode structural blocker is closed.* One
+   `SharedHeapArena` now owns one demand-paged 4 GiB reservation shared by
+   every worker shard and typed flat store. Each store allocates geometric
+   object runs from that address space and keeps compact `AtomicU8`
+   publication sidecars; exact range/stride membership plus Release/Acquire
+   publication replaces the boxed `OnceLock<SharedFlatObject<T>>` slot.
+   Stores still return the active native-pointer handle, but every such handle
+   also round-trips through the common checked `u32` index space. Unsupported
+   platforms retain the boxed compatibility backend. Serial flat objects
+   remain outside this reservation and are now Candidate C's store blocker.
 3. *The current memory profile reopens the measured case.* On pristine
    `951159cc9`, `bench.wide-eval` maps 83,361,792 arena bytes and retains
    181,747,712 bytes cold / 190,382,080 bytes warm, while the sampled
@@ -1421,8 +1423,9 @@ value word (Candidates B and C) remains open and separately gated:**
    word compression as one variable; the subset below rewrites the
    payload layouts and is itself §3.5's "container slots narrowed"
    prerequisite. FV-5/FV-6 have landed and the current inactive
-   Candidate-C substrate passes independently. The shared publication
-   redesign and evaluator/FFI/JIT ABI conversion remain their own gates.
+   Candidate-C substrate passes independently. Shared publication is now
+   reservation-backed; serial-store migration and evaluator/FFI/JIT ABI
+   conversion remain their own gates.
 
 - [x] **Single shared permanent-domain flat arena** (the FV-2/FV-3
       handoff's per-type chunk-slack kill): `SharedFlatStoreArena`
@@ -1487,11 +1490,38 @@ value word (Candidates B and C) remains open and separately gated:**
       exactly 83,361,792 bytes in every baseline and candidate sample; noisy
       retained-RSS maxima stayed within the 10% gate. This is intentionally a
       no-regression substrate result, not a compression speed or memory claim.
+- [x] **Candidate-C shared flat-store adoption:** the reservation bump cursor
+      is atomic and eight-writer tests prove disjoint aligned ranges; one
+      production `SharedHeapArena` supplies the same reservation to every
+      shard's string/path, list, attrset, and thunk/lambda/primop store.
+      Geometric reserved object runs preserve stable addresses, compact
+      `AtomicU8` sidecars publish each slot with Release/Acquire ordering, and
+      exact range/stride checks reject foreign and interior pointers before the
+      typed cast. The compatibility constructor retains boxed `OnceLock`
+      levels for unsupported mappings and isolated tests. Store drop destroys
+      every published payload before the last reservation owner unmaps it;
+      `heap/safety.rs` pins the three reviewed placement/resolution/drop unsafe
+      operations. Production K=4 tests prove cross-shard resolution and one
+      common offset space. This row does not change the active 16-byte `Value`.
+      The full landing gate passed 364 value tests; 3,037 active oracle tests
+      after an isolated rerun of the known parallel environment-counter flake;
+      the core/JIT/runtime-FFI/cache/aos-nix and 38-test language suites; all 16
+      package byte legs; compute x9 under JIT; wide-eval in
+      serial/K=4/JIT/sweep-zero; zlib/wide cache validation; and all 648
+      selected strict-JSON expressions in those four modes. The frozen global
+      source-size gate remains pre-existing red; the touched production files
+      are 573 and 937 lines. A baseline-first three-sample K=4 wide release A/B
+      against pristine `adbd59d22` moved native means from 3.515 to 3.415 s
+      cold and 3.247 to 2.903 s warm (-2.8%/-10.6%); retained-RSS maxima moved
+      from 629.1 to 562.8 MiB cold and 642.1 to 527.7 MiB warm
+      (-10.5%/-17.8%). Legacy shared record storage still dominates total RSS,
+      so this is a non-regressing shared-flat migration, not the final
+      beat-stock-Nix memory claim.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
-      hash-consed `i64` cell for out-of-range ints. **The reservation and
-      codec are landed; active store adoption and shared-mode publication
-      redesign remain.**
+      hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
+      and shared-mode flat-store adoption are landed; serial-store migration
+      and the active ABI conversion remain.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **Deferred
       with C (same re-entry conditions).**

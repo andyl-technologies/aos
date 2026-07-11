@@ -3,15 +3,13 @@
 //! # Why this module exists
 //!
 //! A runtime [`Value`] is two words: a [`ValueTag`] plus an opaque
-//! [`NonNull<HeapObject>`] pointer. The *typed* payload behind that pointer -
-//! the [`NixString`], [`NixList`], [`FlatAttrs`], or `Arc`-shared thunk/lambda/
-//! primop - does **not** live at the pointer. It lives in a side table owned by
-//! one evaluator ([`super::HeapRecordTable`]). Resolving a value therefore is
-//! *not* pointer arithmetic: `get_string`/`get_list`/`get_attrs` all funnel
-//! through `records.find(ptr)`, an address-keyed lookup into that owner's table
-//! (see [`super::EvalHeap::record_or_unknown`]). A worker thus cannot
-//! dereference a value another worker allocated unless it can read that other
-//! worker's record table.
+//! [`NonNull<HeapObject>`] pointer. The serial heap historically keeps the
+//! typed payload behind that pointer in an evaluator-owned side table
+//! ([`super::HeapRecordTable`]), so a worker cannot resolve another worker's
+//! value without shared storage. Shared mode now has two such storage forms:
+//! legacy record-backed values remain in per-shard stable chunks, while flat
+//! strings, paths, lists, attrsets, thunks, lambdas, and primops live directly
+//! at typed addresses in one common 4-GiB [`ReservedArena`].
 //!
 //! That is the exact blocker the P2 harness documented: the serial
 //! [`super::EvalHeap`] mutates its record `Vec`, hash-cons tables, bump arenas,
@@ -26,7 +24,7 @@
 //!   and allocates only into it (single-writer per shard). Allocation is
 //!   `&self`, so a shard can be driven from a scoped worker thread holding only
 //!   an [`Arc`].
-//! - **Stable record addresses.** Records live in an append-only table of
+//! - **Stable record addresses.** Legacy records live in an append-only table of
 //!   geometrically growing chunks ([`OnceLock`] slots inside boxed chunks;
 //!   level `c` holds `CHUNK_LEN << c` slots, so capacity doubles per level the
 //!   way a `Vec` doubles, without ever relocating a published record). A chunk
@@ -35,27 +33,40 @@
 //!   `HeapObject` handle - a safe raw-pointer cast that is never dereferenced as
 //!   a `HeapObject` (the type is a zero-sized opaque key, exactly as the
 //!   production heap treats it).
+//! - **One flat-object address space.** Every shard's typed flat stores reserve
+//!   geometric object runs from the same [`ReservedArena`]. The active value
+//!   ABI still carries native object addresses, but each address also has a
+//!   checked 32-bit byte offset from the common base. Unsupported platforms or
+//!   a failed mapping retain the boxed-level compatibility backend.
 //! - **Release/Acquire publication.** A record is published by
 //!   [`OnceLock::set`] (Release) and by inserting its address into the shard's
 //!   index under a write lock; readers observe it through [`OnceLock::get`]
-//!   (Acquire) and a read lock. A reader can therefore never observe a torn or
-//!   half-initialized record.
+//!   (Acquire) and a read lock. Reservation-backed flat objects use one compact
+//!   `AtomicU8` marker per logical slot: the complete object is written before
+//!   a Release store, and resolution requires the matching Acquire load. A
+//!   reader therefore never observes a torn or half-initialized payload.
 //! - **Cross-shard resolution.** [`SharedHeapArena::resolve`] probes every
 //!   shard's address index and returns a borrow into the stable chunk store -
 //!   a borrow that is *not* tied to the transient index lock, because record
-//!   storage and the address index are separate structures.
+//!   storage and the address index are separate structures. Typed flat
+//!   resolution instead performs exact range/stride membership checks against
+//!   each shard's reserved levels and never takes an address-index lock.
 //!
 //! ```text
-//! worker 0 ── shard 0 ─ chunks:[ r r r ... ]  index:{addr->id}
-//! worker 1 ── shard 1 ─ chunks:[ r r ...   ]  index:{addr->id}   arena.resolve(ptr):
-//! worker 2 ── shard 2 ─ chunks:[ r ...     ]  index:{addr->id}     for each shard:
-//! worker 3 ── shard 3 ─ chunks:[ r r r r...]  index:{addr->id}       shard.index.read()[addr]?
+//! shared 4-GiB reservation: [ shard-0 flat run ][ shard-3 flat run ] ...
+//!                              │ u32 offsets in one common index space
+//! worker 0 ─ shard 0 ─ records:[ r r r ... ] index:{addr->id}
+//! worker 1 ─ shard 1 ─ records:[ r r ...   ] index:{addr->id}
+//! worker 2 ─ shard 2 ─ records:[ r ...     ] index:{addr->id}
+//! worker 3 ─ shard 3 ─ records:[ r r r r...] index:{addr->id}
 //! ```
 //!
 //! # Shared versus per-worker state
 //!
 //! | State | Placement | Rationale |
 //! |-------|-----------|-----------|
+//! | Flat object storage | Shared reservation, per-shard geometric levels | Cross-worker typed resolution uses exact range/stride checks and one common compressed-index space |
+//! | Flat publication markers | Per-level compact `AtomicU8` sidecars | Release/Acquire publication without a hot-path lock or boxed full-object slot |
 //! | Record storage (typed payloads) | Shared, per-shard append-only chunks | Cross-worker deref needs stable, Acquire-published records |
 //! | Address index (addr -> record id) | Shared, per-shard `RwLock<HashMap>` (insert-only) | Resolve consults it; single writer inserts, many readers probe `O(1)` |
 //! | Bump cursor (`next` slot) | Per-shard, single writer | Only the owning worker allocates in its shard |
@@ -84,15 +95,16 @@
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::ptr::NonNull;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use std::sync::OnceLock;
 
 use thiserror::Error;
 
 use crate::attrs::FlatAttrs;
-use crate::heap::flat::FlatObjectKind;
 use crate::heap::flat::shared::{SharedFlatObject, SharedFlatObjectStore};
+use crate::heap::flat::{FlatKindSet, FlatObjectKind};
+use crate::heap::{ReservedArena, ReservedArenaStats};
 use crate::list::NixList;
 use crate::string::NixString;
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
@@ -264,18 +276,61 @@ const fn levels_for_capacity(capacity: usize) -> u32 {
     levels
 }
 
+fn shared_flat_store<T>(
+    reservation: Option<&Arc<ReservedArena>>,
+    capacity: usize,
+    allowed_kinds: FlatKindSet,
+) -> SharedFlatObjectStore<T> {
+    match reservation {
+        Some(reservation) => SharedFlatObjectStore::with_reservation(
+            Arc::clone(reservation),
+            capacity,
+            allowed_kinds,
+        ),
+        None => SharedFlatObjectStore::with_capacity(capacity),
+    }
+}
+
 impl SharedHeapShard {
     /// Builds an empty shard sized to hold at least `capacity` records
     /// (rounded up to a whole number of geometric chunk levels).
-    fn new(shard_id: usize, capacity: usize) -> Self {
+    fn new(
+        shard_id: usize,
+        capacity: usize,
+        flat_reservation: Option<&Arc<ReservedArena>>,
+    ) -> Self {
         let levels = levels_for_capacity(capacity);
         let chunks = (0..levels).map(|_| OnceLock::new()).collect();
+        let flat_strings = shared_flat_store(
+            flat_reservation,
+            capacity,
+            FlatKindSet::of(&[FlatObjectKind::String, FlatObjectKind::Path]),
+        );
+        let flat_lists = shared_flat_store(
+            flat_reservation,
+            capacity,
+            FlatKindSet::of(&[FlatObjectKind::List]),
+        );
+        let flat_attrs = shared_flat_store(
+            flat_reservation,
+            capacity,
+            FlatKindSet::of(&[FlatObjectKind::Attrs]),
+        );
+        let flat_closures = shared_flat_store(
+            flat_reservation,
+            capacity,
+            FlatKindSet::of(&[
+                FlatObjectKind::Thunk,
+                FlatObjectKind::Lambda,
+                FlatObjectKind::Primop,
+            ]),
+        );
         Self {
             shard_id,
-            flat_strings: SharedFlatObjectStore::with_capacity(capacity),
-            flat_lists: SharedFlatObjectStore::with_capacity(capacity),
-            flat_attrs: SharedFlatObjectStore::with_capacity(capacity),
-            flat_closures: SharedFlatObjectStore::with_capacity(capacity),
+            flat_strings,
+            flat_lists,
+            flat_attrs,
+            flat_closures,
             chunks,
             next: AtomicUsize::new(0),
             published: AtomicUsize::new(0),
@@ -616,6 +671,8 @@ fn payload_size_estimate(object: &HeapObjectValue) -> usize {
 pub struct SharedHeapArena {
     /// One allocation shard per worker.
     shards: Vec<Arc<SharedHeapShard>>,
+    /// Candidate-C address space used by every production flat shard store.
+    flat_reservation: Option<Arc<ReservedArena>>,
 }
 
 impl SharedHeapArena {
@@ -626,10 +683,30 @@ impl SharedHeapArena {
     /// so the arena is always usable.
     pub fn new(worker_count: usize, capacity_per_shard: usize) -> Self {
         let shard_count = worker_count.max(1);
+        let flat_reservation = ReservedArena::new().ok().map(Arc::new);
         let shards = (0..shard_count)
-            .map(|shard_id| Arc::new(SharedHeapShard::new(shard_id, capacity_per_shard)))
+            .map(|shard_id| {
+                Arc::new(SharedHeapShard::new(
+                    shard_id,
+                    capacity_per_shard,
+                    flat_reservation.as_ref(),
+                ))
+            })
             .collect();
-        Self { shards }
+        Self {
+            shards,
+            flat_reservation,
+        }
+    }
+
+    /// Returns whether flat objects use the Candidate-C reservation backend.
+    pub fn uses_flat_reservation(&self) -> bool {
+        self.flat_reservation.is_some()
+    }
+
+    /// Returns accounting for the shared flat reservation, when available.
+    pub fn flat_reservation_stats(&self) -> Option<ReservedArenaStats> {
+        self.flat_reservation.as_ref().map(|arena| arena.stats())
     }
 
     /// Returns the number of shards (workers) in this arena.

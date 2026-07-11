@@ -21,9 +21,10 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use crate::eval::parallel_force::shared_parallel_thunk_cells;
 use crate::eval::parallel_force::{force_shared_parallel_roots, infinite_recursion_error};
 use crate::eval::thunk_registry::ParallelForceCycleRegistry;
-use crate::eval::parallel_force::shared_parallel_thunk_cells;
+use crate::heap::flat::FlatObjectKind;
 use crate::list::NixList;
 use crate::string::NixString;
 use crate::value::Value;
@@ -82,6 +83,58 @@ fn cross_shard_resolution() {
             .bytes(),
         b"x86_64-linux"
     );
+}
+
+/// Production flat publication across shards occupies one Candidate-C index
+/// space while the active runtime values still carry native pointers.
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn production_flat_objects_share_one_reservation_index_space() {
+    let arena = SharedHeapArena::new(4, 64);
+    assert!(arena.uses_flat_reservation());
+    let first = arena
+        .shard(0)
+        .expect("shard 0 exists")
+        .publish_flat_string(
+            FlatObjectKind::String,
+            7,
+            NixString::from_bytes(b"first".to_vec()),
+        )
+        .expect("first string publishes");
+    let second = arena
+        .shard(3)
+        .expect("shard 3 exists")
+        .publish_flat_string(
+            FlatObjectKind::String,
+            8,
+            NixString::from_bytes(b"second".to_vec()),
+        )
+        .expect("second string publishes");
+    let reservation = arena
+        .flat_reservation
+        .as_ref()
+        .expect("reservation is retained");
+    let first_index = reservation
+        .index_for_pointer(first.as_string_ptr().expect("first is a string"))
+        .expect("first pointer has an index");
+    let second_index = reservation
+        .index_for_pointer(second.as_string_ptr().expect("second is a string"))
+        .expect("second pointer has an index");
+
+    assert_ne!(first_index, second_index);
+    assert_eq!(
+        arena.get_string(first).expect("first resolves").bytes(),
+        b"first"
+    );
+    assert_eq!(
+        arena.get_string(second).expect("second resolves").bytes(),
+        b"second"
+    );
+    let stats = arena
+        .flat_reservation_stats()
+        .expect("reservation stats are available");
+    assert_eq!(stats.virtual_reserved_bytes as u64, 1_u64 << 32);
+    assert!(stats.used_bytes > 0);
 }
 
 /// A handle not owned by any shard is a clean error, never a torn read.
