@@ -41,11 +41,9 @@ in
 
         SRC="$TMPDIR/glibc-2.3.4"
 
-        # GNU make 3.79.1 removes the per-subdirectory stamp.os files after
-        # archiving PIC objects. elf/librtld.mk needs their object-to-subdir
-        # mapping, while the equivalent static and nonshared stamps survive.
-        # Resolve each PIC archive member through that preserved metadata
-        # instead of depending on deleted intermediate files.
+        # GNU make 3.79.1 removes the per-subdirectory stamp.os files as
+        # intermediates after archiving PIC objects. elf/librtld.mk consumes
+        # those exact files later, so preserve every generated stamp% target.
         patch -d "$SRC" -p1 < ${./patches/glibc-2.3.4-reconstruct-pic-stamps.patch}
 
         # glibc 2.3.4 configure hardcodes /bin/pwd which doesn't exist in sandbox

@@ -1,19 +1,6 @@
---- a/elf/Makefile
-+++ b/elf/Makefile
-@@ -247,4 +247,12 @@
--	    LC_ALL=C fgrep -l /$$file \
--		  $(common-objpfx)stamp.os $(common-objpfx)*/stamp.os | \
--	    LC_ALL=C \
--	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.os$$@rtld-\1'" +=$$file@"\
-+	    static_file=`echo "$$file" | sed 's/\.os$$/.o/'`; \
-+	    for stamp in $(common-objpfx)stamp.o $(common-objpfx)*/stamp.o; do \
-+	      test -f "$$stamp" || continue; \
-+	      LC_ALL=C fgrep -q /$$static_file "$$stamp" && echo "$$stamp"; \
-+	    done | LC_ALL=C \
-+	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.o$$@rtld-\1'" +=$$file@"; \
-+	    nonshared_file=`echo "$$file" | sed 's/\.os$$/.oS/'`; \
-+	    for stamp in $(common-objpfx)stamp.oS $(common-objpfx)*/stamp.oS; do \
-+	      test -f "$$stamp" || continue; \
-+	      LC_ALL=C fgrep -q /$$nonshared_file "$$stamp" && echo "$$stamp"; \
-+	    done | LC_ALL=C \
-+	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.oS$$@rtld-\1'" +=$$file@" \
+--- a/Makerules
++++ b/Makerules
+@@ -748,0 +749,3 @@
++# GNU make 3.79.1 otherwise removes PIC stamps as intermediates.
++.PRECIOUS: $(objpfx)stamp%
++
