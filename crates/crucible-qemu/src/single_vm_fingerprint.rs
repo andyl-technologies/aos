@@ -36,7 +36,8 @@ pub use live_runner::{
     LiveRunnerImmutableInputs, LiveRunnerLaunchFields, LiveRunnerLaunchKind, LiveRunnerLaunchSpec,
     LiveRunnerQmpConnector, LiveRunnerQmpObservation, LiveRunnerQmpPollError,
     LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession, LiveRunnerSleeper,
-    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, spawn_live_observation_process,
+    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests,
+    VerifiedLiveRunInputs, VerifiedLiveRunInputsError, spawn_live_observation_process,
 };
 pub use probe::{
     SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest, SingleVmFingerprintProbeRunner,

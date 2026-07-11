@@ -722,6 +722,44 @@ fn launch_profile_enforces_guest_non_modification() {
 }
 
 #[test]
+fn launch_profile_admits_only_consistent_diskless_storage() {
+    let diskless = LaunchProfileCandidate::default()
+        .with_disk_image_mode(DiskImageMode::NoBlockDevice)
+        .with_guest_backing_state(GuestBackingStateMode::NoBlockDevice)
+        .try_into_deterministic()
+        .unwrap_or_else(|error| panic!("diskless deterministic profile should validate: {error}"));
+    assert_eq!(diskless.disk_image_mode(), DiskImageMode::NoBlockDevice);
+    assert_eq!(
+        diskless.guest_backing_state(),
+        GuestBackingStateMode::NoBlockDevice
+    );
+    assert!(
+        diskless
+            .scenario_hash_material()
+            .contains("disk_image_mode=no-block-device")
+    );
+
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_disk_image_mode(DiskImageMode::NoBlockDevice)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::StorageModeMismatch {
+            disk: DiskImageMode::NoBlockDevice,
+            backing: GuestBackingStateMode::ByteIdenticalGenesis,
+        })
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_guest_backing_state(GuestBackingStateMode::NoBlockDevice)
+            .try_into_deterministic(),
+        Err(LaunchProfileError::StorageModeMismatch {
+            disk: DiskImageMode::CopyOnWriteOverlay,
+            backing: GuestBackingStateMode::NoBlockDevice,
+        })
+    );
+}
+
+#[test]
 fn launch_profile_rejects_host_entropy_and_host_timing() {
     assert_eq!(
         LaunchProfileCandidate::default()
