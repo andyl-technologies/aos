@@ -129,6 +129,16 @@ impl LiveDefinitionPreflightEvidence {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn import_completed_for_test(
+        config: &LiveRunnerConfig,
+        prepared: LivePreparedLaunch,
+        qmp_observation: LiveRunnerQmpObservation,
+        shutdown: LiveObservationShutdown,
+    ) -> Result<Self, LiveDefinitionPreflightError> {
+        Self::import_completed(config, prepared, qmp_observation, shutdown)
+    }
+
     /// Returns the exact definition-preflight launch and all bound identities.
     #[must_use]
     pub const fn prepared_launch(&self) -> &LivePreparedLaunch {
