@@ -211,11 +211,11 @@ begins.
 ### 2.4 The parity-critical identity audit (`payload_bits`)
 
 The record side table is not only overhead — it is where **address
-identity** is currently anchored. The executable audit now classifies 64
-accessor sites across 21 source files: 40 raw scalar/diagnostic reads,
-five address-only reads confined to collector-free recursive walks, and 19
-relocation-sensitive identities. The production subset is 62 sites across 20
-files (40/5/17); the two additional relocation-sensitive sites are the
+identity** is currently anchored. The executable audit now classifies 65
+accessor sites across 22 source files: 40 raw scalar/diagnostic reads,
+five address-only reads confined to collector-free recursive walks, and 20
+relocation-sensitive identities. The production subset is 63 sites across 21
+files (40/5/18); the two additional relocation-sensitive sites are the
 `cfg(test)` capture-plan validator, retained in the B2 worklist so moving-GC
 tests cannot silently use stale identities. The families (the B2 repair
 worklist, enumerated):
@@ -241,8 +241,9 @@ worklist, enumerated):
   tables — bucket candidates compared and reused by address.
 - **Heap/GC internals:** `eval/heap/{roots,gc,arena,shared_arena,shared_backend}.rs`
   — root sets, scan plans, shard resolution.
-- **JIT lowering:** `ratchet-jit/src/lower.rs` — payload words embedded
-  as constants in compiled code.
+- **JIT lowering:** `ratchet-jit/src/lower.rs` and `lower/alloc_cons.rs` —
+  payload words embedded as constants in compiled code; heap constants are
+  rejected before either scalar or singleton-list emission site.
 - **Shape instances:** `ratchet-value/src/attrs/shape/instance.rs`.
 
 The campaign's §2 stages **preserve** this invariant: flat objects keep
@@ -947,9 +948,9 @@ shipped this way):
 
 ### 9.4 Risks
 
-- **The payload-identity audit** (§2.4): 64 audited sites across 21 files,
-  mechanically split 40 raw / 5 address-only / 19 relocation-sensitive
-  (62 production sites; two `cfg(test)` validator sites). Stable Tier-A
+- **The payload-identity audit** (§2.4): 65 audited sites across 22 files,
+  mechanically split 40 raw / 5 address-only / 20 relocation-sensitive
+  (63 production sites; two `cfg(test)` validator sites). Stable Tier-A
   addresses keep them sound through the campaign, but every stage must
   re-verify no site depended on *record
   table* semantics (e.g. `UnknownPointer` fail-loud shape changes under
@@ -1134,11 +1135,11 @@ list only their *additional* gates.
       B2's rehash-hook worklist derivable from it.
       *Landed: the sealed `Value` API distinguishes raw scalar/diagnostic
       bits, address-only identities, and relocation-sensitive identities.
-      The executable audit pins 40/5/19 sites respectively across 21 source
+      The executable audit pins 40/5/20 sites respectively across 22 source
       files and records the required root writeback, side-table rekey,
       structural-hash rebuild, compiled-constant patch/reject, or no-repair
-      disposition for every family. The production subset is 40/5/17 across
-      20 files; two `cfg(test)` capture-validator sites remain deliberately in
+      disposition for every family. The production subset is 40/5/18 across
+      21 files; two `cfg(test)` capture-validator sites remain deliberately in
       the worklist. Test directories and `tests.rs` modules are excluded;
       UFCS and method-call spellings are both counted.*
 - [x] Compiled-root prerequisite for B2 relocation and Tier-B reclamation:
@@ -1590,6 +1591,16 @@ FV-0 columns rather than sketch estimates:**
       the table at zero records, while only the B2 relocation proving ground
       opts into it. Reconsider segmentation with B2 measurements rather than
       adding an idle production structure.
+- [x] First JIT alloc-family unlock: scalar singleton-list tier-1 bodies lower
+      to a stack-mapped `aos_alloc_cons` call. The semantic runtime wrapper
+      initializes and hash-conses the current flat list representation, rather
+      than exposing the obsolete storage-only cons reservation. GC-stress,
+      direct-tail chaining, finalized symbol relocation, and native execution
+      are covered. Broader list constructors and attrs/string/closure allocation
+      remain gated on complete semantic ABIs. The full serial/K=4/JIT/sweep-zero
+      parity battery, cache validation, and 645-seed strict-JSON corpus are green;
+      seven baseline-first release A/B pairs are regression-free with identical
+      83,361,792-byte arena peaks.
 - [ ] Closure/env hash-consing (§7.1): intern flat closures whose
       captured words are all canonical; declined-admission otherwise.
       Gated on FV-5; sized by FV-0 counters *after* FV-5 banks its win.

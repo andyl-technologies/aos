@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! ratchet_runtime_ffi::alloc
-//!   aos_alloc_* trap-only wrappers for frozen pointer-returning allocation ABIs
+//!   aos_alloc_cons semantic wrapper plus remaining trap-only allocation ABIs
 //! ratchet_runtime_ffi::context
 //!   shared pinned runtime context decoded by mixed-helper native calls
 //! ratchet_runtime_ffi::env
@@ -41,13 +41,10 @@
 //!   unsafe-boundary manifest and source-token allowlist
 //! ```
 //!
-//! The forcing and environment-access wrappers now transfer evaluator errors
-//! through [`trap::RuntimeTrapScope`] instead of aborting, so a caller that
-//! installs a scope can observe a failing evaluation. The allocation,
-//! call-control, attrset-access, and write-barrier wrappers still cover only
-//! success-path ABI shape and process-local address metadata; their evaluator
-//! trap/error transfer remains an explicit blocker before `aos-nix` can treat
-//! those symbols as complete native exports.
+//! The force, environment, call-control, attrset-access, and cons-allocation
+//! wrappers transfer evaluator errors through [`trap::RuntimeTrapScope`]. The
+//! remaining allocation and write-barrier wrappers retain explicit blockers
+//! before `aos-nix` can treat those symbols as complete native exports.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 

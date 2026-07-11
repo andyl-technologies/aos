@@ -5126,7 +5126,7 @@ and helps the oracle directly.
       the flat-value campaign** ([30](30-flat-value-architecture.md);
       stages FV-1..FV-6 plus FV-0's executable `payload_bits` table). The
       table mechanically pins 40 raw scalar/diagnostic readers, five
-      collector-free address identities, and 19 relocation-sensitive
+      collector-free address identities, and 20 relocation-sensitive
       identities with explicit B2 repair dispositions. The identity repair
       hooks are now closed; the moving collector itself and complete mutable
       root-slot/JIT stack-map integration remain open.
@@ -5845,23 +5845,26 @@ and helps the oracle directly.
       relinking is implemented here.
 - [x] Current allocation runtime-FFI trap-wrapper precursor:
       `ratchet-runtime-ffi::alloc::runtime_allocation_native_wrapper_bindings()`
-      exposes process-local trap-only `unsafe extern "C"` wrapper addresses for
-      every frozen `aos_alloc_*` entry point in manifest order. The wrappers
-      preserve the frozen pointer-returning ABI shapes and abort for every call
-      until runtime-context decoding, allocator extraction, safepoint/trap
-      transfer, typed heap-pointer return materialization, and semantic payload
-      initialization for cons/lambda/thunk payloads exist. `aos-nix` uses these
+      exposes process-local `unsafe extern "C"` wrapper addresses for every
+      frozen `aos_alloc_*` entry point in manifest order. The first precursor
+      made every body trap-only. `aos_alloc_cons` now decodes the pinned runtime
+      context, validates and transient-roots its complete semantic payload,
+      materializes an ordinary hash-consed flat list through the evaluator's
+      allocation safepoint, transfers allocation errors through the trap scope,
+      and returns its typed pointer. The length/shape/code-env ABIs remain
+      trap-only because they do not yet carry enough payload to initialize the
+      active flat representation. `aos-nix` uses these
       addresses for runtime-symbol provenance, replacing the allocation
       Rust-callable provenance gap, and that provenance now carries the
       trap-wrapper's remaining native-export blockers: it omits the separate
       final-export gate, while runtime-context decoding,
       trap transfer, typed pointer returns, and semantic payload initialization
-      remain explicit where applicable. The oracle native-export readiness gate
+      remain explicit where applicable; the wrapper-local cons blocker list is
+      now empty. The oracle native-export readiness gate
       still reports the missing final exported wrapper and rejects final
       registration. This is process-local preflight
-      metadata only: no allocation wrapper allocates, initializes heap payloads,
-      transfers traps, registers with `JITBuilder::symbol`, or becomes a final
-      exported native ABI target.
+      metadata plus one executable semantic wrapper: final native-export
+      admission and the remaining allocation representations stay open.
 - [x] Current write-barrier symbol/signature precursor:
       `ratchet-core::runtime_abi` now reserves the single
       `RuntimeHelperRole::WriteBarrier` helper symbol, `aos_gc_write_barrier`,
@@ -6098,8 +6101,8 @@ and helps the oracle directly.
       including missing final exported-wrapper admission. Tests call the
       env/forcing, apply, attrset wrappers, and metadata function pointers on
       their supported success paths, cover
-      subprocess abort paths including the trap-only allocation and barrier
-      wrappers,
+      subprocess abort paths including the remaining trap-only allocation and
+      barrier wrappers,
       and the `aos-nix` address-candidate bridge now uses these wrapper
       addresses for `aos_alloc_*`, `aos_env_get`, `aos_apply`, `aos_blackhole_check`, `aos_force`,
       `aos_force_deep`, `aos_gc_write_barrier`, `aos_has_attr`, `aos_select_ic`,
@@ -6114,8 +6117,9 @@ and helps the oracle directly.
       deep-force error paths, and `aos_apply` malformed, null context, and
       tree-walk apply error paths abort until trap transfer and the remaining
       runtime integrations exist;
-      `aos_alloc_*` remains trap-only until safe allocator dispatch and typed
-      heap-pointer returns can be reached from native runtime context; and
+      `aos_alloc_cons` reaches safe allocator dispatch and returns a typed flat
+      list pointer, while the other `aos_alloc_*` bodies remain trap-only until
+      their incomplete ABIs can initialize typed semantic payloads; and
       `aos_gc_write_barrier` remains a trap-only body until safe barrier
       dispatch can be reached from native runtime context; `aos_has_attr` and
       `aos_select_ic` abort on invalid scoped contexts or tree-walk errors until
@@ -11313,9 +11317,10 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       pinned language wrapper, all 16 package legs, all seven wide/shape modes,
       compute x8, zlib and wide cache validation, and all 648 strict-JSON seeds
       in serial/K=4/JIT/sweep-zero. The frozen source-size offender set remains
-      unchanged. Cranelift user-stack-map emission, live compiled-frame binding,
-      allocation-capable bodies, OSR, and persistent compiled-body coverage
-      beyond the later unary-cache slice remain open.
+      unchanged. Cranelift user-stack-map emission and live compiled-frame
+      binding landed later; broader allocation-capable bodies, OSR, and
+      persistent compiled-body coverage beyond the later unary-cache slice
+      remain open.
 - [x] Tier-2 strict `all`/`any` collection seam (`cffda6a76`): the tree-walk
       loops consult the engine at most twice per call and reuse the landed
       arity-1 filter-predicate scanner, lowering, pin validation, and compiled
@@ -11758,7 +11763,7 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       reproduce the allocation/deref columns; analysis version 7 persists
       capture plans and Chunk-D facts; the executable identity audit discovers
       the three representation-owning crates and rejects any drift from its
-      reviewed 40/5/19 raw/address-only/relocation-sensitive inventory.
+      reviewed 40/5/20 raw/address-only/relocation-sensitive inventory.
 - [x] FV-1 — flat strings/paths/lists: header + inline payload in the
       Tier-A arena; hash-cons key migration; `heap/safety.rs` audit-table
       extension ([30](30-flat-value-architecture.md) §2).
@@ -11797,6 +11802,33 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       balanced pairs improve by paired medians of ~5.9% cold and ~3.8% warm.
       Threshold-zero sweep retires 135,872 closures with byte parity; doc 30
       §12 carries the full gate record.*
+- [x] First JIT alloc-family unlock — scalar singleton-list tier-1 bodies call
+      the registered `aos_alloc_cons` wrapper through finalized Cranelift code.
+      The call is bracketed by compiled-frame stack-map enter/exit helpers and
+      carries a user stack map for the complete head `Value`; the safe runtime
+      bridge transient-roots head/tail and returns the canonical flat-list
+      pointer. Focused tests prove GC-stress safepoint dispatch, null-tail and
+      non-null-tail semantics, module relocation of all three symbols, native
+      execution, and zero legacy heap records. Multi-element/non-literal lists
+      and the incomplete list/attrs/string/code-env allocation ABIs deliberately
+      remain on the evaluator path.
+      The landing gate passed 3,034 active serial oracle tests (34 ignored),
+      259 JIT tests, 80 active runtime-FFI unit tests plus eight integration
+      tests (26 ignored subprocess targets), 329 `aos-nix` tests, and the
+      38-test pinned language aggregate. It also passed all 16 package byte
+      legs, compute x9 under JIT, `bench.wide-eval` in serial/K=4/JIT/sweep-zero,
+      zlib and wide cache validation, and all 645 generated strict-JSON seeds in
+      those four modes. The frozen source-size suite remains pre-existing red;
+      all five touched offenders are exactly unchanged, and every new source is
+      below 225 lines. The unrelated harness malformed-node-trace assertion is
+      also pre-existing red when run alone from the pristine `ed1d76c47` archive.
+      A noisy seven-pair baseline-first release A/B against that archive was
+      regression-free: separate medians moved from 3.980 to 3.600 seconds cold
+      and 2.842 to 2.471 seconds warm; paired-median candidate/baseline ratios
+      were ~0.940 cold and ~0.860 warm. Median retained RSS moved from 147.5 to
+      142.1 MiB cold and 171.2 to 165.4 MiB warm; arena peak was identical at
+      83,361,792 bytes in every leg. This is recorded as a functional substrate
+      and no-regression result, not a speedup claim for the narrow constructor.
 - [ ] Extensions, individually gated: closure/env hash-consing; the
       semantic-swap eviction ladder (memo-tier + module-IR eviction,
       drop-and-recompute; thunk serialization and in-process compression

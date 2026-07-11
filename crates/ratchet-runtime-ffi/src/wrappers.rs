@@ -338,17 +338,17 @@ mod tests {
         assert!(bindings.iter().copied().all(|binding| {
             // The forcing, environment-access, call-control, and attrset-access
             // families implement trap transfer, so their wrapper-local blocker
-            // lists are empty and they report as export-ready. The allocation and
-            // write-barrier families still carry wrapper-local blockers. No family
-            // carries the final-export gate, which stays owned by the oracle
-            // native-export preflight.
+            // lists are empty and they report as export-ready. `aos_alloc_cons`
+            // is the first allocation helper whose complete semantic payload
+            // makes the same true. Other allocation helpers and the write barrier
+            // retain wrapper-local blockers. The oracle owns final admission.
             let trap_transfer_done = matches!(
                 binding.role(),
                 RuntimeHelperRole::ForcingControl
                     | RuntimeHelperRole::EnvironmentAccess
                     | RuntimeHelperRole::CallControl
                     | RuntimeHelperRole::AttrsetAccess
-            );
+            ) || binding.symbol_name() == "aos_alloc_cons";
             binding.address().is_non_null()
                 && binding.is_export_ready() == trap_transfer_done
                 && binding.remaining_export_blockers().is_empty() == trap_transfer_done

@@ -4,7 +4,6 @@
 //! helper wrappers must decode raw ABI pointers supplied by compiled code. This
 //! module records the standing controls for that boundary and tests that current
 //! source files keep every unsafe token on a reviewed allowlist.
-
 /// Crate-level lint required for the runtime FFI unsafe boundary.
 pub const RUNTIME_FFI_UNSAFE_CRATE_LINT: &str = "#![deny(unsafe_op_in_unsafe_fn)]";
 
@@ -227,8 +226,8 @@ mod tests {
         "ext",
         "ern \"C\" fn aos_alloc_attrs("
     );
-    const ALLOC_CONS_FN_LINE: &str =
-        concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_alloc_cons(");
+    const ALLOC_CONS_FN_LINE: &str = concat!("pub ", "uns", "afe ", "ext", "ern \"C\" fn aos_alloc_cons(");
+    const ALLOC_CONS_DECODER_CALL_LINE: &str = concat!("let allocated = ", "uns", "afe { // aos_alloc_cons runtime-context decode");
     const ALLOC_LAMBDA_FN_LINE: &str = concat!(
         "pub ",
         "uns",
@@ -796,7 +795,7 @@ mod tests {
                 || trimmed == ALLOC_RAW_FN_TYPE_LINE
                 || trimmed == ALLOC_EXPORT_ATTR_LINE
                 || trimmed == ALLOC_ATTRS_FN_LINE
-                || trimmed == ALLOC_CONS_FN_LINE
+                || trimmed == ALLOC_CONS_FN_LINE || trimmed == ALLOC_CONS_DECODER_CALL_LINE
                 || trimmed == ALLOC_LAMBDA_FN_LINE
                 || trimmed == ALLOC_LIST_FN_LINE
                 || trimmed == ALLOC_RAW_FN_LINE
@@ -1514,9 +1513,9 @@ mod unchecked_cfg;
             "aos_alloc_attrs native wrapper must stay singly reviewed"
         );
         assert_eq!(
-            trimmed_line_occurrences(&alloc, ALLOC_CONS_FN_LINE),
-            1,
-            "aos_alloc_cons native wrapper must stay singly reviewed"
+            (trimmed_line_occurrences(&alloc, ALLOC_CONS_FN_LINE), trimmed_line_occurrences(&alloc, ALLOC_CONS_DECODER_CALL_LINE)),
+            (1, 1),
+            "aos_alloc_cons wrapper and runtime decode must stay singly reviewed"
         );
         assert_eq!(
             trimmed_line_occurrences(&alloc, ALLOC_LAMBDA_FN_LINE),
@@ -2041,6 +2040,7 @@ mod unchecked_cfg;
             RUNTIME_ENV_CONTEXT_ENV_LINE,
             "raw shared runtime environment pointer must keep a SAFETY comment",
         );
+        assert_has_safety_comment_before(&alloc_lines, ALLOC_CONS_DECODER_CALL_LINE, "cons allocation decoder call must keep a SAFETY comment");
         assert_has_safety_comment_before(
             &alloc_lines,
             ALLOC_ATTRS_ABORT_TEST_CALL_LINE,

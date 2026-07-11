@@ -14,8 +14,8 @@
 //! promotion-gated registered native-call composition precursor,
 //! [`lower`] builds verified CLIF bodies for the first literal Core-IR, local
 //! environment-slot, direct local-slot application, static attr selection,
-//! constant-thunk smoke tests, bounded shape-directed tier-1 lowerer selectors,
-//! and address-free tier-1 fact plans,
+//! scalar singleton-list allocation, constant-thunk smoke tests, bounded
+//! shape-directed tier-1 lowerer selectors, and address-free tier-1 fact plans,
 //! [`module`] composes artifacts with runtime-symbol declaration
 //! readiness, [`safepoints`] records the compiled-tier stack-map obligation,
 //! [`symbols`] mirrors the stable runtime symbol manifest from `ratchet-core`
@@ -118,14 +118,16 @@ pub use lower::{
     scan_tier2_unary_predicate,
 };
 pub use lower::{
-    AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX,
-    AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX, AOS_IR_ROOT_FUNCTION_NAMESPACE,
+    AOS_ALLOC_CONS_FUNCTION_INDEX, AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX,
+    AOS_ENV_GET_FUNCTION_INDEX, AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX,
+    AOS_IR_ROOT_FUNCTION_NAMESPACE,
     AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
     AOS_PRIMOP_CALL_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
     AOS_SELECT_IC_FUNCTION_INDEX, AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX,
     AOS_UPVAL_GET_FUNCTION_INDEX,
     JitLowerError, JitTier1ThunkFactDecision, JitTier1ThunkFactPlan,
-    clif_external_name_for_aos_apply, clif_external_name_for_aos_deopt,
+    clif_external_name_for_aos_alloc_cons, clif_external_name_for_aos_apply,
+    clif_external_name_for_aos_deopt,
     clif_external_name_for_aos_env_get, clif_external_name_for_aos_force,
     clif_external_name_for_aos_has_attr, clif_external_name_for_aos_primop_call,
     clif_external_name_for_aos_jit_stack_map_enter,
@@ -154,6 +156,7 @@ pub use lower::{
     lower_primop_call_ir_thunk_body_artifact, lower_select_local_slot_ir_root_thunk_body,
     lower_select_local_slot_ir_root_thunk_body_artifact, lower_select_local_slot_ir_thunk_body,
     lower_select_local_slot_ir_thunk_body_artifact,
+    lower_singleton_list_ir_thunk_body_artifact,
     lower_string_length_inline_ir_thunk_body_artifact, lower_tier1_ir_thunk_body,
     lower_tier1_ir_thunk_body_artifact, lower_tier1_ir_thunk_body_artifact_for_ir,
     lower_tier1_ir_thunk_body_for_ir, lower_update_local_slots_ir_root_thunk_body,

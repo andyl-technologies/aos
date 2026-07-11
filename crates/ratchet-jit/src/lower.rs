@@ -36,8 +36,8 @@ use crate::{
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     tier::JitTier,
 };
-
 mod arith_tree;
+mod alloc_cons;
 mod error;
 pub mod interp;
 mod lambda_chain;
@@ -48,7 +48,10 @@ pub use stack_maps::{
     clif_external_name_for_aos_jit_stack_map_enter,
     clif_external_name_for_aos_jit_stack_map_exit,
 };
-
+pub use alloc_cons::{
+    AOS_ALLOC_CONS_FUNCTION_INDEX, clif_external_name_for_aos_alloc_cons,
+    lower_singleton_list_ir_thunk_body_artifact,
+};
 pub use error::JitLowerError;
 pub use lambda_chain::{
     JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary,
@@ -60,7 +63,6 @@ pub use lambda_rec::{
     AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,
     lower_tier2_self_recursive_lambda,
 };
-
 /// Cranelift user-function namespace reserved for Core IR root thunks.
 ///
 /// Cranelift treats user function names as caller-owned numeric metadata. The
@@ -79,13 +81,10 @@ pub const AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE: u32 = 8;
 
 /// User-external function index reserved for the `aos_env_get` helper.
 pub const AOS_ENV_GET_FUNCTION_INDEX: u32 = 0;
-
 /// User-external function index reserved for the `aos_force` helper.
 pub const AOS_FORCE_FUNCTION_INDEX: u32 = 1;
-
 /// User-external function index reserved for the `aos_apply` helper.
 pub const AOS_APPLY_FUNCTION_INDEX: u32 = 2;
-
 /// User-external function index reserved for the `aos_has_attr` helper.
 pub const AOS_HAS_ATTR_FUNCTION_INDEX: u32 = 3;
 
@@ -2058,6 +2057,7 @@ fn lower_tier1_ir_thunk_body_artifact_for_kind(
         },
         IrKind::Apply => lower_apply_local_slots_ir_thunk_body_artifact(arena, root),
         IrKind::BinOp => arith_tree::lower_binop_ir_thunk_body_artifact(arena, root),
+        IrKind::List => alloc_cons::lower_singleton_list_ir_thunk_body_artifact(arena, root),
         kind if is_thunk_body => Err(JitLowerError::UnsupportedIrBody { kind }),
         kind => Err(JitLowerError::UnsupportedIrRoot { kind }),
     }

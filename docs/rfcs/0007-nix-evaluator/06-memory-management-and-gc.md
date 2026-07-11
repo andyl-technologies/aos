@@ -437,7 +437,7 @@ across requests. That case is Tier B.
 > sweep release. This closes the value-representation prerequisite. The
 > copying nursery remains mandated and unimplemented. The checked-in
 > `payload_bits` identity gate is now closed: 40 raw scalar/diagnostic
-> reads, five collector-free address identities, and 19 relocation-sensitive
+> reads, five collector-free address identities, and 20 relocation-sensitive
 > identities are count-pinned with explicit root-writeback/rekey/rebuild
 > dispositions, all of which are now closed. B2 still has to implement the
 > copying collector, complete mutable root-slot/JIT stack-map integration, and

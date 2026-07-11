@@ -35,6 +35,13 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         b2_disposition: "reject heap constants before CLIF payload emission",
     },
     PayloadIdentityAuditRow {
+        path: "ratchet-jit/src/lower/alloc_cons.rs",
+        raw_representation: 0,
+        address_identity_only: 0,
+        relocation_sensitive: 1,
+        b2_disposition: "reject heap constants before singleton-list head emission",
+    },
+    PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/env.rs",
         raw_representation: 0,
         address_identity_only: 0,
@@ -287,12 +294,12 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .iter()
             .map(|row| row.relocation_sensitive)
             .sum::<usize>(),
-        19
+        20
     );
     let production_rows = PAYLOAD_IDENTITY_AUDIT
         .iter()
         .filter(|row| !row.path.ends_with("capture_validation.rs"));
-    assert_eq!(production_rows.clone().count(), 20);
+    assert_eq!(production_rows.clone().count(), 21);
     assert_eq!(
         production_rows
             .map(|row| {
@@ -305,6 +312,6 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .fold((0, 0, 0), |left, right| {
                 (left.0 + right.0, left.1 + right.1, left.2 + right.2)
             }),
-        (40, 5, 17)
+        (40, 5, 18)
     );
 }

@@ -8,13 +8,12 @@
 //! addresses to register.
 
 use std::{error::Error, fmt};
-
 use cranelift_codegen::ir::{ExternalName, Function, UserExternalName, UserFuncName};
-
 use crate::{
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
     lower::{
-        AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX,
+        AOS_ALLOC_CONS_FUNCTION_INDEX, AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX,
+        AOS_ENV_GET_FUNCTION_INDEX,
         AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX, AOS_PRIMOP_CALL_FUNCTION_INDEX,
         AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX,
@@ -26,8 +25,8 @@ use crate::{
     },
     tier::JitTier,
 };
-
 const AOS_ENV_GET_SYMBOL: &str = "aos_env_get";
+const AOS_ALLOC_CONS_SYMBOL: &str = "aos_alloc_cons";
 const AOS_FORCE_SYMBOL: &str = "aos_force";
 const AOS_APPLY_SYMBOL: &str = "aos_apply";
 const AOS_HAS_ATTR_SYMBOL: &str = "aos_has_attr";
@@ -39,7 +38,6 @@ const AOS_PRIMOP_CALL_SYMBOL: &str = "aos_primop_call";
 const AOS_STRING_LENGTH_SYMBOL: &str = "aos_string_length";
 const AOS_JIT_STACK_MAP_ENTER_SYMBOL: &str = "aos_jit_stack_map_enter";
 const AOS_JIT_STACK_MAP_EXIT_SYMBOL: &str = "aos_jit_stack_map_exit";
-
 /// Address-free CLIF artifact metadata needed by future module setup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JitModuleArtifactMetadata {
@@ -55,7 +53,6 @@ pub struct JitModuleArtifactRuntimeImport {
     symbol_name: String,
     user_external_name: UserExternalName,
 }
-
 impl JitModuleArtifactRuntimeImport {
     fn new(symbol_name: String, user_external_name: UserExternalName) -> Self {
         Self {
@@ -484,6 +481,9 @@ fn runtime_symbol_for_external_name(
         }
         (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_STRING_LENGTH_FUNCTION_INDEX) => {
             Some((AOS_STRING_LENGTH_SYMBOL, user_external_name))
+        }
+        (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_ALLOC_CONS_FUNCTION_INDEX) => {
+            Some((AOS_ALLOC_CONS_SYMBOL, user_external_name))
         }
         (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX) => {
             Some((AOS_JIT_STACK_MAP_ENTER_SYMBOL, user_external_name))

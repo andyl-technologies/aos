@@ -1064,5 +1064,9 @@ design above with the code as ground truth:
 - [ ] MEMO-2 final acceptance: primary/secondary-loss/poisoned-L3 matrix,
       root-cutoff latency non-regression, repeat-heavy package/CI hit-mass
       demonstration, and the required cross-machine L3 replay.
-- [ ] Compiled-body records in the unified keyspace when the approved JIT
-      profit-promotion/artifact round lands.
+- [x] Unary tier-2 compiled-body sidecar records with versioned target and
+      lowering identity, decode validation, and miss-safe recompilation.
+- [ ] Fold compiled-body records into the packed multi-location keyspace and
+      extend persistence beyond unary tier-2 bodies. The new allocation-capable
+      singleton-list tier-1 artifact is intentionally re-lowered today; it does
+      not widen the persisted body claim.

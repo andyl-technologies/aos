@@ -33,7 +33,6 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleError};
 use ratchet_core::{Ir, IrArena, IrId};
 use ratchet_value::value::{Value, ValueError};
-
 use crate::{
     abi::{JitEnvFramePtr, JitRuntimeContextPtr, JitThunkFn},
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
@@ -58,13 +57,11 @@ use crate::{
         JitTieredCodeSlot, JitTieredCodeSlotError, TierUpDecision, TierUpDemandHint, TierUpPolicy,
     },
 };
-
 mod finalized;
 mod tier2;
 pub use finalized::JitCraneliftFinalizedFunction;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_argv_entry;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_entry;
-
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
 pub const PINNED_CRANELIFT_CODEGEN_VERSION: &str = "0.127.4";
 
@@ -76,7 +73,6 @@ pub const PINNED_CRANELIFT_MODULE_VERSION: &str = "0.127.4";
 
 /// The exact `cranelift-native` crate version required by this JIT slice.
 pub const PINNED_CRANELIFT_NATIVE_VERSION: &str = "0.127.4";
-
 /// The `cranelift-codegen` crate version linked into this build.
 pub const ACTIVE_CRANELIFT_CODEGEN_VERSION: &str = cranelift_codegen::VERSION;
 
@@ -3283,6 +3279,10 @@ fn runtime_symbol_name_for_user_external_name(
             crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
             crate::lower::AOS_STRING_LENGTH_FUNCTION_INDEX,
         ) => Some("aos_string_length"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_ALLOC_CONS_FUNCTION_INDEX,
+        ) => Some("aos_alloc_cons"),
         (
             crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
             crate::lower::AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX,

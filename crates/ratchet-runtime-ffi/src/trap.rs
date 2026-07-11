@@ -70,6 +70,8 @@ pub enum RuntimeTrap {
     /// An attrset-access wrapper (`aos_has_attr`, `aos_select_ic`, `aos_update`)
     /// reported a tree-walk evaluator error.
     Attr(TreeWalkError),
+    /// A semantic allocation wrapper reported a tree-walk evaluator error.
+    Allocation(TreeWalkError),
     /// A compiled body requested deoptimization through `aos_deopt`.
     ///
     /// This carries no evaluator error: it is a control signal a compiled tier-1

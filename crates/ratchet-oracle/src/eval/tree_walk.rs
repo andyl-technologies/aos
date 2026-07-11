@@ -12,7 +12,6 @@
 //! list/attrset equality to weak head normal form, establishing the arena access
 //! and diagnostic surface used by later slices for full string coercion,
 //! first-class primitive operations, and derivation boundaries.
-
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     ffi::OsStr,
@@ -1632,6 +1631,7 @@ mod flake_ref;
 mod gc_sweep;
 mod region;
 mod relocation_identity;
+mod runtime_alloc;
 mod safepoint_roots;
 mod select_cache_hash;
 use select_cache_hash::SelectCacheMap;

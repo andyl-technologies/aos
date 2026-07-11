@@ -1,23 +1,25 @@
 //! Allocation C ABI wrappers.
 //!
 //! Native tier-1 code imports allocation helpers through the frozen
-//! `aos_alloc_*` pointer-returning ABI surface. This module supplies trap-only
-//! wrappers for those ABIs: every allocation wrapper aborts until native runtime
-//! contexts can expose the active allocator, typed heap-pointer materialization,
-//! semantic payload initialization, and evaluator trap transfer. That is the
-//! only sound behavior today because the safe evaluator allocation paths own
-//! allocator selection, allocation safepoints, object layout, and payload
-//! initialization.
+//! `aos_alloc_*` pointer-returning ABI surface. `aos_alloc_cons` is the first
+//! complete semantic wrapper: its arguments fully describe the result, so it
+//! enters the evaluator, preserves roots across the allocation safepoint, and
+//! returns an ordinary flat-list pointer. The storage-only and code/env wrappers
+//! remain trap-only until their ABIs can initialize the active representation.
 
-use std::{ffi::c_void, process};
+use std::{ffi::c_void, process, ptr::NonNull};
 
 use ratchet_oracle::{
     runtime::alloc::{
         RuntimeAllocationAbiSignature, RuntimeAllocationEntryPoint,
         RuntimeAllocationNativeExportBlocker,
     },
-    value::Value,
+    runtime::allocation_values::rust_callable_aos_alloc_cons,
+    value::{HeapObject, Value},
 };
+
+use crate::context::with_native_runtime_context;
+use crate::trap::{RuntimeTrap, record_runtime_trap};
 
 /// Native C ABI function pointer shape for code-plus-environment allocations.
 ///
@@ -58,20 +60,14 @@ pub type RuntimeAllocationAttrsNativeFn =
 /// Native C ABI function pointer shape for `aos_alloc_cons`.
 ///
 /// The function returns a typed list pointer through the native ABI and
-/// transfers no error state. It aborts instead of unwinding until the evaluator
-/// runtime context can expose the active allocator, semantic payload
-/// initialization for the cons head/tail, trap transfer, and typed
-/// pointer-return materialization to this ABI boundary.
+/// transfers allocation failures through the active runtime trap scope.
 ///
 /// # Safety
 ///
 /// Calls through this pointer must satisfy the same host-ABI obligations
 /// documented on [`aos_alloc_cons`]. `head` must be a Rust-valid [`Value`] with
 /// a valid tag discriminant, and `tail` must use the frozen list-pointer ABI
-/// representation. The current trap-only wrapper aborts before decoding `_rt`,
-/// inspecting `head`, dereferencing `_tail`, or materializing a typed heap
-/// pointer; future cons allocation will require all arguments to be valid for
-/// the active evaluator runtime.
+/// representation. All arguments must be valid for the active evaluator runtime.
 pub type RuntimeAllocationConsNativeFn =
     unsafe extern "C" fn(*mut c_void, Value, *mut c_void) -> *mut c_void;
 
@@ -121,6 +117,8 @@ const ALLOCATION_SEMANTIC_REMAINING_EXPORT_BLOCKERS: &[RuntimeAllocationNativeEx
     RuntimeAllocationNativeExportBlocker::SemanticPayloadInitializationUnimplemented,
 ];
 
+const ALLOCATION_CONS_REMAINING_EXPORT_BLOCKERS: &[RuntimeAllocationNativeExportBlocker] = &[];
+
 /// Aborts through the frozen attrset allocation native ABI body.
 ///
 /// This wrapper is the trap-only C ABI body for `aos_alloc_attrs`. It accepts
@@ -144,28 +142,47 @@ pub unsafe extern "C" fn aos_alloc_attrs(
     process::abort()
 }
 
-/// Aborts through the frozen cons allocation native ABI body.
+/// Allocates and initializes through the frozen cons native ABI body.
 ///
-/// This wrapper is the trap-only C ABI body for `aos_alloc_cons`. It accepts
-/// the frozen runtime-context pointer, by-value head, and tail list pointer,
-/// then aborts until native wrappers can safely enter the evaluator allocator,
-/// initialize the cons payload, and return a materialized list pointer.
+/// The wrapper validates the by-value head, decodes the shared runtime context,
+/// treats a null tail as the empty list, and delegates to the safe evaluator
+/// allocation path. The resulting pointer identifies a registered, hash-consed
+/// flat list. An evaluator allocation error is transferred through the active
+/// trap scope and returns null; outside a scope, recording the error aborts.
 ///
 /// # Safety
 ///
-/// `head` must be a Rust-valid [`Value`] with a valid tag discriminant before
-/// crossing this ABI boundary, and `tail` must use the frozen list-pointer ABI
-/// representation. The current wrapper aborts before decoding `_rt`, inspecting
-/// `head`, dereferencing `_tail`, or materializing a typed list pointer. The
-/// caller must also ensure the host ABI used to call this function matches the
-/// frozen `aos_alloc_cons` runtime signature.
+/// `head` must be a Rust-valid [`Value`] whose heap payload, if any, is owned by
+/// the evaluator encoded by `rt`. A non-null `tail` must be a live list pointer
+/// owned by the same evaluator. `rt` must point to a pinned live
+/// [`crate::context::RuntimeJitContext`] with exclusive evaluator access. The
+/// caller must ensure the host ABI matches the frozen `aos_alloc_cons`
+/// signature and must stop consuming the null result when the trap scope records
+/// an error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aos_alloc_cons(
-    _rt: *mut c_void,
-    _head: Value,
-    _tail: *mut c_void,
+    rt: *mut c_void,
+    head: Value,
+    tail: *mut c_void,
 ) -> *mut c_void {
-    process::abort()
+    if head.validate_payload().is_err() {
+        process::abort()
+    }
+    let tail = NonNull::new(tail).map(NonNull::cast::<HeapObject>);
+    // SAFETY: The caller supplies the pinned RuntimeJitContext and exclusive
+    // evaluator access required by `with_native_runtime_context`.
+    let allocated = unsafe { // aos_alloc_cons runtime-context decode
+        with_native_runtime_context(rt, |eval, id, span| {
+            rust_callable_aos_alloc_cons(eval, id, span, head, tail)
+        })
+    };
+    match allocated {
+        Ok(ptr) => ptr.cast::<c_void>().as_ptr(),
+        Err(error) => {
+            record_runtime_trap(RuntimeTrap::Allocation(error));
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Aborts through the frozen lambda allocation native ABI body.
@@ -355,7 +372,7 @@ impl RuntimeAllocationNativeWrapperBinding {
             address: RuntimeAllocationNativeWrapperAddress::new(
                 aos_alloc_cons as RuntimeAllocationConsNativeFn as *mut c_void,
             ),
-            remaining_export_blockers: ALLOCATION_SEMANTIC_REMAINING_EXPORT_BLOCKERS,
+            remaining_export_blockers: ALLOCATION_CONS_REMAINING_EXPORT_BLOCKERS,
         }
     }
 
@@ -494,7 +511,7 @@ mod tests {
             bindings[1],
             RuntimeAllocationEntryPoint::AosAllocCons,
             aos_alloc_cons as RuntimeAllocationConsNativeFn as *mut c_void,
-            ALLOCATION_SEMANTIC_REMAINING_EXPORT_BLOCKERS,
+            ALLOCATION_CONS_REMAINING_EXPORT_BLOCKERS,
         );
         assert!(matches!(
             bindings[1].function(),
@@ -568,6 +585,10 @@ mod tests {
     fn allocation_native_wrapper_remaining_blockers_extend_oracle_export_gate() {
         for binding in runtime_allocation_native_wrapper_bindings() {
             let oracle_blockers = binding.entrypoint().native_export_blockers();
+            if binding.entrypoint() == RuntimeAllocationEntryPoint::AosAllocCons {
+                assert!(binding.remaining_export_blockers().is_empty());
+                continue;
+            }
             assert_eq!(
                 binding.remaining_export_blockers(),
                 &oracle_blockers[1..],
@@ -632,9 +653,8 @@ mod tests {
         let head = Value::null();
         let tail = std::ptr::null_mut();
 
-        // SAFETY: `head` has a valid tag discriminant. The current wrapper is
-        // trap-only and aborts before decoding `rt`, inspecting `head`,
-        // dereferencing `tail`, or materializing a typed list pointer.
+        // SAFETY: `head` and the null tail are valid; the null runtime context
+        // intentionally exercises the wrapper's safety-contract abort.
         let _ = unsafe { aos_alloc_cons(rt, head, tail) };
     }
 
@@ -715,7 +735,7 @@ mod tests {
             binding.remaining_export_blockers(),
             remaining_export_blockers
         );
-        assert!(!binding.is_export_ready());
+        assert_eq!(binding.is_export_ready(), remaining_export_blockers.is_empty());
     }
 
     fn assert_child_process_aborts(test_name: &str) {
