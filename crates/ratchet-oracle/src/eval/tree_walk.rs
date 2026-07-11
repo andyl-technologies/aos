@@ -1597,6 +1597,7 @@ mod eval_core;
 mod eval_derivation;
 mod eval_hash;
 mod eval_import;
+mod eval_import_root_cache;
 mod eval_impure_inputs;
 mod import_persist_locations;
 mod eval_list_filter;
@@ -1653,6 +1654,5 @@ pub use safepoint_roots::{
     TreeWalkSafepointMinorGcReferenceWritebackPlan, TreeWalkSafepointMinorGcRootWritebackReport,
     TreeWalkSafepointRootError, TreeWalkSafepointRootWritebackError, TreeWalkSafepointScanError,
 };
-
 #[cfg(test)]
 mod tests;

@@ -1228,7 +1228,7 @@ impl TreeWalk {
         Self::cache_expression_identity_for_node(module, body.id())
     }
 
-    fn cache_expression_identity_for_node(
+    pub(in crate::eval::tree_walk) fn cache_expression_identity_for_node(
         module: &TreeWalkModule,
         id: IrId,
     ) -> Option<CacheExprIdentity> {

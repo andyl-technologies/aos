@@ -26,6 +26,7 @@ mod memo_tiers;
 mod root_cutoff_tests;
 mod semantic_edit;
 mod source_errors;
+mod warm_import;
 
 fn native_with_temp_store(prefix: &str) -> Result<(NixNative, PathBuf, PathBuf)> {
     let root = unique_temp_dir(prefix);
