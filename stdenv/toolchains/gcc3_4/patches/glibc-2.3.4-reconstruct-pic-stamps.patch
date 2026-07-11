@@ -1,24 +1,17 @@
 --- a/elf/Makefile
 +++ b/elf/Makefile
-@@ -238,6 +238,21 @@ $(objpfx)librtld.map: $(objpfx)dl-allobjs.os $(common-objpfx)libc_pic.a
- 	mv -f $@T $@
- 
- $(objpfx)librtld.mk: $(objpfx)librtld.map Makefile
-+	@for stamp_dir in $(common-objpfx) $(common-objpfx)*/; do \
-+	  test -d "$$stamp_dir" || continue; \
-+	  stamp="$$stamp_dir/stamp.os"; \
-+	  test -f "$$stamp" && continue; \
-+	  if test -f "$$stamp_dir/stamp.o"; then \
-+	    sed 's/\.o /.os /g; s/\.o$$/.os/' "$$stamp_dir/stamp.o" > "$$stamp"; \
-+	  else \
-+	    : > "$$stamp"; \
-+	  fi; \
-+	  for obj in "$$stamp_dir"/*.os; do \
-+	    test -e "$$obj" || continue; \
-+	    relative=$$(printf '%s\n' "$$obj" | sed 's@^$(common-objpfx)@@'); \
-+	    printf '%s ' "$$relative" >> "$$stamp"; \
-+	  done; \
-+	done
- 	LC_ALL=C \
- 	sed -n 's@^$(common-objpfx)\([^(]*\)(\([^)]*\.os\)) *.*$$@\1 \2@p' \
- 	    $< | \
+@@ -247,4 +247,10 @@
+-	    LC_ALL=C fgrep -l /$$file \
+-		  $(common-objpfx)stamp.os $(common-objpfx)*/stamp.os | \
+-	    LC_ALL=C \
+-	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.os$$@rtld-\1'" +=$$file@"\
++	    static_file=`echo "$$file" | sed 's/\.os$$/.o/'`; \
++	    for stamp in `find $(common-objpfx) -name stamp.o -type f`; do \
++	      LC_ALL=C fgrep -q /$$static_file "$$stamp" && echo "$$stamp"; \
++	    done | LC_ALL=C \
++	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.o$$@rtld-\1'" +=$$file@"; \
++	    nonshared_file=`echo "$$file" | sed 's/\.os$$/.oS/'`; \
++	    for stamp in `find $(common-objpfx) -name stamp.oS -type f`; do \
++	      LC_ALL=C fgrep -q /$$nonshared_file "$$stamp" && echo "$$stamp"; \
++	    done | LC_ALL=C \
++	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.oS$$@rtld-\1'" +=$$file@" \
