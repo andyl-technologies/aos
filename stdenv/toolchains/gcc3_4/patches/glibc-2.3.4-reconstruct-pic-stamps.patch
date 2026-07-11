@@ -2,5 +2,5 @@
 +++ b/Makerules
 @@ -748,0 +749,3 @@
 +# GNU make 3.79.1 otherwise removes PIC stamps as intermediates.
-+.PRECIOUS: $(objpfx)stamp%
++.SECONDARY: $(foreach o,$(object-suffixes-for-libc),$(objpfx)stamp$o)
 +
