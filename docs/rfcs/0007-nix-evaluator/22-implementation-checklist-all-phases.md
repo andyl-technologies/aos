@@ -11448,8 +11448,38 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       1.020 and 1.030. Median post-eval RSS was 30.30/30.33 MiB cold and
       30.56/30.42 MiB warm; every leg retained a 0.5 MiB arena peak. This is a
       persistence-coverage and no-regression result, not a speedup claim.
-      Compiled-body L3, production hit counters, admission tuning, and
-      machine-code/AOT reuse remain open.
+      Production hit counters, admission tuning, and machine-code/AOT reuse
+      remain open.
+- [x] Persistent compiled-body cache, L3 network placement: after primary and
+      secondary L2 miss, every unary and chain-family tier-2 record can now be
+      fetched from `/v1/compiled-body/<semantic-key>`. Its bounded wire envelope
+      carries magic/version, the expected semantic key, an independent payload
+      hash, and record length; accepted bytes must then pass the existing exact
+      source/arity/self and CLIF verifier before they are compiled or promoted
+      into primary `files/pack.blob`. Declared-length and chunked responses are
+      both capped. Transport, key, hash, schema, and verifier failures remain
+      advisory misses behind the shared process backoff. Publication is
+      best-effort only in explicit `rw`; read-only evaluators never publish.
+      Shared loopback tests cover unary and generic-chain publication,
+      fresh-primary reload, later network-free local reuse, read-only
+      suppression, swapped semantic keys, corrupt content, and the existing
+      root-record L3 matrix.
+
+      The landing passed 3,036 active serial oracle tests (34 ignored), 261 JIT
+      tests, 335 `aos-nix` tests, 80 active runtime-FFI tests plus eight
+      integrations, 112 cache tests plus its doctest, 38 language tests, all 16
+      package byte legs, compute x9, wide serial/K=4/JIT/sweep-zero, zlib and
+      wide cache validation, and all 645 generated strict-JSON seeds in those
+      four modes. The only harness/source-size reds remain the documented
+      pristine-baseline failures; `native/mod.rs` remains at its frozen 1000
+      lines and every new or grown source is below the cap. A balanced
+      seven-pair root-cutoff-disabled JIT `sum-fold` A/B against pristine
+      `1ce5c78f3` measured candidate/baseline medians of 22.69/22.84 ms cold
+      and 21.24/22.00 ms warm, with paired-median ratios 0.980/0.956. Median
+      post-eval RSS was 30.27/30.38 MiB cold and 30.72/30.48 MiB warm; every
+      leg retained a 0.5 MiB arena peak. This closes compiled-body L3 placement,
+      not production hit counters, admission tuning, executable-code reuse, or
+      MEMO-2's required cross-machine acceptance demonstration.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling

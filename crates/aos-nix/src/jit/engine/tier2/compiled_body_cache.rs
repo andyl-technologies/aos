@@ -1,10 +1,11 @@
 //! Packed, multi-location persistence for address-free tier-2 bodies.
 //!
 //! Compiled bodies share the evaluator's indexed `files/pack.blob` store and
-//! probe the configured L2 locations in latency order. A verified secondary
-//! hit is promoted through the primary's ordinary indexed-write path. Missing,
-//! unreadable, corrupt, source-mismatched, or verifier-rejected records are
-//! advisory misses; executable pages and process addresses are never stored.
+//! probe the configured L2 locations in latency order, then the optional L3
+//! network catalog. A verified secondary or network hit is promoted through
+//! the primary's ordinary indexed-write path. Missing, unreadable, corrupt,
+//! source-mismatched, or verifier-rejected records are advisory misses;
+//! executable pages and process addresses are never stored.
 
 #[cfg(test)]
 use std::cell::Cell;
@@ -22,9 +23,10 @@ use ratchet_oracle::cache::{
     PersistFileArtifactIndexValue, PersistFileArtifactKey, PersistFileBlobHash, PersistLocationHit,
     lowered_ir_fingerprint,
 };
-use ratchet_oracle::eval::tree_walk::TreeWalkOptions;
+use ratchet_oracle::eval::tree_walk::{MemoNetMode, MemoNetOptions, TreeWalkOptions};
 
 use super::NixJitTier1Engine;
+use crate::native::memo_net;
 
 const MAGIC: &[u8; 8] = b"AOSJIT2\0";
 const SCHEMA_VERSION: u32 = 2;
@@ -36,21 +38,37 @@ const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 
 pub(in crate::jit::engine) struct CompiledBodyCache {
     locations: PersistCacheLocations,
+    net: Option<MemoNetOptions>,
     #[cfg(test)]
     chain_hits: Cell<u64>,
+    #[cfg(test)]
+    network_hits: Cell<u64>,
 }
 
 impl CompiledBodyCache {
+    #[cfg(test)]
     fn open(
         persist_root: &Path,
         verify: bool,
         secondaries: &[PersistDiskLocation],
     ) -> Option<Self> {
+        Self::open_with_net(persist_root, verify, secondaries, None)
+    }
+
+    fn open_with_net(
+        persist_root: &Path,
+        verify: bool,
+        secondaries: &[PersistDiskLocation],
+        net: Option<&MemoNetOptions>,
+    ) -> Option<Self> {
         match PersistCacheLocations::open(persist_root, verify, secondaries) {
             Ok(locations) => Some(Self {
                 locations,
+                net: net.cloned(),
                 #[cfg(test)]
                 chain_hits: Cell::new(0),
+                #[cfg(test)]
+                network_hits: Cell::new(0),
             }),
             Err(error) => {
                 tracing::debug!(
@@ -91,7 +109,9 @@ impl CompiledBodyCache {
             }
             return Some(lowering);
         }
-        None
+        self.load_network_record(key, |bytes| {
+            read_record(bytes, fingerprint, pattern, body, budget)
+        })
     }
 
     pub(super) fn store(
@@ -111,6 +131,7 @@ impl CompiledBodyCache {
                 "compiled-body indexed write failed"
             );
         }
+        self.publish_network_record(key, &record);
     }
 
     /// Loads and verifies one fused-chain lowering from the ordered L2 set.
@@ -152,7 +173,12 @@ impl CompiledBodyCache {
             self.chain_hits.set(self.chain_hits.get().saturating_add(1));
             return Some(lowering);
         }
-        None
+        let lowering = self.load_network_record(key, |bytes| {
+            read_chain_record(bytes, record_hash, source, arity, self_upval)
+        })?;
+        #[cfg(test)]
+        self.chain_hits.set(self.chain_hits.get().saturating_add(1));
+        Some(lowering)
     }
 
     /// Stores one fused-chain lowering under its complete semantic identity.
@@ -177,12 +203,59 @@ impl CompiledBodyCache {
                 "fused-chain compiled-body indexed write failed"
             );
         }
+        self.publish_network_record(key, &record);
     }
 
     /// Returns successful chain reloads observed by this test cache instance.
     #[cfg(test)]
     pub(in crate::jit::engine) fn chain_hits(&self) -> u64 {
         self.chain_hits.get()
+    }
+
+    #[cfg(test)]
+    fn network_hits(&self) -> u64 {
+        self.network_hits.get()
+    }
+
+    fn load_network_record<T>(
+        &self,
+        key: PersistFileArtifactKey,
+        decode: impl FnOnce(&[u8]) -> Result<T, ReadRecordError>,
+    ) -> Option<T> {
+        let net = self.net.as_ref()?;
+        let bytes = match memo_net::fetch_compiled_body_record(net, key) {
+            memo_net::CompiledBodyFetchOutcome::Hit(bytes) => bytes,
+            memo_net::CompiledBodyFetchOutcome::Miss
+            | memo_net::CompiledBodyFetchOutcome::Error => return None,
+        };
+        let decoded = match decode(&bytes) {
+            Ok(decoded) => decoded,
+            Err(_) => {
+                tracing::debug!(
+                    target: "aos_nix::cache",
+                    "compiled-body network record failed semantic or CLIF validation"
+                );
+                return None;
+            }
+        };
+        if !write_indexed_record(self.locations.primary(), key, &bytes) {
+            tracing::debug!(
+                target: "aos_nix::cache",
+                "compiled-body network hit promotion failed"
+            );
+        }
+        #[cfg(test)]
+        self.network_hits
+            .set(self.network_hits.get().saturating_add(1));
+        Some(decoded)
+    }
+
+    fn publish_network_record(&self, key: PersistFileArtifactKey, record: &[u8]) {
+        if let Some(net) = self.net.as_ref()
+            && net.mode == MemoNetMode::ReadWrite
+        {
+            let _ = memo_net::publish_compiled_body_record(net, key, record);
+        }
     }
 }
 
@@ -195,7 +268,7 @@ impl NixJitTier1Engine {
     /// defensive pack verification.
     #[must_use]
     pub fn with_compiled_body_cache_root(self, persist_root: Option<&Path>) -> Self {
-        self.with_compiled_body_cache_locations(persist_root, false, &[])
+        self.with_compiled_body_cache_locations(persist_root, false, &[], None)
     }
 
     /// Configures packed compiled-body persistence across all L2 locations.
@@ -205,9 +278,10 @@ impl NixJitTier1Engine {
         persist_root: Option<&Path>,
         verify: bool,
         secondaries: &[PersistDiskLocation],
+        net: Option<&MemoNetOptions>,
     ) -> Self {
-        self.tier2.get_mut().compiled_cache =
-            persist_root.and_then(|root| CompiledBodyCache::open(root, verify, secondaries));
+        self.tier2.get_mut().compiled_cache = persist_root
+            .and_then(|root| CompiledBodyCache::open_with_net(root, verify, secondaries, net));
         self
     }
 
@@ -218,6 +292,7 @@ impl NixJitTier1Engine {
             options.persist_cache_root(),
             options.persist_cache_verify(),
             options.memo_disk_locations(),
+            options.memo_net(),
         )
     }
 }
@@ -453,6 +528,8 @@ mod tests {
     };
     use ratchet_oracle::cache::{PersistCache, PersistLatencyClass};
 
+    use crate::native::tests::test_memo_server::MemoTestServer;
+
     use super::*;
 
     #[test]
@@ -584,6 +661,187 @@ mod tests {
         assert!(!primary.join("compiled-bodies").exists());
 
         fs::remove_dir_all(root).expect("cache roots remove");
+    }
+
+    #[test]
+    fn network_bodies_publish_reload_verify_and_promote_locally() {
+        let _net = crate::native::memo_net::test_guard();
+        let server = MemoTestServer::spawn().expect("memo server starts");
+        let root = unique_cache_root();
+        let publisher_root = root.join("publisher");
+        let reader_root = root.join("reader");
+        let write_net = net_options(&server, MemoNetMode::ReadWrite);
+        let publisher =
+            CompiledBodyCache::open_with_net(&publisher_root, false, &[], Some(&write_net))
+                .expect("publisher cache opens");
+
+        let (fib_ir, pattern, body, fib) = fib_lowering();
+        publisher.store(&fib_ir, pattern, body, TIER2_NATIVE_DEPTH_BUDGET, &fib);
+        let (chain_ir, chain) = add_chain_lowering();
+        let identity = b"test:network:add-chain:operator-env:v1";
+        publisher.store_chain(&chain_ir, identity, TIER2_NATIVE_DEPTH_BUDGET, &chain);
+        assert_eq!(
+            server.record_count_with_prefix("/v1/compiled-body/"),
+            2,
+            "rw mode publishes both compiled-body families"
+        );
+
+        let read_net = net_options(&server, MemoNetMode::ReadOnly);
+        let read_only_writer = CompiledBodyCache::open_with_net(
+            &root.join("read-only-writer"),
+            false,
+            &[],
+            Some(&read_net),
+        )
+        .expect("read-only cache opens");
+        read_only_writer.store_chain(
+            &chain_ir,
+            b"test:network:read-only-must-not-publish:v1",
+            TIER2_NATIVE_DEPTH_BUDGET,
+            &chain,
+        );
+        assert_eq!(
+            server.record_count_with_prefix("/v1/compiled-body/"),
+            2,
+            "read-only mode must never publish compiled bodies"
+        );
+
+        let reader = CompiledBodyCache::open_with_net(&reader_root, false, &[], Some(&read_net))
+            .expect("reader cache opens");
+        let decoded_fib = reader
+            .load(&fib_ir, pattern, body, TIER2_NATIVE_DEPTH_BUDGET)
+            .expect("unary body reloads from L3");
+        assert_eq!(decoded_fib.source(), body);
+        let decoded_chain = reader
+            .load_chain(
+                &chain_ir,
+                identity,
+                chain.source(),
+                chain.arity(),
+                chain.self_upval(),
+                TIER2_NATIVE_DEPTH_BUDGET,
+            )
+            .expect("chain body reloads from L3");
+        assert_eq!(decoded_chain.source(), chain.source());
+        assert_eq!(reader.network_hits(), 2);
+        assert_eq!(reader.chain_hits(), 1);
+        assert!(reader_root.join("files/pack.blob").is_file());
+
+        let local = CompiledBodyCache::open(&reader_root, false, &[])
+            .expect("promoted local cache reopens");
+        assert!(
+            local
+                .load(&fib_ir, pattern, body, TIER2_NATIVE_DEPTH_BUDGET)
+                .is_some(),
+            "accepted unary L3 body is installed locally"
+        );
+        assert!(
+            local
+                .load_chain(
+                    &chain_ir,
+                    identity,
+                    chain.source(),
+                    chain.arity(),
+                    chain.self_upval(),
+                    TIER2_NATIVE_DEPTH_BUDGET,
+                )
+                .is_some(),
+            "accepted chain L3 body is installed locally"
+        );
+
+        fs::remove_dir_all(root).expect("cache roots remove");
+    }
+
+    #[test]
+    fn corrupted_or_swapped_network_body_is_an_advisory_miss() {
+        let _net = crate::native::memo_net::test_guard();
+        let server = MemoTestServer::spawn().expect("memo server starts");
+        let root = unique_cache_root();
+        let write_net = net_options(&server, MemoNetMode::ReadWrite);
+        let publisher =
+            CompiledBodyCache::open_with_net(&root.join("publisher"), false, &[], Some(&write_net))
+                .expect("publisher cache opens");
+        let (fib_ir, pattern, body, fib) = fib_lowering();
+        publisher.store(&fib_ir, pattern, body, TIER2_NATIVE_DEPTH_BUDGET, &fib);
+        let (chain_ir, chain) = add_chain_lowering();
+        let identity = b"test:network:poisoned-chain:v1";
+        publisher.store_chain(&chain_ir, identity, TIER2_NATIVE_DEPTH_BUDGET, &chain);
+
+        server.mutate_records(|records| {
+            let keys = records
+                .keys()
+                .filter(|key| key.starts_with("/v1/compiled-body/"))
+                .cloned()
+                .collect::<Vec<_>>();
+            if let [first, second] = keys.as_slice() {
+                let first_bytes = records[first].clone();
+                let second_bytes = records[second].clone();
+                records.insert(first.clone(), second_bytes);
+                records.insert(second.clone(), first_bytes);
+            }
+        });
+        let read_net = net_options(&server, MemoNetMode::ReadOnly);
+        let reader = CompiledBodyCache::open_with_net(
+            &root.join("swapped-reader"),
+            false,
+            &[],
+            Some(&read_net),
+        )
+        .expect("swapped reader opens");
+        assert!(
+            reader
+                .load(&fib_ir, pattern, body, TIER2_NATIVE_DEPTH_BUDGET)
+                .is_none(),
+            "a valid bundle under the wrong semantic key must miss"
+        );
+        assert!(
+            reader
+                .load_chain(
+                    &chain_ir,
+                    identity,
+                    chain.source(),
+                    chain.arity(),
+                    chain.self_upval(),
+                    TIER2_NATIVE_DEPTH_BUDGET,
+                )
+                .is_none(),
+            "the swapped chain bundle must miss"
+        );
+        assert_eq!(reader.network_hits(), 0);
+
+        server.mutate_records(|records| {
+            for (key, bytes) in records.iter_mut() {
+                if key.starts_with("/v1/compiled-body/")
+                    && let Some(last) = bytes.last_mut()
+                {
+                    *last ^= 0xff;
+                }
+            }
+        });
+        let corrupt_reader = CompiledBodyCache::open_with_net(
+            &root.join("corrupt-reader"),
+            false,
+            &[],
+            Some(&read_net),
+        )
+        .expect("corrupt reader opens");
+        assert!(
+            corrupt_reader
+                .load(&fib_ir, pattern, body, TIER2_NATIVE_DEPTH_BUDGET)
+                .is_none(),
+            "content-hash corruption must miss"
+        );
+        assert_eq!(corrupt_reader.network_hits(), 0);
+
+        fs::remove_dir_all(root).expect("cache roots remove");
+    }
+
+    fn net_options(server: &MemoTestServer, mode: MemoNetMode) -> MemoNetOptions {
+        MemoNetOptions {
+            endpoint: server.endpoint(),
+            mode,
+            timeout_ms: 2_000,
+        }
     }
 
     fn fib_lowering() -> (Ir, IrId, IrId, JitTier2LambdaLowering) {

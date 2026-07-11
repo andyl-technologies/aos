@@ -106,7 +106,7 @@ maximum RSS was slightly lower in the candidate (71.03 vs 71.31 MiB cold;
 measured native `fib` at 20.7/18.4 ms cold/warm versus C++ Nix at 269/289 ms,
 with a 0.5 MiB arena peak. The cache is therefore neutral at this workload's
 whole-command resolution; this landing claims a functional substrate, not a
-CLIF-reload wall-time win. Compiled-body L3 placement, cache counters, and a
+CLIF-reload wall-time win. Production compiled-body cache counters and a
 measured default admission heuristic remain open.
 
 The version-2 packed-layout landing's balanced seven-pair,
@@ -140,7 +140,7 @@ candidate/baseline medians of 38.69/33.22 ms cold and 33.32/34.20 ms warm; the
 host-drift-resistant paired-median ratios were 1.065 and 0.999. Median post-eval
 RSS was 31.2/31.0 MiB cold and 31.4/31.1 MiB warm, with a 0.5 MiB arena peak in
 every leg. This clears the 10% no-regression gate but does not claim a reload
-speedup; L3, counters, admission tuning, and executable-code reuse remain open.
+speedup; counters, admission tuning, and executable-code reuse remain open.
 
 **Collection-loop extension (2026-07-11).** Plain strict-fold operators, the
 predicate body shared by `filter`/`all`/`any`, and fused
@@ -154,6 +154,32 @@ candidate/baseline medians of 22.82/22.35 ms cold and 22.02/21.34 ms warm
 (paired ratios 1.020/1.030), with effectively flat RSS and the same 0.5 MiB
 arena peak. This is persistence coverage and a no-regression result, not a
 reload-speedup claim.
+
+**Compiled-body L3 extension (2026-07-11).** Every unary and chain-family
+record now probes the configured network catalog after exhausting local L2.
+The separate `/v1/compiled-body/<semantic-key>` wire envelope carries fixed
+magic/version fields, the expected semantic key, an independent payload hash,
+and a bounded record length; both declared-length and chunked responses are
+capped at 32 MiB plus the envelope. The network remains advisory: only a bundle
+whose key and payload hash validate proceeds to the existing exact
+source/arity/self and CLIF verifier, and only that verified record is promoted
+into the primary `files/pack.blob`. Publication is best-effort and restricted
+to explicit `rw`; transport failures share the root tier's process-wide
+backoff. Loopback tests cover unary and generic-chain publish/fresh-primary
+reload/local reuse, read-only suppression, swapped semantic keys, content
+corruption, and the unchanged root-record L3 matrix.
+
+The full landing gate passed 3,036 active serial oracle tests (34 ignored), 261
+JIT tests, 335 `aos-nix` tests, 80 active runtime-FFI tests plus eight
+integrations, 112 cache tests plus its doctest, 38 language tests, all 16
+package byte legs, compute x9, wide serial/K=4/JIT/sweep-zero, zlib and wide
+cache validation, and all 645 generated strict-JSON seeds in those four modes.
+A balanced seven-pair root-cutoff-disabled JIT `sum-fold` A/B against pristine
+`1ce5c78f3` measured candidate/baseline medians of 22.69/22.84 ms cold and
+21.24/22.00 ms warm (paired ratios 0.980/0.956). Median post-eval RSS was
+30.27/30.38 MiB cold and 30.72/30.48 MiB warm; every leg retained a 0.5 MiB
+arena peak. This is a coverage and no-regression result, not a network-cache
+speedup or the still-required two-machine L3 demonstration.
 
 **FV-5 status boundary (2026-07-09).** Hybrid closure capture changes the
 runtime representation, not this memo contract. `facts.bin` analysis version
@@ -953,7 +979,7 @@ multi-location L2 with latency classes + promotion/demotion; L3
 read-side with re-hash validation + `rw` publish from CI. Unary, fused-chain,
 and collection-loop compiled-body records now use the common indexed `files/`
 pack and artifact mapping keyspace across the configured primary and secondary
-L2 locations; compiled-body L3 placement remains part of this phase.
+L2 locations and the read-validated, rw-gated compiled-body L3 protocol.
 
 Acceptance gates:
 
@@ -1079,8 +1105,8 @@ design above with the code as ground truth:
    live, including the durable scalar filesystem-import root boundary. The unification added per-subtree slice attribution,
    L0/L1 content tables, admission cost flags, multi-location L2, L3,
    and promotion; unary, fused-chain, and collection-loop compiled-body records
-   now share the packed multi-location L2 store, while compiled-body L3
-   placement and final measured defaults remain.
+   now share the packed multi-location L2 store and verified L3 exchange, while
+   production counters and final measured defaults remain.
 5. **"Recompute cost from force-time stats — the `AOS_NIX_EVAL_STATS`
    machinery exists" — corrected by the economics seam.** `EvalStats`
    remains aggregate and normal runs still pay no clock hook. The explicit
@@ -1134,6 +1160,11 @@ design above with the code as ground truth:
       body IDs. Runtime pin resolution and the existing per-call dispatch
       guards remain authoritative before reuse. A fresh-engine test reloads
       all three families from the common verified `files/pack.blob` path.
-- [ ] Extend compiled-body placement through L3. The allocation-capable
-      singleton-list tier-1 artifact is intentionally re-lowered today; it
-      does not widen the persisted body claim.
+- [x] Extend compiled-body placement through L3: separate self-validating
+      semantic-key/content-hash/length envelopes, bounded HTTP reads, advisory
+      transport and validation failures, exact record and CLIF verification,
+      promotion into primary L2, and explicit `rw`-only publication. Loopback
+      tests cover unary and chain families, read-only suppression, swapped-key
+      and corrupted payload rejection, and subsequent network-free local reuse.
+      The allocation-capable singleton-list tier-1 artifact is intentionally
+      re-lowered today; it does not widen the persisted body claim.

@@ -936,13 +936,13 @@ fn native_filesystem_access_denied(mode: EvalMode, path: &[u8]) -> NativeEvalErr
 mod error;
 mod eval_stats_dump;
 mod fallback;
-mod memo_net;
+pub(crate) mod memo_net;
 mod parse_locations;
 mod root_cutoff;
 mod source;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use error::*;
 use fallback::*;
