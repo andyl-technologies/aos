@@ -7,13 +7,19 @@
 //! float use typed boxed-scalar indices. Bit 31 of the kind half is the thunk
 //! `FORCED` shortcut.
 //!
-//! This is the sealed codec boundary for the measured variant. The active
-//! evaluator still uses [`Value`](super::Value); switching the runtime and JIT
-//! ABI is a later, separately gated step.
+//! [`CandidateCScalarStore`] supplies the matching hash-consed reservation
+//! cells for wide integers and floats. The active evaluator still uses
+//! [`Value`](super::Value); switching the runtime and JIT ABI is a later,
+//! separately gated step.
+
+use std::collections::HashMap;
 
 use thiserror::Error;
 
 use crate::heap::ArenaIndex;
+use crate::heap::flat::{
+    FlatKindSet, FlatObjectError, FlatObjectKind, FlatObjectStore, SharedFlatStoreArena,
+};
 
 use super::ValueTag;
 
@@ -257,6 +263,199 @@ impl CompressedValueWord {
     }
 }
 
+/// Hash-consed boxed scalar cells in one Candidate-C reservation.
+///
+/// Encoded words are local to this arena. The active ABI must add and validate
+/// arena-domain identity before compressed values can cross between live heaps.
+#[derive(Debug)]
+pub struct CandidateCScalarStore {
+    arena: SharedFlatStoreArena,
+    ints: FlatObjectStore<i64>,
+    floats: FlatObjectStore<u64>,
+    int_words: HashMap<i64, CompressedValueWord>,
+    float_words: HashMap<u64, CompressedValueWord>,
+}
+
+impl CandidateCScalarStore {
+    /// Creates a scalar store in `arena` when its reservation backend is active.
+    pub fn new(arena: SharedFlatStoreArena) -> Option<Self> {
+        if !arena.uses_reservation() {
+            return None;
+        }
+        Some(Self {
+            ints: FlatObjectStore::with_shared_arena(
+                arena.clone(),
+                FlatKindSet::of(&[FlatObjectKind::BoxedInt]),
+            ),
+            floats: FlatObjectStore::with_shared_arena(
+                arena.clone(),
+                FlatKindSet::of(&[FlatObjectKind::BoxedFloat]),
+            ),
+            arena,
+            int_words: HashMap::new(),
+            float_words: HashMap::new(),
+        })
+    }
+
+    /// Encodes an integer inline or returns its hash-consed boxed word.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flat allocation fails or its address cannot be
+    /// represented by the store's reservation.
+    pub fn encode_int(&mut self, value: i64) -> Result<CompressedValueWord, CandidateCScalarError> {
+        match CompressedValueWord::inline_int(value) {
+            Ok(word) => return Ok(word),
+            Err(CompressedValueError::IntegerRequiresBox { .. }) => {}
+            Err(source) => return Err(CandidateCScalarError::Codec(source)),
+        }
+        if let Some(word) = self.int_words.get(&value) {
+            return Ok(*word);
+        }
+        let allocation = self
+            .ints
+            .alloc(FlatObjectKind::BoxedInt, value as u64, 0, value)?;
+        let index = self.index_for_allocation(allocation.ptr)?;
+        let word = CompressedValueWord::boxed_int(index);
+        self.int_words.insert(value, word);
+        Ok(word)
+    }
+
+    /// Encodes a float as a hash-consed boxed word, preserving its raw bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the flat allocation fails or its address cannot be
+    /// represented by the store's reservation.
+    pub fn encode_float(
+        &mut self,
+        value: f64,
+    ) -> Result<CompressedValueWord, CandidateCScalarError> {
+        let bits = value.to_bits();
+        if let Some(word) = self.float_words.get(&bits) {
+            return Ok(*word);
+        }
+        let allocation = self
+            .floats
+            .alloc(FlatObjectKind::BoxedFloat, bits, 0, bits)?;
+        let index = self.index_for_allocation(allocation.ptr)?;
+        let word = CompressedValueWord::boxed_float(index);
+        self.float_words.insert(bits, word);
+        Ok(word)
+    }
+
+    /// Decodes an inline or boxed integer word.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `word` is not an integer, its index is not live,
+    /// or the indexed object is not a boxed integer in this store.
+    pub fn decode_int(&self, word: CompressedValueWord) -> Result<i64, CandidateCScalarError> {
+        match word.kind() {
+            CompressedValueKind::InlineInt => Ok(word.payload() as i32 as i64),
+            CompressedValueKind::BoxedInt => {
+                let ptr = self.pointer_for_word(word)?;
+                Ok(*self.ints.resolve(ptr, FlatObjectKind::BoxedInt)?.payload())
+            }
+            actual => Err(CandidateCScalarError::KindMismatch {
+                expected: "integer",
+                actual,
+            }),
+        }
+    }
+
+    /// Decodes a boxed float word without normalizing its bit pattern.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `word` is not a float, its index is not live, or
+    /// the indexed object is not a boxed float in this store.
+    pub fn decode_float(&self, word: CompressedValueWord) -> Result<f64, CandidateCScalarError> {
+        if word.kind() != CompressedValueKind::BoxedFloat {
+            return Err(CandidateCScalarError::KindMismatch {
+                expected: "float",
+                actual: word.kind(),
+            });
+        }
+        let ptr = self.pointer_for_word(word)?;
+        let bits = *self
+            .floats
+            .resolve(ptr, FlatObjectKind::BoxedFloat)?
+            .payload();
+        Ok(f64::from_bits(bits))
+    }
+
+    /// Returns the number of distinct boxed integer cells.
+    pub fn boxed_int_count(&self) -> usize {
+        self.ints.len()
+    }
+
+    /// Returns the number of distinct boxed float bit patterns.
+    pub fn boxed_float_count(&self) -> usize {
+        self.floats.len()
+    }
+
+    fn index_for_allocation(
+        &self,
+        ptr: std::ptr::NonNull<crate::value::HeapObject>,
+    ) -> Result<ArenaIndex, CandidateCScalarError> {
+        self.arena
+            .index_for_pointer(ptr)
+            .ok_or(CandidateCScalarError::AddressOutsideReservation {
+                address: ptr.as_ptr() as usize,
+            })
+    }
+
+    fn pointer_for_word(
+        &self,
+        word: CompressedValueWord,
+    ) -> Result<std::ptr::NonNull<crate::value::HeapObject>, CandidateCScalarError> {
+        let index = word
+            .arena_index()
+            .ok_or(CandidateCScalarError::KindMismatch {
+                expected: "boxed scalar",
+                actual: word.kind(),
+            })?;
+        self.arena
+            .pointer_for_index(index)
+            .ok_or(CandidateCScalarError::IndexOutsideReservation { index: index.raw() })
+    }
+}
+
+/// A Candidate-C boxed scalar could not be stored or decoded.
+#[derive(Debug, Error)]
+pub enum CandidateCScalarError {
+    /// The codec rejected a requested scalar encoding.
+    #[error(transparent)]
+    Codec(#[from] CompressedValueError),
+    /// The flat store could not allocate or resolve the scalar cell.
+    #[error(transparent)]
+    Flat(#[from] FlatObjectError),
+    /// Candidate C was requested without a reservation backend.
+    #[error("Candidate-C scalar storage requires a reservation-backed arena")]
+    ReservationUnavailable,
+    /// A fresh scalar allocation did not belong to the expected reservation.
+    #[error("scalar allocation 0x{address:x} is outside the Candidate-C reservation")]
+    AddressOutsideReservation {
+        /// The rejected native address.
+        address: usize,
+    },
+    /// A scalar word named an index outside the reservation's live lanes.
+    #[error("scalar index {index} is outside the Candidate-C reservation's live lanes")]
+    IndexOutsideReservation {
+        /// The rejected compressed offset.
+        index: u32,
+    },
+    /// A scalar decoder received the wrong representation kind.
+    #[error("expected a compressed {expected}, found {actual:?}")]
+    KindMismatch {
+        /// The requested semantic scalar type.
+        expected: &'static str,
+        /// The observed representation kind.
+        actual: CompressedValueKind,
+    },
+}
+
 /// A Candidate-C value could not be encoded or decoded.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum CompressedValueError {
@@ -337,6 +536,52 @@ mod tests {
         assert!(thunk.is_forced_thunk());
         assert_eq!(CompressedValueWord::from_raw(thunk.raw()), Ok(thunk));
         assert_eq!(thunk.arena_index(), Some(index));
+    }
+
+    #[test]
+    fn scalar_store_inlines_i32_and_hash_conses_boxed_values() {
+        let arena = SharedFlatStoreArena::new();
+        let mut store =
+            CandidateCScalarStore::new(arena.clone()).expect("production arena uses a reservation");
+
+        let inline = store.encode_int(-7).expect("small integer encodes");
+        assert_eq!(store.decode_int(inline).expect("small integer decodes"), -7);
+        assert_eq!(store.boxed_int_count(), 0);
+
+        let wide_value = i64::from(i32::MAX) + 1;
+        let wide = store.encode_int(wide_value).expect("wide integer boxes");
+        assert_eq!(
+            store.encode_int(wide_value).expect("wide integer reuses"),
+            wide
+        );
+        assert_eq!(
+            store.decode_int(wide).expect("wide integer decodes"),
+            wide_value
+        );
+        assert_eq!(store.boxed_int_count(), 1);
+
+        let nan_bits = 0x7ff8_0000_0000_0042;
+        let float = store
+            .encode_float(f64::from_bits(nan_bits))
+            .expect("float boxes");
+        assert_eq!(
+            store
+                .encode_float(f64::from_bits(nan_bits))
+                .expect("float reuses"),
+            float
+        );
+        assert_eq!(
+            store.decode_float(float).expect("float decodes").to_bits(),
+            nan_bits
+        );
+        assert_eq!(store.boxed_float_count(), 1);
+        assert_eq!(
+            arena.permanent_stats().used_bytes,
+            arena
+                .reservation_stats()
+                .expect("reservation stats")
+                .low_used_bytes
+        );
     }
 
     #[test]

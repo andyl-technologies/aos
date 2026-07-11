@@ -176,6 +176,10 @@ pub enum FlatObjectKind {
     Lambda = 0x06,
     /// A builtin / partially-applied-builtin payload (doc 30 stage FV-3).
     Primop = 0x07,
+    /// A boxed signed 64-bit scalar for Candidate C.
+    BoxedInt = 0x08,
+    /// A boxed IEEE-754 scalar for Candidate C.
+    BoxedFloat = 0x09,
 }
 
 impl FlatObjectKind {
@@ -195,6 +199,8 @@ impl FlatObjectKind {
             0x05 => Some(Self::Thunk),
             0x06 => Some(Self::Lambda),
             0x07 => Some(Self::Primop),
+            0x08 => Some(Self::BoxedInt),
+            0x09 => Some(Self::BoxedFloat),
             _ => None,
         }
     }

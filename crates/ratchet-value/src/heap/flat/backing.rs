@@ -54,7 +54,7 @@ use crate::value::HeapObject;
 
 /// A set of [`FlatObjectKind`]s one store is allowed to allocate and type.
 ///
-/// Kind discriminants are small (`0x01..=0x07`), so the set is a bit mask.
+/// Kind discriminants are small (`0x01..=0x09`), so the set is a bit mask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlatKindSet(u32);
 
@@ -294,6 +294,14 @@ impl SharedFlatStoreArena {
     pub fn index_for_pointer(&self, ptr: std::ptr::NonNull<HeapObject>) -> Option<ArenaIndex> {
         match &*self.inner.borrow() {
             SharedFlatStoreBacking::Reserved(arena) => arena.index_for_pointer(ptr).ok(),
+            SharedFlatStoreBacking::Chunked(_) => None,
+        }
+    }
+
+    /// Returns the live reservation pointer for one compressed index.
+    pub fn pointer_for_index(&self, index: ArenaIndex) -> Option<std::ptr::NonNull<HeapObject>> {
+        match &*self.inner.borrow() {
+            SharedFlatStoreBacking::Reserved(arena) => arena.pointer_for_index(index).ok(),
             SharedFlatStoreBacking::Chunked(_) => None,
         }
     }

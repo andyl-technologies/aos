@@ -629,6 +629,7 @@ impl EvalHeap {
                 flat_arena.clone(),
                 FlatKindSet::of(&[FlatObjectKind::Attrs]),
             ),
+            compressed_scalars: crate::value::compressed::CandidateCScalarStore::new(flat_arena.clone()),
             flat_arena,
             flat_closures,
             flat_closures_retired: 0,
@@ -650,11 +651,9 @@ impl EvalHeap {
     ///
     /// Panics if the process exhausts all evaluator heap region-owner ids.
     pub fn with_initial_chunk_bytes(chunk_bytes: usize) -> Result<Self, EvalHeapError> {
-        let flat_arena = SharedFlatStoreArena::with_initial_chunk_bytes(chunk_bytes)
-            .map_err(EvalHeapError::Arena)?;
+        let flat_arena = SharedFlatStoreArena::with_initial_chunk_bytes(chunk_bytes).map_err(EvalHeapError::Arena)?;
         Ok(Self {
-            allocator: RuntimeAllocator::tier_a_with_initial_chunk_bytes(chunk_bytes)
-                .map_err(EvalHeapError::Arena)?,
+            allocator: RuntimeAllocator::tier_a_with_initial_chunk_bytes(chunk_bytes).map_err(EvalHeapError::Arena)?,
             permanent_allocator: PermanentSharedAllocator::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
             region_owner: next_heap_region_owner(),
@@ -687,6 +686,7 @@ impl EvalHeap {
                 flat_arena.clone(),
                 FlatKindSet::of(&[FlatObjectKind::Attrs]),
             ),
+            compressed_scalars: crate::value::compressed::CandidateCScalarStore::new(flat_arena.clone()),
             flat_arena,
             flat_closures: FlatObjectStore::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,

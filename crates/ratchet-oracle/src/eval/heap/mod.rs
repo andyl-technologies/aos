@@ -314,9 +314,9 @@ pub struct EvalHeap {
     /// set). Used-prefix statistics are read once through this handle; the
     /// virtual 4 GiB range is not charged as resident/mapped bytes. Explicit
     /// test geometry and unsupported mappings retain the chunked fallback.
-    /// Worker-domain closures use the reservation's downward-growing lane, so
-    /// lexical-region pops never cross permanent allocations.
+    /// Worker closures grow downward, so pops never cross permanent allocations.
     flat_arena: SharedFlatStoreArena,
+    compressed_scalars: Option<crate::value::compressed::CandidateCScalarStore>,
     /// Flat worker-domain closure objects (doc 30 FV-3, serial mode).
     ///
     /// Thunks, lambdas, and partially applied builtins — the mutable,

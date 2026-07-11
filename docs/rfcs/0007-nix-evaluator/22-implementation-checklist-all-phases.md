@@ -11839,6 +11839,27 @@ it ships).**
       outside that gauge, so RSS and lane accounting are authoritative. The
       active `Value` remains 16 bytes; stable-toolchain Miri was unavailable on
       this aarch64-Darwin host.
+- [x] Current Candidate-C boxed-scalar storage precursor:
+      `CandidateCScalarStore` places typed hash-consed wide-`i64` and exact-bit
+      `f64` cells in the serial reservation's permanent lane while keeping
+      signed `i32` immediate. Both scalar kinds share the mode's checked offset
+      space with other permanent objects, while disjoint flat kind domains and
+      registries reject cross-kind and non-live local indices. Compressed words
+      remain arena-local; domain identity across simultaneously live heaps is
+      active-ABI work. Explicit chunk geometry and reservation fallback decline
+      Candidate C. Inactive `EvalHeap`
+      encode/decode seams exercise the complete scalar lifecycle before the
+      active value/FFI/JIT ABI changes; the active `Value` remains 16 bytes and
+      no unsafe operation was added. Focused gates passed 369 value tests and
+      258 oracle heap tests. The full battery passed 3,039 active oracle tests,
+      the core/JIT/runtime-FFI/cache/aos-nix suites, the 38-test language
+      aggregate, all 16 package byte legs, compute x9 under JIT, wide
+      serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and 648 strict-JSON
+      expressions in all four modes. A full isolated oracle rerun cleared the
+      known parallel environment-counter flake. Three noisy interleaved
+      serial-wide rounds against pristine `708099ffb` moved native medians
+      3.967 -> 3.910 s cold and 3.481 -> 3.211 s warm; retained-RSS medians
+      moved +2.1% cold and +2.5% warm, within the 10% gate.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay
@@ -12004,8 +12025,9 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `M-4`/`Q-E` ([30](30-flat-value-architecture.md) §3).
       *The Candidate-C substrate is now landed: a real 4 GiB contiguous
       reservation, checked byte-offset index space, sealed 64-bit codec, and
-      reservation-backed shared publication plus both serial flat-store lanes.
-      Active evaluator/FFI/JIT ABI conversion, container narrowing,
+      reservation-backed shared publication, both serial flat-store lanes, and
+      typed hash-consed boxed scalar cells. Arena-domain identity, active
+      evaluator/FFI/JIT ABI conversion, container narrowing,
       Candidate-B construction, and the measured head-to-head remain, so FV-4
       is intentionally unchecked.*
 - [x] FV-5 — hybrid closures: flat inline free-var capture

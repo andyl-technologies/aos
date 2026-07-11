@@ -52,6 +52,7 @@ use super::*;
 pub(super) mod attrs;
 pub(super) mod closures;
 mod lists;
+mod scalars;
 
 /// Byte-length ceiling for inlining string/path bytes into the flat
 /// allocation (doc 30 FV-1b).
@@ -91,6 +92,8 @@ pub(super) const fn value_tag_for_flat_kind(kind: FlatObjectKind) -> ValueTag {
         FlatObjectKind::Thunk => ValueTag::Thunk,
         FlatObjectKind::Lambda => ValueTag::Lambda,
         FlatObjectKind::Primop => ValueTag::Primop,
+        FlatObjectKind::BoxedInt => ValueTag::Int,
+        FlatObjectKind::BoxedFloat => ValueTag::Float,
     }
 }
 

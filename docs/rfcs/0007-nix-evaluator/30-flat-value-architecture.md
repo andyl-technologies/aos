@@ -1573,11 +1573,39 @@ value word (Candidates B and C) remains open and separately gated:**
       55.8 MiB -> 0 only because it excludes reservation-backed storage, so it
       is no longer a comparable memory measure; RSS and lane accounting are
       the relevant evidence.
+- [x] **Candidate-C boxed-scalar storage prerequisite:**
+      `CandidateCScalarStore` owns disjoint typed `BoxedInt` and `BoxedFloat`
+      flat stores in the serial reservation's permanent lane. Signed `i32`
+      values remain inline; wider `i64` values and exact `f64` bit patterns
+      receive checked indices in the same offset space as other permanent flat
+      objects. Per-type maps hash-cons repeated values, including preserving
+      distinct NaN payloads and signed zero. Typed flat headers and per-store
+      registries reject cross-kind and non-live local indices; explicit chunk
+      geometry and unsupported reservation mappings decline Candidate C rather
+      than manufacturing non-index handles. Compressed words are arena-local;
+      arena-domain identity across simultaneously live heaps stays with the
+      active ABI conversion. `EvalHeap` exposes inactive encode and
+      decode seams so the later `Value`/FFI/JIT switch does not also introduce
+      scalar storage. The active `Value` remains 16 bytes and no unsafe
+      operation was added. Focused gates passed 369 value tests and 258 oracle
+      heap tests. The full battery passed 3,039 active oracle tests (34
+      ignored), cache 112, core 354, JIT 261, runtime-FFI 80 (26 ignored) plus
+      its 2- and 6-test integration targets, aos-nix 336, the 38-test language
+      aggregate, all 16 package byte legs, compute x9 under JIT, wide-eval in
+      serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and all 648 strict
+      JSON expressions in those four modes. One initial parallel oracle run
+      hit the known environment-counter equality flake; the full isolated rerun
+      was green. Three noisy interleaved serial-wide release A/B rounds against
+      pristine `708099ffb` moved native medians 3.967 -> 3.910 s cold (-1.4%)
+      and 3.481 -> 3.211 s warm (-7.8%); retained-RSS medians moved
+      144.9 -> 147.9 MiB cold (+2.1%) and 169.9 -> 174.2 MiB warm (+2.5%),
+      within the 10% gate.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
-      shared-mode flat-store adoption, and both serial store lanes are landed;
-      the active ABI conversion and container narrowing remain.**
+      shared-mode flat-store adoption, both serial store lanes, and typed boxed
+      scalar cells are landed; arena-domain identity, the active ABI conversion,
+      and container narrowing remain.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **Deferred
       with C (same re-entry conditions).**
