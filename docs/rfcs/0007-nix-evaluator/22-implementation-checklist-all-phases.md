@@ -11902,6 +11902,32 @@ it ships).**
       release pairs against pushed `e2dcfc477` moved native medians
       0.529 -> 0.440 s cold and 0.413 -> 0.427 s warm; retained-RSS medians were
       slightly lower in both temperatures despite one 7.13 s stock-Nix outlier.
+- [x] Current Candidate-C parallel boxed-scalar precursor: one synchronized
+      `SharedCandidateCScalarStore` belongs to each `SharedHeapArena` and uses
+      the same reservation/domain as every worker shard. Signed `i32` stays a
+      lock-free immediate; first publication of each wide `i64` or exact `f64`
+      bit pattern is serialized by its typed hash-cons lock, and all workers
+      reuse and decode the same word. Domain checks reject another shared arena
+      before pointer reconstruction, typed membership rejects foreign
+      same-domain stores, and shared object/payload accounting includes scalar
+      cells. Serial behavior and the active 16-byte `Value` are unchanged; no
+      unsafe operation was added. Focused gates passed 375 value and 261 oracle
+      heap tests. On final parent `3b6dd704a`, combined suites passed 355 core,
+      262 JIT, 3,042 active oracle tests (34 ignored), runtime-FFI 80 active/26
+      ignored plus its 2- and 6-test integrations, aos-nix 336, and the 38-test
+      language aggregate; the isolated scalar battery also passed cache 112.
+      The scalar differential battery was byte-green across all 16 package
+      legs, compute x9 under JIT, wide serial/K=4/JIT/sweep-zero, zlib/wide
+      cache validation, and 648 strict-JSON expressions in all four modes. The
+      later ABI-layout parent separately passed that same documented gate; the
+      combined Rust rerun covers their shared compile surface, while K=4 and
+      JIT execution modes do not overlap. Five alternating native-only K=4
+      wide pairs against pristine `3b6dd704a` moved medians
+      2.562 -> 2.644 s cold (+3.2%) and 2.579 -> 2.562 s warm (-0.6%);
+      peak/retained RSS medians stayed within +1.1%. The production in-memory
+      closure path was timed after the standard runner's contended C++ oracle
+      failed to finish one sample in four minutes; no throughput win is
+      claimed.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay

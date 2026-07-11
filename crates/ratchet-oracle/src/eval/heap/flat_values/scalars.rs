@@ -22,6 +22,9 @@ impl EvalHeap {
         &mut self,
         value: i64,
     ) -> Result<CompressedValueWord, CandidateCScalarError> {
+        if let Some(shared) = &self.shared {
+            return shared.arena().candidate_c_encode_int(value);
+        }
         candidate_c_scalars_mut(&mut self.compressed_scalars)?.encode_int(value)
     }
 
@@ -36,6 +39,9 @@ impl EvalHeap {
         &mut self,
         value: f64,
     ) -> Result<CompressedValueWord, CandidateCScalarError> {
+        if let Some(shared) = &self.shared {
+            return shared.arena().candidate_c_encode_float(value);
+        }
         candidate_c_scalars_mut(&mut self.compressed_scalars)?.encode_float(value)
     }
 
@@ -49,6 +55,9 @@ impl EvalHeap {
         &self,
         word: CompressedValueWord,
     ) -> Result<i64, CandidateCScalarError> {
+        if let Some(shared) = &self.shared {
+            return shared.arena().candidate_c_decode_int(word);
+        }
         candidate_c_scalars(&self.compressed_scalars)?.decode_int(word)
     }
 
@@ -62,6 +71,9 @@ impl EvalHeap {
         &self,
         word: CompressedValueWord,
     ) -> Result<f64, CandidateCScalarError> {
+        if let Some(shared) = &self.shared {
+            return shared.arena().candidate_c_decode_float(word);
+        }
         candidate_c_scalars(&self.compressed_scalars)?.decode_float(word)
     }
 }
@@ -84,6 +96,8 @@ fn candidate_c_scalars_mut(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -126,6 +140,68 @@ mod tests {
 
         assert!(matches!(
             receiver.candidate_c_decode_int(word),
+            Err(CandidateCScalarError::ArenaDomainMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn parallel_workers_share_candidate_c_scalar_cells() {
+        let arena = Arc::new(SharedHeapArena::new(2, 32));
+        let mut first = EvalHeap::with_shared_shard(
+            Arc::clone(&arena),
+            Arc::clone(arena.shard(0).expect("first shard exists")),
+        );
+        let mut second = EvalHeap::with_shared_shard(
+            Arc::clone(&arena),
+            Arc::clone(arena.shard(1).expect("second shard exists")),
+        );
+
+        let first_int = first
+            .candidate_c_encode_int(i64::MAX)
+            .expect("first worker boxes integer");
+        let second_int = second
+            .candidate_c_encode_int(i64::MAX)
+            .expect("second worker reuses integer");
+        let float = first
+            .candidate_c_encode_float(-0.0)
+            .expect("first worker boxes float");
+
+        assert_eq!(first_int, second_int);
+        assert_eq!(
+            second
+                .candidate_c_decode_int(first_int)
+                .expect("second worker decodes first worker integer"),
+            i64::MAX
+        );
+        assert_eq!(
+            second
+                .candidate_c_decode_float(float)
+                .expect("second worker decodes first worker float")
+                .to_bits(),
+            (-0.0f64).to_bits()
+        );
+        assert_eq!(arena.published_len(), 2);
+        assert_eq!(arena.published_payload_bytes(), 16);
+    }
+
+    #[test]
+    fn parallel_heap_rejects_scalar_from_another_shared_arena() {
+        let left_arena = Arc::new(SharedHeapArena::new(1, 16));
+        let right_arena = Arc::new(SharedHeapArena::new(1, 16));
+        let mut left = EvalHeap::with_shared_shard(
+            Arc::clone(&left_arena),
+            Arc::clone(left_arena.shard(0).expect("left shard exists")),
+        );
+        let right = EvalHeap::with_shared_shard(
+            Arc::clone(&right_arena),
+            Arc::clone(right_arena.shard(0).expect("right shard exists")),
+        );
+        let word = left
+            .candidate_c_encode_float(1.5)
+            .expect("left float boxes");
+
+        assert!(matches!(
+            right.candidate_c_decode_float(word),
             Err(CandidateCScalarError::ArenaDomainMismatch { .. })
         ));
     }

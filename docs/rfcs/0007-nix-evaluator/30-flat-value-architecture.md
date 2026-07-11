@@ -1649,12 +1649,41 @@ value word (Candidates B and C) remains open and separately gated:**
       0.413 -> 0.427 s warm (+3.4%); retained-RSS medians were slightly lower
       in both temperatures. One co-measured stock-Nix sample took 7.13 s, so
       order was reversed and medians, not that outlier, were used.
+- [x] **Candidate-C parallel boxed-scalar prerequisite:** every
+      `SharedHeapArena` now owns one `SharedCandidateCScalarStore` in the same
+      reservation and domain as all worker shards. Signed `i32` values remain
+      lock-free immediates; the first publication of a wide `i64` or exact
+      `f64` bit pattern serializes through a per-kind hash-cons lock, after
+      which every worker receives the same compressed word and resolves the
+      same typed cell. Cross-arena domains fail before pointer reconstruction,
+      and a same-domain word from a foreign typed registry fails membership.
+      Shared-arena object and payload accounting includes boxed scalar cells.
+      The serial scalar store is unchanged, the active evaluator still carries
+      the 16-byte `Value`, and no unsafe operation was added. Focused gates
+      passed 375 value tests (including eight concurrent publishers) and 261
+      oracle heap tests. On the final `3b6dd704a` parent the combined suites
+      passed 355 core, 262 JIT, 3,042 active oracle tests (34 ignored), 80
+      active runtime-FFI tests (26 ignored) plus its 2- and 6-test integrations,
+      aos-nix 336, and the 38-test language aggregate; the scalar slice's
+      isolated battery also passed cache 112. Its differential gate was
+      byte-green across all 16 package legs, compute x9 under JIT, wide-eval in
+      serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and all 648 strict
+      JSON expressions in those four modes. The subsequently landed ABI-layout
+      parent has the same documented full gate, and the combined Rust rerun
+      covers their shared compile surface; K=4 ignores JIT and JIT mode does
+      not construct the shared scalar backend. Five alternating native-only
+      K=4 wide pairs against pristine `3b6dd704a` moved medians
+      2.562 -> 2.644 s cold (+3.2%) and 2.579 -> 2.562 s warm (-0.6%);
+      peak and retained RSS medians stayed within +1.1%. The temporary harness
+      used the production in-memory closure path after the standard runner's
+      contended C++ oracle failed to finish one sample in four minutes. No
+      throughput win is claimed.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
-      shared-mode flat-store adoption, both serial store lanes, and typed boxed
-      scalar cells plus arena-domain identity are landed; the active ABI
-      conversion and container narrowing remain.**
+      shared-mode flat-store adoption, both serial store lanes, serial and
+      parallel typed boxed-scalar populations, and arena-domain identity are
+      landed; the active ABI conversion and container narrowing remain.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **Deferred
       with C (same re-entry conditions).**

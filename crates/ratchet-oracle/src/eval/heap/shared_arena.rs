@@ -107,10 +107,13 @@ use crate::heap::flat::{FlatKindSet, FlatObjectKind};
 use crate::heap::{ReservedArena, ReservedArenaStats};
 use crate::list::NixList;
 use crate::string::NixString;
+use crate::value::compressed::SharedCandidateCScalarStore;
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
 
 use super::record_table::AddressHasher;
 use super::{FlatAttrsPayload, FlatClosurePayload, HeapObjectValue};
+
+mod scalars;
 
 /// Records in the first (level-0) chunk. Level `c` holds `CHUNK_LEN << c`
 /// records, so chunk sizes grow geometrically like a `Vec`'s doubling while
@@ -671,6 +674,8 @@ fn payload_size_estimate(object: &HeapObjectValue) -> usize {
 pub struct SharedHeapArena {
     /// One allocation shard per worker.
     shards: Vec<Arc<SharedHeapShard>>,
+    /// Boxed scalars shared by every worker in the flat reservation.
+    compressed_scalars: Option<SharedCandidateCScalarStore>,
     /// Candidate-C address space used by every production flat shard store.
     flat_reservation: Option<Arc<ReservedArena>>,
 }
@@ -684,6 +689,10 @@ impl SharedHeapArena {
     pub fn new(worker_count: usize, capacity_per_shard: usize) -> Self {
         let shard_count = worker_count.max(1);
         let flat_reservation = ReservedArena::new().ok().map(Arc::new);
+        let scalar_capacity = capacity_per_shard.saturating_mul(shard_count).max(1);
+        let compressed_scalars = flat_reservation
+            .as_ref()
+            .map(|arena| SharedCandidateCScalarStore::new(Arc::clone(arena), scalar_capacity));
         let shards = (0..shard_count)
             .map(|shard_id| {
                 Arc::new(SharedHeapShard::new(
@@ -695,6 +704,7 @@ impl SharedHeapArena {
             .collect();
         Self {
             shards,
+            compressed_scalars,
             flat_reservation,
         }
     }
@@ -728,12 +738,20 @@ impl SharedHeapArena {
             })
     }
 
-    /// Total records published across every shard.
+    /// Total objects and boxed scalar cells published in the shared arena.
     pub fn published_len(&self) -> usize {
-        self.shards.iter().map(|shard| shard.published_len()).sum()
+        self.shards
+            .iter()
+            .map(|shard| shard.published_len())
+            .sum::<usize>()
+            .saturating_add(
+                self.compressed_scalars
+                    .as_ref()
+                    .map_or(0, SharedCandidateCScalarStore::len),
+            )
     }
 
-    /// Approximate payload bytes published across every shard.
+    /// Approximate payload bytes published across every shard and scalar store.
     ///
     /// Summed from per-shard atomic counters, so concurrent readers never
     /// block allocation and no shard is double-counted.
@@ -742,6 +760,11 @@ impl SharedHeapArena {
             .iter()
             .map(|shard| shard.published_payload_bytes())
             .fold(0usize, usize::saturating_add)
+            .saturating_add(
+                self.compressed_scalars
+                    .as_ref()
+                    .map_or(0, SharedCandidateCScalarStore::payload_bytes),
+            )
     }
 
     /// Resolves `ptr` as a flat string/path of `kind`, across all shards.

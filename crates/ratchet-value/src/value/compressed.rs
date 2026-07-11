@@ -7,19 +7,22 @@
 //! float use typed boxed-scalar indices. Bit 31 of the kind half is the thunk
 //! `FORCED` shortcut.
 //!
-//! [`CandidateCScalarStore`] supplies the matching hash-consed reservation
-//! cells for wide integers and floats. The active evaluator still uses
-//! [`Value`](super::Value); switching the runtime and JIT ABI is a later,
-//! separately gated step.
+//! [`CandidateCScalarStore`] supplies the matching serial hash-consed
+//! reservation cells for wide integers and floats;
+//! [`SharedCandidateCScalarStore`] supplies one synchronized population across
+//! parallel workers. The active evaluator still uses [`Value`](super::Value);
+//! switching the runtime and JIT ABI is a later, separately gated step.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 
+use crate::heap::flat::shared::{SharedFlatObjectError, SharedFlatObjectStore};
 use crate::heap::flat::{
     FlatKindSet, FlatObjectError, FlatObjectKind, FlatObjectStore, SharedFlatStoreArena,
 };
-use crate::heap::{ArenaDomainId, ArenaIndex};
+use crate::heap::{ArenaDomainId, ArenaIndex, ReservedArena};
 
 use super::ValueTag;
 
@@ -468,6 +471,211 @@ impl CandidateCScalarStore {
     }
 }
 
+/// Thread-safe hash-consed boxed scalars in one shared Candidate-C reservation.
+///
+/// Parallel evaluator workers share this store, so a scalar word published by
+/// one worker resolves from every other worker using the same arena domain.
+/// Wide integers and exact float bit patterns serialize only their first
+/// publication; inline integers never acquire a lock.
+#[derive(Debug)]
+pub struct SharedCandidateCScalarStore {
+    arena: Arc<ReservedArena>,
+    domain: ArenaDomainId,
+    ints: SharedFlatObjectStore<i64>,
+    floats: SharedFlatObjectStore<u64>,
+    int_words: Mutex<HashMap<i64, CompressedValueWord>>,
+    float_words: Mutex<HashMap<u64, CompressedValueWord>>,
+}
+
+impl SharedCandidateCScalarStore {
+    /// Creates a shared scalar store in `arena`.
+    ///
+    /// `capacity` is rounded up independently for the integer and float typed
+    /// stores. Both stores allocate from the same reservation and carry its
+    /// domain in every published word.
+    pub fn new(arena: Arc<ReservedArena>, capacity: usize) -> Self {
+        let domain = arena.domain_id();
+        Self {
+            ints: SharedFlatObjectStore::with_reservation(
+                Arc::clone(&arena),
+                capacity,
+                FlatKindSet::of(&[FlatObjectKind::BoxedInt]),
+            ),
+            floats: SharedFlatObjectStore::with_reservation(
+                Arc::clone(&arena),
+                capacity,
+                FlatKindSet::of(&[FlatObjectKind::BoxedFloat]),
+            ),
+            arena,
+            domain,
+            int_words: Mutex::new(HashMap::new()),
+            float_words: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Encodes an integer inline or returns its shared hash-consed boxed word.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hash-cons lock was poisoned, shared publication
+    /// fails, or the allocation cannot be represented by the reservation.
+    pub fn encode_int(&self, value: i64) -> Result<CompressedValueWord, CandidateCScalarError> {
+        match CompressedValueWord::inline_int(value) {
+            Ok(word) => return Ok(word),
+            Err(CompressedValueError::IntegerRequiresBox { .. }) => {}
+            Err(source) => return Err(CandidateCScalarError::Codec(source)),
+        }
+        let mut words = self
+            .int_words
+            .lock()
+            .map_err(|_| CandidateCScalarError::HashConsLockPoisoned { kind: "integer" })?;
+        if let Some(word) = words.get(&value) {
+            return Ok(*word);
+        }
+        let ptr = self.ints.publish(
+            FlatObjectKind::BoxedInt,
+            value as u64,
+            std::mem::size_of::<i64>(),
+            value,
+        )?;
+        let index = self.index_for_allocation(ptr)?;
+        let word = CompressedValueWord::boxed_int(self.domain, index);
+        words.insert(value, word);
+        Ok(word)
+    }
+
+    /// Encodes a float as a shared hash-consed boxed word with exact bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hash-cons lock was poisoned, shared publication
+    /// fails, or the allocation cannot be represented by the reservation.
+    pub fn encode_float(&self, value: f64) -> Result<CompressedValueWord, CandidateCScalarError> {
+        let bits = value.to_bits();
+        let mut words = self
+            .float_words
+            .lock()
+            .map_err(|_| CandidateCScalarError::HashConsLockPoisoned { kind: "float" })?;
+        if let Some(word) = words.get(&bits) {
+            return Ok(*word);
+        }
+        let ptr = self.floats.publish(
+            FlatObjectKind::BoxedFloat,
+            bits,
+            std::mem::size_of::<u64>(),
+            bits,
+        )?;
+        let index = self.index_for_allocation(ptr)?;
+        let word = CompressedValueWord::boxed_float(self.domain, index);
+        words.insert(bits, word);
+        Ok(word)
+    }
+
+    /// Decodes an inline or shared boxed integer word.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `word` has the wrong kind or domain, its index is
+    /// not live, or it does not name this store's boxed-integer population.
+    pub fn decode_int(&self, word: CompressedValueWord) -> Result<i64, CandidateCScalarError> {
+        match word.kind() {
+            CompressedValueKind::InlineInt => Ok(word.payload() as i32 as i64),
+            CompressedValueKind::BoxedInt => {
+                let ptr = self.pointer_for_word(word)?;
+                self.ints
+                    .resolve(ptr, FlatObjectKind::BoxedInt)
+                    .map(|object| *object.payload())
+                    .ok_or(CandidateCScalarError::ScalarCellNotFound {
+                        kind: "integer",
+                        index: word.payload(),
+                    })
+            }
+            actual => Err(CandidateCScalarError::KindMismatch {
+                expected: "integer",
+                actual,
+            }),
+        }
+    }
+
+    /// Decodes a shared boxed float word without normalizing its bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `word` has the wrong kind or domain, its index is
+    /// not live, or it does not name this store's boxed-float population.
+    pub fn decode_float(&self, word: CompressedValueWord) -> Result<f64, CandidateCScalarError> {
+        if word.kind() != CompressedValueKind::BoxedFloat {
+            return Err(CandidateCScalarError::KindMismatch {
+                expected: "float",
+                actual: word.kind(),
+            });
+        }
+        let ptr = self.pointer_for_word(word)?;
+        self.floats
+            .resolve(ptr, FlatObjectKind::BoxedFloat)
+            .map(|object| f64::from_bits(*object.payload()))
+            .ok_or(CandidateCScalarError::ScalarCellNotFound {
+                kind: "float",
+                index: word.payload(),
+            })
+    }
+
+    /// Returns the total number of distinct boxed scalar cells.
+    pub fn len(&self) -> usize {
+        self.ints.len().saturating_add(self.floats.len())
+    }
+
+    /// Returns whether no boxed scalar cell has been published.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the approximate published scalar payload bytes.
+    pub fn payload_bytes(&self) -> usize {
+        self.ints
+            .payload_bytes()
+            .saturating_add(self.floats.payload_bytes())
+    }
+
+    fn index_for_allocation(
+        &self,
+        ptr: std::ptr::NonNull<crate::value::HeapObject>,
+    ) -> Result<ArenaIndex, CandidateCScalarError> {
+        self.arena.index_for_pointer(ptr).map_err(|_| {
+            CandidateCScalarError::AddressOutsideReservation {
+                address: ptr.as_ptr() as usize,
+            }
+        })
+    }
+
+    fn pointer_for_word(
+        &self,
+        word: CompressedValueWord,
+    ) -> Result<std::ptr::NonNull<crate::value::HeapObject>, CandidateCScalarError> {
+        let actual_domain = word
+            .arena_domain()
+            .ok_or(CandidateCScalarError::KindMismatch {
+                expected: "boxed scalar",
+                actual: word.kind(),
+            })?;
+        if actual_domain != self.domain {
+            return Err(CandidateCScalarError::ArenaDomainMismatch {
+                expected: self.domain.raw(),
+                actual: actual_domain.raw(),
+            });
+        }
+        let index = word
+            .arena_index()
+            .ok_or(CandidateCScalarError::KindMismatch {
+                expected: "boxed scalar",
+                actual: word.kind(),
+            })?;
+        self.arena
+            .pointer_for_index(index)
+            .map_err(|_| CandidateCScalarError::IndexOutsideReservation { index: index.raw() })
+    }
+}
+
 /// A Candidate-C boxed scalar could not be stored or decoded.
 #[derive(Debug, Error)]
 pub enum CandidateCScalarError {
@@ -477,6 +685,9 @@ pub enum CandidateCScalarError {
     /// The flat store could not allocate or resolve the scalar cell.
     #[error(transparent)]
     Flat(#[from] FlatObjectError),
+    /// The shared flat store could not publish a scalar cell.
+    #[error(transparent)]
+    SharedFlat(#[from] SharedFlatObjectError),
     /// Candidate C was requested without a reservation backend.
     #[error("Candidate-C scalar storage requires a reservation-backed arena")]
     ReservationUnavailable,
@@ -507,6 +718,20 @@ pub enum CandidateCScalarError {
         expected: u32,
         /// The word's encoded domain.
         actual: u32,
+    },
+    /// A shared hash-cons table was poisoned by a panicking publisher.
+    #[error("Candidate-C shared {kind} hash-cons lock is poisoned")]
+    HashConsLockPoisoned {
+        /// The scalar population whose lock was poisoned.
+        kind: &'static str,
+    },
+    /// A live shared reservation index did not name the expected scalar store.
+    #[error("Candidate-C shared {kind} cell at index {index} is not published")]
+    ScalarCellNotFound {
+        /// The expected scalar population.
+        kind: &'static str,
+        /// The rejected reservation offset.
+        index: u32,
     },
 }
 
@@ -564,6 +789,10 @@ pub enum CompressedValueError {
         payload: u32,
     },
 }
+
+#[cfg(test)]
+#[path = "compressed/shared_tests.rs"]
+mod shared_tests;
 
 #[cfg(test)]
 mod tests {
