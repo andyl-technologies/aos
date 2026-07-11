@@ -11928,6 +11928,30 @@ it ships).**
       closure path was timed after the standard runner's contended C++ oracle
       failed to finish one sample in four minutes; no throughput win is
       claimed.
+- [x] Current Candidate-C active-value bridge precursor: evaluator-owned safe
+      seams now convert between the active 16-byte `Value` and the inactive
+      one-word representation without weakening typed heap membership.
+      Integers and floats route through the serial or shared boxed-scalar
+      store, booleans/null remain immediate, and flat heap values become
+      domain-qualified reservation offsets only after their semantic tag is
+      confirmed in the owning typed store. Decode checks the reservation
+      domain before pointer reconstruction and rechecks the typed store before
+      rebuilding `Value`. Serial scalar/flat round trips and parallel
+      cross-worker heap decoding are covered; foreign domains, same-offset
+      wrong kinds, forced-thunk words that the active ABI cannot preserve, and
+      chunked fallback allocations are rejected. The bridge remains inactive,
+      the production ABI is still 16 bytes, and no unsafe operation was added.
+      Focused gates passed all 6 bridge tests and 10 compressed-value tests.
+      Full suites passed 375 value, 355 core, 262 JIT, 3,048 active oracle
+      tests (34 ignored), runtime-FFI 80 active/26 ignored plus its 2- and
+      6-test integrations, cache 112, aos-nix 336, and language 38. The
+      differential battery was byte-green over all 16 package legs, compute x9
+      under JIT, wide serial/K=4/JIT/sweep-zero, zlib/wide cache validation,
+      and 648 strict-JSON expressions in all four modes. Three interleaved
+      changed-tree pairs against the frozen `995ee3f71`-equivalent binary kept
+      every cache/admission/materialization/forced-work counter identical; all
+      nine settled candidate medians were within -7.1% to +4.4% of baseline.
+      No throughput win is claimed for this inactive seam.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay

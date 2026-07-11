@@ -5,11 +5,39 @@
 //! keeps the public encode/decode seam out of the shared-arena ownership and
 //! resolution implementation.
 
+use crate::heap::{ArenaDomainId, ArenaIndex};
+use crate::value::HeapObject;
 use crate::value::compressed::{CandidateCScalarError, CompressedValueWord};
 
 use super::SharedHeapArena;
 
 impl SharedHeapArena {
+    /// Returns the reservation identity used by Candidate-C indexed words.
+    pub(in crate::eval::heap) fn candidate_c_domain_id(&self) -> Option<ArenaDomainId> {
+        self.flat_reservation
+            .as_ref()
+            .map(|arena| arena.domain_id())
+    }
+
+    /// Returns the compressed offset for a live address in the reservation.
+    pub(in crate::eval::heap) fn candidate_c_index_for_pointer(
+        &self,
+        ptr: std::ptr::NonNull<HeapObject>,
+    ) -> Option<ArenaIndex> {
+        self.flat_reservation.as_ref()?.index_for_pointer(ptr).ok()
+    }
+
+    /// Returns the native address represented by a live compressed offset.
+    pub(in crate::eval::heap) fn candidate_c_pointer_for_index(
+        &self,
+        index: ArenaIndex,
+    ) -> Option<std::ptr::NonNull<HeapObject>> {
+        self.flat_reservation
+            .as_ref()?
+            .pointer_for_index(index)
+            .ok()
+    }
+
     /// Encodes an integer in the shared Candidate-C scalar store.
     ///
     /// # Errors

@@ -217,7 +217,7 @@ impl SharedHeapBackend {
 
     /// Returns the value tag of the flat object at `ptr`, if any shard owns
     /// one there.
-    fn flat_tag_at(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
+    pub(super) fn flat_tag_at(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
         self.shard
             .flat_tag_at(ptr)
             .or_else(|| self.arena.flat_tag_at(ptr))

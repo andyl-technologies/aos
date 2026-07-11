@@ -26,6 +26,10 @@ use crate::heap::{ArenaDomainId, ArenaIndex, ReservedArena};
 
 use super::ValueTag;
 
+mod bridge;
+
+pub use bridge::CandidateCValueError;
+
 /// Metadata bit marking an already-forced thunk index.
 pub const COMPRESSED_FORCED_BIT: u32 = 1 << 31;
 const KIND_MASK: u32 = 0xff;

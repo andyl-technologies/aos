@@ -51,6 +51,7 @@ use super::*;
 
 pub(super) mod attrs;
 pub(super) mod closures;
+mod compressed_values;
 mod lists;
 mod scalars;
 

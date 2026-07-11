@@ -1678,12 +1678,36 @@ value word (Candidates B and C) remains open and separately gated:**
       used the production in-memory closure path after the standard runner's
       contended C++ oracle failed to finish one sample in four minutes. No
       throughput win is claimed.
+- [x] **Candidate-C active-value bridge prerequisite:** `EvalHeap` now owns a
+      safe inactive conversion seam between the active 16-byte `Value` and the
+      one-word codec. Scalars dispatch to the serial or shared typed scalar
+      store; booleans and null remain immediate. A flat heap pointer is encoded
+      only after its semantic tag resolves through the owning typed store, and
+      decode validates the reservation domain before pointer reconstruction,
+      then confirms the reconstructed pointer in the expected typed store.
+      Serial scalar/flat values round-trip and one parallel worker can decode a
+      sibling worker's word. Foreign domains, same-offset wrong kinds,
+      forced-thunk words that cannot yet be represented losslessly, and
+      non-reservation chunk fallback values fail explicitly. The bridge is not
+      selected by production evaluation, `Value` remains 16 bytes, and no
+      unsafe operation was added. Focused gates passed all 6 bridge tests and
+      10 compressed-value tests. Full suites passed 375 value, 355 core, 262
+      JIT, 3,048 active oracle tests (34 ignored), runtime-FFI 80 active/26
+      ignored plus its 2- and 6-test integrations, cache 112, aos-nix 336, and
+      language 38. The differential gate was byte-green across all 16 package
+      legs, compute x9 under JIT, wide serial/K=4/JIT/sweep-zero, zlib/wide
+      cache validation, and all 648 strict-JSON expressions in those four
+      modes. Three interleaved changed-tree pairs against the frozen
+      `995ee3f71`-equivalent binary preserved every cache and forced-work
+      counter; settled candidate medians across all nine scenarios moved from
+      -7.1% to +4.4%. No throughput win is claimed for an inactive seam.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
       shared-mode flat-store adoption, both serial store lanes, serial and
-      parallel typed boxed-scalar populations, and arena-domain identity are
-      landed; the active ABI conversion and container narrowing remain.**
+      parallel typed boxed-scalar populations, arena-domain identity, and the
+      inactive checked `Value` conversion bridge are landed; selecting the
+      one-word active ABI and narrowing containers remain.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **Deferred
       with C (same re-entry conditions).**
