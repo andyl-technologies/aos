@@ -76,17 +76,19 @@ in
     # target also configures unrelated target libraries such as libffi,
     # libf2c, and target libiberty. Their configure link probes run with
     # GCC_NO_EXECUTABLES and fail even though gcc and libgcc are already
-    # complete. Build and install only the compiler plus its required target
-    # runtime; later tiers rebuild the full language/runtime surface.
+    # complete. In this release libgcc is part of the gcc subdirectory rather
+    # than a separate top-level target, so `all-gcc` / `install-gcc` include
+    # the required C runtime. Later tiers rebuild the full language/runtime
+    # surface.
     buildCommands = ''
-      make -j"$NIX_BUILD_CORES" all-gcc all-target-libgcc \
+      make -j"$NIX_BUILD_CORES" all-gcc \
         BOOT_CFLAGS="-O2 -static" \
         CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include" \
         LDFLAGS_FOR_TARGET="-L${prev.glibc}/lib -static" \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
     '';
     installCommands = ''
-      make install-gcc install-target-libgcc \
+      make install-gcc \
         AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
     '';
     postInstall = ''
