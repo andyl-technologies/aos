@@ -42,10 +42,9 @@ in
         SRC="$TMPDIR/glibc-2.3.4"
 
         # GNU make 3.79.1 removes the per-subdirectory stamp.os files after
-        # archiving PIC objects. Force libc.a first so all equivalent static
-        # stamps exist before generating librtld.mk, then resolve the linker
-        # map in the bootstrap shell. The patch names the two verified
-        # shared-only members whose source directories lack a static entry.
+        # archiving PIC objects. Preserve an authoritative copy inside the
+        # libc_pic.a recipe, while every stamp prerequisite still exists, and
+        # make librtld.mk consume those saved copies.
         patch -d "$SRC" -p1 < ${./patches/glibc-2.3.4-reconstruct-pic-stamps.patch}
 
         # glibc 2.3.4 configure hardcodes /bin/pwd which doesn't exist in sandbox

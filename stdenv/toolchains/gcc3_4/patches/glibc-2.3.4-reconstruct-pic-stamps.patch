@@ -1,22 +1,19 @@
+--- a/Makerules
++++ b/Makerules
+@@ -784,0 +785,5 @@
++if test "$(@F)" = libc_pic.a; then \
++  cd $(common-objdir) && for stamp in $(patsubst $(common-objpfx)%,%,$^); do \
++    cp "$$stamp" "$$stamp.saved"; \
++  done; \
++fi
 --- a/elf/Makefile
 +++ b/elf/Makefile
-@@ -240 +240 @@
--$(objpfx)librtld.mk: $(objpfx)librtld.map Makefile
-+$(objpfx)librtld.mk: $(objpfx)librtld.map Makefile $(common-objpfx)libc.a
-@@ -247,4 +247,12 @@
+@@ -247,4 +247,4 @@
 -	    LC_ALL=C fgrep -l /$$file \
 -		  $(common-objpfx)stamp.os $(common-objpfx)*/stamp.os | \
 -	    LC_ALL=C \
 -	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.os$$@rtld-\1'" +=$$file@"\
-+	    static_file=$${file%.os}.o; \
-+	    for stamp in $(common-objpfx)stamp.o $(common-objpfx)*/stamp.o; do \
-+	      test -f "$$stamp" || continue; \
-+	      case " `cat "$$stamp"` " in \
-+	      *"/$$static_file "*) relative=$${stamp#$(common-objpfx)}; \
-+	        echo rtld-$${relative%%/*} += $$file ;; \
-+	      esac; \
-+	    done; \
-+	    case $$file in \
-+	    divdi3.os) echo rtld-csu += $$file ;; \
-+	    forward.os) echo rtld-nptl += $$file ;; \
-+	    esac \
++	    LC_ALL=C fgrep -l /$$file \
++		  $(common-objpfx)stamp.os.saved $(common-objpfx)*/stamp.os.saved | \
++	    LC_ALL=C \
++	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.os\.saved$$@rtld-\1'" +=$$file@"\
