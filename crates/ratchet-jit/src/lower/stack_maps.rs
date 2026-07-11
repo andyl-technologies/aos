@@ -8,7 +8,10 @@
 
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
-    ir::{Inst, InstBuilder, StackSlot, StackSlotData, StackSlotKind, UserStackMapEntry, Value, types},
+    ir::{
+        Inst, InstBuilder, StackSlot, StackSlotData, StackSlotKind, UserStackMapEntry, Value,
+        types,
+    },
 };
 
 use super::{
@@ -45,6 +48,68 @@ pub fn clif_external_name_for_aos_jit_stack_map_exit() -> cranelift_codegen::ir:
 pub(super) struct Runtime {
     pub(super) enter: cranelift_codegen::ir::FuncRef,
     pub(super) exit: cranelift_codegen::ir::FuncRef,
+}
+
+/// Per-function force-call safepoint emitter.
+///
+/// Each force call spills its input plus every caller-supplied value that
+/// remains live across the call, then reloads the latter after the runtime has
+/// had an opportunity to rewrite the frame. A distinct address anchor lets the
+/// runtime identify the finalized map even when Cranelift reorders blocks.
+pub(super) struct ForceSafepoints {
+    runtime: Runtime,
+    next_safepoint: u32,
+}
+
+impl ForceSafepoints {
+    /// Imports the binding helpers and starts a new function-local map table.
+    pub(super) fn import(
+        function: &mut cranelift_codegen::ir::Function,
+    ) -> Result<Self, JitLowerError> {
+        Ok(Self {
+            runtime: import_runtime(function)?,
+            next_safepoint: 0,
+        })
+    }
+
+    /// Emits one mapped `aos_force` call and refreshes values live across it.
+    pub(super) fn force(
+        &mut self,
+        cursor: &mut FuncCursor<'_>,
+        force: cranelift_codegen::ir::FuncRef,
+        rt: Value,
+        input: [Value; 2],
+        live: &mut [[Value; 2]],
+    ) -> Result<[Value; 2], JitLowerError> {
+        let mut values = Vec::with_capacity(live.len().saturating_add(1));
+        values.push(input);
+        values.extend_from_slice(live);
+        let binding = spill_values(cursor, &values);
+        let safepoint = self.next_safepoint;
+        self.next_safepoint = self.next_safepoint.checked_add(1).ok_or(
+            JitLowerError::MalformedForceSafepoint {
+                reason: "function contains more than u32::MAX force calls",
+            },
+        )?;
+        enter(cursor, self.runtime, rt, binding, safepoint);
+        let call = cursor
+            .ins()
+            .call(force, &[rt, input[0], input[1]]);
+        attach(cursor, call, binding);
+        let results = cursor.func.dfg.inst_results(call).to_vec();
+        exit(cursor, self.runtime, rt, binding);
+        if results.len() != 2 {
+            return Err(JitLowerError::InvalidRuntimeCallResultArity {
+                symbol_name: AOS_FORCE_SYMBOL,
+                expected: 2,
+                actual: results.len(),
+            });
+        }
+        for (index, value) in live.iter_mut().enumerate() {
+            *value = reload(cursor, binding, index + 1);
+        }
+        Ok([results[0], results[1]])
+    }
 }
 
 pub(super) fn import_runtime(
@@ -92,26 +157,23 @@ pub(super) fn emit_forced_env_get_return(
             actual: env_get_results.len(),
         });
     }
-    let binding = spill_values(&mut cursor, &[[env_get_results[0], env_get_results[1]]]);
-    enter(&mut cursor, runtime, rt, binding, 0);
-    let force_call = cursor
-        .ins()
-        .call(force, &[rt, env_get_results[0], env_get_results[1]]);
-    attach(&mut cursor, force_call, binding);
-    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
-    exit(&mut cursor, runtime, rt, binding);
-    if force_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_FORCE_SYMBOL,
-            expected: 2,
-            actual: force_results.len(),
-        });
-    }
-    cursor.ins().return_(&force_results);
+    let mut safepoints = ForceSafepoints {
+        runtime,
+        next_safepoint: 0,
+    };
+    let forced = safepoints.force(
+        &mut cursor,
+        force,
+        rt,
+        [env_get_results[0], env_get_results[1]],
+        &mut [],
+    )?;
+    cursor.ins().return_(&forced);
     Ok(())
 }
 
-const BINDING_HEADER_BYTES: u32 = 24;
+const BINDING_HEADER_BYTES: u32 = 32;
+const BINDING_IDENTITY_OFFSET: u32 = 24;
 const VALUE_STACK_SLOT_BYTES: u32 = 16;
 const VALUE_STACK_SLOT_ALIGN_SHIFT: u8 = 3;
 const VALUE_PAYLOAD_OFFSET: i32 = 8;
@@ -149,6 +211,14 @@ pub(super) fn spill_values(cursor: &mut FuncCursor<'_>, values: &[[Value; 2]]) -
 
 /// Attaches every spilled runtime-value anchor to one call safepoint.
 pub(super) fn attach(cursor: &mut FuncCursor<'_>, call: Inst, binding: Binding) {
+    cursor.func.dfg.append_user_stack_map_entry(
+        call,
+        UserStackMapEntry {
+            ty: types::I32,
+            slot: binding.slot,
+            offset: BINDING_IDENTITY_OFFSET,
+        },
+    );
     for index in 0..binding.values {
         cursor.func.dfg.append_user_stack_map_entry(
             call,
@@ -177,6 +247,13 @@ pub(super) fn address(cursor: &mut FuncCursor<'_>, binding: Binding) -> Value {
     cursor.ins().stack_addr(types::I64, binding.slot, 0)
 }
 
+/// Emits the address-identity anchor used to select the finalized map.
+pub(super) fn identity_address(cursor: &mut FuncCursor<'_>, binding: Binding) -> Value {
+    cursor
+        .ins()
+        .stack_addr(types::I64, binding.slot, BINDING_IDENTITY_OFFSET as i32)
+}
+
 /// Returns the number of runtime values stored in a binding.
 pub(super) const fn value_count(binding: Binding) -> u32 {
     binding.values
@@ -191,13 +268,17 @@ pub(super) fn enter(
     safepoint: u32,
 ) {
     let binding_address = address(cursor, binding);
+    let identity_address = identity_address(cursor, binding);
     let safepoint = cursor.ins().iconst(types::I32, i64::from(safepoint));
     let values = cursor
         .ins()
         .iconst(types::I32, i64::from(value_count(binding)));
     cursor
         .ins()
-        .call(runtime.enter, &[rt, binding_address, safepoint, values]);
+        .call(
+            runtime.enter,
+            &[rt, binding_address, identity_address, safepoint, values],
+        );
 }
 
 /// Unlinks the current binding region after its safepoint returns.
@@ -252,9 +333,11 @@ mod tests {
             .dfg
             .user_stack_map_entries(call)
             .expect("call carries a stack map");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].slot, binding.slot);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].ty, types::I32);
         assert_eq!(entries[0].offset, 24);
-        assert_eq!(function.sized_stack_slots[binding.slot].size, 40);
+        assert_eq!(entries[1].slot, binding.slot);
+        assert_eq!(entries[1].offset, 32);
+        assert_eq!(function.sized_stack_slots[binding.slot].size, 48);
     }
 }

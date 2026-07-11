@@ -23,6 +23,8 @@ pub(crate) struct RuntimeJitStackMapBindingHeader {
     frame: u64,
     safepoint: u32,
     values: u32,
+    identity: u32,
+    padding: u32,
 }
 
 impl RuntimeJitContext<'_> {
@@ -136,7 +138,8 @@ impl RuntimeJitContext<'_> {
         if self.has_finalized_stack_maps() {
             process::abort();
         }
-        let Some(offset) = 24_u32.checked_add(index.saturating_mul(16)) else {
+        let header = std::mem::size_of::<RuntimeJitStackMapBindingHeader>() as u32;
+        let Some(offset) = header.checked_add(index.saturating_mul(16)) else {
             process::abort();
         };
         if offset > i32::MAX as u32 {
@@ -165,7 +168,10 @@ impl RuntimeJitContext<'_> {
                         binding
                             .as_ptr()
                             .cast::<u8>()
-                            .add(24 + index as usize * 16)
+                            .add(
+                                std::mem::size_of::<RuntimeJitStackMapBindingHeader>()
+                                    + index as usize * 16,
+                            )
                             .cast::<Value>()
                     };
                     return NonNull::new(pointer);
@@ -176,39 +182,57 @@ impl RuntimeJitContext<'_> {
         None
     }
 
-    fn compiled_frame_base(
+    fn compiled_frame_base_and_safepoint(
         &self,
         binding: NonNull<RuntimeJitStackMapBindingHeader>,
+        identity: NonNull<u8>,
         safepoint: u32,
         values: u32,
-    ) -> u64 {
-        let Some(stack_map) = self.finalized_stack_map(safepoint) else {
-            if self.has_finalized_stack_maps() {
-                process::abort();
-            }
-            return binding.as_ptr().addr() as u64;
-        };
-        if stack_map.entries().len() != values as usize || values == 0 {
+    ) -> (u64, u32) {
+        if !self.has_finalized_stack_maps() {
+            return (binding.as_ptr().addr() as u64, safepoint);
+        }
+        if values == 0 {
             process::abort();
         }
-        let mut frame_base = None;
-        for (index, entry) in stack_map.entries().iter().enumerate() {
-            let Some(tag_address) = binding
-                .as_ptr()
-                .addr()
-                .checked_add(24 + index.saturating_mul(16))
-            else {
-                process::abort();
-            };
-            let Some(candidate) = tag_address.checked_sub(entry.sp_offset() as usize) else {
-                process::abort();
-            };
-            if frame_base.is_some_and(|frame_base| frame_base != candidate) {
-                process::abort();
+        let value_offset = std::mem::size_of::<RuntimeJitStackMapBindingHeader>();
+        for (index, stack_map) in self.finalized_stack_maps().iter().enumerate() {
+            if stack_map.entries().len() != values as usize {
+                continue;
             }
-            frame_base = Some(candidate);
+            let Some(identity_offset) = stack_map.identity_sp_offset() else {
+                continue;
+            };
+            let mut frame_base = None;
+            for (value_index, entry) in stack_map.entries().iter().enumerate() {
+                let Some(tag_address) = binding
+                    .as_ptr()
+                    .addr()
+                    .checked_add(value_offset + value_index.saturating_mul(16))
+                else {
+                    process::abort();
+                };
+                let Some(candidate) = tag_address.checked_sub(entry.sp_offset() as usize) else {
+                    process::abort();
+                };
+                if frame_base.is_some_and(|frame_base| frame_base != candidate) {
+                    process::abort();
+                }
+                frame_base = Some(candidate);
+            }
+            let frame_base = frame_base.unwrap_or_else(|| process::abort());
+            let Some(expected_identity) = frame_base.checked_add(identity_offset as usize) else {
+                process::abort();
+            };
+            if expected_identity != identity.as_ptr().addr() {
+                continue;
+            }
+            let Ok(safepoint) = u32::try_from(index) else {
+                process::abort();
+            };
+            return (frame_base as u64, safepoint);
         }
-        frame_base.unwrap_or_else(|| process::abort()) as u64
+        process::abort()
     }
 }
 
@@ -265,7 +289,7 @@ impl Error for RuntimeJitStackMapWritebackError {
 /// Callers must satisfy [`aos_jit_stack_map_enter`]'s pointer and lifetime
 /// contract.
 pub type RuntimeJitStackMapEnterNativeFn =
-    unsafe extern "C" fn(*mut c_void, *mut c_void, u32, u32);
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, u32, u32);
 
 /// Native ABI for exiting a compiled stack-map binding.
 ///
@@ -281,30 +305,38 @@ pub type RuntimeJitStackMapExitNativeFn = unsafe extern "C" fn(*mut c_void, *mut
 /// `rt` must point to the live pinned runtime context for this native call.
 /// `binding` must point to writable, eight-byte-aligned storage large enough
 /// for [`RuntimeJitStackMapBindingHeader`] followed by `values` runtime values,
-/// and that storage must remain live until the matching exit call.
+/// `identity` must point at the binding's mapped identity word, and that storage
+/// must remain live until the matching exit call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aos_jit_stack_map_enter(
     rt: *mut c_void,
     binding: *mut c_void,
+    identity: *mut c_void,
     safepoint: u32,
     values: u32,
 ) {
     let Some(mut binding) = NonNull::new(binding.cast::<RuntimeJitStackMapBindingHeader>()) else {
         process::abort();
     };
+    let Some(identity) = NonNull::new(identity.cast::<u8>()) else {
+        process::abort();
+    };
     // SAFETY: The native caller supplies the writable binding region and pinned
     // context described by this function's contract.
     unsafe { // aos_jit_stack_map_enter runtime-context decode
         with_native_jit_context(rt, |context| {
-            let frame = context.compiled_frame_base(binding, safepoint, values);
+            let (frame, selected_safepoint) = context
+                .compiled_frame_base_and_safepoint(binding, identity, safepoint, values);
             let previous = context
                 .stack_map_head()
                 .map_or(std::ptr::null_mut(), NonNull::as_ptr);
             let header = binding.as_mut();
             header.previous = previous;
             header.frame = frame;
-            header.safepoint = safepoint;
+            header.safepoint = selected_safepoint;
             header.values = values;
+            header.identity = safepoint;
+            header.padding = 0;
             context.set_stack_map_head(Some(binding));
         });
     }
@@ -367,13 +399,25 @@ mod tests {
             Span::new(0, 0),
         ));
         let rt = context.as_mut().as_mut_ptr();
-        let mut outer = [0_u64; 5];
-        let mut inner = [0_u64; 5];
+        let mut outer = [0_u64; 6];
+        let mut inner = [0_u64; 6];
 
         // SAFETY: Both aligned stack buffers outlive their balanced calls.
         unsafe { // balanced stack-map binding exercise
-            aos_jit_stack_map_enter(rt, outer.as_mut_ptr().cast(), 2, 1);
-            aos_jit_stack_map_enter(rt, inner.as_mut_ptr().cast(), 4, 1);
+            aos_jit_stack_map_enter(
+                rt,
+                outer.as_mut_ptr().cast(),
+                outer.as_mut_ptr().wrapping_add(3).cast(),
+                2,
+                1,
+            );
+            aos_jit_stack_map_enter(
+                rt,
+                inner.as_mut_ptr().cast(),
+                inner.as_mut_ptr().wrapping_add(3).cast(),
+                4,
+                1,
+            );
             let outer_value = Value::thunk(
                 NonNull::new(0x1000_usize as *mut HeapObject).expect("pointer is non-null"),
             )
@@ -382,8 +426,8 @@ mod tests {
                 NonNull::new(0x2000_usize as *mut HeapObject).expect("pointer is non-null"),
             )
             .expect("pointer is aligned");
-            outer.as_mut_ptr().add(3).cast::<Value>().write(outer_value);
-            inner.as_mut_ptr().add(3).cast::<Value>().write(inner_value);
+            outer.as_mut_ptr().add(4).cast::<Value>().write(outer_value);
+            inner.as_mut_ptr().add(4).cast::<Value>().write(inner_value);
 
             let roots = context.active_stack_map_roots().expect("roots snapshot");
             assert_eq!(roots.len(), 2);
@@ -394,14 +438,14 @@ mod tests {
                 &EvalRootSource::StackMap {
                     frame: inner.as_ptr().addr() as u64,
                     safepoint: 4,
-                    slot: StackMapSlot::Stack { offset: 24 },
+                    slot: StackMapSlot::Stack { offset: 32 },
                 }
             );
             let bound = context
                 .bound_stack_map_value(roots.roots()[0].source())
                 .expect("typed physical root resolves to its live slot");
             bound.as_ptr().write(Value::int(9));
-            assert!(inner.as_ptr().add(3).cast::<Value>().read().raw_eq(Value::int(9)));
+            assert!(inner.as_ptr().add(4).cast::<Value>().read().raw_eq(Value::int(9)));
             aos_jit_stack_map_exit(rt, inner.as_mut_ptr().cast());
             aos_jit_stack_map_exit(rt, outer.as_mut_ptr().cast());
         }

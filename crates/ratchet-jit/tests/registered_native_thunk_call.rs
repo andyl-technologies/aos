@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, ptr};
+use std::{ffi::c_void, num::NonZeroUsize, ptr};
 
 use ratchet_core::{
     EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
@@ -74,6 +74,21 @@ extern "C" fn test_aos_update(_rt: JitRuntimeContextPtr, left: Value, right: Val
     };
 
     Value::int((left * 100) + right)
+}
+
+extern "C" fn test_aos_jit_stack_map_enter(
+    _rt: JitRuntimeContextPtr,
+    _binding: *mut c_void,
+    _identity: *mut c_void,
+    _safepoint: u32,
+    _values: u32,
+) {
+}
+
+extern "C" fn test_aos_jit_stack_map_exit(
+    _rt: JitRuntimeContextPtr,
+    _binding: *mut c_void,
+) {
 }
 
 fn local_var_arena(slot: u32) -> IrArena {
@@ -310,6 +325,31 @@ fn update_candidate() -> JitRuntimeSymbolAddressCandidate {
     )
 }
 
+fn stack_map_enter_candidate() -> JitRuntimeSymbolAddressCandidate {
+    candidate(
+        "aos_jit_stack_map_enter",
+        RuntimeHelperRole::SafepointControl,
+        test_aos_jit_stack_map_enter as *const () as usize,
+    )
+}
+
+fn stack_map_exit_candidate() -> JitRuntimeSymbolAddressCandidate {
+    candidate(
+        "aos_jit_stack_map_exit",
+        RuntimeHelperRole::SafepointControl,
+        test_aos_jit_stack_map_exit as *const () as usize,
+    )
+}
+
+fn force_candidates_without_extra() -> [JitRuntimeSymbolAddressCandidate; 4] {
+    [
+        env_get_candidate(),
+        force_candidate(),
+        stack_map_enter_candidate(),
+        stack_map_exit_candidate(),
+    ]
+}
+
 #[test]
 fn registered_native_thunk_call_executes_env_get_artifact_with_candidate() {
     let arena = local_var_arena(9);
@@ -355,7 +395,12 @@ fn registered_native_thunk_call_executes_forced_env_get_artifact_with_candidates
     let arena = local_var_arena(9);
     let artifact = lower_forced_env_get_ir_thunk_body_artifact(&arena, IrId::new(0))
         .expect("forced env-get artifact lowers");
-    let candidates = [env_get_candidate(), force_candidate()];
+    let candidates = [
+        env_get_candidate(),
+        force_candidate(),
+        stack_map_enter_candidate(),
+        stack_map_exit_candidate(),
+    ];
 
     // SAFETY: The current test host is accepted by the native Value ABI gate.
     // The artifact imports `aos_env_get` and `aos_force`, and both candidates
@@ -380,7 +425,15 @@ fn registered_native_thunk_call_executes_forced_env_get_artifact_with_candidates
         .iter()
         .map(|artifact_import| artifact_import.symbol_name())
         .collect::<Vec<_>>();
-    assert_eq!(import_names, ["aos_env_get", "aos_force"]);
+    assert_eq!(
+        import_names,
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+        ]
+    );
     assert!(
         invocation
             .finalization()
@@ -440,130 +493,19 @@ fn registered_native_thunk_call_executes_apply_artifact_with_candidates() {
     );
 }
 
-#[test]
-fn registered_native_thunk_call_executes_static_select_artifact_with_candidates() {
-    let ir = static_select_ir(9);
-    let artifact = lower_select_local_slot_ir_root_thunk_body_artifact(&ir)
-        .expect("static select artifact lowers");
-    let candidates = [
-        env_get_candidate(),
-        force_candidate(),
-        select_ic_candidate(),
-    ];
-
-    // SAFETY: The current test host is accepted by the native Value ABI gate.
-    // The artifact imports `aos_env_get`, `aos_force`, and `aos_select_ic`, and
-    // all candidates are live `extern "C"` test functions with the frozen
-    // helper ABIs. The helpers tolerate null runtime/environment pointers and
-    // return valid-tag Values.
-    let invocation = unsafe {
-        jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(
-            artifact,
-            &candidates,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    }
-    .expect("registered static select artifact can be called through native thunk ABI");
-
-    assert!(invocation.value().raw_eq(Value::int(811)));
-    let import_names = invocation
-        .finalization()
-        .artifact_runtime_imports()
-        .iter()
-        .map(|artifact_import| artifact_import.symbol_name())
-        .collect::<Vec<_>>();
-    assert_eq!(import_names, ["aos_env_get", "aos_force", "aos_select_ic"]);
-    assert!(
-        invocation
-            .finalization()
-            .registered_symbol_for("aos_select_ic")
-            .is_some_and(|registered| registered.address() == candidates[2].address())
-    );
-}
-
-#[test]
-fn registered_native_thunk_call_executes_static_has_attr_artifact_with_candidates() {
-    let ir = static_has_attr_ir(9);
-    let artifact = lower_has_attr_local_slot_ir_root_thunk_body_artifact(&ir)
-        .expect("static hasAttr artifact lowers");
-    let candidates = [env_get_candidate(), force_candidate(), has_attr_candidate()];
-
-    // SAFETY: The current test host is accepted by the native Value ABI gate.
-    // The artifact imports `aos_env_get`, `aos_force`, and `aos_has_attr`, and
-    // all candidates are live `extern "C"` test functions with the frozen
-    // helper ABIs. The helpers tolerate null runtime/environment pointers and
-    // return valid-tag Values.
-    let invocation = unsafe {
-        jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(
-            artifact,
-            &candidates,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    }
-    .expect("registered static hasAttr artifact can be called through native thunk ABI");
-
-    assert!(invocation.value().raw_eq(Value::bool(true)));
-    let import_names = invocation
-        .finalization()
-        .artifact_runtime_imports()
-        .iter()
-        .map(|artifact_import| artifact_import.symbol_name())
-        .collect::<Vec<_>>();
-    assert_eq!(import_names, ["aos_env_get", "aos_force", "aos_has_attr"]);
-    assert!(
-        invocation
-            .finalization()
-            .registered_symbol_for("aos_has_attr")
-            .is_some_and(|registered| registered.address() == candidates[2].address())
-    );
-}
-
-#[test]
-fn registered_native_thunk_call_executes_update_artifact_with_candidates() {
-    let ir = update_ir(8, 9);
-    let artifact =
-        lower_update_local_slots_ir_root_thunk_body_artifact(&ir).expect("update artifact lowers");
-    let candidates = [env_get_candidate(), force_candidate(), update_candidate()];
-
-    // SAFETY: The current test host is accepted by the native Value ABI gate.
-    // The artifact imports `aos_env_get`, `aos_force`, and `aos_update`, and
-    // all candidates are live `extern "C"` test functions with the frozen
-    // helper ABIs. The helpers tolerate null runtime/environment pointers and
-    // return valid-tag Values.
-    let invocation = unsafe {
-        jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(
-            artifact,
-            &candidates,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    }
-    .expect("registered update artifact can be called through native thunk ABI");
-
-    assert!(invocation.value().raw_eq(Value::int(1838)));
-    let import_names = invocation
-        .finalization()
-        .artifact_runtime_imports()
-        .iter()
-        .map(|artifact_import| artifact_import.symbol_name())
-        .collect::<Vec<_>>();
-    assert_eq!(import_names, ["aos_env_get", "aos_force", "aos_update"]);
-    assert!(
-        invocation
-            .finalization()
-            .registered_symbol_for("aos_update")
-            .is_some_and(|registered| registered.address() == candidates[2].address())
-    );
-}
+#[path = "registered_native_thunk_call/force_artifacts.rs"]
+mod force_artifacts;
 
 #[test]
 fn registered_native_thunk_call_requires_candidates_for_artifact_imports() {
     let arena = local_var_arena(9);
     let artifact = lower_forced_env_get_ir_thunk_body_artifact(&arena, IrId::new(0))
         .expect("forced env-get artifact lowers");
-    let candidates = [env_get_candidate()];
+    let candidates = [
+        env_get_candidate(),
+        stack_map_enter_candidate(),
+        stack_map_exit_candidate(),
+    ];
 
     // SAFETY: The current test host is accepted by the native Value ABI gate.
     // The candidate that is supplied is host-ABI-matched, but the call should
@@ -653,7 +595,12 @@ fn promotion_gated_registered_native_thunk_call_keeps_cold_slot_without_candidat
 #[test]
 fn promotion_gated_registered_native_thunk_call_executes_forced_env_get_on_promotion() {
     let arena = local_var_arena(9);
-    let candidates = [env_get_candidate(), force_candidate()];
+    let candidates = [
+        env_get_candidate(),
+        force_candidate(),
+        stack_map_enter_candidate(),
+        stack_map_exit_candidate(),
+    ];
 
     // SAFETY: The current test host is accepted by the native Value ABI gate.
     // The promoted artifact imports `aos_env_get` and `aos_force`, whose
@@ -723,6 +670,8 @@ fn promotion_gated_registered_native_thunk_call_executes_static_select_on_promot
         env_get_candidate(),
         force_candidate(),
         select_ic_candidate(),
+        stack_map_enter_candidate(),
+        stack_map_exit_candidate(),
     ];
 
     // SAFETY: The current test host is accepted by the native Value ABI gate.
@@ -764,7 +713,13 @@ fn promotion_gated_registered_native_thunk_call_executes_static_select_on_promot
             .iter()
             .map(|artifact_import| artifact_import.symbol_name())
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic",
+        ]
     );
     assert!(
         invocation
@@ -784,7 +739,13 @@ fn promotion_gated_registered_native_thunk_call_executes_static_select_on_promot
 #[test]
 fn promotion_gated_registered_native_thunk_call_executes_static_has_attr_on_promotion() {
     let ir = static_has_attr_ir(9);
-    let candidates = [env_get_candidate(), force_candidate(), has_attr_candidate()];
+    let candidates = [
+        env_get_candidate(),
+        force_candidate(),
+        has_attr_candidate(),
+        stack_map_enter_candidate(),
+        stack_map_exit_candidate(),
+    ];
 
     // SAFETY: The current test host is accepted by the native Value ABI gate.
     // The promoted artifact imports `aos_env_get`, `aos_force`, and
@@ -825,7 +786,13 @@ fn promotion_gated_registered_native_thunk_call_executes_static_has_attr_on_prom
             .iter()
             .map(|artifact_import| artifact_import.symbol_name())
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+        ]
     );
     assert!(
         invocation
@@ -845,7 +812,13 @@ fn promotion_gated_registered_native_thunk_call_executes_static_has_attr_on_prom
 #[test]
 fn promotion_gated_registered_native_thunk_call_executes_update_on_promotion() {
     let ir = update_ir(8, 9);
-    let candidates = [env_get_candidate(), force_candidate(), update_candidate()];
+    let candidates = [
+        env_get_candidate(),
+        force_candidate(),
+        update_candidate(),
+        stack_map_enter_candidate(),
+        stack_map_exit_candidate(),
+    ];
 
     // SAFETY: The current test host is accepted by the native Value ABI gate.
     // The promoted update artifact imports `aos_env_get`, `aos_force`, and
@@ -886,7 +859,13 @@ fn promotion_gated_registered_native_thunk_call_executes_update_on_promotion() {
             .iter()
             .map(|artifact_import| artifact_import.symbol_name())
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update",
+        ]
     );
     assert!(
         invocation
@@ -968,192 +947,5 @@ fn promotion_gated_registered_native_thunk_call_executes_apply_on_promotion() {
     assert!(preflight.owns_encapsulated_module());
 }
 
-#[test]
-fn promotion_gated_registered_native_thunk_call_reports_missing_apply_candidate() {
-    let arena = apply_arena(4, 6);
-    let candidates = [env_get_candidate()];
-
-    // SAFETY: The supplied `aos_env_get` candidate is host-ABI-matched, but the
-    // promoted apply artifact also imports `aos_apply`; finalization must fail
-    // before native invocation.
-    let Err(error) = (unsafe {
-        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &arena,
-            IrId::new(2),
-            &candidates,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    }) else {
-        panic!("missing apply candidate must reject before native invocation");
-    };
-
-    assert_eq!(error.slot().invocation_counter().invocations(), 1);
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    let JitCraneliftNativeCallError::FinalizeArtifact {
-        source:
-            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names },
-    } = error.native_call_error()
-    else {
-        panic!(
-            "expected missing artifact-import candidate error, got {}",
-            error.native_call_error()
-        );
-    };
-    assert_eq!(symbol_names, &["aos_apply".to_owned()]);
-}
-
-#[test]
-fn promotion_gated_registered_native_thunk_call_reports_missing_select_candidate() {
-    let ir = static_select_ir(9);
-    let candidates = [env_get_candidate(), force_candidate()];
-
-    // SAFETY: The supplied env/force candidates are host-ABI-matched, but the
-    // promoted static-select artifact also imports `aos_select_ic`;
-    // finalization must fail before native invocation.
-    let Err(error) = (unsafe {
-        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &ir,
-            ir.root,
-            &candidates,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    }) else {
-        panic!("missing select candidate must reject before native invocation");
-    };
-
-    assert_eq!(error.slot().invocation_counter().invocations(), 1);
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    let JitCraneliftNativeCallError::FinalizeArtifact {
-        source:
-            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names },
-    } = error.native_call_error()
-    else {
-        panic!(
-            "expected missing artifact-import candidate error, got {}",
-            error.native_call_error()
-        );
-    };
-    assert_eq!(symbol_names, &["aos_select_ic".to_owned()]);
-}
-
-#[test]
-fn promotion_gated_registered_native_thunk_call_reports_missing_update_candidate() {
-    let ir = update_ir(8, 9);
-    let candidates = [env_get_candidate(), force_candidate()];
-
-    // SAFETY: The supplied env/force candidates are host-ABI-matched, but the
-    // promoted update artifact also imports `aos_update`; finalization must
-    // fail before native invocation.
-    let Err(error) = (unsafe {
-        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &ir.arena,
-            ir.root,
-            &candidates,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    }) else {
-        panic!("missing update candidate must reject before native invocation");
-    };
-
-    assert_eq!(error.slot().invocation_counter().invocations(), 1);
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    let JitCraneliftNativeCallError::FinalizeArtifact {
-        source:
-            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names },
-    } = error.native_call_error()
-    else {
-        panic!(
-            "expected missing artifact-import candidate error, got {}",
-            error.native_call_error()
-        );
-    };
-    assert_eq!(symbol_names, &["aos_update".to_owned()]);
-}
-
-#[test]
-fn promotion_gated_registered_native_thunk_call_reports_missing_has_attr_candidate() {
-    let ir = static_has_attr_ir(9);
-    let candidates = [env_get_candidate(), force_candidate()];
-
-    // SAFETY: The supplied env/force candidates are host-ABI-matched, but the
-    // promoted static-hasAttr artifact also imports `aos_has_attr`;
-    // finalization must fail before native invocation.
-    let Err(error) = (unsafe {
-        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_lowered_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &ir,
-            ir.root,
-            &candidates,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    }) else {
-        panic!("missing hasAttr candidate must reject before native invocation");
-    };
-
-    assert_eq!(error.slot().invocation_counter().invocations(), 1);
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    let JitCraneliftNativeCallError::FinalizeArtifact {
-        source:
-            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names },
-    } = error.native_call_error()
-    else {
-        panic!(
-            "expected missing artifact-import candidate error, got {}",
-            error.native_call_error()
-        );
-    };
-    assert_eq!(symbol_names, &["aos_has_attr".to_owned()]);
-}
-
-#[test]
-fn promotion_gated_registered_native_thunk_call_reports_missing_force_candidate() {
-    let arena = local_var_arena(9);
-    let candidates = [env_get_candidate()];
-
-    // SAFETY: The supplied `aos_env_get` candidate is host-ABI-matched, but the
-    // promoted forced artifact also imports `aos_force`; finalization must fail
-    // before native invocation.
-    let Err(error) = (unsafe {
-        jit_cranelift_force_aware_registered_tier1_native_thunk_call_preflight_for_ir_root_with_candidates(
-            JitTieredCodeSlot::new(),
-            TierUpPolicy::default(),
-            TierUpDemandHint::MultiUse,
-            &arena,
-            IrId::new(0),
-            &candidates,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    }) else {
-        panic!("missing force candidate must reject before native invocation");
-    };
-
-    assert_eq!(error.slot().invocation_counter().invocations(), 1);
-    assert_eq!(error.slot().current_tier(), JitTier::Tier0Oracle);
-    let JitCraneliftNativeCallError::FinalizeArtifact {
-        source:
-            JitCraneliftModuleSetupError::ArtifactRuntimeImportsRequireRegistration { symbol_names },
-    } = error.native_call_error()
-    else {
-        panic!(
-            "expected missing artifact-import candidate error, got {}",
-            error.native_call_error()
-        );
-    };
-    assert_eq!(symbol_names, &["aos_force".to_owned()]);
-}
+#[path = "registered_native_thunk_call/missing_candidates.rs"]
+mod missing_candidates;

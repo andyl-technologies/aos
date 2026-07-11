@@ -5,6 +5,7 @@ use super::*;
 const ENTER_PARAMETERS: &[RuntimeAbiParameter] = &[
     RuntimeAbiParameter::new("rt", RuntimeAbiParameterKind::RuntimeContext),
     RuntimeAbiParameter::new("binding", RuntimeAbiParameterKind::RawPointer),
+    RuntimeAbiParameter::new("identity", RuntimeAbiParameterKind::RawPointer),
     RuntimeAbiParameter::new("safepoint", RuntimeAbiParameterKind::U32),
     RuntimeAbiParameter::new("values", RuntimeAbiParameterKind::U32),
 ];

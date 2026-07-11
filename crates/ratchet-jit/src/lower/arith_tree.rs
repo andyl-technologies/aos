@@ -48,7 +48,7 @@ use super::{
     AOS_DEOPT_SYMBOL, AOS_ENV_GET_SYMBOL, AOS_FORCE_SYMBOL, AOS_UPVAL_GET_SYMBOL, JitLowerError,
     append_entry_block_params, clif_external_name_for_aos_deopt, clif_external_name_for_aos_force,
     clif_name_for_ir_root, import_env_get_function, import_runtime_helper_function,
-    import_upval_get_function, thunk_body_artifact, verify_clif_function,
+    import_upval_get_function, stack_maps, thunk_body_artifact, verify_clif_function,
 };
 use crate::{
     abi::clif_signature_for_runtime_call,
@@ -100,7 +100,6 @@ fn classify(op: BinOpKind) -> Option<ArithKind> {
 }
 
 /// Shared CLIF references and entry values threaded through the tree emitter.
-#[derive(Clone, Copy)]
 struct ArithCtx {
     /// Imported `aos_env_get` helper for local-slot loads.
     env_get: cranelift_codegen::ir::FuncRef,
@@ -111,6 +110,8 @@ struct ArithCtx {
     upval_get: Option<cranelift_codegen::ir::FuncRef>,
     /// Imported `aos_force` helper (forces loaded local-slot values to WHNF).
     force: cranelift_codegen::ir::FuncRef,
+    /// Compiled-frame bindings and user stack maps for every force call.
+    safepoints: stack_maps::ForceSafepoints,
     /// Imported `aos_deopt` helper called by the shared deopt block.
     deopt_fn: cranelift_codegen::ir::FuncRef,
     /// The runtime-context entry parameter passed to forcing and deopt calls.
@@ -225,6 +226,7 @@ fn build_arith_function(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
+    let safepoints = stack_maps::ForceSafepoints::import(&mut function)?;
     let deopt_fn = import_runtime_helper_function(
         &mut function,
         AOS_DEOPT_SYMBOL,
@@ -243,17 +245,19 @@ fn build_arith_function(
         .get(1)
         .copied()
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
-    let ctx = ArithCtx {
+    let mut ctx = ArithCtx {
         env_get,
         upval_get,
         force,
+        safepoints,
         deopt_fn,
         rt,
         env,
         deopt,
     };
 
-    let (tag, payload) = emit_binop(&mut cursor, arena, &ctx, op, lhs, rhs)?;
+    let mut live = Vec::new();
+    let (tag, payload) = emit_binop(&mut cursor, arena, &mut ctx, op, lhs, rhs, &mut live)?;
     cursor.ins().return_(&[tag, payload]);
     emit_deopt_block(&mut cursor, &ctx)?;
     drop(cursor);
@@ -276,8 +280,9 @@ fn build_arith_function(
 fn emit_operand(
     cursor: &mut FuncCursor,
     arena: &IrArena,
-    ctx: &ArithCtx,
+    ctx: &mut ArithCtx,
     id: IrId,
+    live: &mut Vec<[ClifValue; 2]>,
 ) -> Result<(ClifValue, ClifValue), JitLowerError> {
     let node = arena
         .node(id)
@@ -292,11 +297,12 @@ fn emit_operand(
         (IrKind::LocalVar, IrData::Local { slot }) => {
             let slot = cursor.ins().iconst(types::I32, i64::from(slot));
             let loaded = call2(cursor, ctx.env_get, &[ctx.env, slot], AOS_ENV_GET_SYMBOL)?;
-            let forced = call2(
+            let forced = ctx.safepoints.force(
                 cursor,
                 ctx.force,
-                &[ctx.rt, loaded[0], loaded[1]],
-                AOS_FORCE_SYMBOL,
+                ctx.rt,
+                loaded,
+                live,
             )?;
             Ok((forced[0], forced[1]))
         }
@@ -309,16 +315,17 @@ fn emit_operand(
             let depth = cursor.ins().iconst(types::I32, i64::from(depth));
             let slot = cursor.ins().iconst(types::I32, i64::from(slot));
             let loaded = call2(cursor, upval_get, &[ctx.env, depth, slot], AOS_UPVAL_GET_SYMBOL)?;
-            let forced = call2(
+            let forced = ctx.safepoints.force(
                 cursor,
                 ctx.force,
-                &[ctx.rt, loaded[0], loaded[1]],
-                AOS_FORCE_SYMBOL,
+                ctx.rt,
+                loaded,
+                live,
             )?;
             Ok((forced[0], forced[1]))
         }
         (IrKind::BinOp, IrData::Binary { op, lhs, rhs }) => {
-            emit_binop(cursor, arena, ctx, op, lhs, rhs)
+            emit_binop(cursor, arena, ctx, op, lhs, rhs, live)
         }
         (kind, _) => Err(JitLowerError::UnsupportedArithOperand { operand: id, kind }),
     }
@@ -358,15 +365,20 @@ fn arith_tree_reads_upval(arena: &IrArena, id: IrId) -> bool {
 fn emit_binop(
     cursor: &mut FuncCursor,
     arena: &IrArena,
-    ctx: &ArithCtx,
+    ctx: &mut ArithCtx,
     op: BinOpKind,
     lhs: IrId,
     rhs: IrId,
+    live: &mut Vec<[ClifValue; 2]>,
 ) -> Result<(ClifValue, ClifValue), JitLowerError> {
     let kind = classify(op).ok_or(JitLowerError::UnsupportedArithOp { op })?;
 
-    let (lhs_tag, lhs_payload) = emit_operand(cursor, arena, ctx, lhs)?;
-    let (rhs_tag, rhs_payload) = emit_operand(cursor, arena, ctx, rhs)?;
+    let (lhs_tag, lhs_payload) = emit_operand(cursor, arena, ctx, lhs, live)?;
+    let lhs_index = live.len();
+    live.push([lhs_tag, lhs_payload]);
+    let (rhs_tag, rhs_payload) = emit_operand(cursor, arena, ctx, rhs, live)?;
+    let [lhs_tag, lhs_payload] = live[lhs_index];
+    live.truncate(lhs_index);
 
     // Both operands must be integers (tag word == 0) for the inline path.
     let lhs_is_int = cursor.ins().icmp_imm(IntCC::Equal, lhs_tag, TAG_INT);
@@ -473,6 +485,7 @@ fn call2(
 mod tests {
     use super::*;
 
+    use cranelift_codegen::ir::Opcode;
     use ratchet_core::{EffectClass, IrNode, syntax::Span};
 
     use crate::artifact::JitClifArtifactSource;
@@ -601,6 +614,39 @@ mod tests {
             binop(BinOpKind::Add, 3, 2),
         ]);
         lower_binop_ir_thunk_body_artifact(&arena, IrId::new(4)).expect("nested tree lowers");
+    }
+
+    /// Each arithmetic force maps its input and preserves earlier operands.
+    #[test]
+    fn binary_local_forces_map_values_live_across_later_force() {
+        let arena = arena(vec![local(0), local(1), binop(BinOpKind::Add, 0, 1)]);
+        let artifact = lower_binop_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("two-force arithmetic lowers");
+        let function = artifact.function();
+        let maps = function
+            .layout
+            .blocks()
+            .flat_map(|block| function.layout.block_insts(block))
+            .filter_map(|inst| function.dfg.user_stack_map_entries(inst))
+            .collect::<Vec<_>>();
+
+        assert_eq!(maps.len(), 2);
+        assert_eq!(maps[0].len(), 2);
+        assert_eq!(maps[0][0].offset, 24);
+        assert_eq!(maps[0][1].offset, 32);
+        assert_eq!(function.sized_stack_slots[maps[0][1].slot].size, 48);
+        assert_eq!(maps[1].len(), 3);
+        assert_eq!(maps[1][0].offset, 24);
+        assert_eq!(maps[1][1].offset, 32);
+        assert_eq!(maps[1][2].offset, 48);
+        assert_eq!(function.sized_stack_slots[maps[1][1].slot].size, 64);
+        let reloads = function
+            .layout
+            .blocks()
+            .flat_map(|block| function.layout.block_insts(block))
+            .filter(|inst| function.dfg.insts[*inst].opcode() == Opcode::StackLoad)
+            .count();
+        assert_eq!(reloads, 2, "the first value reloads after the second force");
     }
 
     /// A comparison over nested arithmetic `(a + b) < c` lowers.

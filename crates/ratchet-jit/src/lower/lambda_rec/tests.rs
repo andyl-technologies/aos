@@ -1,7 +1,6 @@
 //! Unit tests for the tier-2 self-recursive lambda lowerer.
 
 use super::*;
-use super::*;
 
 use ratchet_core::{
     EffectClass, IrChildSlice, IrNode,
@@ -117,6 +116,15 @@ fn fib_shape_lowers_with_two_self_calls() {
     // The entry keeps the frozen 4-param lambda ABI; inner adds the budget.
     assert_eq!(lowering.entry().signature.params.len(), 4);
     assert_eq!(lowering.inner().signature.params.len(), 5);
+    let maps = lowering
+        .inner()
+        .layout
+        .blocks()
+        .flat_map(|block| lowering.inner().layout.block_insts(block))
+        .filter_map(|inst| lowering.inner().dfg.user_stack_map_entries(inst))
+        .collect::<Vec<_>>();
+    assert_eq!(maps.len(), 1);
+    assert_eq!(maps[0].len(), 2);
 }
 
 /// A non-self callee (a different upvalue per call site) is rejected.
@@ -230,4 +238,3 @@ fn dynamic_if_condition_is_rejected() {
     let arena = arena(nodes);
     assert!(lower_tier2_self_recursive_lambda(&arena, IrId::new(0), IrId::new(4), TIER2_NATIVE_DEPTH_BUDGET).is_err());
 }
-

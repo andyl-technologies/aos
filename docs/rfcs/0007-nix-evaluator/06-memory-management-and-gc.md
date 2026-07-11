@@ -3222,10 +3222,16 @@ GC must be observationally invisible (§8): every item is gated by the different
       In sweep mode, mapped force wrappers keep outer compiled roots registered
       across nested forcing and automatically dispatch the thresholded Tier-B
       non-moving collector with the finalized roots plus the helper result.
-      Focused tests exercise nested-root retention and an actual finalized JIT
-      force under sweep-zero. Unmapped force sites fail closed by skipping
-      collector dispatch; arithmetic-tree and allocation-helper map coverage,
-      plus automatic moving-minor-GC planning/application, remain open.
+      Every currently emitted tier-1 and tier-2 `aos_force` call now uses one
+      shared emitter: arithmetic trees preserve earlier operands across later
+      forces, and paired tier-2 finalization retains the module-local inner
+      body's maps for the exported entry context. Each map carries a physical
+      stack-address identity anchor, so runtime selection remains correct when
+      Cranelift reorders blocks after lowering. Focused tests exercise
+      nested-root retention, multi-force arithmetic, and actual tier-1/tier-2
+      sweep-zero dispatch. Future unmapped sites still fail closed by skipping
+      collector dispatch. Allocation-helper maps and automatic moving-minor-GC
+      planning/application remain open.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now closes the

@@ -69,7 +69,7 @@ use ratchet_core::{
 use super::{
     AOS_DEOPT_SYMBOL, AOS_FORCE_SYMBOL, JitLowerError, append_entry_block_params,
     clif_external_name_for_aos_deopt, clif_external_name_for_aos_force, clif_name_for_ir_root,
-    import_runtime_helper_function, verify_clif_function,
+    import_runtime_helper_function, stack_maps, verify_clif_function,
 };
 use crate::abi::clif_signature_for_runtime_call;
 
@@ -176,6 +176,8 @@ impl JitTier2LambdaLowering {
 struct LambdaCtx {
     /// Imported `aos_force` helper (forces the parameter at first strict use).
     force: cranelift_codegen::ir::FuncRef,
+    /// Compiled-frame bindings and user stack maps for slow-path forces.
+    safepoints: stack_maps::ForceSafepoints,
     /// Imported `aos_deopt` helper called by the shared deopt block.
     deopt_fn: cranelift_codegen::ir::FuncRef,
     /// The module-local self reference for direct recursive calls.
@@ -420,6 +422,7 @@ fn build_inner_function(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
+    let safepoints = stack_maps::ForceSafepoints::import(&mut function)?;
     let deopt_fn = import_runtime_helper_function(
         &mut function,
         AOS_DEOPT_SYMBOL,
@@ -440,6 +443,7 @@ fn build_inner_function(
     };
     let mut ctx = LambdaCtx {
         force,
+        safepoints,
         deopt_fn,
         self_ref,
         rt,
@@ -555,7 +559,7 @@ fn emit_expr(
             Ok((tag, payload))
         }
         (IrKind::LocalVar, IrData::Local { slot: 0 }) => {
-            Ok(emit_forced_param(cursor, ctx, forced_param))
+            emit_forced_param(cursor, ctx, forced_param)
         }
         (IrKind::BinOp, IrData::Binary { op, lhs, rhs }) => {
             emit_binop(cursor, arena, ctx, op, lhs, rhs, forced_param)
@@ -585,11 +589,11 @@ fn emit_expr(
 /// walk's own forced value would.
 fn emit_forced_param(
     cursor: &mut FuncCursor,
-    ctx: &LambdaCtx,
+    ctx: &mut LambdaCtx,
     forced_param: &mut Option<(ClifValue, ClifValue)>,
-) -> (ClifValue, ClifValue) {
+) -> Result<(ClifValue, ClifValue), JitLowerError> {
     if let Some(cached) = *forced_param {
-        return cached;
+        return Ok(cached);
     }
     let is_int = cursor.ins().icmp_imm(IntCC::Equal, ctx.arg_tag, TAG_INT);
     let slow = cursor.func.dfg.make_block();
@@ -600,10 +604,13 @@ fn emit_forced_param(
         .ins()
         .brif(is_int, join, &[ctx.arg_tag.into(), ctx.arg_payload.into()], slow, &[]);
     cursor.insert_block(slow);
-    let force_call = cursor
-        .ins()
-        .call(ctx.force, &[ctx.rt, ctx.arg_tag, ctx.arg_payload]);
-    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+    let force_results = ctx.safepoints.force(
+        cursor,
+        ctx.force,
+        ctx.rt,
+        [ctx.arg_tag, ctx.arg_payload],
+        &mut [],
+    )?;
     cursor
         .ins()
         .jump(join, &[force_results[0].into(), force_results[1].into()]);
@@ -611,7 +618,7 @@ fn emit_forced_param(
     let joined = cursor.func.dfg.block_params(join).to_vec();
     let pair = (joined[0], joined[1]);
     *forced_param = Some(pair);
-    pair
+    Ok(pair)
 }
 
 /// Emits one binary operation, mirroring the tree walk's operand order.

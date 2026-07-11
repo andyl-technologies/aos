@@ -31,6 +31,7 @@ fn forced_env_get_brackets_force_with_a_bound_stack_map() {
             Opcode::StackStore,
             Opcode::StackStore,
             Opcode::StackAddr,
+            Opcode::StackAddr,
             Opcode::Iconst,
             Opcode::Iconst,
             Opcode::Call,
@@ -46,9 +47,10 @@ fn forced_env_get_brackets_force_with_a_bound_stack_map() {
         .dfg
         .user_stack_map_entries(force_call)
         .expect("force call carries the spilled input value");
-    assert_eq!(stack_map.len(), 1);
+    assert_eq!(stack_map.len(), 2);
     assert_eq!(stack_map[0].offset, 24);
-    assert_eq!(function.sized_stack_slots[stack_map[0].slot].size, 40);
+    assert_eq!(stack_map[1].offset, 32);
+    assert_eq!(function.sized_stack_slots[stack_map[1].slot].size, 48);
     assert_eq!(
         function.dfg.inst_args(env_get_call)[0],
         entry_block_values(&function)[1]

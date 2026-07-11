@@ -8314,11 +8314,17 @@ and helps the oracle directly.
       slots, rejecting stale sources or values before the first write. Force
       wrappers publish compiled roots across nested tree-walk/native forcing and
       automatically run the thresholded Tier-B non-moving sweep at mapped sites
-      with finalized roots and the returned helper value. Unmapped sites fail
-      closed by skipping collector dispatch. Focused oracle and executable-JIT
-      sweep-zero tests prove nested retention, collector dispatch, and byte-safe
-      return. Automatic moving-minor-GC planning/application, arithmetic-tree
-      maps, and allocation-site stack maps remain open.
+      with finalized roots and the returned helper value. One shared emitter
+      now covers every currently generated tier-1 and tier-2 `aos_force`:
+      arithmetic trees map and reload prior operands across later calls, while
+      paired tier-2 finalization retains module-local inner-body maps for the
+      exported entry context. A physical stack-address anchor identifies each
+      finalized map independently of backend block reordering. Future unmapped
+      sites fail closed by skipping
+      collector dispatch. Focused oracle and executable-JIT sweep-zero tests
+      prove nested retention, multi-force liveness, tier-2 inner dispatch, and
+      byte-safe return. Automatic moving-minor-GC planning/application and
+      allocation-site stack maps remain open.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now validates and

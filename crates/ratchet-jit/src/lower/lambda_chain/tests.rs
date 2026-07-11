@@ -127,6 +127,19 @@ fn fold_operator_chain_scans_and_lowers_with_pinned_inline() {
     assert_eq!(lowering.arity(), 2);
     assert_eq!(lowering.self_call_count(), 0);
     assert_eq!(lowering.self_upval(), None);
+    let maps = lowering
+        .inner()
+        .layout
+        .blocks()
+        .flat_map(|block| lowering.inner().layout.block_insts(block))
+        .filter_map(|inst| lowering.inner().dfg.user_stack_map_entries(inst))
+        .collect::<Vec<_>>();
+    assert!(!maps.is_empty());
+    assert!(maps.iter().all(|entries| !entries.is_empty()));
+    assert!(
+        maps.iter().any(|entries| entries.len() > 2),
+        "a later force preserves an earlier arithmetic operand"
+    );
     // Entry keeps the frozen 3-param argv ABI; inner carries rt, env, two
     // unboxed value pairs, and the budget.
     assert_eq!(lowering.entry().signature.params.len(), 3);
@@ -152,7 +165,7 @@ fn tak_arena() -> (IrArena, IrId, IrId) {
     ];
     // Emits one `self (p0 - 1) p1 p2` chain and returns the chain root id.
     // Parameter reads: x = Upval(2,0), y = Upval(1,0), z = Local(0).
-    let mut param = |nodes: &mut Vec<IrNode>, which: u32| -> IrId {
+    let param = |nodes: &mut Vec<IrNode>, which: u32| -> IrId {
         let id = IrId::new(nodes.len() as u32);
         match which {
             0 => nodes.push(node(IrKind::UpvalVar, IrData::Upval { depth: 2, slot: 0 })),
@@ -161,7 +174,7 @@ fn tak_arena() -> (IrArena, IrId, IrId) {
         }
         id
     };
-    let mut chain = |nodes: &mut Vec<IrNode>, a: u32, b: u32, c: u32| -> IrId {
+    let chain = |nodes: &mut Vec<IrNode>, a: u32, b: u32, c: u32| -> IrId {
         let head = IrId::new(nodes.len() as u32);
         nodes.push(node(IrKind::UpvalVar, IrData::Upval { depth: 3, slot: 0 }));
         let first = param(nodes, a);

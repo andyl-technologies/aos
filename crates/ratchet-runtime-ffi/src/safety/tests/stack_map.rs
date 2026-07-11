@@ -18,7 +18,8 @@ const JIT_EVALUATOR_CAST: &str = concat!(
     "let eval = ", "uns", "afe { jit_context.eval.as_mut() };"
 );
 const ENTER_TYPE: &str = concat!(
-    "uns", "afe ", "ext", "ern \"C\" fn(*mut c_void, *mut c_void, u32, u32);"
+    "uns", "afe ", "ext",
+    "ern \"C\" fn(*mut c_void, *mut c_void, *mut c_void, u32, u32);"
 );
 const EXIT_TYPE: &str = concat!(
     "pub type RuntimeJitStackMapExitNativeFn = ", "uns", "afe ", "ext",

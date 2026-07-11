@@ -128,6 +128,10 @@ impl<'eval> RuntimeJitContext<'eval> {
         !self.stack_maps.is_empty()
     }
 
+    pub(crate) const fn finalized_stack_maps(&self) -> &[JitCraneliftUserStackMap] {
+        self.stack_maps
+    }
+
     pub(crate) fn set_stack_map_head(
         &mut self,
         head: Option<NonNull<RuntimeJitStackMapBindingHeader>>,

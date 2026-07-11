@@ -43,6 +43,11 @@ pub enum JitLowerError {
         /// The actual number of CLIF result values.
         actual: usize,
     },
+    /// Generated force safepoint metadata could not be renumbered safely.
+    MalformedForceSafepoint {
+        /// The failed generated-code invariant.
+        reason: &'static str,
+    },
     /// The requested IR root was not present in the arena.
     MissingIrNode {
         /// The missing IR root id.
@@ -258,6 +263,9 @@ impl fmt::Display for JitLowerError {
                 formatter,
                 "runtime helper {symbol_name:?} produced {actual} CLIF results, expected {expected}"
             ),
+            Self::MalformedForceSafepoint { reason } => {
+                write!(formatter, "generated force safepoint is malformed: {reason}")
+            }
             Self::MissingIrNode { root } => {
                 write!(formatter, "IR root {root:?} is not present in the arena")
             }
@@ -453,6 +461,7 @@ impl Error for JitLowerError {
             | Self::MissingRuntimeHelperSignature { .. }
             | Self::MissingEntryBlockParameter { .. }
             | Self::InvalidRuntimeCallResultArity { .. }
+            | Self::MalformedForceSafepoint { .. }
             | Self::MissingIrNode { .. }
             | Self::MissingIrBody { .. }
             | Self::UnsupportedIrRoot { .. }

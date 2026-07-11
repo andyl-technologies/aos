@@ -53,7 +53,7 @@ use ratchet_core::{
 use super::super::{
     AOS_DEOPT_SYMBOL, AOS_FORCE_SYMBOL, AOS_UPVAL_GET_SYMBOL, JitLowerError,
     append_entry_block_params, clif_external_name_for_aos_deopt, clif_external_name_for_aos_force,
-    clif_external_name_for_aos_upval_get, import_runtime_helper_function,
+    clif_external_name_for_aos_upval_get, import_runtime_helper_function, stack_maps,
 };
 use super::super::lambda_rec::import_tier2_local_function;
 use super::scan::{flatten_apply_chain, require_static_bool_condition, unwrap_thunk_alloc};
@@ -83,6 +83,10 @@ struct ChainCtx<'a> {
     bindings: &'a [IrBinding],
     /// Imported `aos_force` helper (forces parameters at first strict use).
     force: cranelift_codegen::ir::FuncRef,
+    /// Compiled-frame bindings and user stack maps for slow-path forces.
+    safepoints: stack_maps::ForceSafepoints,
+    /// Runtime values currently live across recursive expression emission.
+    live_values: Vec<[ClifValue; 2]>,
     /// Imported `aos_deopt` helper called by the shared deopt block.
     deopt_fn: cranelift_codegen::ir::FuncRef,
     /// Imported `aos_upval_get` helper, present when the scan saw env reads.
@@ -183,6 +187,7 @@ pub(super) fn build_inner_function(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
+    let safepoints = stack_maps::ForceSafepoints::import(&mut function)?;
     let deopt_fn = import_runtime_helper_function(
         &mut function,
         AOS_DEOPT_SYMBOL,
@@ -223,6 +228,8 @@ pub(super) fn build_inner_function(
     let mut ctx = ChainCtx {
         bindings,
         force,
+        safepoints,
+        live_values: Vec::new(),
         deopt_fn,
         upval_get,
         self_ref,
@@ -433,12 +440,12 @@ fn emit_frame_read(
             });
         }
         // Chain parameter j at normalized depth K-1-j: index = K-1-depth.
-        return Ok(emit_forced_param(
+        return emit_forced_param(
             cursor,
             ctx,
             (ctx.arity - 1 - normalized) as usize,
             state,
-        ));
+        );
     }
     emit_forced_upval(cursor, ctx, normalized, slot, state)
 }
@@ -488,17 +495,17 @@ fn emit_let_binding(
 /// Emits a chain-parameter read, forcing it at first strict use on this path.
 fn emit_forced_param(
     cursor: &mut FuncCursor,
-    ctx: &ChainCtx<'_>,
+    ctx: &mut ChainCtx<'_>,
     index: usize,
     state: &mut EmitState,
-) -> (ClifValue, ClifValue) {
+) -> Result<(ClifValue, ClifValue), JitLowerError> {
     if let Some(cached) = state.forced_params[index] {
-        return cached;
+        return Ok(cached);
     }
     let (raw_tag, raw_payload) = ctx.raw_params[index];
-    let pair = emit_force_int_fast_path(cursor, ctx, raw_tag, raw_payload);
+    let pair = emit_force_int_fast_path(cursor, ctx, raw_tag, raw_payload)?;
     state.forced_params[index] = Some(pair);
-    pair
+    Ok(pair)
 }
 
 /// Emits an environment read beyond the chain parameters.
@@ -547,7 +554,7 @@ fn emit_forced_upval(
             actual: results.len(),
         });
     };
-    let pair = emit_force_int_fast_path(cursor, ctx, raw_tag, raw_payload);
+    let pair = emit_force_int_fast_path(cursor, ctx, raw_tag, raw_payload)?;
     state.forced_upvals.push(((depth, slot), pair));
     Ok(pair)
 }
@@ -559,27 +566,46 @@ fn emit_forced_upval(
 /// evaluator error as a trap the boundary converts to a deopt.
 fn emit_force_int_fast_path(
     cursor: &mut FuncCursor,
-    ctx: &ChainCtx<'_>,
+    ctx: &mut ChainCtx<'_>,
     raw_tag: ClifValue,
     raw_payload: ClifValue,
-) -> (ClifValue, ClifValue) {
+) -> Result<(ClifValue, ClifValue), JitLowerError> {
     let is_int = cursor.ins().icmp_imm(IntCC::Equal, raw_tag, TAG_INT);
     let slow = cursor.func.dfg.make_block();
     let join = cursor.func.dfg.make_block();
     cursor.func.dfg.append_block_param(join, types::I64);
     cursor.func.dfg.append_block_param(join, types::I64);
-    cursor
-        .ins()
-        .brif(is_int, join, &[raw_tag.into(), raw_payload.into()], slow, &[]);
+    let live_before = ctx.live_values.clone();
+    for _ in &live_before {
+        cursor.func.dfg.append_block_param(join, types::I64);
+        cursor.func.dfg.append_block_param(join, types::I64);
+    }
+    let mut fast_args = vec![raw_tag.into(), raw_payload.into()];
+    for value in &live_before {
+        fast_args.push(value[0].into());
+        fast_args.push(value[1].into());
+    }
+    cursor.ins().brif(is_int, join, &fast_args, slow, &[]);
     cursor.insert_block(slow);
-    let force_call = cursor.ins().call(ctx.force, &[ctx.rt, raw_tag, raw_payload]);
-    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
-    cursor
-        .ins()
-        .jump(join, &[force_results[0].into(), force_results[1].into()]);
+    let force_results = ctx.safepoints.force(
+        cursor,
+        ctx.force,
+        ctx.rt,
+        [raw_tag, raw_payload],
+        &mut ctx.live_values,
+    )?;
+    let mut slow_args = vec![force_results[0].into(), force_results[1].into()];
+    for value in &ctx.live_values {
+        slow_args.push(value[0].into());
+        slow_args.push(value[1].into());
+    }
+    cursor.ins().jump(join, &slow_args);
     cursor.insert_block(join);
     let joined = cursor.func.dfg.block_params(join).to_vec();
-    (joined[0], joined[1])
+    for (index, value) in ctx.live_values.iter_mut().enumerate() {
+        *value = [joined[2 + index * 2], joined[3 + index * 2]];
+    }
+    Ok((joined[0], joined[1]))
 }
 
 /// Emits one binary operation, mirroring the tree walk's operand order.
@@ -595,12 +621,20 @@ fn emit_binop(
     let rhs_first = matches!(op, BinOpKind::Gt | BinOpKind::Le);
     let (lhs_pair, rhs_pair) = if rhs_first {
         let rhs_pair = emit_expr(cursor, arena, ctx, rhs, state)?;
+        let live_index = ctx.live_values.len();
+        ctx.live_values.push([rhs_pair.0, rhs_pair.1]);
         let lhs_pair = emit_expr(cursor, arena, ctx, lhs, state)?;
-        (lhs_pair, rhs_pair)
+        let [rhs_tag, rhs_payload] = ctx.live_values[live_index];
+        ctx.live_values.truncate(live_index);
+        (lhs_pair, (rhs_tag, rhs_payload))
     } else {
         let lhs_pair = emit_expr(cursor, arena, ctx, lhs, state)?;
+        let live_index = ctx.live_values.len();
+        ctx.live_values.push([lhs_pair.0, lhs_pair.1]);
         let rhs_pair = emit_expr(cursor, arena, ctx, rhs, state)?;
-        (lhs_pair, rhs_pair)
+        let [lhs_tag, lhs_payload] = ctx.live_values[live_index];
+        ctx.live_values.truncate(live_index);
+        ((lhs_tag, lhs_payload), rhs_pair)
     };
     let (lhs_tag, lhs_payload) = lhs_pair;
     let (rhs_tag, rhs_payload) = rhs_pair;

@@ -55,12 +55,13 @@ use crate::{
         jit_runtime_symbol_registration_preflight_with_candidates,
     },
     tier::{
-        JitCompiledCodePointer, JitTieredCodeSlot, JitTieredCodeSlotError, TierUpDecision,
-        TierUpDemandHint, TierUpPolicy,
+        JitTieredCodeSlot, JitTieredCodeSlotError, TierUpDecision, TierUpDemandHint, TierUpPolicy,
     },
 };
 
+mod finalized;
 mod tier2;
+pub use finalized::JitCraneliftFinalizedFunction;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_argv_entry;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_entry;
 
@@ -256,6 +257,7 @@ impl JitCraneliftUserStackMapEntry {
 pub struct JitCraneliftUserStackMap {
     return_address_offset: u32,
     call_span: u32,
+    identity_sp_offset: Option<u32>,
     entries: Vec<JitCraneliftUserStackMapEntry>,
 }
 
@@ -268,6 +270,11 @@ impl JitCraneliftUserStackMap {
     /// Returns the machine-code byte span covered by the call instruction.
     pub const fn call_span(&self) -> u32 {
         self.call_span
+    }
+
+    /// Returns the SP-relative address-identity anchor for this safepoint.
+    pub const fn identity_sp_offset(&self) -> Option<u32> {
+        self.identity_sp_offset
     }
 
     /// Returns stack-pointer-relative live runtime-value anchors.
@@ -299,58 +306,6 @@ impl JitCraneliftRegisteredSymbol {
     /// Returns the opaque native address metadata passed to the builder.
     pub const fn address(&self) -> JitRuntimeSymbolAddress {
         self.address
-    }
-}
-
-/// A verified CLIF artifact finalized into executable memory.
-///
-/// The code pointer stored here is metadata tied to the lifetime of the
-/// [`JITModule`] owned by the finalization preflight that returned it. It is not
-/// a standalone ownership handle.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct JitCraneliftFinalizedFunction {
-    defined_function: JitCraneliftDefinedFunction,
-    code_ptr: NonNull<u8>,
-}
-
-impl JitCraneliftFinalizedFunction {
-    fn new(defined_function: JitCraneliftDefinedFunction, code_ptr: NonNull<u8>) -> Self {
-        Self {
-            defined_function,
-            code_ptr,
-        }
-    }
-
-    /// Returns the artifact body that was finalized.
-    pub const fn defined_function(&self) -> &JitCraneliftDefinedFunction {
-        &self.defined_function
-    }
-
-    /// Returns the stable module symbol name for the finalized artifact body.
-    pub fn symbol_name(&self) -> &str {
-        self.defined_function.symbol_name()
-    }
-
-    /// Returns the opaque finalized code pointer.
-    ///
-    /// This is code-pointer metadata only. Callers must not cast or call this
-    /// pointer outside reviewed native-call paths such as
-    /// [`jit_cranelift_native_thunk_call_for_artifact`]. The pointer's validity
-    /// is tied to the owning
-    /// [`JitCraneliftArtifactFinalizationPreflight`] and its encapsulated
-    /// [`JITModule`]; retaining it after that owner is dropped can leave stale
-    /// metadata.
-    pub const fn code_ptr(&self) -> NonNull<u8> {
-        self.code_ptr
-    }
-
-    /// Returns the finalized code pointer as tier-slot metadata.
-    ///
-    /// This preserves the same non-callable, non-owning lifetime contract as
-    /// [`Self::code_ptr`]. It only adapts the pointer into the safe metadata type
-    /// accepted by [`crate::tier::JitTieredCodeSlot`].
-    pub const fn compiled_code_ptr(&self) -> JitCompiledCodePointer {
-        JitCompiledCodePointer::from_non_null(self.code_ptr)
     }
 }
 
@@ -3227,16 +3182,24 @@ fn compiled_user_stack_maps(context: &Context) -> Vec<JitCraneliftUserStackMap> 
                 .user_stack_maps()
                 .iter()
                 .map(|(return_address_offset, call_span, stack_map)| {
+                    let mut identity_sp_offset = None;
                     JitCraneliftUserStackMap {
                         return_address_offset: *return_address_offset,
                         call_span: *call_span,
                         entries: stack_map
                             .entries()
-                            .map(|(value_type, sp_offset)| JitCraneliftUserStackMapEntry {
-                                value_type,
-                                sp_offset,
+                            .filter_map(|(value_type, sp_offset)| {
+                                if value_type == cranelift_codegen::ir::types::I32 {
+                                    identity_sp_offset = Some(sp_offset);
+                                    return None;
+                                }
+                                Some(JitCraneliftUserStackMapEntry {
+                                    value_type,
+                                    sp_offset,
+                                })
                             })
                             .collect(),
+                        identity_sp_offset,
                     }
                 })
                 .collect()
@@ -3500,7 +3463,10 @@ mod tests {
             lower_update_local_slots_ir_thunk_body_artifact,
         },
         module::{JitModuleReadinessError, jit_module_readiness_preflight_for_artifact},
-        tier::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpReasons},
+        tier::{
+            DEFAULT_TIER1_INVOCATION_THRESHOLD, JitCompiledCodePointer, JitTier, TierUpCounter,
+            TierUpReasons,
+        },
     };
 
     mod stack_map_registration;
@@ -4408,6 +4374,7 @@ mod tests {
             .defined_function()
             .user_stack_maps();
         assert_eq!(stack_maps.len(), 1);
+        assert!(stack_maps[0].identity_sp_offset().is_some());
         assert_eq!(stack_maps[0].entries().len(), 1);
         assert_eq!(
             stack_maps[0].entries()[0].value_type(),

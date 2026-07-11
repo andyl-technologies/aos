@@ -709,7 +709,12 @@ mod tests {
         let preflight =
             nix_jit_runtime_symbol_address_candidate_preflight().expect("preflight builds");
         let mut candidates = Vec::new();
-        for symbol in ["aos_env_get", "aos_force"] {
+        for symbol in [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+        ] {
             let candidate = preflight
                 .address_candidate_for(symbol)
                 .unwrap_or_else(|| panic!("{symbol} candidate exists"));
@@ -723,7 +728,10 @@ mod tests {
         candidates.push(nix_jit_deopt_address_candidate().expect("deopt candidate builds"));
 
         let source_ir = lower_source("1").expect("trivial source lowers");
-        let mut eval = TreeWalk::new(&source_ir);
+        let mut options = TreeWalkOptions::default();
+        options.set_gc_mode(EvalGcMode::Sweep);
+        options.set_gc_sweep_threshold(0);
+        let mut eval = TreeWalk::with_options(&source_ir, options);
         let outer = EvalFrame::new(1).expect("outer frame allocates");
         outer.set(0, Value::int(41)).expect("outer slot stores");
         let inner = EvalFrame::new(1).expect("inner frame allocates");
@@ -745,6 +753,84 @@ mod tests {
             outcome.trap()
         );
         assert_eq!(outcome.value().as_int(), Ok(42));
+        assert_eq!(eval.stats().gc_sweeps(), 1);
+        assert!(eval.last_gc_sweep_report().is_some());
+    }
+
+    #[test]
+    fn binary_local_arith_native_sweeps_with_live_lhs_map() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local { slot: 0 },
+                ),
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local { slot: 1 },
+                ),
+                IrNode::new(
+                    IrKind::BinOp,
+                    Span::new(0, 3),
+                    EffectClass::pure(),
+                    IrData::Binary {
+                        op: BinOpKind::Add,
+                        lhs: IrId::new(0),
+                        rhs: IrId::new(1),
+                    },
+                ),
+            ],
+            Vec::new(),
+        );
+        let artifact = lower_tier1_ir_thunk_body_artifact(&arena, IrId::new(2))
+            .expect("two-local arithmetic lowers");
+        let preflight =
+            nix_jit_runtime_symbol_address_candidate_preflight().expect("preflight builds");
+        let mut candidates = Vec::new();
+        for symbol in [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+        ] {
+            let candidate = preflight
+                .address_candidate_for(symbol)
+                .unwrap_or_else(|| panic!("{symbol} candidate exists"));
+            candidates.push(JitRuntimeSymbolAddressCandidate::new(
+                candidate.symbol_name().to_owned(),
+                candidate.kind(),
+                candidate.address(),
+            ));
+        }
+        candidates.push(nix_jit_deopt_address_candidate().expect("deopt candidate builds"));
+
+        let source_ir = lower_source("1").expect("trivial source lowers");
+        let mut options = TreeWalkOptions::default();
+        options.set_gc_mode(EvalGcMode::Sweep);
+        options.set_gc_sweep_threshold(0);
+        let mut eval = TreeWalk::with_options(&source_ir, options);
+        let frame = EvalFrame::new(2).expect("frame allocates");
+        frame.set(0, Value::int(40)).expect("left slot stores");
+        frame.set(1, Value::int(2)).expect("right slot stores");
+        let env = EvalEnv::capture(&[frame]).expect("environment captures");
+
+        let outcome = run_registered_native_thunk_call(
+            &mut eval,
+            source_ir.root,
+            Span::new(0, 1),
+            &env,
+            artifact,
+            &candidates,
+        )
+        .expect("native arithmetic call runs");
+
+        assert!(outcome.trap().is_none());
+        assert_eq!(outcome.value().as_int(), Ok(42));
+        assert_eq!(eval.stats().gc_sweeps(), 2);
     }
 
     #[test]

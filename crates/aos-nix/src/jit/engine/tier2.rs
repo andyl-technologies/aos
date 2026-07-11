@@ -49,10 +49,12 @@
 //! tier-2 bodies are pure apart from the memoizing parameter force, so
 //! re-execution reproduces the exact tree-walk result or error.
 //!
-//! No garbage-collection hazard exists across the native call: the precise
-//! sweep only runs at quiescent points (no in-flight force, zero call depth),
-//! and native code allocates nothing itself — any allocation happens inside a
-//! nested interpreter force, which is never quiescent.
+//! Every slow-path `aos_force` call carries an intrusive compiled-frame binding
+//! and a finalized user stack map, including calls in the module-local inner
+//! body. A thresholded Tier-B sweep may therefore run during the nested force
+//! while retaining the native frame's input and earlier arithmetic values.
+//! Native code still allocates nothing directly; allocation-helper safepoints
+//! remain a separate frontend obligation.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;

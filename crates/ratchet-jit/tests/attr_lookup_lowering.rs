@@ -14,6 +14,8 @@ use ratchet_jit::{
     AOS_SELECT_IC_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX, JitClifSignatureError, JitLowerError,
     JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate, clif_external_name_for_aos_env_get,
     clif_external_name_for_aos_force, clif_external_name_for_aos_has_attr,
+    clif_external_name_for_aos_jit_stack_map_enter,
+    clif_external_name_for_aos_jit_stack_map_exit,
     clif_external_name_for_aos_select_ic, clif_external_name_for_aos_update,
     clif_signature_for_runtime_call,
     jit_cranelift_registered_artifact_definition_preflight_with_candidates,
@@ -49,7 +51,7 @@ fn select_local_slot_ir_thunk_body_imports_env_force_and_select_helpers() {
     let select_ic_import =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_select_ic());
 
-    assert_eq!(function.dfg.ext_funcs.len(), 3);
+    assert_eq!(function.dfg.ext_funcs.len(), 5);
     assert_eq!(
         function.dfg.signatures[env_get_import.1.signature],
         helper_signature("aos_env_get")
@@ -62,7 +64,7 @@ fn select_local_slot_ir_thunk_body_imports_env_force_and_select_helpers() {
         function.dfg.signatures[select_ic_import.1.signature],
         helper_signature("aos_select_ic")
     );
-    assert_eq!(iconst_words(&function), vec![5, 0, 11]);
+    assert_eq!(iconst_words(&function), vec![5, 0, 1, 0, 11]);
 }
 
 #[test]
@@ -77,7 +79,7 @@ fn has_attr_local_slot_ir_thunk_body_imports_env_force_and_has_attr_helpers() {
     let has_attr_import =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_has_attr());
 
-    assert_eq!(function.dfg.ext_funcs.len(), 3);
+    assert_eq!(function.dfg.ext_funcs.len(), 5);
     assert_eq!(
         function.dfg.signatures[env_get_import.1.signature],
         helper_signature("aos_env_get")
@@ -90,7 +92,7 @@ fn has_attr_local_slot_ir_thunk_body_imports_env_force_and_has_attr_helpers() {
         function.dfg.signatures[has_attr_import.1.signature],
         helper_signature("aos_has_attr")
     );
-    assert_eq!(iconst_words(&function), vec![5, 0, 11]);
+    assert_eq!(iconst_words(&function), vec![5, 0, 1, 0, 11]);
 }
 
 #[test]
@@ -106,7 +108,7 @@ fn update_local_slots_ir_thunk_body_imports_env_force_and_update_helpers() {
     let update_import =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_update());
 
-    assert_eq!(function.dfg.ext_funcs.len(), 3);
+    assert_eq!(function.dfg.ext_funcs.len(), 5);
     assert_eq!(
         function.dfg.signatures[env_get_import.1.signature],
         helper_signature("aos_env_get")
@@ -119,7 +121,7 @@ fn update_local_slots_ir_thunk_body_imports_env_force_and_update_helpers() {
         function.dfg.signatures[update_import.1.signature],
         helper_signature("aos_update")
     );
-    assert_eq!(iconst_words(&function), vec![5, 6]);
+    assert_eq!(iconst_words(&function), vec![5, 0, 1, 6, 1, 2]);
 }
 
 #[test]
@@ -131,53 +133,51 @@ fn select_local_slot_ir_thunk_body_forces_receiver_then_calls_select_ic() {
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
     let (force, _) =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+    let (enter, _) = imported_function_by_user_external_name(
+        &function,
+        clif_external_name_for_aos_jit_stack_map_enter(),
+    );
+    let (exit, _) = imported_function_by_user_external_name(
+        &function,
+        clif_external_name_for_aos_jit_stack_map_exit(),
+    );
     let (select_ic, _) =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_select_ic());
     let calls = call_insts(&function);
     let entry_values = entry_block_values(&function);
     let iconsts = iconst_values(&function);
 
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 5);
     assert_eq!(
         iconsts.iter().map(|(_, word)| *word).collect::<Vec<_>>(),
-        vec![7, 0, 11]
+        vec![7, 0, 1, 0, 11]
     );
     assert_call_target(&function, calls[0], env_get);
-    assert_call_target(&function, calls[1], force);
-    assert_call_target(&function, calls[2], select_ic);
-    assert_eq!(
-        opcodes(&function),
-        vec![
-            Opcode::Iconst,
-            Opcode::Call,
-            Opcode::Call,
-            Opcode::Iconst,
-            Opcode::Iconst,
-            Opcode::Call,
-            Opcode::Return,
-        ]
-    );
+    assert_call_target(&function, calls[1], enter);
+    assert_call_target(&function, calls[2], force);
+    assert_call_target(&function, calls[3], exit);
+    assert_call_target(&function, calls[4], select_ic);
 
     let env_get_args = call_args(&function, calls[0]);
     assert_eq!(env_get_args, vec![entry_values[1], iconsts[0].0]);
     let env_get_results = function.dfg.inst_results(calls[0]).to_vec();
 
-    let force_args = call_args(&function, calls[1]);
+    let force_args = call_args(&function, calls[2]);
     assert_eq!(
         force_args,
         vec![entry_values[0], env_get_results[0], env_get_results[1]]
     );
-    let force_results = function.dfg.inst_results(calls[1]).to_vec();
+    let force_results = function.dfg.inst_results(calls[2]).to_vec();
 
-    let select_args = call_args(&function, calls[2]);
+    let select_args = call_args(&function, calls[4]);
     assert_eq!(
         select_args,
         vec![
             entry_values[0],
             force_results[0],
             force_results[1],
-            iconsts[1].0,
-            iconsts[2].0,
+            iconsts[3].0,
+            iconsts[4].0,
         ]
     );
 }
@@ -191,53 +191,51 @@ fn has_attr_local_slot_ir_thunk_body_forces_receiver_then_calls_has_attr() {
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
     let (force, _) =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+    let (enter, _) = imported_function_by_user_external_name(
+        &function,
+        clif_external_name_for_aos_jit_stack_map_enter(),
+    );
+    let (exit, _) = imported_function_by_user_external_name(
+        &function,
+        clif_external_name_for_aos_jit_stack_map_exit(),
+    );
     let (has_attr, _) =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_has_attr());
     let calls = call_insts(&function);
     let entry_values = entry_block_values(&function);
     let iconsts = iconst_values(&function);
 
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 5);
     assert_eq!(
         iconsts.iter().map(|(_, word)| *word).collect::<Vec<_>>(),
-        vec![7, 0, 11]
+        vec![7, 0, 1, 0, 11]
     );
     assert_call_target(&function, calls[0], env_get);
-    assert_call_target(&function, calls[1], force);
-    assert_call_target(&function, calls[2], has_attr);
-    assert_eq!(
-        opcodes(&function),
-        vec![
-            Opcode::Iconst,
-            Opcode::Call,
-            Opcode::Call,
-            Opcode::Iconst,
-            Opcode::Iconst,
-            Opcode::Call,
-            Opcode::Return,
-        ]
-    );
+    assert_call_target(&function, calls[1], enter);
+    assert_call_target(&function, calls[2], force);
+    assert_call_target(&function, calls[3], exit);
+    assert_call_target(&function, calls[4], has_attr);
 
     let env_get_args = call_args(&function, calls[0]);
     assert_eq!(env_get_args, vec![entry_values[1], iconsts[0].0]);
     let env_get_results = function.dfg.inst_results(calls[0]).to_vec();
 
-    let force_args = call_args(&function, calls[1]);
+    let force_args = call_args(&function, calls[2]);
     assert_eq!(
         force_args,
         vec![entry_values[0], env_get_results[0], env_get_results[1]]
     );
-    let force_results = function.dfg.inst_results(calls[1]).to_vec();
+    let force_results = function.dfg.inst_results(calls[2]).to_vec();
 
-    let has_attr_args = call_args(&function, calls[2]);
+    let has_attr_args = call_args(&function, calls[4]);
     assert_eq!(
         has_attr_args,
         vec![
             entry_values[0],
             force_results[0],
             force_results[1],
-            iconsts[1].0,
-            iconsts[2].0,
+            iconsts[3].0,
+            iconsts[4].0,
         ]
     );
 }
@@ -252,41 +250,40 @@ fn update_local_slots_ir_thunk_body_forces_operands_then_calls_update() {
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
     let (force, _) =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
+    let (enter, _) = imported_function_by_user_external_name(
+        &function,
+        clif_external_name_for_aos_jit_stack_map_enter(),
+    );
+    let (exit, _) = imported_function_by_user_external_name(
+        &function,
+        clif_external_name_for_aos_jit_stack_map_exit(),
+    );
     let (update, _) =
         imported_function_by_user_external_name(&function, clif_external_name_for_aos_update());
     let calls = call_insts(&function);
     let entry_values = entry_block_values(&function);
     let iconsts = iconst_values(&function);
 
-    assert_eq!(calls.len(), 5);
+    assert_eq!(calls.len(), 9);
     assert_eq!(
         iconsts.iter().map(|(_, word)| *word).collect::<Vec<_>>(),
-        vec![7, 8]
+        vec![7, 0, 1, 8, 1, 2]
     );
     assert_call_target(&function, calls[0], env_get);
-    assert_call_target(&function, calls[1], force);
-    assert_call_target(&function, calls[2], env_get);
-    assert_call_target(&function, calls[3], force);
-    assert_call_target(&function, calls[4], update);
-    assert_eq!(
-        opcodes(&function),
-        vec![
-            Opcode::Iconst,
-            Opcode::Call,
-            Opcode::Call,
-            Opcode::Iconst,
-            Opcode::Call,
-            Opcode::Call,
-            Opcode::Call,
-            Opcode::Return,
-        ]
-    );
+    assert_call_target(&function, calls[1], enter);
+    assert_call_target(&function, calls[2], force);
+    assert_call_target(&function, calls[3], exit);
+    assert_call_target(&function, calls[4], env_get);
+    assert_call_target(&function, calls[5], enter);
+    assert_call_target(&function, calls[6], force);
+    assert_call_target(&function, calls[7], exit);
+    assert_call_target(&function, calls[8], update);
 
     let left_env_get_args = call_args(&function, calls[0]);
     assert_eq!(left_env_get_args, vec![entry_values[1], iconsts[0].0]);
     let left_env_get_results = function.dfg.inst_results(calls[0]).to_vec();
 
-    let left_force_args = call_args(&function, calls[1]);
+    let left_force_args = call_args(&function, calls[2]);
     assert_eq!(
         left_force_args,
         vec![
@@ -295,13 +292,11 @@ fn update_local_slots_ir_thunk_body_forces_operands_then_calls_update() {
             left_env_get_results[1],
         ]
     );
-    let left_force_results = function.dfg.inst_results(calls[1]).to_vec();
+    let right_env_get_args = call_args(&function, calls[4]);
+    assert_eq!(right_env_get_args, vec![entry_values[1], iconsts[3].0]);
+    let right_env_get_results = function.dfg.inst_results(calls[4]).to_vec();
 
-    let right_env_get_args = call_args(&function, calls[2]);
-    assert_eq!(right_env_get_args, vec![entry_values[1], iconsts[1].0]);
-    let right_env_get_results = function.dfg.inst_results(calls[2]).to_vec();
-
-    let right_force_args = call_args(&function, calls[3]);
+    let right_force_args = call_args(&function, calls[6]);
     assert_eq!(
         right_force_args,
         vec![
@@ -310,15 +305,17 @@ fn update_local_slots_ir_thunk_body_forces_operands_then_calls_update() {
             right_env_get_results[1],
         ]
     );
-    let right_force_results = function.dfg.inst_results(calls[3]).to_vec();
+    let right_force_results = function.dfg.inst_results(calls[6]).to_vec();
+    let reloaded_left = stack_load_results(&function);
+    assert_eq!(reloaded_left.len(), 2);
 
-    let update_args = call_args(&function, calls[4]);
+    let update_args = call_args(&function, calls[8]);
     assert_eq!(
         update_args,
         vec![
             entry_values[0],
-            left_force_results[0],
-            left_force_results[1],
+            reloaded_left[0],
+            reloaded_left[1],
             right_force_results[0],
             right_force_results[1],
         ]
@@ -336,7 +333,13 @@ fn select_root_artifact_records_runtime_imports() {
 
     assert_eq!(
         artifact_import_names(readiness.artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic",
+        ]
     );
     assert!(readiness.artifact_runtime_import_gaps().is_empty());
 }
@@ -352,7 +355,13 @@ fn has_attr_root_artifact_records_runtime_imports() {
 
     assert_eq!(
         artifact_import_names(readiness.artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+        ]
     );
     assert!(readiness.artifact_runtime_import_gaps().is_empty());
 }
@@ -368,7 +377,13 @@ fn update_root_artifact_records_runtime_imports() {
 
     assert_eq!(
         artifact_import_names(readiness.artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update",
+        ]
     );
     assert!(readiness.artifact_runtime_import_gaps().is_empty());
 }
@@ -386,9 +401,15 @@ fn select_lowerer_accepts_direct_thunk_alloc_wrapper() {
                 .expect("select readiness builds")
                 .artifact_runtime_imports(),
         ),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic",
+        ]
     );
-    assert_eq!(iconst_words(artifact.function()), vec![10, 0, 11]);
+    assert_eq!(iconst_words(artifact.function()), vec![10, 0, 1, 0, 11]);
 }
 
 #[test]
@@ -404,9 +425,15 @@ fn has_attr_lowerer_accepts_direct_thunk_alloc_wrapper() {
                 .expect("hasAttr readiness builds")
                 .artifact_runtime_imports(),
         ),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+        ]
     );
-    assert_eq!(iconst_words(artifact.function()), vec![10, 0, 11]);
+    assert_eq!(iconst_words(artifact.function()), vec![10, 0, 1, 0, 11]);
 }
 
 #[test]
@@ -422,9 +449,15 @@ fn update_lowerer_accepts_direct_thunk_alloc_wrapper() {
                 .expect("update readiness builds")
                 .artifact_runtime_imports(),
         ),
-        ["aos_env_get", "aos_force", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update",
+        ]
     );
-    assert_eq!(iconst_words(artifact.function()), vec![10, 12]);
+    assert_eq!(iconst_words(artifact.function()), vec![10, 0, 1, 12, 1, 2]);
 }
 
 #[test]
@@ -437,6 +470,16 @@ fn registered_artifact_definition_rewrites_select_runtime_imports() {
         &[
             synthetic_candidate("aos_env_get", RuntimeHelperRole::EnvironmentAccess, 0x1000),
             synthetic_candidate("aos_force", RuntimeHelperRole::ForcingControl, 0x2000),
+            synthetic_candidate(
+                "aos_jit_stack_map_enter",
+                RuntimeHelperRole::SafepointControl,
+                0x2100,
+            ),
+            synthetic_candidate(
+                "aos_jit_stack_map_exit",
+                RuntimeHelperRole::SafepointControl,
+                0x2200,
+            ),
             synthetic_candidate("aos_select_ic", RuntimeHelperRole::AttrsetAccess, 0x3000),
         ],
     )
@@ -444,7 +487,13 @@ fn registered_artifact_definition_rewrites_select_runtime_imports() {
 
     assert_eq!(
         artifact_import_names(preflight.artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic",
+        ]
     );
     assert!(preflight.imported_symbol_for("aos_env_get").is_some());
     assert!(preflight.imported_symbol_for("aos_force").is_some());
@@ -464,6 +513,16 @@ fn registered_artifact_definition_rewrites_has_attr_runtime_imports() {
         &[
             synthetic_candidate("aos_env_get", RuntimeHelperRole::EnvironmentAccess, 0x1000),
             synthetic_candidate("aos_force", RuntimeHelperRole::ForcingControl, 0x2000),
+            synthetic_candidate(
+                "aos_jit_stack_map_enter",
+                RuntimeHelperRole::SafepointControl,
+                0x2100,
+            ),
+            synthetic_candidate(
+                "aos_jit_stack_map_exit",
+                RuntimeHelperRole::SafepointControl,
+                0x2200,
+            ),
             synthetic_candidate("aos_has_attr", RuntimeHelperRole::AttrsetAccess, 0x3000),
         ],
     )
@@ -471,7 +530,13 @@ fn registered_artifact_definition_rewrites_has_attr_runtime_imports() {
 
     assert_eq!(
         artifact_import_names(preflight.artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+        ]
     );
     assert!(preflight.imported_symbol_for("aos_env_get").is_some());
     assert!(preflight.imported_symbol_for("aos_force").is_some());
@@ -491,6 +556,16 @@ fn registered_artifact_definition_rewrites_update_runtime_imports() {
         &[
             synthetic_candidate("aos_env_get", RuntimeHelperRole::EnvironmentAccess, 0x1000),
             synthetic_candidate("aos_force", RuntimeHelperRole::ForcingControl, 0x2000),
+            synthetic_candidate(
+                "aos_jit_stack_map_enter",
+                RuntimeHelperRole::SafepointControl,
+                0x2100,
+            ),
+            synthetic_candidate(
+                "aos_jit_stack_map_exit",
+                RuntimeHelperRole::SafepointControl,
+                0x2200,
+            ),
             synthetic_candidate("aos_update", RuntimeHelperRole::AttrsetAccess, 0x3000),
         ],
     )
@@ -498,7 +573,13 @@ fn registered_artifact_definition_rewrites_update_runtime_imports() {
 
     assert_eq!(
         artifact_import_names(preflight.artifact_runtime_imports()),
-        ["aos_env_get", "aos_force", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update",
+        ]
     );
     assert!(preflight.imported_symbol_for("aos_env_get").is_some());
     assert!(preflight.imported_symbol_for("aos_force").is_some());
@@ -508,185 +589,8 @@ fn registered_artifact_definition_rewrites_update_runtime_imports() {
     assert!(preflight.registered_symbol_for("aos_update").is_some());
 }
 
-#[test]
-fn select_lowering_rejects_unsupported_shapes() {
-    let dynamic_path_ir = attr_lookup_ir(
-        AttrLookupFixtureKind::Select,
-        1,
-        Some(vec![IrAttrPathSegment::Dynamic(IrId::new(0))]),
-    );
-    let select_default_ir = attr_lookup_ir(AttrLookupFixtureKind::SelectWithDefault, 1, None);
-    let non_local_receiver_ir =
-        attr_lookup_ir(AttrLookupFixtureKind::SelectNonLocalReceiver, 1, None);
-
-    let dynamic_path_error =
-        lower_select_local_slot_ir_thunk_body(&dynamic_path_ir, dynamic_path_ir.root)
-            .expect_err("dynamic attr path is rejected");
-    // `a.b or default` is now a supported shape: the lowerer emits the
-    // default-carrying select. This previously expected an error and predates
-    // the or-default support.
-    lower_select_local_slot_ir_thunk_body(&select_default_ir, select_default_ir.root)
-        .expect("select with a default lowers");
-    let non_local_receiver_error =
-        lower_select_local_slot_ir_thunk_body(&non_local_receiver_ir, non_local_receiver_ir.root)
-            .expect_err("non-local attr receiver is rejected");
-
-    assert!(matches!(
-        dynamic_path_error,
-        JitLowerError::UnsupportedAttrPathSegment {
-            path,
-            index: 0,
-            segment: IrAttrPathSegment::Dynamic(dynamic),
-        } if path == IrAttrPathId::new(0) && dynamic == IrId::new(0)
-    ));
-    assert!(matches!(
-        non_local_receiver_error,
-        JitLowerError::UnsupportedAttrReceiver {
-            receiver,
-            kind: IrKind::Int,
-        } if receiver == IrId::new(0)
-    ));
-}
-
-#[test]
-fn has_attr_lowering_rejects_unsupported_shapes() {
-    let dynamic_path_ir = attr_lookup_ir(
-        AttrLookupFixtureKind::HasAttr,
-        1,
-        Some(vec![IrAttrPathSegment::Dynamic(IrId::new(0))]),
-    );
-    let multi_segment_static_path_ir = attr_lookup_ir(
-        AttrLookupFixtureKind::HasAttr,
-        1,
-        Some(vec![
-            IrAttrPathSegment::Static(Symbol::new(0)),
-            IrAttrPathSegment::Static(Symbol::new(0)),
-        ]),
-    );
-    let non_local_receiver_ir =
-        attr_lookup_ir(AttrLookupFixtureKind::HasAttrNonLocalReceiver, 1, None);
-
-    let dynamic_path_error =
-        lower_has_attr_local_slot_ir_thunk_body(&dynamic_path_ir, dynamic_path_ir.root)
-            .expect_err("dynamic attr path is rejected");
-    let multi_segment_static_path_error = lower_has_attr_local_slot_ir_thunk_body(
-        &multi_segment_static_path_ir,
-        multi_segment_static_path_ir.root,
-    )
-    .expect_err("multi-segment static attr path is rejected");
-    let non_local_receiver_error =
-        lower_has_attr_local_slot_ir_thunk_body(&non_local_receiver_ir, non_local_receiver_ir.root)
-            .expect_err("non-local attr receiver is rejected");
-
-    assert!(matches!(
-        dynamic_path_error,
-        JitLowerError::UnsupportedAttrPathSegment {
-            path,
-            index: 0,
-            segment: IrAttrPathSegment::Dynamic(dynamic),
-        } if path == IrAttrPathId::new(0) && dynamic == IrId::new(0)
-    ));
-    assert!(matches!(
-        multi_segment_static_path_error,
-        JitLowerError::UnsupportedAttrPathLength { path, len }
-            if path == IrAttrPathId::new(0) && len == 2
-    ));
-    assert!(matches!(
-        non_local_receiver_error,
-        JitLowerError::UnsupportedAttrReceiver {
-            receiver,
-            kind: IrKind::Int,
-        } if receiver == IrId::new(0)
-    ));
-}
-
-#[test]
-fn update_lowering_rejects_unsupported_shapes() {
-    let non_update_arena = binary_local_slots_arena(BinOpKind::Add, 1, 2);
-    let non_local_operand_arena = IrArena::from_raw_parts(
-        vec![
-            local_var_node(1),
-            IrNode::new(
-                IrKind::Int,
-                Span::new(2, 3),
-                EffectClass::pure(),
-                IrData::Int(9),
-            ),
-            IrNode::new(
-                IrKind::BinOp,
-                Span::new(0, 3),
-                EffectClass::pure(),
-                IrData::Binary {
-                    op: BinOpKind::Update,
-                    lhs: IrId::new(0),
-                    rhs: IrId::new(1),
-                },
-            ),
-        ],
-        Vec::new(),
-    );
-    let missing_operand_arena = IrArena::from_raw_parts(
-        vec![
-            local_var_node(1),
-            IrNode::new(
-                IrKind::BinOp,
-                Span::new(0, 3),
-                EffectClass::pure(),
-                IrData::Binary {
-                    op: BinOpKind::Update,
-                    lhs: IrId::new(0),
-                    rhs: IrId::new(9),
-                },
-            ),
-        ],
-        Vec::new(),
-    );
-    let malformed_payload_arena = IrArena::from_raw_parts(
-        vec![IrNode::new(
-            IrKind::BinOp,
-            Span::new(0, 3),
-            EffectClass::pure(),
-            IrData::None,
-        )],
-        Vec::new(),
-    );
-
-    let non_update_error = lower_update_local_slots_ir_thunk_body(&non_update_arena, IrId::new(2))
-        .expect_err("non-update binary operator is rejected");
-    let non_local_operand_error =
-        lower_update_local_slots_ir_thunk_body(&non_local_operand_arena, IrId::new(2))
-            .expect_err("non-local update operand is rejected");
-    let missing_operand_error =
-        lower_update_local_slots_ir_thunk_body(&missing_operand_arena, IrId::new(1))
-            .expect_err("missing update operand is rejected");
-    let malformed_payload_error =
-        lower_update_local_slots_ir_thunk_body(&malformed_payload_arena, IrId::new(0))
-            .expect_err("malformed update payload is rejected");
-
-    assert!(matches!(
-        non_update_error,
-        JitLowerError::UnsupportedUpdateOp { op: BinOpKind::Add }
-    ));
-    assert!(matches!(
-        non_local_operand_error,
-        JitLowerError::UnsupportedUpdateOperand {
-            operand,
-            kind: IrKind::Int,
-        } if operand == IrId::new(1)
-    ));
-    assert!(matches!(
-        missing_operand_error,
-        JitLowerError::MissingUpdateOperand { operand } if operand == IrId::new(9)
-    ));
-    assert!(matches!(
-        malformed_payload_error,
-        JitLowerError::MismatchedIrNodeData {
-            kind: IrKind::BinOp,
-            data: IrData::None,
-            expected: "attr update binary payload",
-        }
-    ));
-}
+#[path = "attr_lookup_lowering/rejection.rs"]
+mod rejection;
 
 #[derive(Clone, Copy)]
 enum AttrLookupFixtureKind {
@@ -1010,7 +914,7 @@ fn assert_call_target(
     assert_eq!(func_ref, expected);
 }
 
-fn opcodes(function: &Function) -> Vec<Opcode> {
+fn stack_load_results(function: &Function) -> Vec<Value> {
     let entry_block = function
         .layout
         .entry_block()
@@ -1018,7 +922,8 @@ fn opcodes(function: &Function) -> Vec<Opcode> {
     function
         .layout
         .block_insts(entry_block)
-        .map(|inst| function.dfg.insts[inst].opcode())
+        .filter(|inst| function.dfg.insts[*inst].opcode() == Opcode::StackLoad)
+        .map(|inst| function.dfg.inst_results(inst)[0])
         .collect()
 }
 

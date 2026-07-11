@@ -8,14 +8,19 @@ use ratchet_jit::{
 use ratchet_oracle::{
     compile::{
         EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrData, IrFacts, IrId,
-        IrInlineCacheSiteId, IrKind, IrNode, RuntimeSymbolKind, resolve,
+        IrInlineCacheSiteId, IrKind, IrNode, RuntimeHelperRole, RuntimeSymbolKind, resolve,
     },
     eval::{EvalEnv, EvalFrame, tree_walk::TreeWalk},
     runtime::forcing::rust_callable_aos_force,
     syntax::{BinOpKind, Span, Symbol, SymbolTable, parse_str},
     value::Value,
 };
-use ratchet_runtime_ffi::{context::RuntimeJitContext, wrappers::runtime_native_wrapper_bindings};
+use ratchet_runtime_ffi::{
+    aos_jit_stack_map_enter_native_wrapper_address,
+    aos_jit_stack_map_exit_native_wrapper_address,
+    context::RuntimeJitContext,
+    wrappers::runtime_native_wrapper_bindings,
+};
 
 #[test]
 fn jit_native_call_executes_mixed_runtime_ffi_wrappers_with_one_context() {
@@ -29,14 +34,15 @@ fn jit_native_call_executes_mixed_runtime_ffi_wrappers_with_one_context() {
     let frame = EvalFrame::new(1).expect("frame allocates");
     frame.set(0, attrs).expect("attrs capture stores");
     let candidates = runtime_wrapper_candidates(&["aos_env_get", "aos_force", "aos_has_attr"]);
-    let mut context = std::pin::pin!(RuntimeJitContext::new(
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(
         &mut eval,
         source_ir.root,
-        source_span
+        source_span,
+        &env_owned,
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
-    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
+    let env = rt;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
     // by the force and attr wrappers, the environment pointer comes from a live
@@ -73,11 +79,23 @@ fn jit_native_call_executes_mixed_runtime_ffi_wrappers_with_one_context() {
             .iter()
             .map(|artifact_import| artifact_import.symbol_name())
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+        ]
     );
     assert_imports_registered(
         invocation.finalization(),
-        &["aos_env_get", "aos_force", "aos_has_attr"],
+        &[
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+        ],
     );
     let value = preflight
         .native_value()
@@ -97,14 +115,15 @@ fn jit_native_call_executes_select_runtime_ffi_wrapper_with_one_context() {
     let frame = EvalFrame::new(1).expect("frame allocates");
     frame.set(0, attrs).expect("attrs capture stores");
     let candidates = runtime_wrapper_candidates(&["aos_env_get", "aos_force", "aos_select_ic"]);
-    let mut context = std::pin::pin!(RuntimeJitContext::new(
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(
         &mut eval,
         source_ir.root,
-        source_span
+        source_span,
+        &env_owned,
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
-    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
+    let env = rt;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
     // by the force and select wrappers, the environment pointer comes from a
@@ -141,11 +160,23 @@ fn jit_native_call_executes_select_runtime_ffi_wrapper_with_one_context() {
             .iter()
             .map(|artifact_import| artifact_import.symbol_name())
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic",
+        ]
     );
     assert_imports_registered(
         invocation.finalization(),
-        &["aos_env_get", "aos_force", "aos_select_ic"],
+        &[
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_select_ic",
+        ],
     );
     let value = preflight
         .native_value()
@@ -188,14 +219,15 @@ fn assert_select_literal_default_from_nested_attrset(source: &str, expected: i64
     frame.set(0, nested).expect("nested attrset capture stores");
     let candidates =
         runtime_wrapper_candidates(&["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"]);
-    let mut context = std::pin::pin!(RuntimeJitContext::new(
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(
         &mut eval,
         source_ir.root,
-        source_span
+        source_span,
+        &env_owned,
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
-    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
+    let env = rt;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
     // by the force and attr wrappers, the environment pointer comes from a live
@@ -232,11 +264,25 @@ fn assert_select_literal_default_from_nested_attrset(source: &str, expected: i64
             .iter()
             .map(|artifact_import| artifact_import.symbol_name())
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+            "aos_select_ic",
+        ]
     );
     assert_imports_registered(
         invocation.finalization(),
-        &["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"],
+        &[
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_has_attr",
+            "aos_select_ic",
+        ],
     );
     let value = preflight
         .native_value()
@@ -269,14 +315,15 @@ fn jit_native_call_executes_update_runtime_ffi_wrapper_with_one_context() {
     frame.set(0, left).expect("left attrset capture stores");
     frame.set(1, right).expect("right attrset capture stores");
     let candidates = runtime_wrapper_candidates(&["aos_env_get", "aos_force", "aos_update"]);
-    let mut context = std::pin::pin!(RuntimeJitContext::new(
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(
         &mut eval,
         source_ir.root,
-        source_span
+        source_span,
+        &env_owned,
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
-    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
+    let env = rt;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext shared
     // by the force and update wrappers, the environment pointer comes from a live
@@ -313,11 +360,23 @@ fn jit_native_call_executes_update_runtime_ffi_wrapper_with_one_context() {
             .iter()
             .map(|artifact_import| artifact_import.symbol_name())
             .collect::<Vec<_>>(),
-        ["aos_env_get", "aos_force", "aos_update"]
+        [
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update",
+        ]
     );
     assert_imports_registered(
         invocation.finalization(),
-        &["aos_env_get", "aos_force", "aos_update"],
+        &[
+            "aos_env_get",
+            "aos_force",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+            "aos_update",
+        ],
     );
     let value = preflight
         .native_value()
@@ -358,14 +417,15 @@ fn jit_native_call_executes_apply_runtime_ffi_wrapper_with_one_context() {
         .set(1, Value::int(41))
         .expect("argument capture stores");
     let candidates = runtime_wrapper_candidates(&["aos_env_get", "aos_apply"]);
-    let mut context = std::pin::pin!(RuntimeJitContext::new(
+    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(
         &mut eval,
         source_ir.root,
-        source_span
+        source_span,
+        &env_owned,
     ));
     let rt = context.as_mut().as_mut_ptr();
-    let env_owned = EvalEnv::capture(&[frame]).expect("env captures");
-    let env = (&env_owned as *const EvalEnv) as *mut std::ffi::c_void;
+    let env = rt;
 
     // SAFETY: The runtime pointer comes from one pinned RuntimeJitContext used
     // by the apply wrapper, the environment pointer comes from a live EvalFrame,
@@ -658,7 +718,11 @@ fn symbol_for(ir: &Ir, name: &[u8]) -> Symbol {
 }
 
 fn runtime_wrapper_candidates(symbols: &[&str]) -> Vec<JitRuntimeSymbolAddressCandidate> {
-    let requested = symbols.iter().copied().collect::<BTreeSet<_>>();
+    let mut requested = symbols.iter().copied().collect::<BTreeSet<_>>();
+    if requested.contains("aos_force") {
+        requested.insert("aos_jit_stack_map_enter");
+        requested.insert("aos_jit_stack_map_exit");
+    }
     let mut candidates = runtime_native_wrapper_bindings()
         .expect("runtime wrapper manifest builds")
         .into_iter()
@@ -673,6 +737,26 @@ fn runtime_wrapper_candidates(symbols: &[&str]) -> Vec<JitRuntimeSymbolAddressCa
             )
         })
         .collect::<Vec<_>>();
+    for (symbol_name, address) in [
+        (
+            "aos_jit_stack_map_enter",
+            aos_jit_stack_map_enter_native_wrapper_address(),
+        ),
+        (
+            "aos_jit_stack_map_exit",
+            aos_jit_stack_map_exit_native_wrapper_address(),
+        ),
+    ] {
+        if requested.contains(symbol_name) {
+            let raw = NonZeroUsize::new(address as usize)
+                .expect("stack-map wrapper address is non-null");
+            candidates.push(JitRuntimeSymbolAddressCandidate::new(
+                symbol_name.to_owned(),
+                RuntimeSymbolKind::Helper(RuntimeHelperRole::SafepointControl),
+                JitRuntimeSymbolAddress::new(raw),
+            ));
+        }
+    }
     candidates.sort_by(|left, right| left.symbol_name().cmp(right.symbol_name()));
     assert_eq!(
         candidates.len(),

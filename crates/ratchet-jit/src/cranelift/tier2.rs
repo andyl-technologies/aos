@@ -122,7 +122,13 @@ impl JitModuleContext {
         // The tier-2 grammar imports at most these helpers (`aos_upval_get`
         // only when the body reads its environment); require their registered
         // addresses up front so finalization cannot dangle.
-        let required = ["aos_force", "aos_deopt", "aos_upval_get"];
+        let required = [
+            "aos_force",
+            "aos_deopt",
+            "aos_upval_get",
+            "aos_jit_stack_map_enter",
+            "aos_jit_stack_map_exit",
+        ];
         let missing: Vec<String> = required
             .iter()
             .filter(|name| {
@@ -187,7 +193,7 @@ impl JitModuleContext {
             inner_symbol_name,
             inner_id,
         )?;
-        let _ = defined_inner;
+        let inner_user_stack_maps = defined_inner.user_stack_maps().to_vec();
 
         let mut entry_function = entry_artifact.into_function();
         rewrite_tier2_function_references(&mut entry_function, &imported_symbols, inner_id);
@@ -204,7 +210,11 @@ impl JitModuleContext {
             }
         })?;
         let code_ptr = finalized_function_pointer(&inner_ctx.module, &defined_entry)?;
-        let finalized_function = JitCraneliftFinalizedFunction::new(defined_entry, code_ptr);
+        let finalized_function = JitCraneliftFinalizedFunction::new_with_runtime_user_stack_maps(
+            defined_entry,
+            code_ptr,
+            inner_user_stack_maps,
+        );
 
         Ok(JitModuleContextFinalizedBody {
             artifact: artifact_metadata,
@@ -425,4 +435,97 @@ fn lambda_argv_entry_from_finalized_code(code_ptr: NonNull<u8>) -> JitLambdaArgv
     // `JITModule` alive while the returned entry is called.
     let entry = unsafe { mem::transmute::<*mut u8, JitLambdaArgvFn>(code_ptr.as_ptr()) };
     entry
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use ratchet_core::{
+        EffectClass, IrArena, IrData, IrId, IrKind, IrNode, RuntimeHelperRole,
+        RuntimeSymbolKind,
+        syntax::{Span, Symbol},
+    };
+
+    use super::*;
+    use crate::{
+        lower::{TIER2_NATIVE_DEPTH_BUDGET, lower_tier2_self_recursive_lambda},
+        symbols::{JitRuntimeSymbolAddress, JitRuntimeSymbolAddressCandidate},
+    };
+
+    fn candidate(
+        symbol_name: &str,
+        role: RuntimeHelperRole,
+        address: usize,
+    ) -> JitRuntimeSymbolAddressCandidate {
+        let address = NonZeroUsize::new(address).expect("test address is non-zero");
+        JitRuntimeSymbolAddressCandidate::new(
+            symbol_name.to_owned(),
+            RuntimeSymbolKind::Helper(role),
+            JitRuntimeSymbolAddress::new(address),
+        )
+    }
+
+    #[test]
+    fn finalized_tier2_entry_retains_inner_force_stack_maps() {
+        let arena = IrArena::from_raw_parts(
+            vec![
+                IrNode::new(
+                    IrKind::Formal,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Formal {
+                        name: Symbol::new(0),
+                        default: None,
+                    },
+                ),
+                IrNode::new(
+                    IrKind::LocalVar,
+                    Span::new(0, 1),
+                    EffectClass::pure(),
+                    IrData::Local { slot: 0 },
+                ),
+            ],
+            Vec::new(),
+        );
+        let lowering = lower_tier2_self_recursive_lambda(
+            &arena,
+            IrId::new(0),
+            IrId::new(1),
+            TIER2_NATIVE_DEPTH_BUDGET,
+        )
+        .expect("tier-2 parameter force lowers");
+        let candidates = [
+            candidate("aos_force", RuntimeHelperRole::ForcingControl, 1),
+            candidate("aos_deopt", RuntimeHelperRole::Deoptimization, 2),
+            candidate("aos_upval_get", RuntimeHelperRole::EnvironmentAccess, 3),
+            candidate(
+                "aos_jit_stack_map_enter",
+                RuntimeHelperRole::SafepointControl,
+                4,
+            ),
+            candidate(
+                "aos_jit_stack_map_exit",
+                RuntimeHelperRole::SafepointControl,
+                5,
+            ),
+        ];
+        let context = JitModuleContext::with_candidates(&candidates)
+            .expect("tier-2 module context builds");
+        let body = context
+            .define_and_finalize_tier2_lambda(lowering)
+            .expect("tier-2 pair finalizes");
+
+        assert!(
+            body.finalized_function()
+                .defined_function()
+                .user_stack_maps()
+                .is_empty(),
+            "the exported entry adapter has no direct force"
+        );
+        let maps = body.finalized_function().runtime_user_stack_maps();
+        assert_eq!(maps.len(), 1);
+        assert!(maps[0].identity_sp_offset().is_some());
+        assert_eq!(maps[0].entries().len(), 1);
+    }
 }
