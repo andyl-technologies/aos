@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-native-eval = ["aos-core/native-eval"]
+native-eval = ["aos-core/native-eval", "dep:aos-nix"]
 
 [[bin]]
 name = "aos"
@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 aos-core = { workspace = true }
+aos-nix = { workspace = true, optional = true }
 aos-nix-harness = { workspace = true }
 aos-server = { workspace = true }
 aos-cache = { workspace = true }

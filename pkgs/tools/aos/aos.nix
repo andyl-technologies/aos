@@ -53,7 +53,7 @@ in
     pname = "aos";
     inherit version src;
 
-    cargoFlags = "-p aos --features aos-core/native-eval";
+    cargoFlags = "-p aos --features native-eval";
 
     cargoDeps = fetchCargoDeps {
       inherit src;
@@ -74,7 +74,7 @@ in
     '';
 
     doCheck = true;
-    cargoTestFlags = "--workspace --features aos-core/native-eval";
+    cargoTestFlags = "--workspace --features native-eval";
 
     # Each of aos/apm/apr is the same binary, dispatched by argv[0]. We install
     # a thin wrapper per name that sets the hermetic runtime PATH and execs the

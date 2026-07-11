@@ -120,6 +120,7 @@ dependencies = [
  "aos-cache",
  "aos-core",
  "aos-doc",
+ "aos-nix",
  "aos-nix-harness",
  "aos-package",
  "aos-remote",

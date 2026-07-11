@@ -331,6 +331,12 @@ pub enum Commands {
         /// Relative peak-RSS movement threshold for memory regressions
         #[arg(long, default_value_t = crate::commands::nix_bench::default_memory_regression_threshold())]
         memory_regression_threshold: f64,
+        /// Compare warm caches after controlled Nix source-tree changes
+        #[arg(
+            long,
+            conflicts_with_all = ["attr", "file", "history", "fail_on_regression", "require_perf_win"]
+        )]
+        changed_tree: bool,
     },
     /// Generate cargo-fuzz source seeds
     NixFuzzCorpus {
@@ -456,6 +462,8 @@ pub enum SystemCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod nix_bench;
 
     #[test]
     fn nix_diff_defaults_to_byte_mode_and_default_file() {
@@ -945,101 +953,6 @@ mod tests {
                 assert!(systems);
             }
             _ => panic!("expected nix-diff command"),
-        }
-    }
-
-    #[test]
-    fn nix_bench_parses_defaults() {
-        let cli = parse_cli(["aos", "nix-bench"]);
-
-        match cli.command {
-            Commands::NixBench {
-                attr,
-                file,
-                samples,
-                history,
-                no_record,
-                fail_on_regression,
-                require_perf_win,
-                regression_threshold,
-                memory_regression_threshold,
-            } => {
-                assert!(attr.is_empty());
-                assert_eq!(file, None);
-                assert_eq!(samples, crate::commands::nix_bench::default_samples());
-                assert_eq!(history, None);
-                assert!(!no_record);
-                assert!(!fail_on_regression);
-                assert!(!require_perf_win);
-                assert_eq!(
-                    regression_threshold,
-                    crate::commands::nix_bench::default_regression_threshold()
-                );
-                assert_eq!(
-                    memory_regression_threshold,
-                    crate::commands::nix_bench::default_memory_regression_threshold()
-                );
-            }
-            _ => panic!("expected nix-bench command"),
-        }
-    }
-
-    #[test]
-    fn nix_bench_parses_explicit_options() {
-        let cli = parse_cli([
-            "aos",
-            "nix-bench",
-            "--attr",
-            "pkgs.zlib",
-            "-A",
-            "systems.server.build.toplevel",
-            "--file",
-            "default.nix",
-            "--samples",
-            "5",
-            "--history",
-            "/tmp/history.jsonl",
-            "--no-record",
-            "--fail-on-regression",
-            "--require-perf-win",
-            "--regression-threshold",
-            "0.2",
-            "--memory-regression-threshold",
-            "0.3",
-        ]);
-
-        match cli.command {
-            Commands::NixBench {
-                attr,
-                file,
-                samples,
-                history,
-                no_record,
-                fail_on_regression,
-                require_perf_win,
-                regression_threshold,
-                memory_regression_threshold,
-            } => {
-                assert_eq!(
-                    attr,
-                    vec![
-                        "pkgs.zlib".to_string(),
-                        "systems.server.build.toplevel".to_string()
-                    ]
-                );
-                assert_eq!(file, Some(std::path::PathBuf::from("default.nix")));
-                assert_eq!(samples, 5);
-                assert_eq!(
-                    history,
-                    Some(std::path::PathBuf::from("/tmp/history.jsonl"))
-                );
-                assert!(no_record);
-                assert!(fail_on_regression);
-                assert!(require_perf_win);
-                assert_eq!(regression_threshold, 0.2);
-                assert_eq!(memory_regression_threshold, 0.3);
-            }
-            _ => panic!("expected nix-bench command"),
         }
     }
 

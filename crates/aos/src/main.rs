@@ -217,6 +217,7 @@ async fn run(cli: &Cli) -> Result<()> {
         require_perf_win,
         regression_threshold,
         memory_regression_threshold,
+        changed_tree,
     } = &cli.command
     {
         return run_nix_bench_threaded(
@@ -232,6 +233,7 @@ async fn run(cli: &Cli) -> Result<()> {
             *require_perf_win,
             *regression_threshold,
             *memory_regression_threshold,
+            *changed_tree,
         );
     }
 
@@ -472,6 +474,7 @@ fn run_nix_bench_threaded(
     require_perf_win: bool,
     regression_threshold: f64,
     memory_regression_threshold: f64,
+    changed_tree: bool,
 ) -> Result<()> {
     const NIX_BENCH_STACK_SIZE: usize = 32 * 1024 * 1024;
 
@@ -492,6 +495,7 @@ fn run_nix_bench_threaded(
                 require_perf_win,
                 regression_threshold,
                 memory_regression_threshold,
+                changed_tree,
             )
         })
         .context("spawning nix-bench worker thread")?;

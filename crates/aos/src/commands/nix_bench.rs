@@ -14,6 +14,8 @@
 //! watermarks, arena gauges), and this file drives sampling and rendering.
 
 mod analysis;
+#[cfg(feature = "native-eval")]
+mod changed_tree;
 pub(crate) mod corpus;
 mod memory;
 mod record;
@@ -156,11 +158,18 @@ pub fn run(
     require_perf_win: bool,
     regression_threshold: f64,
     memory_regression_threshold: f64,
+    changed_tree: bool,
 ) -> Result<()> {
     validate_args(samples, regression_threshold, memory_regression_threshold)?;
     NixRunner::ensure_nix_instantiate_available()?;
     if eval_config.eval_mode() == NixEvalMode::Ambient {
         eval_config.set_eval_mode(NixEvalMode::Impure);
+    }
+    if changed_tree {
+        #[cfg(feature = "native-eval")]
+        return changed_tree::run(printer, verbose, samples);
+        #[cfg(not(feature = "native-eval"))]
+        anyhow::bail!("nix-bench --changed-tree requires the native-eval feature");
     }
     let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())
         .context("initializing nix-bench .drv parity gate")?;
