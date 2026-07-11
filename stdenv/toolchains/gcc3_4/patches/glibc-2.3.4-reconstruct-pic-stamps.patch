@@ -1,5 +1,8 @@
 --- a/elf/Makefile
 +++ b/elf/Makefile
+@@ -240 +240 @@
+-$(objpfx)librtld.mk: $(objpfx)librtld.map Makefile
++$(objpfx)librtld.mk: $(objpfx)librtld.map Makefile $(common-objpfx)stamp.o $(subst %,.o,$(subdirs-stamps))
 @@ -247,4 +247,12 @@
 -	    LC_ALL=C fgrep -l /$$file \
 -		  $(common-objpfx)stamp.os $(common-objpfx)*/stamp.os | \
