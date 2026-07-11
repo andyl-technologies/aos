@@ -350,6 +350,10 @@ before building either 2.3.4 libc. This keeps the static cross-tier tools
 portable to kernels booted without `vsyscall=emulate` or `vsyscall=xonly`;
 do not solve this by requiring a legacy kernel boot option on build workers.
 
+Build the native glibc 2.5 tier with its in-tree NPTL add-on and a Linux 2.6
+kernel floor. RHEL 5 compatibility includes the NPTL `libpthread` ABI, and
+glibc 2.5 intentionally rejects a Linux build that silently omits that add-on.
+
 ## Expected outcome
 
 The ~22,400 toolchain LOC should drop by well over half: the POSIX-tools

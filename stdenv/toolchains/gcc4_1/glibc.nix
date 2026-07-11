@@ -94,6 +94,8 @@ in
                 --disable-shared \
                 --disable-profile \
                 --disable-nscd \
+                --enable-add-ons=nptl \
+                --enable-kernel=2.6.0 \
                 --enable-static-nss \
                 --without-gd \
                 --without-selinux \
