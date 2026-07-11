@@ -37,6 +37,10 @@ in
               cd glibc-2.5
               chmod -R u+w .
 
+              # Avoid the x86_64 fixed vsyscall page so this tier's Bash and
+              # other static tools run on kernels without legacy emulation.
+              ${prev.patch}/bin/patch -p1 < ${./patches/glibc-2.5-no-fixed-vsyscall.patch}
+
               # The preceding cross tier's static sed 4.1.2 crashes in
               # in-place mode on newer 6.12 kernels. Stream each transform
               # back into the existing inode so configure keeps its mode.
