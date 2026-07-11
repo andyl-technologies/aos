@@ -243,6 +243,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0036-crucible-raw-state-export.patch";
+      check = import ./phase2-qemu-raw-state-export.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

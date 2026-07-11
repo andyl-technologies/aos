@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "cf0c6e7956c26bad0c76aa48ebfda70f6b22e9bedc9f646e02ab3a3b2f23479c";
+  patchBranchBundleSha256 = "a1f1c2e6d2fb9edaa12cd9e4c541981c56bdafa2e61205676e40663daf274b35";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "c676ed7e9cd9808e863765e2369a2b042fa6cd84";
+  patchBranchHeadCommit = "5aac4ab15fb81455eeb6b5e31beb8283c0a5b384";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -330,6 +330,15 @@ let
       class = "F";
       enforces = "DET-31,QEMU-34";
       capability = "process-entry raw Unix argc/argv v2 SHA-256 self-attestation exposed to observation plugins";
+    }
+    {
+      file = "0036-crucible-raw-state-export.patch";
+      branchCommit = "5aac4ab15fb81455eeb6b5e31beb8283c0a5b384";
+      branchTree = "dab484134a095b2d0557733faac900ae112b8f00";
+      catalogName = "crucible-raw-state-export";
+      class = "F";
+      enforces = "DET-29,PLUG-47";
+      capability = "GPA-sorted exact guest-RAM export and terminal one-shot serialized non-RAM VMState snapshot";
     }
   ];
   catalogOnlyCapabilities = [

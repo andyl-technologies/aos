@@ -113,6 +113,145 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         &qemu_patch_series,
         "process-entry raw Unix argc/argv v2 SHA-256 self-attestation",
     );
+    assert_contains(&qemu_patch_series, "0036-crucible-raw-state-export.patch");
+    assert_contains(
+        &qemu_patch_series,
+        "GPA-sorted exact guest-RAM export and terminal one-shot serialized non-RAM VMState snapshot",
+    );
+
+    let qemu_raw_state_export = fs::read_to_string(
+        root.join("pkgs/emulation/qemu-patches/0036-crucible-raw-state-export.patch"),
+    )?;
+    assert_contains(
+        &qemu_raw_state_export,
+        "qemu_plugin_crucible_guest_ram_regions(",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "qemu_plugin_crucible_guest_ram_region_copy(",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "qemu_plugin_crucible_request_terminal_pause(",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "view = address_space_to_flatview(&address_space_memory);",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "flatview_for_each_section(view, crucible_collect_ram_region, &state);",
+    );
+    assert_contains(&qemu_raw_state_export, "section->readonly");
+    assert_contains(
+        &qemu_raw_state_export,
+        "+    if (!memory_region_is_ram(mr)) {\n+        return false;\n+    }\n+    if (memory_region_is_protected(mr)) {",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "section->readonly || memory_region_is_rom(mr) ||\n+        memory_region_is_ram_device(mr)",
+    );
+    assert_contains(&qemu_raw_state_export, "return -ESTALE;");
+    assert_contains(&qemu_raw_state_export, "return -ERANGE;");
+    assert_contains(
+        &qemu_raw_state_export,
+        "qemu_plugin_crucible_vmstate_snapshot_begin(",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "crucible_terminal_vmstate_export_latched = true;",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "crucible_terminal_vmstate_export_latched = true;\n+    buffer = qio_channel_buffer_new(4096);",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "VM resume rejected after terminal Crucible VMState export",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "VM reset rejected after terminal Crucible VMState export",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "vCPU execution rejected after terminal Crucible VMState export",
+    );
+    let incoming_setup_hunk = qemu_raw_state_export
+        .split_once(
+            "@@ -697,6 +701,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)",
+        )
+        .expect("raw-state patch must modify incoming migration state setup")
+        .1
+        .split_once("\n@@")
+        .expect("incoming migration setup patch hunk must have a bounded body")
+        .0;
+    let incoming_state_read = incoming_setup_hunk
+        .find("MigrationStatus current = mis->state;")
+        .expect("incoming migration setup must retain its initial state read");
+    let incoming_seal_guard = incoming_setup_hunk
+        .find("migration_crucible_raw_state_export_sealed()")
+        .expect("incoming migration setup must reject work after terminal sealing");
+    let incoming_first_setup_branch = incoming_setup_hunk
+        .find("if (current == MIGRATION_STATUS_POSTCOPY_PAUSED)")
+        .expect("incoming migration setup must retain its first pre-existing branch");
+    assert!(
+        incoming_state_read < incoming_seal_guard
+            && incoming_seal_guard < incoming_first_setup_branch,
+        "terminal sealing must be checked inside incoming migration setup before any incoming state mutation or transport setup"
+    );
+    let loadvm_main = qemu_raw_state_export
+        .split_once("int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)")
+        .expect("raw-state patch must modify the central VMState load loop")
+        .1
+        .split_once("int qemu_loadvm_state(QEMUFile *f)")
+        .expect("central VMState load-loop patch hunk must have a bounded body")
+        .0;
+    let load_admission = loadvm_main
+        .find("migration_crucible_load_begin()")
+        .expect("central VMState load loop must enter migration admission");
+    let load_retry = loadvm_main
+        .find("retry:")
+        .expect("central VMState load loop must retain its retry boundary");
+    assert!(
+        load_admission < load_retry,
+        "migration admission must be entered before central VMState loading"
+    );
+    assert_eq!(
+        loadvm_main
+            .matches("migration_crucible_load_begin()")
+            .count(),
+        1,
+        "central VMState load loop must increment its loader count once"
+    );
+    assert_eq!(
+        loadvm_main.matches("migration_crucible_load_end()").count(),
+        2,
+        "central VMState load loop must balance its normal and latched exits"
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "crucible_active_loaders != 0 || migration_is_running()",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "incoming != MIGRATION_STATUS_NONE &&",
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "postcopy != POSTCOPY_INCOMING_NONE &&",
+    );
+    assert!(
+        qemu_raw_state_export
+            .matches("status = migration_crucible_raw_state_export_admit();")
+            .count()
+            >= 2,
+        "RAM and VMState export must both enforce migration admission"
+    );
+    assert_contains(
+        &qemu_raw_state_export,
+        "this is a terminal dump API, not an",
+    );
 
     let qemu_process_argv_attestation =
         fs::read_to_string(root.join("tests/crucible/phase2-qemu-process-argv-attestation.nix"))?;
