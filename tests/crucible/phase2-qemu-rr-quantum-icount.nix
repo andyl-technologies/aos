@@ -349,7 +349,7 @@ in
             require_line "$nvcpu_result" "all_vcpus_retired_at_horizon=true"
             require_line "$nvcpu_result" "live_device_io_observed=true"
             require_line "$nvcpu_result" "exact_horizon_authoritative=true"
-            require_line "$nvcpu_result" "plugin_exit_pause_overshoot_bound=one-rr-quantum"
+            require_line "$nvcpu_result" "plugin_exit_pause_overshoot_bound=zero-exact-horizon"
             cp "$nvcpu_result" "$out/qemu-nvcpu-fingerprint.result"
 
             s11_result="${simS11}/result"

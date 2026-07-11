@@ -196,8 +196,8 @@
         needle = "plugin tracked {tracked_vcpus} vCPUs but QMP and launch require";
       }
       {
-        label = "trace importer bounds plugin-exit pause overshoot";
-        needle = "exceeds one RR quantum";
+        label = "trace importer pins plugin-exit logical time";
+        needle = "differs from exact horizon";
       }
       {
         label = "trace importer requires plugin exit to be final";
@@ -320,8 +320,8 @@
         needle = "real_qemu_trace_comparison_localizes_first_vcpu_register_difference";
       }
       {
-        label = "bounded post-horizon teardown test";
-        needle = "real_qemu_trace_import_accepts_bounded_post_horizon_teardown";
+        label = "logical-time and retired-count separation test";
+        needle = "real_qemu_trace_import_accepts_retired_offset_at_exact_observed_horizon";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/vcpu_introspection.rs" pluginVcpu [
@@ -583,7 +583,7 @@ in
             jitter_pids=""
             fingerprint_cli="$TMPDIR/crucible-qemu-nvcpu-fingerprint-target/debug/examples/crucible-qemu-fingerprint"
             cadence=600000000
-            horizon=1800000000
+            horizon=1500000000
             quantum=4096
             memory_mib=128
             qemu_binary="${pkgs.qemu-crucible}/bin/qemu-system-x86_64"
@@ -721,6 +721,7 @@ in
             wait_for_stop_at_pause() {
               label="$1"
               qmp_socket="$2"
+              allow_prelaunch="''${3:-false}"
               waited=0
               qmp_failures=0
               while [ "$waited" -lt 24000 ]; do
@@ -731,7 +732,12 @@ in
                     paused)
                       return 0
                       ;;
-                    running | prelaunch)
+                    prelaunch)
+                      if [ "$allow_prelaunch" = true ]; then
+                        return 0
+                      fi
+                      ;;
+                    running)
                       ;;
                     *)
                       cat "$TMPDIR/qmp-status-$label.json" >&2
@@ -789,13 +795,16 @@ in
               qemu_pid="$!"
 
               wait_for_socket "$qmp_socket" || fail "QMP socket did not appear for the definition preflight"
-              wait_for_stop_at_pause "$label" "$qmp_socket" \
-                || fail "definition-only QEMU did not pause before guest execution"
+              wait_for_stop_at_pause "$label" "$qmp_socket" true \
+                || fail "definition-only QEMU did not remain non-running before guest execution"
               qmp_cmd "$qmp_socket" '{"execute":"query-cpus-fast"}' "$TMPDIR/qmp-cpus-definition.json" \
                 || fail "definition preflight QMP topology query failed"
               jq -e -s '[.[] | select(.return | type == "array")][-1].return | map(."cpu-index") | sort == [0,1,2,3]' \
                 "$TMPDIR/qmp-cpus-definition.json" >/dev/null \
                 || fail "definition preflight did not report exact CPU indexes 0..3"
+              qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-definition.json" || true
+              wait "$qemu_pid" || fail "definition-only QEMU exited unsuccessfully"
+              qemu_pid=""
               jq -e -s \
                 --argjson quantum "$quantum" \
                 --arg launch_definition_digest "$launch_definition_digest" \
@@ -843,9 +852,6 @@ in
                     and . != "0000000000000000000000000000000000000000000000000000000000000000")
                 ))' "$trace" >/dev/null \
                 || fail "definition-only QEMU did not emit one complete paused preflight"
-              qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-definition.json" || true
-              wait "$qemu_pid" || fail "definition-only QEMU exited unsuccessfully"
-              qemu_pid=""
             }
 
             run_one() {
@@ -906,7 +912,8 @@ in
                 | [ .[] | select((.kind // "sample") == "sample" and .final != true) ] as $samples
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
                 | [ .[] | select((.kind // "sample") == "sample" and .final == true) ] as $finals
-                | ($samples | map(.retired)) == [range($cadence; $horizon + 1; $cadence)]
+                | ($samples | last) as $horizon_sample
+                | ($samples | map(.observed_icount)) == ([range($cadence; $horizon; $cadence)] + [$horizon])
                 and all($samples[]; (
                   .schema == "crucible.qemu.trace-fingerprint.v4"
                   and .launch_definition_digest != null
@@ -926,7 +933,7 @@ in
                   and .device_state_bytes > 0
                   and .device_state_sections == $contract.device_state_sections
                   and .device_state_schema_digest == $contract.device_state_schema_digest
-                  and .observed_icount == .retired
+                  and .observed_icount >= .retired
                   and .memory_events > 0
                   and .ram_bytes > 0
                   and .ram_status == 0
@@ -953,20 +960,20 @@ in
                   and .device_state_digest != "0000000000000000000000000000000000000000000000000000000000000000"
                   and .device_event_hash != "0000000000000000"
                 ))
-                and (($samples | last) | (
-                  .retired == $horizon
+                and ($horizon_sample | (
+                  .observed_icount == $horizon
                   and .trigger == "event"
                   and .event_boundary == "horizon-advance"
                   and all(.register_retired[]; . > 0)
                   and .io_events > 0
                 ))
                 and ($finals | length) == 1
-                and (.[-1] | (
+                and ($finals[0] | (
                   .final == true
                   and .stop_requested == true
                   and .stop_at == $horizon
-                  and .retired >= $horizon
-                  and (.retired - $horizon) <= $quantum
+                  and .observed_icount == $horizon
+                  and .retired == $horizon_sample.retired
                   and .rr_cursor_valid == true
                   and .rr_cursor_source == "last_executed_instruction"
                 ))
@@ -1045,7 +1052,7 @@ in
               || fail "canonical real-QEMU N-vCPU fingerprint streams differed"
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .register_digests[1] = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
               else .
               end
@@ -1061,8 +1068,8 @@ in
               2> "$TMPDIR/fingerprint-negative.err"; then
               fail "mutated vCPU register trace unexpectedly compared equal"
             fi
-            last_sample_index=$((horizon / cadence - 1))
-            previous_icount=$((horizon - cadence))
+            last_sample_index=$((horizon / cadence))
+            previous_icount=$(((horizon / cadence) * cadence))
             grep -q "^first_differing_sample=$last_sample_index\$" "$TMPDIR/fingerprint-negative.err"
             grep -q "^previous_matching_icount=$previous_icount\$" "$TMPDIR/fingerprint-negative.err"
             grep -q "^first_different_icount=$horizon\$" "$TMPDIR/fingerprint-negative.err"
@@ -1088,7 +1095,7 @@ in
             }
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .rr_current_vcpu = ((.rr_current_vcpu + 1) % 4)
                 | .vcpu = .rr_current_vcpu
               else . end
@@ -1097,7 +1104,7 @@ in
               "$TMPDIR/trace-rr-mutated.jsonl" '^first_differing_component=rr_current_vcpu$'
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .register_retired[0] += 1 | .register_retired[1] -= 1
               else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-retired-mutated.jsonl"
@@ -1105,64 +1112,64 @@ in
               "$TMPDIR/trace-retired-mutated.jsonl" '^first_differing_component=vcpu_retired_instruction_count\[0\]$'
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .ram_digest = "0000000000000000000000000000000000000000000000000000000000000001" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-ram-mutated.jsonl"
             expect_cli_failure ram-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-ram-mutated.jsonl" '^first_differing_component=guest_memory_digest$'
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .device_state_digest = "0000000000000000000000000000000000000000000000000000000000000002" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-device-mutated.jsonl"
             expect_cli_failure device-mismatch "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-device-mutated.jsonl" '^first_differing_component=device_state_digest$'
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .register_digests[0] = "0000000000000000000000000000000000000000000000000000000000000000" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-register.jsonl"
             expect_cli_failure zero-register-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-zero-register.jsonl" 'register_digests\[0\] must be non-zero'
+              "$TMPDIR/trace-zero-register.jsonl" 'field `register_digests\[0\]` must be non-zero'
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .ram_digest = "0000000000000000000000000000000000000000000000000000000000000000" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-ram.jsonl"
             expect_cli_failure zero-ram-reject "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-zero-ram.jsonl" 'field `ram_digest` must be non-zero'
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .device_state_digest = "0000000000000000000000000000000000000000000000000000000000000000" else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-zero-device.jsonl"
             expect_cli_failure zero-device-reject "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-zero-device.jsonl" 'field `device_state_digest` must be non-zero'
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .device_state_schema_digest = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
               else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-device-schema-mutated.jsonl"
             expect_cli_failure device-schema-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-device-schema-mutated.jsonl" 'differs from the independent preflight schema'
+              "$TMPDIR/trace-device-schema-mutated.jsonl" 'device-state section/schema coverage differs from the independent preflight'
 
             jq -c --argjson cadence "$cadence" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $cadence)
-              then .retired += 1 else . end
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $cadence)
+              then .observed_icount += 1 else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-cadence-mutated.jsonl"
             expect_cli_failure cadence-reject "$TMPDIR/qmp-cpus-b.json" \
               "$TMPDIR/trace-cadence-mutated.jsonl" "periodic sample icount $((cadence + 1)) does not match expected $cadence"
 
-            jq -c --argjson horizon "$horizon" --argjson quantum "$quantum" '
+            jq -c --argjson horizon "$horizon" '
               if ((.kind // "sample") == "sample" and .final == true)
-              then .retired = ($horizon + $quantum + 1) else . end
+              then .observed_icount = ($horizon + 1) else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-horizon-mutated.jsonl"
             expect_cli_failure horizon-reject "$TMPDIR/qmp-cpus-b.json" \
-              "$TMPDIR/trace-horizon-mutated.jsonl" 'exceeds one RR quantum'
+              "$TMPDIR/trace-horizon-mutated.jsonl" 'differs from exact horizon'
 
             jq -c --argjson horizon "$horizon" '
-              if ((.kind // "sample") == "sample" and .final != true and .retired == $horizon)
+              if ((.kind // "sample") == "sample" and .final != true and .observed_icount == $horizon)
               then .ram_bytes += 1 else . end
             ' "$TMPDIR/qemu-nvcpu-trace-b.jsonl" > "$TMPDIR/trace-ram-bytes-mutated.jsonl"
             expect_cli_failure ram-bytes-reject "$TMPDIR/qmp-cpus-b.json" \
@@ -1230,13 +1237,13 @@ in
             guest_entropy_path=stock-kaslr-aslr-with-fixed-qemu-seed
             guest_entropy_seal=fw-cfg-plus-seeded-rng-builtin-no-rdrand-rdseed
             firmware_artifact_digest_bound=true
-            guest_horizon=1800000000
+            guest_horizon=1500000000-non-cadence
             all_vcpus_retired_at_horizon=true
             live_device_io_observed=true
             zero_observation_hashes_rejected=true
             exact_horizon_authoritative=true
             plugin_exit_semantics=bounded-post-stop-request-teardown-observation
-            plugin_exit_pause_overshoot_bound=one-rr-quantum
+            plugin_exit_pause_overshoot_bound=zero-exact-horizon
             plugin_exit_is_final_record=true
             run_provenance=distinct-ordinals-plus-trace-bound-canonical-launch-and-build-digests
             launch_identity=complete-canonical-guest-visible-options-plus-artifact-digests

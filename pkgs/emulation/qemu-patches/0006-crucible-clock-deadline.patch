@@ -1,7 +1,7 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1017,6 +1017,18 @@ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
+@@ -1049,6 +1049,18 @@ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
  QEMU_PLUGIN_API
  void qemu_plugin_crucible_pause_vm(void);
  

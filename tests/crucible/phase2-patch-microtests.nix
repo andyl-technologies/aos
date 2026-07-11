@@ -231,6 +231,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0034-crucible-safe-fingerprint-boundary.patch";
+      check = import ./phase2-qemu-safe-fingerprint-boundary.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =
@@ -312,14 +318,16 @@ in
       version = "0";
       src = null;
 
-      buildDeps = [
-        pkgs.binutils
-        pkgs.coreutils
-        pkgs.grep
-        pkgs.patch
-        pkgs.tar
-        pkgs.xz
-      ] ++ dependencies;
+      buildDeps =
+        [
+          pkgs.binutils
+          pkgs.coreutils
+          pkgs.grep
+          pkgs.patch
+          pkgs.tar
+          pkgs.xz
+        ]
+        ++ dependencies;
 
       phases = [
         {
