@@ -176,6 +176,24 @@ impl LiveRunnerConfig {
         self.profile.smp_vcpus()
     }
 
+    /// Returns the launch-pinned round-robin vCPU switch quantum.
+    #[must_use]
+    pub fn rr_switch_quantum(&self) -> u64 {
+        self.profile.rr_switch_quantum()
+    }
+
+    /// Returns the SHA-256 digest of the verified QEMU executable.
+    #[must_use]
+    pub const fn qemu_build_digest(&self) -> [u8; 32] {
+        self.qemu_build_digest
+    }
+
+    /// Returns the SHA-256 digest of the verified trace plugin.
+    #[must_use]
+    pub const fn trace_plugin_build_digest(&self) -> [u8; 32] {
+        self.trace_plugin_build_digest
+    }
+
     /// Returns the definition-pinned periodic sampling cadence.
     #[must_use]
     pub const fn cadence_icount(&self) -> u64 {

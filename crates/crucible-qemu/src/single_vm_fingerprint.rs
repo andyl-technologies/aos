@@ -30,17 +30,19 @@ pub use compare::{
 };
 #[cfg(target_os = "linux")]
 pub use live_runner::{
-    LiveIdentityError, LiveInvocationIdentity, LiveInvocationPaths, LiveObservationAttempt,
-    LiveObservationControl, LiveObservationControlFields, LiveObservationMode,
-    LiveObservationModeFlags, LiveObservationProcess, LiveObservationProcessError,
-    LiveObservationShutdown, LiveObservationShutdownPolicy, LivePreparationError,
-    LivePreparationRequest, LivePreparedLaunch, LiveRunnerArtifactRoot, LiveRunnerArtifacts,
-    LiveRunnerArtifactsError, LiveRunnerConfig, LiveRunnerConfigError, LiveRunnerImmutableInputs,
-    LiveRunnerLaunchFields, LiveRunnerLaunchKind, LiveRunnerLaunchSpec, LiveRunnerQmpConnector,
-    LiveRunnerQmpObservation, LiveRunnerQmpPollError, LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller,
-    LiveRunnerQmpSession, LiveRunnerSleeper, RawUnixArgvIdentity, ThreadLiveRunnerSleeper,
-    TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests, VerifiedLiveRunInputs,
-    VerifiedLiveRunInputsError, spawn_live_observation_process,
+    LiveDefinitionPreflightError, LiveDefinitionPreflightEvidence, LiveGenesisProbeExecutor,
+    LiveGenesisProbeExecutorError, LiveGenesisProbeReport, LiveIdentityError,
+    LiveInvocationIdentity, LiveInvocationPaths, LiveObservationAttempt, LiveObservationControl,
+    LiveObservationControlFields, LiveObservationMode, LiveObservationModeFlags,
+    LiveObservationProcess, LiveObservationProcessError, LiveObservationShutdown,
+    LiveObservationShutdownPolicy, LivePreparationError, LivePreparationRequest,
+    LivePreparedLaunch, LiveRunnerArtifactRoot, LiveRunnerArtifacts, LiveRunnerArtifactsError,
+    LiveRunnerConfig, LiveRunnerConfigError, LiveRunnerImmutableInputs, LiveRunnerLaunchFields,
+    LiveRunnerLaunchKind, LiveRunnerLaunchSpec, LiveRunnerQmpConnector, LiveRunnerQmpObservation,
+    LiveRunnerQmpPollError, LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession,
+    LiveRunnerSleeper, RawUnixArgvIdentity, ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector,
+    VerifiedGuestImageDigests, VerifiedLiveRunInputs, VerifiedLiveRunInputsError,
+    spawn_live_observation_process,
 };
 pub use probe::{
     SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest, SingleVmFingerprintProbeRunner,
