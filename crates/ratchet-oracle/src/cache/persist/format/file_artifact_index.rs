@@ -1,6 +1,7 @@
 //! File-artifact index key, value, entry, and storage format adapters.
 
 use super::*;
+use crate::cache::CompiledBodyRecordHash;
 use ratchet_cache::artifact_index::{
     ArtifactIndex as EngineArtifactIndex, ArtifactIndexEntry as EngineArtifactIndexEntry,
     ArtifactIndexError as EngineArtifactIndexError,
@@ -8,16 +9,24 @@ use ratchet_cache::artifact_index::{
     ArtifactIndexKey as EngineArtifactIndexKey, ArtifactIndexValue as EngineArtifactIndexValue,
 };
 
-/// A stable index key for a durable frontend file artifact.
+/// A stable index key for a durable file-derived or compiled artifact.
 ///
-/// The key is derived from the canonical realpath bytes, the source-content
-/// hash, and the parse-cache key that includes parser schema and flags.
+/// Frontend keys derive from canonical realpath bytes, source content, and
+/// parse identity. Compiled-body keys enter through their separately
+/// domain-separated lowering identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PersistFileArtifactKey {
     hash: DurableBlake3Hash,
 }
 
 impl PersistFileArtifactKey {
+    /// Creates a persistent artifact mapping key for a compiled-body record.
+    pub const fn for_compiled_body(hash: CompiledBodyRecordHash) -> Self {
+        Self {
+            hash: hash.as_durable_hash(),
+        }
+    }
+
     /// Creates a persistent file-artifact index key from a parse file key.
     pub fn from_parse_file_key(file_key: &ParseFileKey, parse_key: ParseCacheKey) -> Self {
         Self::for_realpath_bytes(
@@ -81,7 +90,7 @@ impl PersistFileArtifactKey {
     }
 }
 
-/// A stable index value for a durable frontend file artifact.
+/// A stable index value for a durable file-derived or compiled artifact.
 ///
 /// The value points at a blob in the `files/` pack. The blob payload format is
 /// intentionally outside this codec; the pack still verifies the payload hash

@@ -57,7 +57,6 @@
 //! remain a separate frontend obligation.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::rc::Rc;
 
 use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
@@ -100,7 +99,7 @@ pub(super) struct Tier2EngineState {
     /// [`TIER2_NATIVE_DEPTH_BUDGET`] in production; tests shrink it so a
     /// budget-exhaustion deopt can be exercised at interpreter-safe depths.
     pub(super) budget: i64,
-    /// Persistent address-free CLIF sidecar, when evaluator caching is active.
+    /// Persistent address-free CLIF record store, when evaluator caching is active.
     compiled_cache: Option<CompiledBodyCache>,
 }
 
@@ -135,16 +134,6 @@ impl NixJitTier2DispatchEntry {
 }
 
 impl NixJitTier1Engine {
-    /// Configures the persistent address-free compiled-body sidecar.
-    ///
-    /// `persist_root` is the evaluator's primary persistent-cache root. `None`
-    /// keeps JIT compilation process-local.
-    #[must_use]
-    pub fn with_compiled_body_cache_root(mut self, persist_root: Option<&Path>) -> Self {
-        self.tier2.get_mut().compiled_cache = persist_root.map(CompiledBodyCache::new);
-        self
-    }
-
     /// Implements [`Tier1Engine::on_lambda_apply`] for the live engine.
     ///
     /// See the [module docs](self) for the promotion gate and dispatch guards.

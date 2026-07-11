@@ -74,7 +74,7 @@ unification and tiering, not invention:
 | Demand/force cache | per lowered node | `DemandCacheKey::for_free_vars(CacheExprIdentity{source_hash, node: IrId}, [ValueHash])` (`ratchet-oracle/src/cache/key.rs`, ordered length-prefixed combiner per decision C-1) | forced value payloads (`CachedExpressionPayloadValueHash`, derivation side records) | in-process maps + `nodes/` persist layer (`metadata.index`, `traces.log`) |
 | Root cutoff | whole root (largest subtree) | blake3(domain ‖ format-v2 ‖ crate version ‖ entry realpath ‖ entry content ‖ attr ‖ `TreeWalkOptions::result_affecting_fingerprint()`) (`aos-nix/src/native/root_cutoff.rs`) | `RootInstantiationRecord` = root drv + closure blob refs + canonicalized input trace | `roots/instantiations.index` + `files/` pack, tag 6 |
 | Parse cache | per source file | realpath + content hash (`ParseFileContentHash`); artifact carries post-remap `LoweredIrFingerprint` | lowered IR + symbol table + facts | `nodes/parse-artifacts.index` + packs |
-| JIT body cache (unary slice live) | per def-site | `(LoweredIrFingerprint, pattern IrId, body IrId, depth budget, schema, Cranelift version, target)` | paired entry/inner CLIF + self-upvalue and self-call metadata | `persist/compiled-bodies/v1/<cranelift>/<target>/`; primary location only |
+| JIT body cache (unary slice live) | per def-site | `(LoweredIrFingerprint, pattern IrId, body IrId, depth budget, schema, Cranelift version, target)` | paired entry/inner CLIF + self-upvalue and self-call metadata | `nodes/file-artifacts.index` mapping to a content-hashed `files/pack.blob` record; primary plus latency-ordered L2 secondaries with promotion |
 
 Shared machinery already in place: the hash-domain type system
 (`cache/hashing.rs` — hot xxh3 never crosses into durable addresses),
@@ -83,14 +83,20 @@ the `LatestIndex` append-only sidecar index with tail-reload
 `files/` packs with `ensure_blob_indexed` CAS dedup, and the
 canonicalized impure-input trace (§2.3).
 
-**Compiled-body status boundary (2026-07-10).** The first live slice covers
+**Compiled-body status boundary (2026-07-11).** The first live slice covers
 unary self-recursive tier-2 lambdas. Cranelift's `enable-serde` representation
 is encoded with a pinned binary codec inside an explicit magic/schema/key
-envelope, capped at 32 MiB, written by temporary-file rename, and treated as an
-advisory miss on I/O, header, source, codec, or CLIF-verifier failure. A fresh
-engine decodes and verifies CLIF, then recompiles it into its own
-`JitModuleContext`; executable pages and addresses are never serialized. The
-canonical `fib` record is 5.7 KiB. The final balanced seven-pair release A/B on
+envelope and capped at 32 MiB. Version 2 derives a domain-separated memo key
+from every lowering input, stores that key in the shared artifact mapping
+index, and stores the envelope under its independent payload hash in the
+indexed `files/` pack. Reads probe the primary then configured latency-ordered
+L2 locations; a verified secondary hit replaces a missing or corrupt primary
+mapping through the normal indexed write path. I/O, mapping, pack-integrity,
+header, source, codec, and CLIF-verifier failures are advisory misses and probe
+the next location. A fresh engine decodes and verifies CLIF, then recompiles it
+into its own `JitModuleContext`; executable pages and addresses never
+serialize. The canonical `fib` record is 5.7 KiB. The original balanced
+seven-pair release A/B on
 the noisy Darwin host measured the combined C++-oracle/native command at 210 ms
 cold versus 220 ms for pristine `afa7cf6c7`, and 220 ms warm for both. Median
 maximum RSS was slightly lower in the candidate (71.03 vs 71.31 MiB cold;
@@ -98,10 +104,20 @@ maximum RSS was slightly lower in the candidate (71.03 vs 71.31 MiB cold;
 measured native `fib` at 20.7/18.4 ms cold/warm versus C++ Nix at 269/289 ms,
 with a 0.5 MiB arena peak. The cache is therefore neutral at this workload's
 whole-command resolution; this landing claims a functional substrate, not a
-CLIF-reload wall-time win. Fused chains, fold/filter/genList
-and `all`/`any` entries, a packed/indexed multi-record layout, secondary/L3
-placement, cache counters, and a measured default admission heuristic remain
-open.
+CLIF-reload wall-time win. Fused chains, fold/filter/genList and `all`/`any`
+entries, compiled-body L3 placement, cache counters, and a measured default
+admission heuristic remain open.
+
+The version-2 packed-layout landing's balanced seven-pair,
+root-cutoff-disabled JIT `fib` A/B against pristine `4e23f145c` measured
+candidate/baseline medians of 15.27/15.14 ms cold (+0.9%) and 14.44/14.73 ms
+warm (-2.0%). Median resident memory after evaluation was 30.6/30.6 MiB cold
+and 30.7/30.8 MiB warm. The layout change is therefore timing- and
+memory-neutral at this resolution. Its full gate passed 3,035 active oracle
+tests (34 ignored), 259 JIT tests, 330 `aos-nix` tests, the 38-test language
+aggregate, the 16-leg package byte matrix, compute x9, wide evaluation in all
+four modes, zlib and wide cache validation, and all 645 strict-JSON seeds in
+those four modes.
 
 **FV-5 status boundary (2026-07-09).** Hybrid closure capture changes the
 runtime representation, not this memo contract. `facts.bin` analysis version
@@ -899,8 +915,9 @@ same keys, same bytes on the primary location); blob-liveness
 enumeration to the reaper (closes the known root-record trim caveat);
 multi-location L2 with latency classes + promotion/demotion; L3
 read-side with re-hash validation + `rw` publish from CI. Unary tier-2
-compiled-body records now occupy a versioned primary sidecar; folding them into
-the packed multi-location record store remains part of this phase.
+compiled-body records now use the common indexed `files/` pack and artifact
+mapping keyspace across the configured primary and secondary L2 locations;
+wider compiled-body shapes and L3 placement remain part of this phase.
 
 Acceptance gates:
 
@@ -1025,9 +1042,9 @@ design above with the code as ground truth:
    options identity, and materialization economics counters is already
    live, including the durable scalar filesystem-import root boundary. The unification added per-subtree slice attribution,
    L0/L1 content tables, admission cost flags, multi-location L2, L3,
-   and promotion; unary compiled-body records are now live in a primary
-   sidecar, while their packed multi-location form and final measured defaults
-   remain.
+   and promotion; unary compiled-body records now share the packed
+   multi-location L2 store, while wider compiled shapes, compiled-body L3
+   placement, and final measured defaults remain.
 5. **"Recompute cost from force-time stats — the `AOS_NIX_EVAL_STATS`
    machinery exists" — corrected by the economics seam.** `EvalStats`
    remains aggregate and normal runs still pay no clock hook. The explicit
@@ -1064,9 +1081,12 @@ design above with the code as ground truth:
 - [ ] MEMO-2 final acceptance: primary/secondary-loss/poisoned-L3 matrix,
       root-cutoff latency non-regression, repeat-heavy package/CI hit-mass
       demonstration, and the required cross-machine L3 replay.
-- [x] Unary tier-2 compiled-body sidecar records with versioned target and
+- [x] Unary tier-2 compiled-body records with versioned target and
       lowering identity, decode validation, and miss-safe recompilation.
-- [ ] Fold compiled-body records into the packed multi-location keyspace and
-      extend persistence beyond unary tier-2 bodies. The new allocation-capable
+- [x] Fold unary compiled-body records into the packed multi-location L2
+      keyspace: domain-separated artifact mapping key, independently
+      content-hashed pack payload, primary/secondary probing, corruption
+      fallthrough, and verified-hit promotion.
+- [ ] Extend persistence beyond unary tier-2 bodies and through L3. The new allocation-capable
       singleton-list tier-1 artifact is intentionally re-lowered today; it does
       not widen the persisted body claim.

@@ -793,7 +793,7 @@ impl NixNative {
             return None;
         }
         NixJitTier1Engine::new().ok().map(|engine| {
-            Rc::new(engine.with_compiled_body_cache_root(options.persist_cache_root()))
+            Rc::new(engine.with_compiled_body_cache_options(options))
                 as Rc<dyn Tier1Engine>
         })
     }

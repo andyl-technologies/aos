@@ -11344,16 +11344,24 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       touched offender stays at or below its baseline size.
 - [x] Persistent compiled-body cache, first unary tier-2 slice: when both the
       JIT and primary evaluator cache are configured, a promoted self-recursive
-      lambda writes its address-free entry/inner CLIF pair and dispatch metadata
-      beneath `persist/compiled-bodies/v1/<cranelift>/<target>/`. The key binds
-      the complete lowered-IR fingerprint, pattern/body IDs, native depth
+      lambda writes its address-free entry/inner CLIF pair and dispatch metadata.
+      The original v1 used one file per body beneath
+      `persist/compiled-bodies/v1/<cranelift>/<target>/`; v2 now derives a
+      domain-separated artifact mapping key and stores the envelope by its
+      independent content hash in the common indexed `files/pack.blob`. The
+      key binds the complete lowered-IR fingerprint, pattern/body IDs, native depth
       budget, cache schema, exact Cranelift version, and target triple. Records
-      use an explicit size-bounded envelope and binary serde payload; malformed,
-      mismatched, unreadable, or verifier-rejected records are deleted and
-      treated as misses. A fresh engine re-verifies CLIF and recompiles it into
-      its own `JitModuleContext`; machine code and addresses never persist.
+      use an explicit size-bounded envelope and binary serde payload. The
+      runtime probes the primary then configured latency-ordered secondary L2
+      locations; malformed, mismatched, unreadable, or verifier-rejected records
+      miss and continue, while a verified secondary hit is promoted into the
+      primary through the ordinary indexed write path. A fresh engine
+      re-verifies CLIF and recompiles it into its own `JitModuleContext`;
+      machine code and addresses never persist.
       Tests cover codec/source rejection and a real `fib` write/reload across
-      engines; the full `ratchet-jit` suite is 257/257 and `aos-nix` is 329/329.
+      engines, plus corrupt-primary fallthrough, secondary verification, and
+      primary promotion without recreating the bespoke directory; the original
+      landing's full `ratchet-jit` suite was 257/257 and `aos-nix` was 329/329.
       The locked Cargo vendor hash is updated for the codec dependency. After
       removing an unnecessary advisory-record `fsync`, the final balanced
       seven-pair release A/B was 210 vs 220 ms cold and 220/220 ms warm against
@@ -11368,10 +11376,19 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       language tests, all 16 package byte-parity legs, compute x9,
       `bench.wide-eval` in serial/K=4/JIT/sweep-zero, zlib and wide cache
       validation, and all 645 generated strict-JSON seeds in those four modes.
+      The v2 packing landing passed 3,035 active oracle tests (34 ignored), 259
+      JIT tests, 330 `aos-nix` tests, the 38-test language aggregate, all 16
+      package byte-parity legs, compute x9, `bench.wide-eval` in
+      serial/K=4/JIT/sweep-zero, zlib and wide cache validation, and all 645
+      generated strict-JSON seeds in those four modes. Its balanced seven-pair
+      root-cutoff-disabled JIT `fib` A/B against pristine `4e23f145c` measured
+      candidate/baseline medians of 15.27/15.14 ms cold and 14.44/14.73 ms
+      warm; median resident memory after evaluation was 30.6/30.6 MiB cold and
+      30.7/30.8 MiB warm. This is a timing and memory no-regression result.
       The source-size gate remains pre-existing red; every touched offender is
       unchanged and both new modules stay below 200 lines. Fused-chain and
-      collection entries, packed/indexed records, multi-location placement,
-      counters, and a measured admission/default policy remain open.
+      collection entries, compiled-body L3 placement, counters, and a measured
+      admission/default policy remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling

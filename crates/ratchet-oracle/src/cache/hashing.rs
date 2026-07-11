@@ -21,6 +21,7 @@
 //! ImpureInputIdentityHash -> filesystem/environment input identity keys
 //! ImpureInputObservationHash -> observed filesystem/environment input results
 //! LoweredIrFingerprint -> lowered-IR artifact/source-less module identities
+//! CompiledBodyRecordHash -> persistent compiled-body memo record identities
 //! ParseCacheSourceHash -> parse-cache source-byte artifact keys
 //! ParseFileContentHash -> parse-file realpath/content memo keys
 //! PersistFileBlobHash -> persisted `files/` blob payload addresses
@@ -431,6 +432,50 @@ impl LoweredIrFingerprint {
     }
 }
 
+/// A durable BLAKE3 key for one persistent compiled-body memo record.
+///
+/// The key is derived exclusively from lowering inputs: lowered module
+/// identity, definition-site coordinates, compilation budget, record schema,
+/// compiler version, and target triple. Executable addresses and encoded CLIF
+/// bytes never participate, so independently opened cache locations address the
+/// same pure artifact through one stable key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CompiledBodyRecordHash(DurableBlake3Hash);
+
+impl CompiledBodyRecordHash {
+    /// Derives the durable key for one unary tier-2 compiled-body record.
+    pub fn for_unary_tier2(
+        lowered_ir: LoweredIrFingerprint,
+        pattern: u32,
+        body: u32,
+        budget: i64,
+        schema: u32,
+        compiler_version: &str,
+        target_triple: &str,
+    ) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"aos-nix:compiled-body:unary-tier2:v1\0");
+        hasher.update(&lowered_ir.as_bytes());
+        hasher.update(&pattern.to_le_bytes());
+        hasher.update(&body.to_le_bytes());
+        hasher.update(&budget.to_le_bytes());
+        hasher.update(&schema.to_le_bytes());
+        update_compiled_body_key_field(&mut hasher, compiler_version.as_bytes());
+        update_compiled_body_key_field(&mut hasher, target_triple.as_bytes());
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Returns the underlying durable BLAKE3 digest.
+    pub(in crate::cache) const fn as_durable_hash(self) -> DurableBlake3Hash {
+        self.0
+    }
+}
+
+fn update_compiled_body_key_field(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
 /// A durable BLAKE3 key for parse artifacts derived from source bytes.
 ///
 /// This type separates parse-cache source identities from file-content memo
@@ -614,6 +659,43 @@ mod tests {
         let fingerprint = LoweredIrFingerprint::from_durable_hash(durable);
 
         assert_eq!(fingerprint.as_durable_hash(), durable);
+    }
+
+    #[test]
+    fn compiled_body_record_hash_covers_lowering_and_target_identity() {
+        let fingerprint = LoweredIrFingerprint::from_durable_hash(
+            DurableBlake3Hash::for_bytes(b"lowered module"),
+        );
+        let key = CompiledBodyRecordHash::for_unary_tier2(
+            fingerprint,
+            3,
+            7,
+            128,
+            2,
+            "cranelift-1",
+            "aarch64-test",
+        );
+        let same = CompiledBodyRecordHash::for_unary_tier2(
+            fingerprint,
+            3,
+            7,
+            128,
+            2,
+            "cranelift-1",
+            "aarch64-test",
+        );
+        let other_target = CompiledBodyRecordHash::for_unary_tier2(
+            fingerprint,
+            3,
+            7,
+            128,
+            2,
+            "cranelift-1",
+            "x86_64-test",
+        );
+
+        assert_eq!(key, same);
+        assert_ne!(key, other_target);
     }
 
     #[test]
