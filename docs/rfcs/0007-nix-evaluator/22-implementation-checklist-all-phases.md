@@ -11844,10 +11844,10 @@ it ships).**
       `f64` cells in the serial reservation's permanent lane while keeping
       signed `i32` immediate. Both scalar kinds share the mode's checked offset
       space with other permanent objects, while disjoint flat kind domains and
-      registries reject cross-kind and non-live local indices. Compressed words
-      remain arena-local; domain identity across simultaneously live heaps is
-      active-ABI work. Explicit chunk geometry and reservation fallback decline
-      Candidate C. Inactive `EvalHeap`
+      registries reject cross-kind and non-live local indices. This landing
+      initially kept words arena-local; the following reservation-domain
+      precursor closes cross-live-heap aliasing. Explicit chunk geometry and
+      reservation fallback decline Candidate C. Inactive `EvalHeap`
       encode/decode seams exercise the complete scalar lifecycle before the
       active value/FFI/JIT ABI changes; the active `Value` remains 16 bytes and
       no unsafe operation was added. Focused gates passed 369 value tests and
@@ -11860,6 +11860,29 @@ it ships).**
       serial-wide rounds against pristine `708099ffb` moved native medians
       3.967 -> 3.910 s cold and 3.481 -> 3.211 s warm; retained-RSS medians
       moved +2.1% cold and +2.5% warm, within the 10% gate.
+- [x] Current Candidate-C reservation-domain identity precursor: indexed words
+      reserve metadata bits 8..30 for an immutable nonzero 23-bit reservation
+      domain, retain the low 8-bit kind plus bit-31 forced-thunk marker, and
+      keep the checked `u32` arena offset in the low word. Reservations receive
+      monotonic process-non-reusing domains and fail loudly at domain-space
+      exhaustion. Indexed constructors require a domain; raw decoding rejects
+      missing domains, inline values carrying domain bits, and forced markers
+      on non-thunks. Scalar decoding compares the receiving reservation before
+      pointer reconstruction, with a cross-live-heap equal-offset regression
+      witness. The active `Value` remains 16 bytes and no unsafe operation was
+      added. Focused gates passed 371 value tests and 259 oracle heap tests. The
+      full battery passed 3,040 active oracle tests (34 ignored), the
+      core/JIT/runtime-FFI/cache/aos-nix suites, the 38-test language aggregate,
+      all 16 package byte legs, compute x9 under JIT, wide
+      serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and 648 strict-JSON
+      expressions in all four modes. Ten noisy interleaved serial-wide rounds
+      against pristine `ae945989a` moved cold medians 4.211 -> 4.417 s (+4.9%).
+      Warm marginal medians were scheduler/order contaminated at
+      3.477 -> 4.044 s; the paired-delta median was +0.343 s (about +9.9% of the
+      baseline median), and retained RSS moved about +1%, inside the 10% gate.
+      A three-sample changed-tree confirmation kept output parity and identical
+      cache counters across all nine mutations, but its wall times were
+      discarded because co-measured stock-Nix medians moved by up to 153%.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay

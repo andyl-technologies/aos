@@ -66,8 +66,9 @@ pub use region::{
     RegionPlan, RegionRuntimeTier, RegionSharing,
 };
 pub use reservation::{
-    ArenaIndex, CANDIDATE_C_ADDRESS_SPACE_BYTES, ReservedArena, ReservedArenaAllocation,
-    ReservedArenaError, ReservedArenaHighMark, ReservedArenaMark, ReservedArenaStats,
+    ArenaDomainId, ArenaIndex, CANDIDATE_C_ADDRESS_SPACE_BYTES, CANDIDATE_C_ARENA_DOMAIN_MAX,
+    ReservedArena, ReservedArenaAllocation, ReservedArenaError, ReservedArenaHighMark,
+    ReservedArenaMark, ReservedArenaStats,
 };
 pub use resident::{
     PeakResidentMemoryScope, ProcessResidentMemoryError, ProcessResidentMemorySample,

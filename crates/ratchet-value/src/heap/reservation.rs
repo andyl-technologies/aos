@@ -13,7 +13,7 @@
 //! index space without exposing raw references or unchecked pointer decoding.
 
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use thiserror::Error;
 
@@ -21,6 +21,9 @@ use crate::value::HeapObject;
 
 /// The virtual address-space size required by a full unsigned 32-bit offset.
 pub const CANDIDATE_C_ADDRESS_SPACE_BYTES: u64 = 1_u64 << 32;
+/// Maximum nonzero arena domain encodable beside kind and forced metadata.
+pub const CANDIDATE_C_ARENA_DOMAIN_MAX: u32 = (1 << 23) - 1;
+static NEXT_ARENA_DOMAIN: AtomicU32 = AtomicU32::new(1);
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
 const MAP_ANONYMOUS_FLAG: libc::c_int = libc::MAP_ANONYMOUS;
@@ -42,6 +45,36 @@ impl ArenaIndex {
     /// Returns the raw byte offset from the reservation base.
     pub const fn raw(self) -> u32 {
         self.0
+    }
+}
+
+/// A process-unique identity for one Candidate-C reservation.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ArenaDomainId(u32);
+
+impl ArenaDomainId {
+    /// Decodes nonzero 23-bit domain metadata.
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        if raw > 0 && raw <= CANDIDATE_C_ARENA_DOMAIN_MAX {
+            Some(Self(raw))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the nonzero 23-bit domain metadata.
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    fn next() -> Result<Self, ReservedArenaError> {
+        let raw = NEXT_ARENA_DOMAIN
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |next| {
+                (next <= CANDIDATE_C_ARENA_DOMAIN_MAX).then_some(next + 1)
+            })
+            .map_err(|_| ReservedArenaError::ArenaDomainExhausted)?;
+        Ok(Self(raw))
     }
 }
 
@@ -107,6 +140,7 @@ impl ReservedArenaMark {
 #[derive(Debug)]
 pub struct ReservedArena {
     base: NonNull<u8>,
+    domain_id: ArenaDomainId,
     capacity: usize,
     low_cursor: AtomicUsize,
     high_cursor: usize,
@@ -156,6 +190,7 @@ impl ReservedArena {
             return Err(ReservedArenaError::UnsupportedPointerWidth);
         }
         validate_capacity(capacity)?;
+        let domain_id = ArenaDomainId::next()?;
 
         // SAFETY: The arguments request a private anonymous mapping, pass no
         // file descriptor, and `capacity` is nonzero and representable by
@@ -184,10 +219,16 @@ impl ReservedArena {
         };
         Ok(Self {
             base,
+            domain_id,
             capacity,
             low_cursor: AtomicUsize::new(0),
             high_cursor: capacity,
         })
+    }
+
+    /// Returns this reservation's process-unique compressed-word domain.
+    pub const fn domain_id(&self) -> ArenaDomainId {
+        self.domain_id
     }
 
     /// Reports that contiguous reservation is unavailable on non-Unix hosts.
@@ -572,6 +613,9 @@ pub enum ReservedArenaError {
     /// Anonymous virtual mappings are unavailable on this platform.
     #[error("Candidate-C address reservation is unsupported on this platform")]
     UnsupportedPlatform,
+    /// The non-reusing compressed-word domain space was exhausted.
+    #[error("Candidate-C arena domain identity space is exhausted")]
+    ArenaDomainExhausted,
     /// A reservation cannot have zero capacity.
     #[error("reservation capacity must be nonzero, got {capacity}")]
     InvalidCapacity {
@@ -671,6 +715,25 @@ mod tests {
         assert_eq!(
             arena.index_for_pointer(first.ptr).expect("pointer encodes"),
             first.index
+        );
+    }
+
+    #[test]
+    fn live_reservations_receive_distinct_nonzero_domains() {
+        let first = ReservedArena::with_capacity(4096).expect("first reservation maps");
+        let second = ReservedArena::with_capacity(4096).expect("second reservation maps");
+
+        assert_ne!(first.domain_id(), second.domain_id());
+        assert!(first.domain_id().raw() > 0);
+        assert!(first.domain_id().raw() <= CANDIDATE_C_ARENA_DOMAIN_MAX);
+        assert_eq!(
+            ArenaDomainId::from_raw(first.domain_id().raw()),
+            Some(first.domain_id())
+        );
+        assert_eq!(ArenaDomainId::from_raw(0), None);
+        assert_eq!(
+            ArenaDomainId::from_raw(CANDIDATE_C_ARENA_DOMAIN_MAX + 1),
+            None
         );
     }
 

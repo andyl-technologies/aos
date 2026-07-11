@@ -115,4 +115,18 @@ mod tests {
             Err(CandidateCScalarError::ReservationUnavailable)
         ));
     }
+
+    #[test]
+    fn evaluator_rejects_compressed_scalar_from_another_live_heap() {
+        let mut source = EvalHeap::new();
+        let receiver = EvalHeap::new();
+        let word = source
+            .candidate_c_encode_int(i64::MAX)
+            .expect("source scalar encodes");
+
+        assert!(matches!(
+            receiver.candidate_c_decode_int(word),
+            Err(CandidateCScalarError::ArenaDomainMismatch { .. })
+        ));
+    }
 }

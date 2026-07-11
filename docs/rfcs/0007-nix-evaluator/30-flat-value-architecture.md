@@ -1582,9 +1582,9 @@ value word (Candidates B and C) remains open and separately gated:**
       distinct NaN payloads and signed zero. Typed flat headers and per-store
       registries reject cross-kind and non-live local indices; explicit chunk
       geometry and unsupported reservation mappings decline Candidate C rather
-      than manufacturing non-index handles. Compressed words are arena-local;
-      arena-domain identity across simultaneously live heaps stays with the
-      active ABI conversion. `EvalHeap` exposes inactive encode and
+      than manufacturing non-index handles. This landing initially kept words
+      arena-local; the following reservation-domain prerequisite closes
+      cross-live-heap aliasing. `EvalHeap` exposes inactive encode and
       decode seams so the later `Value`/FFI/JIT switch does not also introduce
       scalar storage. The active `Value` remains 16 bytes and no unsafe
       operation was added. Focused gates passed 369 value tests and 258 oracle
@@ -1600,12 +1600,38 @@ value word (Candidates B and C) remains open and separately gated:**
       and 3.481 -> 3.211 s warm (-7.8%); retained-RSS medians moved
       144.9 -> 147.9 MiB cold (+2.1%) and 169.9 -> 174.2 MiB warm (+2.5%),
       within the 10% gate.
+- [x] **Candidate-C reservation-domain identity prerequisite:** indexed words
+      encode an immutable nonzero 23-bit reservation domain in metadata bits
+      8..30, alongside the low 8-bit kind and bit-31 forced-thunk marker; the
+      low word remains the checked `u32` arena offset. Reservations receive
+      monotonically allocated, process-non-reusing domains and fail loudly
+      after the encodable domain space is exhausted. Indexed constructors now
+      require a domain, while raw decoding rejects missing domains, domain bits
+      on inline values, and forced markers on non-thunks. Scalar decoding
+      validates the receiving reservation's domain before reconstructing a
+      pointer, including a regression witness where two simultaneously live
+      heaps allocate the same numeric offset. The active `Value` remains 16
+      bytes and no unsafe operation was added. Focused gates passed 371 value
+      tests and 259 oracle heap tests. The full battery passed 3,040 active
+      oracle tests (34 ignored), cache 112, core 354, JIT 261, runtime-FFI 80
+      (26 ignored) plus its 2- and 6-test integration targets, aos-nix 336, the
+      38-test language aggregate, all 16 package byte legs, compute x9 under
+      JIT, wide-eval in serial/K=4/JIT/sweep-zero, zlib/wide cache validation,
+      and all 648 strict JSON expressions in those four modes. Ten noisy
+      interleaved serial-wide A/B rounds against pristine `ae945989a` measured
+      cold medians of 4.211 -> 4.417 s (+4.9%). Warm marginal medians were
+      scheduler/order contaminated at 3.477 -> 4.044 s, while the paired-delta
+      median was +0.343 s (about +9.9% of the baseline median) and retained RSS
+      moved about +1%, inside the 10% landing gate. A three-sample changed-tree
+      confirmation preserved output parity and identical cache counters in all
+      nine mutation scenarios; its wall times were not used because co-measured
+      stock-Nix medians moved by as much as 153% under host contention.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
       shared-mode flat-store adoption, both serial store lanes, and typed boxed
-      scalar cells are landed; arena-domain identity, the active ABI conversion,
-      and container narrowing remain.**
+      scalar cells plus arena-domain identity are landed; the active ABI
+      conversion and container narrowing remain.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **Deferred
       with C (same re-entry conditions).**

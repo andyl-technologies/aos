@@ -47,8 +47,8 @@ use crate::heap::arena::{
     BumpArena, HeapObjectKind,
 };
 use crate::heap::{
-    ArenaIndex, MemoryAdviceOutcome, ReservedArena, ReservedArenaError, ReservedArenaHighMark,
-    ReservedArenaStats,
+    ArenaDomainId, ArenaIndex, MemoryAdviceOutcome, ReservedArena, ReservedArenaError,
+    ReservedArenaHighMark, ReservedArenaStats,
 };
 use crate::value::HeapObject;
 
@@ -286,6 +286,14 @@ impl SharedFlatStoreArena {
     pub fn reservation_stats(&self) -> Option<ReservedArenaStats> {
         match &*self.inner.borrow() {
             SharedFlatStoreBacking::Reserved(arena) => Some(arena.stats()),
+            SharedFlatStoreBacking::Chunked(_) => None,
+        }
+    }
+
+    /// Returns the reservation identity encoded into Candidate-C words.
+    pub fn arena_domain_id(&self) -> Option<ArenaDomainId> {
+        match &*self.inner.borrow() {
+            SharedFlatStoreBacking::Reserved(arena) => Some(arena.domain_id()),
             SharedFlatStoreBacking::Chunked(_) => None,
         }
     }

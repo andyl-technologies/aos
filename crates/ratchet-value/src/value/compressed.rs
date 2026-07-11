@@ -16,16 +16,18 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
-use crate::heap::ArenaIndex;
 use crate::heap::flat::{
     FlatKindSet, FlatObjectError, FlatObjectKind, FlatObjectStore, SharedFlatStoreArena,
 };
+use crate::heap::{ArenaDomainId, ArenaIndex};
 
 use super::ValueTag;
 
 /// Metadata bit marking an already-forced thunk index.
 pub const COMPRESSED_FORCED_BIT: u32 = 1 << 31;
-const KIND_MASK: u32 = !COMPRESSED_FORCED_BIT;
+const KIND_MASK: u32 = 0xff;
+const ARENA_DOMAIN_SHIFT: u32 = 8;
+const ARENA_DOMAIN_MASK: u32 = 0x7fff_ff00;
 
 /// The representation kind stored in the high half of a compressed word.
 #[repr(u32)]
@@ -127,13 +129,13 @@ impl CompressedValueWord {
     }
 
     /// Encodes an arena index for a boxed signed 64-bit integer.
-    pub const fn boxed_int(index: ArenaIndex) -> Self {
-        Self::compose(CompressedValueKind::BoxedInt, index.raw())
+    pub const fn boxed_int(domain: ArenaDomainId, index: ArenaIndex) -> Self {
+        Self::compose_indexed(CompressedValueKind::BoxedInt, domain, index)
     }
 
     /// Encodes an arena index for a boxed IEEE-754 double.
-    pub const fn boxed_float(index: ArenaIndex) -> Self {
-        Self::compose(CompressedValueKind::BoxedFloat, index.raw())
+    pub const fn boxed_float(domain: ArenaDomainId, index: ArenaIndex) -> Self {
+        Self::compose_indexed(CompressedValueKind::BoxedFloat, domain, index)
     }
 
     /// Encodes an inline boolean.
@@ -153,7 +155,11 @@ impl CompressedValueWord {
     /// Returns [`CompressedValueError::NonHeapTag`] when `tag` is an inline
     /// scalar tag. Boxed scalars use [`Self::boxed_int`] or
     /// [`Self::boxed_float`].
-    pub fn heap(tag: ValueTag, index: ArenaIndex) -> Result<Self, CompressedValueError> {
+    pub fn heap(
+        domain: ArenaDomainId,
+        tag: ValueTag,
+        index: ArenaIndex,
+    ) -> Result<Self, CompressedValueError> {
         let kind = match tag {
             ValueTag::String => CompressedValueKind::String,
             ValueTag::Path => CompressedValueKind::Path,
@@ -165,7 +171,7 @@ impl CompressedValueWord {
             ValueTag::Thunk => CompressedValueKind::Thunk,
             tag => return Err(CompressedValueError::NonHeapTag { tag }),
         };
-        Ok(Self::compose(kind, index.raw()))
+        Ok(Self::compose_indexed(kind, domain, index))
     }
 
     /// Decodes and validates a raw Candidate-C word.
@@ -177,9 +183,16 @@ impl CompressedValueWord {
     pub fn from_raw(raw: u64) -> Result<Self, CompressedValueError> {
         let kind_and_flags = (raw >> 32) as u32;
         let kind = CompressedValueKind::from_bits(kind_and_flags & KIND_MASK)?;
+        let domain = (kind_and_flags & ARENA_DOMAIN_MASK) >> ARENA_DOMAIN_SHIFT;
         let forced = kind_and_flags & COMPRESSED_FORCED_BIT != 0;
         if forced && kind != CompressedValueKind::Thunk {
             return Err(CompressedValueError::ForcedBitOnNonThunk { kind });
+        }
+        if kind.carries_arena_index() && ArenaDomainId::from_raw(domain).is_none() {
+            return Err(CompressedValueError::MissingArenaDomain { kind });
+        }
+        if !kind.carries_arena_index() && domain != 0 {
+            return Err(CompressedValueError::ArenaDomainOnInline { kind, domain });
         }
         let payload = raw as u32;
         match kind {
@@ -234,6 +247,15 @@ impl CompressedValueWord {
             .then(|| ArenaIndex::new(self.payload()))
     }
 
+    /// Returns the reservation identity carried by an indexed word.
+    pub fn arena_domain(self) -> Option<ArenaDomainId> {
+        if !self.kind().carries_arena_index() {
+            return None;
+        }
+        let high = (self.raw >> 32) as u32;
+        ArenaDomainId::from_raw((high & ARENA_DOMAIN_MASK) >> ARENA_DOMAIN_SHIFT)
+    }
+
     /// Returns whether this is a thunk word with the `FORCED` shortcut set.
     pub const fn is_forced_thunk(self) -> bool {
         let high = (self.raw >> 32) as u32;
@@ -261,15 +283,28 @@ impl CompressedValueWord {
             raw: ((kind as u64) << 32) | payload as u64,
         }
     }
+
+    const fn compose_indexed(
+        kind: CompressedValueKind,
+        domain: ArenaDomainId,
+        index: ArenaIndex,
+    ) -> Self {
+        Self {
+            raw: ((kind as u64 | ((domain.raw() as u64) << ARENA_DOMAIN_SHIFT)) << 32)
+                | index.raw() as u64,
+        }
+    }
 }
 
 /// Hash-consed boxed scalar cells in one Candidate-C reservation.
 ///
-/// Encoded words are local to this arena. The active ABI must add and validate
-/// arena-domain identity before compressed values can cross between live heaps.
+/// Every indexed word carries the reservation's non-reusing domain identity;
+/// decoding rejects a word from another simultaneously live heap before
+/// reconstructing its pointer.
 #[derive(Debug)]
 pub struct CandidateCScalarStore {
     arena: SharedFlatStoreArena,
+    domain: ArenaDomainId,
     ints: FlatObjectStore<i64>,
     floats: FlatObjectStore<u64>,
     int_words: HashMap<i64, CompressedValueWord>,
@@ -279,9 +314,7 @@ pub struct CandidateCScalarStore {
 impl CandidateCScalarStore {
     /// Creates a scalar store in `arena` when its reservation backend is active.
     pub fn new(arena: SharedFlatStoreArena) -> Option<Self> {
-        if !arena.uses_reservation() {
-            return None;
-        }
+        let domain = arena.arena_domain_id()?;
         Some(Self {
             ints: FlatObjectStore::with_shared_arena(
                 arena.clone(),
@@ -292,6 +325,7 @@ impl CandidateCScalarStore {
                 FlatKindSet::of(&[FlatObjectKind::BoxedFloat]),
             ),
             arena,
+            domain,
             int_words: HashMap::new(),
             float_words: HashMap::new(),
         })
@@ -316,7 +350,7 @@ impl CandidateCScalarStore {
             .ints
             .alloc(FlatObjectKind::BoxedInt, value as u64, 0, value)?;
         let index = self.index_for_allocation(allocation.ptr)?;
-        let word = CompressedValueWord::boxed_int(index);
+        let word = CompressedValueWord::boxed_int(self.domain, index);
         self.int_words.insert(value, word);
         Ok(word)
     }
@@ -339,7 +373,7 @@ impl CandidateCScalarStore {
             .floats
             .alloc(FlatObjectKind::BoxedFloat, bits, 0, bits)?;
         let index = self.index_for_allocation(allocation.ptr)?;
-        let word = CompressedValueWord::boxed_float(index);
+        let word = CompressedValueWord::boxed_float(self.domain, index);
         self.float_words.insert(bits, word);
         Ok(word)
     }
@@ -410,6 +444,18 @@ impl CandidateCScalarStore {
         &self,
         word: CompressedValueWord,
     ) -> Result<std::ptr::NonNull<crate::value::HeapObject>, CandidateCScalarError> {
+        let actual_domain = word
+            .arena_domain()
+            .ok_or(CandidateCScalarError::KindMismatch {
+                expected: "boxed scalar",
+                actual: word.kind(),
+            })?;
+        if actual_domain != self.domain {
+            return Err(CandidateCScalarError::ArenaDomainMismatch {
+                expected: self.domain.raw(),
+                actual: actual_domain.raw(),
+            });
+        }
         let index = word
             .arena_index()
             .ok_or(CandidateCScalarError::KindMismatch {
@@ -454,6 +500,14 @@ pub enum CandidateCScalarError {
         /// The observed representation kind.
         actual: CompressedValueKind,
     },
+    /// A scalar word belonged to another live reservation.
+    #[error("compressed scalar arena domain {actual} does not match expected domain {expected}")]
+    ArenaDomainMismatch {
+        /// The receiving scalar store's domain.
+        expected: u32,
+        /// The word's encoded domain.
+        actual: u32,
+    },
 }
 
 /// A Candidate-C value could not be encoded or decoded.
@@ -476,6 +530,20 @@ pub enum CompressedValueError {
     NonHeapTag {
         /// The rejected runtime tag.
         tag: ValueTag,
+    },
+    /// An indexed word omitted its nonzero reservation domain.
+    #[error("compressed indexed kind {kind:?} has no arena domain")]
+    MissingArenaDomain {
+        /// The indexed representation kind.
+        kind: CompressedValueKind,
+    },
+    /// An inline word carried reservation-domain metadata.
+    #[error("compressed inline kind {kind:?} carries arena domain {domain}")]
+    ArenaDomainOnInline {
+        /// The inline representation kind.
+        kind: CompressedValueKind,
+        /// The rejected metadata.
+        domain: u32,
     },
     /// The forced shortcut appeared on a value other than a thunk.
     #[error("compressed forced bit is invalid on {kind:?}")]
@@ -524,18 +592,36 @@ mod tests {
 
     #[test]
     fn typed_indices_and_forced_thunk_bits_roundtrip() {
+        let arena = SharedFlatStoreArena::new();
+        let domain = arena.arena_domain_id().expect("reservation has a domain");
         let index = ArenaIndex::new(0xfeed_beef);
-        let list = CompressedValueWord::heap(ValueTag::List, index).expect("list is heap-backed");
+        let list =
+            CompressedValueWord::heap(domain, ValueTag::List, index).expect("list is heap-backed");
         assert_eq!(list.arena_index(), Some(index));
+        assert_eq!(list.arena_domain(), Some(domain));
         assert_eq!(list.semantic_tag(), ValueTag::List);
 
-        let thunk = CompressedValueWord::heap(ValueTag::Thunk, index)
+        let thunk = CompressedValueWord::heap(domain, ValueTag::Thunk, index)
             .expect("thunk is heap-backed")
             .with_forced_bit()
             .expect("thunk accepts forced bit");
         assert!(thunk.is_forced_thunk());
         assert_eq!(CompressedValueWord::from_raw(thunk.raw()), Ok(thunk));
         assert_eq!(thunk.arena_index(), Some(index));
+    }
+
+    #[test]
+    fn scalar_store_rejects_an_equal_offset_from_another_arena_domain() {
+        let mut left = CandidateCScalarStore::new(SharedFlatStoreArena::new())
+            .expect("left reservation is available");
+        let right = CandidateCScalarStore::new(SharedFlatStoreArena::new())
+            .expect("right reservation is available");
+        let word = left.encode_int(i64::MAX).expect("wide integer boxes");
+
+        assert!(matches!(
+            right.decode_int(word),
+            Err(CandidateCScalarError::ArenaDomainMismatch { .. })
+        ));
     }
 
     #[test]
@@ -600,6 +686,19 @@ mod tests {
         assert_eq!(
             CompressedValueWord::from_raw((0x03_u64 << 32) | 1),
             Err(CompressedValueError::InvalidNullPayload { payload: 1 })
+        );
+        assert_eq!(
+            CompressedValueWord::from_raw((0x12_u64 << 32) | 8),
+            Err(CompressedValueError::MissingArenaDomain {
+                kind: CompressedValueKind::List
+            })
+        );
+        assert_eq!(
+            CompressedValueWord::from_raw(((0x102_u64) << 32) | 1),
+            Err(CompressedValueError::ArenaDomainOnInline {
+                kind: CompressedValueKind::Bool,
+                domain: 1
+            })
         );
     }
 }
