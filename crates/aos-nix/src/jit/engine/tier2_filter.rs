@@ -62,7 +62,7 @@ use ratchet_runtime_ffi::{
 use ratchet_value::value::Value;
 
 use super::NixJitTier1Engine;
-use super::tier2_chain::Tier2PinIdentity;
+use super::tier2_chain::{Tier2ChainCacheRole, Tier2PinIdentity, chain_cache_identity};
 use super::tier2_fold::{
     FoldOperatorResolution, TIER2_FOLD_MIN_HEADROOM, fold_def_site_key, fold_pins_still_valid,
 };
@@ -268,17 +268,51 @@ impl NixJitTier1Engine {
         // environment, so env reads translate against `OperatorEnv` (skew 1
         // at arity 1).
         let budget = self.tier2.borrow().budget;
-        let Ok(lowering) = lower_tier2_curried_chain(
-            &ir.arena,
-            &ir.bindings,
+        let env_boundary = JitTier2EnvBoundary::OperatorEnv;
+        let Some(cache_identity) = chain_cache_identity(
+            Tier2ChainCacheRole::Predicate,
+            lambda.pattern(),
+            lambda.body(),
             &resolved.scan,
             None,
+            &resolved.pinned,
             &resolved.pinned_callees,
-            JitTier2EnvBoundary::OperatorEnv,
-            budget,
+            env_boundary,
+            &[],
         ) else {
             return FilterPreparation::Structural;
         };
+        let cached = {
+            let state = self.tier2.borrow();
+            state.compiled_cache.as_ref().and_then(|cache| {
+                cache.load_chain(
+                    ir,
+                    &cache_identity,
+                    resolved.scan.inner_body(),
+                    resolved.scan.arity(),
+                    None,
+                    budget,
+                )
+            })
+        };
+        let cache_hit = cached.is_some();
+        let Some(lowering) = cached.or_else(|| {
+            lower_tier2_curried_chain(
+                &ir.arena,
+                &ir.bindings,
+                &resolved.scan,
+                None,
+                &resolved.pinned_callees,
+                env_boundary,
+                budget,
+            )
+            .ok()
+        }) else {
+            return FilterPreparation::Structural;
+        };
+        if !cache_hit && let Some(cache) = self.tier2.borrow().compiled_cache.as_ref() {
+            cache.store_chain(ir, &cache_identity, budget, &lowering);
+        }
         let Some((finalized_body, keep_alive)) = self.finalize_tier2_chain(lowering) else {
             return FilterPreparation::Structural;
         };

@@ -41,10 +41,9 @@ Today the evaluator carries what look like four separate caches:
    7.8–28 ms, 5–18x faster than a warm C++ `nix` flake-eval-cache hit);
 3. the **parse cache** — per-file lowered-IR artifacts keyed by realpath
    plus content hash, carrying the post-remap `LoweredIrFingerprint`;
-4. the **JIT persistent compiled-body cache** — unary and fused curried-chain
-   tier-2 slices store paired CLIF functions under the lowered module
-   fingerprint and complete def-site/inline identity; collection-body records
-   remain deferred.
+4. the **JIT persistent compiled-body cache** — unary, fused curried-chain,
+   and collection-loop tier-2 slices store paired CLIF functions under the
+   lowered module fingerprint and complete def-site/inline identity.
 
 These are the same object at different granularities and with different
 payload kinds. Each one is a **content-keyed record**: a key derived
@@ -84,10 +83,12 @@ the `LatestIndex` append-only sidecar index with tail-reload
 `files/` packs with `ensure_blob_indexed` CAS dedup, and the
 canonicalized impure-input trace (§2.3).
 
-**Compiled-body status boundary (2026-07-11).** The first live slice covers
-unary self-recursive tier-2 lambdas. Cranelift's `enable-serde` representation
-is encoded with a pinned binary codec inside an explicit magic/schema/key
-envelope and capped at 32 MiB. Version 2 derives a domain-separated memo key
+**Compiled-body status boundary (2026-07-11).** The live record families cover
+unary self-recursive tier-2 lambdas, fused self-recursive apply chains, and the
+three collection-loop chain shapes described below. Cranelift's `enable-serde`
+representation is encoded with a pinned binary codec inside an explicit
+magic/schema/key envelope and capped at 32 MiB. Version 2 derives a
+domain-separated memo key
 from every lowering input, stores that key in the shared artifact mapping
 index, and stores the envelope under its independent payload hash in the
 indexed `files/` pack. Reads probe the primary then configured latency-ordered
@@ -105,9 +106,8 @@ maximum RSS was slightly lower in the candidate (71.03 vs 71.31 MiB cold;
 measured native `fib` at 20.7/18.4 ms cold/warm versus C++ Nix at 269/289 ms,
 with a 0.5 MiB arena peak. The cache is therefore neutral at this workload's
 whole-command resolution; this landing claims a functional substrate, not a
-CLIF-reload wall-time win. Fold/filter/genList and `all`/`any` entries,
-compiled-body L3 placement, cache counters, and a measured default admission
-heuristic remain open.
+CLIF-reload wall-time win. Compiled-body L3 placement, cache counters, and a
+measured default admission heuristic remain open.
 
 The version-2 packed-layout landing's balanced seven-pair,
 root-cutoff-disabled JIT `fib` A/B against pristine `4e23f145c` measured
@@ -140,8 +140,20 @@ candidate/baseline medians of 38.69/33.22 ms cold and 33.32/34.20 ms warm; the
 host-drift-resistant paired-median ratios were 1.065 and 0.999. Median post-eval
 RSS was 31.2/31.0 MiB cold and 31.4/31.1 MiB warm, with a 0.5 MiB arena peak in
 every leg. This clears the 10% no-regression gate but does not claim a reload
-speedup; collection entries, L3, counters, admission tuning, and executable-code
-reuse remain open.
+speedup; L3, counters, admission tuning, and executable-code reuse remain open.
+
+**Collection-loop extension (2026-07-11).** Plain strict-fold operators, the
+predicate body shared by `filter`/`all`/`any`, and fused
+`foldl'`-over-`genList` operator-generator pairs now use that same verified
+packed L2 path. A v2 role tag separates the apply/fold/predicate/fused-generator
+domains; the fused-generator key additionally binds its pattern, root body,
+and validated arithmetic body. A fresh-engine test loads all three families.
+The complete landing gate is recorded in [22](22-implementation-checklist-all-phases.md).
+Its balanced seven-pair `sum-fold` A/B against pristine `5d92b8029` measured
+candidate/baseline medians of 22.82/22.35 ms cold and 22.02/21.34 ms warm
+(paired ratios 1.020/1.030), with effectively flat RSS and the same 0.5 MiB
+arena peak. This is persistence coverage and a no-regression result, not a
+reload-speedup claim.
 
 **FV-5 status boundary (2026-07-09).** Hybrid closure capture changes the
 runtime representation, not this memo contract. `facts.bin` analysis version
@@ -938,10 +950,10 @@ cutoff and parse cache re-expressed as instances (behavior-preserving —
 same keys, same bytes on the primary location); blob-liveness
 enumeration to the reaper (closes the known root-record trim caveat);
 multi-location L2 with latency classes + promotion/demotion; L3
-read-side with re-hash validation + `rw` publish from CI. Unary and fused-chain
-compiled-body records now use the common indexed `files/` pack and artifact
-mapping keyspace across the configured primary and secondary L2 locations;
-collection-body shapes and L3 placement remain part of this phase.
+read-side with re-hash validation + `rw` publish from CI. Unary, fused-chain,
+and collection-loop compiled-body records now use the common indexed `files/`
+pack and artifact mapping keyspace across the configured primary and secondary
+L2 locations; compiled-body L3 placement remains part of this phase.
 
 Acceptance gates:
 
@@ -1066,9 +1078,9 @@ design above with the code as ground truth:
    options identity, and materialization economics counters is already
    live, including the durable scalar filesystem-import root boundary. The unification added per-subtree slice attribution,
    L0/L1 content tables, admission cost flags, multi-location L2, L3,
-   and promotion; unary and fused-chain compiled-body records now share the
-   packed multi-location L2 store, while collection shapes, compiled-body L3
-   placement, and final measured defaults remain.
+   and promotion; unary, fused-chain, and collection-loop compiled-body records
+   now share the packed multi-location L2 store, while compiled-body L3
+   placement and final measured defaults remain.
 5. **"Recompute cost from force-time stats — the `AOS_NIX_EVAL_STATS`
    machinery exists" — corrected by the economics seam.** `EvalStats`
    remains aggregate and normal runs still pay no clock hook. The explicit
@@ -1114,7 +1126,14 @@ design above with the code as ground truth:
 - [x] Extend packed multi-location L2 persistence beyond unary bodies to fused
       self-recursive curried apply chains, binding every runtime-resolved inline
       identity and preserving the existing promotion/dispatch guards.
-- [ ] Extend persistence to fold/filter/genList and `all`/`any` collection
-      entries and through L3. The allocation-capable singleton-list tier-1
-      artifact is intentionally re-lowered today; it does not widen the
-      persisted body claim.
+- [x] Extend packed multi-location L2 persistence to the collection-loop body
+      families: plain `foldl'` operators, the predicate body shared by
+      `filter`/`all`/`any`, and fused `foldl'`-over-`genList` operator-generator
+      pairs. Role-tagged semantic identities include every resolved pin and,
+      for the fused generator family, the generator pattern/root/validated
+      body IDs. Runtime pin resolution and the existing per-call dispatch
+      guards remain authoritative before reuse. A fresh-engine test reloads
+      all three families from the common verified `files/pack.blob` path.
+- [ ] Extend compiled-body placement through L3. The allocation-capable
+      singleton-list tier-1 artifact is intentionally re-lowered today; it
+      does not widen the persisted body claim.

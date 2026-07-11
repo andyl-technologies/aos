@@ -316,13 +316,15 @@ impl NixJitTier1Engine {
         let budget = self.tier2.borrow().budget;
         let env_boundary = JitTier2EnvBoundary::InnerLambdaEnv;
         let Some(cache_identity) = chain_cache_identity(
+            Tier2ChainCacheRole::Apply,
             root_lambda.pattern(),
             root_lambda.body(),
             &scan,
-            self_upval,
+            Some(self_upval),
             &pinned,
             &pinned_callees,
             env_boundary,
+            &[],
         ) else {
             return ChainPreparation::Structural;
         };
@@ -388,30 +390,59 @@ impl NixJitTier1Engine {
     }
 }
 
+/// Distinguishes the evaluator seam that owns one persisted chain body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tier2ChainCacheRole {
+    /// A self-recursive curried chain dispatched at the apply seam.
+    Apply,
+    /// A non-recursive binary operator dispatched by the strict fold loop.
+    Fold,
+    /// A unary predicate shared by the filter and all/any loops.
+    Predicate,
+    /// A binary fold operator fused with a generated-list body.
+    FoldGen,
+}
+
 /// Canonically encodes every runtime-resolved input that can change chain CLIF.
-fn chain_cache_identity(
+pub(super) fn chain_cache_identity(
+    role: Tier2ChainCacheRole,
     root_pattern: IrId,
     root_body: IrId,
     scan: &ratchet_jit::JitTier2ChainScan,
-    self_upval: (u32, u32),
+    self_upval: Option<(u32, u32)>,
     pinned: &[Tier2PinIdentity],
     pinned_callees: &[JitTier2PinnedCallee],
     env_boundary: JitTier2EnvBoundary,
+    extra_identity: &[IrId],
 ) -> Option<Vec<u8>> {
     if pinned.len() != pinned_callees.len() {
         return None;
     }
     let pin_count = u32::try_from(pinned.len()).ok()?;
-    let mut identity = Vec::with_capacity(64usize.saturating_add(pinned.len().saturating_mul(36)));
-    identity.extend_from_slice(b"aos-nix:fused-chain-identity:v1\0");
+    let extra_count = u32::try_from(extra_identity.len()).ok()?;
+    let mut identity = Vec::with_capacity(
+        72usize
+            .saturating_add(pinned.len().saturating_mul(36))
+            .saturating_add(extra_identity.len().saturating_mul(4)),
+    );
+    identity.extend_from_slice(b"aos-nix:fused-chain-identity:v2\0");
+    identity.push(match role {
+        Tier2ChainCacheRole::Apply => 1,
+        Tier2ChainCacheRole::Fold => 2,
+        Tier2ChainCacheRole::Predicate => 3,
+        Tier2ChainCacheRole::FoldGen => 4,
+    });
     extend_identity_u32(&mut identity, root_pattern.as_u32());
     extend_identity_u32(&mut identity, root_body.as_u32());
     extend_identity_u32(&mut identity, scan.inner_pattern().as_u32());
     extend_identity_u32(&mut identity, scan.inner_body().as_u32());
     extend_identity_u32(&mut identity, scan.arity());
     identity.push(u8::from(scan.reads_env()));
-    extend_identity_u32(&mut identity, self_upval.0);
-    extend_identity_u32(&mut identity, self_upval.1);
+    identity.push(u8::from(self_upval.is_some()));
+    if let Some((depth, slot)) = self_upval {
+        extend_identity_u32(&mut identity, depth);
+        extend_identity_u32(&mut identity, slot);
+    }
     identity.push(match env_boundary {
         JitTier2EnvBoundary::InnerLambdaEnv => 1,
         JitTier2EnvBoundary::OperatorEnv => 2,
@@ -426,6 +457,10 @@ fn chain_cache_identity(
         extend_identity_u32(&mut identity, callee.upval.1);
         extend_identity_u32(&mut identity, callee.arity);
         extend_identity_u32(&mut identity, callee.body.as_u32());
+    }
+    extend_identity_u32(&mut identity, extra_count);
+    for id in extra_identity {
+        extend_identity_u32(&mut identity, id.as_u32());
     }
     Some(identity)
 }
@@ -606,6 +641,67 @@ mod tests {
         assert!(!cache_root.join("compiled-bodies").exists());
 
         drop(state);
+        fs::remove_dir_all(cache_root).expect("cache root removes");
+    }
+
+    /// Every collection-owned chain body reloads through the shared packed
+    /// cache without aliasing the apply-chain record family.
+    #[test]
+    fn collection_chains_persist_and_reload_verified_bodies() {
+        let sources = [
+            "builtins.foldl' (a: b: a + b) 0 [1 2 3 4 5 6 7 8 9 10]",
+            "builtins.length (builtins.filter (x: x < 8) \
+             [0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15])",
+            "builtins.foldl' (a: b: a + b * b) 0 \
+             (builtins.genList (i: i + 1) 64)",
+        ];
+        let cache_root = unique_cache_root();
+        fs::create_dir(&cache_root).expect("cache root creates");
+
+        for (index, source) in sources.iter().enumerate() {
+            let ir = lower(source);
+            let source_cache = cache_root.join(index.to_string());
+            fs::create_dir(&source_cache).expect("source cache creates");
+            let mut options = TreeWalkOptions::default();
+            options.set_jit_tier1_publish_enabled(true);
+
+            let first_engine = Rc::new(
+                NixJitTier1Engine::new()
+                    .expect("first engine builds")
+                    .with_compiled_body_cache_root(Some(&source_cache)),
+            );
+            let mut first_eval = TreeWalk::with_options(&ir, options.clone());
+            first_eval.set_tier1_engine(first_engine);
+            let first = first_eval
+                .eval_root()
+                .expect("first collection evaluation succeeds");
+            assert!(first_eval.stats().tier2_dispatched() >= 1);
+            drop(first_eval);
+
+            let fresh_engine = Rc::new(
+                NixJitTier1Engine::new()
+                    .expect("fresh engine builds")
+                    .with_compiled_body_cache_root(Some(&source_cache)),
+            );
+            let mut fresh_eval = TreeWalk::with_options(&ir, options);
+            fresh_eval.set_tier1_engine(fresh_engine.clone());
+            let second = fresh_eval
+                .eval_root()
+                .expect("cached collection evaluation succeeds");
+            assert!(first.raw_eq(second), "cached collection value changed");
+            assert!(fresh_eval.stats().tier2_dispatched() >= 1);
+            drop(fresh_eval);
+
+            let state = fresh_engine.tier2.borrow();
+            let cache = state.compiled_cache.as_ref().expect("cache configured");
+            assert_eq!(
+                cache.chain_hits(),
+                1,
+                "fresh engine must reload the collection chain"
+            );
+            assert!(source_cache.join("files/pack.blob").is_file());
+        }
+
         fs::remove_dir_all(cache_root).expect("cache root removes");
     }
 

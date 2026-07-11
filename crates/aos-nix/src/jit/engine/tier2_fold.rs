@@ -49,8 +49,8 @@ use std::rc::Rc;
 use ratchet_core::{IrId, syntax::Span};
 use ratchet_jit::{
     JitModuleContextFinalizedBody, JitModuleContextKeepAlive, JitTier2ChainScan,
-    JitTier2EnvBoundary, JitTier2PinnedCallee, lower_tier2_curried_chain,
-    scan_tier2_curried_chain, scan_tier2_pinned_callee,
+    JitTier2EnvBoundary, JitTier2PinnedCallee, lower_tier2_curried_chain, scan_tier2_curried_chain,
+    scan_tier2_pinned_callee,
 };
 use ratchet_oracle::eval::Tier2FoldHook;
 use ratchet_oracle::eval::heap::EvalLambda;
@@ -59,7 +59,7 @@ use ratchet_runtime_ffi::run_context_finalized_native_fold_loop;
 use ratchet_value::value::Value;
 
 use super::NixJitTier1Engine;
-use super::tier2_chain::Tier2PinIdentity;
+use super::tier2_chain::{Tier2ChainCacheRole, Tier2PinIdentity, chain_cache_identity};
 
 /// The minimum remaining element run that justifies compiling a fold operator.
 ///
@@ -229,17 +229,51 @@ impl NixJitTier1Engine {
         // unapplied operator closure's environment, so env reads translate
         // against `OperatorEnv`.
         let budget = self.tier2.borrow().budget;
-        let Ok(lowering) = lower_tier2_curried_chain(
-            &ir.arena,
-            &ir.bindings,
+        let env_boundary = JitTier2EnvBoundary::OperatorEnv;
+        let Some(cache_identity) = chain_cache_identity(
+            Tier2ChainCacheRole::Fold,
+            lambda.pattern(),
+            lambda.body(),
             &resolved.scan,
             None,
+            &resolved.pinned,
             &resolved.pinned_callees,
-            JitTier2EnvBoundary::OperatorEnv,
-            budget,
+            env_boundary,
+            &[],
         ) else {
             return FoldPreparation::Structural;
         };
+        let cached = {
+            let state = self.tier2.borrow();
+            state.compiled_cache.as_ref().and_then(|cache| {
+                cache.load_chain(
+                    ir,
+                    &cache_identity,
+                    resolved.scan.inner_body(),
+                    resolved.scan.arity(),
+                    None,
+                    budget,
+                )
+            })
+        };
+        let cache_hit = cached.is_some();
+        let Some(lowering) = cached.or_else(|| {
+            lower_tier2_curried_chain(
+                &ir.arena,
+                &ir.bindings,
+                &resolved.scan,
+                None,
+                &resolved.pinned_callees,
+                env_boundary,
+                budget,
+            )
+            .ok()
+        }) else {
+            return FoldPreparation::Structural;
+        };
+        if !cache_hit && let Some(cache) = self.tier2.borrow().compiled_cache.as_ref() {
+            cache.store_chain(ir, &cache_identity, budget, &lowering);
+        }
         let Some((finalized_body, keep_alive)) = self.finalize_tier2_chain(lowering) else {
             return FoldPreparation::Structural;
         };

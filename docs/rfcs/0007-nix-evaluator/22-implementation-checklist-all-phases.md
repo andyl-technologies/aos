@@ -11421,8 +11421,34 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       1.065 cold and 0.999 warm, below the 10% regression threshold. Median
       post-eval RSS was 31.2/31.0 MiB cold and 31.4/31.1 MiB warm; every leg
       retained the same 0.5 MiB arena peak. This is a functional persistence
-      substrate and no-regression result, not a CLIF-reload speedup. Collection
-      seams, compiled-body L3, production hit counters, admission tuning, and
+      substrate and no-regression result, not a CLIF-reload speedup.
+- [x] Persistent compiled-body cache, collection-loop slice: plain `foldl'`
+      operators, the predicate body shared by `filter`/`all`/`any`, and fused
+      `foldl'`-over-`genList` operator-generator pairs now reuse verified
+      address-free chain lowerings through the same indexed multi-location L2
+      pack. The v2 semantic identity is role-tagged so apply, fold, predicate,
+      and fused-generator records cannot alias; it binds the root/inner chain,
+      optional self coordinate, environment boundary, every resolved pin and
+      inline body, and (for fused generation) generator pattern/root/validated
+      body IDs. Runtime pin resolution still precedes lookup and existing
+      per-call dispatch guards remain authoritative. A fresh-engine regression
+      test reloads all three collection families and confirms the shared
+      `files/pack.blob` layout.
+
+      The landing gate passed 3,036 active serial oracle tests (34 ignored),
+      261 JIT tests, 333 `aos-nix` tests, 80 active runtime-FFI tests plus eight
+      integrations, 112 cache tests plus its doctest, 38 language tests, all 16
+      package byte legs, compute x9, wide serial/K=4/JIT/sweep-zero, zlib and
+      wide cache validation, and all 645 generated strict-JSON seeds in those
+      four modes. The only harness and source-size reds are the two documented
+      pristine-baseline failures; every touched source remains below 1000
+      lines. A balanced seven-pair, root-cutoff-disabled JIT `sum-fold` A/B
+      against pristine `5d92b8029` measured candidate/baseline medians of
+      22.82/22.35 ms cold and 22.02/21.34 ms warm, with paired-median ratios of
+      1.020 and 1.030. Median post-eval RSS was 30.30/30.33 MiB cold and
+      30.56/30.42 MiB warm; every leg retained a 0.5 MiB arena peak. This is a
+      persistence-coverage and no-regression result, not a speedup claim.
+      Compiled-body L3, production hit counters, admission tuning, and
       machine-code/AOT reuse remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
