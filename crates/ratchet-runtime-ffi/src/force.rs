@@ -27,8 +27,13 @@ use ratchet_oracle::{
     value::Value,
 };
 
-use crate::context::{RuntimeJitContext, with_native_runtime_context};
-use crate::trap::{RuntimeTrap, record_runtime_trap, runtime_trap_sentinel_value};
+use crate::context::{
+    RuntimeJitContext, with_native_jit_evaluator_context, with_native_runtime_context,
+};
+use crate::trap::{RuntimeTrap, record_runtime_trap};
+
+mod compiled_safepoint;
+use compiled_safepoint::run_force_at_compiled_safepoint;
 
 /// Native C ABI function pointer shape for `aos_blackhole_check`.
 ///
@@ -147,21 +152,13 @@ pub unsafe extern "C" fn aos_force(rt: *mut c_void, value: Value) -> Value {
     // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
     // RuntimeForceContext pointer contract documented on this function.
     let forced = unsafe {
-        with_native_runtime_context(rt, |eval, id, span| {
-            aos_force_success_path(eval, id, span, value)
+        with_native_jit_evaluator_context(rt, |context, eval, id, span| {
+            run_force_at_compiled_safepoint(context, eval, id, span, |eval| {
+                rust_callable_aos_force(eval, id, span, value)
+            })
         })
     };
     forced
-}
-
-fn aos_force_success_path(eval: &mut TreeWalk, id: IrId, span: Span, value: Value) -> Value {
-    match rust_callable_aos_force(eval, id, span, value) {
-        Ok(value) => value,
-        Err(error) => {
-            record_runtime_trap(RuntimeTrap::Force(error));
-            runtime_trap_sentinel_value()
-        }
-    }
 }
 
 /// Deep-forces a value through an unmangled frozen native ABI body.
@@ -195,21 +192,13 @@ pub unsafe extern "C" fn aos_force_deep(rt: *mut c_void, value: Value) -> Value 
     // SAFETY: The wrapper's caller must satisfy the frozen native ABI and
     // RuntimeForceContext pointer contract documented on this function.
     let deeply_forced = unsafe {
-        with_native_runtime_context(rt, |eval, id, span| {
-            aos_force_deep_success_path(eval, id, span, value)
+        with_native_jit_evaluator_context(rt, |context, eval, id, span| {
+            run_force_at_compiled_safepoint(context, eval, id, span, |eval| {
+                rust_callable_aos_force_deep(eval, id, span, value)
+            })
         })
     };
     deeply_forced
-}
-
-fn aos_force_deep_success_path(eval: &mut TreeWalk, id: IrId, span: Span, value: Value) -> Value {
-    match rust_callable_aos_force_deep(eval, id, span, value) {
-        Ok(value) => value,
-        Err(error) => {
-            record_runtime_trap(RuntimeTrap::Force(error));
-            runtime_trap_sentinel_value()
-        }
-    }
 }
 
 /// Returns metadata for exported forcing wrappers in symbol order.

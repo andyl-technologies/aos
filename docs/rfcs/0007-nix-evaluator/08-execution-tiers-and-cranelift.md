@@ -2037,9 +2037,13 @@ harness, never cut for scope.
       Tier-1 force sites now spill complete values, attach Cranelift user stack
       maps, retain finalized return/SP metadata, and bracket the native call with
       allocation-free intrusive runtime bindings. Executable JIT paths exercise
-      nested LIFO binding and typed root snapshots. Allocation-site maps,
-      finalized-offset-to-live-slot joining, relocation writeback, and automatic
-      collector consumption remain open.
+      nested LIFO binding and typed root snapshots. Native dispatch now supplies
+      finalized maps to the runtime, which derives physical SP/frame sources,
+      transactionally binds moving-GC writeback plans to live value slots, and
+      dispatches the Tier-B non-moving sweep at mapped force safepoints while
+      retaining outer compiled roots across nested forces. Unmapped sites fail
+      closed by skipping collector dispatch. Arithmetic-tree and allocation-site
+      maps, plus automatic moving-minor-GC planning/application, remain open.
 - [ ] Counter-based tier-0 → tier-1 promotion (invocation counter beside `code_ptr`) ([§3.4](#34-promotion-policy)) — P6.
 - [ ] Pin a Cranelift git revision for user-stack-map API stability once
       safepoint/stack-map lowering lands ([§10](#10-open-questions)) — P6,

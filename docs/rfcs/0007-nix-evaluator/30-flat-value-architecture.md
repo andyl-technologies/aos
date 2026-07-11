@@ -1132,6 +1132,14 @@ list only their *additional* gates.
       20 files; two `cfg(test)` capture-validator sites remain deliberately in
       the worklist. Test directories and `tests.rs` modules are excluded;
       UFCS and method-call spellings are both counted.*
+- [x] Compiled-root prerequisite for B2 relocation and Tier-B reclamation:
+      finalized Cranelift SP offsets are joined to live intrusive frame
+      bindings, moving-GC root plans have a transactional two-word slot
+      writeback path, and mapped force safepoints automatically run the
+      non-moving sweep with nested compiled roots registered. Unmapped sites
+      fail closed by skipping collector dispatch. Arithmetic-tree and
+      allocation-site maps plus automatic moving-minor-GC plan application
+      remain outside this slice.
 - [x] P4 **Chunk D** — per-def-site free-variable sets, capture
       publication-boundary proof, single-use/escape refinement
       (`ratchet-core/src/analysis/` beside `strictness/` and

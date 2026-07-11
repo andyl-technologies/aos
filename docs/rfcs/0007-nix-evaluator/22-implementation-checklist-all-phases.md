@@ -8303,8 +8303,22 @@ and helps the oracle directly.
       The release A/B kept zlib and wide cold time within the 10% noise gate,
       held their evaluator arena peaks at 7.5 MiB and 71.5 MiB, and measured the
       current JIT `fib` witness at 0.035x C++ Nix time with a 0.5 MiB arena
-      peak. Finalized-offset joining, live relocation writeback, automatic
-      collector dispatch, and allocation-helper safepoints remain open.
+      peak. Finalized physical joining, live relocation writeback, collector
+      dispatch, and allocation-helper safepoints remain open.
+- [x] Current finalized compiled-root collector bridge: native-call contexts
+      borrow the finalized Cranelift map table for their body. Stack-map enter
+      validates safepoint cardinality, derives a consistent physical frame base
+      from live tag addresses and finalized SP-relative anchors, and exposes
+      roots with those real coordinates. The runtime can transactionally bind a
+      minor-GC root-writeback partition to the corresponding live two-word
+      slots, rejecting stale sources or values before the first write. Force
+      wrappers publish compiled roots across nested tree-walk/native forcing and
+      automatically run the thresholded Tier-B non-moving sweep at mapped sites
+      with finalized roots and the returned helper value. Unmapped sites fail
+      closed by skipping collector dispatch. Focused oracle and executable-JIT
+      sweep-zero tests prove nested retention, collector dispatch, and byte-safe
+      return. Automatic moving-minor-GC planning/application, arithmetic-tree
+      maps, and allocation-site stack maps remain open.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now validates and

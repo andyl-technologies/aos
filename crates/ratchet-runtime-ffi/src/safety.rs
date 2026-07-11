@@ -549,7 +549,6 @@ mod tests {
         concat!("uns", "afe { aos_blackhole_check(rt, bool_value) };");
     const BLACKHOLE_BLACKHOLED_ABORT_TEST_CALL_LINE: &str =
         concat!("uns", "afe { aos_blackhole_check(rt, blackholed) };");
-    const NATIVE_CALL_JIT_BOUNDARY_LINE: &str = concat!("let call = ", "uns", "afe {");
     const FINALIZED_CALL_JIT_BOUNDARY_LINE: &str = concat!(
         "let dispatched = ",
         "uns",
@@ -1025,8 +1024,7 @@ mod tests {
 
         let trimmed = line.trim_start();
         if token == UNSAFE_TOKEN {
-            trimmed == NATIVE_CALL_JIT_BOUNDARY_LINE
-                || trimmed == FINALIZED_CALL_JIT_BOUNDARY_LINE
+            trimmed == FINALIZED_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE
@@ -1389,11 +1387,6 @@ mod unchecked_cfg;
         let native_call = fs::read_to_string(source_root.join("native_call.rs"))
             .expect("native-call FFI source file is readable");
 
-        assert_eq!(
-            trimmed_line_occurrences(&native_call, NATIVE_CALL_JIT_BOUNDARY_LINE),
-            1,
-            "registered native thunk-call jit boundary must stay singly reviewed"
-        );
         assert_eq!(
             trimmed_line_occurrences(&native_call, FINALIZED_CALL_JIT_BOUNDARY_LINE),
             1,
@@ -1967,11 +1960,6 @@ mod unchecked_cfg;
         let force_lines = force.lines().collect::<Vec<_>>();
         let native_call_lines = native_call.lines().collect::<Vec<_>>();
 
-        assert_has_safety_comment_before(
-            &native_call_lines,
-            NATIVE_CALL_JIT_BOUNDARY_LINE,
-            "registered native thunk-call jit boundary must keep a SAFETY comment",
-        );
         assert_has_safety_comment_before(
             &native_call_lines,
             FINALIZED_CALL_JIT_BOUNDARY_LINE,

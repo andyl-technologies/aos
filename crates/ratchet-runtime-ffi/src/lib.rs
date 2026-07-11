@@ -85,6 +85,7 @@ pub use string_length::{
 };
 pub use stack_map::{
     RuntimeJitStackMapEnterNativeFn, RuntimeJitStackMapExitNativeFn,
+    RuntimeJitStackMapWritebackError,
     aos_jit_stack_map_enter, aos_jit_stack_map_enter_native_wrapper_address,
     aos_jit_stack_map_exit, aos_jit_stack_map_exit_native_wrapper_address,
 };

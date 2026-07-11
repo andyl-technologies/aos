@@ -552,6 +552,7 @@ mod tests {
 
     use ratchet_core::syntax::BinOpKind;
     use ratchet_jit::lower_tier1_ir_thunk_body_artifact;
+    use ratchet_oracle::eval::{heap::EvalGcMode, tree_walk::TreeWalkOptions};
 
     use crate::jit::nix_jit_deopt_address_candidate;
 
@@ -578,6 +579,42 @@ mod tests {
             panic!("expected a value-agreement outcome, got {outcome:?}");
         };
         assert_eq!(native.as_bool(), Ok(false));
+    }
+
+    #[test]
+    fn forced_env_slot_native_dispatches_sweep_through_finalized_roots() {
+        let source = "{ v = 40 + 2; }";
+        let source_ir = lower_source(source).expect("source lowers");
+        let source_span = Span::new(0, source.len() as u32);
+        let artifact = lower_forced_env_get_ir_thunk_body_artifact(
+            &local_slot_zero_arena(),
+            IrId::new(0),
+        )
+        .expect("forced artifact lowers");
+        let candidates = forced_env_slot_candidates().expect("candidates build");
+        let mut options = TreeWalkOptions::default();
+        options.set_gc_mode(EvalGcMode::Sweep);
+        options.set_gc_sweep_threshold(0);
+        let mut eval = TreeWalk::with_options(&source_ir, options);
+        let thunk = binding_thunk(&mut eval, &source_ir, b"v").expect("binding projects");
+        let frame = EvalFrame::new(1).expect("frame allocates");
+        frame.set(0, thunk).expect("frame stores thunk");
+        let env = EvalEnv::capture(&[frame]).expect("environment captures");
+
+        let outcome = run_registered_native_thunk_call(
+            &mut eval,
+            source_ir.root,
+            source_span,
+            &env,
+            artifact,
+            &candidates,
+        )
+        .expect("native call succeeds");
+
+        assert_eq!(outcome.value().as_int(), Ok(42));
+        assert!(outcome.trap().is_none());
+        assert_eq!(eval.stats().gc_sweeps(), 1);
+        assert!(eval.last_gc_sweep_report().is_some());
     }
 
     #[test]

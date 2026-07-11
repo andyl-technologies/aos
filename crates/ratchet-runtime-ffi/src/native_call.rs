@@ -25,7 +25,7 @@ use ratchet_jit::{
     JitRuntimeSymbolAddressCandidate, jit_cranelift_call_context_finalized_lambda_argv_entry,
     jit_cranelift_call_context_finalized_lambda_entry,
     jit_cranelift_call_context_finalized_thunk_entry, jit_cranelift_call_finalized_thunk_entry,
-    jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates,
+    jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
 };
 use ratchet_oracle::value::Value;
 use ratchet_oracle::{compile::IrId, eval::EvalEnv, eval::tree_walk::TreeWalk, syntax::Span};
@@ -96,33 +96,11 @@ pub fn run_registered_native_thunk_call(
     artifact: JitClifArtifact,
     candidates: &[JitRuntimeSymbolAddressCandidate],
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
-    let rt = context.as_mut().as_mut_ptr();
-    let env = rt;
-
-    let scope = RuntimeTrapScope::new();
-    // SAFETY: `rt` comes from the pinned context over `eval` and `env` from the
-    // live `frame`; every candidate is a caller-guaranteed frozen-ABI runtime-FFI
-    // wrapper that does not unwind, and the installed scope converts a trap.
-    let call = unsafe {
-        jit_cranelift_registered_native_thunk_call_for_artifact_with_candidates(
-            artifact, candidates, rt, env,
-        )
-    };
-    match call {
-        Ok(invocation) => {
-            let value = invocation.value();
-            let trap = scope.take_trap();
-            drop(invocation);
-            drop(scope);
-            drop(context);
-            Ok(NativeThunkCallOutcome { value, trap })
-        }
-        Err(error) => {
-            drop(scope);
-            Err(error)
-        }
-    }
+    let finalization = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
+        artifact, candidates,
+    )
+    .map_err(|source| JitCraneliftNativeCallError::FinalizeArtifact { source })?;
+    run_finalized_native_thunk_call(eval, id, span, env, &finalization)
 }
 
 /// Runs a pre-finalized native thunk artifact against `eval`.
@@ -152,7 +130,13 @@ pub fn run_finalized_native_thunk_call(
     env: &EvalEnv,
     finalization: &JitCraneliftRegisteredArtifactFinalizationPreflight,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
+    let stack_maps = finalization
+        .finalized_function()
+        .defined_function()
+        .user_stack_maps();
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env_and_stack_maps(
+        eval, id, span, env, stack_maps,
+    ));
     let rt = context.as_mut().as_mut_ptr();
     let env = rt;
 
@@ -204,7 +188,13 @@ pub fn run_context_finalized_native_thunk_call(
     env: &EvalEnv,
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
+    let stack_maps = body
+        .finalized_function()
+        .defined_function()
+        .user_stack_maps();
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env_and_stack_maps(
+        eval, id, span, env, stack_maps,
+    ));
     let rt = context.as_mut().as_mut_ptr();
     let env = rt;
 
@@ -255,7 +245,13 @@ pub fn run_context_finalized_native_lambda_call(
     argument: Value,
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
+    let stack_maps = body
+        .finalized_function()
+        .defined_function()
+        .user_stack_maps();
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env_and_stack_maps(
+        eval, id, span, env, stack_maps,
+    ));
     let rt = context.as_mut().as_mut_ptr();
     let env = rt;
 
@@ -306,7 +302,13 @@ pub fn run_context_finalized_native_chain_call(
     argv: &[Value],
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeThunkCallOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
+    let stack_maps = body
+        .finalized_function()
+        .defined_function()
+        .user_stack_maps();
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env_and_stack_maps(
+        eval, id, span, env, stack_maps,
+    ));
     let rt = context.as_mut().as_mut_ptr();
     let env = rt;
 
@@ -507,7 +509,13 @@ pub fn run_context_finalized_native_filter_loop(
     elements: &[Value],
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeFilterLoopOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
+    let stack_maps = body
+        .finalized_function()
+        .defined_function()
+        .user_stack_maps();
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env_and_stack_maps(
+        eval, id, span, env, stack_maps,
+    ));
     let rt = context.as_mut().as_mut_ptr();
     let env = rt;
 
@@ -617,7 +625,13 @@ fn run_native_fold_loop(
     source: FoldElementSource<'_>,
     body: &JitModuleContextFinalizedBody,
 ) -> Result<NativeFoldLoopOutcome, JitCraneliftNativeCallError> {
-    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env(eval, id, span, env));
+    let stack_maps = body
+        .finalized_function()
+        .defined_function()
+        .user_stack_maps();
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env_and_stack_maps(
+        eval, id, span, env, stack_maps,
+    ));
     let rt = context.as_mut().as_mut_ptr();
     let env = rt;
 

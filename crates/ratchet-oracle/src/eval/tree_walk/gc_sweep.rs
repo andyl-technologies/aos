@@ -36,6 +36,73 @@ pub enum TreeWalkGcSweepError {
 }
 
 impl TreeWalk {
+    /// Returns whether native frames must publish roots across helper calls.
+    ///
+    /// Sweep mode can cross the allocation threshold inside a nested force, so
+    /// compiled roots stay registered for the whole helper call even when the
+    /// threshold has not yet been reached at entry.
+    pub fn compiled_safepoint_roots_required(&self) -> bool {
+        self.shared.is_none() && self.gc_mode.is_enabled()
+    }
+
+    /// Returns whether a compiled safepoint should collect precise roots.
+    ///
+    /// Native wrappers use this cheap predicate before materializing their
+    /// finalized stack-map roots. Parallel evaluators decline the serial
+    /// non-moving sweep until the existing quiescent coordinator owns it.
+    pub fn compiled_safepoint_sweep_requested(&self) -> bool {
+        self.shared.is_none() && self.heap_sweep_threshold_reached()
+    }
+
+    /// Runs the Tier-B sweep with roots from active compiled frames.
+    ///
+    /// `compiled_roots` must be the finalized stack-map snapshot for every
+    /// native frame live at this safepoint. `extra_roots` carries values
+    /// returned by the runtime helper but not yet stored back into compiled
+    /// spill slots. The collector is non-moving, so no root writeback is
+    /// required after the sweep.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkErrorKind::GcQuiescentSweep`] if root construction or
+    /// the heap-side mark/sweep fails.
+    pub fn maybe_sweep_heap_at_compiled_safepoint(
+        &mut self,
+        compiled_roots: &EvalRootSet,
+        extra_roots: &[Value],
+    ) -> Result<Option<EvalHeapSweepReport>, TreeWalkError> {
+        if !self.compiled_safepoint_sweep_requested() {
+            return Ok(None);
+        }
+        let result = (|| -> Result<EvalHeapSweepReport, TreeWalkGcSweepError> {
+            let mut roots = self.mutator_root_set()?;
+            roots
+                .try_extend(compiled_roots)
+                .map_err(TreeWalkSafepointRootError::RootSet)?;
+            for (slot, value) in self
+                .transient_value_stack_roots
+                .iter()
+                .chain(extra_roots)
+                .copied()
+                .enumerate()
+            {
+                roots
+                    .try_push_value_stack(slot, value)
+                    .map_err(TreeWalkSafepointRootError::RootSet)?;
+            }
+            Ok(self.heap.sweep_unreachable_worker_records(&roots)?)
+        })();
+        let report = result.map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::GcQuiescentSweep { source },
+                Span::default(),
+            )
+        })?;
+        self.gc_records_at_last_sweep = self.stats.thunks_allocated;
+        self.gc_last_sweep_report = Some(report);
+        Ok(Some(report))
+    }
+
     /// Sweeps unreachable worker records if the growth threshold was reached.
     ///
     /// This is the production cadence hook for `AOS_NIX_GC=sweep`: drivers

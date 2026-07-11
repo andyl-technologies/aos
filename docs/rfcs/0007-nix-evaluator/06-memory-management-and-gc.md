@@ -3208,9 +3208,24 @@ GC must be observationally invisible (§8): every item is gated by the different
       pointers fail closed. Executable differentials cover forced locals,
       upvalues, select/has-attr/update paths, trap transfer, publish-dispatch,
       and balanced return; exact unsafe operations remain pinned by the runtime
-      FFI source audit. Joining bound values to finalized physical offsets,
-      applying relocation writebacks to the live slots, automatic collector
-      dispatch, and allocation-helper safepoints remain open.
+      FFI source audit. Finalized physical joining, live relocation writeback,
+      collector dispatch, and allocation-helper safepoints remain open.
+- [x] Current finalized compiled-root collector bridge:
+      every native dispatch now lends its finalized Cranelift stack-map table to
+      the pinned runtime context. Enter validates the safepoint cardinality,
+      joins the caller-owned tag addresses to finalized SP-relative offsets,
+      and derives one consistent physical frame base; root snapshots therefore
+      carry real frame/SP coordinates rather than conceptual slot indexes.
+      `apply_active_stack_map_writebacks` resolves the stack-map partition of a
+      minor-GC plan, validates every source and expected two-word `Value` before
+      mutation, then writes relocated values into the live compiled slots.
+      In sweep mode, mapped force wrappers keep outer compiled roots registered
+      across nested forcing and automatically dispatch the thresholded Tier-B
+      non-moving collector with the finalized roots plus the helper result.
+      Focused tests exercise nested-root retention and an actual finalized JIT
+      force under sweep-zero. Unmapped force sites fail closed by skipping
+      collector dispatch; arithmetic-tree and allocation-helper map coverage,
+      plus automatic moving-minor-GC planning/application, remain open.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now closes the

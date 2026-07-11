@@ -1,7 +1,7 @@
 //! Tree-walk GC barrier integration tests.
 
 use super::*;
-use crate::eval::heap::HeapAllocationDomain;
+use crate::eval::heap::{HeapAllocationDomain, StackMapSlot};
 use crate::heap::{GcHeapAddress, HeapGeneration, RememberedEdge};
 
 fn gc_address(value: Value) -> GcHeapAddress {
@@ -361,6 +361,50 @@ fn validation_sweep_preserves_later_forcing() {
         .force_value(ir.root, span, b_value)
         .expect("b still forces after the sweep");
     assert!(b_forced.raw_eq(Value::int(6)));
+}
+
+#[test]
+fn compiled_safepoint_sweep_marks_finalized_stack_map_roots() {
+    let ir = lower("{ kept = (x: x + 1) 4; garbage = (y: y * y) 9; }");
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_gc_sweep_threshold(0);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let kept = evaluator
+        .heap()
+        .get_attrs(root)
+        .expect("root is attrs")
+        .get(symbol_for(&ir, b"kept"))
+        .expect("kept exists");
+    let mut compiled_roots = EvalRootSet::new();
+    compiled_roots
+        .try_push_stack_map(
+            0x7000,
+            2,
+            StackMapSlot::Stack { offset: 48 },
+            kept,
+        )
+        .expect("compiled root records");
+
+    let mut outer_compiled_roots = [root];
+    let report = evaluator
+        .with_transient_value_stack_roots(
+            ir.root,
+            Span::default(),
+            &mut outer_compiled_roots,
+            |eval| {
+                eval.maybe_sweep_heap_at_compiled_safepoint(&compiled_roots, &[])
+                    .map(|report| report.expect("threshold-zero sweep runs"))
+            },
+        )
+        .expect("compiled safepoint sweep succeeds");
+    assert!(report.roots >= 2, "nested compiled roots remain registered");
+    let forced = evaluator
+        .force_value(ir.root, Span::default(), kept)
+        .expect("stack-map-only root remains live");
+    assert!(forced.raw_eq(Value::int(5)));
+    assert_eq!(evaluator.stats().gc_sweeps(), 1);
 }
 
 #[test]

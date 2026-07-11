@@ -19,6 +19,7 @@ use ratchet_oracle::{
     eval::{EvalEnv, tree_walk::TreeWalk},
     syntax::Span,
 };
+use ratchet_jit::JitCraneliftUserStackMap;
 
 use crate::stack_map::RuntimeJitStackMapBindingHeader;
 
@@ -34,6 +35,7 @@ use crate::stack_map::RuntimeJitStackMapBindingHeader;
 pub struct RuntimeJitContext<'eval> {
     eval: NonNull<TreeWalk>,
     env: Option<NonNull<EvalEnv>>,
+    stack_maps: &'eval [JitCraneliftUserStackMap],
     stack_map_head: Option<NonNull<RuntimeJitStackMapBindingHeader>>,
     id: IrId,
     span: Span,
@@ -47,6 +49,7 @@ impl<'eval> RuntimeJitContext<'eval> {
         Self {
             eval: NonNull::from(eval),
             env: None,
+            stack_maps: &[],
             stack_map_head: None,
             id,
             span,
@@ -65,6 +68,27 @@ impl<'eval> RuntimeJitContext<'eval> {
         Self {
             eval: NonNull::from(eval),
             env: Some(NonNull::from(env)),
+            stack_maps: &[],
+            stack_map_head: None,
+            id,
+            span,
+            _marker: PhantomData,
+            _pinned: PhantomPinned,
+        }
+    }
+
+    /// Creates a scoped context carrying finalized compiled stack-map layouts.
+    pub fn new_with_env_and_stack_maps(
+        eval: &'eval mut TreeWalk,
+        id: IrId,
+        span: Span,
+        env: &'eval EvalEnv,
+        stack_maps: &'eval [JitCraneliftUserStackMap],
+    ) -> Self {
+        Self {
+            eval: NonNull::from(eval),
+            env: Some(NonNull::from(env)),
+            stack_maps,
             stack_map_head: None,
             id,
             span,
@@ -89,6 +113,21 @@ impl<'eval> RuntimeJitContext<'eval> {
         self.stack_map_head
     }
 
+    pub(crate) const fn has_active_stack_map_binding(&self) -> bool {
+        self.stack_map_head.is_some()
+    }
+
+    pub(crate) fn finalized_stack_map(
+        &self,
+        safepoint: u32,
+    ) -> Option<&JitCraneliftUserStackMap> {
+        self.stack_maps.get(safepoint as usize)
+    }
+
+    pub(crate) const fn has_finalized_stack_maps(&self) -> bool {
+        !self.stack_maps.is_empty()
+    }
+
     pub(crate) fn set_stack_map_head(
         &mut self,
         head: Option<NonNull<RuntimeJitStackMapBindingHeader>>,
@@ -108,6 +147,25 @@ pub(crate) unsafe fn with_native_jit_context<R>(
     };
     // SAFETY: The caller provides the live pinned context described above.
     call(unsafe { rt.cast::<RuntimeJitContext<'static>>().as_mut() })
+}
+
+// SAFETY: Callers must pass a live pinned RuntimeJitContext pointer and keep
+// exclusive access to both it and its evaluator for the callback.
+pub(crate) unsafe fn with_native_jit_evaluator_context<R>(
+    rt: *mut c_void,
+    call: impl FnOnce(&mut RuntimeJitContext<'static>, &mut TreeWalk, IrId, Span) -> R,
+) -> R {
+    let Some(rt) = NonNull::new(rt) else {
+        process::abort();
+    };
+    // SAFETY: The caller provides the live pinned context described above.
+    let jit_context = unsafe { rt.cast::<RuntimeJitContext<'static>>().as_mut() };
+    let id = jit_context.id;
+    let span = jit_context.span;
+    // SAFETY: RuntimeJitContext owns the exclusive evaluator pointer for the
+    // native call; the callback cannot outlive this scoped mutable borrow.
+    let eval = unsafe { jit_context.eval.as_mut() };
+    call(jit_context, eval, id, span)
 }
 
 // SAFETY: Callers must pass a live pinned RuntimeJitContext carrying an env and

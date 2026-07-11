@@ -5,9 +5,13 @@
 //! validates strict LIFO ownership and restores the previous compiled frame.
 //! No allocator is touched while native code is active.
 
-use std::{ffi::c_void, process, ptr::NonNull};
+use std::{error::Error, ffi::c_void, fmt, process, ptr::NonNull};
 
-use ratchet_oracle::eval::heap::{EvalRootSet, EvalRootSetError, StackMapSlot};
+use ratchet_oracle::eval::heap::{
+    AllocationCollectorPollRootValueWritebackSlot, AllocationCollectorPollRootWritebackPlan,
+    AllocationCollectorPollRootWritebackReport, EvalHeapError, EvalRootSet, EvalRootSetError,
+    EvalRootSource, StackMapSlot,
+};
 use ratchet_oracle::value::Value;
 
 use crate::context::{RuntimeJitContext, with_native_jit_context};
@@ -56,7 +60,7 @@ impl RuntimeJitContext<'_> {
                     header.frame,
                     header.safepoint,
                     StackMapSlot::Stack {
-                        offset: (index as i32) * 16,
+                        offset: self.stack_map_slot_offset(header.safepoint, index),
                     },
                     value,
                 )?;
@@ -64,6 +68,193 @@ impl RuntimeJitContext<'_> {
             current = NonNull::new(header.previous);
         }
         Ok(roots)
+    }
+
+    /// Applies relocated root values to the currently bound compiled slots.
+    ///
+    /// The complete stack-map partition is resolved and validated before the
+    /// first live slot is changed. Finalized stack-pointer offsets, dynamic
+    /// frame identity, safepoint identity, and the expected from-space value
+    /// must all still match the collector plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeJitStackMapWritebackError`] if temporary binding
+    /// storage cannot be reserved, a planned source is no longer bound, or the
+    /// collector writeback plan rejects a source or value.
+    pub fn apply_active_stack_map_writebacks(
+        &mut self,
+        plan: &AllocationCollectorPollRootWritebackPlan,
+    ) -> Result<AllocationCollectorPollRootWritebackReport, RuntimeJitStackMapWritebackError> {
+        let count = plan.stack_map_writeback_count();
+        let mut pointers = Vec::new();
+        let mut slots = Vec::new();
+        pointers
+            .try_reserve_exact(count)
+            .map_err(|_| RuntimeJitStackMapWritebackError::AllocationFailed { slots: count })?;
+        slots
+            .try_reserve_exact(count)
+            .map_err(|_| RuntimeJitStackMapWritebackError::AllocationFailed { slots: count })?;
+
+        for writeback in plan.stack_map_writebacks() {
+            let source = writeback.source();
+            let pointer = self
+                .bound_stack_map_value(source)
+                .ok_or_else(|| RuntimeJitStackMapWritebackError::MissingBinding {
+                    source: source.clone(),
+                })?;
+            // SAFETY: The binding remains linked for this method's exclusive
+            // context borrow, and `bound_stack_map_value` checked its index.
+            let value = unsafe { pointer.as_ptr().read() };
+            pointers.push(pointer);
+            slots.push(AllocationCollectorPollRootValueWritebackSlot::new(
+                source.clone(),
+                value,
+            ));
+        }
+
+        let report = plan.apply_to_stack_map_value_slots(&mut slots)?;
+        for (pointer, slot) in pointers.into_iter().zip(slots) {
+            // SAFETY: Every pointer was resolved from a still-linked binding,
+            // and the complete temporary slot partition validated above.
+            unsafe { pointer.as_ptr().write(slot.value()) };
+        }
+        Ok(report)
+    }
+
+    fn stack_map_slot_offset(&self, safepoint: u32, index: u32) -> i32 {
+        if let Some(stack_map) = self.finalized_stack_map(safepoint) {
+            let Some(entry) = stack_map.entries().get(index as usize) else {
+                process::abort();
+            };
+            let offset = entry.sp_offset();
+            if offset > i32::MAX as u32 {
+                process::abort();
+            }
+            return offset as i32;
+        }
+        if self.has_finalized_stack_maps() {
+            process::abort();
+        }
+        let Some(offset) = 24_u32.checked_add(index.saturating_mul(16)) else {
+            process::abort();
+        };
+        if offset > i32::MAX as u32 {
+            process::abort();
+        }
+        offset as i32
+    }
+
+    fn bound_stack_map_value(&self, source: &EvalRootSource) -> Option<NonNull<Value>> {
+        let mut current = self.stack_map_head();
+        while let Some(binding) = current {
+            // SAFETY: Every linked header stays live until its matching exit.
+            let bound_header = unsafe { binding.as_ref() };
+            for index in 0..bound_header.values {
+                let candidate = EvalRootSource::StackMap {
+                    frame: bound_header.frame,
+                    safepoint: bound_header.safepoint,
+                    slot: StackMapSlot::Stack {
+                        offset: self.stack_map_slot_offset(bound_header.safepoint, index),
+                    },
+                };
+                if &candidate == source {
+                    // SAFETY: The generated binding region stores `values`
+                    // complete Values immediately after its 24-byte header.
+                    let pointer = unsafe {
+                        binding
+                            .as_ptr()
+                            .cast::<u8>()
+                            .add(24 + index as usize * 16)
+                            .cast::<Value>()
+                    };
+                    return NonNull::new(pointer);
+                }
+            }
+            current = NonNull::new(bound_header.previous);
+        }
+        None
+    }
+
+    fn compiled_frame_base(
+        &self,
+        binding: NonNull<RuntimeJitStackMapBindingHeader>,
+        safepoint: u32,
+        values: u32,
+    ) -> u64 {
+        let Some(stack_map) = self.finalized_stack_map(safepoint) else {
+            if self.has_finalized_stack_maps() {
+                process::abort();
+            }
+            return binding.as_ptr().addr() as u64;
+        };
+        if stack_map.entries().len() != values as usize || values == 0 {
+            process::abort();
+        }
+        let mut frame_base = None;
+        for (index, entry) in stack_map.entries().iter().enumerate() {
+            let Some(tag_address) = binding
+                .as_ptr()
+                .addr()
+                .checked_add(24 + index.saturating_mul(16))
+            else {
+                process::abort();
+            };
+            let Some(candidate) = tag_address.checked_sub(entry.sp_offset() as usize) else {
+                process::abort();
+            };
+            if frame_base.is_some_and(|frame_base| frame_base != candidate) {
+                process::abort();
+            }
+            frame_base = Some(candidate);
+        }
+        frame_base.unwrap_or_else(|| process::abort()) as u64
+    }
+}
+
+/// Failure while binding a collector writeback plan to live compiled slots.
+#[derive(Debug)]
+pub enum RuntimeJitStackMapWritebackError {
+    /// Temporary pointer or typed-slot storage could not be reserved.
+    AllocationFailed {
+        /// The requested stack-map writeback count.
+        slots: usize,
+    },
+    /// A planned physical compiled-frame source is no longer bound.
+    MissingBinding {
+        /// The source that could not be resolved to a live slot.
+        source: EvalRootSource,
+    },
+    /// The collector rejected the current stack-map source or value partition.
+    Heap(EvalHeapError),
+}
+
+impl From<EvalHeapError> for RuntimeJitStackMapWritebackError {
+    fn from(source: EvalHeapError) -> Self {
+        Self::Heap(source)
+    }
+}
+
+impl fmt::Display for RuntimeJitStackMapWritebackError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AllocationFailed { slots } => {
+                write!(formatter, "failed to reserve {slots} compiled root bindings")
+            }
+            Self::MissingBinding { source } => {
+                write!(formatter, "compiled root source is no longer bound: {source:?}")
+            }
+            Self::Heap(source) => source.fmt(formatter),
+        }
+    }
+}
+
+impl Error for RuntimeJitStackMapWritebackError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Heap(source) => Some(source),
+            Self::AllocationFailed { .. } | Self::MissingBinding { .. } => None,
+        }
     }
 }
 
@@ -105,11 +296,13 @@ pub unsafe extern "C" fn aos_jit_stack_map_enter(
     // context described by this function's contract.
     unsafe { // aos_jit_stack_map_enter runtime-context decode
         with_native_jit_context(rt, |context| {
-            let header = binding.as_mut();
-            header.previous = context
+            let frame = context.compiled_frame_base(binding, safepoint, values);
+            let previous = context
                 .stack_map_head()
                 .map_or(std::ptr::null_mut(), NonNull::as_ptr);
-            header.frame = binding.as_ptr().addr() as u64;
+            let header = binding.as_mut();
+            header.previous = previous;
+            header.frame = frame;
             header.safepoint = safepoint;
             header.values = values;
             context.set_stack_map_head(Some(binding));
@@ -196,6 +389,19 @@ mod tests {
             assert_eq!(roots.len(), 2);
             assert!(roots.roots()[0].value().raw_eq(inner_value));
             assert!(roots.roots()[1].value().raw_eq(outer_value));
+            assert_eq!(
+                roots.roots()[0].source(),
+                &EvalRootSource::StackMap {
+                    frame: inner.as_ptr().addr() as u64,
+                    safepoint: 4,
+                    slot: StackMapSlot::Stack { offset: 24 },
+                }
+            );
+            let bound = context
+                .bound_stack_map_value(roots.roots()[0].source())
+                .expect("typed physical root resolves to its live slot");
+            bound.as_ptr().write(Value::int(9));
+            assert!(inner.as_ptr().add(3).cast::<Value>().read().raw_eq(Value::int(9)));
             aos_jit_stack_map_exit(rt, inner.as_mut_ptr().cast());
             aos_jit_stack_map_exit(rt, outer.as_mut_ptr().cast());
         }

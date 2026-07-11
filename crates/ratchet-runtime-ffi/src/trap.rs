@@ -30,15 +30,15 @@
 //! # Safepoint invariant
 //!
 //! The sink stores only owned error values ([`RuntimeTrap`]), never a runtime
-//! [`Value`] or any heap pointer. No moving garbage collector runs during a
-//! native call (`ratchet-jit`'s `safepoints` module is dormant), so the raw
-//! runtime-context and environment pointers a wrapper holds stay valid across
-//! the recording, and the trap cell never needs to be traced or relocated.
+//! [`Value`] or any heap pointer. Compiled force safepoints may run the Tier-B
+//! non-moving sweep, but the raw runtime-context and environment pointers stay
+//! stable and the trap cell never needs tracing or relocation. A future moving
+//! collector must finish live compiled-slot writeback before recording a trap.
 
 use std::cell::RefCell;
 use std::process;
 
-use ratchet_oracle::eval::EvalEnvError;
+use ratchet_oracle::eval::{EvalEnvError, heap::EvalRootSetError};
 use ratchet_oracle::eval::tree_walk::TreeWalkError;
 use ratchet_oracle::value::Value;
 
@@ -58,6 +58,8 @@ pub enum RuntimeTrap {
     /// A forcing wrapper (`aos_force`, `aos_force_deep`, `aos_blackhole_check`)
     /// reported a tree-walk evaluator error.
     Force(TreeWalkError),
+    /// Finalized compiled roots could not be materialized for a collector poll.
+    StackMap(EvalRootSetError),
     /// The environment-access wrapper (`aos_env_get`) reported a frame error.
     Env(EvalEnvError),
     /// The call-control wrapper (`aos_apply`) reported a tree-walk evaluator error.
