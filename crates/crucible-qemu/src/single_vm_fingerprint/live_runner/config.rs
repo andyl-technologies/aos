@@ -75,6 +75,7 @@ pub struct LiveRunnerConfig {
     qemu_build_digest: [u8; 32],
     trace_plugin_build_digest: [u8; 32],
     verified_run_inputs: VerifiedLiveRunInputs,
+    fixed_run_digest: [u8; 32],
 }
 
 impl LiveRunnerConfig {
@@ -146,6 +147,7 @@ impl LiveRunnerConfig {
             &seed_bytes,
             base_launch_digest,
         )?;
+        let fixed_run_digest = verified_run_inputs.to_run_inputs()?.content_digest();
 
         Ok(Self {
             immutable,
@@ -156,6 +158,7 @@ impl LiveRunnerConfig {
             qemu_build_digest,
             trace_plugin_build_digest,
             verified_run_inputs,
+            fixed_run_digest,
         })
     }
 
@@ -169,6 +172,18 @@ impl LiveRunnerConfig {
     #[must_use]
     pub fn vcpus(&self) -> u16 {
         self.profile.smp_vcpus()
+    }
+
+    /// Returns the definition-pinned periodic sampling cadence.
+    #[must_use]
+    pub const fn cadence_icount(&self) -> u64 {
+        self.cadence_icount
+    }
+
+    /// Returns the fixed scenario observation horizon.
+    #[must_use]
+    pub const fn horizon_icount(&self) -> u64 {
+        self.horizon_icount
     }
 
     /// Returns the stable diskless base-launch digest.
@@ -185,6 +200,12 @@ impl LiveRunnerConfig {
     #[must_use]
     pub const fn verified_run_inputs(&self) -> &VerifiedLiveRunInputs {
         &self.verified_run_inputs
+    }
+
+    /// Returns the content digest of the complete verified fixed-run tuple.
+    #[must_use]
+    pub const fn fixed_run_digest(&self) -> [u8; 32] {
+        self.fixed_run_digest
     }
 
     /// Builds and validates the canonical executable and argv for one attempt.
@@ -274,7 +295,7 @@ impl LiveRunnerConfig {
     }
 
     #[cfg(test)]
-    fn from_verified_test_inputs(
+    pub(super) fn from_verified_test_inputs(
         immutable: LiveRunnerImmutableInputs,
         profile: DeterministicLaunchProfile,
         launch: LiveRunnerLaunchFields,
@@ -288,6 +309,7 @@ impl LiveRunnerConfig {
             b"verified-test-seed",
             base_launch_digest,
         )?;
+        let fixed_run_digest = verified_run_inputs.to_run_inputs()?.content_digest();
         Ok(Self {
             immutable,
             profile,
@@ -297,6 +319,7 @@ impl LiveRunnerConfig {
             qemu_build_digest: [2; 32],
             trace_plugin_build_digest: [10; 32],
             verified_run_inputs,
+            fixed_run_digest,
         })
     }
 }

@@ -7,6 +7,8 @@
 
 mod artifacts;
 mod config;
+mod identity;
+mod prepared;
 mod process;
 mod qmp_poll;
 mod verified_inputs;
@@ -16,6 +18,12 @@ pub use config::{
     LiveRunnerConfig, LiveRunnerConfigError, LiveRunnerImmutableInputs, LiveRunnerLaunchFields,
     LiveRunnerLaunchKind, LiveRunnerLaunchSpec,
 };
+pub use identity::{
+    LiveIdentityError, LiveInvocationIdentity, LiveInvocationPaths, LiveObservationControl,
+    LiveObservationControlFields, LiveObservationMode, LiveObservationModeFlags,
+    RawUnixArgvIdentity,
+};
+pub use prepared::{LivePreparationError, LivePreparationRequest, LivePreparedLaunch};
 pub use process::{
     LiveObservationAttempt, LiveObservationProcess, LiveObservationProcessError,
     LiveObservationShutdown, LiveObservationShutdownPolicy, spawn_live_observation_process,

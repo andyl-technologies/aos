@@ -2,6 +2,7 @@
 
 use std::fs::{self, File};
 use std::io;
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -11,18 +12,15 @@ use thiserror::Error;
 use crate::QemuNodeChild;
 
 use super::{
-    LiveRunnerArtifacts, LiveRunnerConfig, LiveRunnerConfigError, LiveRunnerLaunchKind,
-    LiveRunnerQmpConnector, LiveRunnerQmpObservation, LiveRunnerQmpPollError, LiveRunnerQmpPoller,
-    LiveRunnerQmpSession, LiveRunnerSleeper,
+    LivePreparedLaunch, LiveRunnerArtifacts, LiveRunnerQmpConnector, LiveRunnerQmpObservation,
+    LiveRunnerQmpPollError, LiveRunnerQmpPoller, LiveRunnerQmpSession, LiveRunnerSleeper,
 };
 
 /// Owned fresh QEMU observation process.
 #[derive(Debug)]
 pub struct LiveObservationProcess {
     child: QemuNodeChild,
-    artifacts: LiveRunnerArtifacts,
-    launch_kind: LiveRunnerLaunchKind,
-    expected_vcpus: u16,
+    prepared: LivePreparedLaunch,
 }
 
 impl LiveObservationProcess {
@@ -52,9 +50,9 @@ impl LiveObservationProcess {
     {
         let connection = poller
             .observe_stopped(
-                self.artifacts.qmp_socket(),
-                self.expected_vcpus,
-                self.launch_kind.expected_stopped_state(),
+                self.prepared.artifacts().qmp_socket(),
+                self.prepared.expected_vcpus(),
+                self.prepared.kind().expected_stopped_state(),
             )
             .map_err(LiveObservationProcessError::Qmp)?;
         Ok(LiveObservationAttempt {
@@ -112,7 +110,13 @@ impl<S: LiveRunnerQmpSession> LiveObservationAttempt<S> {
     /// Returns the fresh artifact paths owned by this attempt.
     #[must_use]
     pub fn artifacts(&self) -> &LiveRunnerArtifacts {
-        &self.process.artifacts
+        self.process.prepared.artifacts()
+    }
+
+    /// Returns the exact prepared launch and its bound identities.
+    #[must_use]
+    pub const fn prepared_launch(&self) -> &LivePreparedLaunch {
+        &self.process.prepared
     }
 
     /// Requests typed QMP quit and performs bounded child cleanup.
@@ -179,20 +183,18 @@ pub enum LiveObservationShutdown {
     ForcedByOwnerDrop,
 }
 
-/// Spawns one fresh observation-only QEMU process with an empty environment.
+/// Spawns one already-prepared observation-only QEMU process with an empty environment.
 ///
 /// # Errors
 ///
-/// Returns [`LiveObservationProcessError`] when argv construction, log creation,
-/// metadata sync, or process spawning fails.
+/// Returns [`LiveObservationProcessError`] when log creation, metadata sync, or
+/// process spawning fails. The retained spec is used byte-for-byte; this path
+/// never rebuilds argv after identity computation.
 pub fn spawn_live_observation_process(
-    config: &LiveRunnerConfig,
-    kind: LiveRunnerLaunchKind,
-    artifacts: &LiveRunnerArtifacts,
+    prepared: LivePreparedLaunch,
 ) -> Result<LiveObservationProcess, LiveObservationProcessError> {
-    let spec = config
-        .launch_spec(kind, artifacts)
-        .map_err(LiveObservationProcessError::Config)?;
+    let spec = prepared.spec();
+    let artifacts = prepared.artifacts();
     let stdout = create_new_log(artifacts.stdout_log())?;
     let stderr = create_new_log(artifacts.stderr_log())?;
     fs::File::open(artifacts.directory())
@@ -203,6 +205,7 @@ pub fn spawn_live_observation_process(
         })?;
     let mut command = Command::new(spec.executable());
     command
+        .arg0(spec.executable().as_os_str())
         .args(spec.argv())
         .current_dir(artifacts.directory())
         .env_clear()
@@ -217,9 +220,7 @@ pub fn spawn_live_observation_process(
         })?;
     Ok(LiveObservationProcess {
         child: QemuNodeChild::new(child),
-        artifacts: artifacts.clone(),
-        launch_kind: kind,
-        expected_vcpus: config.vcpus(),
+        prepared,
     })
 }
 
@@ -237,9 +238,6 @@ fn create_new_log(path: &std::path::Path) -> Result<File, LiveObservationProcess
 /// Failures while spawning or cleaning up an observation process.
 #[derive(Debug, Error)]
 pub enum LiveObservationProcessError {
-    /// Launch configuration could not produce argv.
-    #[error("live-run launch configuration failed: {0}")]
-    Config(LiveRunnerConfigError),
     /// Typed QMP cleanup failed.
     #[error("live-run QMP cleanup failed: {0}")]
     Qmp(LiveRunnerQmpPollError),

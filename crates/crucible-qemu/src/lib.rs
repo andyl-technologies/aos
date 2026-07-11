@@ -180,14 +180,17 @@ pub use shutdown::{
 };
 #[cfg(target_os = "linux")]
 pub use single_vm_fingerprint::{
-    LiveObservationAttempt, LiveObservationProcess, LiveObservationProcessError,
-    LiveObservationShutdown, LiveObservationShutdownPolicy, LiveRunnerArtifactRoot,
-    LiveRunnerArtifacts, LiveRunnerArtifactsError, LiveRunnerConfig, LiveRunnerConfigError,
-    LiveRunnerImmutableInputs, LiveRunnerLaunchFields, LiveRunnerLaunchKind, LiveRunnerLaunchSpec,
-    LiveRunnerQmpConnector, LiveRunnerQmpObservation, LiveRunnerQmpPollError,
-    LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession, LiveRunnerSleeper,
-    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests,
-    VerifiedLiveRunInputs, VerifiedLiveRunInputsError, spawn_live_observation_process,
+    LiveIdentityError, LiveInvocationIdentity, LiveInvocationPaths, LiveObservationAttempt,
+    LiveObservationControl, LiveObservationControlFields, LiveObservationMode,
+    LiveObservationModeFlags, LiveObservationProcess, LiveObservationProcessError,
+    LiveObservationShutdown, LiveObservationShutdownPolicy, LivePreparationError,
+    LivePreparationRequest, LivePreparedLaunch, LiveRunnerArtifactRoot, LiveRunnerArtifacts,
+    LiveRunnerArtifactsError, LiveRunnerConfig, LiveRunnerConfigError, LiveRunnerImmutableInputs,
+    LiveRunnerLaunchFields, LiveRunnerLaunchKind, LiveRunnerLaunchSpec, LiveRunnerQmpConnector,
+    LiveRunnerQmpObservation, LiveRunnerQmpPollError, LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller,
+    LiveRunnerQmpSession, LiveRunnerSleeper, RawUnixArgvIdentity, ThreadLiveRunnerSleeper,
+    TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests, VerifiedLiveRunInputs,
+    VerifiedLiveRunInputsError, spawn_live_observation_process,
 };
 pub use single_vm_fingerprint::{
     QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
