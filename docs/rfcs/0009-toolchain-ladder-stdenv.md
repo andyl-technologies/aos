@@ -344,6 +344,12 @@ preserves executable modes such as `configure`. Keep this workaround at the
 gcc4_1 boundary; later tiers use newer libc-backed tools and should retain
 their normal manifest recipes.
 
+The same glibc release hardcodes `gettimeofday` and `time` calls through the
+x86_64 fixed vsyscall page. Patch both wrappers to issue normal system calls
+before building either 2.3.4 libc. This keeps the static cross-tier tools
+portable to kernels booted without `vsyscall=emulate` or `vsyscall=xonly`;
+do not solve this by requiring a legacy kernel boot option on build workers.
+
 ## Expected outcome
 
 The ~22,400 toolchain LOC should drop by well over half: the POSIX-tools

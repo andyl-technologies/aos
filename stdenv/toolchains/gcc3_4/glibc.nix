@@ -47,6 +47,10 @@ in
         # still exists, and make librtld.mk consume those saved copies.
         patch -d "$SRC" -p1 < ${./patches/glibc-2.3.4-reconstruct-pic-stamps.patch}
 
+        # Avoid the x86_64 fixed vsyscall page so this tier's binaries run on
+        # kernels booted without legacy vsyscall emulation.
+        patch -d "$SRC" -p1 < ${./patches/glibc-2.3.4-no-fixed-vsyscall.patch}
+
         # glibc 2.3.4 configure hardcodes /bin/pwd which doesn't exist in sandbox
         sed -i 's|/bin/pwd|pwd|g' "$SRC/configure"
 
