@@ -8275,6 +8275,19 @@ and helps the oracle directly.
       3,032 oracle tests (34 ignored), 322 `aos-nix` tests, 38 pinned language
       tests, 16 package legs, seven wide/shape modes, compute x8, cache
       validation, and 648 strict-JSON seeds in serial/K4/JIT/sweep-zero.
+- [x] Current Cranelift user-stack-map emission slice: every tier-1
+      `aos_force` call spills its two-word runtime input into an aligned explicit
+      stack slot and attaches a user stack map. Values live across a later force
+      are spilled, mapped, and reloaded so a future collector rewrite becomes
+      observable by subsequent native code. The finalized-function metadata
+      retains each call return-address offset, instruction span, CLIF word type,
+      and stack-pointer-relative slot offset. Tests cover CLIF anchoring,
+      verified lowering, finalized machine metadata, and executable artifact
+      paths. The checkpoint passed 253 `ratchet-jit` tests, 322 `aos-nix`
+      tests, the four-package JIT matrix, compute x8, the wide root, and all 648
+      strict-JSON seeds under JIT with byte parity. Allocation-helper
+      safepoints, physical stack walking/live-frame binding, and automatic
+      collector dispatch remain open.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now validates and

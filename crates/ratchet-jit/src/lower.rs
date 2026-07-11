@@ -42,6 +42,7 @@ mod error;
 pub mod interp;
 mod lambda_chain;
 mod lambda_rec;
+mod stack_maps;
 
 pub use error::JitLowerError;
 pub use lambda_chain::{
@@ -2497,9 +2498,14 @@ fn emit_forced_env_get_return(
         });
     }
 
+    let force_input_slot = stack_maps::spill_value(
+        &mut cursor,
+        [env_get_results[0], env_get_results[1]],
+    );
     let force_call = cursor
         .ins()
         .call(force, &[rt, env_get_results[0], env_get_results[1]]);
+    stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
 
     if force_results.len() != 2 {
@@ -2575,9 +2581,12 @@ fn emit_forced_upval_get_return(
         });
     }
 
+    let force_input_slot =
+        stack_maps::spill_value(&mut cursor, [upval_get_results[0], upval_get_results[1]]);
     let force_call = cursor
         .ins()
         .call(force, &[rt, upval_get_results[0], upval_get_results[1]]);
+    stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
 
     if force_results.len() != 2 {
@@ -2647,7 +2656,9 @@ fn emit_string_length_inline_return(
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
     let argument = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, operand)?;
 
+    let force_input_slot = stack_maps::spill_value(&mut cursor, argument);
     let force_call = cursor.ins().call(force, &[rt, argument[0], argument[1]]);
+    stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
 
     if force_results.len() != 2 {
@@ -2830,9 +2841,11 @@ fn emit_update_local_slots_return(
 
     let left_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, left_operand)?;
 
+    let left_input_slot = stack_maps::spill_value(&mut cursor, left_value);
     let left_force_call = cursor
         .ins()
         .call(force, &[rt, left_value[0], left_value[1]]);
+    stack_maps::attach(&mut cursor, left_force_call, left_input_slot);
     let left_force_results = cursor.func.dfg.inst_results(left_force_call).to_vec();
 
     if left_force_results.len() != 2 {
@@ -2845,9 +2858,16 @@ fn emit_update_local_slots_return(
 
     let right_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, right_operand)?;
 
+    let live_left_slot = stack_maps::spill_value(
+        &mut cursor,
+        [left_force_results[0], left_force_results[1]],
+    );
+    let right_input_slot = stack_maps::spill_value(&mut cursor, right_value);
     let right_force_call = cursor
         .ins()
         .call(force, &[rt, right_value[0], right_value[1]]);
+    stack_maps::attach(&mut cursor, right_force_call, live_left_slot);
+    stack_maps::attach(&mut cursor, right_force_call, right_input_slot);
     let right_force_results = cursor.func.dfg.inst_results(right_force_call).to_vec();
 
     if right_force_results.len() != 2 {
@@ -2858,6 +2878,7 @@ fn emit_update_local_slots_return(
         });
     }
 
+    let left_force_results = stack_maps::reload(&mut cursor, live_left_slot);
     let update_call = cursor.ins().call(
         update,
         &[
@@ -2905,9 +2926,11 @@ fn emit_attr_lookup_local_slot_return(
     let receiver_value =
         emit_slot_operand_load(&mut cursor, env, env_get, upval_get, lookup.receiver)?;
 
+    let force_input_slot = stack_maps::spill_value(&mut cursor, receiver_value);
     let force_call = cursor
         .ins()
         .call(force, &[rt, receiver_value[0], receiver_value[1]]);
+    stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
 
     if force_results.len() != 2 {
@@ -2969,9 +2992,11 @@ fn emit_attr_select_default_local_slot_return(
     let receiver_value =
         emit_slot_operand_load(&mut cursor, env, env_get, upval_get, lookup.receiver)?;
 
+    let force_input_slot = stack_maps::spill_value(&mut cursor, receiver_value);
     let force_call = cursor
         .ins()
         .call(force, &[rt, receiver_value[0], receiver_value[1]]);
+    stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
 
     if force_results.len() != 2 {

@@ -1026,8 +1026,22 @@ fn forced_env_get_ir_thunk_body_calls_env_get_then_force_with_entry_rt() {
 
     assert_eq!(
         opcodes(&function),
-        vec![Opcode::Iconst, Opcode::Call, Opcode::Call, Opcode::Return]
+        vec![
+            Opcode::Iconst,
+            Opcode::Call,
+            Opcode::StackStore,
+            Opcode::StackStore,
+            Opcode::Call,
+            Opcode::Return,
+        ]
     );
+    let stack_map = function
+        .dfg
+        .user_stack_map_entries(force_call)
+        .expect("force call carries the spilled input value");
+    assert_eq!(stack_map.len(), 1);
+    assert_eq!(stack_map[0].offset, 0);
+    assert_eq!(function.sized_stack_slots[stack_map[0].slot].size, 16);
     assert_eq!(
         function.dfg.inst_args(env_get_call)[0],
         entry_block_values(&function)[1]

@@ -193,14 +193,21 @@ pub struct JitCraneliftDefinedFunction {
     symbol_name: String,
     linkage: Linkage,
     func_id: FuncId,
+    user_stack_maps: Vec<JitCraneliftUserStackMap>,
 }
 
 impl JitCraneliftDefinedFunction {
-    fn new(symbol_name: String, linkage: Linkage, func_id: FuncId) -> Self {
+    fn new(
+        symbol_name: String,
+        linkage: Linkage,
+        func_id: FuncId,
+        user_stack_maps: Vec<JitCraneliftUserStackMap>,
+    ) -> Self {
         Self {
             symbol_name,
             linkage,
             func_id,
+            user_stack_maps,
         }
     }
 
@@ -217,6 +224,55 @@ impl JitCraneliftDefinedFunction {
     /// Returns the Cranelift function identifier assigned to the artifact body.
     pub const fn func_id(&self) -> FuncId {
         self.func_id
+    }
+
+    /// Returns finalized user stack maps keyed by call return-address offset.
+    pub fn user_stack_maps(&self) -> &[JitCraneliftUserStackMap] {
+        &self.user_stack_maps
+    }
+}
+
+/// One finalized live-value entry in a Cranelift user stack map.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JitCraneliftUserStackMapEntry {
+    value_type: cranelift_codegen::ir::Type,
+    sp_offset: u32,
+}
+
+impl JitCraneliftUserStackMapEntry {
+    /// Returns the CLIF word type recorded for the live value anchor.
+    pub const fn value_type(self) -> cranelift_codegen::ir::Type {
+        self.value_type
+    }
+
+    /// Returns the byte offset from the compiled frame's stack pointer.
+    pub const fn sp_offset(self) -> u32 {
+        self.sp_offset
+    }
+}
+
+/// A finalized user stack map for one compiled call safepoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JitCraneliftUserStackMap {
+    return_address_offset: u32,
+    call_span: u32,
+    entries: Vec<JitCraneliftUserStackMapEntry>,
+}
+
+impl JitCraneliftUserStackMap {
+    /// Returns the call return-address offset from the function entrypoint.
+    pub const fn return_address_offset(&self) -> u32 {
+        self.return_address_offset
+    }
+
+    /// Returns the machine-code byte span covered by the call instruction.
+    pub const fn call_span(&self) -> u32 {
+        self.call_span
+    }
+
+    /// Returns stack-pointer-relative live runtime-value anchors.
+    pub fn entries(&self) -> &[JitCraneliftUserStackMapEntry] {
+        &self.entries
     }
 }
 
@@ -3153,11 +3209,39 @@ fn define_artifact_function_body(
             },
         )?;
 
+    let user_stack_maps = compiled_user_stack_maps(&context);
+
     Ok(JitCraneliftDefinedFunction::new(
         symbol_name,
         Linkage::Export,
         func_id,
+        user_stack_maps,
     ))
+}
+
+fn compiled_user_stack_maps(context: &Context) -> Vec<JitCraneliftUserStackMap> {
+    context
+        .compiled_code()
+        .map(|code| {
+            code.buffer
+                .user_stack_maps()
+                .iter()
+                .map(|(return_address_offset, call_span, stack_map)| {
+                    JitCraneliftUserStackMap {
+                        return_address_offset: *return_address_offset,
+                        call_span: *call_span,
+                        entries: stack_map
+                            .entries()
+                            .map(|(value_type, sp_offset)| JitCraneliftUserStackMapEntry {
+                                value_type,
+                                sp_offset,
+                            })
+                            .collect(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn rewrite_artifact_runtime_imports_for_module(
@@ -4355,6 +4439,16 @@ mod tests {
                 .compiled_code_ptr()
                 .as_non_null(),
             preflight.finalized_function().code_ptr()
+        );
+        let stack_maps = preflight
+            .finalized_function()
+            .defined_function()
+            .user_stack_maps();
+        assert_eq!(stack_maps.len(), 1);
+        assert_eq!(stack_maps[0].entries().len(), 1);
+        assert_eq!(
+            stack_maps[0].entries()[0].value_type(),
+            cranelift_codegen::ir::types::I64
         );
         let artifact_import_names = preflight
             .artifact_runtime_imports()

@@ -3188,6 +3188,15 @@ GC must be observationally invisible (§8): every item is gated by the different
       cache validation, and all 648 strict-JSON seeds in four modes. The new
       246-line module is off the evaluation hot path; `roots.rs` remains eight
       lines below its frozen baseline size.
+- [x] Current Cranelift user-stack-map emission slice:
+      tier-1 `aos_force` calls spill two-word runtime values into aligned
+      explicit stack slots and attach user stack maps; values that remain live
+      across another force reload from the mapped slot. Finalized JIT metadata
+      retains return-address offsets and stack-pointer-relative anchors for
+      later frame binding. The checkpoint is byte-green across the four-package
+      JIT matrix, compute x8, the wide root, and all 648 JIT strict-JSON seeds.
+      Allocation-helper maps, physical stack walking, live-frame mutation, and
+      automatic collector dispatch remain open.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now closes the

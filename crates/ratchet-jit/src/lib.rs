@@ -66,6 +66,7 @@ pub use cranelift::{
     ACTIVE_CRANELIFT_MODULE_VERSION, ACTIVE_CRANELIFT_NATIVE_VERSION,
     JitCraneliftArtifactDefinitionPreflight, JitCraneliftArtifactFinalizationPreflight,
     JitCraneliftDefinedFunction, JitCraneliftDependencyPin, JitCraneliftFinalizedFunction,
+    JitCraneliftUserStackMap, JitCraneliftUserStackMapEntry,
     JitCraneliftImportedSymbol, JitCraneliftModuleDeclarationPreflight, JitCraneliftModuleSetup,
     JitCraneliftModuleSetupError, JitCraneliftNativeCallError, JitCraneliftNativeThunkInvocation,
     JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,

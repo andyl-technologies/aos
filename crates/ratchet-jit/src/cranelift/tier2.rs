@@ -231,10 +231,12 @@ fn define_declared_function(
             source,
         },
     )?;
+    let user_stack_maps = super::compiled_user_stack_maps(&context);
     Ok(JitCraneliftDefinedFunction::new(
         symbol_name,
         Linkage::Local,
         func_id,
+        user_stack_maps,
     ))
 }
 
