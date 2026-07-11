@@ -1,0 +1,20 @@
+--- a/elf/Makefile
++++ b/elf/Makefile
+@@ -238,6 +238,17 @@ $(objpfx)librtld.map: $(objpfx)dl-allobjs.os $(common-objpfx)libc_pic.a
+ 	mv -f $@T $@
+ 
+ $(objpfx)librtld.mk: $(objpfx)librtld.map Makefile
++	@for stamp_dir in $(common-objpfx) $(common-objpfx)*/; do \
++	  test -d "$$stamp_dir" || continue; \
++	  stamp="$$stamp_dir/stamp.os"; \
++	  test -f "$$stamp" && continue; \
++	  : > "$$stamp"; \
++	  for obj in "$$stamp_dir"/*.os; do \
++	    test -e "$$obj" || continue; \
++	    relative=$$(printf '%s\n' "$$obj" | sed 's@^$(common-objpfx)@@'); \
++	    printf '%s ' "$$relative" >> "$$stamp"; \
++	  done; \
++	done
+ 	LC_ALL=C \
+ 	sed -n 's@^$(common-objpfx)\([^(]*\)(\([^)]*\.os\)) *.*$$@\1 \2@p' \
+ 	    $< | \

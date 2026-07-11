@@ -41,6 +41,13 @@ in
 
         SRC="$TMPDIR/glibc-2.3.4"
 
+        # GNU make 3.79.1 can lose the per-subdirectory stamp.os files after
+        # archiving PIC objects. elf/librtld.mk needs those files to map each
+        # archive member back to its source subdirectory. Reconstruct only a
+        # missing stamp from the actual bounded set of built .os files before
+        # the mapping recipe runs; existing upstream-generated stamps win.
+        patch -d "$SRC" -p1 < ${./patches/glibc-2.3.4-reconstruct-pic-stamps.patch}
+
         # glibc 2.3.4 configure hardcodes /bin/pwd which doesn't exist in sandbox
         sed -i 's|/bin/pwd|pwd|g' "$SRC/configure"
 
