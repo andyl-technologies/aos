@@ -1,19 +1,22 @@
 --- a/Makerules
 +++ b/Makerules
-@@ -784,0 +785,5 @@
+@@ -784,0 +785,9 @@
 +if test "$(@F)" = libc_pic.a; then \
-+  cd $(common-objdir) && for stamp in $(patsubst $(common-objpfx)%,%,$^); do \
-+    cp "$$stamp" "$$stamp.saved"; \
++  cd $(common-objdir) && mkdir -p span-pic-stamps && \
++  for stamp in $(patsubst $(common-objpfx)%,%,$^); do \
++    case "$$stamp" in \
++    */stamp.os) subdir=$${stamp%/stamp.os}; \
++      cp "$$stamp" "span-pic-stamps/$$subdir" ;; \
++    esac; \
 +  done; \
 +fi
 --- a/elf/Makefile
 +++ b/elf/Makefile
-@@ -247,4 +247,4 @@
+@@ -247,4 +247,3 @@
 -	    LC_ALL=C fgrep -l /$$file \
 -		  $(common-objpfx)stamp.os $(common-objpfx)*/stamp.os | \
 -	    LC_ALL=C \
 -	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.os$$@rtld-\1'" +=$$file@"\
-+	    LC_ALL=C fgrep -l /$$file \
-+		  $(common-objpfx)stamp.os.saved $(common-objpfx)*/stamp.os.saved | \
++	    LC_ALL=C fgrep -l /$$file $(common-objpfx)span-pic-stamps/* | \
 +	    LC_ALL=C \
-+	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.os\.saved$$@rtld-\1'" +=$$file@"\
++	    sed 's@^$(common-objpfx)span-pic-stamps/\([^/]*\)$$@rtld-\1'" +=$$file@"\
