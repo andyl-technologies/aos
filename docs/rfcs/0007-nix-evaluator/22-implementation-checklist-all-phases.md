@@ -11759,6 +11759,21 @@ it ships).**
       heap-address/immediate/small-int payloads; and reports heap-address
       payloads for future precise-GC scanning without reconstructing provenance.
       The active 16-byte `Value` ABI is unchanged.
+- [x] Current Candidate-C reservation/index/codec precursor:
+      `ratchet-value` owns one demand-paged 4 GiB contiguous virtual reservation,
+      checked `u32` byte-offset-to-pointer round trips over its used prefix,
+      caller-validated LIFO rewind markers, and a sealed 64-bit word codec with
+      typed heap kinds, inline `i32`, boxed `i64`/`f64` indices, and the thunk
+      `FORCED` bit. The reservation owner is worker-handoff safe and its seven
+      unsafe operations are pinned by `heap/safety.rs`. Focused tests cover the
+      full reservation, absolute alignment, exhaustion, invalid offsets,
+      pointer/index round trips, rewind/reuse, cross-thread traits, raw-word
+      rejection, and scalar/heap encodings. This is the real Candidate-C
+      substrate, but not the active evaluator or FFI/JIT ABI; the 16-byte
+      `Value` remains active and the FV-4 selection row remains open. The full
+      landing battery is green; baseline-first release A/B kept zlib and wide
+      medians plus retained RSS within the 10% no-regression gate, and wide
+      arena peak was byte-identical at 83,361,792 bytes.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay
@@ -11922,6 +11937,11 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       tagged 61-bit-immediate word (fallback), built head-to-head per the
       P8 mandate — this executes the P8 pointer-tagging row and
       `M-4`/`Q-E` ([30](30-flat-value-architecture.md) §3).
+      *The Candidate-C substrate is now landed: a real 4 GiB contiguous
+      reservation, checked byte-offset index space, and sealed 64-bit codec.
+      Shared-store publication migration, active evaluator/FFI/JIT ABI
+      conversion, Candidate-B construction, and the measured head-to-head
+      remain, so FV-4 is intentionally unchecked.*
 - [x] FV-5 — hybrid closures: flat inline free-var capture
       (`|FV| <= K`) + linked persistent frame chains; persistent
       `with`/scoped-global lists; delete the generation-keyed capture
@@ -11975,10 +11995,13 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
 - [ ] Extensions, individually gated: closure/env hash-consing; the
       semantic-swap eviction ladder (memo-tier + module-IR eviction,
       drop-and-recompute; thunk serialization and in-process compression
-      explicitly rejected); store-path segment interning (counting probe
-      first); per-kind arenas + size-class slabs; last-use capture
+      explicitly rejected); per-kind arenas + size-class slabs; last-use capture
       shedding; weak hash-cons tables for daemon residency
       ([30](30-flat-value-architecture.md) §7).
+      *Store-path segment interning is no longer part of this open roll-up: its
+      required counting probe measured only 1,250,076 eligible payload bytes on
+      `bench.wide-eval`, so even impossible 100% elimination cannot meet the
+      specified multi-MiB admission gate; it is rejected by measurement.*
 - [x] Unsafe placement (recorded decision): the new `unsafe` stays in
       sealed audited `ratchet-value` modules under the token-count
       discipline; `#[forbid(unsafe_code)]` rollout to every crate outside

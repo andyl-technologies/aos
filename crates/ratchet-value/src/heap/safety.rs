@@ -30,6 +30,7 @@ pub const HEAP_INNATE_UNSAFE_OPERATIONS: &[HeapInnateUnsafeOperation] = &[
     HeapInnateUnsafeOperation::RegionPopHandoff,
     HeapInnateUnsafeOperation::AllocatorFreeMemoryRelease,
     HeapInnateUnsafeOperation::FlatObjectPayloadAccess,
+    HeapInnateUnsafeOperation::ContiguousAddressReservation,
 ];
 
 /// Required audit tools for heap and GC unsafe code.
@@ -66,6 +67,9 @@ pub enum HeapInnateUnsafeOperation {
     /// Writes, reads, and drops flat header-plus-payload heap objects in
     /// place inside store-owned arena chunks (RFC-0007 doc 30 stage FV-1).
     FlatObjectPayloadAccess,
+    /// Reserves one contiguous virtual range, derives checked in-range
+    /// addresses from compressed offsets, and releases the exact mapping.
+    ContiguousAddressReservation,
 }
 
 /// Standing controls required before unsafe heap or GC code can land.
@@ -325,6 +329,12 @@ mod tests {
         // header length, and reservation extent validate the initialized run,
         // and one exclusive object/tail block behind `&mut self`, all under
         // `FlatObjectPayloadAccess`.
+        // reservation.rs count 0 -> 7 (doc 30 Candidate-C substrate): one
+        // anonymous 4-GiB mapping, one defensive unmap for a null successful
+        // mapping, two checked in-range address derivations (allocation and
+        // compressed-index decode), the exact-range drop unmap, and the
+        // mapping owner's Send/Sync contracts, all under the reviewed
+        // `ContiguousAddressReservation` operation.
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 13usize),
@@ -334,6 +344,7 @@ mod tests {
             ("flat/slice.rs", 5usize),
             ("flat/value_tail.rs", 3usize),
             ("resident.rs", 6usize),
+            ("reservation.rs", 7usize),
         ] {
             let source_path = heap_root.join(file_name);
             let source = fs::read_to_string(&source_path).expect("source file is readable");
@@ -404,6 +415,7 @@ mod tests {
                     | "flat/bytes.rs"
                     | "flat/slice.rs"
                     | "flat/value_tail.rs"
+                    | "reservation.rs"
                     | "resident.rs"
             )
         )

@@ -420,9 +420,9 @@ guard (`8c0680193`).
 
 The JVM's compressed-oops move, enabled *by* §2: once every payload is
 flat in one arena, a heap reference need not be a 64-bit pointer at all —
-it can be a **32-bit offset in 8-byte granules from a single reserved
-arena base**, addressing 32 GiB of heap (the measured wide-eval peak is
-238 MiB; two orders of magnitude of headroom). A `Value` becomes
+it can be a **32-bit byte offset from a single reserved arena base**,
+addressing 4 GiB of heap (the current measured wide-eval arena peak is
+83,361,792 bytes, leaving about 50x headroom). A `Value` becomes
 `(tag: u32, offset: u32)` or a packed single word; container slots that
 hold only heap references (list spines, attr slots after shape
 classification) can shrink to 4 bytes.
@@ -757,6 +757,12 @@ probe** (bytes in string payloads matching the store-path shape, unique
 vs. total) as the stage's first deliverable; the interning implementation
 is gated on that probe showing a multi-MiB dedup ratio.
 
+The probe is now closed as a measured rejection. On the current
+`bench.wide-eval` profile, all eligible store-path-shaped string payloads
+together account for 1,250,076 bytes. Even an impossible 100% elimination
+is below the required multi-MiB gate, so segment interning is not built;
+the residual memory campaign stays focused on value-bearing storage.
+
 ### 7.4 Smaller committed items
 
 - **Per-kind arenas.** Segregate allocation by object kind (at minimum:
@@ -1079,12 +1085,11 @@ they conflict.
    `ratchet-value`/safe oracle code and parallelism in the safe oracle.
 5. **Candidate C's arena prerequisite.** Compressed indices require a
    single contiguous reservation; the Tier-A arena is chunked mmap
-   (`c11acc759`) and no prior doc commits to a reservation-based arena.
-   New prerequisite, owned by FV-4. *FV-4 resolution: probed feasible
-   on both platforms (§12 FV-4), but C is deferred anyway — the
-   unflagged blocker was shared mode, whose `OnceLock` slot addresses
-   are not arena offsets and cannot be named by a `u32` offset without
-   a per-shard publication redesign this section never covered.*
+   (`c11acc759`). *FV-4 resolution:* the real 4 GiB reservation,
+   byte-offset index space, and codec are now landed (§12 FV-4). Active
+   adoption still requires the shared-mode redesign: its `OnceLock` slot
+   addresses are not reservation offsets and cannot be named by the
+   current `u32` codec without migrating publication into that arena.
 6. **B1's fail-loud shape changes under flat objects.** Today a stale
    handle to a retired record fails as an `UnknownPointer` map miss;
    with the index gone, §2.5 substitutes header epoch/kind checks. This
@@ -1383,16 +1388,18 @@ list only their *additional* gates.
 
 ### Stage FV-4 — value-word compression
 
-**Landed (FV-4) as the compatible-layout subset; the 8-byte value word
-(Candidates B and C) is DEFERRED, decided against code reality and the
-FV-0 columns rather than sketch estimates:**
+**Landed (FV-4) as the compatible-layout subset and now re-entered with a
+real Candidate-C reservation/index/codec substrate; the active 8-byte
+value word (Candidates B and C) remains open and separately gated:**
 
-1. *The §11.5 reservation prerequisite is NOT the blocker.* Probed this
-   stage: one contiguous anonymous reservation of 64/256 GiB maps in
-   0.09/0.33 ms on darwin with RSS growing only on touch and
-   `MADV_FREE` decommit available; Linux `MAP_NORESERVE` + default
-   overcommit is the standard equivalent. A commit-on-demand
-   reservation arena is buildable when a compressed layout wants it.
+1. *The §11.5 reservation prerequisite is no longer hypothetical.* In
+   addition to the original feasibility probe, `heap/reservation.rs` now
+   maps the actual demand-paged 4 GiB Candidate-C address space, bumps
+   aligned objects within it, checks both pointer/index directions
+   against the used prefix, supports caller-validated rewind, and releases
+   the exact mapping. `value/compressed.rs` seals the corresponding
+   high-32-bit kind/metadata + low-32-bit payload word, including inline
+   `i32`, typed boxed-scalar/heap indices, and the thunk `FORCED` bit.
 2. *Shared mode is the structural blocker.* Compressed indices address
    "one reserved arena base"; shared-mode values are published at
    `OnceLock` slot addresses inside per-shard boxed slot levels
@@ -1402,22 +1409,20 @@ FV-0 columns rather than sketch estimates:**
    never designed. The honest fallback — compressed words in serial
    mode, 16-byte words in shared mode — forks the value ABI (and the
    tier-2 FFI/JIT ABI with it) across modes for one mode's benefit.
-3. *The measured win does not carry the invasiveness on the workloads
-   that matter.* FV-0 byte-mass columns at the FV-3 landing
-   (`7cd61564f`): halving the value word saves ~0.3 MB of a 62 MB
-   package-eval peak (zlib, ~0.5%) and ~5 MB of a ~233 MB wide-eval
-   peak (~2%). The large halvable masses sit on the compute
-   benchmarks (qsort ~106 MB, lambda-interp ~114 MB of attr-entry,
-   list-element, and env-slot mass) — exactly the workloads §3.5
-   already concedes to the 32-bit immediate-int weakness and that
-   tier-2 native code owns.
+3. *The current memory profile reopens the measured case.* On pristine
+   `951159cc9`, `bench.wide-eval` maps 83,361,792 arena bytes and retains
+   181,747,712 bytes cold / 190,382,080 bytes warm, while the sampled
+   stock child peak is 91,684,864 bytes. Value-bearing mass includes
+   145,557 list slots (~2.33 MB at 16 bytes), 295,810 flat-capture slots
+   (~4.73 MB), and 4,148,192 environment-slot bytes before attr slots and
+   other value storage. This does not predict the final delta, but it
+   satisfies the reason to build and measure the compressed variant.
 4. *Sequencing.* §3.6 rule 1 forbids landing layout flattening and
    word compression as one variable; the subset below rewrites the
    payload layouts and is itself §3.5's "container slots narrowed"
-   prerequisite. B/C re-enter after FV-5/FV-6 (payload `Arc`s dead,
-   spine-mass share risen), with a shared-mode reservation design,
-   and only if the memory columns then show ≥10%-class savings on
-   package/wide workloads.
+   prerequisite. FV-5/FV-6 have landed and the current inactive
+   Candidate-C substrate passes independently. The shared publication
+   redesign and evaluator/FFI/JIT ABI conversion remain their own gates.
 
 - [x] **Single shared permanent-domain flat arena** (the FV-2/FV-3
       handoff's per-type chunk-slack kill): `SharedFlatStoreArena`
@@ -1464,11 +1469,29 @@ FV-0 columns rather than sketch estimates:**
       consumes it yet — it pins the header classification field the
       compressed layout plans against, and resolution validity still
       checks only magic + kind.
+- [x] **Candidate-C reservation/index/codec substrate:** one contiguous
+      demand-paged 4 GiB reservation with `u32` byte offsets, absolute
+      alignment, checked used-prefix pointer/index conversion, LIFO rewind,
+      cross-worker ownership, and exact unmap; plus a sealed 64-bit word
+      codec for inline `i32`, booleans/null, boxed `i64`/`f64`, typed heap
+      indices, and the thunk `FORCED` bit. The unsafe manifest pins seven
+      reviewed operations. The active evaluator still uses the 16-byte
+      `Value`, so this row proves the prerequisite without claiming the
+      Candidate-C or FFI/JIT ABI rows below. The landing gate passed 360
+      `ratchet-value` tests, the core/JIT/oracle/aos-nix/runtime-FFI/cache
+      suites, all 16 package byte legs, compute x9, wide-eval in four modes,
+      zlib/wide cache validation, and all 645 strict-JSON seeds in those four
+      modes. A baseline-first three-sample release A/B was regression-free:
+      zlib candidate/baseline medians were ~1.020 cold and ~1.015 warm;
+      wide medians were ~1.047 cold and ~0.854 warm. Wide arena peak was
+      exactly 83,361,792 bytes in every baseline and candidate sample; noisy
+      retained-RSS maxima stayed within the 10% gate. This is intentionally a
+      no-regression substrate result, not a compression speed or memory claim.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
-      hash-consed `i64` cell for out-of-range ints. **Deferred (see
-      above); requires the reservation arena and a shared-mode
-      publication redesign first.**
+      hash-consed `i64` cell for out-of-range ints. **The reservation and
+      codec are landed; active store adoption and shared-mode publication
+      redesign remain.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **Deferred
       with C (same re-entry conditions).**

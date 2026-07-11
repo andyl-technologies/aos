@@ -13,6 +13,7 @@ pub mod flat;
 pub mod gauges;
 pub mod gc;
 pub mod region;
+pub mod reservation;
 pub mod resident;
 pub mod safety;
 
@@ -26,10 +27,6 @@ pub use arena::{
     ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionMark, ArenaRegionPopReport,
     ArenaStats, BumpArena, HeapObjectKind, ThreadLocalBumpArena,
 };
-pub use flat::{
-    FlatAllocation, FlatObjectError, FlatObjectKind, FlatObjectRef, FlatObjectStore,
-    FlatStoredObject,
-};
 pub use budget::{
     DEFAULT_BUDGET_HEADROOM_DENOMINATOR, HeapMemoryBudget, HeapMemoryBudgetError,
     HeapMemoryBudgetResponse, HeapMemorySample,
@@ -39,6 +36,11 @@ pub use concurrent_gc::{
     LoadBarrierSlowReason, ThunkMutation, ThunkMutationBarrier, classify_load_barrier,
     classify_thunk_mutation_barrier,
 };
+pub use flat::{
+    FlatAllocation, FlatObjectError, FlatObjectKind, FlatObjectRef, FlatObjectStore,
+    FlatStoredObject,
+};
+pub use gauges::ArenaProcessGauges;
 pub use gc::{
     DEFAULT_GC_CARD_SIZE_BYTES, GcCardTable, GcCardTableClearReport, GcCardTableSnapshot,
     GcCardTableUpdate, GcDirtyCard, GcHeapAddress, GenerationalGcError, GenerationalGcTier,
@@ -63,7 +65,10 @@ pub use region::{
     AllocationRegionFacts, RegionEffect, RegionLifetime, RegionPlacement, RegionPlacementReason,
     RegionPlan, RegionRuntimeTier, RegionSharing,
 };
-pub use gauges::ArenaProcessGauges;
+pub use reservation::{
+    ArenaIndex, CANDIDATE_C_ADDRESS_SPACE_BYTES, ReservedArena, ReservedArenaAllocation,
+    ReservedArenaError, ReservedArenaMark, ReservedArenaStats,
+};
 pub use resident::{
     PeakResidentMemoryScope, ProcessResidentMemoryError, ProcessResidentMemorySample,
     ProcessResidentMemorySource, peak_resident_memory_bytes, process_resident_memory_sample,
