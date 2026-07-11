@@ -2,9 +2,11 @@
 //!
 //! Candidate C represents heap references as unsigned 32-bit byte offsets into
 //! one 4 GiB virtual reservation. [`ReservedArena`] owns that reservation,
-//! validates every pointer/index conversion against its used prefix, and bumps
-//! monotonically. The mapping is read/write but demand paged, so reserving the
-//! index space does not commit 4 GiB of resident memory.
+//! validates every pointer/index conversion against its used lanes, and bumps
+//! from both ends. Permanent/shared objects grow upward from offset zero;
+//! serial region-popped objects grow downward from the reservation end. The
+//! mapping is read/write but demand paged, so reserving the index space does
+//! not commit 4 GiB of resident memory.
 //!
 //! This module intentionally does not define concrete object layouts. It
 //! returns opaque [`HeapObject`] handles so the flat-object store can adopt the
@@ -63,8 +65,12 @@ pub struct ReservedArenaAllocation {
 pub struct ReservedArenaStats {
     /// Virtual bytes held by the reservation.
     pub virtual_reserved_bytes: usize,
-    /// Bytes in the bump allocator's used prefix, including alignment padding.
+    /// Bytes in both allocation lanes, including alignment padding.
     pub used_bytes: usize,
+    /// Bytes consumed by the low, monotonically increasing lane.
+    pub low_used_bytes: usize,
+    /// Bytes consumed by the high, rewindable decreasing lane.
+    pub high_used_bytes: usize,
     /// Bytes still available after the bump cursor.
     pub available_bytes: usize,
 }
@@ -76,19 +82,34 @@ pub struct ReservedArenaMark {
     cursor: usize,
 }
 
-impl ReservedArenaMark {
-    /// Returns the used-prefix length captured by the marker.
+/// A LIFO marker in the reservation's high, downward-growing lane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReservedArenaHighMark {
+    base_address: usize,
+    cursor: usize,
+}
+
+impl ReservedArenaHighMark {
+    /// Returns the high-lane cursor captured by the marker.
     pub const fn cursor(self) -> usize {
         self.cursor
     }
 }
 
-/// A single, monotonically allocated Candidate-C address space.
+impl ReservedArenaMark {
+    /// Returns the low-lane used-prefix length captured by the marker.
+    pub const fn cursor(self) -> usize {
+        self.cursor
+    }
+}
+
+/// A single, bidirectionally allocated Candidate-C address space.
 #[derive(Debug)]
 pub struct ReservedArena {
     base: NonNull<u8>,
     capacity: usize,
-    cursor: AtomicUsize,
+    low_cursor: AtomicUsize,
+    high_cursor: usize,
 }
 
 // SAFETY: The arena uniquely owns its anonymous mapping, which is not tied to
@@ -164,7 +185,8 @@ impl ReservedArena {
         Ok(Self {
             base,
             capacity,
-            cursor: AtomicUsize::new(0),
+            low_cursor: AtomicUsize::new(0),
+            high_cursor: capacity,
         })
     }
 
@@ -194,11 +216,11 @@ impl ReservedArena {
         align: usize,
     ) -> Result<ReservedArenaAllocation, ReservedArenaError> {
         let (start, reserved_size) = loop {
-            let cursor = self.cursor.load(Ordering::Relaxed);
+            let cursor = self.low_cursor.load(Ordering::Relaxed);
             let (start, end, reserved_size) =
                 self.plan_allocation(cursor, requested_size, align)?;
             if self
-                .cursor
+                .low_cursor
                 .compare_exchange_weak(cursor, end, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
@@ -225,7 +247,7 @@ impl ReservedArena {
         requested_size: usize,
         align: usize,
     ) -> Result<ReservedArenaAllocation, ReservedArenaError> {
-        let cursor = *self.cursor.get_mut();
+        let cursor = *self.low_cursor.get_mut();
         let base_address = self.base.as_ptr() as usize;
         let reserved_size = requested_size.max(1);
         let (start, end) = if align.is_power_of_two()
@@ -235,11 +257,11 @@ impl ReservedArena {
             let end = cursor
                 .checked_add(reserved_size)
                 .ok_or(ReservedArenaError::SizeOverflow)?;
-            if end > self.capacity || cursor > u32::MAX as usize {
+            if end > self.high_cursor || cursor > u32::MAX as usize {
                 return Err(ReservedArenaError::OutOfSpace {
                     requested_size,
                     align,
-                    available_bytes: self.capacity.saturating_sub(cursor),
+                    available_bytes: self.high_cursor.saturating_sub(cursor),
                 });
             }
             (cursor, end)
@@ -248,7 +270,54 @@ impl ReservedArena {
             (start, end)
         };
         let allocation = self.allocation_at(start, requested_size, reserved_size, align)?;
-        *self.cursor.get_mut() = end;
+        *self.low_cursor.get_mut() = end;
+        Ok(allocation)
+    }
+
+    /// Exclusively allocates from the high, downward-growing lane.
+    ///
+    /// The returned object start remains aligned while any alignment padding
+    /// is charged to the high lane. This door requires exclusive access so a
+    /// caller can pair allocations with [`Self::high_mark`] and rewind them
+    /// independently of permanent low-lane allocations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-power-of-two alignment, arithmetic overflow,
+    /// or an allocation that would collide with the low lane.
+    #[inline]
+    pub fn alloc_exclusive_high(
+        &mut self,
+        requested_size: usize,
+        align: usize,
+    ) -> Result<ReservedArenaAllocation, ReservedArenaError> {
+        if !align.is_power_of_two() {
+            return Err(ReservedArenaError::InvalidAlignment { align });
+        }
+        let reserved_size = requested_size.max(1);
+        let base_address = self.base.as_ptr() as usize;
+        let unaligned_start = self
+            .high_cursor
+            .checked_sub(reserved_size)
+            .ok_or(ReservedArenaError::SizeOverflow)?;
+        let start_address = base_address
+            .checked_add(unaligned_start)
+            .ok_or(ReservedArenaError::SizeOverflow)?
+            & !(align - 1);
+        let start = start_address
+            .checked_sub(base_address)
+            .ok_or(ReservedArenaError::SizeOverflow)?;
+        let low_cursor = *self.low_cursor.get_mut();
+        if start < low_cursor || start > u32::MAX as usize {
+            return Err(ReservedArenaError::OutOfSpace {
+                requested_size,
+                align,
+                available_bytes: self.high_cursor.saturating_sub(low_cursor),
+            });
+        }
+        let consumed_size = self.high_cursor - start;
+        let allocation = self.allocation_at(start, requested_size, consumed_size, align)?;
+        self.high_cursor = start;
         Ok(allocation)
     }
 
@@ -274,11 +343,11 @@ impl ReservedArena {
         let end = start
             .checked_add(reserved_size)
             .ok_or(ReservedArenaError::SizeOverflow)?;
-        if end > self.capacity || start > u32::MAX as usize {
+        if end > self.high_cursor || start > u32::MAX as usize {
             return Err(ReservedArenaError::OutOfSpace {
                 requested_size,
                 align,
-                available_bytes: self.capacity.saturating_sub(cursor),
+                available_bytes: self.high_cursor.saturating_sub(cursor),
             });
         }
         Ok((start, end, reserved_size))
@@ -307,14 +376,9 @@ impl ReservedArena {
         })
     }
 
-    /// Returns the live used-prefix address range, when nonempty.
-    pub(crate) fn used_region(&self) -> Option<(usize, usize)> {
-        let used = self.cursor.load(Ordering::Acquire);
-        if used == 0 {
-            return None;
-        }
-        let start = self.base.as_ptr() as usize;
-        start.checked_add(used).map(|end| (start, end))
+    /// Returns whether either allocation lane contains live bytes.
+    pub(crate) fn has_allocations(&self) -> bool {
+        self.low_cursor.load(Ordering::Acquire) != 0 || self.high_cursor != self.capacity
     }
 
     /// Returns the complete readable virtual mapping owned by the reservation.
@@ -323,27 +387,29 @@ impl ReservedArena {
         start.checked_add(self.capacity).map(|end| (start, end))
     }
 
-    /// Converts an address in the used prefix to its compressed byte offset.
+    /// Converts an address in either used lane to its compressed byte offset.
     ///
     /// The address need not be an object boundary. Concrete object registries
     /// remain responsible for validating exact allocation starts and liveness.
     ///
     /// # Errors
     ///
-    /// Returns an error when `ptr` is below the mapping base or outside the
-    /// arena's current used prefix.
+    /// Returns an error when `ptr` is outside the mapping or lies in the free
+    /// gap between the two lanes.
     pub fn index_for_pointer(
         &self,
         ptr: NonNull<HeapObject>,
     ) -> Result<ArenaIndex, ReservedArenaError> {
         let base_address = self.base.as_ptr() as usize;
         let address = ptr.as_ptr() as usize;
-        let cursor = self.cursor.load(Ordering::Acquire);
+        let low_cursor = self.low_cursor.load(Ordering::Acquire);
         let Some(offset) = address.checked_sub(base_address) else {
-            return Err(ReservedArenaError::PointerOutsideUsedPrefix { address });
+            return Err(ReservedArenaError::PointerOutsideUsedLanes { address });
         };
-        if offset >= cursor || offset > u32::MAX as usize {
-            return Err(ReservedArenaError::PointerOutsideUsedPrefix { address });
+        let in_low_lane = offset < low_cursor;
+        let in_high_lane = offset >= self.high_cursor && offset < self.capacity;
+        if (!in_low_lane && !in_high_lane) || offset > u32::MAX as usize {
+            return Err(ReservedArenaError::PointerOutsideUsedLanes { address });
         }
         Ok(ArenaIndex::new(offset as u32))
     }
@@ -355,22 +421,24 @@ impl ReservedArena {
     ///
     /// # Errors
     ///
-    /// Returns an error when `index` lies outside the arena's current used
-    /// prefix.
+    /// Returns an error when `index` lies in the free gap between the lanes.
     pub fn pointer_for_index(
         &self,
         index: ArenaIndex,
     ) -> Result<NonNull<HeapObject>, ReservedArenaError> {
         let offset = index.raw() as usize;
-        let cursor = self.cursor.load(Ordering::Acquire);
-        if offset >= cursor {
-            return Err(ReservedArenaError::IndexOutsideUsedPrefix {
+        let low_cursor = self.low_cursor.load(Ordering::Acquire);
+        let in_low_lane = offset < low_cursor;
+        let in_high_lane = offset >= self.high_cursor && offset < self.capacity;
+        if !in_low_lane && !in_high_lane {
+            return Err(ReservedArenaError::IndexOutsideUsedLanes {
                 index: index.raw(),
-                used_bytes: cursor,
+                low_used_bytes: low_cursor,
+                high_lane_start: self.high_cursor,
             });
         }
-        // SAFETY: The used-prefix check proves `offset < cursor <= capacity`,
-        // so the computed address is inside this arena's live mapping.
+        // SAFETY: The used-lane check proves `offset < capacity`, so the
+        // computed address is inside this arena's live mapping.
         let address = unsafe { self.base.as_ptr().add(offset) };
         NonNull::new(address.cast::<HeapObject>()).ok_or(ReservedArenaError::NullAllocationPointer)
     }
@@ -379,7 +447,7 @@ impl ReservedArena {
     pub fn mark(&self) -> ReservedArenaMark {
         ReservedArenaMark {
             base_address: self.base.as_ptr() as usize,
-            cursor: self.cursor.load(Ordering::Acquire),
+            cursor: self.low_cursor.load(Ordering::Acquire),
         }
     }
 
@@ -397,7 +465,7 @@ impl ReservedArena {
         &mut self,
         mark: ReservedArenaMark,
     ) -> Result<usize, ReservedArenaError> {
-        let cursor = self.cursor.get_mut();
+        let cursor = self.low_cursor.get_mut();
         if mark.base_address != self.base.as_ptr() as usize || mark.cursor > *cursor {
             return Err(ReservedArenaError::InvalidMark);
         }
@@ -406,13 +474,64 @@ impl ReservedArena {
         Ok(released)
     }
 
+    /// Captures the current downward-growing lane position.
+    pub fn high_mark(&self) -> ReservedArenaHighMark {
+        ReservedArenaHighMark {
+            base_address: self.base.as_ptr() as usize,
+            cursor: self.high_cursor,
+        }
+    }
+
+    /// Validates a high-lane marker without changing the reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReservedArenaError::InvalidMark`] for a cross-reservation
+    /// marker or one outside the current high-lane allocation history.
+    pub(crate) fn validate_high_mark(
+        &self,
+        mark: ReservedArenaHighMark,
+    ) -> Result<(), ReservedArenaError> {
+        let low_cursor = self.low_cursor.load(Ordering::Acquire);
+        if mark.base_address != self.base.as_ptr() as usize
+            || mark.cursor < self.high_cursor
+            || mark.cursor > self.capacity
+            || mark.cursor < low_cursor
+        {
+            return Err(ReservedArenaError::InvalidMark);
+        }
+        Ok(())
+    }
+
+    /// Rewinds the high lane after the caller invalidates every later handle.
+    ///
+    /// Low-lane allocations made after the marker remain live. The caller must
+    /// drop and unregister every high-lane object below the marker first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReservedArenaError::InvalidMark`] when validation fails.
+    pub fn pop_high_caller_validated_to_mark(
+        &mut self,
+        mark: ReservedArenaHighMark,
+    ) -> Result<usize, ReservedArenaError> {
+        self.validate_high_mark(mark)?;
+        let released = mark.cursor - self.high_cursor;
+        self.high_cursor = mark.cursor;
+        Ok(released)
+    }
+
     /// Returns current virtual-reservation and bump-prefix accounting.
     pub fn stats(&self) -> ReservedArenaStats {
-        let used_bytes = self.cursor.load(Ordering::Acquire);
+        let low_used_bytes = self.low_cursor.load(Ordering::Acquire);
+        let high_used_bytes = self.capacity - self.high_cursor;
+        let used_bytes = low_used_bytes.saturating_add(high_used_bytes);
         ReservedArenaStats {
             virtual_reserved_bytes: self.capacity,
             used_bytes,
-            available_bytes: self.capacity - used_bytes,
+            low_used_bytes,
+            high_used_bytes,
+            available_bytes: self.high_cursor.saturating_sub(low_used_bytes),
         }
     }
 }
@@ -501,25 +620,29 @@ pub enum ReservedArenaError {
         requested_size: usize,
         /// The caller-requested alignment.
         align: usize,
-        /// Bytes after the current cursor, before alignment padding.
+        /// Free bytes between the opposing allocation cursors.
         available_bytes: usize,
     },
-    /// A pointer was not in the current used prefix.
-    #[error("address 0x{address:x} is outside the reservation's used prefix")]
-    PointerOutsideUsedPrefix {
+    /// A pointer was outside both currently used allocation lanes.
+    #[error("address 0x{address:x} is outside the reservation's used lanes")]
+    PointerOutsideUsedLanes {
         /// The rejected native address.
         address: usize,
     },
-    /// A compressed offset was not in the current used prefix.
-    #[error("arena index {index} is outside the {used_bytes}-byte used prefix")]
-    IndexOutsideUsedPrefix {
+    /// A compressed offset was outside both currently used allocation lanes.
+    #[error(
+        "arena index {index} is outside the low {low_used_bytes}-byte lane and high lane starting at {high_lane_start}"
+    )]
+    IndexOutsideUsedLanes {
         /// The rejected byte offset.
         index: u32,
-        /// The current used-prefix length.
-        used_bytes: usize,
+        /// The low lane's current used-prefix length.
+        low_used_bytes: usize,
+        /// The high lane's current starting offset.
+        high_lane_start: usize,
     },
-    /// A rewind marker did not belong to the current live prefix.
-    #[error("reservation marker does not belong to the current live prefix")]
+    /// A rewind marker did not belong to the current live allocation lane.
+    #[error("reservation marker does not belong to the current live allocation lane")]
     InvalidMark,
 }
 
@@ -610,7 +733,7 @@ mod tests {
         ));
         assert!(matches!(
             arena.pointer_for_index(ArenaIndex::new(64)),
-            Err(ReservedArenaError::IndexOutsideUsedPrefix { .. })
+            Err(ReservedArenaError::IndexOutsideUsedLanes { .. })
         ));
         assert_eq!(
             arena
@@ -620,7 +743,70 @@ mod tests {
         );
         assert!(matches!(
             arena.index_for_pointer(NonNull::dangling()),
-            Err(ReservedArenaError::PointerOutsideUsedPrefix { .. })
+            Err(ReservedArenaError::PointerOutsideUsedLanes { .. })
+        ));
+    }
+
+    #[test]
+    fn low_and_high_lanes_share_indices_and_rewind_independently() {
+        let mut arena = ReservedArena::with_capacity(4096).expect("small reservation maps");
+        let low = arena.alloc_exclusive(24, 8).expect("low object fits");
+        let mark = arena.high_mark();
+        let high = arena.alloc_exclusive_high(40, 8).expect("high object fits");
+        assert!(low.index < high.index);
+        assert_eq!(
+            arena
+                .index_for_pointer(high.ptr)
+                .expect("high pointer encodes"),
+            high.index
+        );
+        assert_eq!(
+            arena
+                .pointer_for_index(high.index)
+                .expect("high index resolves"),
+            high.ptr
+        );
+        assert_eq!(arena.stats().low_used_bytes, 24);
+        assert_eq!(arena.stats().high_used_bytes, 40);
+
+        let later_low = arena.alloc_exclusive(8, 8).expect("later low object fits");
+        assert_eq!(
+            arena
+                .pop_high_caller_validated_to_mark(mark)
+                .expect("high marker remains valid across low allocation"),
+            40
+        );
+        assert_eq!(
+            arena
+                .index_for_pointer(later_low.ptr)
+                .expect("later low pointer encodes"),
+            later_low.index
+        );
+        assert!(matches!(
+            arena.index_for_pointer(high.ptr),
+            Err(ReservedArenaError::PointerOutsideUsedLanes { .. })
+        ));
+        let replacement = arena
+            .alloc_exclusive_high(40, 8)
+            .expect("replacement high object fits");
+        assert_eq!(replacement.index, high.index);
+        assert_eq!(replacement.ptr, high.ptr);
+    }
+
+    #[test]
+    fn opposing_lanes_reject_colliding_allocations() {
+        let mut arena = ReservedArena::with_capacity(64).expect("small reservation maps");
+        arena.alloc_exclusive(32, 8).expect("low half fits");
+        arena
+            .alloc_exclusive_high(24, 8)
+            .expect("high portion fits");
+        assert!(matches!(
+            arena.alloc_exclusive(16, 8),
+            Err(ReservedArenaError::OutOfSpace { .. })
+        ));
+        assert!(matches!(
+            arena.alloc_exclusive_high(16, 8),
+            Err(ReservedArenaError::OutOfSpace { .. })
         ));
     }
 

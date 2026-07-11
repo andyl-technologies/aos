@@ -147,7 +147,7 @@ pub struct ArenaRegionPopReport {
 }
 
 impl ArenaRegionPopReport {
-    const fn new(
+    pub(crate) const fn new(
         before: ArenaStats,
         after: ArenaStats,
         released_mapped_bytes: usize,

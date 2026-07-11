@@ -390,12 +390,28 @@ fn production_shared_arena_places_disjoint_kinds_in_one_reservation() {
     );
     let mut lists =
         FlatObjectStore::with_shared_arena(arena.clone(), FlatKindSet::of(&[FlatObjectKind::List]));
+    let mut closures = FlatObjectStore::with_rewindable_shared_arena(
+        arena.clone(),
+        FlatKindSet::of(&[FlatObjectKind::Thunk]),
+    )
+    .expect("reservation exposes one rewindable lane");
     let string = strings
         .alloc(FlatObjectKind::String, 1, 0, payload("string", &drops))
         .expect("string allocates");
     let list = lists
         .alloc(FlatObjectKind::List, 2, 0, payload("list", &drops))
         .expect("list allocates");
+    let closure_mark = closures.region_mark().expect("closure lane marks");
+    let closure = closures
+        .alloc_with_value_tail(
+            FlatObjectKind::Thunk,
+            3,
+            0,
+            &[Value::int(7)],
+            payload("closure", &drops),
+        )
+        .expect("closure allocates")
+        .allocation;
 
     let string_index = arena
         .index_for_pointer(string.ptr)
@@ -403,7 +419,11 @@ fn production_shared_arena_places_disjoint_kinds_in_one_reservation() {
     let list_index = arena
         .index_for_pointer(list.ptr)
         .expect("list has compressed index");
+    let closure_index = arena
+        .index_for_pointer(closure.ptr)
+        .expect("closure has compressed index");
     assert_ne!(string_index, list_index);
+    assert!(list_index < closure_index);
     let reservation = arena.reservation_stats().expect("reservation stats exist");
     assert_eq!(
         reservation.virtual_reserved_bytes as u64,
@@ -411,6 +431,28 @@ fn production_shared_arena_places_disjoint_kinds_in_one_reservation() {
     );
     assert_eq!(arena.stats().chunks, 1);
     assert_eq!(arena.stats().used_bytes, reservation.used_bytes);
+    assert_eq!(arena.permanent_stats().used_bytes, reservation.low_used_bytes);
+    assert_eq!(closures.arena_stats().used_bytes, reservation.high_used_bytes);
+    assert!(closures.value_tail(closure.ptr, FlatObjectKind::Thunk).is_ok());
+
+    let pop = closures.pop_region(closure_mark).expect("closure lane pops");
+    assert_eq!(pop.popped_entries(), 1);
+    assert!(pop.arena_report().used_bytes_released() > 0);
+    assert!(arena.index_for_pointer(closure.ptr).is_none());
+    assert_eq!(
+        strings
+            .resolve(string.ptr, FlatObjectKind::String)
+            .expect("low-lane string survives")
+            .payload()
+            .text,
+        "string"
+    );
+    drop(closures);
+    assert!(FlatObjectStore::<Payload>::with_rewindable_shared_arena(
+        arena,
+        FlatKindSet::of(&[FlatObjectKind::Thunk]),
+    )
+    .is_some());
 }
 
 /// A metadata-leading composite payload approximating the evaluator's

@@ -69,7 +69,7 @@ pub(crate) use alloc_counters::EvalHeapAllocationCounters;
 pub(crate) use deref_counters::{EvalHeapDerefCounters, EvalHeapDerefCountersSnapshot};
 use flat_values::FlatColdHashStore;
 pub(crate) use flat_values::attrs::FlatAttrsPayload;
-pub(crate) use flat_values::closures::FlatClosurePayload;
+pub(crate) use flat_values::closures::{FlatClosurePayload, serial_flat_closure_store};
 pub use flat_values::closures::WorkerClosurePlacement;
 
 use crate::heap::flat::{
@@ -314,8 +314,8 @@ pub struct EvalHeap {
     /// set). Used-prefix statistics are read once through this handle; the
     /// virtual 4 GiB range is not charged as resident/mapped bytes. Explicit
     /// test geometry and unsupported mappings retain the chunked fallback.
-    /// The worker-domain closure store keeps a dedicated owned arena because
-    /// lexical-region pops rewind a bump cursor.
+    /// Worker-domain closures use the reservation's downward-growing lane, so
+    /// lexical-region pops never cross permanent allocations.
     flat_arena: SharedFlatStoreArena,
     /// Flat worker-domain closure objects (doc 30 FV-3, serial mode).
     ///
@@ -323,10 +323,10 @@ pub struct EvalHeap {
     /// claim-carrying, region-popped worker kinds — live flat behind their
     /// value addresses as arena-owned payloads. Thunk force-state cells use
     /// side-owned `Arc`s so claims survive evaluator re-entry, while one store
-    /// hosts all three kinds under a single worker-region mark. The store
-    /// participates in region pops (`FlatObjectStore::pop_region`) and the B1
-    /// sweep (payload retirement in place); see `flat_values::closures` for
-    /// the placement decision and the reclamation contract.
+    /// hosts all three kinds under a single worker-region mark. Production
+    /// shares `flat_arena`'s high lane; chunked fallback stays independently
+    /// owned. The store participates in region pops and the B1 sweep; see
+    /// `flat_values::closures` for the reclamation contract.
     flat_closures: FlatObjectStore<FlatClosurePayload>,
     /// Running total of flat closures retired by the Tier-B sweep.
     ///

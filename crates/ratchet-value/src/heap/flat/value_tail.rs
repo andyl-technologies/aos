@@ -301,10 +301,7 @@ impl<T> FlatObjectStore<T> {
     /// Returns `false` when `ptr` is not an initialized `Value`-tail entry.
     pub fn retire_value_tail(&mut self, ptr: NonNull<HeapObject>) -> bool {
         let address = ptr.as_ptr() as usize;
-        let Ok(index) = self
-            .entries
-            .binary_search_by_key(&address, |entry| entry.ptr.as_ptr() as usize)
-        else {
+        let Some(index) = self.entry_index_for_address(address) else {
             return false;
         };
         let Some(entry) = self.entries.get_mut(index) else {
@@ -346,11 +343,7 @@ impl<T> FlatObjectStore<T> {
         kind: FlatObjectKind,
     ) -> Result<(&mut T, Option<&mut [Value]>), FlatObjectError> {
         let address = ptr.as_ptr() as usize;
-        let Some(store_index) = self
-            .entries
-            .binary_search_by_key(&address, |entry| entry.ptr.as_ptr() as usize)
-            .ok()
-        else {
+        let Some(store_index) = self.entry_index_for_address(address) else {
             return Err(FlatObjectError::UnknownAddress { address });
         };
         self.resolve_mut_with_value_tail_at(store_index, ptr, kind)
@@ -467,8 +460,13 @@ impl<T> FlatObjectStore<T> {
     ) -> Result<&[Value], FlatObjectError> {
         let address = ptr.as_ptr() as usize;
         let object_size = mem::size_of::<FlatObject<T>>();
-        let tail = NonNull::new(ptr.as_ptr().cast::<u8>().wrapping_add(object_size).cast::<Value>())
-            .ok_or(FlatObjectError::UnknownAddress { address })?;
+        let tail = NonNull::new(
+            ptr.as_ptr()
+                .cast::<u8>()
+                .wrapping_add(object_size)
+                .cast::<Value>(),
+        )
+        .ok_or(FlatObjectError::UnknownAddress { address })?;
         Ok(self.value_tail_slice_from_ptr(tail, len))
     }
 
@@ -483,9 +481,7 @@ impl<T> FlatObjectStore<T> {
 
     fn value_tail_entry(&self, ptr: NonNull<HeapObject>) -> Option<FlatStoreEntry> {
         let address = ptr.as_ptr() as usize;
-        self.entries
-            .binary_search_by_key(&address, |entry| entry.ptr.as_ptr() as usize)
-            .ok()
+        self.entry_index_for_address(address)
             .and_then(|index| self.entries.get(index))
             .copied()
     }
@@ -493,15 +489,23 @@ impl<T> FlatObjectStore<T> {
     /// Returns the stable registry index of an initialized `Value` tail.
     pub fn value_tail_store_index(&self, ptr: NonNull<HeapObject>) -> Option<usize> {
         let address = ptr.as_ptr() as usize;
-        let index = self
-            .entries
-            .binary_search_by_key(&address, |entry| entry.ptr.as_ptr() as usize)
-            .ok()?;
+        let index = self.entry_index_for_address(address)?;
         self.entries
             .get(index)
             .copied()
             .is_some_and(FlatStoreEntry::has_value_tail)
             .then_some(index)
+    }
+
+    fn entry_index_for_address(&self, address: usize) -> Option<usize> {
+        let ordering = |entry: &FlatStoreEntry| (entry.ptr.as_ptr() as usize).cmp(&address);
+        match &self.backing {
+            super::FlatStoreBacking::Rewindable { .. } => self
+                .entries
+                .binary_search_by(|entry| ordering(entry).reverse()),
+            _ => self.entries.binary_search_by(ordering),
+        }
+        .ok()
     }
 }
 
@@ -524,7 +528,12 @@ fn checked_value_tail<T>(
     if required > entry.size_bytes() {
         return Err(FlatObjectError::UnknownAddress { address });
     }
-    let tail = NonNull::new(ptr.as_ptr().cast::<u8>().wrapping_add(object_size).cast::<Value>())
-        .ok_or(FlatObjectError::UnknownAddress { address })?;
+    let tail = NonNull::new(
+        ptr.as_ptr()
+            .cast::<u8>()
+            .wrapping_add(object_size)
+            .cast::<Value>(),
+    )
+    .ok_or(FlatObjectError::UnknownAddress { address })?;
     Ok((tail, len))
 }

@@ -3,11 +3,10 @@
 //! Until FV-4, every [`FlatObjectStore`] owned a dedicated [`BumpArena`], so a
 //! heap hosting strings/paths, lists, and attrsets carried three independent
 //! chunk tails. [`SharedFlatStoreArena`] first collapsed those stores into one
-//! chunked bump arena; Candidate C now places the production serial permanent
-//! domain in one demand-paged 4 GiB [`ReservedArena`]. Explicit chunk-geometry
-//! constructors and unsupported mappings retain the chunked backend. Each
-//! store keeps its own registry and kind domain while all production object
-//! addresses share one checked `u32` offset space.
+//! chunked bump arena; Candidate C now places the complete production serial
+//! flat domain in one demand-paged 4 GiB [`ReservedArena`]. Permanent objects
+//! grow upward while the exclusive region-popped closure lane grows downward.
+//! Explicit chunk geometry and unsupported mappings retain chunked backends.
 //!
 //! # Soundness structure
 //!
@@ -22,10 +21,10 @@
 //!   backing stays mapped until the *last* store drops — payload drop
 //!   glue in each store's `Drop` always runs against live mappings, exactly
 //!   as with an owned arena.
-//! - **No region pops.** Lexical-region pops rewind a bump cursor, which is
-//!   only sound when one store's allocations own the rewound suffix. Shared
-//!   backings therefore reject `pop_region`; the worker-domain closure store,
-//!   which pops, keeps its dedicated owned arena.
+//! - **Independent rewind.** Permanent stores own the low lane and reject
+//!   region operations. Exactly one closure store claims the high lane; its
+//!   allocations descend, so a LIFO rewind cannot cross interleaved immortal
+//!   objects. Dropping/resetting that store rewinds to its claimed origin.
 //!
 //! # Concurrency contract
 //!
@@ -38,15 +37,19 @@
 //!
 //! [`FlatObjectStore`]: super::FlatObjectStore
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::FlatObjectKind;
 use crate::heap::advice::MemoryAdviceKind;
 use crate::heap::arena::{
-    ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaStats, BumpArena, HeapObjectKind,
+    ArenaAllocation, ArenaError, ArenaMemoryAdviceReport, ArenaRegionPopReport, ArenaStats,
+    BumpArena, HeapObjectKind,
 };
-use crate::heap::{ArenaIndex, ReservedArena, ReservedArenaError, ReservedArenaStats};
+use crate::heap::{
+    ArenaIndex, MemoryAdviceOutcome, ReservedArena, ReservedArenaError, ReservedArenaHighMark,
+    ReservedArenaStats,
+};
 use crate::value::HeapObject;
 
 /// A set of [`FlatObjectKind`]s one store is allowed to allocate and type.
@@ -85,13 +88,14 @@ enum SharedFlatStoreBacking {
     Chunked(BumpArena),
 }
 
-/// A shared handle to one serial permanent-domain arena hosting several stores.
+/// A shared handle to one serial flat-domain arena hosting several stores.
 ///
 /// See this module's documentation (`backing`) for the sharing structure
 /// and its soundness argument. Cloning the handle shares the same arena.
 #[derive(Clone, Debug)]
 pub struct SharedFlatStoreArena {
     inner: Rc<RefCell<SharedFlatStoreBacking>>,
+    rewindable_claimed: Rc<Cell<bool>>,
 }
 
 impl Default for SharedFlatStoreArena {
@@ -116,6 +120,7 @@ impl SharedFlatStoreArena {
         };
         Self {
             inner: Rc::new(RefCell::new(backing)),
+            rewindable_claimed: Rc::new(Cell::new(false)),
         }
     }
 
@@ -131,6 +136,7 @@ impl SharedFlatStoreArena {
         arena.limit_chunk_growth(super::MAX_CHUNK_BYTES.max(chunk_bytes));
         Ok(Self {
             inner: Rc::new(RefCell::new(SharedFlatStoreBacking::Chunked(arena))),
+            rewindable_claimed: Rc::new(Cell::new(false)),
         })
     }
 
@@ -153,26 +159,122 @@ impl SharedFlatStoreArena {
         };
         match &mut *backing {
             SharedFlatStoreBacking::Chunked(arena) => arena.aos_alloc_raw(size, align, kind as u32),
-            SharedFlatStoreBacking::Reserved(arena) => {
-                let reserved_size = size
-                    .max(1)
-                    .checked_add(super::MAX_ALIGN - 1)
-                    .map(|size| size & !(super::MAX_ALIGN - 1))
-                    .ok_or(ArenaError::SizeOverflow)?;
-                let allocation = arena
-                    .alloc_exclusive(reserved_size, align)
-                    .map_err(|error| reservation_allocation_error(error, size))?;
-                Ok(ArenaAllocation {
-                    ptr: allocation.ptr,
-                    kind: HeapObjectKind::Raw {
-                        type_tag: kind as u32,
-                    },
-                    requested_size: size,
-                    reserved_size: allocation.reserved_size,
-                    align: allocation.align,
-                })
-            }
+            SharedFlatStoreBacking::Reserved(arena) => reserved_allocation(
+                arena.alloc_exclusive(word_rounded_size(size)?, align),
+                size,
+                kind,
+            ),
         }
+    }
+
+    /// Reserves an object from the downward-growing region-pop lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns an allocation error if the lanes collide, or
+    /// [`ArenaError::InvalidRegionMark`] when no reservation is active.
+    #[inline]
+    pub(super) fn alloc_rewindable_raw(
+        &self,
+        size: usize,
+        align: usize,
+        kind: FlatObjectKind,
+    ) -> Result<ArenaAllocation, ArenaError> {
+        if !self.rewindable_claimed.get() {
+            return Err(ArenaError::InvalidRegionMark);
+        }
+        let Ok(mut backing) = self.inner.try_borrow_mut() else {
+            return Err(ArenaError::SizeOverflow);
+        };
+        let SharedFlatStoreBacking::Reserved(arena) = &mut *backing else {
+            return Err(ArenaError::InvalidRegionMark);
+        };
+        reserved_allocation(
+            arena.alloc_exclusive_high(word_rounded_size(size)?, align),
+            size,
+            kind,
+        )
+    }
+
+    /// Exclusively claims the reservation's high lane for one flat store.
+    pub(super) fn claim_rewindable_lane(&self) -> Result<ReservedArenaHighMark, ArenaError> {
+        if self.rewindable_claimed.replace(true) {
+            return Err(ArenaError::InvalidRegionMark);
+        }
+        let mark = match &*self.inner.borrow() {
+            SharedFlatStoreBacking::Reserved(arena) => Ok(arena.high_mark()),
+            SharedFlatStoreBacking::Chunked(_) => Err(ArenaError::InvalidRegionMark),
+        };
+        if mark.is_err() {
+            self.rewindable_claimed.set(false);
+        }
+        mark
+    }
+
+    /// Rewinds and releases the exclusively claimed high lane.
+    pub(super) fn release_rewindable_lane(
+        &self,
+        origin: ReservedArenaHighMark,
+    ) -> Result<(), ArenaError> {
+        let result = self.pop_rewindable_to_mark(origin).map(|_| ());
+        self.rewindable_claimed.set(false);
+        result
+    }
+
+    /// Captures the rewindable lane's current cursor.
+    pub(super) fn rewindable_mark(&self) -> Result<ReservedArenaHighMark, ArenaError> {
+        if !self.rewindable_claimed.get() {
+            return Err(ArenaError::InvalidRegionMark);
+        }
+        let SharedFlatStoreBacking::Reserved(arena) = &*self.inner.borrow() else {
+            return Err(ArenaError::InvalidRegionMark);
+        };
+        Ok(arena.high_mark())
+    }
+
+    /// Validates one marker against the rewindable lane.
+    pub(super) fn validate_rewindable_mark(
+        &self,
+        mark: ReservedArenaHighMark,
+    ) -> Result<(), ArenaError> {
+        if !self.rewindable_claimed.get() {
+            return Err(ArenaError::InvalidRegionMark);
+        }
+        let SharedFlatStoreBacking::Reserved(arena) = &*self.inner.borrow() else {
+            return Err(ArenaError::InvalidRegionMark);
+        };
+        arena
+            .validate_high_mark(mark)
+            .map_err(|_| ArenaError::InvalidRegionMark)
+    }
+
+    /// Rewinds the high lane to a caller-validated marker.
+    pub(super) fn pop_rewindable_to_mark(
+        &self,
+        mark: ReservedArenaHighMark,
+    ) -> Result<ArenaRegionPopReport, ArenaError> {
+        if !self.rewindable_claimed.get() {
+            return Err(ArenaError::InvalidRegionMark);
+        }
+        let Ok(mut backing) = self.inner.try_borrow_mut() else {
+            return Err(ArenaError::InvalidRegionMark);
+        };
+        let SharedFlatStoreBacking::Reserved(arena) = &mut *backing else {
+            return Err(ArenaError::InvalidRegionMark);
+        };
+        let before = reserved_lane_stats(arena.stats().high_used_bytes);
+        arena
+            .pop_high_caller_validated_to_mark(mark)
+            .map_err(|_| ArenaError::InvalidRegionMark)?;
+        Ok(ArenaRegionPopReport::new(
+            before,
+            reserved_lane_stats(arena.stats().high_used_bytes),
+            0,
+            0,
+            MemoryAdviceOutcome::EmptyRange {
+                kind: MemoryAdviceKind::Dead,
+            },
+        ))
     }
 
     /// Returns whether this handle uses the Candidate-C reservation backend.
@@ -205,14 +307,26 @@ impl SharedFlatStoreArena {
     pub fn stats(&self) -> ArenaStats {
         match &*self.inner.borrow() {
             SharedFlatStoreBacking::Chunked(arena) => arena.stats(),
+            SharedFlatStoreBacking::Reserved(arena) => reserved_arena_stats(arena),
+        }
+    }
+
+    /// Returns only the upward-growing permanent lane's accounting.
+    pub fn permanent_stats(&self) -> ArenaStats {
+        match &*self.inner.borrow() {
+            SharedFlatStoreBacking::Chunked(arena) => arena.stats(),
             SharedFlatStoreBacking::Reserved(arena) => {
-                let used_bytes = arena.stats().used_bytes;
-                ArenaStats {
-                    chunks: usize::from(used_bytes != 0),
-                    reserved_bytes: used_bytes,
-                    mapped_bytes: used_bytes,
-                    used_bytes,
-                }
+                reserved_lane_stats(arena.stats().low_used_bytes)
+            }
+        }
+    }
+
+    /// Returns only the downward-growing rewindable lane's accounting.
+    pub(super) fn rewindable_stats(&self) -> ArenaStats {
+        match &*self.inner.borrow() {
+            SharedFlatStoreBacking::Chunked(_) => ArenaStats::default(),
+            SharedFlatStoreBacking::Reserved(arena) => {
+                reserved_lane_stats(arena.stats().high_used_bytes)
             }
         }
     }
@@ -222,7 +336,7 @@ impl SharedFlatStoreArena {
     pub(super) fn chunk_count(&self) -> usize {
         match &*self.inner.borrow() {
             SharedFlatStoreBacking::Chunked(arena) => arena.chunk_count(),
-            SharedFlatStoreBacking::Reserved(arena) => usize::from(arena.used_region().is_some()),
+            SharedFlatStoreBacking::Reserved(arena) => usize::from(arena.has_allocations()),
         }
     }
 
@@ -253,6 +367,43 @@ impl SharedFlatStoreArena {
             SharedFlatStoreBacking::Chunked(arena) => arena.supported_unused_tail_advice_bytes(),
             SharedFlatStoreBacking::Reserved(_) => 0,
         }
+    }
+}
+
+fn word_rounded_size(size: usize) -> Result<usize, ArenaError> {
+    size.max(1)
+        .checked_add(super::MAX_ALIGN - 1)
+        .map(|size| size & !(super::MAX_ALIGN - 1))
+        .ok_or(ArenaError::SizeOverflow)
+}
+
+fn reserved_allocation(
+    allocation: Result<crate::heap::ReservedArenaAllocation, ReservedArenaError>,
+    size: usize,
+    kind: FlatObjectKind,
+) -> Result<ArenaAllocation, ArenaError> {
+    let allocation = allocation.map_err(|error| reservation_allocation_error(error, size))?;
+    Ok(ArenaAllocation {
+        ptr: allocation.ptr,
+        kind: HeapObjectKind::Raw {
+            type_tag: kind as u32,
+        },
+        requested_size: size,
+        reserved_size: allocation.reserved_size,
+        align: allocation.align,
+    })
+}
+
+fn reserved_arena_stats(arena: &ReservedArena) -> ArenaStats {
+    reserved_lane_stats(arena.stats().used_bytes)
+}
+
+fn reserved_lane_stats(used_bytes: usize) -> ArenaStats {
+    ArenaStats {
+        chunks: usize::from(used_bytes != 0),
+        reserved_bytes: used_bytes,
+        mapped_bytes: used_bytes,
+        used_bytes,
     }
 }
 

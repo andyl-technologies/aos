@@ -320,6 +320,10 @@ mod tests {
         // header reconstruction behind `&mut self` repairs the staged
         // structural-hash word after collector payload relocation, under the
         // existing `FlatObjectPayloadAccess` operation.
+        // flat.rs count 9 -> 6 + flat/region_ops.rs count 0 -> 3 (doc 30 FV-4
+        // dual-ended reservation): the existing drop, header wipe, and sealed
+        // rewind operations moved verbatim with lexical-region methods. No
+        // unsafe operation was added or changed.
         // flat/slice.rs count 0 -> 5 (doc 30 FV-4): the `FlatSlice` inline
         // element witness — one `from_raw_parts` read over the sealed
         // construction contract (`as_slice`), the `Send`/`Sync` impls
@@ -347,9 +351,10 @@ mod tests {
         for (file_name, expected_count) in [
             ("advice.rs", 13usize),
             ("arena.rs", 13usize),
-            ("flat.rs", 9usize),
+            ("flat.rs", 6usize),
             ("flat/alloc.rs", 4usize),
             ("flat/bytes.rs", 3usize),
+            ("flat/region_ops.rs", 3usize),
             ("flat/slice.rs", 5usize),
             ("flat/shared.rs", 3usize),
             ("flat/value_tail.rs", 3usize),
@@ -423,6 +428,7 @@ mod tests {
                     | "flat.rs"
                     | "flat/alloc.rs"
                     | "flat/bytes.rs"
+                    | "flat/region_ops.rs"
                     | "flat/slice.rs"
                     | "flat/shared.rs"
                     | "flat/value_tail.rs"

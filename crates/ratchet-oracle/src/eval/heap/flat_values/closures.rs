@@ -99,7 +99,21 @@ impl FlatClosurePayload {
     pub(in crate::eval::heap) const fn is_retired(&self) -> bool {
         matches!(self, Self::Retired(_))
     }
+}
 
+/// Creates the production closure store or its chunked platform fallback.
+pub(crate) fn serial_flat_closure_store(
+    arena: &SharedFlatStoreArena,
+) -> FlatObjectStore<FlatClosurePayload> {
+    FlatObjectStore::with_rewindable_shared_arena(
+        arena.clone(),
+        FlatKindSet::of(&[
+            FlatObjectKind::Thunk,
+            FlatObjectKind::Lambda,
+            FlatObjectKind::Primop,
+        ]),
+    )
+    .unwrap_or_else(FlatObjectStore::new)
 }
 
 impl EvalHeap {
@@ -500,7 +514,10 @@ impl EvalHeap {
     /// Retired addresses report `None`: a retired object's address must keep
     /// failing as an unknown pointer, exactly like a retired record's removed
     /// index entry.
-    pub(in crate::eval::heap) fn flat_closure_tag(&self, ptr: NonNull<HeapObject>) -> Option<ValueTag> {
+    pub(in crate::eval::heap) fn flat_closure_tag(
+        &self,
+        ptr: NonNull<HeapObject>,
+    ) -> Option<ValueTag> {
         let payload = self.flat_closure_payload_any(ptr)?;
         if payload.is_retired() {
             return None;
@@ -590,9 +607,7 @@ impl EvalHeap {
         match error {
             FlatObjectError::KindMismatch { actual, .. } => {
                 match self.flat_closures.resolve(ptr, actual) {
-                    Ok(object) if object.payload().is_retired() => {
-                        EvalHeapError::unknown(tag, ptr)
-                    }
+                    Ok(object) if object.payload().is_retired() => EvalHeapError::unknown(tag, ptr),
                     _ => EvalHeapError::record_type_mismatch(
                         tag,
                         value_tag_for_flat_kind(actual),

@@ -11803,8 +11803,9 @@ it ships).**
       atomic door; word-rounded extents preserve registry tail flags; exact
       header-kind checks preserve cross-store type safety. Memory budgets
       charge used-prefix bytes rather than virtual size, and reservation tails
-      advertise no fictitious reclaim capacity. The region-popped closure store
-      deliberately remains outside this reservation pending a lane design, and
+      advertise no fictitious reclaim capacity. At this landing the
+      region-popped closure store deliberately remained outside this reservation
+      pending a lane design, and
       the active `Value` remains 16 bytes. Focused gates passed 366 value tests,
       256 oracle heap tests, and serial zlib/wide parity. The full battery passed
       3,037 active oracle tests, the core/JIT/runtime-FFI/cache/aos-nix suites,
@@ -11814,6 +11815,30 @@ it ships).**
       `7a490a306`, three-sample serial wide means improved 3.642 -> 3.495 s cold
       and 3.076 -> 2.951 s warm; arena peak fell 79.5 -> 55.8 MiB and retained
       RSS was non-regressing.
+- [x] Current Candidate-C serial closure-lane adoption precursor: the serial
+      4 GiB reservation is dual-ended, with permanent flat objects growing
+      upward and one exclusively claimed region-popped thunk/lambda/primop
+      store growing downward. Both lanes share one checked `u32` offset space;
+      collision checks preserve separation, and high-lane marks rewind across
+      later low-lane allocations without crossing permanent objects. Drop and
+      worker reset destroy payloads, rewind to the store origin, and release
+      the claim. Lane-specific accounting avoids charging worker closures as
+      permanent storage; explicit chunk geometry and reservation failure keep
+      the prior chunked fallback. Downward value-tail registry order is handled
+      explicitly. The three existing region-pop unsafe operations moved into a
+      dedicated module with no unsafe-count increase. Focused gates passed 368
+      value tests and 256 oracle heap tests. The full battery passed 3,037
+      active oracle tests, the core/JIT/runtime-FFI/cache/aos-nix suites, the
+      38-test language aggregate, all 16 package byte legs, compute x9 under
+      JIT, wide serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and 648
+      strict-JSON expressions in all four modes. Three interleaved serial-wide
+      rounds against pristine `4260e8bfb` moved native medians
+      3.473 -> 3.412 s cold and 4.019 -> 4.031 s warm, while retained-RSS
+      medians fell about 5.5% cold and 2.7% warm. The old chunk-arena gauge's
+      55.8 MiB -> 0 movement is not a memory result: reservation storage is
+      outside that gauge, so RSS and lane accounting are authoritative. The
+      active `Value` remains 16 bytes; stable-toolchain Miri was unavailable on
+      this aarch64-Darwin host.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay
@@ -11979,10 +12004,10 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `M-4`/`Q-E` ([30](30-flat-value-architecture.md) §3).
       *The Candidate-C substrate is now landed: a real 4 GiB contiguous
       reservation, checked byte-offset index space, sealed 64-bit codec, and
-      reservation-backed shared publication plus serial permanent-domain
-      storage. Serial closure-lane placement, active evaluator/FFI/JIT ABI
-      conversion, Candidate-B construction, and the measured head-to-head
-      remain, so FV-4 is intentionally unchecked.*
+      reservation-backed shared publication plus both serial flat-store lanes.
+      Active evaluator/FFI/JIT ABI conversion, container narrowing,
+      Candidate-B construction, and the measured head-to-head remain, so FV-4
+      is intentionally unchecked.*
 - [x] FV-5 — hybrid closures: flat inline free-var capture
       (`|FV| <= K`) + linked persistent frame chains; persistent
       `with`/scoped-global lists; delete the generation-keyed capture

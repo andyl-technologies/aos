@@ -595,6 +595,7 @@ impl EvalHeap {
 
     fn with_worker_allocator(allocator: RuntimeAllocator) -> Self {
         let flat_arena = SharedFlatStoreArena::new();
+        let flat_closures = serial_flat_closure_store(&flat_arena);
         Self {
             allocator,
             permanent_allocator: PermanentSharedAllocator::new(),
@@ -629,7 +630,7 @@ impl EvalHeap {
                 FlatKindSet::of(&[FlatObjectKind::Attrs]),
             ),
             flat_arena,
-            flat_closures: FlatObjectStore::new(),
+            flat_closures,
             flat_closures_retired: 0,
             worker_closure_placement: WorkerClosurePlacement::default(),
             flat_cold_hashes: FlatColdHashStore::default(),
@@ -845,14 +846,13 @@ impl EvalHeap {
 
     /// Returns current permanent shared allocation accounting.
     ///
-    /// Includes the shared permanent-domain flat arena (FV-1/FV-2/FV-4):
-    /// flat strings, paths, lists, and attrsets are permanent-domain values
-    /// hosted in one shared arena, so its bytes stay in the permanent
-    /// columns of every budget decision and statistics surface. The arena is
-    /// read once through its handle — the sharing stores all report the same
-    /// arena and must not be summed.
+    /// Includes the shared flat arena's low permanent lane exactly once; the
+    /// high closure lane remains in [`Self::arena_stats`].
     pub fn permanent_arena_stats(&self) -> ArenaStats {
-        merged_arena_stats(self.permanent_allocator.stats(), self.flat_arena.stats())
+        merged_arena_stats(
+            self.permanent_allocator.stats(),
+            self.flat_arena.permanent_stats(),
+        )
     }
 
     /// Returns the typed-value allocation work counters for this heap.
@@ -1068,11 +1068,11 @@ impl EvalHeap {
         }
 
         let permanent_stats = self.permanent_arena_stats();
-        // Replace the flat closure store together with the worker arena: its
-        // objects are worker-domain and provably dead here (no live closures
-        // remain; retired tombstones die with their arena, and their
-        // addresses keep failing as unknown pointers in the fresh store).
-        let dropped_flat_closures = std::mem::take(&mut self.flat_closures).arena_stats();
+        // Replace the provably idle flat closure store with the worker arena.
+        let dropped_flat_store = std::mem::take(&mut self.flat_closures);
+        let dropped_flat_closures = dropped_flat_store.arena_stats();
+        drop(dropped_flat_store);
+        self.flat_closures = serial_flat_closure_store(&self.flat_arena);
         let dropped_worker_stats =
             merged_arena_stats(self.allocator.reset_to_empty(), dropped_flat_closures);
         let worker_stats_after = self.arena_stats();

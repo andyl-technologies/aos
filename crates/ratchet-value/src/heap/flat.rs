@@ -37,10 +37,10 @@
 //! A [`FlatObjectStore`] owns its backing or holds a strong shared-backing
 //! handle, so the safe API cannot outlive the memory it hands out: payload drop
 //! glue runs in the store's [`Drop`] before the last backing owner can unmap.
-//! Permanent-domain stores (strings/paths/lists/attrsets) share one Candidate-C
-//! reservation in production and never free objects individually: they model
-//! the evaluator's hash-consed immortal domain. Worker-domain
-//! stores (doc 30 stage FV-3: thunks, lambdas, primops) reclaim through
+//! Permanent-domain stores (strings/paths/lists/attrsets) grow upward in one
+//! Candidate-C reservation and never free objects individually. The exclusive
+//! worker-domain closure store grows downward in that same reservation and
+//! reclaims thunks, lambdas, and primops through
 //! exactly two doors, mirroring the record table's two mutually-exclusive
 //! reclaimers: [`FlatObjectStore::pop_region`] (LIFO lexical-region pops,
 //! addresses may be reused afterwards) and payload retirement in place
@@ -108,11 +108,13 @@ use super::arena::{
     ArenaStats, BumpArena,
 };
 use super::advice::MemoryAdviceKind;
+use super::reservation::ReservedArenaHighMark;
 use crate::value::HeapObject;
 
 mod alloc;
 mod backing;
 mod bytes;
+mod region_ops;
 pub mod shared;
 mod slice;
 mod value_tail;
@@ -355,7 +357,13 @@ impl<'a, T> FlatStoredObject<'a, T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlatStoreRegionMark {
     entries: usize,
-    arena: ArenaRegionMark,
+    backing: FlatStoreBackingMark,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FlatStoreBackingMark {
+    Owned(ArenaRegionMark),
+    Rewindable(ReservedArenaHighMark),
 }
 
 impl FlatStoreRegionMark {
@@ -397,14 +405,17 @@ pub struct FlatAllocation {
 
 /// The arena a flat store reserves object storage from.
 ///
-/// `Owned` is the pre-FV-4 shape: a dedicated per-store arena, required by
-/// stores that pop lexical regions (rewinding a bump cursor is only sound
-/// over one store's allocations). `Shared` places this store's objects in a
-/// [`SharedFlatStoreArena`] beside other stores' objects, collapsing the
-/// per-type chunk slack; see the `backing` module for the soundness argument.
+/// `Owned` is the explicit chunked compatibility shape. `Rewindable` grows
+/// downward in the shared reservation while permanent `Shared` stores grow
+/// upward, so both domains use one Candidate-C index base without crossing
+/// cursors.
 #[derive(Debug)]
 enum FlatStoreBacking {
     Owned(BumpArena),
+    Rewindable {
+        arena: SharedFlatStoreArena,
+        origin: ReservedArenaHighMark,
+    },
     Shared(SharedFlatStoreArena),
 }
 
@@ -417,6 +428,7 @@ impl FlatStoreBacking {
     ) -> Result<ArenaAllocation, ArenaError> {
         match self {
             Self::Owned(arena) => arena.aos_alloc_raw(size, MAX_ALIGN, kind as u32),
+            Self::Rewindable { arena, .. } => arena.alloc_rewindable_raw(size, MAX_ALIGN, kind),
             Self::Shared(shared) => shared.alloc_raw(size, MAX_ALIGN, kind),
         }
     }
@@ -424,8 +436,8 @@ impl FlatStoreBacking {
 
 /// An arena-backed store of flat (header + inline payload) heap objects.
 ///
-/// The store reserves storage from its backing — a dedicated Tier-A
-/// [`BumpArena`] or an FV-4 shared multi-store arena; every allocation
+/// The store reserves storage from a chunked compatibility [`BumpArena`] or
+/// an FV-4 shared multi-lane reservation; every allocation
 /// writes a [`FlatObject<T>`] in place and registers it for enumeration and
 /// drop. See the [module documentation](self) for the layout and the
 /// fail-loud contract.
@@ -509,6 +521,27 @@ impl<T> FlatObjectStore<T> {
         }
     }
 
+    /// Creates a region-popped store in a shared reservation's high lane.
+    ///
+    /// Returns `None` when the handle uses its chunked compatibility backend;
+    /// callers should retain an owned chunked store on that platform.
+    pub fn with_rewindable_shared_arena(
+        arena: SharedFlatStoreArena,
+        allowed: FlatKindSet,
+    ) -> Option<Self> {
+        if !arena.uses_reservation() {
+            return None;
+        }
+        let origin = arena.claim_rewindable_lane().ok()?;
+        Some(Self {
+            backing: FlatStoreBacking::Rewindable { arena, origin },
+            allowed,
+            entries: Vec::new(),
+            regions: Vec::new(),
+            _payload: PhantomData,
+        })
+    }
+
     /// Returns the number of flat objects in the store.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -527,6 +560,7 @@ impl<T> FlatObjectStore<T> {
     pub fn arena_stats(&self) -> ArenaStats {
         match &self.backing {
             FlatStoreBacking::Owned(arena) => arena.stats(),
+            FlatStoreBacking::Rewindable { arena, .. } => arena.rewindable_stats(),
             FlatStoreBacking::Shared(shared) => shared.stats(),
         }
     }
@@ -538,7 +572,9 @@ impl<T> FlatObjectStore<T> {
     pub fn advise_unused_tail(&self, kind: MemoryAdviceKind) -> ArenaMemoryAdviceReport {
         match &self.backing {
             FlatStoreBacking::Owned(arena) => arena.advise_unused_tail(kind),
-            FlatStoreBacking::Shared(_) => ArenaMemoryAdviceReport::empty(kind),
+            FlatStoreBacking::Rewindable { .. } | FlatStoreBacking::Shared(_) => {
+                ArenaMemoryAdviceReport::empty(kind)
+            }
         }
     }
 
@@ -549,7 +585,7 @@ impl<T> FlatObjectStore<T> {
     pub fn supported_unused_tail_advice_bytes(&self) -> usize {
         match &self.backing {
             FlatStoreBacking::Owned(arena) => arena.supported_unused_tail_advice_bytes(),
-            FlatStoreBacking::Shared(_) => 0,
+            FlatStoreBacking::Rewindable { .. } | FlatStoreBacking::Shared(_) => 0,
         }
     }
 
@@ -688,96 +724,6 @@ impl<T> FlatObjectStore<T> {
         })
     }
 
-    /// Captures the current registry and arena position for a future
-    /// lexical-region pop.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FlatObjectError::SharedArenaRegionUnsupported`] for a store
-    /// on a shared arena: rewinding a shared bump cursor would reclaim other
-    /// stores' objects, so region marks exist only over owned arenas (the
-    /// worker-domain closure store).
-    pub fn region_mark(&self) -> Result<FlatStoreRegionMark, FlatObjectError> {
-        let FlatStoreBacking::Owned(arena) = &self.backing else {
-            return Err(FlatObjectError::SharedArenaRegionUnsupported);
-        };
-        Ok(FlatStoreRegionMark {
-            entries: self.entries.len(),
-            arena: arena.region_mark(),
-        })
-    }
-
-    /// Pops every object allocated after `mark`, dropping payloads and
-    /// rewinding the owned arena (doc 30 stage FV-3, worker-domain stores).
-    ///
-    /// This is the flat analog of the record table's region truncation: the
-    /// popped objects' payloads are dropped exactly once, their header kind
-    /// words are wiped so a stale resolution of a popped address in a
-    /// retained chunk fails the magic check loudly (dropped whole chunks
-    /// leave the membership regions entirely), and the arena cursor rewinds
-    /// so later allocations may reuse the addresses — the same reuse contract
-    /// the record-table pop documents. The caller owns the reachability
-    /// proof: no retained object or live root may still reference the popped
-    /// suffix (the evaluator's region-pop validation establishes this before
-    /// calling), and marker freshness/ownership is the caller's region-mark
-    /// discipline (the evaluator wraps flat markers in its owner/epoch
-    /// checked region marks).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FlatObjectError::SharedArenaRegionUnsupported`] for a store
-    /// on a shared arena (marks are unobtainable there, so this is
-    /// defense-in-depth), [`FlatObjectError::InvalidRegionMark`] if `mark`'s
-    /// registry length exceeds the store's, or [`FlatObjectError::Arena`] if
-    /// the arena marker cannot describe the arena's current prefix. All are
-    /// rejected before any payload is dropped.
-    pub fn pop_region(
-        &mut self,
-        mark: FlatStoreRegionMark,
-    ) -> Result<FlatStorePopReport, FlatObjectError> {
-        let FlatStoreBacking::Owned(arena) = &mut self.backing else {
-            return Err(FlatObjectError::SharedArenaRegionUnsupported);
-        };
-        if mark.entries > self.entries.len() {
-            return Err(FlatObjectError::InvalidRegionMark {
-                marked_entries: mark.entries,
-                current_entries: self.entries.len(),
-            });
-        }
-        arena
-            .validate_region_mark(mark.arena)
-            .map_err(FlatObjectError::Arena)?;
-        for entry in &self.entries[mark.entries..] {
-            // SAFETY: `entry.ptr` was placement-written by an allocation
-            // method as a `FlatObject<T>` in the store-owned arena and is
-            // dropped exactly once: the registry entry is truncated below, so
-            // neither a later pop nor the store's `Drop` revisits it. The
-            // arena mapping is still live because the rewind happens after
-            // this loop.
-            unsafe { std::ptr::drop_in_place(entry.ptr.as_ptr() as *mut FlatObject<T>) };
-            // SAFETY: same in-bounds, exclusively owned allocation; wiping
-            // the kind word makes a stale resolution of this address fail the
-            // header magic check loudly instead of reading a dropped payload.
-            unsafe { (entry.ptr.as_ptr() as *mut u64).write(0) };
-        }
-        let popped_entries = self.entries.len() - mark.entries;
-        self.entries.truncate(mark.entries);
-        // SAFETY: the marker was structurally validated above and every
-        // object above it was just dropped and unregistered, so no registry
-        // entry or payload borrow refers to the rewound range; the caller's
-        // region discipline proves no live runtime value still names those
-        // addresses (stale handles fail loudly per the wipe above).
-        let arena_report = unsafe { arena.pop_region_to_mark(mark.arena) }
-            .map_err(FlatObjectError::Arena)?;
-        self.regions.clear();
-        self.regions.extend(arena.chunk_regions());
-        self.regions.sort_unstable();
-        Ok(FlatStorePopReport {
-            popped_entries,
-            arena: arena_report,
-        })
-    }
-
     /// Validates that `ptr` names one of this store's objects and reads its
     /// kind.
     #[inline]
@@ -827,7 +773,8 @@ impl<T> FlatObjectStore<T> {
                 self.regions.extend(arena.chunk_regions());
                 self.regions.sort_unstable();
             }
-            FlatStoreBacking::Shared(shared) => {
+            FlatStoreBacking::Rewindable { arena: shared, .. }
+            | FlatStoreBacking::Shared(shared) => {
                 if self.regions.len() == shared.chunk_count() {
                     return;
                 }
@@ -847,6 +794,9 @@ impl<T> Drop for FlatObjectStore<T> {
             // still live: the arena is a field of `self`, and fields drop
             // after this `Drop::drop` body returns.
             unsafe { std::ptr::drop_in_place(entry.ptr.as_ptr() as *mut FlatObject<T>) };
+        }
+        if let FlatStoreBacking::Rewindable { arena, origin } = &self.backing {
+            let _ = arena.release_rewindable_lane(*origin);
         }
     }
 }
@@ -896,9 +846,8 @@ pub enum FlatObjectError {
         /// The rejected kind.
         kind: FlatObjectKind,
     },
-    /// Region marks and pops are unsupported over a shared arena (rewinding
-    /// a shared bump cursor would reclaim other stores' objects).
-    #[error("flat store region operations are unsupported on a shared arena")]
+    /// Region marks and pops are unsupported over the permanent shared lane.
+    #[error("flat store region operations are unsupported on a permanent shared arena lane")]
     SharedArenaRegionUnsupported,
 }
 

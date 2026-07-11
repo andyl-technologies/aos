@@ -1086,12 +1086,11 @@ they conflict.
 5. **Candidate C's arena prerequisite.** Compressed indices require a
    single contiguous reservation; the Tier-A arena is chunked mmap
    (`c11acc759`). *FV-4 resolution:* the real 4 GiB reservation,
-   byte-offset index space, codec, shared-mode flat-store migration, and
-   serial permanent-domain migration are now landed (§12 FV-4). Parallel
-   flat stores and serial strings/paths/lists/attrsets now have checked `u32`
-   offsets in their mode's common reservation. Active adoption still requires
-   placing the serial region-popped closure lane in that reservation and
-   changing the evaluator/FFI/JIT value ABI.
+   byte-offset index space, codec, shared-mode flat-store migration, serial
+   permanent-domain migration, and serial closure-lane placement are now
+   landed (§12 FV-4). Parallel flat stores and all serial flat-store domains
+   now have checked `u32` offsets in their mode's common reservation. Active
+   adoption still requires changing the evaluator/FFI/JIT value ABI.
 6. **B1's fail-loud shape changes under flat objects.** Today a stale
    handle to a retired record fails as an `UnknownPointer` map miss;
    with the index gone, §2.5 substitutes header epoch/kind checks. This
@@ -1398,8 +1397,8 @@ value word (Candidates B and C) remains open and separately gated:**
    addition to the original feasibility probe, `heap/reservation.rs` now
    maps the actual demand-paged 4 GiB Candidate-C address space, bumps
    aligned objects within it, checks both pointer/index directions
-   against the used prefix, supports caller-validated rewind, and releases
-   the exact mapping. `value/compressed.rs` seals the corresponding
+   against the two used lanes, supports caller-validated high-lane rewind,
+   and releases the exact mapping. `value/compressed.rs` seals the corresponding
    high-32-bit kind/metadata + low-32-bit payload word, including inline
    `i32`, typed boxed-scalar/heap indices, and the thunk `FORCED` bit.
 2. *The shared-mode structural blocker is closed.* One
@@ -1410,12 +1409,12 @@ value word (Candidates B and C) remains open and separately gated:**
    publication replaces the boxed `OnceLock<SharedFlatObject<T>>` slot.
    Stores still return the active native-pointer handle, but every such handle
    also round-trips through the common checked `u32` index space. Unsupported
-   platforms retain the boxed compatibility backend. The serial permanent
-   domain likewise uses one reservation with a chunked fallback and an
-   exclusive cursor fast path. Its region-popped thunk/lambda/primop store
-   remains a dedicated bump arena because a shared cursor cannot rewind across
-   interleaved immortal allocations; that closure lane is now Candidate C's
-   final store blocker.
+   platforms retain the boxed compatibility backend. The serial domain likewise
+   uses one dual-ended reservation with a chunked fallback: permanent objects
+   grow upward through an exclusive low cursor while the exclusively claimed
+   region-popped thunk/lambda/primop lane grows downward. High-lane rewind is
+   independent of interleaved low-lane immortal allocations, and both lanes
+   share one checked `u32` offset space.
 3. *The current memory profile reopens the measured case.* On pristine
    `951159cc9`, `bench.wide-eval` maps 83,361,792 arena bytes and retains
    181,747,712 bytes cold / 190,382,080 bytes warm, while the sampled
@@ -1428,23 +1427,22 @@ value word (Candidates B and C) remains open and separately gated:**
    word compression as one variable; the subset below rewrites the
    payload layouts and is itself §3.5's "container slots narrowed"
    prerequisite. FV-5/FV-6 have landed and the current inactive
-   Candidate-C substrate passes independently. Shared publication and the
-   serial permanent domain are reservation-backed; serial closure-lane
-   placement and evaluator/FFI/JIT ABI conversion remain their own gates.
+   Candidate-C substrate passes independently. Shared publication and every
+   serial flat-store domain are reservation-backed; evaluator/FFI/JIT ABI
+   conversion remains its own gate.
 
 - [x] **Single shared permanent-domain flat arena** (the FV-2/FV-3
       handoff's per-type chunk-slack kill): `SharedFlatStoreArena`
-      (`heap/flat/backing.rs`), one bump arena hosting the
+      (`heap/flat/backing.rs`), one arena hosting the
       string/path, list, and attrset stores through a single-threaded
       handle; each store keeps its registry plus an allowed-kind set
       (`FlatKindSet`) so the header kind word stays a sound payload
       type witness over interleaved chunks; typed resolution rejects
-      foreign kinds before any cast, region marks/pops are rejected on
-      shared backings (the popping worker-closure store keeps its
-      owned arena), and arena stats/advice are read once through the
-      handle (`EvalHeap::flat_arena`). Gate met: arena gauges + budget
+      foreign kinds before any cast, and arena stats/advice are read once
+      through the handle (`EvalHeap::flat_arena`). Gate met: arena gauges + budget
       machinery read true (permanent columns fold the shared arena
-      once); memory columns moved down, not up.
+      once); memory columns moved down, not up. The later serial closure-lane
+      row extends this backing with a separate rewindable high lane.
 - [x] **Inline attrset arrays — and a measured NO on inline list
       spines** (doc 30 §2.3's inline payloads, generalized from FV-1b
       bytes): `FlatSlice<T>` typed inline-run witness +
@@ -1479,7 +1477,7 @@ value word (Candidates B and C) remains open and separately gated:**
       checks only magic + kind.
 - [x] **Candidate-C reservation/index/codec substrate:** one contiguous
       demand-paged 4 GiB reservation with `u32` byte offsets, absolute
-      alignment, checked used-prefix pointer/index conversion, LIFO rewind,
+      alignment, checked used-lane pointer/index conversion, LIFO rewind,
       cross-worker ownership, and exact unmap; plus a sealed 64-bit word
       codec for inline `i32`, booleans/null, boxed `i64`/`f64`, typed heap
       indices, and the thunk `FORCED` bit. The unsafe manifest pins seven
@@ -1534,7 +1532,8 @@ value word (Candidates B and C) remains open and separately gated:**
       registry tail flags. Heap budgets charge only the used prefix, not 4 GiB
       of virtual address space, and reservation unused-tail advice reports no
       fictitious reclaim capacity. The active `Value` remains 16 bytes and the
-      region-popped closure store remains on its dedicated bump arena. Focused
+      region-popped closure store remained on its dedicated bump arena at this
+      landing. Focused
       gates passed 366 value tests and 256 oracle heap/GC/budget tests. The full
       landing battery passed 3,037 active oracle tests (34 ignored), cache 112,
       core 354, JIT 261, runtime-FFI 80 (26 ignored), aos-nix 336, the 38-test
@@ -1545,12 +1544,40 @@ value word (Candidates B and C) remains open and separately gated:**
       means from 3.642 to 3.495 s cold and 3.076 to 2.951 s warm
       (-4.0%/-4.1%); arena peak fell 79.5 -> 55.8 MiB (-29.8%), while retained
       RSS moved 168.9 -> 158.3 MiB cold and 190.5 -> 190.1 MiB warm.
+- [x] **Candidate-C serial closure-lane adoption:** the same 4 GiB serial
+      reservation is now dual-ended. Permanent strings/paths/lists/attrsets
+      grow upward from the low end; one exclusively claimed
+      thunk/lambda/primop store grows downward from the high end. Opposing
+      allocations reject lane collision, both lanes use the same base and
+      checked `u32` offsets, and high-lane marks rewind independently across
+      later low-lane allocations. Drop and worker reset destroy closure
+      payloads, rewind to the store origin, and release the claim. Permanent
+      and worker memory accounting charge their own lanes without double
+      counting; explicit chunk geometry and failed/unsupported reservation
+      mappings retain the old chunked fallback. Downward registry order is
+      handled explicitly by value-tail pointer lookup. The three existing
+      region-pop unsafe operations moved into `heap/flat/region_ops.rs`; no
+      unsafe operation was added and the manifest pins the new location. The
+      active `Value` remains 16 bytes. Focused gates passed 368 value tests and
+      256 oracle heap/GC/budget tests. The full battery passed 3,037 active
+      oracle tests (34 ignored), cache 112, core 354, JIT 261, runtime-FFI 80
+      (26 ignored), aos-nix 336, the 38-test language aggregate, all 16 package
+      byte legs, compute x9 under JIT, wide-eval in
+      serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and all 648 strict
+      JSON expressions in those four modes. Miri was unavailable in the
+      installed stable aarch64-Darwin toolchain. Three interleaved serial-wide
+      release A/B rounds against pristine `4260e8bfb` moved native medians
+      3.473 -> 3.412 s cold (-1.8%) and 4.019 -> 4.031 s warm (+0.3%);
+      retained-RSS medians moved about 147.9 -> 139.8 MiB cold (-5.5%) and
+      172.7 -> 168.1 MiB warm (-2.7%). The legacy chunk-arena gauge moved
+      55.8 MiB -> 0 only because it excludes reservation-backed storage, so it
+      is no longer a comparable memory measure; RSS and lane accounting are
+      the relevant evidence.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
-      shared-mode flat-store adoption, and serial permanent-domain migration
-      are landed; serial closure-lane placement and the active ABI conversion
-      remain.**
+      shared-mode flat-store adoption, and both serial store lanes are landed;
+      the active ABI conversion and container narrowing remain.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **Deferred
       with C (same re-entry conditions).**
