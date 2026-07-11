@@ -7,7 +7,7 @@
 //! finally writes real bytes behind the arena address:
 //!
 //! ```text
-//! flat heap object (Tier-A bump arena, 8-byte aligned):
+//! flat heap object (Tier-A allocation backing, 8-byte aligned):
 //!
 //!   ┌──────────────────────────────────────────────────────────┐
 //!   │ word 0: kind word = FLAT_OBJECT_MAGIC << 32               │
@@ -34,12 +34,12 @@
 //!
 //! # Ownership and drop discipline
 //!
-//! [`FlatObjectStore`] owns its own [`BumpArena`], so the safe API cannot
-//! outlive the memory it hands out: payload drop glue runs in the store's
-//! [`Drop`] (in registry order) strictly before the owned arena unmaps its
-//! chunks (struct fields drop after `Drop::drop` returns). Permanent-domain
-//! stores (strings/paths/lists/attrsets) never free objects individually:
-//! they model the evaluator's hash-consed immortal domain. Worker-domain
+//! A [`FlatObjectStore`] owns its backing or holds a strong shared-backing
+//! handle, so the safe API cannot outlive the memory it hands out: payload drop
+//! glue runs in the store's [`Drop`] before the last backing owner can unmap.
+//! Permanent-domain stores (strings/paths/lists/attrsets) share one Candidate-C
+//! reservation in production and never free objects individually: they model
+//! the evaluator's hash-consed immortal domain. Worker-domain
 //! stores (doc 30 stage FV-3: thunks, lambdas, primops) reclaim through
 //! exactly two doors, mirroring the record table's two mutually-exclusive
 //! reclaimers: [`FlatObjectStore::pop_region`] (LIFO lexical-region pops,

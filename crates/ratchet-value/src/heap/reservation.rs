@@ -193,39 +193,105 @@ impl ReservedArena {
         requested_size: usize,
         align: usize,
     ) -> Result<ReservedArenaAllocation, ReservedArenaError> {
-        if !align.is_power_of_two() {
-            return Err(ReservedArenaError::InvalidAlignment { align });
-        }
-        let reserved_size = requested_size.max(1);
-        let base_address = self.base.as_ptr() as usize;
-        let start = loop {
+        let (start, reserved_size) = loop {
             let cursor = self.cursor.load(Ordering::Relaxed);
-            let cursor_address = base_address
-                .checked_add(cursor)
-                .ok_or(ReservedArenaError::SizeOverflow)?;
-            let aligned_address = align_up(cursor_address, align)?;
-            let start = aligned_address
-                .checked_sub(base_address)
-                .ok_or(ReservedArenaError::SizeOverflow)?;
-            let end = start
+            let (start, end, reserved_size) =
+                self.plan_allocation(cursor, requested_size, align)?;
+            if self
+                .cursor
+                .compare_exchange_weak(cursor, end, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break (start, reserved_size);
+            }
+        };
+        self.allocation_at(start, requested_size, reserved_size, align)
+    }
+
+    /// Exclusively allocates an aligned range without an atomic cursor update.
+    ///
+    /// Serial owners that already have `&mut self` use this door to retain the
+    /// same address/index contract without paying a compare-exchange per
+    /// object. It plans and commits exactly the same cursor transition as
+    /// [`Self::alloc`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-power-of-two alignment, arithmetic overflow,
+    /// or an allocation that exceeds the reservation or 32-bit offset space.
+    #[inline]
+    pub fn alloc_exclusive(
+        &mut self,
+        requested_size: usize,
+        align: usize,
+    ) -> Result<ReservedArenaAllocation, ReservedArenaError> {
+        let cursor = *self.cursor.get_mut();
+        let base_address = self.base.as_ptr() as usize;
+        let reserved_size = requested_size.max(1);
+        let (start, end) = if align.is_power_of_two()
+            && base_address & (align - 1) == 0
+            && cursor & (align - 1) == 0
+        {
+            let end = cursor
                 .checked_add(reserved_size)
                 .ok_or(ReservedArenaError::SizeOverflow)?;
-            if end > self.capacity || start > u32::MAX as usize {
+            if end > self.capacity || cursor > u32::MAX as usize {
                 return Err(ReservedArenaError::OutOfSpace {
                     requested_size,
                     align,
                     available_bytes: self.capacity.saturating_sub(cursor),
                 });
             }
-            if self
-                .cursor
-                .compare_exchange_weak(cursor, end, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                break start;
-            }
+            (cursor, end)
+        } else {
+            let (start, end, _) = self.plan_allocation(cursor, requested_size, align)?;
+            (start, end)
         };
+        let allocation = self.allocation_at(start, requested_size, reserved_size, align)?;
+        *self.cursor.get_mut() = end;
+        Ok(allocation)
+    }
 
+    #[inline]
+    fn plan_allocation(
+        &self,
+        cursor: usize,
+        requested_size: usize,
+        align: usize,
+    ) -> Result<(usize, usize, usize), ReservedArenaError> {
+        if !align.is_power_of_two() {
+            return Err(ReservedArenaError::InvalidAlignment { align });
+        }
+        let reserved_size = requested_size.max(1);
+        let base_address = self.base.as_ptr() as usize;
+        let cursor_address = base_address
+            .checked_add(cursor)
+            .ok_or(ReservedArenaError::SizeOverflow)?;
+        let aligned_address = align_up(cursor_address, align)?;
+        let start = aligned_address
+            .checked_sub(base_address)
+            .ok_or(ReservedArenaError::SizeOverflow)?;
+        let end = start
+            .checked_add(reserved_size)
+            .ok_or(ReservedArenaError::SizeOverflow)?;
+        if end > self.capacity || start > u32::MAX as usize {
+            return Err(ReservedArenaError::OutOfSpace {
+                requested_size,
+                align,
+                available_bytes: self.capacity.saturating_sub(cursor),
+            });
+        }
+        Ok((start, end, reserved_size))
+    }
+
+    #[inline]
+    fn allocation_at(
+        &self,
+        start: usize,
+        requested_size: usize,
+        reserved_size: usize,
+        align: usize,
+    ) -> Result<ReservedArenaAllocation, ReservedArenaError> {
         // SAFETY: `start < end <= capacity`, so the computed address remains
         // inside the live mapping (or at its first byte for a one-byte object).
         let address = unsafe { self.base.as_ptr().add(start) };
@@ -239,6 +305,22 @@ impl ReservedArena {
             reserved_size,
             align,
         })
+    }
+
+    /// Returns the live used-prefix address range, when nonempty.
+    pub(crate) fn used_region(&self) -> Option<(usize, usize)> {
+        let used = self.cursor.load(Ordering::Acquire);
+        if used == 0 {
+            return None;
+        }
+        let start = self.base.as_ptr() as usize;
+        start.checked_add(used).map(|end| (start, end))
+    }
+
+    /// Returns the complete readable virtual mapping owned by the reservation.
+    pub(crate) fn mapped_region(&self) -> Option<(usize, usize)> {
+        let start = self.base.as_ptr() as usize;
+        start.checked_add(self.capacity).map(|end| (start, end))
     }
 
     /// Converts an address in the used prefix to its compressed byte offset.
@@ -492,6 +574,30 @@ mod tests {
             arena.alloc(1, 3),
             Err(ReservedArenaError::InvalidAlignment { align: 3 })
         ));
+    }
+
+    #[test]
+    fn exclusive_and_atomic_allocations_share_one_monotonic_cursor() {
+        let mut arena = ReservedArena::with_capacity(4096).expect("small reservation maps");
+        let exclusive = arena
+            .alloc_exclusive(24, 8)
+            .expect("exclusive allocation fits");
+        let atomic = arena.alloc(24, 8).expect("atomic allocation fits");
+        assert_ne!(exclusive.index, atomic.index);
+        assert!(exclusive.index < atomic.index);
+        assert_eq!(
+            arena
+                .index_for_pointer(exclusive.ptr)
+                .expect("exclusive pointer encodes"),
+            exclusive.index
+        );
+        assert_eq!(
+            arena
+                .index_for_pointer(atomic.ptr)
+                .expect("atomic pointer encodes"),
+            atomic.index
+        );
+        assert_eq!(arena.stats().used_bytes, 48);
     }
 
     #[test]

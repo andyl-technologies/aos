@@ -309,13 +309,13 @@ pub struct EvalHeap {
     flat_attrs: FlatObjectStore<FlatAttrsPayload>,
     /// The shared permanent-domain flat arena (doc 30 FV-4, serial mode).
     ///
-    /// One bump arena hosts the string/path, list, and attrset stores'
-    /// objects (each store keeps its own registry and disjoint kind set),
-    /// collapsing the per-type chunk-tail slack to one tail. This handle is
-    /// the accounting and memory-advice door: statistics and unused-tail
-    /// advice for the shared arena are read/issued exactly once through it,
-    /// never per store. The worker-domain closure store keeps a dedicated
-    /// owned arena because lexical-region pops rewind a bump cursor.
+    /// One Candidate-C reservation hosts the string/path, list, and attrset
+    /// stores' objects (each store keeps its own registry and disjoint kind
+    /// set). Used-prefix statistics are read once through this handle; the
+    /// virtual 4 GiB range is not charged as resident/mapped bytes. Explicit
+    /// test geometry and unsupported mappings retain the chunked fallback.
+    /// The worker-domain closure store keeps a dedicated owned arena because
+    /// lexical-region pops rewind a bump cursor.
     flat_arena: SharedFlatStoreArena,
     /// Flat worker-domain closure objects (doc 30 FV-3, serial mode).
     ///

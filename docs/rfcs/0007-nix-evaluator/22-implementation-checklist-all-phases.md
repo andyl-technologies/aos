@@ -11795,6 +11795,25 @@ it ships).**
       pristine parent improved native means 3.515 -> 3.415 s cold and
       3.247 -> 2.903 s warm, while retained-RSS maxima fell
       629.1 -> 562.8 MiB cold and 642.1 -> 527.7 MiB warm.
+- [x] Current Candidate-C serial permanent flat-store adoption precursor:
+      production strings/paths, lists, and attrsets now share one 4 GiB
+      reservation through `SharedFlatStoreArena`, with the old chunked arena
+      retained for explicit test geometry and mapping fallback. Exclusive
+      allocation keeps the serial cursor fast while preserving the public
+      atomic door; word-rounded extents preserve registry tail flags; exact
+      header-kind checks preserve cross-store type safety. Memory budgets
+      charge used-prefix bytes rather than virtual size, and reservation tails
+      advertise no fictitious reclaim capacity. The region-popped closure store
+      deliberately remains outside this reservation pending a lane design, and
+      the active `Value` remains 16 bytes. Focused gates passed 366 value tests,
+      256 oracle heap tests, and serial zlib/wide parity. The full battery passed
+      3,037 active oracle tests, the core/JIT/runtime-FFI/cache/aos-nix suites,
+      the 38-test language aggregate, all 16 package byte legs, compute x9,
+      wide serial/K=4/JIT/sweep-zero, zlib/wide cache validation, and 648
+      strict-JSON expressions in those four modes. Against pristine
+      `7a490a306`, three-sample serial wide means improved 3.642 -> 3.495 s cold
+      and 3.076 -> 2.951 s warm; arena peak fell 79.5 -> 55.8 MiB and retained
+      RSS was non-regressing.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay
@@ -11960,10 +11979,10 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       `M-4`/`Q-E` ([30](30-flat-value-architecture.md) §3).
       *The Candidate-C substrate is now landed: a real 4 GiB contiguous
       reservation, checked byte-offset index space, sealed 64-bit codec, and
-      reservation-backed shared flat-store publication. Serial-store
-      migration, active evaluator/FFI/JIT ABI conversion, Candidate-B
-      construction, and the measured head-to-head remain, so FV-4 is
-      intentionally unchecked.*
+      reservation-backed shared publication plus serial permanent-domain
+      storage. Serial closure-lane placement, active evaluator/FFI/JIT ABI
+      conversion, Candidate-B construction, and the measured head-to-head
+      remain, so FV-4 is intentionally unchecked.*
 - [x] FV-5 — hybrid closures: flat inline free-var capture
       (`|FV| <= K`) + linked persistent frame chains; persistent
       `with`/scoped-global lists; delete the generation-keyed capture

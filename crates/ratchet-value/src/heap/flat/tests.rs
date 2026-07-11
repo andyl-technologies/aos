@@ -355,7 +355,9 @@ fn addresses_stay_stable_across_chunk_growth() {
 
 #[test]
 fn flat_arena_growth_stops_at_the_measured_four_mibibyte_ceiling() {
-    let arena = SharedFlatStoreArena::new();
+    let arena = SharedFlatStoreArena::with_initial_chunk_bytes(INITIAL_CHUNK_BYTES)
+        .expect("chunked compatibility arena creates");
+    assert!(!arena.uses_reservation());
     let sizes = [
         INITIAL_CHUNK_BYTES,
         INITIAL_CHUNK_BYTES * 2,
@@ -374,6 +376,41 @@ fn flat_arena_growth_stops_at_the_measured_four_mibibyte_ceiling() {
     assert_eq!(stats.used_bytes, sizes.iter().sum());
     assert_eq!(stats.reserved_bytes, sizes.iter().sum());
     assert_eq!(MAX_CHUNK_BYTES, 4 << 20);
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn production_shared_arena_places_disjoint_kinds_in_one_reservation() {
+    let drops = Rc::new(Cell::new(0));
+    let arena = SharedFlatStoreArena::new();
+    assert!(arena.uses_reservation());
+    let mut strings = FlatObjectStore::with_shared_arena(
+        arena.clone(),
+        FlatKindSet::of(&[FlatObjectKind::String]),
+    );
+    let mut lists =
+        FlatObjectStore::with_shared_arena(arena.clone(), FlatKindSet::of(&[FlatObjectKind::List]));
+    let string = strings
+        .alloc(FlatObjectKind::String, 1, 0, payload("string", &drops))
+        .expect("string allocates");
+    let list = lists
+        .alloc(FlatObjectKind::List, 2, 0, payload("list", &drops))
+        .expect("list allocates");
+
+    let string_index = arena
+        .index_for_pointer(string.ptr)
+        .expect("string has compressed index");
+    let list_index = arena
+        .index_for_pointer(list.ptr)
+        .expect("list has compressed index");
+    assert_ne!(string_index, list_index);
+    let reservation = arena.reservation_stats().expect("reservation stats exist");
+    assert_eq!(
+        reservation.virtual_reserved_bytes as u64,
+        crate::heap::CANDIDATE_C_ADDRESS_SPACE_BYTES
+    );
+    assert_eq!(arena.stats().chunks, 1);
+    assert_eq!(arena.stats().used_bytes, reservation.used_bytes);
 }
 
 /// A metadata-leading composite payload approximating the evaluator's
