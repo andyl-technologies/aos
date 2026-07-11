@@ -28,7 +28,8 @@ pub enum LiveRunnerLaunchKind {
 impl LiveRunnerLaunchKind {
     pub(super) const fn expected_stopped_state(self) -> crate::QmpRunStateKind {
         match self {
-            Self::DefinitionPreflight | Self::Observation => crate::QmpRunStateKind::Paused,
+            Self::DefinitionPreflight => crate::QmpRunStateKind::Prelaunch,
+            Self::Observation => crate::QmpRunStateKind::Paused,
         }
     }
 }
@@ -167,9 +168,10 @@ impl LiveRunnerConfig {
     ///
     /// The base deterministic surface comes from
     /// [`DeterministicLaunchProfile::canonical_qemu_args`]. This method only
-    /// replaces the canonical seed and serial endpoints with their verified
-    /// concrete paths, then adds firmware, guest images, QMP, and the independent
-    /// observation plugin.
+    /// replaces the canonical seed endpoint with its verified concrete path,
+    /// then adds firmware, guest images, QMP, and the independent observation
+    /// plugin. Serial remains disabled so a host-backed character device cannot
+    /// become an input to the guest.
     ///
     /// # Errors
     ///
@@ -181,8 +183,7 @@ impl LiveRunnerConfig {
         kind: LiveRunnerLaunchKind,
         artifacts: &LiveRunnerArtifacts,
     ) -> Result<LiveRunnerLaunchSpec, LiveRunnerConfigError> {
-        let qmp = path_text("qmp_socket", artifacts.qmp_socket())?;
-        let serial = path_text("serial_log", artifacts.serial_log())?;
+        let qmp = path_file_name_text("qmp_socket", artifacts.qmp_socket())?;
         let trace = path_text(
             "trace",
             match kind {
@@ -192,7 +193,6 @@ impl LiveRunnerConfig {
         )?;
 
         let mut argv = self.profile.canonical_qemu_args();
-        replace_unique_option_value(&mut argv, "-serial", "chardev:serial0".to_owned())?;
         replace_unique_option_value(
             &mut argv,
             "-fw_cfg",
@@ -211,8 +211,6 @@ impl LiveRunnerConfig {
             path_text("kernel", &self.immutable.kernel)?.to_owned(),
             "-initrd".to_owned(),
             path_text("initrd", &self.immutable.initrd)?.to_owned(),
-            "-chardev".to_owned(),
-            format!("file,id=serial0,path={serial}"),
             "-qmp".to_owned(),
             format!("unix:{qmp},server=on,wait=off"),
             "-plugin".to_owned(),
@@ -537,7 +535,7 @@ fn launch_definition_digest(
         plugin,
     } = digests;
     let material = format!(
-        "crucible.qemu.live-fingerprint-launch.v1\n{}\nqemu_path={}\nqemu_sha256={qemu}\nfirmware_path={}\nfirmware_sha256={firmware}\nkernel_path={}\nkernel_sha256={kernel}\ninitrd_path={}\ninitrd_sha256={initrd}\nseed_path={}\nseed_sha256={seed}\ntrace_plugin_path={}\ntrace_plugin_sha256={plugin}\nplugin_cadence={}\nplugin_stop_at={}\nplugin_extended=on\nplugin_mem_events=on\nplugin_rr_switch_events=on\nserial_backend=file\nqmp=unix-server-wait-off\nno_shutdown=true\nno_reboot=true",
+        "crucible.qemu.live-fingerprint-launch.v1\n{}\nqemu_path={}\nqemu_sha256={qemu}\nfirmware_path={}\nfirmware_sha256={firmware}\nkernel_path={}\nkernel_sha256={kernel}\ninitrd_path={}\ninitrd_sha256={initrd}\nseed_path={}\nseed_sha256={seed}\ntrace_plugin_path={}\ntrace_plugin_sha256={plugin}\nplugin_cadence={}\nplugin_stop_at={}\nplugin_extended=on\nplugin_mem_events=on\nplugin_rr_switch_events=on\nserial_backend=none\nqmp=unix-server-wait-off\nno_shutdown=true\nno_reboot=true",
         profile.scenario_hash_material(),
         immutable.qemu.display(),
         immutable.firmware.display(),
@@ -594,6 +592,19 @@ fn path_text<'a>(field: &'static str, path: &'a Path) -> Result<&'a str, LiveRun
     Ok(text)
 }
 
+fn path_file_name_text<'a>(
+    field: &'static str,
+    path: &'a Path,
+) -> Result<&'a str, LiveRunnerConfigError> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| LiveRunnerConfigError::InvalidTextPath {
+            field,
+            path: path.to_owned(),
+        })?;
+    path_text(field, Path::new(file_name))
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error;
@@ -645,7 +656,6 @@ mod tests {
         let spec = config.launch_spec(LiveRunnerLaunchKind::Observation, &artifacts)?;
         let argv = spec.argv();
         let mut canonical = config.profile.canonical_qemu_args();
-        replace_unique_option_value(&mut canonical, "-serial", "chardev:serial0".into())?;
         replace_unique_option_value(
             &mut canonical,
             "-fw_cfg",
@@ -657,6 +667,19 @@ mod tests {
         let canonical: Vec<OsString> = canonical.into_iter().map(OsString::from).collect();
         assert_eq!(&argv[..canonical.len()], canonical);
         assert!(!argv.iter().any(|arg| arg == OsStr::new("-S")));
+        assert!(
+            argv.windows(2)
+                .any(|pair| { pair[0] == OsStr::new("-serial") && pair[1] == OsStr::new("none") })
+        );
+        assert!(!argv.iter().any(|arg| arg == OsStr::new("-chardev")));
+        assert!(argv.windows(2).any(|pair| {
+            pair[0] == OsStr::new("-qmp")
+                && pair[1] == OsStr::new("unix:qmp.sock,server=on,wait=off")
+        }));
+        assert_eq!(
+            LiveRunnerLaunchKind::Observation.expected_stopped_state(),
+            crate::QmpRunStateKind::Paused
+        );
         let plugin = argv
             .windows(2)
             .find(|pair| pair[0] == OsStr::new("-plugin"))
@@ -669,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn preflight_waits_for_plugin_paused_boundary() -> Result<(), Box<dyn Error>> {
+    fn preflight_waits_for_qemu_prelaunch_boundary() -> Result<(), Box<dyn Error>> {
         let root_path = std::env::temp_dir().join(format!(
             "crucible-live-preflight-config-{}",
             std::process::id()
@@ -680,9 +703,13 @@ mod tests {
         let artifacts = LiveRunnerArtifactRoot::new(&root_path)?.create_attempt(2)?;
         let spec = config()?.launch_spec(LiveRunnerLaunchKind::DefinitionPreflight, &artifacts)?;
         assert!(spec.argv().iter().any(|arg| arg == OsStr::new("-S")));
+        assert!(spec.argv().windows(2).any(|pair| {
+            pair[0] == OsStr::new("-qmp")
+                && pair[1] == OsStr::new("unix:qmp.sock,server=on,wait=off")
+        }));
         assert_eq!(
             LiveRunnerLaunchKind::DefinitionPreflight.expected_stopped_state(),
-            crate::QmpRunStateKind::Paused
+            crate::QmpRunStateKind::Prelaunch
         );
         assert!(
             spec.argv()
