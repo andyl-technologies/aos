@@ -13,6 +13,7 @@ use std::io::{self, BufRead};
 
 use crucible::ContentHash;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::{
@@ -26,9 +27,10 @@ const REGISTER_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-register-component.
 const MEMORY_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-memory-component.v2";
 const DEVICE_STATE_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-device-state-component.v2";
 const DEFINITION_DOMAIN: &str = "crucible.qemu.trace-fingerprint-definition.v3";
+const GENESIS_FINGERPRINT_DOMAIN: &str = "crucible.qemu.genesis-fingerprint.v1";
 
 /// Wire-schema identifier emitted by the canonical QEMU observation plugin.
-pub const QEMU_TRACE_FINGERPRINT_SCHEMA: &str = "crucible.qemu.trace-fingerprint.v5";
+pub const QEMU_TRACE_FINGERPRINT_SCHEMA: &str = "crucible.qemu.trace-fingerprint.v6";
 
 /// Current encoding version for QEMU's process-argv self-attestation.
 pub const QEMU_PROCESS_ARGV_ATTESTATION_VERSION: u64 = 2;
@@ -485,6 +487,7 @@ impl QemuTraceDefinitionPreflight {
         require_zero(&value, "sample_register_failures", 1)?;
         require_zero(&value, "register_read_failures", 1)?;
         require_zero(&value, "device_state_failures", 1)?;
+        require_zero(&value, "rr_state_status", 1)?;
 
         let tracked_vcpus = usize_field(&value, "tracked_vcpus", 1)?;
         if tracked_vcpus == 0 {
@@ -492,6 +495,24 @@ impl QemuTraceDefinitionPreflight {
                 line: 1,
                 reason: "definition preflight must cover at least one vCPU".to_owned(),
             });
+        }
+        let rr_switch_quantum = u64_field(&value, "rr_switch_quantum", 1)?;
+        let rr_cursor_position = u64_field(&value, "rr_cursor_position", 1)?;
+        if rr_switch_quantum == 0 || rr_cursor_position != 0 {
+            return Err(malformed(
+                1,
+                "definition RR cursor must be zero at pre-execution genesis",
+            ));
+        }
+        let rr_current_vcpu_present = bool_field(&value, "rr_current_vcpu_present", 1)?;
+        let rr_current_vcpu = u64_field(&value, "rr_current_vcpu", 1)?;
+        if (rr_current_vcpu_present && rr_current_vcpu >= tracked_vcpus as u64)
+            || (!rr_current_vcpu_present && rr_current_vcpu != 0)
+        {
+            return Err(malformed(
+                1,
+                "definition RR current vCPU is not canonical for the observed topology",
+            ));
         }
         let qmp_cpu_ids = (0..tracked_vcpus as u64).collect::<Vec<_>>();
         let register_counts = array_field(&value, "register_counts", 1)?;
@@ -535,7 +556,7 @@ impl QemuTraceDefinitionPreflight {
         )?;
         let observation = QemuTraceObservationContract::new(
             qmp_cpu_ids,
-            u64_field(&value, "rr_switch_quantum", 1)?,
+            rr_switch_quantum,
             u64_field(&value, "ram_bytes", 1)?,
             u64_field(&value, "device_state_sections", 1)?,
             sha256_field(&value, "device_state_schema_digest", 1)?,
@@ -549,6 +570,197 @@ impl QemuTraceDefinitionPreflight {
     #[must_use]
     pub const fn observation(&self) -> &QemuTraceObservationContract {
         &self.observation
+    }
+}
+
+/// Isolated importer for one instruction-free genesis observation.
+///
+/// The launch and raw process argv are validated as provenance, but are not
+/// fingerprint components. The caller must separately validate the typed
+/// [`crate::LiveObservationControl`] and invocation identity that bind the
+/// requested run ordinal before importing. Consequently, two fresh launches
+/// with identical observed machine state produce the same fingerprint even
+/// though their attempt paths and argv identities differ.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuTraceGenesisFingerprintImport {
+    observation: QemuTraceObservationContract,
+    expected_process_argv: QemuTraceProcessArgvContract,
+}
+
+impl QemuTraceGenesisFingerprintImport {
+    /// Builds a genesis importer from a preflight-pinned observation shape.
+    #[must_use]
+    pub const fn new(
+        observation: QemuTraceObservationContract,
+        expected_process_argv: QemuTraceProcessArgvContract,
+    ) -> Self {
+        Self {
+            observation,
+            expected_process_argv,
+        }
+    }
+
+    /// Imports exactly one complete, non-running genesis record.
+    ///
+    /// The returned SHA-256 fingerprint is derived from the actual all-vCPU
+    /// register, RAM, non-RAM VMState, and RR scheduler state in the record.
+    /// It is not synthesized from the observation definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuTraceFingerprintImportError`] when the record count,
+    /// schema, identity, argv self-attestation, zero-icount evidence, state
+    /// coverage, component shape, scheduler state, or any failure status is
+    /// invalid.
+    pub fn import<R: BufRead>(
+        &self,
+        reader: R,
+    ) -> Result<[u8; 32], QemuTraceFingerprintImportError> {
+        let value = read_single_definition_record(reader, "genesis observation")?;
+        require_process_argv(&value, self.expected_process_argv, 1)?;
+        require_trace_identity(&value, &self.observation.identity, 1)?;
+        require_true(&value, "definition_only", 1)?;
+        require_true(&value, "observed_non_running", 1)?;
+        require_true(&value, "device_state_complete", 1)?;
+        for field in [
+            "retired",
+            "observed_icount",
+            "ram_status",
+            "device_state_status",
+            "device_state_schema_status",
+            "sample_register_failures",
+            "register_read_failures",
+            "device_state_failures",
+            "rr_state_status",
+        ] {
+            require_zero(&value, field, 1)?;
+        }
+
+        let tracked_vcpus = usize_field(&value, "tracked_vcpus", 1)?;
+        if tracked_vcpus != self.observation.qmp_cpu_ids.len() {
+            return Err(malformed(
+                1,
+                "genesis tracked vCPUs differ from the preflight/QMP contract",
+            ));
+        }
+        let register_counts = array_field(&value, "register_counts", 1)?;
+        let register_file_bytes = array_field(&value, "register_file_bytes", 1)?;
+        let register_digests = array_field(&value, "register_digests", 1)?;
+        let register_schema_digests = array_field(&value, "register_schema_digests", 1)?;
+        if [
+            register_counts.len(),
+            register_file_bytes.len(),
+            register_digests.len(),
+            register_schema_digests.len(),
+        ]
+        .iter()
+        .any(|length| *length != tracked_vcpus)
+        {
+            return Err(malformed(
+                1,
+                "genesis register arrays must cover exactly the configured vCPUs",
+            ));
+        }
+
+        let mut fingerprint = FramedSha256::new(GENESIS_FINGERPRINT_DOMAIN);
+        fingerprint.u64("tracked-vcpus", tracked_vcpus as u64);
+        for (vcpu, contract) in self.observation.vcpu_contracts.iter().enumerate() {
+            let register_count = u64_array_item(register_counts, vcpu, "register_counts", 1)?;
+            let register_bytes =
+                u64_array_item(register_file_bytes, vcpu, "register_file_bytes", 1)?;
+            let register_schema =
+                sha256_array_item(register_schema_digests, vcpu, "register_schema_digests", 1)?;
+            if register_count != contract.register_count
+                || register_bytes != contract.register_file_bytes
+                || register_schema != contract.register_schema_digest
+            {
+                return Err(malformed(
+                    1,
+                    format!("genesis vCPU {vcpu} register shape differs from preflight"),
+                ));
+            }
+            fingerprint.u64("vcpu-index", vcpu as u64);
+            fingerprint.u64("register-count", register_count);
+            fingerprint.u64("register-file-bytes", register_bytes);
+            fingerprint.bytes("register-schema-digest", &register_schema);
+            fingerprint.bytes(
+                "register-digest",
+                &sha256_array_item(register_digests, vcpu, "register_digests", 1)?,
+            );
+        }
+
+        let ram_bytes = u64_field(&value, "ram_bytes", 1)?;
+        if ram_bytes != self.observation.guest_ram_bytes {
+            return Err(malformed(
+                1,
+                "genesis RAM byte coverage differs from preflight",
+            ));
+        }
+        fingerprint.u64("ram-bytes", ram_bytes);
+        fingerprint.bytes("ram-digest", &sha256_field(&value, "ram_digest", 1)?);
+
+        let device_state_sections = u64_field(&value, "device_state_sections", 1)?;
+        let device_state_schema = sha256_field(&value, "device_state_schema_digest", 1)?;
+        if device_state_sections != self.observation.device_state_sections
+            || device_state_schema != self.observation.device_state_schema_digest
+        {
+            return Err(malformed(
+                1,
+                "genesis non-RAM VMState schema differs from preflight",
+            ));
+        }
+        let device_state_bytes = u64_field(&value, "device_state_bytes", 1)?;
+        if device_state_bytes == 0 {
+            return Err(malformed(
+                1,
+                "genesis non-RAM VMState byte coverage must be non-zero",
+            ));
+        }
+        fingerprint.u64("device-state-sections", device_state_sections);
+        fingerprint.u64("device-state-bytes", device_state_bytes);
+        fingerprint.bytes("device-state-schema-digest", &device_state_schema);
+        fingerprint.bytes(
+            "device-state-digest",
+            &sha256_field(&value, "device_state_digest", 1)?,
+        );
+
+        let rr_switch_quantum = u64_field(&value, "rr_switch_quantum", 1)?;
+        if rr_switch_quantum != self.observation.rr_switch_quantum {
+            return Err(malformed(
+                1,
+                "genesis RR switch quantum differs from preflight",
+            ));
+        }
+        let rr_cursor_position = u64_field(&value, "rr_cursor_position", 1)?;
+        if rr_cursor_position != 0 {
+            return Err(malformed(
+                1,
+                "genesis RR cursor position must be zero before execution",
+            ));
+        }
+        let rr_current_vcpu_present = bool_field(&value, "rr_current_vcpu_present", 1)?;
+        let rr_current_vcpu = u64_field(&value, "rr_current_vcpu", 1)?;
+        if rr_current_vcpu_present {
+            if rr_current_vcpu >= tracked_vcpus as u64 {
+                return Err(malformed(
+                    1,
+                    "genesis RR current vCPU is outside the observed topology",
+                ));
+            }
+        } else if rr_current_vcpu != 0 {
+            return Err(malformed(
+                1,
+                "genesis RR current vCPU must be canonical zero when absent",
+            ));
+        }
+        fingerprint.bytes(
+            "rr-current-vcpu-present",
+            &[u8::from(rr_current_vcpu_present)],
+        );
+        fingerprint.u64("rr-current-vcpu", rr_current_vcpu);
+        fingerprint.u64("rr-cursor-position", rr_cursor_position);
+        fingerprint.u64("rr-switch-quantum", rr_switch_quantum);
+        Ok(fingerprint.finish())
     }
 }
 
@@ -1183,6 +1395,95 @@ pub enum QemuTraceFingerprintImportError {
         /// Underlying canonical stream error.
         source: SingleVmFingerprintGateError,
     },
+}
+
+struct FramedSha256 {
+    hasher: Sha256,
+}
+
+impl FramedSha256 {
+    fn new(domain: &str) -> Self {
+        let mut hasher = Sha256::new();
+        update_framed(&mut hasher, domain.as_bytes());
+        Self { hasher }
+    }
+
+    fn bytes(&mut self, label: &str, bytes: &[u8]) {
+        update_framed(&mut self.hasher, label.as_bytes());
+        update_framed(&mut self.hasher, bytes);
+    }
+
+    fn u64(&mut self, label: &str, value: u64) {
+        self.bytes(label, &value.to_be_bytes());
+    }
+
+    fn finish(self) -> [u8; 32] {
+        self.hasher.finalize().into()
+    }
+}
+
+fn update_framed(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
+fn read_single_definition_record<R: BufRead>(
+    reader: R,
+    purpose: &str,
+) -> Result<Value, QemuTraceFingerprintImportError> {
+    let mut records = reader.lines();
+    let line = records
+        .next()
+        .ok_or(QemuTraceFingerprintImportError::IncompleteTrace {
+            reason: "definition-shaped state record is absent",
+        })?
+        .map_err(|source| QemuTraceFingerprintImportError::Io { line: 1, source })?;
+    if line.trim().is_empty() {
+        return Err(malformed(1, format!("blank {purpose} record")));
+    }
+    if records.next().is_some() {
+        return Err(malformed(
+            2,
+            format!("{purpose} must contain exactly one record"),
+        ));
+    }
+    let value: Value = serde_json::from_str(&line)
+        .map_err(|source| QemuTraceFingerprintImportError::Json { line: 1, source })?;
+    require_str(&value, "kind", "definition", 1)?;
+    require_str(&value, "schema", QEMU_TRACE_FINGERPRINT_SCHEMA, 1)?;
+    Ok(value)
+}
+
+fn require_trace_identity(
+    value: &Value,
+    identity: &QemuTraceIdentityContract,
+    line: usize,
+) -> Result<(), QemuTraceFingerprintImportError> {
+    require_str(
+        value,
+        "launch_definition_digest",
+        &identity.launch_definition_digest,
+        line,
+    )?;
+    require_str(
+        value,
+        "qemu_build_digest",
+        &identity.qemu_build_digest,
+        line,
+    )?;
+    require_str(
+        value,
+        "trace_plugin_build_digest",
+        &identity.trace_plugin_build_digest,
+        line,
+    )
+}
+
+fn malformed(line: usize, reason: impl Into<String>) -> QemuTraceFingerprintImportError {
+    QemuTraceFingerprintImportError::MalformedTrace {
+        line,
+        reason: reason.into(),
+    }
 }
 
 fn component_digest(domain: &str, material: &str) -> Vec<u8> {

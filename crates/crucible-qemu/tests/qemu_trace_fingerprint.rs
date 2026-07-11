@@ -9,9 +9,9 @@ use std::io::{BufRead, Cursor};
 
 use crucible_qemu::{
     QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
-    QemuTraceFingerprintImport, QemuTraceFingerprintImportError, QemuTraceIdentityContract,
-    QemuTraceObservationContract, QemuTraceProcessArgvContract, QemuTraceVcpuContract,
-    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintMismatchKind,
+    QemuTraceFingerprintImport, QemuTraceFingerprintImportError, QemuTraceGenesisFingerprintImport,
+    QemuTraceIdentityContract, QemuTraceObservationContract, QemuTraceProcessArgvContract,
+    QemuTraceVcpuContract, SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintMismatchKind,
     SingleVmFingerprintSampleDifference, compare_single_vm_fingerprint_streams,
 };
 use serde_json::{Value, json};
@@ -87,6 +87,18 @@ fn definition_preflight_is_independent_complete_and_instruction_free() {
         .expect_err("failed VMState schema observation must fail closed");
     assert!(error.to_string().contains("device_state_schema_status"));
 
+    let mut rr_failure = definition_preflight(2);
+    rr_failure["rr_state_status"] = Value::from(1);
+    let error = import_preflight(Cursor::new(rr_failure.to_string()))
+        .expect_err("failed RR-state observation must fail closed");
+    assert!(error.to_string().contains("rr_state_status"));
+
+    let mut impossible_rr_cursor = definition_preflight(2);
+    impossible_rr_cursor["rr_cursor_position"] = Value::from(1);
+    let error = import_preflight(Cursor::new(impossible_rr_cursor.to_string()))
+        .expect_err("zero-icount preflight cannot have an advanced RR cursor");
+    assert!(error.to_string().contains("RR cursor"));
+
     let mut missing_encoding = definition_preflight(2);
     missing_encoding
         .as_object_mut()
@@ -101,6 +113,79 @@ fn definition_preflight_is_independent_complete_and_instruction_free() {
     let error = import_preflight(Cursor::new(wrong_digest.to_string()))
         .expect_err("mismatched process argv digest must fail closed");
     assert!(error.to_string().contains("process_argv_digest"));
+}
+
+#[test]
+fn genesis_fingerprint_is_state_derived_and_independent_of_verified_argv() {
+    let first_contract = process_argv_contract();
+    let second_contract =
+        QemuTraceProcessArgvContract::new(4, 19, [0x66; 32]).expect("second argv validates");
+    let first = definition_preflight(2);
+    let mut second = first.clone();
+    second["process_argv_argc"] = Value::from(second_contract.argc());
+    second["process_argv_raw_bytes"] = Value::from(second_contract.raw_bytes());
+    second["process_argv_digest"] = Value::String("66".repeat(32));
+
+    let first_fingerprint = QemuTraceGenesisFingerprintImport::new(observation(2), first_contract)
+        .import(Cursor::new(first.to_string()))
+        .expect("first genesis argv should import");
+    let second_fingerprint =
+        QemuTraceGenesisFingerprintImport::new(observation(2), second_contract)
+            .import(Cursor::new(second.to_string()))
+            .expect("second genesis argv should import");
+    assert_eq!(first_fingerprint, second_fingerprint);
+}
+
+#[test]
+fn genesis_fingerprint_fails_closed_or_changes_for_every_state_class() {
+    let importer = QemuTraceGenesisFingerprintImport::new(observation(2), process_argv_contract());
+    let baseline = importer
+        .import(Cursor::new(definition_preflight(2).to_string()))
+        .expect("baseline genesis should import");
+
+    for (label, mut drifted) in [
+        ("register", definition_preflight(2)),
+        ("ram", definition_preflight(2)),
+        ("device", definition_preflight(2)),
+    ] {
+        match label {
+            "register" => drifted["register_digests"][1] = Value::String("71".repeat(32)),
+            "ram" => drifted["ram_digest"] = Value::String("72".repeat(32)),
+            "device" => drifted["device_state_digest"] = Value::String("73".repeat(32)),
+            _ => unreachable!("fixture labels are exhaustive"),
+        }
+        let fingerprint = importer
+            .import(Cursor::new(drifted.to_string()))
+            .expect("complete state drift remains observable");
+        assert_ne!(baseline, fingerprint, "{label} drift must change genesis");
+    }
+
+    let mut impossible_rr_cursor = definition_preflight(2);
+    impossible_rr_cursor["rr_cursor_position"] = Value::from(1);
+    let error = importer
+        .import(Cursor::new(impossible_rr_cursor.to_string()))
+        .expect_err("zero-icount genesis cannot have an advanced RR cursor");
+    assert!(error.to_string().contains("RR cursor"));
+
+    for field in [
+        "sample_register_failures",
+        "register_read_failures",
+        "ram_status",
+        "device_state_status",
+        "device_state_schema_status",
+        "device_state_failures",
+        "rr_state_status",
+    ] {
+        let mut failed = definition_preflight(2);
+        failed[field] = Value::from(1);
+        let error = importer
+            .import(Cursor::new(failed.to_string()))
+            .expect_err("capture failure must reject genesis");
+        assert!(
+            error.to_string().contains(field),
+            "unexpected {field} error"
+        );
+    }
 }
 
 #[test]
@@ -490,6 +575,10 @@ fn definition_preflight(vcpus: usize) -> Value {
         "observed_icount": 0,
         "tracked_vcpus": vcpus,
         "rr_switch_quantum": 4096,
+        "rr_state_status": 0,
+        "rr_current_vcpu_present": false,
+        "rr_current_vcpu": 0,
+        "rr_cursor_position": 0,
         "launch_definition_digest": "10".repeat(32),
         "qemu_build_digest": "20".repeat(32),
         "trace_plugin_build_digest": "30".repeat(32),

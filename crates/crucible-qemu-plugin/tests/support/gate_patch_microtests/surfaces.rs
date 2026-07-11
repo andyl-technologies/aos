@@ -146,7 +146,7 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     );
     assert_contains(
         &qemu_process_argv_attestation,
-        "crucible.qemu.trace-fingerprint.v5",
+        "crucible.qemu.trace-fingerprint.v6",
     );
     assert_contains(&qemu_process_argv_attestation, "actual_argv_digest=");
     assert_contains(&qemu_process_argv_attestation, "control_digest=");

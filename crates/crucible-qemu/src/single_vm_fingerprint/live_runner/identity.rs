@@ -36,7 +36,7 @@ pub enum LiveObservationMode {
     ExactTarget {
         /// Definition-pinned periodic fingerprint cadence.
         cadence_icount: u64,
-        /// Exact nonzero aggregate instruction target.
+        /// Exact aggregate instruction target; zero selects paused genesis.
         target_icount: u64,
         /// Fixed-run ordinal being replayed.
         ordinal: SingleVmFingerprintRunOrdinal,
@@ -72,6 +72,15 @@ impl LiveObservationMode {
                 stop_at_target: true,
                 exact_target: false,
             },
+            Self::ExactTarget {
+                target_icount: 0, ..
+            } => LiveObservationModeFlags {
+                version: MODE_FLAGS_VERSION,
+                definition_only: true,
+                periodic_sampling: false,
+                stop_at_target: false,
+                exact_target: true,
+            },
             Self::ExactTarget { .. } => LiveObservationModeFlags {
                 version: MODE_FLAGS_VERSION,
                 definition_only: false,
@@ -105,7 +114,7 @@ impl LiveObservationMode {
         hasher.finish()
     }
 
-    /// Returns the periodic cadence when this mode executes the guest.
+    /// Returns the definition-bound cadence carried by observation and exact modes.
     #[must_use]
     pub const fn cadence_icount(self) -> Option<u64> {
         match self {
@@ -223,7 +232,7 @@ impl LiveObservationControl {
             } => {
                 validate_executing_mode(cadence_icount, fields.horizon_icount)?;
                 require_definition_digest(fields.definition_digest, fields.mode)?;
-                if target_icount == 0 || target_icount > fields.horizon_icount {
+                if target_icount > fields.horizon_icount {
                     return Err(LiveIdentityError::InvalidModeTarget {
                         mode: fields.mode,
                         target: target_icount,
@@ -779,6 +788,28 @@ mod tests {
                 ..exact_fields()
             })
             .is_ok()
+        );
+        let genesis = LiveObservationMode::ExactTarget {
+            cadence_icount: 100,
+            target_icount: 0,
+            ordinal: SingleVmFingerprintRunOrdinal::Second,
+        };
+        assert!(
+            LiveObservationControl::new(LiveObservationControlFields {
+                mode: genesis,
+                ..exact_fields()
+            })
+            .is_ok()
+        );
+        assert_eq!(
+            genesis.flags(),
+            LiveObservationModeFlags {
+                version: MODE_FLAGS_VERSION,
+                definition_only: true,
+                periodic_sampling: false,
+                stop_at_target: false,
+                exact_target: true,
+            }
         );
     }
 

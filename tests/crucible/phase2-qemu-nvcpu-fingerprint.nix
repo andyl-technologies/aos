@@ -369,7 +369,7 @@
       }
       {
         label = "trace plugin versioned schema";
-        needle = "crucible.qemu.trace-fingerprint.v5";
+        needle = "crucible.qemu.trace-fingerprint.v6";
       }
       {
         label = "trace plugin register schema hashes";
@@ -426,6 +426,14 @@
       {
         label = "definition records pre-execution pause";
         needle = "observed_non_running";
+      }
+      {
+        label = "definition records complete genesis RR state";
+        needle = "rr_state_status";
+      }
+      {
+        label = "definition records inactive genesis RR cursor explicitly";
+        needle = "rr_current_vcpu_present";
       }
       {
         label = "definition records serialized device-state status";
@@ -948,7 +956,7 @@ in
                 '($prepared[0]) as $argv
                  | length == 1 and (.[0] | (
                   .kind == "definition"
-                  and .schema == "crucible.qemu.trace-fingerprint.v5"
+                  and .schema == "crucible.qemu.trace-fingerprint.v6"
                   and .process_argv_status == 0
                   and .process_argv_attestation_version == 2
                   and .process_argv_encoding == "raw-unix-argv-v2"
@@ -966,6 +974,13 @@ in
                   and .retired == 0
                   and .tracked_vcpus == 4
                   and .rr_switch_quantum == $quantum
+                  and .rr_state_status == 0
+                  and (.rr_current_vcpu_present | type == "boolean")
+                  and (.rr_current_vcpu | type == "number")
+                  and .rr_current_vcpu >= 0
+                  and .rr_current_vcpu < 4
+                  and (.rr_current_vcpu_present or .rr_current_vcpu == 0)
+                  and .rr_cursor_position == 0
                   and .launch_definition_digest == $launch_definition_digest
                   and .qemu_build_digest == $qemu_build_digest
                   and .trace_plugin_build_digest == $trace_plugin_build_digest
@@ -1065,7 +1080,7 @@ in
                 | ($samples | last) as $horizon_sample
                 | ($samples | map(.observed_icount)) == ([range($cadence; $horizon; $cadence)] + [$horizon])
                 and all($samples[]; (
-                  .schema == "crucible.qemu.trace-fingerprint.v5"
+                  .schema == "crucible.qemu.trace-fingerprint.v6"
                   and .process_argv_status == 0
                   and .process_argv_attestation_version == 2
                   and .process_argv_encoding == "raw-unix-argv-v2"
@@ -1432,7 +1447,7 @@ in
             actual_argv_hash_complete=true
             observation_contract_source=independent-definition-only-qemu-preflight
             independent_observation_contract=true
-            fingerprint_definition=canonical-periodic-and-event-boundary-trace-v5
+            fingerprint_definition=canonical-periodic-and-event-boundary-trace-v6
             periodic_cadence=600000000-real-smp-guest
             live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum
             postprocessing_negative_controls=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology

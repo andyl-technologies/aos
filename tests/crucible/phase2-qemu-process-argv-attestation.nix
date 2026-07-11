@@ -135,8 +135,8 @@
         needle = "invalid process argv self-attestation";
       }
       {
-        label = "v5 trace schema";
-        needle = "crucible.qemu.trace-fingerprint.v5";
+        label = "v6 trace schema";
+        needle = "crucible.qemu.trace-fingerprint.v6";
       }
       {
         label = "trace process argv digest evidence";
@@ -145,8 +145,8 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/single_vm_fingerprint/trace.rs" traceImporterSource [
       {
-        label = "v5 importer schema";
-        needle = "crucible.qemu.trace-fingerprint.v5";
+        label = "v6 importer schema";
+        needle = "crucible.qemu.trace-fingerprint.v6";
       }
       {
         label = "required v2 process argv definition material";
