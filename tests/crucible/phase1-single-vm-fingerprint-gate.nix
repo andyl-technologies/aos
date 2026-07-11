@@ -479,8 +479,8 @@
         needle = "static uint64_t retired;";
       }
       {
-        label = "icount cadence sample trigger";
-        needle = "if (!post_boundary_samples && retired >= next_sample)";
+        label = "icount cadence observer trigger";
+        needle = "const bool periodic_due = current_icount >= next_sample;";
       }
       {
         label = "cadence advances by instruction period";

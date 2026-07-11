@@ -258,6 +258,13 @@
       enforces = "DET-29,PLUG-35";
       capability = "exact observer budget clamp and BQL-held fingerprint capture boundary";
     }
+    {
+      file = "0035-crucible-process-argv-attestation.patch";
+      catalogName = "crucible-process-argv-attestation";
+      class = "F";
+      enforces = "DET-31,QEMU-34";
+      capability = "process-entry raw Unix argc/argv v2 SHA-256 self-attestation exposed to observation plugins";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

@@ -13,7 +13,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define FNV1A64_OFFSET 14695981039346656037ULL
 #define FNV1A64_PRIME 1099511628211ULL
 #define MAX_TRACKED_VCPUS 256U
-#define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v4"
+#define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v5"
 #define ZERO_SHA256_HEX \
   "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -95,6 +95,9 @@ static bool rr_switch_trace_initialized;
 static const char *launch_definition_digest = ZERO_SHA256_HEX;
 static const char *qemu_build_digest = ZERO_SHA256_HEX;
 static const char *trace_plugin_build_digest = ZERO_SHA256_HEX;
+static struct qemu_plugin_crucible_process_argv_attestation
+    process_argv_attestation;
+static int process_argv_status = -1;
 
 static void
 on_sim_publish_icount(uint64_t current_icount, void *userdata)
@@ -551,6 +554,7 @@ record_definition(void)
   char ram_digest_hex[65];
   char device_state_digest_hex[65];
   char device_state_schema_digest_hex[65];
+  char process_argv_digest_hex[65];
 
   definition_emitted = true;
   stop_requested = true;
@@ -560,6 +564,7 @@ record_definition(void)
   digest_hex(ram_digest, ram_digest_hex);
   digest_hex(device_state.digest, device_state_digest_hex);
   digest_hex(device_state.schema_digest, device_state_schema_digest_hex);
+  digest_hex(process_argv_attestation.sha256, process_argv_digest_hex);
   fprintf(
       trace_file,
       "{\"kind\":\"definition\""
@@ -573,6 +578,12 @@ record_definition(void)
       ",\"launch_definition_digest\":\"%s\""
       ",\"qemu_build_digest\":\"%s\""
       ",\"trace_plugin_build_digest\":\"%s\""
+      ",\"process_argv_attestation_version\":%" PRIu32
+      ",\"process_argv_encoding\":\"raw-unix-argv-v2\""
+      ",\"process_argv_argc\":%" PRIu64
+      ",\"process_argv_raw_bytes\":%" PRIu64
+      ",\"process_argv_digest\":\"%s\""
+      ",\"process_argv_status\":%d"
       ",\"register_counts\":[",
       retired,
       observed_icount,
@@ -581,7 +592,12 @@ record_definition(void)
       rr_switch_quantum,
       launch_definition_digest,
       qemu_build_digest,
-      trace_plugin_build_digest);
+      trace_plugin_build_digest,
+      process_argv_attestation.version,
+      process_argv_attestation.argc,
+      process_argv_attestation.raw_bytes,
+      process_argv_digest_hex,
+      process_argv_status);
 
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
     fprintf(
@@ -777,12 +793,14 @@ record_sample(unsigned int vcpu_index, bool final)
   char device_state_digest_hex[65];
   char device_state_schema_digest_hex[65];
   char trajectory_digest_hex[65];
+  char process_argv_digest_hex[65];
 
   register_diagnostic_fnv = diagnostic_register_fnv(&register_digests);
   digest_hex(ram_digest, ram_digest_hex);
   digest_hex(device_state.digest, device_state_digest_hex);
   digest_hex(device_state.schema_digest, device_state_schema_digest_hex);
   digest_hex(trajectory_digest, trajectory_digest_hex);
+  digest_hex(process_argv_attestation.sha256, process_argv_digest_hex);
 
   const bool rr_cursor_valid = read_rr_cursor_snapshot(
       &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum);
@@ -864,6 +882,12 @@ record_sample(unsigned int vcpu_index, bool final)
       ",\"launch_definition_digest\":\"%s\""
       ",\"qemu_build_digest\":\"%s\""
       ",\"trace_plugin_build_digest\":\"%s\""
+      ",\"process_argv_attestation_version\":%" PRIu32
+      ",\"process_argv_encoding\":\"raw-unix-argv-v2\""
+      ",\"process_argv_argc\":%" PRIu64
+      ",\"process_argv_raw_bytes\":%" PRIu64
+      ",\"process_argv_digest\":\"%s\""
+      ",\"process_argv_status\":%d"
       ",\"stream_hash\":\"%016" PRIx64 "\""
       ",\"register_digests\":[",
       retired,
@@ -888,6 +912,11 @@ record_sample(unsigned int vcpu_index, bool final)
       launch_definition_digest,
       qemu_build_digest,
       trace_plugin_build_digest,
+      process_argv_attestation.version,
+      process_argv_attestation.argc,
+      process_argv_attestation.raw_bytes,
+      process_argv_digest_hex,
+      process_argv_status,
       stream_hash);
 
   for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
@@ -1425,10 +1454,32 @@ parse_bool_flag(const char *text)
          strcmp(text, "true") == 0 || strcmp(text, "yes") == 0;
 }
 
+static bool
+digest_is_zero(const unsigned char digest[32])
+{
+  for (size_t i = 0; i < 32; i++) {
+    if (digest[i] != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 QEMU_PLUGIN_EXPORT int
 qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char **argv)
 {
   const char *out_path = NULL;
+
+  memset(&process_argv_attestation, 0, sizeof(process_argv_attestation));
+  process_argv_status = qemu_plugin_crucible_process_argv_attestation(
+      &process_argv_attestation);
+  if (process_argv_status != 0 || process_argv_attestation.version != 2 ||
+      process_argv_attestation.argc == 0 ||
+      digest_is_zero(process_argv_attestation.sha256)) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: invalid process argv self-attestation\n");
+    return -1;
+  }
 
   if (info != NULL && info->system.smp_vcpus > 0) {
     tracked_vcpus = (unsigned int)info->system.smp_vcpus;

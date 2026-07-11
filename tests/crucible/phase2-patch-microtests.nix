@@ -237,6 +237,12 @@
         inherit pkgs lib qemuPackage;
       };
     }
+    {
+      patch = "0035-crucible-process-argv-attestation.patch";
+      check = import ./phase2-qemu-process-argv-attestation.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

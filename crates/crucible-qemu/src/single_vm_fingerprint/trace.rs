@@ -25,10 +25,69 @@ use super::{
 const REGISTER_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-register-component.v2";
 const MEMORY_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-memory-component.v2";
 const DEVICE_STATE_COMPONENT_DOMAIN: &str = "crucible.qemu.trace-device-state-component.v2";
-const DEFINITION_DOMAIN: &str = "crucible.qemu.trace-fingerprint-definition.v2";
+const DEFINITION_DOMAIN: &str = "crucible.qemu.trace-fingerprint-definition.v3";
 
 /// Wire-schema identifier emitted by the canonical QEMU observation plugin.
-pub const QEMU_TRACE_FINGERPRINT_SCHEMA: &str = "crucible.qemu.trace-fingerprint.v4";
+pub const QEMU_TRACE_FINGERPRINT_SCHEMA: &str = "crucible.qemu.trace-fingerprint.v5";
+
+/// Current encoding version for QEMU's process-argv self-attestation.
+pub const QEMU_PROCESS_ARGV_ATTESTATION_VERSION: u64 = 2;
+
+/// Independently computed contract for QEMU's original process argument vector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QemuTraceProcessArgvContract {
+    argc: u64,
+    raw_bytes: u64,
+    digest: [u8; 32],
+}
+
+impl QemuTraceProcessArgvContract {
+    /// Builds an expected process-argv attestation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuTraceFingerprintImportError::InvalidContract`] when
+    /// `argc` or the digest is zero.
+    pub fn new(
+        argc: u64,
+        raw_bytes: u64,
+        digest: [u8; 32],
+    ) -> Result<Self, QemuTraceFingerprintImportError> {
+        if argc == 0 {
+            return Err(QemuTraceFingerprintImportError::InvalidContract {
+                reason: "process argv argc must be non-zero",
+            });
+        }
+        if digest == [0; 32] {
+            return Err(QemuTraceFingerprintImportError::InvalidContract {
+                reason: "process argv digest must be non-zero",
+            });
+        }
+        Ok(Self {
+            argc,
+            raw_bytes,
+            digest,
+        })
+    }
+
+    /// Returns the expected process argument count.
+    #[must_use]
+    pub const fn argc(self) -> u64 {
+        self.argc
+    }
+
+    /// Returns the expected sum of bytes across all process arguments.
+    #[must_use]
+    pub const fn raw_bytes(self) -> u64 {
+        self.raw_bytes
+    }
+
+    /// Returns the expected v2 process-argv SHA-256 digest.
+    #[must_use]
+    pub const fn digest(self) -> [u8; 32] {
+        self.digest
+    }
+}
 
 /// Canonical fingerprint definition pinned by an independent QEMU preflight.
 ///
@@ -90,6 +149,7 @@ fn definition_material(cadence_icount: u64, observation: &QemuTraceObservationCo
         "component[3]=qemu-non-ram-vmstate-sha256-v1".to_owned(),
         "complete_current_device_state=true".to_owned(),
         "event_boundary_sampling=true".to_owned(),
+        "process_argv_attestation=raw-unix-argv-v2-required".to_owned(),
         format!("rr_switch_quantum={}", observation.rr_switch_quantum),
         format!("guest_ram_bytes={}", observation.guest_ram_bytes),
         format!(
@@ -386,7 +446,10 @@ impl QemuTraceDefinitionPreflight {
     /// exactly one definition record, any identity or observation field is
     /// malformed, VMState coverage is incomplete, or the preflight retired a
     /// guest instruction.
-    pub fn import<R: BufRead>(reader: R) -> Result<Self, QemuTraceFingerprintImportError> {
+    pub fn import<R: BufRead>(
+        reader: R,
+        expected_process_argv: QemuTraceProcessArgvContract,
+    ) -> Result<Self, QemuTraceFingerprintImportError> {
         let mut records = reader.lines();
         let line = records
             .next()
@@ -410,6 +473,7 @@ impl QemuTraceDefinitionPreflight {
             .map_err(|source| QemuTraceFingerprintImportError::Json { line: 1, source })?;
         require_str(&value, "kind", "definition", 1)?;
         require_str(&value, "schema", QEMU_TRACE_FINGERPRINT_SCHEMA, 1)?;
+        require_process_argv(&value, expected_process_argv, 1)?;
         require_true(&value, "definition_only", 1)?;
         require_true(&value, "observed_non_running", 1)?;
         require_true(&value, "device_state_complete", 1)?;
@@ -502,6 +566,7 @@ pub struct QemuTraceFingerprintImport {
     device_state_schema_digest: [u8; 32],
     vcpu_contracts: Vec<QemuTraceVcpuContract>,
     identity: QemuTraceIdentityContract,
+    expected_process_argv: QemuTraceProcessArgvContract,
 }
 
 impl QemuTraceFingerprintImport {
@@ -521,6 +586,7 @@ impl QemuTraceFingerprintImport {
         cadence_icount: u64,
         run_horizon_icount: u64,
         observation: QemuTraceObservationContract,
+        expected_process_argv: QemuTraceProcessArgvContract,
     ) -> Result<Self, QemuTraceFingerprintImportError> {
         let node = node.into();
         if node.is_empty() {
@@ -563,6 +629,7 @@ impl QemuTraceFingerprintImport {
             device_state_schema_digest: observation.device_state_schema_digest,
             vcpu_contracts: observation.vcpu_contracts,
             identity: observation.identity,
+            expected_process_argv,
         })
     }
 
@@ -637,6 +704,7 @@ impl QemuTraceFingerprintImport {
             }
             require_str(&value, "schema", QEMU_TRACE_FINGERPRINT_SCHEMA, line_number)?;
             self.require_identity(&value, line_number)?;
+            require_process_argv(&value, self.expected_process_argv, line_number)?;
             if bool_field(&value, "final", line_number)? {
                 if terminal_stop_seen {
                     return Err(QemuTraceFingerprintImportError::MalformedTrace {
@@ -1409,6 +1477,35 @@ fn require_zero(
             reason: format!("field `{field}` must be zero, got {count}"),
         })
     }
+}
+
+fn require_process_argv(
+    value: &Value,
+    expected: QemuTraceProcessArgvContract,
+    line: usize,
+) -> Result<(), QemuTraceFingerprintImportError> {
+    require_zero(value, "process_argv_status", line)?;
+    require_u64(
+        value,
+        "process_argv_attestation_version",
+        QEMU_PROCESS_ARGV_ATTESTATION_VERSION,
+        line,
+    )?;
+    require_str(value, "process_argv_encoding", "raw-unix-argv-v2", line)?;
+    require_u64(value, "process_argv_argc", expected.argc(), line)?;
+    require_u64(value, "process_argv_raw_bytes", expected.raw_bytes(), line)?;
+    let actual_digest = sha256_field(value, "process_argv_digest", line)?;
+    if actual_digest != expected.digest() {
+        return Err(QemuTraceFingerprintImportError::MalformedTrace {
+            line,
+            reason: format!(
+                "field `process_argv_digest` must be {}, got {}",
+                lower_hex(&expected.digest()),
+                lower_hex(&actual_digest)
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn require_u64(

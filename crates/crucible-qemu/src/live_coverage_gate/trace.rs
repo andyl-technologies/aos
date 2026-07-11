@@ -163,7 +163,8 @@ fn validate_trace_sample(
     mode: &'static str,
 ) -> Result<(), LoadedQemuCoverageGateError> {
     for (field, expected) in [
-        ("schema", "crucible.qemu.trace-fingerprint.v4"),
+        ("schema", "crucible.qemu.trace-fingerprint.v5"),
+        ("process_argv_encoding", "raw-unix-argv-v2"),
         ("rr_cursor_source", "live_instruction"),
     ] {
         if sample.get(field).and_then(Value::as_str) != Some(expected) {
@@ -173,6 +174,17 @@ fn validate_trace_sample(
             });
         }
     }
+    if u64_field(sample, "process_argv_status") != Some(0)
+        || u64_field(sample, "process_argv_attestation_version") != Some(2)
+        || u64_field(sample, "process_argv_argc").is_none_or(|argc| argc == 0)
+        || u64_field(sample, "process_argv_raw_bytes").is_none_or(|bytes| bytes == 0)
+    {
+        return Err(LoadedQemuCoverageGateError::TraceSampleIncomplete {
+            mode,
+            reason: "QEMU process argv self-attestation is incomplete",
+        });
+    }
+    require_nonzero_hex(sample, "process_argv_digest", 64, mode)?;
     for field in [
         "rr_cursor_valid",
         "device_state_complete",

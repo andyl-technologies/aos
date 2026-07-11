@@ -191,6 +191,8 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-icount-raw .... raw icount read           F    DET-29, INV-10
   crucible-vcpu-introspect ...... per-vCPU regs + RR cursor  F    PATCH-46, DET-29, INV-10
   crucible-sim-observer ......... post-exec boundary observe F    DET-29, PLUG-35
+  crucible-safe-fingerprint-boundary exact BQL-held capture  F    DET-29, PLUG-35
+  crucible-process-argv-attestation raw launch argv SHA-256  F    DET-31, QEMU-34
   crucible-preemption-inject .... commanded vCPU switch/IRQ  D    PATCH-47, DET-1, PLUG-50
   crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1, INV-10
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
@@ -697,6 +699,36 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
   memory, and device-I/O fingerprint.
 - **Inertness:** [PATCH-3](c) — an additive plugin-API export that is inert until
   an auxiliary plugin registers it.
+- **Risk:** F.
+
+### crucible-safe-fingerprint-boundary — exact BQL-held capture boundary
+
+- **Enforces:** [DET-29], [PLUG-35]; prevents a requested observation horizon
+  from overshooting and keeps complete state capture inside the QEMU lock
+  boundary.
+- **Mechanism:** clamps the sim execution budget to the next observer ceiling,
+  publishes the resulting logical icount only after execution, and invokes the
+  observation callback while the BQL is held.
+- **Micro-test:** require the exact budget clamp, post-execution notification,
+  BQL ordering, and a live non-cadence horizon with zero observed overshoot.
+- **Inertness:** [PATCH-3](c) — the observer ceiling and callback are inert until
+  an observation plugin registers them.
+- **Risk:** F.
+
+### crucible-process-argv-attestation — process-entry raw argv identity
+
+- **Enforces:** [DET-31], [QEMU-34]; lets the observation runner reject a QEMU
+  process whose actual Unix argument vector differs from the prepared launch.
+- **Mechanism:** hashes the original `argc` and every raw `argv[i]` byte string,
+  including `argv[0]` and empty or non-UTF-8 values, before `qemu_init` parses
+  options. The system-emulation plugin API exposes only the version, argument
+  count, raw-byte count, and SHA-256 digest. The expected digest is never passed
+  through plugin argv, avoiding a circular identity.
+- **Micro-test:** compare an independently computed launcher digest with a
+  loaded patched-QEMU probe, require stock-header rejection, and make the v5
+  trace importer reject missing or mismatched attestation evidence.
+- **Inertness:** [PATCH-3](c) — capture is read-only and the additive export has
+  no guest-visible effect unless an observation plugin queries it.
 - **Risk:** F.
 
 ### crucible-preemption-inject — commanded vCPU switch / interrupt delivery

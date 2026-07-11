@@ -16,7 +16,7 @@ use crate::SingleVmFingerprintRunOrdinal;
 
 const MODE_DOMAIN: &str = "crucible.qemu.live-observation-mode.v1";
 const CONTROL_DOMAIN: &str = "crucible.qemu.live-observation-control.v1";
-const RAW_ARGV_DOMAIN: &str = "crucible.qemu.raw-unix-argv.v1";
+const RAW_ARGV_DOMAIN: &str = "crucible.qemu.raw-unix-argv.v2";
 const INVOCATION_DOMAIN: &str = "crucible.qemu.live-invocation-identity.v1";
 const MODE_FLAGS_VERSION: u16 = 1;
 
@@ -168,7 +168,7 @@ pub struct LiveObservationControlFields {
     pub node: String,
     /// Fresh attempt number under the run ordinal.
     pub attempt: u32,
-    /// Digest of the exact executable and raw argv bytes.
+    /// Digest of the exact raw process argv bytes, including `argv[0]`.
     pub actual_argv_digest: [u8; 32],
     /// Tagged observation purpose.
     pub mode: LiveObservationMode,
@@ -281,39 +281,42 @@ impl LiveObservationControl {
     }
 }
 
-/// Canonical identity of one raw Unix executable and argv tail.
+/// Canonical identity of one raw Unix process argument vector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawUnixArgvIdentity {
-    executable: OsString,
+    argv0: OsString,
     argv: Vec<OsString>,
+    argc: u64,
+    raw_byte_count: u64,
     digest: [u8; 32],
 }
 
 impl RawUnixArgvIdentity {
-    /// Hashes raw Unix executable and argument bytes without Unicode conversion.
+    /// Hashes raw Unix process argument bytes without Unicode conversion.
     ///
-    /// Empty arguments are valid and remain distinct from omitted arguments.
+    /// Empty `argv[0]` and tail arguments are valid and remain distinct from
+    /// omitted arguments. This identity describes the argument vector visible
+    /// to the process; it does not claim that `argv[0]` is the `execve` path.
     ///
     /// # Errors
     ///
-    /// Returns [`LiveIdentityError`] when the executable is empty, any element
-    /// contains NUL, or the argument count/index cannot fit the canonical `u64`.
-    pub fn new(executable: &OsStr, argv: &[OsString]) -> Result<Self, LiveIdentityError> {
-        let executable_bytes = executable.as_bytes();
-        if executable_bytes.is_empty() {
-            return Err(LiveIdentityError::EmptyExecutable);
-        }
-        validate_no_nul("executable", None, executable_bytes)?;
+    /// Returns [`LiveIdentityError`] when any element contains NUL, the raw
+    /// byte count overflows, or the argument count/index cannot fit the
+    /// canonical `u64`.
+    pub fn new(argv0: &OsStr, argv: &[OsString]) -> Result<Self, LiveIdentityError> {
+        let argv0_bytes = argv0.as_bytes();
+        validate_no_nul("argv", Some(0), argv0_bytes)?;
         let argc_tail = u64::try_from(argv.len())
             .map_err(|_| LiveIdentityError::CountOverflow { field: "argc" })?;
         let argc = argc_tail
             .checked_add(1)
             .ok_or(LiveIdentityError::CountOverflow { field: "argc" })?;
+        let mut raw_byte_count = u64::try_from(argv0_bytes.len())
+            .map_err(|_| LiveIdentityError::RawArgvByteCountOverflow)?;
         let mut hasher = DomainHasher::new(RAW_ARGV_DOMAIN);
-        hasher.segment("executable", executable_bytes);
         hasher.u64("argc", argc);
         hasher.u64("argv-index", 0);
-        hasher.segment("argv-value", executable_bytes);
+        hasher.segment("argv-value", argv0_bytes);
         for (index, argument) in argv.iter().enumerate() {
             let index = u64::try_from(index).map_err(|_| LiveIdentityError::CountOverflow {
                 field: "argv-index",
@@ -325,26 +328,45 @@ impl RawUnixArgvIdentity {
                 })?;
             let bytes = argument.as_bytes();
             validate_no_nul("argv", Some(index), bytes)?;
+            let byte_count = u64::try_from(bytes.len())
+                .map_err(|_| LiveIdentityError::RawArgvByteCountOverflow)?;
+            raw_byte_count = raw_byte_count
+                .checked_add(byte_count)
+                .ok_or(LiveIdentityError::RawArgvByteCountOverflow)?;
             hasher.u64("argv-index", index);
             hasher.segment("argv-value", bytes);
         }
         Ok(Self {
-            executable: executable.to_owned(),
+            argv0: argv0.to_owned(),
             argv: argv.to_vec(),
+            argc,
+            raw_byte_count,
             digest: hasher.finish(),
         })
     }
 
-    /// Returns the exact raw executable.
+    /// Returns the exact raw `argv[0]` value.
     #[must_use]
-    pub fn executable(&self) -> &OsStr {
-        &self.executable
+    pub fn argv0(&self) -> &OsStr {
+        &self.argv0
     }
 
     /// Returns the exact ordered argv tail, including empty arguments.
     #[must_use]
     pub fn argv(&self) -> &[OsString] {
         &self.argv
+    }
+
+    /// Returns the actual process `argc`, including forced `argv[0]`.
+    #[must_use]
+    pub const fn argc(&self) -> u64 {
+        self.argc
+    }
+
+    /// Returns the sum of raw bytes across all actual `argv[i]` values.
+    #[must_use]
+    pub const fn raw_byte_count(&self) -> u64 {
+        self.raw_byte_count
     }
 
     /// Returns the canonical raw argv digest.
@@ -498,9 +520,6 @@ pub enum LiveIdentityError {
         /// Rejected field.
         field: &'static str,
     },
-    /// Raw executable was empty.
-    #[error("raw Unix executable must be non-empty")]
-    EmptyExecutable,
     /// Raw Unix element contained NUL.
     #[error("{field} element {index:?} contains NUL")]
     InteriorNul {
@@ -515,6 +534,9 @@ pub enum LiveIdentityError {
         /// Rejected field.
         field: &'static str,
     },
+    /// Raw process argument bytes exceeded canonical `u64` accounting.
+    #[error("raw Unix argv byte count exceeds canonical u64 accounting")]
+    RawArgvByteCountOverflow,
     /// Invocation path was relative.
     #[error("{field} invocation path must be absolute: {path}", path = path.display())]
     RelativeInvocationPath {
@@ -763,17 +785,17 @@ mod tests {
     #[test]
     fn argv_length_framing_defeats_concatenation_and_empty_ambiguity() -> Result<(), Box<dyn Error>>
     {
-        let executable = OsStr::new("/nix/store/qemu");
+        let argv0 = OsStr::new("/nix/store/qemu");
         let split_left =
-            RawUnixArgvIdentity::new(executable, &[OsString::from("ab"), OsString::from("c")])?;
+            RawUnixArgvIdentity::new(argv0, &[OsString::from("ab"), OsString::from("c")])?;
         let split_right =
-            RawUnixArgvIdentity::new(executable, &[OsString::from("a"), OsString::from("bc")])?;
+            RawUnixArgvIdentity::new(argv0, &[OsString::from("a"), OsString::from("bc")])?;
         let with_empty = RawUnixArgvIdentity::new(
-            executable,
+            argv0,
             &[OsString::from("ab"), OsString::new(), OsString::from("c")],
         )?;
         let reordered =
-            RawUnixArgvIdentity::new(executable, &[OsString::from("c"), OsString::from("ab")])?;
+            RawUnixArgvIdentity::new(argv0, &[OsString::from("c"), OsString::from("ab")])?;
         assert_ne!(split_left.digest(), split_right.digest());
         assert_ne!(split_left.digest(), with_empty.digest());
         assert_ne!(split_left.digest(), reordered.digest());
@@ -783,12 +805,38 @@ mod tests {
     }
 
     #[test]
-    fn raw_non_utf8_and_executable_bytes_are_bound() -> Result<(), Box<dyn Error>> {
+    fn raw_non_utf8_and_argv0_bytes_are_bound() -> Result<(), Box<dyn Error>> {
         let non_utf8 = OsString::from_vec(vec![0xff]);
         let first = RawUnixArgvIdentity::new(OsStr::new("/qemu-a"), &[non_utf8.clone()])?;
         let second = RawUnixArgvIdentity::new(OsStr::new("/qemu-b"), &[non_utf8])?;
         assert_ne!(first.digest(), second.digest());
+        assert_eq!(first.argv0(), OsStr::new("/qemu-a"));
         assert_eq!(first.argv()[0].as_bytes(), &[0xff]);
+        Ok(())
+    }
+
+    #[test]
+    fn raw_argv_v2_matches_cross_language_known_answer() -> Result<(), Box<dyn Error>> {
+        let argv0 = OsString::from_vec(vec![b'q', b'e', b'm', b'u', b'-', 0xff]);
+        let identity = RawUnixArgvIdentity::new(
+            &argv0,
+            &[
+                OsString::from("-S"),
+                OsString::new(),
+                OsString::from("ab"),
+                OsString::from("c"),
+            ],
+        )?;
+        assert_eq!(identity.argc(), 5);
+        assert_eq!(identity.raw_byte_count(), 11);
+        assert_eq!(
+            identity.digest(),
+            [
+                0x6e, 0x59, 0x13, 0xd0, 0x07, 0xf3, 0x62, 0x00, 0x25, 0x52, 0xd3, 0xda, 0xb7, 0xa3,
+                0x85, 0x15, 0xc4, 0xd7, 0x3f, 0x8f, 0xbc, 0xd6, 0x05, 0x0a, 0xed, 0xec, 0xae, 0x8a,
+                0xd9, 0xb5, 0xfe, 0xa2,
+            ]
+        );
         Ok(())
     }
 
@@ -841,10 +889,9 @@ mod tests {
 
     #[test]
     fn invalid_raw_and_path_inputs_fail_closed() -> Result<(), Box<dyn Error>> {
-        assert_eq!(
-            RawUnixArgvIdentity::new(OsStr::new(""), &[]),
-            Err(LiveIdentityError::EmptyExecutable)
-        );
+        let empty_argv0 = RawUnixArgvIdentity::new(OsStr::new(""), &[])?;
+        assert_eq!(empty_argv0.argc(), 1);
+        assert_eq!(empty_argv0.raw_byte_count(), 0);
         let argv = RawUnixArgvIdentity::new(OsStr::new("/qemu"), &[])?;
         assert!(matches!(
             LiveInvocationIdentity::new(

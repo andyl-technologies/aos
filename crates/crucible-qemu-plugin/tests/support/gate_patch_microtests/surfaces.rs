@@ -105,6 +105,65 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
         "checks.crucible.phase1.qemuDoorbellNoPatch",
     );
     assert_contains(&qemu_patch_series, "no_patch_decisions=");
+    assert_contains(
+        &qemu_patch_series,
+        "0035-crucible-process-argv-attestation.patch",
+    );
+    assert_contains(
+        &qemu_patch_series,
+        "process-entry raw Unix argc/argv v2 SHA-256 self-attestation",
+    );
+
+    let qemu_process_argv_attestation =
+        fs::read_to_string(root.join("tests/crucible/phase2-qemu-process-argv-attestation.nix"))?;
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "0035-crucible-process-argv-attestation.patch",
+    );
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "+    crucible_capture_process_argv(argc, argv);\\n     qemu_init(argc, argv);",
+    );
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "crucible.qemu.raw-unix-argv.v2",
+    );
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "argv_length_framing_defeats_concatenation_and_empty_ambiguity",
+    );
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "raw_non_utf8_and_argv0_bytes_are_bound",
+    );
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "qemu_plugin_crucible_process_argv_attestation",
+    );
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "invalid process argv self-attestation",
+    );
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "crucible.qemu.trace-fingerprint.v5",
+    );
+    assert_contains(&qemu_process_argv_attestation, "actual_argv_digest=");
+    assert_contains(&qemu_process_argv_attestation, "control_digest=");
+    assert_contains(&qemu_process_argv_attestation, "invocation_digest=");
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "actual_argv_hash_complete=true",
+    );
+    assert_contains(&qemu_process_argv_attestation, "process_argv_digest");
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "stock QEMU unexpectedly exposed process argv attestation",
+    );
+    assert_contains(
+        &qemu_process_argv_attestation,
+        "circular_identity_digest_in_plugin_argv=false",
+    );
 
     let qemu_rr_quantum_icount =
         fs::read_to_string(root.join("tests/crucible/phase2-qemu-rr-quantum-icount.nix"))?;

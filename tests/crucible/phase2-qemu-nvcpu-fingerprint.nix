@@ -369,7 +369,7 @@
       }
       {
         label = "trace plugin versioned schema";
-        needle = "crucible.qemu.trace-fingerprint.v4";
+        needle = "crucible.qemu.trace-fingerprint.v5";
       }
       {
         label = "trace plugin register schema hashes";
@@ -513,8 +513,10 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.glib
         pkgs.grep
         pkgs.jq
+        pkgs.pkg-config
         pkgs.qemu-crucible
         pkgs.crucible-qemu-trace-plugin
         pkgs.rust
@@ -560,6 +562,136 @@ in
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
               cd source
             fi
+            cat > "$TMPDIR/qemu-argv-launcher.c" <<'ARGV_LAUNCHER'
+            #include <glib.h>
+            #include <errno.h>
+            #include <inttypes.h>
+            #include <stdint.h>
+            #include <stdio.h>
+            #include <string.h>
+            #include <unistd.h>
+
+            static void
+            hash_u64(GChecksum *checksum, uint64_t value)
+            {
+              unsigned char encoded[8];
+
+              for (size_t index = 0; index < sizeof(encoded); index++) {
+                encoded[sizeof(encoded) - index - 1] = value & 0xffU;
+                value >>= 8;
+              }
+              g_checksum_update(checksum, encoded, sizeof(encoded));
+            }
+
+            static void
+            hash_framed(GChecksum *checksum, const void *bytes, size_t length)
+            {
+              hash_u64(checksum, length);
+              if (length != 0) {
+                g_checksum_update(checksum, bytes, length);
+              }
+            }
+
+            static void
+            hash_segment(GChecksum *checksum,
+                         const char *label,
+                         const void *bytes,
+                         size_t length)
+            {
+              hash_framed(checksum, label, strlen(label));
+              hash_framed(checksum, bytes, length);
+            }
+
+            static void
+            encode_u64(uint64_t value, unsigned char encoded[8])
+            {
+              for (size_t index = 0; index < 8; index++) {
+                encoded[8 - index - 1] = value & 0xffU;
+                value >>= 8;
+              }
+            }
+
+            static int
+            write_prepared_argv(const char *path, char *const child_argv[])
+            {
+              static const char domain[] = "crucible.qemu.raw-unix-argv.v2";
+              GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
+              unsigned char encoded[8];
+              uint64_t child_argc = 0;
+              uint64_t raw_bytes = 0;
+              FILE *output;
+
+              if (checksum == NULL) {
+                return -1;
+              }
+              while (child_argv[child_argc] != NULL) {
+                const size_t length = strlen(child_argv[child_argc]);
+
+                if (UINT64_MAX - raw_bytes < length || child_argc == UINT64_MAX) {
+                  g_checksum_free(checksum);
+                  return -1;
+                }
+                raw_bytes += length;
+                child_argc++;
+              }
+              hash_framed(checksum, domain, sizeof(domain) - 1);
+              encode_u64(child_argc, encoded);
+              hash_segment(checksum, "argc", encoded, sizeof(encoded));
+              for (uint64_t index = 0; index < child_argc; index++) {
+                encode_u64(index, encoded);
+                hash_segment(checksum, "argv-index", encoded, sizeof(encoded));
+                hash_segment(checksum,
+                             "argv-value",
+                             child_argv[index],
+                             strlen(child_argv[index]));
+              }
+
+              output = fopen(path, "wb");
+              if (output == NULL) {
+                g_checksum_free(checksum);
+                return -1;
+              }
+              if (fprintf(output,
+                          "{\"schema\":\"crucible.qemu.prepared-process-argv.v1\","
+                          "\"process_argv_argc\":%" PRIu64 ","
+                          "\"process_argv_raw_bytes\":%" PRIu64 ","
+                          "\"process_argv_digest\":\"%s\"}\n",
+                          child_argc,
+                          raw_bytes,
+                          g_checksum_get_string(checksum)) < 0) {
+                fclose(output);
+                g_checksum_free(checksum);
+                return -1;
+              }
+              if (fclose(output) != 0) {
+                g_checksum_free(checksum);
+                return -1;
+              }
+              g_checksum_free(checksum);
+              return 0;
+            }
+
+            int
+            main(int argc, char **argv)
+            {
+              if (argc < 3) {
+                fprintf(stderr, "usage: %s EXPECTED QEMU [ARG...]\n", argv[0]);
+                return 2;
+              }
+              if (write_prepared_argv(argv[1], &argv[2]) != 0) {
+                fprintf(stderr, "failed to persist prepared argv evidence\n");
+                return 2;
+              }
+              execv(argv[2], &argv[2]);
+              fprintf(stderr, "execv failed: %s\n", strerror(errno));
+              return 2;
+            }
+            ARGV_LAUNCHER
+            argv_cflags=$(pkg-config --cflags glib-2.0)
+            argv_libs=$(pkg-config --libs glib-2.0)
+            cc -O2 -Wall -Wextra -Werror $argv_cflags \
+              "$TMPDIR/qemu-argv-launcher.c" $argv_libs \
+              -o "$TMPDIR/qemu-argv-launcher"
             cargo test \
               --frozen \
               --offline \
@@ -582,6 +714,7 @@ in
             qemu_pid=""
             jitter_pids=""
             fingerprint_cli="$TMPDIR/crucible-qemu-nvcpu-fingerprint-target/debug/examples/crucible-qemu-fingerprint"
+            argv_launcher="$TMPDIR/qemu-argv-launcher"
             cadence=600000000
             horizon=1500000000
             quantum=4096
@@ -763,9 +896,10 @@ in
               label=definition
               qmp_socket="$TMPDIR/qmp-nvcpu-definition.sock"
               trace="$TMPDIR/qemu-nvcpu-definition.jsonl"
-              rm -f "$qmp_socket" "$trace"
+              prepared_argv="$TMPDIR/prepared-argv-definition.json"
+              rm -f "$qmp_socket" "$trace" "$prepared_argv"
 
-              timeout 2400 "$qemu_binary" \
+              timeout 2400 "$argv_launcher" "$prepared_argv" "$qemu_binary" \
                 -nodefaults \
                 -no-user-config \
                 -display none \
@@ -806,13 +940,26 @@ in
               wait "$qemu_pid" || fail "definition-only QEMU exited unsuccessfully"
               qemu_pid=""
               jq -e -s \
+                --slurpfile prepared "$prepared_argv" \
                 --argjson quantum "$quantum" \
                 --arg launch_definition_digest "$launch_definition_digest" \
                 --arg qemu_build_digest "$qemu_build_digest" \
                 --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
-                'length == 1 and (.[0] | (
+                '($prepared[0]) as $argv
+                 | length == 1 and (.[0] | (
                   .kind == "definition"
-                  and .schema == "crucible.qemu.trace-fingerprint.v4"
+                  and .schema == "crucible.qemu.trace-fingerprint.v5"
+                  and .process_argv_status == 0
+                  and .process_argv_attestation_version == 2
+                  and .process_argv_encoding == "raw-unix-argv-v2"
+                  and .process_argv_argc > 0
+                  and .process_argv_raw_bytes > 0
+                  and (.process_argv_digest | test("^[0-9a-f]{64}$"))
+                  and .process_argv_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                  and $argv.schema == "crucible.qemu.prepared-process-argv.v1"
+                  and .process_argv_argc == $argv.process_argv_argc
+                  and .process_argv_raw_bytes == $argv.process_argv_raw_bytes
+                  and .process_argv_digest == $argv.process_argv_digest
                   and .definition_only == true
                   and .observed_non_running == true
                   and .observed_icount == 0
@@ -858,9 +1005,10 @@ in
               label="$1"
               qmp_socket="$TMPDIR/qmp-nvcpu-$label.sock"
               trace="$TMPDIR/qemu-nvcpu-trace-$label.jsonl"
-              rm -f "$qmp_socket" "$trace"
+              prepared_argv="$TMPDIR/prepared-argv-$label.json"
+              rm -f "$qmp_socket" "$trace" "$prepared_argv"
 
-              timeout 2400 "$qemu_binary" \
+              timeout 2400 "$argv_launcher" "$prepared_argv" "$qemu_binary" \
                 -nodefaults \
                 -no-user-config \
                 -display none \
@@ -903,19 +1051,32 @@ in
               qemu_pid=""
 
               jq -e -s \
+                --slurpfile prepared "$prepared_argv" \
                 --argjson cadence "$cadence" \
                 --argjson horizon "$horizon" \
                 --argjson quantum "$quantum" \
                 --slurpfile definition "$TMPDIR/qemu-nvcpu-definition.jsonl" \
                 '
                 ([$definition[] | select(.kind == "definition")][0]) as $contract
+                | ($prepared[0]) as $argv
                 | [ .[] | select((.kind // "sample") == "sample" and .final != true) ] as $samples
                 | [ .[] | select(.kind == "rr_switch") ] as $switches
                 | [ .[] | select((.kind // "sample") == "sample" and .final == true) ] as $finals
                 | ($samples | last) as $horizon_sample
                 | ($samples | map(.observed_icount)) == ([range($cadence; $horizon; $cadence)] + [$horizon])
                 and all($samples[]; (
-                  .schema == "crucible.qemu.trace-fingerprint.v4"
+                  .schema == "crucible.qemu.trace-fingerprint.v5"
+                  and .process_argv_status == 0
+                  and .process_argv_attestation_version == 2
+                  and .process_argv_encoding == "raw-unix-argv-v2"
+                  and .process_argv_argc > 0
+                  and .process_argv_raw_bytes > 0
+                  and (.process_argv_digest | test("^[0-9a-f]{64}$"))
+                  and .process_argv_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                  and $argv.schema == "crucible.qemu.prepared-process-argv.v1"
+                  and .process_argv_argc == $argv.process_argv_argc
+                  and .process_argv_raw_bytes == $argv.process_argv_raw_bytes
+                  and .process_argv_digest == $argv.process_argv_digest
                   and .launch_definition_digest != null
                   and .qemu_build_digest != null
                   and .trace_plugin_build_digest != null
@@ -976,6 +1137,12 @@ in
                   and .retired == $horizon_sample.retired
                   and .rr_cursor_valid == true
                   and .rr_cursor_source == "last_executed_instruction"
+                  and .process_argv_status == 0
+                  and .process_argv_attestation_version == 2
+                  and .process_argv_encoding == "raw-unix-argv-v2"
+                  and .process_argv_argc == $argv.process_argv_argc
+                  and .process_argv_raw_bytes == $argv.process_argv_raw_bytes
+                  and .process_argv_digest == $argv.process_argv_digest
                 ))
                 and ($switches | length) > 0
                 and all($switches[]; (
@@ -994,13 +1161,21 @@ in
                 *) fail "unknown run label $label" ;;
               esac
               jq -n \
-                --arg schema 'crucible.qemu.trace-run-provenance.v1' \
+                --slurpfile prepared "$prepared_argv" \
+                --arg schema 'crucible.qemu.trace-run-provenance.v2' \
                 --arg ordinal "$ordinal" \
                 --arg run_id "qemu-nvcpu-$label" \
                 --arg launch_definition_digest "$launch_definition_digest" \
                 --arg qemu_build_digest "$qemu_build_digest" \
                 --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
-                '{schema:$schema,ordinal:$ordinal,run_id:$run_id,launch_definition_digest:$launch_definition_digest,qemu_build_digest:$qemu_build_digest,trace_plugin_build_digest:$trace_plugin_build_digest}' \
+                '($prepared[0]) as $argv
+                 | {schema:$schema,ordinal:$ordinal,run_id:$run_id,
+                    launch_definition_digest:$launch_definition_digest,
+                    qemu_build_digest:$qemu_build_digest,
+                    trace_plugin_build_digest:$trace_plugin_build_digest,
+                    process_argv_argc:$argv.process_argv_argc,
+                    process_argv_raw_bytes:$argv.process_argv_raw_bytes,
+                    process_argv_digest:$argv.process_argv_digest}' \
                 > "$TMPDIR/provenance-$label.json"
             }
 
@@ -1012,7 +1187,8 @@ in
 
             jq -n \
               --slurpfile trace "$TMPDIR/qemu-nvcpu-definition.jsonl" \
-              --arg schema 'crucible.qemu.trace-comparison-contract.v1' \
+              --slurpfile prepared "$TMPDIR/prepared-argv-definition.json" \
+              --arg schema 'crucible.qemu.trace-comparison-contract.v2' \
               --arg node 'qemu-nvcpu-gate' \
               --argjson cadence_icount "$cadence" \
               --argjson horizon_icount "$horizon" \
@@ -1025,6 +1201,7 @@ in
               --arg qemu_build_digest "$qemu_build_digest" \
               --arg trace_plugin_build_digest "$trace_plugin_build_digest" \
               '([$trace[] | select(.kind == "definition")][0]) as $sample
+               | ($prepared[0]) as $argv
                | {schema:$schema,node:$node,cadence_icount:$cadence_icount,horizon_icount:$horizon_icount,
                   rr_switch_quantum:$rr_switch_quantum,baseline_ram_bytes:$sample.ram_bytes,
                   device_state_sections:$sample.device_state_sections,
@@ -1038,7 +1215,10 @@ in
                   seed_digest:$seed_digest,
                   injected_input_sequence_digest:$injected_input_sequence_digest,
                   qemu_build_digest:$qemu_build_digest,
-                  trace_plugin_build_digest:$trace_plugin_build_digest}' \
+                  trace_plugin_build_digest:$trace_plugin_build_digest,
+                  process_argv_argc:$argv.process_argv_argc,
+                  process_argv_raw_bytes:$argv.process_argv_raw_bytes,
+                  process_argv_digest:$argv.process_argv_digest}' \
               > "$TMPDIR/fingerprint-contract.json"
 
             "$fingerprint_cli" \
@@ -1245,13 +1425,14 @@ in
             plugin_exit_semantics=bounded-post-stop-request-teardown-observation
             plugin_exit_pause_overshoot_bound=zero-exact-horizon
             plugin_exit_is_final_record=true
-            run_provenance=distinct-ordinals-plus-trace-bound-canonical-launch-and-build-digests
+            run_provenance=distinct-ordinals-plus-prepared-argv-and-canonical-launch-and-build-digests
             launch_identity=complete-canonical-guest-visible-options-plus-artifact-digests
             canonical_guest_visible_launch_material_complete=true
-            actual_argv_hash_complete=false
+            process_argv_expectation=independent-pre-exec-raw-unix-argv-v2
+            actual_argv_hash_complete=true
             observation_contract_source=independent-definition-only-qemu-preflight
             independent_observation_contract=true
-            fingerprint_definition=canonical-periodic-and-event-boundary-trace-v4
+            fingerprint_definition=canonical-periodic-and-event-boundary-trace-v5
             periodic_cadence=600000000-real-smp-guest
             live_rr_switch_observation=distinct-vcpu-events-report-configured-quantum
             postprocessing_negative_controls=register,rr,retired,ram,device,device-schema,zero-register,zero-ram,zero-device,cadence,horizon,ram-bytes,topology

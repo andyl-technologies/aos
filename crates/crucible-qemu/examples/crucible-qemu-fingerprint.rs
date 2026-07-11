@@ -13,17 +13,17 @@ use std::process::ExitCode;
 
 use crucible_qemu::{
     QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition, QemuTraceFingerprintImport,
-    QemuTraceObservationContract, QemuTraceVcpuContract, SingleVmFingerprintBisectionError,
-    SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
-    SingleVmFingerprintGateError, SingleVmFingerprintRunError, SingleVmFingerprintRunInputs,
-    SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest, SingleVmFingerprintRunner,
-    SingleVmFingerprintScenario, SingleVmFingerprintStream, SingleVmHostProfile,
-    SingleVmNvcpuFingerprintContract, run_single_vm_fingerprint_gate,
+    QemuTraceObservationContract, QemuTraceProcessArgvContract, QemuTraceVcpuContract,
+    SingleVmFingerprintBisectionError, SingleVmFingerprintBisectionReport,
+    SingleVmFingerprintBisectionRequest, SingleVmFingerprintGateError, SingleVmFingerprintRunError,
+    SingleVmFingerprintRunInputs, SingleVmFingerprintRunOrdinal, SingleVmFingerprintRunRequest,
+    SingleVmFingerprintRunner, SingleVmFingerprintScenario, SingleVmFingerprintStream,
+    SingleVmHostProfile, SingleVmNvcpuFingerprintContract, run_single_vm_fingerprint_gate,
 };
 use serde_json::Value;
 
-const CONTRACT_SCHEMA: &str = "crucible.qemu.trace-comparison-contract.v1";
-const PROVENANCE_SCHEMA: &str = "crucible.qemu.trace-run-provenance.v1";
+const CONTRACT_SCHEMA: &str = "crucible.qemu.trace-comparison-contract.v2";
+const PROVENANCE_SCHEMA: &str = "crucible.qemu.trace-run-provenance.v2";
 
 fn main() -> ExitCode {
     match run() {
@@ -45,7 +45,8 @@ fn run() -> Result<(), String> {
     }
 
     let contract = ComparisonContract::read(Path::new(&args[0]))?;
-    let preflight = import_definition_preflight(Path::new(&args[1]))?;
+    let preflight =
+        import_definition_preflight(Path::new(&args[1]), contract.definition_process_argv)?;
     contract.validate_preflight(preflight.observation())?;
     let first_cpu_ids = read_qmp_cpu_ids(Path::new(&args[2]))?;
     let first_provenance = RunProvenance::read(Path::new(&args[3]))?;
@@ -68,8 +69,13 @@ fn run() -> Result<(), String> {
     let observation = preflight.observation().clone();
     let definition = QemuTraceFingerprintDefinition::new(contract.cadence_icount, &observation)
         .map_err(|error| format!("invalid preflight-pinned trace definition: {error}"))?;
-    let first_importer = contract.importer(&definition, observation.clone())?;
-    let second_importer = contract.importer(&definition, observation)?;
+    let first_importer = contract.importer(
+        &definition,
+        observation.clone(),
+        first_provenance.process_argv,
+    )?;
+    let second_importer =
+        contract.importer(&definition, observation, second_provenance.process_argv)?;
     let first_trace = PathBuf::from(&args[4]);
     let second_trace = PathBuf::from(&args[7]);
     let first = import_trace(&first_importer, &first_trace)?;
@@ -165,6 +171,7 @@ struct ComparisonContract {
     injected_input_sequence_digest: String,
     qemu_build_digest: String,
     trace_plugin_build_digest: String,
+    definition_process_argv: QemuTraceProcessArgvContract,
 }
 
 impl ComparisonContract {
@@ -219,6 +226,7 @@ impl ComparisonContract {
             )?,
             qemu_build_digest: digest_text(&value, "qemu_build_digest", path)?,
             trace_plugin_build_digest: digest_text(&value, "trace_plugin_build_digest", path)?,
+            definition_process_argv: process_argv_contract(&value, path)?,
         })
     }
 
@@ -245,6 +253,7 @@ impl ComparisonContract {
         &self,
         definition: &QemuTraceFingerprintDefinition,
         observation: QemuTraceObservationContract,
+        expected_process_argv: QemuTraceProcessArgvContract,
     ) -> Result<QemuTraceFingerprintImport, String> {
         QemuTraceFingerprintImport::new(
             self.node.clone(),
@@ -252,6 +261,7 @@ impl ComparisonContract {
             self.cadence_icount,
             self.horizon_icount,
             observation,
+            expected_process_argv,
         )
         .map_err(|error| error.to_string())
     }
@@ -304,6 +314,7 @@ struct RunProvenance {
     launch_definition_digest: String,
     qemu_build_digest: String,
     trace_plugin_build_digest: String,
+    process_argv: QemuTraceProcessArgvContract,
 }
 
 impl RunProvenance {
@@ -323,6 +334,7 @@ impl RunProvenance {
             launch_definition_digest,
             qemu_build_digest: digest_text(&value, "qemu_build_digest", path)?,
             trace_plugin_build_digest: digest_text(&value, "trace_plugin_build_digest", path)?,
+            process_argv: process_argv_contract(&value, path)?,
         })
     }
 }
@@ -389,19 +401,24 @@ fn import_trace(
         .map_err(|error| format!("failed to import trace {}: {error}", path.display()))
 }
 
-fn import_definition_preflight(path: &Path) -> Result<QemuTraceDefinitionPreflight, String> {
+fn import_definition_preflight(
+    path: &Path,
+    expected_process_argv: QemuTraceProcessArgvContract,
+) -> Result<QemuTraceDefinitionPreflight, String> {
     let file = File::open(path).map_err(|error| {
         format!(
             "failed to open definition preflight {}: {error}",
             path.display()
         )
     })?;
-    QemuTraceDefinitionPreflight::import(BufReader::new(file)).map_err(|error| {
-        format!(
-            "failed to import definition preflight {}: {error}",
-            path.display()
-        )
-    })
+    QemuTraceDefinitionPreflight::import(BufReader::new(file), expected_process_argv).map_err(
+        |error| {
+            format!(
+                "failed to import definition preflight {}: {error}",
+                path.display()
+            )
+        },
+    )
 }
 
 fn read_qmp_cpu_ids(path: &Path) -> Result<Vec<u64>, String> {
@@ -540,6 +557,23 @@ fn digest_array(value: &Value, field: &str, path: &Path) -> Result<Vec<[u8; 32]>
 fn digest_array_item(value: &Value, field: &str, path: &Path) -> Result<[u8; 32], String> {
     let text = text_field(value, field, path)?;
     decode_digest_array(field, &text)
+}
+
+fn process_argv_contract(
+    value: &Value,
+    path: &Path,
+) -> Result<QemuTraceProcessArgvContract, String> {
+    QemuTraceProcessArgvContract::new(
+        u64_field(value, "process_argv_argc", path)?,
+        u64_field(value, "process_argv_raw_bytes", path)?,
+        digest_array_item(value, "process_argv_digest", path)?,
+    )
+    .map_err(|error| {
+        format!(
+            "invalid process argv contract in {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn decode_digest_array(label: &str, text: &str) -> Result<[u8; 32], String> {

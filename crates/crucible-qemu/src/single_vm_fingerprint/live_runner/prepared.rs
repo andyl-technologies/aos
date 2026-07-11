@@ -7,6 +7,8 @@
 
 use thiserror::Error;
 
+use crate::single_vm_fingerprint::{QemuTraceFingerprintImportError, QemuTraceProcessArgvContract};
+
 use super::{
     LiveIdentityError, LiveInvocationIdentity, LiveInvocationPaths, LiveObservationControl,
     LiveObservationControlFields, LiveObservationMode, LiveRunnerArtifacts, LiveRunnerConfig,
@@ -31,6 +33,7 @@ pub struct LivePreparedLaunch {
     artifacts: LiveRunnerArtifacts,
     spec: LiveRunnerLaunchSpec,
     argv_identity: RawUnixArgvIdentity,
+    process_argv_contract: QemuTraceProcessArgvContract,
     control: LiveObservationControl,
     invocation: LiveInvocationIdentity,
     expected_vcpus: u16,
@@ -57,6 +60,11 @@ impl LivePreparedLaunch {
         validate_request(config, kind, &request)?;
         let spec = config.launch_spec(kind, artifacts)?;
         let argv_identity = RawUnixArgvIdentity::new(spec.executable().as_os_str(), spec.argv())?;
+        let process_argv_contract = QemuTraceProcessArgvContract::new(
+            argv_identity.argc(),
+            argv_identity.raw_byte_count(),
+            argv_identity.digest(),
+        )?;
         let invocation = LiveInvocationIdentity::new(
             &argv_identity,
             LiveInvocationPaths {
@@ -81,6 +89,7 @@ impl LivePreparedLaunch {
             artifacts: artifacts.clone(),
             spec,
             argv_identity,
+            process_argv_contract,
             control,
             invocation,
             expected_vcpus: config.vcpus(),
@@ -109,6 +118,12 @@ impl LivePreparedLaunch {
     #[must_use]
     pub const fn argv_identity(&self) -> &RawUnixArgvIdentity {
         &self.argv_identity
+    }
+
+    /// Returns the independent expectation used to verify QEMU's self-attestation.
+    #[must_use]
+    pub const fn process_argv_contract(&self) -> QemuTraceProcessArgvContract {
+        self.process_argv_contract
     }
 
     /// Returns the validated observation-control identity.
@@ -160,6 +175,9 @@ pub enum LivePreparationError {
     /// A canonical control, argv, or invocation identity was invalid.
     #[error("live launch identity failed: {0}")]
     Identity(#[from] LiveIdentityError),
+    /// The independently computed trace-attestation contract was invalid.
+    #[error("live launch trace contract failed: {0}")]
+    TraceContract(#[from] QemuTraceFingerprintImportError),
     /// Requested observation semantics did not match the launch kind/config.
     #[error(
         "live launch kind {kind:?} does not admit mode {mode:?} with configured cadence {configured_cadence}"
@@ -244,7 +262,7 @@ mod tests {
         )?;
         assert_eq!(
             prepared.spec().executable().as_os_str(),
-            prepared.argv_identity().executable()
+            prepared.argv_identity().argv0()
         );
         assert_eq!(prepared.spec().argv(), prepared.argv_identity().argv());
         assert_eq!(
