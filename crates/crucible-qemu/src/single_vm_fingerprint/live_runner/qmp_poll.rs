@@ -235,7 +235,13 @@ where
 
         for attempt in 0..self.policy.status_attempts {
             let status = session.query_status()?;
-            if status.status == expected_state {
+            if status.running != (status.status == QmpRunStateKind::Running) {
+                return Err(LiveRunnerQmpPollError::InconsistentRunState {
+                    running: status.running,
+                    status: status.status,
+                });
+            }
+            if !status.running && status.status == expected_state {
                 let topology = session.query_topology()?;
                 let expected: Vec<u64> = (0..u64::from(expected_vcpus)).collect();
                 if topology.cpu_indexes() != expected {
@@ -283,6 +289,16 @@ pub enum LiveRunnerQmpPollError {
     /// Caller requested running state as a stopped boundary.
     #[error("expected stopped QMP state cannot be running")]
     ExpectedStateRunning,
+    /// QMP's boolean and symbolic run-state fields contradicted each other.
+    #[error(
+        "QEMU reported internally inconsistent run state: running={running}, status={status:?}"
+    )]
+    InconsistentRunState {
+        /// Boolean running field returned by QMP.
+        running: bool,
+        /// Symbolic status returned by QMP.
+        status: QmpRunStateKind,
+    },
     /// Connection attempts were exhausted.
     #[error("QMP connection to {socket} failed after {attempts} attempts: {last_error}", socket = socket.display())]
     ConnectExhausted {
@@ -444,6 +460,60 @@ mod tests {
             })
         ));
         assert_eq!(poller.connector.connections, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn internally_inconsistent_running_shape_is_rejected() -> Result<(), LiveRunnerQmpPollError> {
+        let connector = ScriptedConnector {
+            status: QmpRunState {
+                running: true,
+                status: QmpRunStateKind::Paused,
+            },
+            topology: None,
+            connections: 0,
+        };
+        let mut poller =
+            LiveRunnerQmpPoller::new(connector, NoSleep, LiveRunnerQmpPollPolicy::default())?;
+        let result = poller.observe_stopped(
+            Path::new("/tmp/unused-qmp.sock"),
+            4,
+            QmpRunStateKind::Paused,
+        );
+        assert!(matches!(
+            result,
+            Err(LiveRunnerQmpPollError::InconsistentRunState {
+                running: true,
+                status: QmpRunStateKind::Paused,
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn internally_inconsistent_stopped_shape_is_rejected() -> Result<(), LiveRunnerQmpPollError> {
+        let connector = ScriptedConnector {
+            status: QmpRunState {
+                running: false,
+                status: QmpRunStateKind::Running,
+            },
+            topology: None,
+            connections: 0,
+        };
+        let mut poller =
+            LiveRunnerQmpPoller::new(connector, NoSleep, LiveRunnerQmpPollPolicy::default())?;
+        let result = poller.observe_stopped(
+            Path::new("/tmp/unused-qmp.sock"),
+            4,
+            QmpRunStateKind::Paused,
+        );
+        assert!(matches!(
+            result,
+            Err(LiveRunnerQmpPollError::InconsistentRunState {
+                running: false,
+                status: QmpRunStateKind::Running,
+            })
+        ));
         Ok(())
     }
 

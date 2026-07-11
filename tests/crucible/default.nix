@@ -407,6 +407,7 @@ in rec {
     qemuRealization = import ./phase2-qemu-realization.nix {inherit pkgs lib;};
     qemuSavevmFallback = import ./phase2-qemu-savevm-fallback.nix {inherit pkgs lib;};
     qemuNvcpuFingerprint = import ./phase2-qemu-nvcpu-fingerprint.nix {inherit pkgs lib;};
+    qemuLiveGenesisExecutor = import ./phase2-qemu-live-genesis-executor.nix {inherit pkgs lib;};
     qemuShutdownEscalation = import ./phase2-qemu-shutdown-escalation.nix {inherit pkgs lib;};
     qemuSingleVmFingerprint = import ./phase2-qemu-single-vm-fingerprint.nix {inherit pkgs lib;};
     qemuSpawnFdPassing = import ./phase2-qemu-spawn-fd-passing.nix {inherit pkgs lib;};

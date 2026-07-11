@@ -7,6 +7,7 @@
 
 mod artifacts;
 mod config;
+mod genesis_probe;
 mod identity;
 mod prepared;
 mod process;
@@ -17,6 +18,10 @@ pub use artifacts::{LiveRunnerArtifactRoot, LiveRunnerArtifacts, LiveRunnerArtif
 pub use config::{
     LiveRunnerConfig, LiveRunnerConfigError, LiveRunnerImmutableInputs, LiveRunnerLaunchFields,
     LiveRunnerLaunchKind, LiveRunnerLaunchSpec,
+};
+pub use genesis_probe::{
+    LiveDefinitionPreflightError, LiveDefinitionPreflightEvidence, LiveGenesisProbeExecutor,
+    LiveGenesisProbeExecutorError, LiveGenesisProbeReport,
 };
 pub use identity::{
     LiveIdentityError, LiveInvocationIdentity, LiveInvocationPaths, LiveObservationControl,
