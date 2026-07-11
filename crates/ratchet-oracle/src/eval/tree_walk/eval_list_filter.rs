@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod all_any;
+
 impl TreeWalk {
     pub(super) fn alloc_dynamic_attrs_result_with_order_telemetry(
         &mut self,
@@ -169,7 +171,18 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            Self::clone_list_elements(list_id, list_span, list)?
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(list.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: list_id,
+                        len: list.len(),
+                    },
+                    list_span,
+                )
+            })?;
+            elements.extend_from_slice(list.as_slice());
+            elements
         };
 
         self.alloc_zipped_attrs_with(
@@ -549,18 +562,7 @@ impl TreeWalk {
                     list_span,
                 )
             })?;
-            let mut elements = Vec::new();
-            elements.try_reserve_exact(list.len()).map_err(|_| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ListAllocationFailed {
-                        id: list_id,
-                        len: list.len(),
-                    },
-                    list_span,
-                )
-            })?;
-            elements.extend_from_slice(list.as_slice());
-            elements
+            Self::clone_list_elements(list_id, list_span, list)?
         };
         let mut values = Vec::new();
         values.try_reserve_exact(elements.len()).map_err(|_| {
@@ -602,158 +604,6 @@ impl TreeWalk {
             }
         }
         self.alloc_tree_walk_list(id, span, NixList::new(values))
-    }
-
-    pub(super) fn eval_all_any_primop(
-        &mut self,
-        op: AllAnyOp,
-        id: IrId,
-        span: Span,
-        predicate_id: IrId,
-        list_id: IrId,
-    ) -> Result<Value, TreeWalkError> {
-        let predicate_span = self.node(predicate_id)?.span;
-        let predicate = self.eval_node(predicate_id)?;
-        let predicate = self.force_callable_value(predicate_id, predicate_span, predicate)?;
-
-        let list_span = self.node(list_id)?.span;
-        let list_value = self.eval_node(list_id)?;
-        let list_value = self.force_value(list_id, list_span, list_value)?;
-        if list_value.tag() != ValueTag::List {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: list_id,
-                    expected: "list",
-                    actual: list_value.tag(),
-                },
-                list_span,
-            ));
-        }
-        let elements = {
-            let list = self.heap.get_list(list_value).map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Heap {
-                        id: list_id,
-                        source,
-                    },
-                    list_span,
-                )
-            })?;
-            let mut elements = Vec::new();
-            elements.try_reserve_exact(list.len()).map_err(|_| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ListAllocationFailed {
-                        id: list_id,
-                        len: list.len(),
-                    },
-                    list_span,
-                )
-            })?;
-            elements.extend_from_slice(list.as_slice());
-            elements
-        };
-
-        self.eval_all_any_elements(
-            op,
-            id,
-            span,
-            predicate_id,
-            predicate_span,
-            predicate,
-            list_id,
-            elements,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn eval_all_any_primop_value(
-        &mut self,
-        id: IrId,
-        span: Span,
-        op: AllAnyOp,
-        predicate: EvalPrimOpArg,
-        list: EvalPrimOpArg,
-    ) -> Result<Value, TreeWalkError> {
-        let predicate_value =
-            self.force_callable_value(predicate.id(), predicate.span(), predicate.value())?;
-
-        let list_value = self.force_value(list.id(), list.span(), list.value())?;
-        if list_value.tag() != ValueTag::List {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: list.id(),
-                    expected: "list",
-                    actual: list_value.tag(),
-                },
-                list.span(),
-            ));
-        }
-        let elements = {
-            let list_value = self.heap.get_list(list_value).map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Heap {
-                        id: list.id(),
-                        source,
-                    },
-                    list.span(),
-                )
-            })?;
-            Self::clone_list_elements(list.id(), list.span(), list_value)?
-        };
-
-        self.eval_all_any_elements(
-            op,
-            id,
-            span,
-            predicate.id(),
-            predicate.span(),
-            predicate_value,
-            list.id(),
-            elements,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn eval_all_any_elements(
-        &mut self,
-        op: AllAnyOp,
-        id: IrId,
-        span: Span,
-        predicate_id: IrId,
-        predicate_span: Span,
-        predicate: Value,
-        list_id: IrId,
-        elements: Vec<Value>,
-    ) -> Result<Value, TreeWalkError> {
-        for element in elements {
-            let result = self.apply_lambda_value(
-                id,
-                span,
-                predicate_id,
-                predicate,
-                predicate_span,
-                list_id,
-                element,
-            )?;
-            let result = self.force_value(predicate_id, predicate_span, result)?;
-            let actual = result.tag();
-            let ValueTag::Bool = actual else {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::Type {
-                        id: predicate_id,
-                        expected: "bool",
-                        actual,
-                    },
-                    predicate_span,
-                ));
-            };
-            let result = self.expect_bool(predicate_id, result, predicate_span)?;
-            if op.short_circuits(result) {
-                return Ok(Value::bool(op.short_circuit_value()));
-            }
-        }
-
-        Ok(Value::bool(op.empty_or_exhausted_value()))
     }
 
     pub(super) fn eval_filter_primop(

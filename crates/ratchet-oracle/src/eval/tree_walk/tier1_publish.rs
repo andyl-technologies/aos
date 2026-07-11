@@ -162,6 +162,34 @@ pub enum Tier2FilterHook {
     },
 }
 
+/// The outcome of consulting a [`Tier1Engine`] at strict `all`/`any`.
+///
+/// A native run decides a leading element prefix and either reaches the
+/// operation's short-circuit value or leaves the interpreted loop to resume at
+/// the first element that deoptimized. Exhausting the supplied run without a
+/// short circuit is also a complete native result.
+#[derive(Debug)]
+pub enum Tier2AllAnyHook {
+    /// Native code decided `consumed` leading elements.
+    Ran {
+        /// The number of leading elements decided by native code.
+        consumed: usize,
+        /// Whether the decided prefix reached the operation's short circuit.
+        short_circuited: bool,
+        /// Whether element `consumed` must be retried interpreted.
+        deopted: bool,
+        /// Whether this consult compiled and published the predicate.
+        promoted: bool,
+    },
+    /// No native predicate loop ran.
+    Continued {
+        /// Whether this consult compiled and published the predicate.
+        promoted: bool,
+        /// Whether the predicate def-site was permanently rejected.
+        blacklisted: bool,
+    },
+}
+
 /// A pluggable tier-1 JIT engine consulted by the serial force path.
 ///
 /// The tree-walk evaluator owns no JIT machinery — the Cranelift lowerer,
@@ -262,6 +290,35 @@ pub trait Tier1Engine: fmt::Debug {
     ) -> Tier2FilterHook {
         let _ = (eval, predicate, lambda, elements, id, span);
         Tier2FilterHook::Continued {
+            promoted: false,
+            blacklisted: false,
+        }
+    }
+
+    /// Consulted by a strict `builtins.all` or `builtins.any` element run.
+    ///
+    /// `short_circuit_on` is false for `all` and true for `any`. The default
+    /// implementation preserves the interpreted loop unchanged.
+    fn on_all_any_strict(
+        &self,
+        eval: &mut TreeWalk,
+        predicate: Value,
+        lambda: &crate::eval::heap::EvalLambda,
+        elements: &[Value],
+        short_circuit_on: bool,
+        id: IrId,
+        span: Span,
+    ) -> Tier2AllAnyHook {
+        let _ = (
+            eval,
+            predicate,
+            lambda,
+            elements,
+            short_circuit_on,
+            id,
+            span,
+        );
+        Tier2AllAnyHook::Continued {
             promoted: false,
             blacklisted: false,
         }

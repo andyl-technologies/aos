@@ -43,6 +43,7 @@
     };
     lambda-interp = 1000000;
     hash-loop = 1000000;
+    all-any = 600000;
   };
   params = defaults // scale;
 
@@ -280,6 +281,18 @@
     (acc: i: builtins.hashString "sha256" (acc + "-" + builtins.toString i))
     "seed"
     (builtins.genList (i: i) n);
+
+  # 9. all-any: unary predicates over one shared, forced list. The four cases
+  #    distinguish exhaustion from a last-element short circuit for both
+  #    operations while keeping list construction out of the comparison.
+  allAny = n: let
+    values = builtins.genList (i: i) n;
+  in {
+    allExhausts = builtins.all (x: x < n) values;
+    allStopsLast = builtins.all (x: x < n - 1) values;
+    anyStopsLast = builtins.any (x: x == n - 1) values;
+    anyExhausts = builtins.any (x: x == n) values;
+  };
 in {
   fib = mkBench "fib" {
     n = params.fib;
@@ -301,4 +314,5 @@ in {
     n = params.hash-loop;
     value = hashLoop params.hash-loop;
   };
+  all-any = mkBench "all-any" ({n = params.all-any;} // allAny params.all-any);
 }

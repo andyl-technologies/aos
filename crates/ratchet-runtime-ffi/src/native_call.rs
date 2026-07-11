@@ -574,6 +574,119 @@ pub fn run_context_finalized_native_filter_loop(
     })
 }
 
+/// The result of one native strict `all`/`any` predicate loop.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeAllAnyLoopOutcome {
+    consumed: usize,
+    short_circuited: bool,
+    deopted: bool,
+}
+
+impl NativeAllAnyLoopOutcome {
+    /// Returns how many leading elements were decided natively.
+    pub const fn consumed(self) -> usize {
+        self.consumed
+    }
+
+    /// Returns whether the predicate reached the requested short-circuit value.
+    pub const fn short_circuited(self) -> bool {
+        self.short_circuited
+    }
+
+    /// Returns whether the next element must be retried interpreted.
+    pub const fn deopted(self) -> bool {
+        self.deopted
+    }
+}
+
+/// Runs a compiled arity-1 predicate until `all` or `any` is decided.
+///
+/// The runtime context and trap scope are installed once for the whole run.
+/// `short_circuit_on` is false for `all` and true for `any`; once the native
+/// predicate produces that value, later elements remain unevaluated. A trap,
+/// boundary failure, or non-boolean result at element `k` returns
+/// `consumed == k` so the evaluator can retry it through the tree walk.
+///
+/// # Errors
+///
+/// Returns [`JitCraneliftNativeCallError`] when the host lacks a supported
+/// native value ABI, the body is not an arity-1 tier-2 entry, or the first
+/// native call fails before any element has been decided.
+pub fn run_context_finalized_native_all_any_loop(
+    eval: &mut TreeWalk,
+    id: IrId,
+    span: Span,
+    env: &EvalEnv,
+    elements: &[Value],
+    short_circuit_on: bool,
+    body: &JitModuleContextFinalizedBody,
+) -> Result<NativeAllAnyLoopOutcome, JitCraneliftNativeCallError> {
+    let stack_maps = body.finalized_function().runtime_user_stack_maps();
+    let mut context = std::pin::pin!(RuntimeJitContext::new_with_env_and_stack_maps(
+        eval, id, span, env, stack_maps,
+    ));
+    let rt = context.as_mut().as_mut_ptr();
+    let env = rt;
+    let scope = RuntimeTrapScope::new();
+    for (index, element) in elements.iter().copied().enumerate() {
+        let argv = [element];
+        // SAFETY: `rt` is pinned over `eval`, `env` is the operator-boundary
+        // context pointer, `argv` is live, the owner keeps `body` alive, and
+        // the trap scope is armed for the call.
+        let step = unsafe { jit_cranelift_call_context_finalized_lambda_argv_entry(body, rt, env, &argv) };
+        let value = match step {
+            Ok(value) => value,
+            Err(error) if index == 0 => {
+                drop(scope);
+                return Err(error);
+            }
+            Err(_) => {
+                drop(scope);
+                drop(context);
+                return Ok(NativeAllAnyLoopOutcome {
+                    consumed: index,
+                    short_circuited: false,
+                    deopted: true,
+                });
+            }
+        };
+        if scope.take_trap().is_some() {
+            drop(scope);
+            drop(context);
+            return Ok(NativeAllAnyLoopOutcome {
+                consumed: index,
+                short_circuited: false,
+                deopted: true,
+            });
+        }
+        let Ok(result) = value.as_bool() else {
+            drop(scope);
+            drop(context);
+            return Ok(NativeAllAnyLoopOutcome {
+                consumed: index,
+                short_circuited: false,
+                deopted: true,
+            });
+        };
+        if result == short_circuit_on {
+            drop(scope);
+            drop(context);
+            return Ok(NativeAllAnyLoopOutcome {
+                consumed: index + 1,
+                short_circuited: true,
+                deopted: false,
+            });
+        }
+    }
+    drop(scope);
+    drop(context);
+    Ok(NativeAllAnyLoopOutcome {
+        consumed: elements.len(),
+        short_circuited: false,
+        deopted: false,
+    })
+}
+
 /// The per-step element supply of one native fold run.
 #[derive(Clone, Copy)]
 enum FoldElementSource<'a> {

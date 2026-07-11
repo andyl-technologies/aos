@@ -53,10 +53,12 @@ use ratchet_jit::{
     JitModuleContextFinalizedBody, JitModuleContextKeepAlive, JitTier2EnvBoundary,
     lower_tier2_curried_chain, scan_tier2_unary_predicate,
 };
-use ratchet_oracle::eval::Tier2FilterHook;
 use ratchet_oracle::eval::heap::EvalLambda;
 use ratchet_oracle::eval::tree_walk::TreeWalk;
-use ratchet_runtime_ffi::run_context_finalized_native_filter_loop;
+use ratchet_oracle::eval::{Tier2AllAnyHook, Tier2FilterHook};
+use ratchet_runtime_ffi::{
+    run_context_finalized_native_all_any_loop, run_context_finalized_native_filter_loop,
+};
 use ratchet_value::value::Value;
 
 use super::NixJitTier1Engine;
@@ -175,6 +177,76 @@ impl NixJitTier1Engine {
         }
     }
 
+    /// Runs the filter predicate entry at the strict `all`/`any` loop seam.
+    pub(super) fn on_all_any_strict_impl(
+        &self,
+        eval: &mut TreeWalk,
+        predicate: Value,
+        lambda: &EvalLambda,
+        elements: &[Value],
+        short_circuit_on: bool,
+        id: IrId,
+        span: Span,
+    ) -> Tier2AllAnyHook {
+        let _ = predicate;
+        if !self.tier2_enabled {
+            return all_any_continued(false, false);
+        }
+        let key = fold_def_site_key(lambda);
+        let existing = {
+            let state = self.tier2_filter.borrow();
+            if state.blacklist.contains(&key) {
+                return all_any_continued(false, false);
+            }
+            state.entries.get(&key).cloned()
+        };
+        let (entry, promoted) = match existing {
+            Some(entry) => (entry, false),
+            None => {
+                if elements.len() < TIER2_FILTER_MIN_ELEMENTS {
+                    return all_any_continued(false, false);
+                }
+                match self.prepare_tier2_filter(eval, lambda) {
+                    FilterPreparation::Ready(entry) => {
+                        self.tier2_filter
+                            .borrow_mut()
+                            .entries
+                            .insert(key, Rc::clone(&entry));
+                        (entry, true)
+                    }
+                    FilterPreparation::Transient => return all_any_continued(false, false),
+                    FilterPreparation::Structural => {
+                        self.tier2_filter.borrow_mut().blacklist.insert(key);
+                        return all_any_continued(false, true);
+                    }
+                }
+            }
+        };
+        if !fold_pins_still_valid(eval, lambda, &entry.pinned, 1)
+            || eval.tier2_call_depth_headroom() < TIER2_FOLD_MIN_HEADROOM
+        {
+            return all_any_continued(promoted, false);
+        }
+        let env = lambda.env().clone();
+        match run_context_finalized_native_all_any_loop(
+            eval,
+            id,
+            span,
+            &env,
+            elements,
+            short_circuit_on,
+            &entry.body,
+        ) {
+            Ok(outcome) => Tier2AllAnyHook::Ran {
+                consumed: outcome.consumed(),
+                short_circuited: outcome.short_circuited(),
+                deopted: outcome.deopted(),
+                promoted,
+            },
+            Err(_) => all_any_continued(promoted, false),
+        }
+    }
+
     /// Scans, resolves, lowers, and finalizes one filter predicate.
     fn prepare_tier2_filter(&self, eval: &TreeWalk, lambda: &EvalLambda) -> FilterPreparation {
         let Some(ir) = eval.tier1_module_ir(lambda.module()) else {
@@ -221,6 +293,14 @@ impl NixJitTier1Engine {
 /// A `Continued` filter hook with the given promotion/blacklist flags.
 const fn filter_continued(promoted: bool, blacklisted: bool) -> Tier2FilterHook {
     Tier2FilterHook::Continued {
+        promoted,
+        blacklisted,
+    }
+}
+
+/// A `Continued` all/any hook with the given promotion/blacklist flags.
+const fn all_any_continued(promoted: bool, blacklisted: bool) -> Tier2AllAnyHook {
+    Tier2AllAnyHook::Continued {
         promoted,
         blacklisted,
     }
@@ -298,6 +378,45 @@ mod tests {
             0,
             "an all-integer filter must never deopt, got {stats:?}"
         );
+    }
+
+    /// `all` exhausts a long integer run through the shared native predicate.
+    #[test]
+    fn all_exhausts_natively_and_matches_the_oracle() {
+        let source = "let limit = 400; in builtins.all (x: x < limit) \
+             (builtins.genList (i: i) limit)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(oracle.raw_eq(native));
+        assert!(stats.tier2_dispatched() >= 1, "got {stats:?}");
+        assert_eq!(stats.tier2_deopted(), 0, "got {stats:?}");
+    }
+
+    /// `any` stops at its first true result without evaluating a later error.
+    #[test]
+    fn any_short_circuit_preserves_laziness() {
+        let source = "builtins.any (x: x == 40) \
+             (builtins.genList (i: if i == 50 then 1 / 0 else i) 64)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(oracle.raw_eq(native));
+        assert!(stats.tier2_dispatched() >= 1, "got {stats:?}");
+        assert_eq!(stats.tier2_deopted(), 0, "got {stats:?}");
+    }
+
+    /// A non-integer mid-run deopts and the interpreted suffix still decides.
+    #[test]
+    fn all_deopts_mid_run_and_resumes_interpreted() {
+        let source = "builtins.all (x: x < 40) \
+             (builtins.genList (i: if i == 20 then 0.5 else i) 64)";
+        let oracle = eval_oracle(source);
+        let (native, stats) = eval_with_tier2(source);
+
+        assert!(oracle.raw_eq(native));
+        assert!(stats.tier2_dispatched() >= 1, "got {stats:?}");
+        assert!(stats.tier2_deopted() >= 1, "got {stats:?}");
     }
 
     /// A closed arithmetic predicate (no environment reads) filters natively

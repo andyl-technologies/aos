@@ -323,6 +323,66 @@ impl TreeWalk {
         }
     }
 
+    /// Consults tier-2 for a strict `all`/`any` predicate run.
+    ///
+    /// Returns the native prefix length and whether it reached the operation's
+    /// short-circuit result. Short runs and non-lambda predicates remain fully
+    /// interpreted, matching the filter seam's hook-tax floor.
+    pub(super) fn try_tier2_all_any(
+        &mut self,
+        id: IrId,
+        span: Span,
+        predicate: Value,
+        elements: &[Value],
+        short_circuit_on: bool,
+    ) -> Option<(usize, bool)> {
+        if elements.len() < TIER2_FOLDL_CONSULT_FLOOR || predicate.tag() != ValueTag::Lambda {
+            return None;
+        }
+        let engine = self.tier1_engine.clone()?;
+        let lambda = self.heap.clone_lambda(predicate).ok()?;
+        match engine.on_all_any_strict(
+            self,
+            predicate,
+            &lambda,
+            elements,
+            short_circuit_on,
+            id,
+            span,
+        ) {
+            Tier2AllAnyHook::Ran {
+                consumed,
+                short_circuited,
+                deopted,
+                promoted,
+            } => {
+                if promoted {
+                    self.increment_tier2_promoted();
+                }
+                if deopted {
+                    self.increment_tier2_deopted();
+                }
+                if consumed == 0 {
+                    return None;
+                }
+                self.increment_tier2_dispatched();
+                Some((consumed.min(elements.len()), short_circuited))
+            }
+            Tier2AllAnyHook::Continued {
+                promoted,
+                blacklisted,
+            } => {
+                if promoted {
+                    self.increment_tier2_promoted();
+                }
+                if blacklisted {
+                    self.increment_tier2_blacklisted();
+                }
+                None
+            }
+        }
+    }
+
     /// Consults the tier-2 engine for one run of a fused `genList` fold.
     ///
     /// Called by the fused index loop (see

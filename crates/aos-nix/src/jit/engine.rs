@@ -1,31 +1,10 @@
 //! Live tier-1 JIT engine driving promotion and dispatch during serial forcing.
 //!
-//! [`NixJitTier1Engine`] implements [`Tier1Engine`], the hook the tree-walk
-//! evaluator consults once per claimed serial force. It owns the JIT policy the
-//! oracle cannot (it depends on `ratchet-jit` and `ratchet-runtime-ffi`, which
-//! in turn depend on the oracle), so the oracle stays JIT-agnostic and only
-//! calls out through the trait.
-//!
-//! Each consulted force does one of two things:
-//!
-//! - **Dispatch.** If the forced thunk already has a published
-//!   [`OpaqueTier1Slot`], the engine recovers the finalized body, passes the
-//!   thunk's captured innermost environment frame as the native `env`, and calls
-//!   [`run_context_finalized_native_thunk_call`]. A clean return is handed back as
-//!   [`Tier1ForceHook::Dispatched`]; a trap or any error becomes
-//!   [`Tier1ForceHook::Deopted`] so the evaluator runs the tree-walk body.
-//! - **Promotion.** Otherwise the engine bumps a per-def-site invocation counter
-//!   (keyed by the thunk's `(module, root)` IR body). At the threshold it lowers
-//!   that body through the tier-1 lowerer; if the shape lowers it compiles,
-//!   finalizes, installs, and publishes a slot (reported as
-//!   [`Tier1ForceHook::Continued`] with `promoted = true`), and if the shape is
-//!   unsupported it blacklists the def-site so it is never retried.
-//!
-//! Dispatch reads the thunk's innermost captured frame because the tier-1 lowerer
-//! resolves `LocalVar { slot }` against the innermost environment frame, exactly
-//! as [the tree walk does](ratchet_oracle::eval::TreeWalk); the captured frames
-//! are the same `Rc<EvalFrame>` instances the tree-walk body would read, so the
-//! native and tree-walk sides observe identical locals.
+//! [`NixJitTier1Engine`] owns promotion policy behind [`Tier1Engine`]. Native
+//! success returns [`Tier1ForceHook::Dispatched`]; traps return
+//! [`Tier1ForceHook::Deopted`], and unsupported shapes are blacklisted once.
+//! Native entries read the tree walk's captured innermost `Rc<EvalFrame>`, so
+//! both tiers observe identical `LocalVar { slot }` values.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -798,6 +777,27 @@ impl Tier1Engine for NixJitTier1Engine {
         span: Span,
     ) -> ratchet_oracle::eval::Tier2FilterHook {
         self.on_filter_strict_impl(eval, predicate, lambda, elements, id, span)
+    }
+
+    fn on_all_any_strict(
+        &self,
+        eval: &mut TreeWalk,
+        predicate: Value,
+        lambda: &ratchet_oracle::eval::heap::EvalLambda,
+        elements: &[Value],
+        short_circuit_on: bool,
+        id: IrId,
+        span: Span,
+    ) -> ratchet_oracle::eval::Tier2AllAnyHook {
+        self.on_all_any_strict_impl(
+            eval,
+            predicate,
+            lambda,
+            elements,
+            short_circuit_on,
+            id,
+            span,
+        )
     }
 
     fn on_foldl_strict_genlist(

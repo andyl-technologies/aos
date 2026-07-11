@@ -1582,8 +1582,7 @@ impl StructuredAttrsJson {
 }
 
 // The `impl TreeWalk` body is split across concern-focused submodules below.
-// Each submodule re-opens `impl TreeWalk` and shares this module's private
-// items via `use super::*;`.
+// Each re-opens `impl TreeWalk` and shares private items via `use super::*;`.
 mod alloc_intern;
 mod call_summary;
 mod coerce_paths;
@@ -1642,7 +1641,8 @@ use store_validity::StoreValidityChecker;
 mod fold_genlist;
 mod tier1_publish;
 pub use tier1_publish::{
-    OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2ApplyHook, Tier2FilterHook, Tier2FoldHook,
+    OpaqueTier1Slot, Tier1Engine, Tier1ForceHook, Tier2AllAnyHook, Tier2ApplyHook, Tier2FilterHook,
+    Tier2FoldHook,
 };
 mod tier2_apply;
 pub use eval_impure_inputs::{
