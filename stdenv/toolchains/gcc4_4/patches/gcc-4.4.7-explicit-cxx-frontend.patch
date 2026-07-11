@@ -1,0 +1,13 @@
+diff --git a/configure b/configure
+index 3df12d7..f5303e3 100755
+--- a/configure
++++ b/configure
+@@ -5136,7 +5136,7 @@ if test "${enable_languages+set}" = set; then
+   missing_languages=`echo ",$enable_languages," | sed -e s/,all,/,/ -e s/,c,/,/ `
+   potential_languages=,c,
+ 
+-  for lang_frag in ${srcdir}/gcc/*/config-lang.in .. ; do
++  for lang_frag in ${srcdir}/gcc/cp/config-lang.in .. ; do
+     case ${lang_frag} in
+       ..) ;;
+       # The odd quoting in the next line works around

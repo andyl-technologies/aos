@@ -85,21 +85,14 @@ in
         -e 's@\./fixinc\.sh@-c true@' \
         -e 's|then sleep 1; else exit 1; fi;|then sleep 1; else sleep 1; fi;|' \
         gcc/Makefile.in
+
+      # This tier intentionally contains only the core C frontend and the g++
+      # component. Enumerate cp directly so configure does not depend on glob
+      # state inherited from an early bootstrap shell.
+      ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.4.7-explicit-cxx-frontend.patch}
     '';
     preConfigure = ''
-      # GCC discovers non-C frontends with gcc/*/config-lang.in. Reset shell
-      # glob filters inherited from the early bootstrap environment so the
-      # in-tree g++ component is visible to configure.
-      set +f
-      unset GLOBIGNORE || true
-      export SHELLOPTS
-      foundCxx=
-      for langFragment in "$TMPDIR"/gcc-4.4.7/gcc/*/config-lang.in; do
-        case "$langFragment" in
-          */gcc/cp/config-lang.in) foundCxx=1 ;;
-        esac
-      done
-      test -n "$foundCxx" || {
+      test -f "$TMPDIR/gcc-4.4.7/gcc/cp/config-lang.in" || {
         echo "GCC 4.4.7 C++ frontend source is missing" >&2
         exit 1
       }
