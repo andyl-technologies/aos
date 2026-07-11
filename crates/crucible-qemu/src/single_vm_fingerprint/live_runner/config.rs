@@ -304,7 +304,7 @@ impl LiveRunnerConfig {
                 format!("out={trace},definition_only=on,vcpus={}", self.vcpus())
             }
             LiveRunnerLaunchKind::Observation => format!(
-                "out={trace},cadence={},stop_at={},extended=on,mem_events=on,rr_switch_events=on,vcpus={}",
+                "out={trace},cadence={},stop_at={},extended=on,mem_events=on,rr_switch_events=on,terminal_horizon=on,vcpus={}",
                 self.cadence_icount,
                 self.horizon_icount,
                 self.vcpus()

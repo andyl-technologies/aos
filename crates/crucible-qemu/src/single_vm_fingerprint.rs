@@ -21,6 +21,7 @@ mod live_runner;
 mod probe;
 mod run;
 mod state_dump;
+mod terminal_trace;
 mod trace;
 mod types;
 
@@ -40,9 +41,10 @@ pub use live_runner::{
     LiveRunnerConfig, LiveRunnerConfigError, LiveRunnerImmutableInputs, LiveRunnerLaunchFields,
     LiveRunnerLaunchKind, LiveRunnerLaunchSpec, LiveRunnerQmpConnector, LiveRunnerQmpObservation,
     LiveRunnerQmpPollError, LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession,
-    LiveRunnerSleeper, RawUnixArgvIdentity, ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector,
-    VerifiedGuestImageDigests, VerifiedLiveRunInputs, VerifiedLiveRunInputsError,
-    spawn_live_observation_process,
+    LiveRunnerSleeper, LiveTerminalHorizonExecutor, LiveTerminalHorizonExecutorError,
+    LiveTerminalHorizonReport, RawUnixArgvIdentity, ThreadLiveRunnerSleeper,
+    TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests, VerifiedLiveRunInputs,
+    VerifiedLiveRunInputsError, spawn_live_observation_process,
 };
 pub use probe::{
     SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest, SingleVmFingerprintProbeRunner,
@@ -54,6 +56,7 @@ pub use state_dump::{
     SingleVmFingerprintDivergenceStateDump, SingleVmFingerprintMemoryRegionState,
     SingleVmFingerprintRunStateDump, SingleVmFingerprintVcpuState,
 };
+pub use terminal_trace::QemuTerminalHorizonTraceImport;
 pub use trace::{
     QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
     QemuTraceFingerprintImport, QemuTraceFingerprintImportError, QemuTraceGenesisFingerprintImport,

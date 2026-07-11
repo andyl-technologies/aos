@@ -272,6 +272,22 @@ where
             attempts: self.policy.status_attempts,
         })
     }
+
+    /// Reuses the finite status-poll budget for a post-pause publication barrier.
+    pub(super) fn poll_publication<T, E, F>(&mut self, mut inspect: F) -> Result<Option<T>, E>
+    where
+        F: FnMut() -> Result<Option<T>, E>,
+    {
+        for attempt in 0..self.policy.status_attempts {
+            if let Some(value) = inspect()? {
+                return Ok(Some(value));
+            }
+            if attempt + 1 < self.policy.status_attempts {
+                self.sleeper.sleep(self.policy.interval);
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// Failures from bounded typed QMP observation.

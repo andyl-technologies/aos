@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <glib.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -13,6 +14,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define FNV1A64_OFFSET 14695981039346656037ULL
 #define FNV1A64_PRIME 1099511628211ULL
 #define MAX_TRACKED_VCPUS 256U
+#define RAW_COPY_CHUNK_BYTES (1024U * 1024U)
 #define TRACE_FINGERPRINT_SCHEMA "crucible.qemu.trace-fingerprint.v6"
 #define ZERO_SHA256_HEX \
   "0000000000000000000000000000000000000000000000000000000000000000"
@@ -47,6 +49,21 @@ struct device_state_summary {
   int schema_status;
 };
 
+struct raw_ram_summary {
+  unsigned char digest[32];
+  unsigned char region_map_digest[32];
+  uint64_t bytes;
+  uint64_t regions;
+  int status;
+};
+
+struct raw_vmstate_summary {
+  unsigned char digest[32];
+  uint64_t bytes;
+  int status;
+  bool export_attempted;
+};
+
 static FILE *trace_file;
 static uint64_t cadence = 100000;
 static uint64_t next_sample = 100000;
@@ -74,6 +91,14 @@ static bool det_ipi_probe;
 static bool det_ipi_probe_commanded;
 static bool stop_requested;
 static bool horizon_emitted;
+static bool terminal_horizon;
+static bool terminal_pause_requested;
+static bool terminal_callback_completed;
+static bool terminal_state_emitted;
+static bool terminal_final_emitted;
+static bool terminal_state_complete;
+static int terminal_pause_status = -1;
+static uint64_t terminal_observed_icount;
 static unsigned int tracked_vcpus = 1;
 static struct register_set register_sets[MAX_TRACKED_VCPUS];
 static uint64_t per_vcpu_retired[MAX_TRACKED_VCPUS];
@@ -520,6 +545,176 @@ capture_device_state(void)
   return summary;
 }
 
+static struct raw_ram_summary
+capture_terminal_raw_ram(void)
+{
+  struct raw_ram_summary summary = {0};
+  struct qemu_plugin_crucible_ram_region *regions = NULL;
+  unsigned char *buffer = NULL;
+  GChecksum *bytes_checksum = NULL;
+  GChecksum *map_checksum = NULL;
+  uint64_t count = 0;
+
+  summary.status = qemu_plugin_crucible_guest_ram_regions(NULL, 0, &count);
+  if (summary.status != -ENOSPC || count == 0 ||
+      count > SIZE_MAX / sizeof(*regions)) {
+    if (summary.status == 0) {
+      summary.status = -ENODATA;
+    }
+    return summary;
+  }
+
+  regions = calloc((size_t)count, sizeof(*regions));
+  buffer = malloc(RAW_COPY_CHUNK_BYTES);
+  bytes_checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  map_checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  if (regions == NULL || buffer == NULL || bytes_checksum == NULL ||
+      map_checksum == NULL) {
+    summary.status = -ENOMEM;
+    goto out;
+  }
+
+  summary.status =
+      qemu_plugin_crucible_guest_ram_regions(regions, count, &summary.regions);
+  if (summary.status != 0 || summary.regions != count) {
+    if (summary.status == 0) {
+      summary.status = -ESTALE;
+    }
+    goto out;
+  }
+
+  checksum_string(map_checksum, "crucible.qemu.raw-ram-region-map.v1");
+  checksum_u64(map_checksum, count);
+  for (uint64_t index = 0; index < count; index++) {
+    const struct qemu_plugin_crucible_ram_region *region = &regions[index];
+    const char *name_end = memchr(
+        region->memory_region_name,
+        '\0',
+        sizeof(region->memory_region_name));
+
+    if (region->length == 0 || name_end == NULL ||
+        region->length > UINT64_MAX - region->guest_physical_base ||
+        region->length > UINT64_MAX - summary.bytes) {
+      summary.status = -EOVERFLOW;
+      goto out;
+    }
+    if (index != 0) {
+      const struct qemu_plugin_crucible_ram_region *previous =
+          &regions[index - 1];
+      if (previous->length >
+              UINT64_MAX - previous->guest_physical_base ||
+          previous->guest_physical_base + previous->length >
+              region->guest_physical_base) {
+        summary.status = -ESTALE;
+        goto out;
+      }
+    }
+
+    checksum_u64(map_checksum, region->guest_physical_base);
+    checksum_u64(map_checksum, region->length);
+    checksum_u64(map_checksum, region->memory_region_offset);
+    checksum_bytes(
+        map_checksum,
+        region->memory_region_name,
+        (size_t)(name_end - region->memory_region_name));
+
+    uint64_t offset = 0;
+    while (offset < region->length) {
+      const uint64_t remaining = region->length - offset;
+      const uint64_t chunk = remaining < RAW_COPY_CHUNK_BYTES
+                                 ? remaining
+                                 : RAW_COPY_CHUNK_BYTES;
+
+      summary.status = qemu_plugin_crucible_guest_ram_region_copy(
+          region, offset, buffer, chunk);
+      if (summary.status != 0) {
+        goto out;
+      }
+      g_checksum_update(bytes_checksum, buffer, (gssize)chunk);
+      offset += chunk;
+    }
+    summary.bytes += region->length;
+  }
+
+  if (!checksum_finish(bytes_checksum, summary.digest) ||
+      !checksum_finish(map_checksum, summary.region_map_digest)) {
+    summary.status = -EIO;
+    memset(summary.digest, 0, sizeof(summary.digest));
+    memset(summary.region_map_digest, 0, sizeof(summary.region_map_digest));
+  }
+
+out:
+  if (bytes_checksum != NULL) {
+    g_checksum_free(bytes_checksum);
+  }
+  if (map_checksum != NULL) {
+    g_checksum_free(map_checksum);
+  }
+  free(buffer);
+  free(regions);
+  return summary;
+}
+
+static struct raw_vmstate_summary
+capture_terminal_vmstate(void)
+{
+  struct raw_vmstate_summary summary = {0};
+  struct qemu_plugin_crucible_vmstate_snapshot *snapshot = NULL;
+  unsigned char *buffer = NULL;
+  GChecksum *checksum = NULL;
+
+  summary.export_attempted = true;
+  summary.status = qemu_plugin_crucible_vmstate_snapshot_begin(&snapshot);
+  if (summary.status != 0 || snapshot == NULL) {
+    if (summary.status == 0) {
+      summary.status = -EIO;
+    }
+    return summary;
+  }
+
+  summary.status =
+      qemu_plugin_crucible_vmstate_snapshot_size(snapshot, &summary.bytes);
+  if (summary.status != 0 || summary.bytes == 0) {
+    if (summary.status == 0) {
+      summary.status = -ENODATA;
+    }
+    goto out;
+  }
+
+  buffer = malloc(RAW_COPY_CHUNK_BYTES);
+  checksum = g_checksum_new(G_CHECKSUM_SHA256);
+  if (buffer == NULL || checksum == NULL) {
+    summary.status = -ENOMEM;
+    goto out;
+  }
+  for (uint64_t offset = 0; offset < summary.bytes;) {
+    const uint64_t remaining = summary.bytes - offset;
+    const uint64_t chunk = remaining < RAW_COPY_CHUNK_BYTES
+                               ? remaining
+                               : RAW_COPY_CHUNK_BYTES;
+
+    summary.status = qemu_plugin_crucible_vmstate_snapshot_copy(
+        snapshot, offset, buffer, chunk);
+    if (summary.status != 0) {
+      goto out;
+    }
+    g_checksum_update(checksum, buffer, (gssize)chunk);
+    offset += chunk;
+  }
+  if (!checksum_finish(checksum, summary.digest)) {
+    summary.status = -EIO;
+    memset(summary.digest, 0, sizeof(summary.digest));
+  }
+
+out:
+  if (checksum != NULL) {
+    g_checksum_free(checksum);
+  }
+  free(buffer);
+  qemu_plugin_crucible_vmstate_snapshot_free(snapshot);
+  return summary;
+}
+
 static bool
 all_register_sets_initialized(void)
 {
@@ -676,6 +871,301 @@ record_definition(void)
       register_read_failures,
       device_state_failures);
   fflush(trace_file);
+}
+
+static void
+record_terminal_final(void)
+{
+  char process_argv_digest_hex[65];
+
+  if (trace_file == NULL || terminal_final_emitted) {
+    return;
+  }
+  terminal_final_emitted = true;
+  digest_hex(process_argv_attestation.sha256, process_argv_digest_hex);
+  fprintf(
+      trace_file,
+      "{\"kind\":\"terminal_final\""
+      ",\"schema\":\"" TRACE_FINGERPRINT_SCHEMA "\""
+      ",\"terminal_state_schema\":\"crucible.qemu.terminal-horizon.v1\""
+      ",\"final\":true"
+      ",\"retired\":%" PRIu64
+      ",\"stop_at\":%" PRIu64
+      ",\"stop_requested\":%s"
+      ",\"observed_icount\":%" PRIu64
+      ",\"terminal_pause_requested\":%s"
+      ",\"terminal_pause_status\":%d"
+      ",\"terminal_callback_completed\":%s"
+      ",\"terminal_state_emitted\":%s"
+      ",\"terminal_state_complete\":%s"
+      ",\"launch_definition_digest\":\"%s\""
+      ",\"qemu_build_digest\":\"%s\""
+      ",\"trace_plugin_build_digest\":\"%s\""
+      ",\"process_argv_attestation_version\":%" PRIu32
+      ",\"process_argv_encoding\":\"raw-unix-argv-v2\""
+      ",\"process_argv_argc\":%" PRIu64
+      ",\"process_argv_raw_bytes\":%" PRIu64
+      ",\"process_argv_digest\":\"%s\""
+      ",\"process_argv_status\":%d"
+      "}\n",
+      retired,
+      stop_at,
+      stop_requested ? "true" : "false",
+      terminal_observed_icount,
+      terminal_pause_requested ? "true" : "false",
+      terminal_pause_status,
+      terminal_callback_completed ? "true" : "false",
+      terminal_state_emitted ? "true" : "false",
+      terminal_state_complete ? "true" : "false",
+      launch_definition_digest,
+      qemu_build_digest,
+      trace_plugin_build_digest,
+      process_argv_attestation.version,
+      process_argv_attestation.argc,
+      process_argv_attestation.raw_bytes,
+      process_argv_digest_hex,
+      process_argv_status);
+  fflush(trace_file);
+}
+
+static void
+record_terminal_horizon(int paused_status)
+{
+  struct register_digest_summary register_digests = {0};
+  struct raw_ram_summary ram = {0};
+  struct raw_vmstate_summary vmstate = {0};
+  uint64_t rr_current_vcpu = UINT64_MAX;
+  uint64_t rr_cursor_position = UINT64_MAX;
+  uint64_t rr_switch_quantum = 0;
+  uint64_t register_retired_sum = 0;
+  int capture_status = paused_status;
+  bool rr_cursor_valid = false;
+  bool observed_non_running = false;
+  const char *rr_cursor_source = "terminal_paused_boundary";
+  char ram_digest_hex[65];
+  char ram_region_map_digest_hex[65];
+  char vmstate_digest_hex[65];
+  char process_argv_digest_hex[65];
+
+  if (trace_file == NULL || terminal_state_emitted) {
+    return;
+  }
+  terminal_state_emitted = true;
+  terminal_pause_status = paused_status;
+  terminal_observed_icount = qemu_plugin_crucible_icount();
+  observed_non_running = qemu_plugin_crucible_vm_non_running();
+
+  if (paused_status == 0) {
+    register_digests = compute_register_digests();
+    rr_cursor_valid = read_rr_cursor_snapshot(
+        &rr_current_vcpu, &rr_cursor_position, &rr_switch_quantum);
+    if (!rr_cursor_valid && last_valid_rr_cursor_available) {
+      rr_current_vcpu = last_valid_rr_current_vcpu;
+      rr_cursor_position = last_valid_rr_cursor_position;
+      rr_switch_quantum = last_valid_rr_switch_quantum;
+      rr_cursor_valid = true;
+      rr_cursor_source = "terminal_last_executed_instruction";
+    }
+    ram = capture_terminal_raw_ram();
+
+    /*
+     * VMState pre_save hooks may mutate device bookkeeping. This must remain
+     * the final state observation; beginning it seals QEMU even on a failed
+     * serialization attempt.
+     */
+    vmstate = capture_terminal_vmstate();
+  } else {
+    ram.status = -ECANCELED;
+    vmstate.status = -ECANCELED;
+  }
+
+  if (capture_status == 0 && terminal_observed_icount != stop_at) {
+    capture_status = -ERANGE;
+  }
+  if (capture_status == 0 && !observed_non_running) {
+    capture_status = -EBUSY;
+  }
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    if (UINT64_MAX - register_retired_sum <
+        register_digests.register_retired[vcpu]) {
+      capture_status = capture_status == 0 ? -EOVERFLOW : capture_status;
+    } else {
+      register_retired_sum += register_digests.register_retired[vcpu];
+    }
+  }
+  if (capture_status == 0 &&
+      (register_digests.sample_failures != 0 ||
+       register_retired_sum != retired || trajectory_digest_failures != 0)) {
+    capture_status = -EIO;
+  }
+  if (capture_status == 0 &&
+      (!rr_cursor_valid || rr_current_vcpu >= tracked_vcpus ||
+       rr_switch_quantum == 0)) {
+    capture_status = -EIO;
+  }
+  if (capture_status == 0 && ram.status != 0) {
+    capture_status = ram.status;
+  }
+  if (capture_status == 0 && vmstate.status != 0) {
+    capture_status = vmstate.status;
+  }
+  terminal_state_complete = capture_status == 0;
+
+  digest_hex(ram.digest, ram_digest_hex);
+  digest_hex(ram.region_map_digest, ram_region_map_digest_hex);
+  digest_hex(vmstate.digest, vmstate_digest_hex);
+  digest_hex(process_argv_attestation.sha256, process_argv_digest_hex);
+  fprintf(
+      trace_file,
+      "{\"kind\":\"terminal_horizon\""
+      ",\"schema\":\"" TRACE_FINGERPRINT_SCHEMA "\""
+      ",\"terminal_state_schema\":\"crucible.qemu.terminal-horizon.v1\""
+      ",\"final\":false"
+      ",\"retired\":%" PRIu64
+      ",\"vcpu\":%" PRIu64
+      ",\"tracked_vcpus\":%u"
+      ",\"stop_at\":%" PRIu64
+      ",\"stop_requested\":%s"
+      ",\"trigger\":\"event\""
+      ",\"event_boundary\":\"horizon-advance\""
+      ",\"observed_icount\":%" PRIu64
+      ",\"observed_non_running\":%s"
+      ",\"terminal_pause_status\":%d"
+      ",\"terminal_capture_status\":%d"
+      ",\"terminal_state_complete\":%s"
+      ",\"terminal_vmstate_export\":%s"
+      ",\"rr_current_vcpu\":%" PRIu64
+      ",\"rr_cursor_position\":%" PRIu64
+      ",\"rr_switch_quantum\":%" PRIu64
+      ",\"rr_cursor_valid\":%s"
+      ",\"rr_cursor_source\":\"%s\""
+      ",\"launch_definition_digest\":\"%s\""
+      ",\"qemu_build_digest\":\"%s\""
+      ",\"trace_plugin_build_digest\":\"%s\""
+      ",\"process_argv_attestation_version\":%" PRIu32
+      ",\"process_argv_encoding\":\"raw-unix-argv-v2\""
+      ",\"process_argv_argc\":%" PRIu64
+      ",\"process_argv_raw_bytes\":%" PRIu64
+      ",\"process_argv_digest\":\"%s\""
+      ",\"process_argv_status\":%d"
+      ",\"stream_hash\":\"%016" PRIx64 "\""
+      ",\"register_digests\":[",
+      retired,
+      rr_current_vcpu,
+      tracked_vcpus,
+      stop_at,
+      stop_requested ? "true" : "false",
+      terminal_observed_icount,
+      observed_non_running ? "true" : "false",
+      terminal_pause_status,
+      capture_status,
+      terminal_state_complete ? "true" : "false",
+      vmstate.status == 0 && vmstate.export_attempted ? "true" : "false",
+      rr_current_vcpu,
+      rr_cursor_position,
+      rr_switch_quantum,
+      rr_cursor_valid ? "true" : "false",
+      rr_cursor_source,
+      launch_definition_digest,
+      qemu_build_digest,
+      trace_plugin_build_digest,
+      process_argv_attestation.version,
+      process_argv_attestation.argc,
+      process_argv_attestation.raw_bytes,
+      process_argv_digest_hex,
+      process_argv_status,
+      stream_hash);
+
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    char encoded[65];
+    digest_hex(register_digests.per_vcpu[vcpu], encoded);
+    fprintf(trace_file, "%s\"%s\"", vcpu == 0 ? "" : ",", encoded);
+  }
+  fprintf(trace_file, "],\"register_counts\":[");
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    fprintf(
+        trace_file,
+        "%s%" PRIu64,
+        vcpu == 0 ? "" : ",",
+        register_digests.register_counts[vcpu]);
+  }
+  fprintf(trace_file, "],\"register_file_bytes\":[");
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    fprintf(
+        trace_file,
+        "%s%" PRIu64,
+        vcpu == 0 ? "" : ",",
+        register_digests.register_file_bytes[vcpu]);
+  }
+  fprintf(trace_file, "],\"register_schema_digests\":[");
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    char encoded[65];
+    digest_hex(register_digests.register_schema[vcpu], encoded);
+    fprintf(trace_file, "%s\"%s\"", vcpu == 0 ? "" : ",", encoded);
+  }
+  fprintf(trace_file, "],\"register_retired\":[");
+  for (unsigned int vcpu = 0; vcpu < tracked_vcpus; vcpu++) {
+    fprintf(
+        trace_file,
+        "%s%" PRIu64,
+        vcpu == 0 ? "" : ",",
+        register_digests.register_retired[vcpu]);
+  }
+  fprintf(
+      trace_file,
+      "]"
+      ",\"raw_ram_digest\":\"%s\""
+      ",\"raw_ram_region_map_digest\":\"%s\""
+      ",\"raw_ram_regions\":%" PRIu64
+      ",\"raw_ram_bytes\":%" PRIu64
+      ",\"raw_ram_status\":%d"
+      ",\"vmstate_digest\":\"%s\""
+      ",\"vmstate_bytes\":%" PRIu64
+      ",\"vmstate_status\":%d"
+      ",\"memory_event_hash\":\"%016" PRIx64 "\""
+      ",\"device_event_hash\":\"%016" PRIx64 "\""
+      ",\"memory_events\":%" PRIu64
+      ",\"io_events\":%" PRIu64
+      ",\"memory_events_enabled\":%s"
+      ",\"sample_register_failures\":%" PRIu64
+      ",\"register_read_failures\":%" PRIu64
+      ",\"trajectory_digest_failures\":%" PRIu64
+      "}\n",
+      ram_digest_hex,
+      ram_region_map_digest_hex,
+      ram.regions,
+      ram.bytes,
+      ram.status,
+      vmstate_digest_hex,
+      vmstate.bytes,
+      vmstate.status,
+      memory_event_hash,
+      current_device_event_hash(),
+      memory_events,
+      io_events,
+      capture_memory_events ? "true" : "false",
+      register_digests.sample_failures,
+      register_read_failures,
+      trajectory_digest_failures);
+  fflush(trace_file);
+}
+
+static void
+on_terminal_paused(int status, void *userdata)
+{
+  (void)userdata;
+
+  if (terminal_callback_completed) {
+    return;
+  }
+  record_terminal_horizon(status);
+  terminal_callback_completed = true;
+  /*
+   * This final record is the one-shot trace-publication barrier, not process
+   * exit evidence. QEMU remains terminally sealed and paused until its owner
+   * issues the later QMP quit; the atexit callback only closes the trace.
+   */
+  record_terminal_final();
 }
 
 static void
@@ -1214,10 +1704,11 @@ on_mem(unsigned int vcpu_index, qemu_plugin_meminfo_t info, uint64_t vaddr, void
   event_hash = fnv1a_u64(event_hash, is_store ? 1U : 0U);
   event_hash = fnv1a_u64(event_hash, is_io ? 1U : 0U);
   event_hash = hash_mem_value(event_hash, value);
-  if (post_boundary_samples) {
+  if (post_boundary_samples || terminal_horizon) {
     memory_event_hash = fnv1a_u64(memory_event_hash, memory_events);
     memory_event_hash = fnv1a_u64(memory_event_hash, event_hash);
-    if (required_pc_seen && trajectory_digest_failures == 0 &&
+    if (post_boundary_samples && required_pc_seen &&
+        trajectory_digest_failures == 0 &&
         !advance_memory_event_digest(
           memory_event_digest,
           "crucible.qemu.memory-event-trajectory.v1",
@@ -1338,6 +1829,35 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
     return;
   }
 
+  if (terminal_horizon) {
+    int status;
+
+    stop_requested = true;
+    horizon_emitted = true;
+    next_sample = UINT64_MAX;
+    terminal_observed_icount = current_icount;
+    if (!horizon_due || current_icount != stop_at) {
+      qemu_plugin_outs(
+          "crucible-qemu-trace-plugin: terminal horizon boundary was not exact\n");
+      terminal_pause_status = -ERANGE;
+      qemu_plugin_crucible_pause_vm();
+      on_terminal_paused(terminal_pause_status, NULL);
+      return;
+    }
+
+    terminal_pause_requested = true;
+    status = qemu_plugin_crucible_request_terminal_pause(
+        on_terminal_paused, NULL);
+    if (status != 0) {
+      qemu_plugin_outs(
+          "crucible-qemu-trace-plugin: terminal pause request failed\n");
+      terminal_pause_status = status;
+      qemu_plugin_crucible_pause_vm();
+      on_terminal_paused(status, NULL);
+    }
+    return;
+  }
+
   if (post_boundary_samples) {
     const struct register_digest_summary register_digests =
         compute_register_digests();
@@ -1441,7 +1961,12 @@ on_plugin_exit(qemu_plugin_id_t id, void *userdata)
     return;
   }
 
-  if (!definition_only) {
+  if (terminal_horizon) {
+    if (!terminal_final_emitted) {
+      terminal_observed_icount = qemu_plugin_crucible_icount();
+      record_terminal_final();
+    }
+  } else if (!definition_only) {
     record_sample(UINT_MAX, true);
   } else {
     record_definition();
@@ -1517,6 +2042,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
       next_sample = parsed;
     } else if (strncmp(argv[i], "extended=", 9) == 0) {
       extended_fingerprint = parse_bool_flag(argv[i] + 9);
+    } else if (strncmp(argv[i], "terminal_horizon=", 17) == 0) {
+      terminal_horizon = parse_bool_flag(argv[i] + 17);
     } else if (strncmp(argv[i], "definition_only=", 16) == 0) {
       definition_only = parse_bool_flag(argv[i] + 16);
     } else if (strncmp(argv[i], "mem_events=", 11) == 0) {
@@ -1578,6 +2105,15 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
           "crucible-qemu-trace-plugin: definition-only mode cannot execute or schedule guest boundaries\n");
       return -1;
     }
+  }
+
+  if (terminal_horizon &&
+      (!extended_fingerprint || !capture_memory_events || stop_at == 0 ||
+       cadence != stop_at || definition_only || post_boundary_samples ||
+       det_ipi_probe)) {
+    qemu_plugin_outs(
+        "crucible-qemu-trace-plugin: terminal horizon requires dedicated extended memory-event capture with equal nonzero cadence/stop_at\n");
+    return -1;
   }
 
   if (post_boundary_samples &&
