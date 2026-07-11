@@ -236,6 +236,24 @@ pub struct JitTier2ChainLowering {
 }
 
 impl JitTier2ChainLowering {
+    pub(crate) fn from_cached_parts(
+        entry: Function,
+        inner: Function,
+        source: IrId,
+        arity: u32,
+        self_upval: Option<(u32, u32)>,
+        self_call_count: u32,
+    ) -> Self {
+        Self {
+            entry,
+            inner,
+            source,
+            arity,
+            self_upval,
+            self_call_count,
+        }
+    }
+
     /// Returns the boundary entry function (frozen argv lambda-entry ABI).
     pub fn entry(&self) -> &Function {
         &self.entry

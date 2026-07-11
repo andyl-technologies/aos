@@ -126,6 +126,9 @@ struct PreparedChain {
     root_pattern: IrId,
     root_body: IrId,
     pinned: Vec<Tier2PinIdentity>,
+    cache_identity: Vec<u8>,
+    cache_hit: bool,
+    budget: i64,
     lowering: JitTier2ChainLowering,
 }
 
@@ -167,6 +170,18 @@ impl NixJitTier1Engine {
                 .is_profitable(TIER2_MIN_NATIVE_INSTS)
         {
             return self.blacklist_tier2(eval, key, lambda);
+        }
+
+        if !prepared.cache_hit
+            && let Some(ir) = eval.tier1_module_ir(lambda.module())
+            && let Some(cache) = self.tier2.borrow().compiled_cache.as_ref()
+        {
+            cache.store_chain(
+                ir,
+                &prepared.cache_identity,
+                prepared.budget,
+                &prepared.lowering,
+            );
         }
 
         let arity = prepared.lowering.arity();
@@ -299,17 +314,46 @@ impl NixJitTier1Engine {
         }
 
         let budget = self.tier2.borrow().budget;
+        let env_boundary = JitTier2EnvBoundary::InnerLambdaEnv;
+        let Some(cache_identity) = chain_cache_identity(
+            root_lambda.pattern(),
+            root_lambda.body(),
+            &scan,
+            self_upval,
+            &pinned,
+            &pinned_callees,
+            env_boundary,
+        ) else {
+            return ChainPreparation::Structural;
+        };
+        let cached = {
+            let state = self.tier2.borrow();
+            state.compiled_cache.as_ref().and_then(|cache| {
+                cache.load_chain(
+                    ir,
+                    &cache_identity,
+                    scan.inner_body(),
+                    scan.arity(),
+                    Some(self_upval),
+                    budget,
+                )
+            })
+        };
+        let cache_hit = cached.is_some();
         // The apply seam dispatches with the innermost closure's environment
         // (root env + K-1 argument frames), so env reads translate by one.
-        let Ok(lowering) = lower_tier2_curried_chain(
-            arena,
-            &ir.bindings,
-            &scan,
-            Some(self_upval),
-            &pinned_callees,
-            JitTier2EnvBoundary::InnerLambdaEnv,
-            budget,
-        ) else {
+        let Some(lowering) = cached.or_else(|| {
+            lower_tier2_curried_chain(
+                arena,
+                &ir.bindings,
+                &scan,
+                Some(self_upval),
+                &pinned_callees,
+                env_boundary,
+                budget,
+            )
+            .ok()
+        }) else {
             return ChainPreparation::Structural;
         };
         ChainPreparation::Ready(Box::new(PreparedChain {
@@ -317,6 +361,9 @@ impl NixJitTier1Engine {
             root_pattern: root_lambda.pattern(),
             root_body: root_lambda.body(),
             pinned,
+            cache_identity,
+            cache_hit,
+            budget,
             lowering,
         }))
     }
@@ -339,6 +386,52 @@ impl NixJitTier1Engine {
             Err(_) => None,
         }
     }
+}
+
+/// Canonically encodes every runtime-resolved input that can change chain CLIF.
+fn chain_cache_identity(
+    root_pattern: IrId,
+    root_body: IrId,
+    scan: &ratchet_jit::JitTier2ChainScan,
+    self_upval: (u32, u32),
+    pinned: &[Tier2PinIdentity],
+    pinned_callees: &[JitTier2PinnedCallee],
+    env_boundary: JitTier2EnvBoundary,
+) -> Option<Vec<u8>> {
+    if pinned.len() != pinned_callees.len() {
+        return None;
+    }
+    let pin_count = u32::try_from(pinned.len()).ok()?;
+    let mut identity = Vec::with_capacity(64usize.saturating_add(pinned.len().saturating_mul(36)));
+    identity.extend_from_slice(b"aos-nix:fused-chain-identity:v1\0");
+    extend_identity_u32(&mut identity, root_pattern.as_u32());
+    extend_identity_u32(&mut identity, root_body.as_u32());
+    extend_identity_u32(&mut identity, scan.inner_pattern().as_u32());
+    extend_identity_u32(&mut identity, scan.inner_body().as_u32());
+    extend_identity_u32(&mut identity, scan.arity());
+    identity.push(u8::from(scan.reads_env()));
+    extend_identity_u32(&mut identity, self_upval.0);
+    extend_identity_u32(&mut identity, self_upval.1);
+    identity.push(match env_boundary {
+        JitTier2EnvBoundary::InnerLambdaEnv => 1,
+        JitTier2EnvBoundary::OperatorEnv => 2,
+    });
+    extend_identity_u32(&mut identity, pin_count);
+    for (pin, callee) in pinned.iter().zip(pinned_callees) {
+        extend_identity_u32(&mut identity, pin.upval.0);
+        extend_identity_u32(&mut identity, pin.upval.1);
+        extend_identity_u32(&mut identity, pin.pattern.as_u32());
+        extend_identity_u32(&mut identity, pin.body.as_u32());
+        extend_identity_u32(&mut identity, callee.upval.0);
+        extend_identity_u32(&mut identity, callee.upval.1);
+        extend_identity_u32(&mut identity, callee.arity);
+        extend_identity_u32(&mut identity, callee.body.as_u32());
+    }
+    Some(identity)
+}
+
+fn extend_identity_u32(identity: &mut Vec<u8>, value: u32) {
+    identity.extend_from_slice(&value.to_le_bytes());
 }
 
 /// Checks every chain dispatch guard and extracts the outer-argument run.
@@ -398,7 +491,12 @@ pub(super) fn chain_guard_argv(
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
+    use std::{
+        fs,
+        path::PathBuf,
+        rc::Rc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use ratchet_core::Ir;
     use ratchet_oracle::eval::EvalStats;
@@ -462,6 +560,64 @@ mod tests {
             0,
             "an all-integer tak must never deopt, got {stats:?}"
         );
+    }
+
+    /// A fresh engine reloads `tak`'s fused chain from the packed cache.
+    #[test]
+    fn tak_persists_and_reloads_verified_fused_chain() {
+        let source = "let tak = x: y: z: if y < x then \
+             tak (tak (x - 1) y z) (tak (y - 1) z x) (tak (z - 1) x y) \
+             else z; in tak 12 6 3";
+        let ir = lower(source);
+        let cache_root = unique_cache_root();
+        fs::create_dir(&cache_root).expect("cache root creates");
+
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let first_engine = Rc::new(
+            NixJitTier1Engine::new()
+                .expect("first engine builds")
+                .with_compiled_body_cache_root(Some(&cache_root)),
+        );
+        let mut first_eval = TreeWalk::with_options(&ir, options.clone());
+        first_eval.set_tier1_engine(first_engine);
+        let first = first_eval.eval_root().expect("first tak evaluation succeeds");
+        assert!(first_eval.stats().tier2_promoted() >= 1);
+        drop(first_eval);
+
+        let fresh_engine = Rc::new(
+            NixJitTier1Engine::new()
+                .expect("fresh engine builds")
+                .with_compiled_body_cache_root(Some(&cache_root)),
+        );
+        let mut fresh_eval = TreeWalk::with_options(&ir, options);
+        fresh_eval.set_tier1_engine(fresh_engine.clone());
+        let second = fresh_eval
+            .eval_root()
+            .expect("cached tak evaluation succeeds");
+        assert!(first.raw_eq(second), "cached chain changed tak's value");
+        assert!(fresh_eval.stats().tier2_dispatched() >= 1);
+        drop(fresh_eval);
+
+        let state = fresh_engine.tier2.borrow();
+        let cache = state.compiled_cache.as_ref().expect("cache configured");
+        assert_eq!(cache.chain_hits(), 1, "fresh engine must load one chain");
+        assert!(cache_root.join("files/pack.blob").is_file());
+        assert!(!cache_root.join("compiled-bodies").exists());
+
+        drop(state);
+        fs::remove_dir_all(cache_root).expect("cache root removes");
+    }
+
+    fn unique_cache_root() -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock follows Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "aos-tier2-chain-cache-{}-{now}",
+            std::process::id()
+        ))
     }
 
     /// An arity-2 recursion promotes as a fused chain and matches the oracle.

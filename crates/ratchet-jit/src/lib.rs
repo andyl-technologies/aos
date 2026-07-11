@@ -59,8 +59,8 @@ pub use abi::{
 };
 pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
 pub use compiled_body::{
-    JitCompiledBodyCodecError, compiled_body_target_triple, decode_tier2_lambda_lowering,
-    encode_tier2_lambda_lowering,
+    JitCompiledBodyCodecError, compiled_body_target_triple, decode_tier2_chain_lowering,
+    decode_tier2_lambda_lowering, encode_tier2_chain_lowering, encode_tier2_lambda_lowering,
 };
 pub use cost::{Tier1BodyCost, estimate_tier1_body_cost};
 pub use lower::interp::{

@@ -11386,9 +11386,44 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       warm; median resident memory after evaluation was 30.6/30.6 MiB cold and
       30.7/30.8 MiB warm. This is a timing and memory no-regression result.
       The source-size gate remains pre-existing red; every touched offender is
-      unchanged and both new modules stay below 200 lines. Fused-chain and
-      collection entries, compiled-body L3 placement, counters, and a measured
+      unchanged and both new modules stay below 200 lines. Collection entries,
+      compiled-body L3 placement, counters, and a measured
       admission/default policy remain open.
+- [x] Persistent compiled-body cache, fused curried-chain apply slice: a hot
+      multi-argument self-recursive def-site such as `tak` now reuses its
+      address-free argv-entry/inner CLIF pair through the same indexed,
+      multi-location L2 pack as unary bodies. The domain-separated key binds
+      the complete lowered-IR fingerprint, chain root and inner IDs, arity,
+      environment-boundary translation, native depth budget, resolved
+      self-upvalue, every pinned callee's def-site and inline-body identity,
+      record schema, exact Cranelift version, and target triple. Runtime
+      self/pin resolution still precedes every cache lookup, and the existing
+      per-dispatch def-site guards remain authoritative. The envelope embeds
+      its semantic key; decoding rejects key/source/arity/self mismatches and
+      re-verifies both CLIF functions before fresh-module compilation.
+      Tests cover codec round-trip and mismatch rejection, a real `tak`
+      write/fresh-engine reload, corrupt-primary fallthrough to a valid
+      secondary, promotion, and rejection of a valid chain under the wrong
+      semantic key. The landing passed 3,036 active serial oracle tests (34
+      ignored), 261 JIT tests, 332 `aos-nix` tests, 80 active runtime-FFI tests
+      plus eight integrations, 112 cache tests plus its doctest, and the
+      38-test language aggregate. It also passed all 16 package byte legs,
+      compute x9, wide serial/K=4/JIT/sweep-zero, zlib and wide cache
+      validation, and all 645 strict-JSON seeds in those four modes. The only
+      harness red remains the pristine-baseline malformed-node-trace assertion;
+      the frozen source-size gate is likewise unchanged, and every touched
+      source stays below 1000 lines.
+
+      A balanced seven-pair root-cutoff-disabled JIT `tak` A/B against pristine
+      `89f92c52e` measured separate candidate/baseline medians of 38.69/33.22 ms
+      cold and 33.32/34.20 ms warm. Because the local host drifted strongly
+      during the run, the balanced paired-median ratios are the landing gate:
+      1.065 cold and 0.999 warm, below the 10% regression threshold. Median
+      post-eval RSS was 31.2/31.0 MiB cold and 31.4/31.1 MiB warm; every leg
+      retained the same 0.5 MiB arena peak. This is a functional persistence
+      substrate and no-regression result, not a CLIF-reload speedup. Collection
+      seams, compiled-body L3, production hit counters, admission tuning, and
+      machine-code/AOT reuse remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling

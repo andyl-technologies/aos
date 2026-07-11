@@ -465,6 +465,36 @@ impl CompiledBodyRecordHash {
         Self(DurableBlake3Hash::from_hasher(hasher))
     }
 
+    /// Derives the durable key for one fused-chain tier-2 compiled-body record.
+    ///
+    /// `semantic_identity` is the caller's canonical encoding of the chain
+    /// root, inner body, self-callee, environment boundary, and every pinned
+    /// callee. Its length prefix keeps the following schema and toolchain
+    /// fields structurally unambiguous.
+    pub fn for_fused_chain_tier2(
+        lowered_ir: LoweredIrFingerprint,
+        semantic_identity: &[u8],
+        budget: i64,
+        schema: u32,
+        compiler_version: &str,
+        target_triple: &str,
+    ) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"aos-nix:compiled-body:fused-chain-tier2:v1\0");
+        hasher.update(&lowered_ir.as_bytes());
+        update_compiled_body_key_field(&mut hasher, semantic_identity);
+        hasher.update(&budget.to_le_bytes());
+        hasher.update(&schema.to_le_bytes());
+        update_compiled_body_key_field(&mut hasher, compiler_version.as_bytes());
+        update_compiled_body_key_field(&mut hasher, target_triple.as_bytes());
+        Self(DurableBlake3Hash::from_hasher(hasher))
+    }
+
+    /// Returns the raw durable key bytes for envelope self-validation.
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0.as_bytes()
+    }
+
     /// Returns the underlying durable BLAKE3 digest.
     pub(in crate::cache) const fn as_durable_hash(self) -> DurableBlake3Hash {
         self.0
@@ -696,6 +726,41 @@ mod tests {
 
         assert_eq!(key, same);
         assert_ne!(key, other_target);
+    }
+
+    #[test]
+    fn fused_chain_record_hash_covers_semantic_identity_and_budget() {
+        let fingerprint = LoweredIrFingerprint::from_durable_hash(
+            DurableBlake3Hash::for_bytes(b"lowered chain module"),
+        );
+        let key = CompiledBodyRecordHash::for_fused_chain_tier2(
+            fingerprint,
+            b"root/self/pins",
+            128,
+            1,
+            "cranelift-1",
+            "aarch64-test",
+        );
+        let other_identity = CompiledBodyRecordHash::for_fused_chain_tier2(
+            fingerprint,
+            b"different pin",
+            128,
+            1,
+            "cranelift-1",
+            "aarch64-test",
+        );
+        let other_budget = CompiledBodyRecordHash::for_fused_chain_tier2(
+            fingerprint,
+            b"root/self/pins",
+            64,
+            1,
+            "cranelift-1",
+            "aarch64-test",
+        );
+
+        assert_ne!(key, other_identity);
+        assert_ne!(key, other_budget);
+        assert_eq!(key.as_bytes().len(), 32);
     }
 
     #[test]

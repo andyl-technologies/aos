@@ -41,9 +41,10 @@ Today the evaluator carries what look like four separate caches:
    7.8–28 ms, 5–18x faster than a warm C++ `nix` flake-eval-cache hit);
 3. the **parse cache** — per-file lowered-IR artifacts keyed by realpath
    plus content hash, carrying the post-remap `LoweredIrFingerprint`;
-4. the **JIT persistent compiled-body cache** — its first unary tier-2 slice
-   stores paired CLIF functions under the lowered module fingerprint and
-   def-site identity; fused-chain and collection-body records remain deferred.
+4. the **JIT persistent compiled-body cache** — unary and fused curried-chain
+   tier-2 slices store paired CLIF functions under the lowered module
+   fingerprint and complete def-site/inline identity; collection-body records
+   remain deferred.
 
 These are the same object at different granularities and with different
 payload kinds. Each one is a **content-keyed record**: a key derived
@@ -74,7 +75,7 @@ unification and tiering, not invention:
 | Demand/force cache | per lowered node | `DemandCacheKey::for_free_vars(CacheExprIdentity{source_hash, node: IrId}, [ValueHash])` (`ratchet-oracle/src/cache/key.rs`, ordered length-prefixed combiner per decision C-1) | forced value payloads (`CachedExpressionPayloadValueHash`, derivation side records) | in-process maps + `nodes/` persist layer (`metadata.index`, `traces.log`) |
 | Root cutoff | whole root (largest subtree) | blake3(domain ‖ format-v2 ‖ crate version ‖ entry realpath ‖ entry content ‖ attr ‖ `TreeWalkOptions::result_affecting_fingerprint()`) (`aos-nix/src/native/root_cutoff.rs`) | `RootInstantiationRecord` = root drv + closure blob refs + canonicalized input trace | `roots/instantiations.index` + `files/` pack, tag 6 |
 | Parse cache | per source file | realpath + content hash (`ParseFileContentHash`); artifact carries post-remap `LoweredIrFingerprint` | lowered IR + symbol table + facts | `nodes/parse-artifacts.index` + packs |
-| JIT body cache (unary slice live) | per def-site | `(LoweredIrFingerprint, pattern IrId, body IrId, depth budget, schema, Cranelift version, target)` | paired entry/inner CLIF + self-upvalue and self-call metadata | `nodes/file-artifacts.index` mapping to a content-hashed `files/pack.blob` record; primary plus latency-ordered L2 secondaries with promotion |
+| JIT body cache (unary + fused apply-chain slices live) | per def-site | unary identity or `(LoweredIrFingerprint, chain root/inner IDs, arity, env boundary, self/pinned callee identities, depth budget, schema, Cranelift version, target)` | paired entry/inner CLIF + dispatch metadata | `nodes/file-artifacts.index` mapping to a content-hashed `files/pack.blob` record; primary plus latency-ordered L2 secondaries with promotion |
 
 Shared machinery already in place: the hash-domain type system
 (`cache/hashing.rs` — hot xxh3 never crosses into durable addresses),
@@ -104,9 +105,9 @@ maximum RSS was slightly lower in the candidate (71.03 vs 71.31 MiB cold;
 measured native `fib` at 20.7/18.4 ms cold/warm versus C++ Nix at 269/289 ms,
 with a 0.5 MiB arena peak. The cache is therefore neutral at this workload's
 whole-command resolution; this landing claims a functional substrate, not a
-CLIF-reload wall-time win. Fused chains, fold/filter/genList and `all`/`any`
-entries, compiled-body L3 placement, cache counters, and a measured default
-admission heuristic remain open.
+CLIF-reload wall-time win. Fold/filter/genList and `all`/`any` entries,
+compiled-body L3 placement, cache counters, and a measured default admission
+heuristic remain open.
 
 The version-2 packed-layout landing's balanced seven-pair,
 root-cutoff-disabled JIT `fib` A/B against pristine `4e23f145c` measured
@@ -118,6 +119,29 @@ tests (34 ignored), 259 JIT tests, 330 `aos-nix` tests, the 38-test language
 aggregate, the 16-leg package byte matrix, compute x9, wide evaluation in all
 four modes, zlib and wide cache validation, and all 645 strict-JSON seeds in
 those four modes.
+
+**Fused-chain extension (2026-07-11).** Self-recursive curried apply chains now
+use a separate domain and envelope schema in the same packed multi-location L2
+store. The key covers the complete lowered module plus the chain root and inner
+nodes, arity, environment translation, native budget, runtime-resolved
+self-upvalue, and every pinned callee def-site and inline body. Resolution of
+those runtime bindings still happens before lookup, and the existing
+per-dispatch identity guards remain authoritative. The record embeds its key,
+and decoding validates key/source/arity/self metadata and re-verifies both CLIF
+functions. A real `tak` test proves a fresh engine reload; secondary tests prove
+corrupt-primary fallthrough, promotion, and wrong-semantic-key rejection.
+
+The full landing gate passed 3,036 active serial oracle tests (34 ignored), 261
+JIT tests, 332 `aos-nix` tests, the runtime/cache/language suites, all 16 package
+byte legs, compute x9, wide evaluation and all 645 strict-JSON seeds in
+serial/K=4/JIT/sweep-zero, and zlib/wide cache validation. A balanced seven-pair
+root-cutoff-disabled `tak` A/B against pristine `89f92c52e` measured separate
+candidate/baseline medians of 38.69/33.22 ms cold and 33.32/34.20 ms warm; the
+host-drift-resistant paired-median ratios were 1.065 and 0.999. Median post-eval
+RSS was 31.2/31.0 MiB cold and 31.4/31.1 MiB warm, with a 0.5 MiB arena peak in
+every leg. This clears the 10% no-regression gate but does not claim a reload
+speedup; collection entries, L3, counters, admission tuning, and executable-code
+reuse remain open.
 
 **FV-5 status boundary (2026-07-09).** Hybrid closure capture changes the
 runtime representation, not this memo contract. `facts.bin` analysis version
@@ -914,10 +938,10 @@ cutoff and parse cache re-expressed as instances (behavior-preserving —
 same keys, same bytes on the primary location); blob-liveness
 enumeration to the reaper (closes the known root-record trim caveat);
 multi-location L2 with latency classes + promotion/demotion; L3
-read-side with re-hash validation + `rw` publish from CI. Unary tier-2
+read-side with re-hash validation + `rw` publish from CI. Unary and fused-chain
 compiled-body records now use the common indexed `files/` pack and artifact
 mapping keyspace across the configured primary and secondary L2 locations;
-wider compiled-body shapes and L3 placement remain part of this phase.
+collection-body shapes and L3 placement remain part of this phase.
 
 Acceptance gates:
 
@@ -1042,8 +1066,8 @@ design above with the code as ground truth:
    options identity, and materialization economics counters is already
    live, including the durable scalar filesystem-import root boundary. The unification added per-subtree slice attribution,
    L0/L1 content tables, admission cost flags, multi-location L2, L3,
-   and promotion; unary compiled-body records now share the packed
-   multi-location L2 store, while wider compiled shapes, compiled-body L3
+   and promotion; unary and fused-chain compiled-body records now share the
+   packed multi-location L2 store, while collection shapes, compiled-body L3
    placement, and final measured defaults remain.
 5. **"Recompute cost from force-time stats — the `AOS_NIX_EVAL_STATS`
    machinery exists" — corrected by the economics seam.** `EvalStats`
@@ -1087,6 +1111,10 @@ design above with the code as ground truth:
       keyspace: domain-separated artifact mapping key, independently
       content-hashed pack payload, primary/secondary probing, corruption
       fallthrough, and verified-hit promotion.
-- [ ] Extend persistence beyond unary tier-2 bodies and through L3. The new allocation-capable
-      singleton-list tier-1 artifact is intentionally re-lowered today; it does
-      not widen the persisted body claim.
+- [x] Extend packed multi-location L2 persistence beyond unary bodies to fused
+      self-recursive curried apply chains, binding every runtime-resolved inline
+      identity and preserving the existing promotion/dispatch guards.
+- [ ] Extend persistence to fold/filter/genList and `all`/`any` collection
+      entries and through L3. The allocation-capable singleton-list tier-1
+      artifact is intentionally re-lowered today; it does not widen the
+      persisted body claim.

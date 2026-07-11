@@ -100,7 +100,7 @@ pub(super) struct Tier2EngineState {
     /// budget-exhaustion deopt can be exercised at interpreter-safe depths.
     pub(super) budget: i64,
     /// Persistent address-free CLIF record store, when evaluator caching is active.
-    compiled_cache: Option<CompiledBodyCache>,
+    pub(super) compiled_cache: Option<CompiledBodyCache>,
 }
 
 impl Default for Tier2EngineState {
