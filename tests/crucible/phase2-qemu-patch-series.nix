@@ -265,6 +265,13 @@
       enforces = "DET-31,QEMU-34";
       capability = "process-entry raw Unix argc/argv v2 SHA-256 self-attestation exposed to observation plugins";
     }
+    {
+      file = "0036-crucible-raw-state-export.patch";
+      catalogName = "crucible-raw-state-export";
+      class = "F";
+      enforces = "DET-29,PLUG-47";
+      capability = "GPA-sorted exact guest-RAM export and terminal one-shot serialized non-RAM VMState snapshot";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

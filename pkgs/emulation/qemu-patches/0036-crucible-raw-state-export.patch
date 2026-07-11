@@ -1,0 +1,928 @@
+diff --git a/hw/core/machine-qmp-cmds.c b/hw/core/machine-qmp-cmds.c
+--- a/hw/core/machine-qmp-cmds.c
++++ b/hw/core/machine-qmp-cmds.c
+@@ -19,6 +19,7 @@
+ #include "qapi/qobject-input-visitor.h"
+ #include "qapi/type-helpers.h"
+ #include "qemu/uuid.h"
++#include "qemu/plugin.h"
+ #include "qom/qom-qobject.h"
+ #include "system/hostmem.h"
+ #include "system/hw_accel.h"
+@@ -273,6 +274,11 @@ UuidInfo *qmp_query_uuid(Error **errp)
+ 
+ void qmp_system_reset(Error **errp)
+ {
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_setg(errp,
++                   "VM reset rejected after terminal Crucible VMState export");
++        return;
++    }
+     qemu_system_reset_request(SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET);
+ }
+ 
+diff --git a/include/exec/memory.h b/include/exec/memory.h
+--- a/include/exec/memory.h
++++ b/include/exec/memory.h
+@@ -1180,6 +1180,29 @@ typedef bool (*flatview_cb)(Int128 start,
+  */
+ void flatview_for_each_range(FlatView *fv, flatview_cb cb, void *opaque);
+ 
++/**
++ * typedef flatview_section_cb: callback for flatview_for_each_section()
++ *
++ * @section: effective flattened section, including inherited attributes
++ * @opaque: data pointer passed to flatview_for_each_section()
++ *
++ * Returns: true to stop the iteration, false to keep going.
++ */
++typedef bool (*flatview_section_cb)(const MemoryRegionSection *section,
++                                    void *opaque);
++
++/**
++ * flatview_for_each_section: Iterate through effective FlatView sections
++ * @fv: the FlatView to iterate through
++ * @cb: function to call for each effective section
++ * @opaque: opaque data pointer to pass to @cb
++ *
++ * Unlike flatview_for_each_range(), each callback receives the effective
++ * flattened attributes inherited through aliases and containers.
++ */
++void flatview_for_each_section(FlatView *fv, flatview_section_cb cb,
++                               void *opaque);
++
+ static inline bool MemoryRegionSection_eq(MemoryRegionSection *a,
+                                           MemoryRegionSection *b)
+ {
+diff --git a/include/migration/misc.h b/include/migration/misc.h
+--- a/include/migration/misc.h
++++ b/include/migration/misc.h
+@@ -59,6 +59,17 @@ void migration_shutdown(void);
+ bool migration_is_running(void);
+ bool migration_thread_is_self(void);
+ 
++/*
++ * Under the BQL, atomically prove migration quiescence and permanently exclude
++ * new migration loaders before terminal raw-state export.
++ */
++int migration_crucible_raw_state_export_admit(void);
++bool migration_crucible_raw_state_export_sealed(void);
++
++/* Track every entry into the central VMState deserialization loop. */
++int migration_crucible_load_begin(void);
++void migration_crucible_load_end(void);
++
+ typedef enum MigrationEventType {
+     MIG_EVENT_PRECOPY_SETUP,
+     MIG_EVENT_PRECOPY_DONE,
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -24,6 +24,8 @@
+ struct qemu_plugin_desc;
+ typedef QTAILQ_HEAD(, qemu_plugin_desc) QemuPluginList;
+ 
++bool qemu_crucible_terminal_vmstate_exported(void);
++
+ int qemu_crucible_process_argv_attestation(uint32_t *version_out,
+                                            uint64_t *argc_out,
+                                            uint64_t *raw_bytes_out,
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1412,6 +1412,139 @@ QEMU_PLUGIN_API
+ int qemu_plugin_crucible_device_state_schema_sha256(
+     uint8_t digest_out[32], uint64_t *sections_out);
+ 
++#define QEMU_PLUGIN_CRUCIBLE_RAM_REGION_NAME_MAX 256
++
++/** Callback invoked after QEMU has entered a terminal paused boundary. */
++typedef void (*qemu_plugin_crucible_terminal_paused_cb_t)(int status,
++                                                          void *userdata);
++
++/**
++ * Stop the running VM and invoke a callback later under the BQL while paused.
++ *
++ * Only one terminal-pause request may be pending. The callback receives zero
++ * only at a `RUN_STATE_PAUSED` boundary suitable for the raw export APIs; all
++ * other statuses are failures and must not be used to export state.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_request_terminal_pause(
++    qemu_plugin_crucible_terminal_paused_cb_t callback,
++    void *userdata);
++
++/** Stable identity and extent of one writable guest RAM range. */
++struct qemu_plugin_crucible_ram_region {
++    /** Guest-physical base address in the system memory address space. */
++    uint64_t guest_physical_base;
++    /** Number of exact bytes in this flattened writable range. */
++    uint64_t length;
++    /** Offset of the range within its underlying memory region. */
++    uint64_t memory_region_offset;
++    /**
++     * Stable underlying leaf memory-region name, including its terminating
++     * NUL; alias and container names do not replace the leaf identity.
++     */
++    char memory_region_name[QEMU_PLUGIN_CRUCIBLE_RAM_REGION_NAME_MAX];
++};
++
++/**
++ * Enumerate writable guest RAM in ascending guest-physical-address order.
++ *
++ * The caller must invoke this only while the VM is paused and while QEMU holds
++ * the BQL. The returned descriptors exclude effective read-only mappings
++ * (including read-only aliases), ROM, and RAM-backed devices. Encountering any
++ * protected RAM mapping fails the complete enumeration instead of silently
++ * producing an incomplete dump. RAM enumeration and copies must finish before
++ * beginning the terminal VMState export.
++ *
++ * The first successful admission atomically verifies that no incoming
++ * migration, postcopy/COLO loader, or outgoing migration is active, then
++ * permanently rejects new migration loads for the remainder of the process.
++ * An already-entered central VMState load loop makes admission fail `-EBUSY`.
++ *
++ * A sizing query passes NULL and zero for @regions and @capacity. If writable
++ * RAM exists, it returns `-ENOSPC` and stores the exact descriptor count in
++ * @count_out. A call whose capacity is too small likewise returns `-ENOSPC`,
++ * reports the required count, and does not copy a partial descriptor array.
++ * On success, @count_out is the number of initialized descriptors.
++ *
++ * Returns `-EINVAL` for invalid pointers, `-EPERM` without the BQL, `-EBUSY`
++ * unless paused or while any migration/load activity is present, `-ESHUTDOWN`
++ * after terminal VMState export, `-ENOTSUP` for protected RAM, or a
++ * representability/name error when a complete stable descriptor cannot be
++ * produced. Except when @count_out itself is invalid, failures before
++ * successful collection leave it zero; sizing failures report the exact
++ * required count as described above.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_guest_ram_regions(
++    struct qemu_plugin_crucible_ram_region *regions,
++    uint64_t capacity,
++    uint64_t *count_out);
++
++/**
++ * Copy exact bytes from a previously enumerated writable guest RAM range.
++ *
++ * @region: complete expected descriptor, used to detect topology drift
++ * @offset: byte offset within @region
++ * @bytes: destination buffer, or NULL only when @length is zero
++ * @length: exact number of bytes to copy
++ *
++ * The caller must keep the VM paused and the BQL held from enumeration through
++ * the final copy. Bounds or identity mismatches fail without a partial copy.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_guest_ram_region_copy(
++    const struct qemu_plugin_crucible_ram_region *region,
++    uint64_t offset,
++    void *bytes,
++    uint64_t length);
++
++/** Opaque immutable serialized non-RAM VMState snapshot. */
++struct qemu_plugin_crucible_vmstate_snapshot;
++
++/**
++ * Serialize non-RAM VMState once at a terminal paused boundary.
++ *
++ * This calls device VMState `pre_save` hooks, which may mutate device
++ * bookkeeping. A successful or failed serialization attempt permanently
++ * latches QEMU against vCPU execution, reset, suspend, wakeup, powerdown, and
++ * VMState or snapshot loading. Shutdown remains available so the process can
++ * terminate. The caller must release any returned snapshot and terminate QEMU.
++ * RAM, registers, and events must already have been copied before this final
++ * operation; this is a terminal dump API, not an observational fingerprint
++ * API.
++ *
++ * Before latching, this function uses the same atomic migration admission as
++ * RAM export. It returns `-EBUSY` rather than serialize concurrently with an
++ * already-active incoming, postcopy/COLO, or outgoing migration.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_vmstate_snapshot_begin(
++    struct qemu_plugin_crucible_vmstate_snapshot **snapshot_out);
++
++/** Return the exact serialized size of an immutable VMState snapshot. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_vmstate_snapshot_size(
++    const struct qemu_plugin_crucible_vmstate_snapshot *snapshot,
++    uint64_t *size_out);
++
++/**
++ * Copy an exact byte range from an immutable VMState snapshot.
++ *
++ * Bounds failures are reported before copying, so the destination is never
++ * partially modified by an invalid request.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_vmstate_snapshot_copy(
++    const struct qemu_plugin_crucible_vmstate_snapshot *snapshot,
++    uint64_t offset,
++    void *bytes,
++    uint64_t length);
++
++/** Release an immutable VMState snapshot returned by the begin function. */
++QEMU_PLUGIN_API
++void qemu_plugin_crucible_vmstate_snapshot_free(
++    struct qemu_plugin_crucible_vmstate_snapshot *snapshot);
++
+ /** Original raw Unix process argc/argv identity captured at process entry. */
+ struct qemu_plugin_crucible_process_argv_attestation {
+     uint32_t version;
+diff --git a/migration/migration.c b/migration/migration.c
+--- a/migration/migration.c
++++ b/migration/migration.c
+@@ -101,6 +101,9 @@ enum mig_rp_message_type {
+ 
+ static MigrationState *current_migration;
+ static MigrationIncomingState *current_incoming;
++static QemuMutex crucible_raw_state_mutex;
++static unsigned int crucible_active_loaders;
++static bool crucible_raw_state_export_sealed;
+ 
+ static GSList *migration_blockers[MIG_MODE__MAX];
+ 
+@@ -286,6 +289,7 @@ static int migration_stop_vm(MigrationState *s, RunState state)
+ void migration_object_init(void)
+ {
+     /* This can only be called once. */
++    qemu_mutex_init(&crucible_raw_state_mutex);
+     assert(!current_migration);
+     current_migration = MIGRATION_OBJ(object_new(TYPE_MIGRATION));
+ 
+@@ -697,6 +701,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)
+ {
+     MigrationStatus current = mis->state;
+ 
++    if (migration_crucible_raw_state_export_sealed()) {
++        error_setg(errp,
++                   "incoming migration rejected during terminal Crucible "
++                   "raw-state export");
++        return false;
++    }
+     if (current == MIGRATION_STATUS_POSTCOPY_PAUSED) {
+         /*
+          * Incoming postcopy migration will stay in PAUSED state even if
+@@ -1206,6 +1216,71 @@ bool migration_is_running(void)
+     }
+ }
+ 
++int migration_crucible_raw_state_export_admit(void)
++{
++    MigrationIncomingState *mis = migration_incoming_get_current();
++    MigrationStatus incoming;
++    PostcopyState postcopy;
++    int status = 0;
++
++    if (!bql_locked()) {
++        return -EPERM;
++    }
++    qemu_mutex_lock(&crucible_raw_state_mutex);
++    incoming = qatomic_read(&mis->state);
++    postcopy = postcopy_state_get();
++    if (crucible_raw_state_export_sealed) {
++        goto out;
++    }
++    if (crucible_active_loaders != 0 || migration_is_running() ||
++        (incoming != MIGRATION_STATUS_NONE &&
++         incoming != MIGRATION_STATUS_COMPLETED) ||
++        (postcopy != POSTCOPY_INCOMING_NONE &&
++         postcopy != POSTCOPY_INCOMING_END)) {
++        status = -EBUSY;
++        goto out;
++    }
++    crucible_raw_state_export_sealed = true;
++
++out:
++    qemu_mutex_unlock(&crucible_raw_state_mutex);
++    return status;
++}
++
++bool migration_crucible_raw_state_export_sealed(void)
++{
++    bool sealed;
++
++    qemu_mutex_lock(&crucible_raw_state_mutex);
++    sealed = crucible_raw_state_export_sealed;
++    qemu_mutex_unlock(&crucible_raw_state_mutex);
++    return sealed;
++}
++
++int migration_crucible_load_begin(void)
++{
++    int status = 0;
++
++    qemu_mutex_lock(&crucible_raw_state_mutex);
++    if (crucible_raw_state_export_sealed) {
++        status = -EPERM;
++    } else if (crucible_active_loaders == UINT_MAX) {
++        status = -EOVERFLOW;
++    } else {
++        crucible_active_loaders++;
++    }
++    qemu_mutex_unlock(&crucible_raw_state_mutex);
++    return status;
++}
++
++void migration_crucible_load_end(void)
++{
++    qemu_mutex_lock(&crucible_raw_state_mutex);
++    assert(crucible_active_loaders != 0);
++    crucible_active_loaders--;
++    qemu_mutex_unlock(&crucible_raw_state_mutex);
++}
++
+ static bool migration_is_active(void)
+ {
+     MigrationState *s = current_migration;
+@@ -2032,6 +2107,12 @@ bool migration_is_blocked(Error **errp)
+ /* Returns true if continue to migrate, or false if error detected */
+ static bool migrate_prepare(MigrationState *s, bool resume, Error **errp)
+ {
++    if (migration_crucible_raw_state_export_sealed()) {
++        error_setg(errp,
++                   "outgoing migration rejected during terminal Crucible "
++                   "raw-state export");
++        return false;
++    }
+     if (resume) {
+         if (s->state != MIGRATION_STATUS_POSTCOPY_PAUSED) {
+             error_setg(errp, "Cannot resume if there is no "
+diff --git a/migration/savevm.c b/migration/savevm.c
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -54,6 +54,7 @@
+ #include "qemu/iov.h"
+ #include "qemu/job.h"
+ #include "qemu/main-loop.h"
++#include "qemu/plugin.h"
+ #include "block/snapshot.h"
+ #include "block/thread-pool.h"
+ #include "qemu/cutils.h"
+@@ -3112,6 +3113,18 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis)
+     uint8_t section_type;
+     int ret = 0;
+ 
++    ret = migration_crucible_load_begin();
++    if (ret != 0) {
++        error_report(
++            "VMState load rejected during terminal Crucible raw-state export");
++        return ret;
++    }
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_report(
++            "VMState load rejected after terminal Crucible VMState export");
++        migration_crucible_load_end();
++        return -EPERM;
++    }
+ retry:
+     while (true) {
+         section_type = qemu_get_byte(f);
+@@ -3179,6 +3192,7 @@ out:
+             goto retry;
+         }
+     }
++    migration_crucible_load_end();
+     return ret;
+ }
+ 
+@@ -3189,6 +3203,11 @@ int qemu_loadvm_state(QEMUFile *f)
+     Error *local_err = NULL;
+     int ret;
+ 
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_report(
++            "VMState load rejected after terminal Crucible VMState export");
++        return -EPERM;
++    }
+     if (qemu_savevm_state_blocked(&local_err)) {
+         error_report_err(local_err);
+         return -EINVAL;
+@@ -3534,6 +3553,11 @@ bool load_snapshot(const char *name, const char *vmstate,
+     int ret;
+     MigrationIncomingState *mis = migration_incoming_get_current();
+ 
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_setg(errp,
++                   "snapshot load rejected after terminal Crucible VMState export");
++        return false;
++    }
+     if (!bdrv_all_can_snapshot(has_devices, devices, errp)) {
+         return false;
+     }
+diff --git a/plugins/api.c b/plugins/api.c
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -36,15 +36,18 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "block/aio.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/plugin.h"
+ #include "qemu/log.h"
+ #include "io/channel-buffer.h"
+ #include "migration/qemu-file.h"
+ #include "migration/savevm.h"
++#include "migration/misc.h"
+ #include "system/cpu-timers.h"
+ #include "system/runstate.h"
+ #include "tcg/tcg.h"
++#include "exec/address-spaces.h"
+ #include "exec/cpu-common.h"
+ #include "exec/gdbstub.h"
+ #include "exec/memory.h"
+@@ -932,6 +935,363 @@ int qemu_plugin_crucible_device_state_schema_sha256(
+     return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
+ }
+ 
++struct CrucibleRamRegions {
++    GArray *regions;
++    int status;
++};
++
++struct qemu_plugin_crucible_vmstate_snapshot {
++    uint8_t *data;
++    size_t size;
++};
++
++struct CrucibleTerminalPauseRequest {
++    qemu_plugin_crucible_terminal_paused_cb_t callback;
++    void *userdata;
++};
++
++static bool crucible_terminal_vmstate_export_latched;
++static struct CrucibleTerminalPauseRequest *crucible_terminal_pause_pending;
++
++bool qemu_crucible_terminal_vmstate_exported(void)
++{
++    return crucible_terminal_vmstate_export_latched;
++}
++
++static int crucible_require_paused_bql(void)
++{
++    if (!bql_locked()) {
++        return -EPERM;
++    }
++    if (!runstate_check(RUN_STATE_PAUSED)) {
++        return -EBUSY;
++    }
++    return 0;
++}
++
++static void crucible_terminal_pause_bh(void *opaque)
++{
++    struct CrucibleTerminalPauseRequest *request = opaque;
++    int status = 0;
++
++    if (runstate_is_running()) {
++        aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                                crucible_terminal_pause_bh, request);
++        return;
++    }
++    crucible_terminal_pause_pending = NULL;
++    if (!bql_locked()) {
++        status = -EPERM;
++    } else if (!runstate_check(RUN_STATE_PAUSED)) {
++        status = -ECANCELED;
++    }
++    request->callback(status, request->userdata);
++    g_free(request);
++}
++
++int qemu_plugin_crucible_request_terminal_pause(
++    qemu_plugin_crucible_terminal_paused_cb_t callback,
++    void *userdata)
++{
++    struct CrucibleTerminalPauseRequest *request;
++    int status;
++
++    if (!callback) {
++        return -EINVAL;
++    }
++    if (!bql_locked()) {
++        return -EPERM;
++    }
++    if (crucible_terminal_pause_pending ||
++        crucible_terminal_vmstate_export_latched) {
++        return -EALREADY;
++    }
++    request = g_new0(struct CrucibleTerminalPauseRequest, 1);
++    request->callback = callback;
++    request->userdata = userdata;
++    crucible_terminal_pause_pending = request;
++    status = vm_stop(RUN_STATE_PAUSED);
++    if (status != 0) {
++        crucible_terminal_pause_pending = NULL;
++        g_free(request);
++        return status;
++    }
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            crucible_terminal_pause_bh, request);
++    return 0;
++}
++
++static bool crucible_collect_ram_region(const MemoryRegionSection *section,
++                                        void *opaque)
++{
++    struct CrucibleRamRegions *state = opaque;
++    struct qemu_plugin_crucible_ram_region region = { 0 };
++    MemoryRegion *mr = section->mr;
++    const char *name;
++    size_t name_length;
++
++    if (!memory_region_is_ram(mr)) {
++        return false;
++    }
++    if (memory_region_is_protected(mr)) {
++        state->status = -ENOTSUP;
++        return true;
++    }
++    if (section->readonly || memory_region_is_rom(mr) ||
++        memory_region_is_ram_device(mr)) {
++        return false;
++    }
++    if (int128_gethi(section->size) != 0) {
++        state->status = -EOVERFLOW;
++        return true;
++    }
++    region.guest_physical_base = section->offset_within_address_space;
++    region.length = int128_getlo(section->size);
++    region.memory_region_offset = section->offset_within_region;
++    if (region.length == 0 ||
++        UINT64_MAX - region.guest_physical_base < region.length - 1) {
++        state->status = -EOVERFLOW;
++        return true;
++    }
++    name = memory_region_name(mr);
++    if (!name) {
++        state->status = -ENODATA;
++        return true;
++    }
++    name_length = strlen(name);
++    if (name_length >= sizeof(region.memory_region_name)) {
++        state->status = -ENAMETOOLONG;
++        return true;
++    }
++    memcpy(region.memory_region_name, name, name_length + 1);
++    g_array_append_val(state->regions, region);
++    return false;
++}
++
++static int crucible_ram_regions_collect(GArray **regions_out)
++{
++    FlatView *view;
++    struct CrucibleRamRegions state;
++    int status;
++
++    if (!regions_out) {
++        return -EINVAL;
++    }
++    *regions_out = NULL;
++    status = crucible_require_paused_bql();
++    if (status != 0) {
++        return status;
++    }
++    if (crucible_terminal_vmstate_export_latched) {
++        return -ESHUTDOWN;
++    }
++    status = migration_crucible_raw_state_export_admit();
++    if (status != 0) {
++        return status;
++    }
++    state.regions = g_array_new(false, false,
++                                sizeof(struct qemu_plugin_crucible_ram_region));
++    state.status = 0;
++    view = address_space_to_flatview(&address_space_memory);
++    flatview_for_each_section(view, crucible_collect_ram_region, &state);
++    if (state.status != 0) {
++        g_array_free(state.regions, true);
++        return state.status;
++    }
++    *regions_out = state.regions;
++    return 0;
++}
++
++int qemu_plugin_crucible_guest_ram_regions(
++    struct qemu_plugin_crucible_ram_region *regions,
++    uint64_t capacity,
++    uint64_t *count_out)
++{
++    g_autoptr(GArray) collected = NULL;
++    int status;
++
++    if (!count_out || (!regions && capacity != 0)) {
++        return -EINVAL;
++    }
++    *count_out = 0;
++    status = crucible_ram_regions_collect(&collected);
++    if (status != 0) {
++        return status;
++    }
++    *count_out = collected->len;
++    if (capacity < collected->len) {
++        return -ENOSPC;
++    }
++    if (collected->len != 0) {
++        memcpy(regions, collected->data,
++               collected->len * sizeof(*regions));
++    }
++    return 0;
++}
++
++static bool crucible_ram_region_equal(
++    const struct qemu_plugin_crucible_ram_region *left,
++    const struct qemu_plugin_crucible_ram_region *right)
++{
++    return left->guest_physical_base == right->guest_physical_base &&
++           left->length == right->length &&
++           left->memory_region_offset == right->memory_region_offset &&
++           memcmp(left->memory_region_name, right->memory_region_name,
++                  sizeof(left->memory_region_name)) == 0;
++}
++
++int qemu_plugin_crucible_guest_ram_region_copy(
++    const struct qemu_plugin_crucible_ram_region *region,
++    uint64_t offset,
++    void *bytes,
++    uint64_t length)
++{
++    g_autoptr(GArray) collected = NULL;
++    struct qemu_plugin_crucible_ram_region *candidate = NULL;
++    int status;
++
++    if (!region || (!bytes && length != 0)) {
++        return -EINVAL;
++    }
++    if (offset > region->length || length > region->length - offset ||
++        length > SIZE_MAX) {
++        return -ERANGE;
++    }
++    status = crucible_ram_regions_collect(&collected);
++    if (status != 0) {
++        return status;
++    }
++    for (guint index = 0; index < collected->len; index++) {
++        struct qemu_plugin_crucible_ram_region *current =
++            &g_array_index(collected,
++                           struct qemu_plugin_crucible_ram_region,
++                           index);
++
++        if (current->guest_physical_base == region->guest_physical_base) {
++            candidate = current;
++            break;
++        }
++    }
++    if (!candidate || !crucible_ram_region_equal(candidate, region)) {
++        return -ESTALE;
++    }
++    if (length != 0) {
++        hwaddr physical = region->guest_physical_base + offset;
++        MemTxResult result = address_space_read(&address_space_memory,
++                                                physical,
++                                                MEMTXATTRS_UNSPECIFIED,
++                                                bytes, length);
++
++        if (result != MEMTX_OK) {
++            memset(bytes, 0, length);
++            return -EIO;
++        }
++    }
++    return 0;
++}
++
++int qemu_plugin_crucible_vmstate_snapshot_begin(
++    struct qemu_plugin_crucible_vmstate_snapshot **snapshot_out)
++{
++    struct qemu_plugin_crucible_vmstate_snapshot *snapshot;
++    QIOChannelBuffer *buffer;
++    QEMUFile *file;
++    int status;
++    int close_status;
++
++    if (!snapshot_out) {
++        return -EINVAL;
++    }
++    *snapshot_out = NULL;
++    status = crucible_require_paused_bql();
++    if (status != 0) {
++        return status;
++    }
++    if (crucible_terminal_vmstate_export_latched) {
++        return -EALREADY;
++    }
++    status = migration_crucible_raw_state_export_admit();
++    if (status != 0) {
++        return status;
++    }
++
++    /* pre_save callbacks below may mutate bookkeeping: resume is forbidden. */
++    crucible_terminal_vmstate_export_latched = true;
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state(file);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    if (status == 0 && buffer->usage == 0) {
++        status = -EIO;
++    }
++    snapshot = NULL;
++    if (status == 0) {
++        snapshot = g_new0(struct qemu_plugin_crucible_vmstate_snapshot, 1);
++        snapshot->data = g_memdup2(buffer->data, buffer->usage);
++        snapshot->size = buffer->usage;
++    }
++    close_status = qemu_fclose(file);
++    object_unref(OBJECT(buffer));
++    if (status == 0 && close_status != 0) {
++        status = close_status;
++    }
++    if (status != 0) {
++        if (snapshot) {
++            g_free(snapshot->data);
++            g_free(snapshot);
++        }
++        return status;
++    }
++    *snapshot_out = snapshot;
++    return 0;
++}
++
++int qemu_plugin_crucible_vmstate_snapshot_size(
++    const struct qemu_plugin_crucible_vmstate_snapshot *snapshot,
++    uint64_t *size_out)
++{
++    if (!snapshot || !size_out) {
++        return -EINVAL;
++    }
++    *size_out = snapshot->size;
++    return 0;
++}
++
++int qemu_plugin_crucible_vmstate_snapshot_copy(
++    const struct qemu_plugin_crucible_vmstate_snapshot *snapshot,
++    uint64_t offset,
++    void *bytes,
++    uint64_t length)
++{
++    uint64_t size;
++
++    if (!snapshot || (!bytes && length != 0)) {
++        return -EINVAL;
++    }
++    size = snapshot->size;
++    if (offset > size || length > size - offset || length > SIZE_MAX) {
++        return -ERANGE;
++    }
++    if (length != 0) {
++        memcpy(bytes, snapshot->data + offset, length);
++    }
++    return 0;
++}
++
++void qemu_plugin_crucible_vmstate_snapshot_free(
++    struct qemu_plugin_crucible_vmstate_snapshot *snapshot)
++{
++    if (snapshot) {
++        g_free(snapshot->data);
++        g_free(snapshot);
++    }
++}
++
+ int qemu_plugin_crucible_process_argv_attestation(
+     struct qemu_plugin_crucible_process_argv_attestation *out)
+ {
+diff --git a/system/cpus.c b/system/cpus.c
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -650,6 +650,11 @@ void resume_all_vcpus(void)
+ {
+     CPUState *cpu;
+ 
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_report(
++            "vCPU execution rejected after terminal Crucible VMState export");
++        return;
++    }
+     if (!runstate_is_running()) {
+         return;
+     }
+@@ -745,6 +750,10 @@ int vm_prepare_start(bool step_pending)
+     RunState requested;
+ 
+     qemu_vmstop_requested(&requested);
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_report("VM resume rejected after terminal Crucible VMState export");
++        return -1;
++    }
+     if (runstate_is_running() && requested == RUN_STATE__MAX) {
+         return -1;
+     }
+@@ -896,4 +905,3 @@ void qmp_inject_nmi(Error **errp)
+ {
+     nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
+ }
+-
+diff --git a/system/memory.c b/system/memory.c
+--- a/system/memory.c
++++ b/system/memory.c
+@@ -705,6 +705,23 @@ void flatview_for_each_range(FlatView *fv, flatview_cb cb , void *opaque)
+     }
+ }
+ 
++void flatview_for_each_section(FlatView *fv, flatview_section_cb cb,
++                               void *opaque)
++{
++    FlatRange *fr;
++
++    assert(fv);
++    assert(cb);
++
++    FOR_EACH_FLAT_RANGE(fr, fv) {
++        MemoryRegionSection section = section_from_flat_range(fr, fv);
++
++        if (cb(&section, opaque)) {
++            break;
++        }
++    }
++}
++
+ static MemoryRegion *memory_region_get_flatview_root(MemoryRegion *mr)
+ {
+     while (mr->enabled) {
+diff --git a/system/runstate.c b/system/runstate.c
+--- a/system/runstate.c
++++ b/system/runstate.c
+@@ -46,6 +46,7 @@
+ #include "qemu/job.h"
+ #include "qemu/log.h"
+ #include "qemu/module.h"
++#include "qemu/plugin.h"
+ #include "qemu/sockets.h"
+ #include "qemu/timer.h"
+ #include "qemu/thread.h"
+@@ -510,6 +511,11 @@ void qemu_system_reset(ShutdownCause reason)
+     MachineClass *mc;
+     ResetType type;
+ 
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_report(
++            "VM reset rejected after terminal Crucible VMState export");
++        return;
++    }
+     mc = current_machine ? MACHINE_GET_CLASS(current_machine) : NULL;
+ 
+     cpu_synchronize_all_states();
+@@ -626,6 +632,11 @@ void qemu_system_guest_pvshutdown(void)
+ 
+ void qemu_system_reset_request(ShutdownCause reason)
+ {
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_report(
++            "VM reset rejected after terminal Crucible VMState export");
++        return;
++    }
+     if (reboot_action == REBOOT_ACTION_SHUTDOWN &&
+         reason != SHUTDOWN_CAUSE_SUBSYSTEM_RESET) {
+         shutdown_requested = reason;
+@@ -649,6 +660,11 @@ static void qemu_system_suspend(void)
+ 
+ void qemu_system_suspend_request(void)
+ {
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_report(
++            "VM suspend rejected after terminal Crucible VMState export");
++        return;
++    }
+     if (runstate_check(RUN_STATE_SUSPENDED)) {
+         return;
+     }
+@@ -666,6 +682,11 @@ void qemu_system_wakeup_request(WakeupReason reason, Error **errp)
+ {
+     trace_system_wakeup_request(reason);
+ 
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_setg(errp,
++                   "VM wakeup rejected after terminal Crucible VMState export");
++        return;
++    }
+     if (!runstate_check(RUN_STATE_SUSPENDED)) {
+         error_setg(errp,
+                    "Unable to wake up: guest is not in suspended state");
+@@ -747,6 +768,11 @@ static void qemu_system_shutdown(ShutdownCause cause)
+ 
+ void qemu_system_powerdown_request(void)
+ {
++    if (qemu_crucible_terminal_vmstate_exported()) {
++        error_report(
++            "VM powerdown rejected after terminal Crucible VMState export");
++        return;
++    }
+     trace_qemu_system_powerdown_request();
+     powerdown_requested = 1;
+     qemu_notify_event();

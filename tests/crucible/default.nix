@@ -393,6 +393,7 @@ in rec {
     qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {inherit pkgs lib;};
     qemuPatchSeries = import ./phase2-qemu-patch-series.nix {inherit pkgs lib;};
     qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {inherit pkgs lib;};
+    qemuRawStateExport = import ./phase2-qemu-raw-state-export.nix {inherit pkgs lib;};
     qemuRrQuantumIcount = import ./phase2-qemu-rr-quantum-icount.nix {inherit pkgs lib;};
     qemuDetIpi = import ./phase2-qemu-det-ipi.nix {inherit pkgs lib;};
     qemuVcpuIntrospect = import ./phase2-qemu-vcpu-introspect.nix {inherit pkgs lib;};
