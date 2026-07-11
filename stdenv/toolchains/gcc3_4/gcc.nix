@@ -72,6 +72,23 @@ in
       ''CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include"''
       ''LDFLAGS_FOR_TARGET="-L${prev.glibc}/lib -static"''
     ];
+    # This tier is a C-only bootstrap compiler. The top-level GCC 3.4 `all`
+    # target also configures unrelated target libraries such as libffi,
+    # libf2c, and target libiberty. Their configure link probes run with
+    # GCC_NO_EXECUTABLES and fail even though gcc and libgcc are already
+    # complete. Build and install only the compiler plus its required target
+    # runtime; later tiers rebuild the full language/runtime surface.
+    buildCommands = ''
+      make -j"$NIX_BUILD_CORES" all-gcc all-target-libgcc \
+        BOOT_CFLAGS="-O2 -static" \
+        CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include" \
+        LDFLAGS_FOR_TARGET="-L${prev.glibc}/lib -static" \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+    '';
+    installCommands = ''
+      make install-gcc install-target-libgcc \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+    '';
     postInstall = ''
       "${prev.binutils}/bin/ar" crs "$out/lib/gcc/${targetPlatform.config}/3.4.6/libgcc_eh.a"
 
