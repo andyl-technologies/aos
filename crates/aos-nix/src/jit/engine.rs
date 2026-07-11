@@ -14,6 +14,7 @@ use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
 use ratchet_jit::{
     JitClifArtifact, JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
     JitRuntimeSymbolAddressCandidate, classify_interp_thunk_body,
+    lower_candidate_c_constant_ir_thunk_body_artifact,
     lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module,
     lower_string_length_inline_ir_thunk_body_artifact,
 };
@@ -72,6 +73,8 @@ pub struct NixJitTier1Engine {
     /// [`NixJitTier1Engine::force_promote`] (used by the dispatch differential
     /// tests, which must still promote and dispatch a body).
     force_promote: bool,
+    /// Whether arena-independent literals use Candidate C's one-word boundary.
+    candidate_c_value_abi: bool,
     /// The shared JIT module every promoted body is finalized into.
     ///
     /// Built lazily on the first promotion (from [`candidates`](Self::candidates))
@@ -102,6 +105,7 @@ pub struct NixJitTier1Engine {
 }
 
 mod tier2;
+mod dispatch_policy;
 mod stats_dump;
 mod tier2_chain;
 mod tier2_filter;
@@ -234,6 +238,8 @@ impl NixJitTier1Engine {
             record_gated_cost: std::env::var("AOS_NIX_EVAL_STATS").as_deref() == Ok("1"),
             force_promote: std::env::var("AOS_NIX_JIT_FORCE_PROMOTE").as_deref()
                 == Ok("1"),
+            candidate_c_value_abi: std::env::var("AOS_NIX_JIT_VALUE_ABI").as_deref()
+                == Ok("candidate-c"),
             context: RefCell::new(None),
             state: RefCell::new(EngineState::default()),
             tier2_enabled: std::env::var("AOS_NIX_JIT_TIER2").as_deref() != Ok("0"),
@@ -254,6 +260,17 @@ impl NixJitTier1Engine {
     #[must_use]
     pub fn force_promote(mut self) -> Self {
         self.force_promote = true;
+        self
+    }
+
+    /// Enables Candidate C's one-word ABI for arena-independent literal thunks.
+    ///
+    /// Other bodies, wide integers, and floats retain the active two-word ABI.
+    /// This is the deterministic builder counterpart of setting
+    /// `AOS_NIX_JIT_VALUE_ABI=candidate-c`.
+    #[must_use]
+    pub fn candidate_c_value_abi(mut self) -> Self {
+        self.candidate_c_value_abi = true;
         self
     }
 
@@ -288,11 +305,15 @@ impl NixJitTier1Engine {
         // dispatched lexical env with empty `with`/scoped-import scopes, which is
         // only faithful when the thunk captured none. A primop thunk that did
         // capture dynamic scopes falls back to the tree walk.
-        if primop_dispatch_needs_dynamic_scopes(eval, thunk, body) {
+        if dispatch_policy::primop_dispatch_needs_dynamic_scopes(eval, thunk, body) {
             return Some(Tier1ForceHook::Deopted);
         }
-        let Some(env) = dispatch_env(eval, thunk) else {
-            return Some(Tier1ForceHook::Deopted);
+        let env = match dispatch_env(eval, thunk) {
+            Some(env) => env,
+            None if finalized_body.artifact().value_abi() == ratchet_jit::JitValueAbi::CandidateC => {
+                EvalEnv::default()
+            }
+            None => return Some(Tier1ForceHook::Deopted),
         };
         match run_context_finalized_native_thunk_call(eval, id, span, &env, &finalized_body) {
             Ok(outcome) if !outcome.is_trap() => {
@@ -429,9 +450,16 @@ impl NixJitTier1Engine {
     /// measurement use, so the estimated cost matches what promotion would compile.
     fn lower_body_artifact(&self, eval: &TreeWalk, body: EvalNodeRef) -> Option<JitClifArtifact> {
         let inline_builtin = primop_symbol_name(eval, body)
-            .is_some_and(|name| primop_has_native_inline(name.as_bytes()));
+            .is_some_and(|name| dispatch_policy::primop_has_native_inline(name.as_bytes()));
         eval.tier1_module_ir(body.module()).and_then(|ir| {
-            if inline_builtin {
+            if self.candidate_c_value_abi
+                && let Ok(artifact) = lower_candidate_c_constant_ir_thunk_body_artifact(
+                    &ir.arena,
+                    body.id(),
+                )
+            {
+                Some(artifact)
+            } else if inline_builtin {
                 lower_string_length_inline_ir_thunk_body_artifact(&ir.arena, body.id()).ok()
             } else {
                 lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module(
@@ -868,30 +896,6 @@ fn dispatch_env(eval: &TreeWalk, thunk: Value) -> Option<EvalEnv> {
     Some(env.clone())
 }
 
-/// Returns true when a primop `body`'s thunk captured dynamic scopes.
-///
-/// The `aos_primop_call` trampoline forces the primop against the dispatched
-/// lexical environment with empty `with`/scoped-import scopes (see
-/// [`ratchet_oracle::eval::TreeWalk::run_lowered_primop_body`]), which reproduces
-/// a tree-walk force only when the thunk captured no such scopes. This guard lets
-/// the dispatcher deoptimize the rare primop thunk that did, keeping every other
-/// dispatched shape (which never consults dynamic scopes) unaffected.
-fn primop_dispatch_needs_dynamic_scopes(eval: &TreeWalk, thunk: Value, body: EvalNodeRef) -> bool {
-    if !body_is_primop(eval, body) {
-        return false;
-    }
-    let Ok(heap_thunk) = eval.heap().get_thunk(thunk) else {
-        return false;
-    };
-    let with_nonempty = heap_thunk
-        .with_scope_env()
-        .is_some_and(|env| !env.scopes().is_empty());
-    let scoped_nonempty = heap_thunk
-        .scoped_global_env()
-        .is_some_and(|env| !env.scopes().is_empty());
-    with_nonempty || scoped_nonempty
-}
-
 /// Returns the dispatched primop's builtin name (`add`, `head`, …), if any.
 ///
 /// Resolves the primop node's `Symbol` (through at most one `ThunkAlloc`) against
@@ -914,24 +918,6 @@ fn primop_symbol_name(eval: &TreeWalk, body: EvalNodeRef) -> Option<String> {
     };
     eval.resolve_symbol(symbol)
         .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-}
-
-/// Returns whether a builtin has a native tier-1 inline lowering.
-///
-/// A builtin listed here lowers to native CLIF that computes the result in the
-/// compiled thunk (guarding operand tags and deoptimizing on a mismatch) rather
-/// than delegating to the tree walk through the `aos_primop_call` trampoline, so
-/// it is faster than interpreting and stays eligible for promotion. Every other
-/// builtin lowers to a delegate-only trampoline the engine gates out of promotion.
-///
-/// Only pure, deterministic builtins may appear here: an impure builtin records
-/// its observations inside the tree-walk force, so it must keep delegating to
-/// preserve cutoff soundness (see the RFC-0007 primop lowering design).
-fn primop_has_native_inline(name: &[u8]) -> bool {
-    // `stringLength` is pure and deterministic: its inline body forces the
-    // argument and returns its byte length, deoptimizing to the tree walk for any
-    // non-string (coercible) argument.
-    name == b"stringLength"
 }
 
 /// Returns a diagnostic signature naming a gated def-site's body.
@@ -1015,6 +1001,8 @@ mod tests {
     use ratchet_oracle::eval::EvalStats;
     use ratchet_oracle::eval::tree_walk::{TreeWalkError, TreeWalkOptions};
     use ratchet_oracle::syntax::parse_str;
+
+    mod candidate_c;
 
     /// Parses, resolves, and lowers a source program into Core IR.
     fn lower(source: &str) -> Ir {

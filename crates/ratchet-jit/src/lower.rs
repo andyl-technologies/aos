@@ -30,7 +30,6 @@ use ratchet_core::{
     syntax::{BinOpKind, Symbol},
 };
 use ratchet_value::value::Value;
-
 use crate::{
     abi::clif_signature_for_runtime_call,
     artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
@@ -38,6 +37,7 @@ use crate::{
 };
 mod arith_tree;
 mod alloc_cons;
+mod candidate_c;
 mod error;
 pub mod interp;
 mod lambda_chain;
@@ -51,6 +51,9 @@ pub use stack_maps::{
 pub use alloc_cons::{
     AOS_ALLOC_CONS_FUNCTION_INDEX, clif_external_name_for_aos_alloc_cons,
     lower_singleton_list_ir_thunk_body_artifact,
+};
+pub use candidate_c::{
+    JitCandidateCConstantError, lower_candidate_c_constant_ir_thunk_body_artifact,
 };
 pub use error::JitLowerError;
 pub use lambda_chain::{
@@ -70,7 +73,6 @@ pub use lambda_rec::{
 /// index so non-executable CLIF artifacts have deterministic per-expression
 /// names before `JITModule` integration exists.
 pub const AOS_IR_ROOT_FUNCTION_NAMESPACE: u32 = 7;
-
 /// Cranelift user-external namespace reserved for imported AOS runtime helpers.
 ///
 /// Standalone verified CLIF functions do not have a `JITModule` string symbol
@@ -78,7 +80,6 @@ pub const AOS_IR_ROOT_FUNCTION_NAMESPACE: u32 = 7;
 /// names that tests can inspect before real relocation and symbol registration
 /// are wired in.
 pub const AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE: u32 = 8;
-
 /// User-external function index reserved for the `aos_env_get` helper.
 pub const AOS_ENV_GET_FUNCTION_INDEX: u32 = 0;
 /// User-external function index reserved for the `aos_force` helper.
@@ -87,7 +88,6 @@ pub const AOS_FORCE_FUNCTION_INDEX: u32 = 1;
 pub const AOS_APPLY_FUNCTION_INDEX: u32 = 2;
 /// User-external function index reserved for the `aos_has_attr` helper.
 pub const AOS_HAS_ATTR_FUNCTION_INDEX: u32 = 3;
-
 /// User-external function index reserved for the `aos_select_ic` helper.
 pub const AOS_SELECT_IC_FUNCTION_INDEX: u32 = 4;
 

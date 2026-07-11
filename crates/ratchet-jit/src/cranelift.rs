@@ -32,10 +32,10 @@ use cranelift_codegen::{
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleError};
 use ratchet_core::{Ir, IrArena, IrId};
-use ratchet_value::value::{Value, ValueError};
+use ratchet_value::value::Value;
 use crate::{
     abi::{JitEnvFramePtr, JitRuntimeContextPtr, JitThunkFn},
-    artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
+    artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource, JitValueAbi},
     lower::{
         JitLowerError, lower_constant_ir_thunk_body_artifact,
         lower_force_aware_tier1_ir_thunk_body_artifact,
@@ -57,9 +57,14 @@ use crate::{
         JitTieredCodeSlot, JitTieredCodeSlotError, TierUpDecision, TierUpDemandHint, TierUpPolicy,
     },
 };
+mod candidate_c;
 mod finalized;
+mod native_error;
 mod tier2;
+pub use candidate_c::jit_cranelift_call_context_finalized_candidate_c_thunk_entry;
 pub use finalized::JitCraneliftFinalizedFunction;
+pub use native_error::JitCraneliftNativeCallError;
+use native_error::require_artifact_value_abi;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_argv_entry;
 pub use tier2::jit_cranelift_call_context_finalized_lambda_entry;
 /// The exact `cranelift-codegen` crate version required by this JIT slice.
@@ -1362,69 +1367,6 @@ pub enum JitCraneliftModuleSetupError {
     },
 }
 
-/// A failure while calling finalized native thunk code.
-#[derive(Debug)]
-pub enum JitCraneliftNativeCallError {
-    /// The current host does not have a reviewed native `Value` calling convention.
-    UnsupportedNativeValueAbi {
-        /// Human-readable reason this host is not enabled for native thunk calls.
-        message: &'static str,
-    },
-    /// The artifact could not be lowered, finalized, or installed into callable code metadata.
-    FinalizeArtifact {
-        /// The underlying Cranelift setup error.
-        source: JitCraneliftModuleSetupError,
-    },
-    /// The finalized artifact is not a compiled thunk body.
-    UnsupportedArtifactKind {
-        /// The lowered artifact kind carried by finalization metadata.
-        kind: JitClifArtifactKind,
-    },
-    /// The native call returned valid-tag bits that violate the runtime value payload layout.
-    InvalidReturnValue {
-        /// The stable module symbol that was called.
-        symbol_name: String,
-        /// The valid-tag value whose payload failed validation.
-        value: Value,
-        /// The underlying value-layout error.
-        source: ValueError,
-    },
-}
-
-impl fmt::Display for JitCraneliftNativeCallError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnsupportedNativeValueAbi { message } => write!(formatter, "{message}"),
-            Self::FinalizeArtifact { source } => write!(formatter, "{source}"),
-            Self::UnsupportedArtifactKind { kind } => {
-                write!(
-                    formatter,
-                    "artifact kind {kind:?} is not callable as a thunk body"
-                )
-            }
-            Self::InvalidReturnValue {
-                symbol_name,
-                source,
-                ..
-            } => write!(
-                formatter,
-                "native thunk {symbol_name:?} returned an invalid runtime value: {source}"
-            ),
-        }
-    }
-}
-
-impl Error for JitCraneliftNativeCallError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::UnsupportedNativeValueAbi { .. } => None,
-            Self::FinalizeArtifact { source } => Some(source),
-            Self::UnsupportedArtifactKind { .. } => None,
-            Self::InvalidReturnValue { source, .. } => Some(source),
-        }
-    }
-}
-
 impl fmt::Display for JitCraneliftModuleSetupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1906,6 +1848,7 @@ pub fn jit_cranelift_native_thunk_call_for_artifact(
             kind: finalization.artifact().kind(),
         });
     }
+    require_artifact_value_abi(finalization.artifact(), JitValueAbi::Active)?;
 
     let thunk_entry = thunk_entry_from_finalized_code(finalization.finalized_function().code_ptr());
     // SAFETY: The artifact was produced by this crate's thunk-body lowerers,
@@ -1986,6 +1929,7 @@ pub unsafe fn jit_cranelift_registered_native_thunk_call_for_artifact_with_candi
             kind: finalization.artifact().kind(),
         });
     }
+    require_artifact_value_abi(finalization.artifact(), JitValueAbi::Active)?;
 
     let thunk_entry = thunk_entry_from_finalized_code(finalization.finalized_function().code_ptr());
     // SAFETY: The caller guarantees that registered helper candidates and the
@@ -2058,6 +2002,7 @@ pub unsafe fn jit_cranelift_call_finalized_thunk_entry(
             kind: finalization.artifact().kind(),
         });
     }
+    require_artifact_value_abi(finalization.artifact(), JitValueAbi::Active)?;
 
     let thunk_entry = thunk_entry_from_finalized_code(finalization.finalized_function().code_ptr());
     // SAFETY: The caller guarantees that the borrowed finalization's registered
@@ -2290,6 +2235,7 @@ pub unsafe fn jit_cranelift_call_context_finalized_thunk_entry(
             kind: body.artifact().kind(),
         });
     }
+    require_artifact_value_abi(body.artifact(), JitValueAbi::Active)?;
 
     let thunk_entry = thunk_entry_from_finalized_code(body.finalized_function().code_ptr());
     // SAFETY: The caller keeps the finalizing `JitModuleContext` (or a cloned

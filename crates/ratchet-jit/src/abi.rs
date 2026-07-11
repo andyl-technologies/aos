@@ -17,9 +17,9 @@ use cranelift_codegen::{
 };
 use ratchet_core::{
     RuntimeAbiCallingConvention, RuntimeAbiParameter, RuntimeAbiParameterKind,
-    RuntimeAbiReturnKind, RuntimeAbiValueLayout, RuntimeCallSignature, runtime_abi_value_layout,
-    runtime_helper_call_signatures, runtime_lambda_call_signature, runtime_primop_call_signatures,
-    runtime_thunk_call_signature,
+    RuntimeAbiReturnKind, RuntimeAbiValueLayout, RuntimeCallSignature,
+    candidate_c_runtime_abi_value_layout, runtime_abi_value_layout, runtime_helper_call_signatures,
+    runtime_lambda_call_signature, runtime_primop_call_signatures, runtime_thunk_call_signature,
 };
 use ratchet_value::value::Value;
 use target_lexicon::{CallingConvention, Triple};
@@ -50,6 +50,14 @@ pub type JitEnvFramePtr = *mut c_void;
 /// compiled code with raw pointers and evaluator-owned state. This alias does
 /// not create, cast, register, or call any function pointer.
 pub type JitThunkFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> Value;
+
+/// Native entry type for a Candidate-C one-word compiled thunk body.
+///
+/// Calling this type is unsafe for the same raw-pointer and executable-code
+/// lifetime reasons as [`JitThunkFn`]. The returned integer is validated as a
+/// compressed word after the call.
+pub type JitCandidateCThunkFn =
+    unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> u64;
 
 /// Native entry type for a compiled lambda body.
 ///
@@ -145,6 +153,21 @@ pub fn clif_signature_for_runtime_call(
     signature: RuntimeCallSignature,
 ) -> Result<Signature, JitClifSignatureError> {
     clif_signature_for_runtime_call_with_layout(signature, runtime_abi_value_layout())
+}
+
+/// Converts a frozen runtime-call signature using Candidate C's one-word values.
+///
+/// # Errors
+///
+/// Returns the same target and layout errors as
+/// [`clif_signature_for_runtime_call`].
+pub fn clif_signature_for_candidate_c_runtime_call(
+    signature: RuntimeCallSignature,
+) -> Result<Signature, JitClifSignatureError> {
+    clif_signature_for_runtime_call_with_layout(
+        signature,
+        candidate_c_runtime_abi_value_layout(),
+    )
 }
 
 fn clif_signature_for_runtime_call_with_layout(

@@ -10,6 +10,15 @@ use ratchet_core::IrId;
 
 use crate::tier::JitTier;
 
+/// The by-value runtime representation used at one compiled artifact boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JitValueAbi {
+    /// The active two-word [`ratchet_value::value::Value`] ABI.
+    Active,
+    /// The Candidate-C one-word compressed-value ABI.
+    CandidateC,
+}
+
 /// The lowered body shape stored in a CLIF artifact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum JitClifArtifactKind {
@@ -54,6 +63,7 @@ pub struct JitClifArtifact {
     tier: JitTier,
     kind: JitClifArtifactKind,
     source: JitClifArtifactSource,
+    value_abi: JitValueAbi,
     function: Function,
 }
 
@@ -68,6 +78,23 @@ impl JitClifArtifact {
             tier,
             kind,
             source,
+            value_abi: JitValueAbi::Active,
+            function,
+        }
+    }
+
+    pub(crate) fn new_with_value_abi(
+        tier: JitTier,
+        kind: JitClifArtifactKind,
+        source: JitClifArtifactSource,
+        value_abi: JitValueAbi,
+        function: Function,
+    ) -> Self {
+        Self {
+            tier,
+            kind,
+            source,
+            value_abi,
             function,
         }
     }
@@ -85,6 +112,11 @@ impl JitClifArtifact {
     /// Returns the source identity associated with the artifact.
     pub const fn source(&self) -> JitClifArtifactSource {
         self.source
+    }
+
+    /// Returns the by-value representation used by this artifact's boundary.
+    pub const fn value_abi(&self) -> JitValueAbi {
+        self.value_abi
     }
 
     /// Returns the contained verified CLIF function.

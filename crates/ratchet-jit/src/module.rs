@@ -10,7 +10,7 @@
 use std::{error::Error, fmt};
 use cranelift_codegen::ir::{ExternalName, Function, UserExternalName, UserFuncName};
 use crate::{
-    artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
+    artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource, JitValueAbi},
     lower::{
         AOS_ALLOC_CONS_FUNCTION_INDEX, AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX,
         AOS_ENV_GET_FUNCTION_INDEX,
@@ -44,6 +44,7 @@ pub struct JitModuleArtifactMetadata {
     tier: JitTier,
     kind: JitClifArtifactKind,
     source: JitClifArtifactSource,
+    value_abi: JitValueAbi,
     function_name: UserFuncName,
 }
 
@@ -122,6 +123,7 @@ impl JitModuleArtifactMetadata {
             tier: artifact.tier(),
             kind: artifact.kind(),
             source: artifact.source(),
+            value_abi: artifact.value_abi(),
             function_name: artifact.function_name().clone(),
         }
     }
@@ -139,6 +141,11 @@ impl JitModuleArtifactMetadata {
     /// Returns the source identity for the artifact.
     pub const fn source(&self) -> JitClifArtifactSource {
         self.source
+    }
+
+    /// Returns the by-value representation used by the artifact boundary.
+    pub const fn value_abi(&self) -> JitValueAbi {
+        self.value_abi
     }
 
     /// Returns the deterministic CLIF function name carried by the artifact.

@@ -54,10 +54,12 @@ pub mod tier;
 pub mod warmup;
 
 pub use abi::{
-    JitClifSignatureError, JitEnvFramePtr, JitLambdaFn, JitRuntimeAbiInventory,
-    JitRuntimeContextPtr, JitThunkFn, clif_signature_for_runtime_call, jit_runtime_abi_inventory,
+    JitCandidateCThunkFn, JitClifSignatureError, JitEnvFramePtr, JitLambdaFn,
+    JitRuntimeAbiInventory, JitRuntimeContextPtr, JitThunkFn,
+    clif_signature_for_candidate_c_runtime_call,
+    clif_signature_for_runtime_call, jit_runtime_abi_inventory,
 };
-pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource};
+pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource, JitValueAbi};
 pub use compiled_body::{
     JitCompiledBodyCodecError, compiled_body_target_triple, decode_tier2_chain_lowering,
     decode_tier2_lambda_lowering, encode_tier2_chain_lowering, encode_tier2_lambda_lowering,
@@ -86,6 +88,7 @@ pub use cranelift::{
     PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact,
     jit_cranelift_artifact_finalization_preflight_for_artifact,
+    jit_cranelift_call_context_finalized_candidate_c_thunk_entry,
     jit_cranelift_call_context_finalized_lambda_argv_entry,
     jit_cranelift_call_context_finalized_lambda_entry,
     jit_cranelift_call_context_finalized_thunk_entry, jit_cranelift_call_finalized_thunk_entry,
@@ -125,7 +128,8 @@ pub use lower::{
     AOS_PRIMOP_CALL_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
     AOS_SELECT_IC_FUNCTION_INDEX, AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX,
     AOS_UPVAL_GET_FUNCTION_INDEX,
-    JitLowerError, JitTier1ThunkFactDecision, JitTier1ThunkFactPlan,
+    JitCandidateCConstantError, JitLowerError, JitTier1ThunkFactDecision,
+    JitTier1ThunkFactPlan,
     clif_external_name_for_aos_alloc_cons, clif_external_name_for_aos_apply,
     clif_external_name_for_aos_deopt,
     clif_external_name_for_aos_env_get, clif_external_name_for_aos_force,
@@ -137,7 +141,8 @@ pub use lower::{
     jit_tier1_thunk_fact_decision_for_facts, jit_tier1_thunk_fact_plan,
     lower_apply_local_slots_ir_root_thunk_body,
     lower_apply_local_slots_ir_root_thunk_body_artifact, lower_apply_local_slots_ir_thunk_body,
-    lower_apply_local_slots_ir_thunk_body_artifact, lower_constant_ir_root_thunk_body,
+    lower_apply_local_slots_ir_thunk_body_artifact,
+    lower_candidate_c_constant_ir_thunk_body_artifact, lower_constant_ir_root_thunk_body,
     lower_constant_ir_root_thunk_body_artifact, lower_constant_ir_thunk_body,
     lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body,
     lower_constant_thunk_body_artifact, lower_env_get_ir_root_thunk_body,

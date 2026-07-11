@@ -11959,6 +11959,37 @@ it ships).**
       88 settled cutoffs, versus 150 forced thunks and 96 settled cutoffs for
       the unchanged control. No throughput win is claimed for this inactive
       seam or for the changed-tree heuristic campaign.
+- [x] Current Candidate-C executable thunk-boundary slice: verified JIT
+      artifacts now carry an explicit active-vs-Candidate-C value ABI through
+      module finalization, so the native entry type is selected from checked
+      metadata before any code-pointer cast. A dedicated lowerer emits one
+      `i64` return for arena-independent literal thunks (`i32`, boolean, and
+      null); wide integers and floats fall back to the active two-word lowerer
+      because their compressed indices belong to an evaluator-owned scalar
+      arena and cannot be embedded in reusable code. The reviewed Candidate-C
+      native boundary validates returned words, runtime FFI reconstructs the
+      active scalar value, and `AOS_NIX_JIT_VALUE_ABI=candidate-c` (or the
+      deterministic engine builder) selects the path for tier-1 publication.
+      Tests execute the one-word body through Cranelift and runtime FFI, prove
+      both native entry types reject mismatched artifacts before casting, prove
+      engine publication carries Candidate-C metadata, and pin active fallback
+      for arena-owned scalars. Closed literal thunks are hash-consed after the
+      first force, so the engine test observes publication while the runtime-FFI
+      test performs the native dispatch directly. The interpreter, containers,
+      helper wrappers, tier-2 entries, and default runtime ABI remain the active
+      16-byte representation; this is the first executable boundary slice, not
+      a global value/container cutover. The full landing battery passed 375
+      value, 355 core, 266 JIT, 3,051 active oracle tests (34 ignored), 81
+      active runtime-FFI tests (26 ignored) plus its 2- and 6-test integrations,
+      cache 112, aos-nix 338, the 38-test language aggregate, and all three
+      changed-tree suite tests. It was byte-green across all 16 package legs,
+      compute x9 under JIT, wide serial/K=4/JIT/sweep-zero, zlib/wide cache
+      validation, and 648 strict-JSON expressions in all four modes. Three
+      balanced release pairs against exact parent `2f1b58bbc` moved native
+      wide-eval medians 0.451 -> 0.487 s cold (+8.1%) and 0.436 -> 0.449 s
+      warm (+3.1%); retained-RSS medians moved -0.1% cold and +0.5% warm, inside
+      the 10% no-regression gate. The A/B used clean parent and patch-only
+      snapshots so unrelated concurrent oracle/container edits were excluded.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay

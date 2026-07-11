@@ -553,11 +553,8 @@ mod tests {
         "uns",
         "afe { jit_cranelift_call_finalized_thunk_entry(finalization, rt, env) };"
     );
-    const CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE: &str = concat!(
-        "let context_dispatched = ",
-        "uns",
-        "afe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };"
-    );
+    const CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE: &str = concat!("let context_dispatched = ", "uns", "afe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };");
+    const CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE: &str = concat!("let candidate_c_dispatched = ", "uns", "afe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) };");
     const CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE: &str = concat!(
         "let lambda_dispatched = ",
         "uns",
@@ -1030,6 +1027,7 @@ mod tests {
         if token == UNSAFE_TOKEN {
             trimmed == FINALIZED_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE
+                || trimmed == CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_FOLD_STEP_JIT_BOUNDARY_LINE
@@ -1395,6 +1393,7 @@ mod unchecked_cfg;
         for (line, boundary) in [
             (FINALIZED_CALL_JIT_BOUNDARY_LINE, "thunk call"),
             (CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE, "context thunk call"),
+            (CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE, "Candidate-C thunk call"),
             (CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE, "lambda call"),
             (CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE, "chain call"),
             (CONTEXT_FINALIZED_FOLD_STEP_JIT_BOUNDARY_LINE, "fold step"),
@@ -1960,6 +1959,7 @@ mod unchecked_cfg;
             CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE,
             "shared-context finalized native thunk-call jit boundary must keep a SAFETY comment",
         );
+        assert_has_safety_comment_before(&native_call_lines, CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE, "shared-context Candidate-C thunk-call jit boundary must keep a SAFETY comment");
         assert_has_safety_comment_before(
             &native_call_lines,
             CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE,

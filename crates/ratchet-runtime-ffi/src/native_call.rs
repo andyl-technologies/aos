@@ -20,14 +20,18 @@
 //! through [`run_registered_native_thunk_call`].
 
 use ratchet_jit::{
-    JitClifArtifact, JitCraneliftNativeCallError,
+    JitClifArtifact, JitCraneliftNativeCallError, JitValueAbi,
     JitCraneliftRegisteredArtifactFinalizationPreflight, JitModuleContextFinalizedBody,
     JitRuntimeSymbolAddressCandidate, jit_cranelift_call_context_finalized_lambda_argv_entry,
+    jit_cranelift_call_context_finalized_candidate_c_thunk_entry,
     jit_cranelift_call_context_finalized_lambda_entry,
     jit_cranelift_call_context_finalized_thunk_entry, jit_cranelift_call_finalized_thunk_entry,
     jit_cranelift_registered_artifact_finalization_preflight_with_candidates,
 };
-use ratchet_oracle::value::Value;
+use ratchet_oracle::value::{
+    Value,
+    compressed::{CompressedValueKind, CompressedValueWord},
+};
 use ratchet_oracle::{compile::IrId, eval::EvalEnv, eval::tree_walk::TreeWalk, syntax::Span};
 
 use crate::context::RuntimeJitContext;
@@ -197,10 +201,19 @@ pub fn run_context_finalized_native_thunk_call(
     let env = rt;
 
     let scope = RuntimeTrapScope::new();
-    // SAFETY: `rt` comes from the pinned context over `eval` and `env` from the
-    // live `frame`; the caller keeps the shared module context that finalized
-    // `body` alive, so its frozen-ABI wrappers and code stay live for the call.
-    let context_dispatched = unsafe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };
+    let context_dispatched = if body.artifact().value_abi() == JitValueAbi::CandidateC {
+        // SAFETY: `rt` comes from the pinned context over `eval`; the current
+        // Candidate-C literal body ignores raw inputs, and the caller keeps the
+        // shared module context that finalized `body` alive across the call.
+        let candidate_c_dispatched = unsafe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) };
+        candidate_c_dispatched.and_then(candidate_c_inline_value)
+    } else {
+        // SAFETY: `rt` comes from the pinned context over `eval` and `env` from
+        // the live frame; the caller keeps the shared module context alive, so
+        // its frozen-ABI wrappers and finalized code stay live for the call.
+        let context_dispatched = unsafe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };
+        context_dispatched
+    };
     match context_dispatched {
         Ok(value) => {
             let trap = scope.take_trap();
@@ -212,6 +225,17 @@ pub fn run_context_finalized_native_thunk_call(
             drop(scope);
             Err(error)
         }
+    }
+}
+
+fn candidate_c_inline_value(
+    word: CompressedValueWord,
+) -> Result<Value, JitCraneliftNativeCallError> {
+    match word.kind() {
+        CompressedValueKind::InlineInt => Ok(Value::int(word.payload() as i32 as i64)),
+        CompressedValueKind::Bool => Ok(Value::bool(word.payload() != 0)),
+        CompressedValueKind::Null => Ok(Value::null()),
+        kind => Err(JitCraneliftNativeCallError::UnsupportedCandidateCReturnKind { kind }),
     }
 }
 
@@ -815,6 +839,8 @@ mod tests {
     };
 
     use super::*;
+
+    mod candidate_c;
 
     fn candidate(
         symbol_name: &str,
