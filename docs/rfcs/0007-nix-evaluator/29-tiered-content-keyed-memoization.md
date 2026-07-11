@@ -1000,7 +1000,7 @@ design above with the code as ground truth:
    persist-backed force cache with admission
    (`ForceCacheMemoizationAdmission`), free-variable value-hash keying,
    options identity, and materialization economics counters is already
-   live. The unification has since added per-subtree slice attribution,
+   live, including the durable scalar filesystem-import root boundary. The unification added per-subtree slice attribution,
    L0/L1 content tables, admission cost flags, multi-location L2, L3,
    and promotion; compiled-body records and final measured defaults remain.
 5. **"Recompute cost from force-time stats — the `AOS_NIX_EVAL_STATS`

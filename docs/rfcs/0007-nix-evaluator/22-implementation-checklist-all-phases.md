@@ -215,8 +215,8 @@ hold invariant.
       direct node reruns, `--smoke` zlib witness,
       `--all`/`--systems`/toolchain/lang-corpus enumeration,
       binary corpus failure semantics, `NixCli::instantiate_with_stats`,
-      `aos nix-diff --oracle-stats`, `aos nix-bench` with byte-parity guard
-      before recording, `cargo-fuzz` `internal_diff_raw`/`parity_json` seeds,
+      `aos nix-diff --oracle-stats`, `aos nix-bench` with byte-parity guard and
+      the nine-scenario `--changed-tree` warm-mutation suite, `cargo-fuzz` seeds,
       the configured C++ Nix lang corpus runner, and `proptest` invariant
       coverage are in place.
 - [x] Full acceptance gate: **byte-identical `.drv` output from `NixNative` vs
