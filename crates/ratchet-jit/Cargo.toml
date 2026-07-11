@@ -7,10 +7,13 @@ edition = "2024"
 default = []
 
 [dependencies]
+bincode = { workspace = true }
 cranelift-codegen = { workspace = true }
 cranelift-jit = { workspace = true }
 cranelift-module = { workspace = true }
 cranelift-native = { workspace = true }
 ratchet-core = { workspace = true }
 ratchet-value = { workspace = true }
+serde = { workspace = true }
 target-lexicon = { workspace = true }
+thiserror = { workspace = true }

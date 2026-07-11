@@ -11314,8 +11314,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       compute x8, zlib and wide cache validation, and all 648 strict-JSON seeds
       in serial/K=4/JIT/sweep-zero. The frozen source-size offender set remains
       unchanged. Cranelift user-stack-map emission, live compiled-frame binding,
-      allocation-capable bodies, OSR, and the persistent compiled-body cache
-      remain open.
+      allocation-capable bodies, OSR, and persistent compiled-body coverage
+      beyond the later unary-cache slice remain open.
 - [x] Tier-2 strict `all`/`any` collection seam (`cffda6a76`): the tree-walk
       loops consult the engine at most twice per call and reuse the landed
       arity-1 filter-predicate scanner, lowering, pin validation, and compiled
@@ -11337,6 +11337,26 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       serial/K=4/JIT/sweep-zero. The moved `all`/`any` module removes
       `eval_list_filter.rs` from the source-size offender set while every other
       touched offender stays at or below its baseline size.
+- [x] Persistent compiled-body cache, first unary tier-2 slice: when both the
+      JIT and primary evaluator cache are configured, a promoted self-recursive
+      lambda writes its address-free entry/inner CLIF pair and dispatch metadata
+      beneath `persist/compiled-bodies/v1/<cranelift>/<target>/`. The key binds
+      the complete lowered-IR fingerprint, pattern/body IDs, native depth
+      budget, cache schema, exact Cranelift version, and target triple. Records
+      use an explicit size-bounded envelope and binary serde payload; malformed,
+      mismatched, unreadable, or verifier-rejected records are deleted and
+      treated as misses. A fresh engine re-verifies CLIF and recompiles it into
+      its own `JitModuleContext`; machine code and addresses never persist.
+      Tests cover codec/source rejection and a real `fib` write/reload across
+      engines; the full `ratchet-jit` suite is 257/257 and `aos-nix` is 329/329.
+      The locked Cargo vendor hash is updated for the codec dependency. After
+      removing an unnecessary advisory-record `fsync`, fifteen alternating
+      release-process rounds were warm-neutral at the command's 10 ms timing
+      resolution (140/140 ms) and showed a one-tick cold write cost (150 vs
+      140 ms) against pristine `afa7cf6c7`; this is therefore a functional
+      substrate, not yet a performance-win claim. Fused-chain and collection
+      entries, packed/indexed records, multi-location placement, counters, and a
+      measured admission/default policy remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling

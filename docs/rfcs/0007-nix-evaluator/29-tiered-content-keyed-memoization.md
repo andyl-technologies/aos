@@ -41,8 +41,9 @@ Today the evaluator carries what look like four separate caches:
    7.8–28 ms, 5–18x faster than a warm C++ `nix` flake-eval-cache hit);
 3. the **parse cache** — per-file lowered-IR artifacts keyed by realpath
    plus content hash, carrying the post-remap `LoweredIrFingerprint`;
-4. the approved-but-deferred **JIT persistent compiled-body cache** —
-   compiled CLIF artifacts keyed by `(LoweredIrFingerprint, pattern IrId)`.
+4. the **JIT persistent compiled-body cache** — its first unary tier-2 slice
+   stores paired CLIF functions under the lowered module fingerprint and
+   def-site identity; fused-chain and collection-body records remain deferred.
 
 These are the same object at different granularities and with different
 payload kinds. Each one is a **content-keyed record**: a key derived
@@ -73,7 +74,7 @@ unification and tiering, not invention:
 | Demand/force cache | per lowered node | `DemandCacheKey::for_free_vars(CacheExprIdentity{source_hash, node: IrId}, [ValueHash])` (`ratchet-oracle/src/cache/key.rs`, ordered length-prefixed combiner per decision C-1) | forced value payloads (`CachedExpressionPayloadValueHash`, derivation side records) | in-process maps + `nodes/` persist layer (`metadata.index`, `traces.log`) |
 | Root cutoff | whole root (largest subtree) | blake3(domain ‖ format-v2 ‖ crate version ‖ entry realpath ‖ entry content ‖ attr ‖ `TreeWalkOptions::result_affecting_fingerprint()`) (`aos-nix/src/native/root_cutoff.rs`) | `RootInstantiationRecord` = root drv + closure blob refs + canonicalized input trace | `roots/instantiations.index` + `files/` pack, tag 6 |
 | Parse cache | per source file | realpath + content hash (`ParseFileContentHash`); artifact carries post-remap `LoweredIrFingerprint` | lowered IR + symbol table + facts | `nodes/parse-artifacts.index` + packs |
-| JIT body cache (approved, deferred) | per def-site | `(LoweredIrFingerprint, pattern IrId)` | lowering decision + serialized `JitClifArtifact` | new sidecar under `AOS_NIX_CACHE` (design) |
+| JIT body cache (unary slice live) | per def-site | `(LoweredIrFingerprint, pattern IrId, body IrId, depth budget, schema, Cranelift version, target)` | paired entry/inner CLIF + self-upvalue and self-call metadata | `persist/compiled-bodies/v1/<cranelift>/<target>/`; primary location only |
 
 Shared machinery already in place: the hash-domain type system
 (`cache/hashing.rs` — hot xxh3 never crosses into durable addresses),
@@ -81,6 +82,22 @@ the `LatestIndex` append-only sidecar index with tail-reload
 (`ratchet-cache/src/sidecar_index.rs`), content-addressed `values/` and
 `files/` packs with `ensure_blob_indexed` CAS dedup, and the
 canonicalized impure-input trace (§2.3).
+
+**Compiled-body status boundary (2026-07-10).** The first live slice covers
+unary self-recursive tier-2 lambdas. Cranelift's `enable-serde` representation
+is encoded with a pinned binary codec inside an explicit magic/schema/key
+envelope, capped at 32 MiB, written by temporary-file rename, and treated as an
+advisory miss on I/O, header, source, codec, or CLIF-verifier failure. A fresh
+engine decodes and verifies CLIF, then recompiles it into its own
+`JitModuleContext`; executable pages and addresses are never serialized. The
+canonical `fib` record is 5.7 KiB. Fifteen alternating release-process rounds
+on the noisy Darwin host were resolution-flat warm (140 ms vs 140 ms for
+pristine `afa7cf6c7`) and showed a one-tick cold write cost (150 ms vs 140 ms)
+for the combined C++-oracle/native command, so this landing is a functional
+cache substrate, not a claimed wall-time win. Fused chains, fold/filter/genList
+and `all`/`any` entries, a packed/indexed multi-record layout, secondary/L3
+placement, cache counters, and a measured default admission heuristic remain
+open.
 
 **FV-5 status boundary (2026-07-09).** Hybrid closure capture changes the
 runtime representation, not this memo contract. `facts.bin` analysis version
@@ -167,9 +184,11 @@ observable in eval output.
   cache becomes the front-end instance; its key is the degenerate case
   where the "environment" component is empty and the code component is
   the file content itself.
-- **`CompiledBody`** — the deferred JIT artifact: the lowering decision
-  plus a serializable `JitClifArtifact`, recompiled into the batched
-  `JitModuleContext` on load (never relocated code pages). Same
+- **`CompiledBody`** — the JIT artifact: the live unary slice stores its paired
+  entry/inner functions plus dispatch metadata; remaining shapes retain the
+  approved lowering-decision + serializable-artifact design. Records are
+  recompiled into the batched `JitModuleContext` on load (never relocated code
+  pages). Same
   keyspace, different payload kind; its records never carry an impure
   slice because a compiled body is a pure function of IR shape.
 
@@ -875,9 +894,9 @@ cutoff and parse cache re-expressed as instances (behavior-preserving —
 same keys, same bytes on the primary location); blob-liveness
 enumeration to the reaper (closes the known root-record trim caveat);
 multi-location L2 with latency classes + promotion/demotion; L3
-read-side with re-hash validation + `rw` publish from CI; compiled-body
-records join the keyspace when the JIT profit-promotion round lands
-(that design is approved separately and unchanged).
+read-side with re-hash validation + `rw` publish from CI. Unary tier-2
+compiled-body records now occupy a versioned primary sidecar; folding them into
+the packed multi-location record store remains part of this phase.
 
 Acceptance gates:
 
@@ -1002,7 +1021,9 @@ design above with the code as ground truth:
    options identity, and materialization economics counters is already
    live, including the durable scalar filesystem-import root boundary. The unification added per-subtree slice attribution,
    L0/L1 content tables, admission cost flags, multi-location L2, L3,
-   and promotion; compiled-body records and final measured defaults remain.
+   and promotion; unary compiled-body records are now live in a primary
+   sidecar, while their packed multi-location form and final measured defaults
+   remain.
 5. **"Recompute cost from force-time stats — the `AOS_NIX_EVAL_STATS`
    machinery exists" — corrected by the economics seam.** `EvalStats`
    remains aggregate and normal runs still pay no clock hook. The explicit

@@ -137,6 +137,22 @@ pub struct JitTier2LambdaLowering {
 }
 
 impl JitTier2LambdaLowering {
+    pub(crate) fn from_cached_parts(
+        entry: Function,
+        inner: Function,
+        source: IrId,
+        self_upval: (u32, u32),
+        self_call_count: u32,
+    ) -> Self {
+        Self {
+            entry,
+            inner,
+            source,
+            self_upval,
+            self_call_count,
+        }
+    }
+
     /// Returns the boundary entry function (frozen lambda-call ABI).
     pub fn entry(&self) -> &Function {
         &self.entry

@@ -792,10 +792,10 @@ impl NixNative {
         if !options.jit_tier1_publish_enabled() {
             return None;
         }
-        match NixJitTier1Engine::new() {
-            Ok(engine) => Some(Rc::new(engine)),
-            Err(_) => None,
-        }
+        NixJitTier1Engine::new().ok().map(|engine| {
+            Rc::new(engine.with_compiled_body_cache_root(options.persist_cache_root()))
+                as Rc<dyn Tier1Engine>
+        })
     }
 
     fn instantiation_options(&self) -> TreeWalkOptions {

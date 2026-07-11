@@ -415,6 +415,16 @@ impl LoweredIrFingerprint {
         Self(hash)
     }
 
+    /// Returns the raw durable digest used by compiled-body cache keys.
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0.as_bytes()
+    }
+
+    /// Returns the lowercase hexadecimal cache-key representation.
+    pub fn to_hex(self) -> String {
+        self.0.to_hex()
+    }
+
     /// Returns the underlying durable BLAKE3 digest.
     pub(crate) const fn as_durable_hash(self) -> DurableBlake3Hash {
         self.0

@@ -3064,7 +3064,7 @@ fn emit_attr_select_default_local_slot_return(
 
     Ok(())
 }
-fn verify_clif_function(function: &Function) -> Result<(), JitLowerError> {
+pub(crate) fn verify_clif_function(function: &Function) -> Result<(), JitLowerError> {
     let flags = settings::Flags::new(settings::builder());
     verify_function(function, &flags).map_err(JitLowerError::Verifier)
 }

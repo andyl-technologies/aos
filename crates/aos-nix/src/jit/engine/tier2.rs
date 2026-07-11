@@ -57,6 +57,7 @@
 //! remain a separate frontend obligation.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::rc::Rc;
 
 use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
@@ -71,6 +72,10 @@ use ratchet_runtime_ffi::{run_context_finalized_native_chain_call, run_context_f
 use ratchet_value::value::Value;
 
 use super::NixJitTier1Engine;
+
+mod compiled_body_cache;
+
+use compiled_body_cache::CompiledBodyCache;
 
 /// The apply count at which a lambda def-site is considered for promotion.
 pub(super) const TIER2_PROMOTION_THRESHOLD: u32 = 8;
@@ -95,6 +100,8 @@ pub(super) struct Tier2EngineState {
     /// [`TIER2_NATIVE_DEPTH_BUDGET`] in production; tests shrink it so a
     /// budget-exhaustion deopt can be exercised at interpreter-safe depths.
     pub(super) budget: i64,
+    /// Persistent address-free CLIF sidecar, when evaluator caching is active.
+    compiled_cache: Option<CompiledBodyCache>,
 }
 
 impl Default for Tier2EngineState {
@@ -104,6 +111,7 @@ impl Default for Tier2EngineState {
             blacklist: HashSet::new(),
             gated_kinds: HashMap::new(),
             budget: TIER2_NATIVE_DEPTH_BUDGET,
+            compiled_cache: None,
         }
     }
 }
@@ -127,6 +135,16 @@ impl NixJitTier2DispatchEntry {
 }
 
 impl NixJitTier1Engine {
+    /// Configures the persistent address-free compiled-body sidecar.
+    ///
+    /// `persist_root` is the evaluator's primary persistent-cache root. `None`
+    /// keeps JIT compilation process-local.
+    #[must_use]
+    pub fn with_compiled_body_cache_root(mut self, persist_root: Option<&Path>) -> Self {
+        self.tier2.get_mut().compiled_cache = persist_root.map(CompiledBodyCache::new);
+        self
+    }
+
     /// Implements [`Tier1Engine::on_lambda_apply`] for the live engine.
     ///
     /// See the [module docs](self) for the promotion gate and dispatch guards.
@@ -269,7 +287,20 @@ impl NixJitTier1Engine {
         }
 
         let budget = self.tier2.borrow().budget;
-        let Some(lowering) = self.lower_tier2_body(eval, lambda, budget) else {
+        let Some(ir) = eval.tier1_module_ir(lambda.module()) else {
+            return self.promote_tier2_chain(eval, key, lambda);
+        };
+        let cached = self
+            .tier2
+            .borrow()
+            .compiled_cache
+            .as_ref()
+            .and_then(|cache| cache.load(ir, lambda.pattern(), lambda.body(), budget));
+        let cache_hit = cached.is_some();
+        let Some(lowering) = cached.or_else(|| {
+            lower_tier2_self_recursive_lambda(&ir.arena, lambda.pattern(), lambda.body(), budget)
+                .ok()
+        }) else {
             // Outside the unary grammar: the def-site may still be the
             // innermost lambda of a fused curried chain (see `tier2_chain`).
             return self.promote_tier2_chain(eval, key, lambda);
@@ -291,6 +322,11 @@ impl NixJitTier1Engine {
         if !self_callee_is_this_closure(eval, function, lambda, self_upval) {
             self.tier2.borrow_mut().counts.insert(key, 0);
             return continued_hook(false, false, false);
+        }
+        if !cache_hit
+            && let Some(cache) = self.tier2.borrow().compiled_cache.as_ref()
+        {
+            cache.store(ir, lambda.pattern(), lambda.body(), budget, &lowering);
         }
 
         let (finalized_body, keep_alive) = {
@@ -331,17 +367,6 @@ impl NixJitTier1Engine {
         } else {
             continued_hook(false, false, false)
         }
-    }
-
-    /// Lowers a lambda's body under the tier-2 grammar, if possible.
-    fn lower_tier2_body(
-        &self,
-        eval: &TreeWalk,
-        lambda: &EvalLambda,
-        budget: i64,
-    ) -> Option<ratchet_jit::JitTier2LambdaLowering> {
-        let ir = eval.tier1_module_ir(lambda.module())?;
-        lower_tier2_self_recursive_lambda(&ir.arena, lambda.pattern(), lambda.body(), budget).ok()
     }
 
     /// Resets a def-site's apply count after a transient promotion failure.
@@ -445,9 +470,13 @@ const fn gated() -> Tier2ApplyHook {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
     use std::rc::Rc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use ratchet_core::Ir;
+    use ratchet_core::{Ir, IrData};
+    use ratchet_jit::TIER2_NATIVE_DEPTH_BUDGET;
     use ratchet_oracle::eval::EvalStats;
     use ratchet_oracle::eval::tree_walk::{TreeWalk, TreeWalkError, TreeWalkOptions};
     use ratchet_oracle::syntax::parse_str;
@@ -527,6 +556,65 @@ mod tests {
             "an all-integer fib must never deopt, got deopted={}",
             stats.tier2_deopted(),
         );
+    }
+
+    /// A promoted unary body persists as address-free CLIF and a fresh engine
+    /// can decode and re-verify it from the same cache root.
+    #[test]
+    fn fib_persists_and_reloads_verified_compiled_body() {
+        let source =
+            "let fib = n: if n < 2 then n else fib (n - 1) + fib (n - 2); in fib 20";
+        let ir = lower(source);
+        let (pattern, body) = ir
+            .arena
+            .nodes()
+            .iter()
+            .find_map(|node| match node.data {
+                IrData::Lambda { pattern, body, .. } => Some((pattern, body)),
+                _ => None,
+            })
+            .expect("fib lambda exists");
+        let cache_root = unique_cache_root();
+        fs::create_dir(&cache_root).expect("cache root creates");
+
+        let mut options = TreeWalkOptions::default();
+        options.set_jit_tier1_publish_enabled(true);
+        let mut eval = TreeWalk::with_options(&ir, options);
+        let engine = Rc::new(
+            NixJitTier1Engine::new()
+                .expect("engine builds")
+                .with_compiled_body_cache_root(Some(&cache_root)),
+        );
+        eval.set_tier1_engine(engine);
+        let value = eval.eval_root().expect("first evaluation succeeds");
+        assert!(eval.stats().tier2_promoted() >= 1);
+        drop(eval);
+
+        let fresh = NixJitTier1Engine::new()
+            .expect("fresh engine builds")
+            .with_compiled_body_cache_root(Some(&cache_root));
+        let state = fresh.tier2.borrow();
+        let cache = state.compiled_cache.as_ref().expect("cache configured");
+        let decoded = cache
+            .load(&ir, pattern, body, TIER2_NATIVE_DEPTH_BUDGET)
+            .expect("compiled body reloads");
+        assert_eq!(decoded.source(), body);
+        assert_eq!(decoded.self_call_count(), 2);
+        assert_eq!(value.as_int().expect("fib result is an integer"), 6_765);
+
+        drop(state);
+        fs::remove_dir_all(cache_root).expect("cache root removes");
+    }
+
+    fn unique_cache_root() -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock follows Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "aos-tier2-compiled-body-{}-{now}",
+            std::process::id()
+        ))
     }
 
     /// Compiled arithmetic wraps on i64 overflow exactly like the tree walk
