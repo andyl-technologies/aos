@@ -333,6 +333,17 @@ stdenv` plus the existing eval/VM checks.
 - **Cross-tier sequencing.** The multi-stage cross dance stays explicit;
   only its building blocks are shared.
 
+### Early static-tool compatibility
+
+Treat the first x86_64 cross-tier tools as compatibility-constrained build
+inputs, not general-purpose host utilities. In particular, do not invoke the
+static glibc 2.3.4 `sed` with `-i`: that mode segfaults on newer Linux 6.12
+kernels. Stream the transform to a sibling file and copy it back into the
+original inode because this works across the supported builder kernels and
+preserves executable modes such as `configure`. Keep this workaround at the
+gcc4_1 boundary; later tiers use newer libc-backed tools and should retain
+their normal manifest recipes.
+
 ## Expected outcome
 
 The ~22,400 toolchain LOC should drop by well over half: the POSIX-tools
