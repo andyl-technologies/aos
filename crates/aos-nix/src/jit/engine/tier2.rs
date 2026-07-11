@@ -63,6 +63,7 @@ use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
 use ratchet_jit::{
     JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
     TIER2_NATIVE_DEPTH_BUDGET, estimate_tier1_body_cost, lower_tier2_self_recursive_lambda,
+    tier2_self_recursive_lambda_cache_eligible,
 };
 use ratchet_oracle::eval::heap::EvalLambda;
 use ratchet_oracle::eval::tree_walk::TreeWalk;
@@ -279,6 +280,13 @@ impl NixJitTier1Engine {
         let Some(ir) = eval.tier1_module_ir(lambda.module()) else {
             return self.promote_tier2_chain(eval, key, lambda);
         };
+        if !tier2_self_recursive_lambda_cache_eligible(
+            &ir.arena,
+            lambda.pattern(),
+            lambda.body(),
+        ) {
+            return self.promote_tier2_chain(eval, key, lambda);
+        }
         let cached = self
             .tier2
             .borrow()

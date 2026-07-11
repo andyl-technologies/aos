@@ -11387,8 +11387,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       30.7/30.8 MiB warm. This is a timing and memory no-regression result.
       The source-size gate remains pre-existing red; every touched offender is
       unchanged and both new modules stay below 200 lines. Collection entries,
-      compiled-body L3 placement, counters, and a measured
-      admission/default policy remain open.
+      compiled-body L3 placement, counters, and a measured admission/default
+      policy were open at this landing and are covered by later rows.
 - [x] Persistent compiled-body cache, fused curried-chain apply slice: a hot
       multi-argument self-recursive def-site such as `tak` now reuses its
       address-free argv-entry/inner CLIF pair through the same indexed,
@@ -11448,8 +11448,8 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       1.020 and 1.030. Median post-eval RSS was 30.30/30.33 MiB cold and
       30.56/30.42 MiB warm; every leg retained a 0.5 MiB arena peak. This is a
       persistence-coverage and no-regression result, not a speedup claim.
-      Production hit counters, admission tuning, and machine-code/AOT reuse
-      remain open.
+      Production hit counters and admission tuning were still open at this
+      landing and are covered below; machine-code/AOT reuse remains open.
 - [x] Persistent compiled-body cache, L3 network placement: after primary and
       secondary L2 miss, every unary and chain-family tier-2 record can now be
       fetched from `/v1/compiled-body/<semantic-key>`. Its bounded wire envelope
@@ -11478,8 +11478,43 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       and 21.24/22.00 ms warm, with paired-median ratios 0.980/0.956. Median
       post-eval RSS was 30.27/30.38 MiB cold and 30.72/30.48 MiB warm; every
       leg retained a 0.5 MiB arena peak. This closes compiled-body L3 placement,
-      not production hit counters, admission tuning, executable-code reuse, or
-      MEMO-2's required cross-machine acceptance demonstration.
+      while the production counters and admission default land in the next row.
+      Executable-code reuse and MEMO-2's required cross-machine acceptance
+      demonstration remain open.
+- [x] Persistent compiled-body cache, production observability and measured
+      admission default: `AOS_NIX_EVAL_STATS=1` now emits one strict-JSON
+      cache-operation snapshot covering primary/secondary/network hits and
+      misses, network errors, validation failures, promotion/write/publication
+      success and failure, byte mass, and maximum record size. A new
+      allocation-free necessary structural preflight prevents unary L2/L3
+      probes unless a bare-formal body has one consistent direct self-callee;
+      full Cranelift lowering, the native-cost gate, and resolved chain or
+      collection paths remain authoritative. Release telemetry moved zlib from
+      69 useless misses and zero writes to zero lookups, while `tak` retained
+      exactly one 9,549-byte cold miss/write and one warm hit. `fib` admitted
+      one 5,815-byte record and `all`/`any` admitted four records totaling
+      19,994 bytes (5,213-byte maximum), all without validation/write failures.
+
+      The full landing gate passed 354 core tests, 261 JIT tests, 3,036 active
+      serial oracle tests (34 ignored), 336 `aos-nix` tests, 80 active
+      runtime-FFI tests plus eight integrations, 112 cache tests plus its
+      doctest, the 38-test language aggregate, the 16 package byte legs,
+      compute x9, wide serial/K=4/JIT/sweep-zero, zlib and wide cache
+      validation, and all 645 generated strict-JSON seeds in those four modes.
+      The harness retains only its pristine-baseline malformed-node-trace red;
+      the frozen source-size red is also unchanged. The touched frozen
+      `engine.rs` shrank from 1,518 to 1,446 lines and every new or grown source
+      remains below 1,000 lines.
+
+      A balanced seven-pair, stats-off release A/B against pristine
+      `426a122bd` measured zlib candidate/baseline medians of 855.11/857.47 ms
+      cold and 861.85/863.73 ms warm (paired ratios 0.978/0.961), with retained
+      RSS of 61.92/61.95 MiB cold and 62.80/63.16 MiB warm and identical
+      7.5 MiB arena peaks. Hot `tak` measured 24.24/24.37 ms cold and
+      23.66/24.31 ms warm (paired ratios 1.002/0.971), effectively flat RSS,
+      and identical 0.5 MiB arena peaks. Production counters and the measured
+      default are therefore closed; executable-code reuse and MEMO-2's
+      cross-machine/repeat-heavy final acceptance remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling

@@ -272,6 +272,26 @@ pub fn lower_tier2_self_recursive_lambda(
     })
 }
 
+/// Returns whether a lambda can possibly use the unary tier-2 body cache.
+///
+/// This is the allocation-free structural prefix of
+/// [`lower_tier2_self_recursive_lambda`]: the parameter must be a bare formal,
+/// the body must fit the unary callee-discovery traversal, and at least one
+/// direct call must name one consistent upvalue. Passing is necessary but not
+/// sufficient for promotion; Cranelift lowering and the native-cost gate remain
+/// authoritative. Failing proves that a persistent unary record cannot exist,
+/// so callers may skip disk and network probes before trying the curried-chain
+/// tier.
+#[must_use]
+pub fn tier2_self_recursive_lambda_cache_eligible(
+    arena: &IrArena,
+    pattern: IrId,
+    body: IrId,
+) -> bool {
+    require_bare_formal_pattern(arena, pattern).is_ok()
+        && find_single_self_callee(arena, body).is_ok_and(|(depth, _)| depth >= 1)
+}
+
 /// Requires the lambda pattern to be a bare formal without a default.
 ///
 /// A bare formal binds the argument at call-frame slot 0 of a one-slot frame,

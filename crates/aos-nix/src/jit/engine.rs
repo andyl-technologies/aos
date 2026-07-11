@@ -102,6 +102,7 @@ pub struct NixJitTier1Engine {
 }
 
 mod tier2;
+mod stats_dump;
 mod tier2_chain;
 mod tier2_filter;
 mod tier2_fold;
@@ -621,79 +622,6 @@ impl NixJitTier1Engine {
             .collect();
         entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         entries
-    }
-}
-
-impl Drop for NixJitTier1Engine {
-    /// Dumps the blacklist-by-kind histogram to stderr when stats dumping is on.
-    ///
-    /// Gated on `AOS_NIX_EVAL_STATS=1` (read directly here because the engine is
-    /// not handed the tree-walk options), this emits a single JSON object beside
-    /// the evaluator's [`maybe_dump_eval_stats`](crate::native) output so a run
-    /// can be told what the blacklisted def-sites are made of.
-    fn drop(&mut self) {
-        if std::env::var("AOS_NIX_EVAL_STATS").as_deref() != Ok("1") {
-            return;
-        }
-        let blacklist = self.blacklist_histogram();
-        if !blacklist.is_empty() {
-            let body = blacklist
-                .iter()
-                .map(|(kind, count)| format!("\"{kind}\":{count}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            eprintln!("{{\"aos_nix_tier1_blacklist_histogram\":{{{body}}}}}");
-        }
-        let dispatched = self.dispatched_histogram();
-        if !dispatched.is_empty() {
-            let body = dispatched
-                .iter()
-                .map(|(name, count)| format!("\"{name}\":{count}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            eprintln!("{{\"aos_nix_tier1_dispatched_histogram\":{{{body}}}}}");
-        }
-        let gated = self.gated_histogram();
-        if !gated.is_empty() {
-            let body = gated
-                .iter()
-                .map(|(name, count)| format!("\"{name}\":{count}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            eprintln!("{{\"aos_nix_tier1_gated_histogram\":{{{body}}}}}");
-        }
-        let gated_cost = self.gated_cost_histogram();
-        if !gated_cost.is_empty() {
-            let native = gated_cost
-                .iter()
-                .map(|(native, count)| format!("\"{native}\":{count}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            eprintln!(
-                "{{\"aos_nix_tier1_gated_cost_histogram\":\
-                 {{\"lowerable\":{},\"unlowerable\":{},\"native_insts\":{{{native}}}}}}}",
-                self.gated_lowerable_count(),
-                self.gated_unlowerable_count(),
-            );
-        }
-        let interp_shape = self.interp_shape_histogram();
-        if !interp_shape.is_empty() {
-            let body = interp_shape
-                .iter()
-                .map(|(key, count)| format!("\"{key}\":{count}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            eprintln!("{{\"aos_nix_tier1_interp_shape_histogram\":{{{body}}}}}");
-        }
-        let interp_children = self.interp_child_kind_histogram();
-        if !interp_children.is_empty() {
-            let body = interp_children
-                .iter()
-                .map(|(key, count)| format!("\"{key}\":{count}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            eprintln!("{{\"aos_nix_tier1_interp_child_kind_histogram\":{{{body}}}}}");
-        }
     }
 }
 

@@ -106,8 +106,8 @@ maximum RSS was slightly lower in the candidate (71.03 vs 71.31 MiB cold;
 measured native `fib` at 20.7/18.4 ms cold/warm versus C++ Nix at 269/289 ms,
 with a 0.5 MiB arena peak. The cache is therefore neutral at this workload's
 whole-command resolution; this landing claims a functional substrate, not a
-CLIF-reload wall-time win. Production compiled-body cache counters and a
-measured default admission heuristic remain open.
+CLIF-reload wall-time win. Production compiled-body counters and the measured
+default admission policy landed in the observability extension below.
 
 The version-2 packed-layout landing's balanced seven-pair,
 root-cutoff-disabled JIT `fib` A/B against pristine `4e23f145c` measured
@@ -140,7 +140,8 @@ candidate/baseline medians of 38.69/33.22 ms cold and 33.32/34.20 ms warm; the
 host-drift-resistant paired-median ratios were 1.065 and 0.999. Median post-eval
 RSS was 31.2/31.0 MiB cold and 31.4/31.1 MiB warm, with a 0.5 MiB arena peak in
 every leg. This clears the 10% no-regression gate but does not claim a reload
-speedup; counters, admission tuning, and executable-code reuse remain open.
+speedup; the later observability extension closes counters and admission,
+while executable-code reuse remains open.
 
 **Collection-loop extension (2026-07-11).** Plain strict-fold operators, the
 predicate body shared by `filter`/`all`/`any`, and fused
@@ -180,6 +181,40 @@ A balanced seven-pair root-cutoff-disabled JIT `sum-fold` A/B against pristine
 30.27/30.38 MiB cold and 30.72/30.48 MiB warm; every leg retained a 0.5 MiB
 arena peak. This is a coverage and no-regression result, not a network-cache
 speedup or the still-required two-machine L3 demonstration.
+
+**Compiled-body observability and measured admission (2026-07-11).** The
+production cache now counts lookup sequences, primary/secondary/network hits
+and misses, network errors, validation failures, promotions, writes,
+publications, each corresponding failure class, hit/written bytes, and the
+largest record. `AOS_NIX_EVAL_STATS=1` emits the snapshot as a strict-JSON
+`aos_nix_compiled_body_cache_stats` object at engine teardown. Counters sit at
+the cache-operation boundary rather than the force path, so normal non-JIT
+package evaluation does not acquire new instrumentation work.
+
+Stats-on release probes with root cutoff disabled measured one 5,815-byte
+`fib` record, one 9,549-byte `tak` record, and four `all`/`any` records totaling
+19,994 bytes (5,213-byte maximum), with zero validation or write failures.
+Before admission, zlib issued 69 primary misses and produced no compiled-body
+record on either cold or warm runs. The selected default therefore adds an
+allocation-free necessary preflight: only a bare-formal lambda with one
+consistent direct self-callee may probe the unary persistent tiers; resolved
+chain and collection candidates retain their existing authoritative paths.
+Passing the preflight is not sufficient for promotion - complete lowering and
+the native-profitability gate still decide. After the change zlib issued zero
+compiled-body lookups, while `tak` issued exactly one cold miss/write and one
+warm hit. Real admitted records are only 5-10 KiB and persistence already sits
+behind the tier-2 hotness/profitability gate, so measurement does not justify a
+second record-size floor.
+
+A balanced seven-pair, stats-off release A/B against pristine `426a122bd`
+measured zlib candidate/baseline medians of 855.11/857.47 ms cold and
+861.85/863.73 ms warm, with paired-median ratios 0.978/0.961. Median retained
+RSS was 61.92/61.95 MiB cold and 62.80/63.16 MiB warm; every leg retained a
+7.5 MiB arena peak. The hot `tak` witness measured 24.24/24.37 ms cold and
+23.66/24.31 ms warm (paired ratios 1.002/0.971), 30.41/30.14 MiB cold RSS and
+30.53/30.53 MiB warm RSS, and the same 0.5 MiB arena peak. This closes
+production counter coverage and the measured compiled-body admission default;
+it does not claim executable-code reuse or close MEMO-2's cross-machine gate.
 
 **FV-5 status boundary (2026-07-09).** Hybrid closure capture changes the
 runtime representation, not this memo contract. `facts.bin` analysis version
@@ -1105,8 +1140,8 @@ design above with the code as ground truth:
    live, including the durable scalar filesystem-import root boundary. The unification added per-subtree slice attribution,
    L0/L1 content tables, admission cost flags, multi-location L2, L3,
    and promotion; unary, fused-chain, and collection-loop compiled-body records
-   now share the packed multi-location L2 store and verified L3 exchange, while
-   production counters and final measured defaults remain.
+   now share the packed multi-location L2 store, verified L3 exchange,
+   production counters, and measured structural admission default.
 5. **"Recompute cost from force-time stats — the `AOS_NIX_EVAL_STATS`
    machinery exists" — corrected by the economics seam.** `EvalStats`
    remains aggregate and normal runs still pay no clock hook. The explicit
@@ -1168,3 +1203,11 @@ design above with the code as ground truth:
       and corrupted payload rejection, and subsequent network-free local reuse.
       The allocation-capable singleton-list tier-1 artifact is intentionally
       re-lowered today; it does not widen the persisted body claim.
+- [x] Add production compiled-body cache observability and a measured default
+      admission policy: strict-JSON per-tier hit/miss/error, validation,
+      promotion, write/publication, and byte counters; an allocation-free
+      necessary unary-structure preflight; zero retained speculative probes on
+      zlib (69 to 0); and exact one-miss/write then one-hit behavior on `tak`.
+      The seven-pair stats-off release A/B is timing- and memory-neutral against
+      pristine `426a122bd`; executable-page reuse and MEMO-2's two-machine
+      acceptance demonstration remain open.

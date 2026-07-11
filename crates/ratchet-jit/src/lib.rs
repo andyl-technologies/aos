@@ -109,7 +109,7 @@ pub use cranelift::{
 };
 pub use lower::{
     AOS_TIER2_LOCAL_FUNCTION_NAMESPACE, JitTier2LambdaLowering, TIER2_NATIVE_DEPTH_BUDGET,
-    lower_tier2_self_recursive_lambda,
+    lower_tier2_self_recursive_lambda, tier2_self_recursive_lambda_cache_eligible,
 };
 pub use lower::{
     JitTier2ChainCalleeSite, JitTier2ChainLowering, JitTier2ChainScan, JitTier2EnvBoundary,

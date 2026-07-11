@@ -107,6 +107,9 @@ fn fib_arena() -> (IrArena, IrId, IrId) {
 #[test]
 fn fib_shape_lowers_with_two_self_calls() {
     let (arena, pattern, body) = fib_arena();
+    assert!(tier2_self_recursive_lambda_cache_eligible(
+        &arena, pattern, body
+    ));
     let lowering =
         lower_tier2_self_recursive_lambda(&arena, pattern, body, TIER2_NATIVE_DEPTH_BUDGET)
             .expect("fib shape lowers");
@@ -162,6 +165,11 @@ fn mixed_callee_upvalues_are_rejected() {
         ),
     ];
     let arena = arena(nodes);
+    assert!(!tier2_self_recursive_lambda_cache_eligible(
+        &arena,
+        IrId::new(0),
+        IrId::new(5)
+    ));
     assert!(lower_tier2_self_recursive_lambda(&arena, IrId::new(0), IrId::new(5), TIER2_NATIVE_DEPTH_BUDGET).is_err());
 }
 

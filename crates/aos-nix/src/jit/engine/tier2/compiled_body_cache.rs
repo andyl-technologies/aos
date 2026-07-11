@@ -7,7 +7,6 @@
 //! source-mismatched, or verifier-rejected records are advisory misses;
 //! executable pages and process addresses are never stored.
 
-#[cfg(test)]
 use std::cell::Cell;
 use std::path::Path;
 
@@ -28,6 +27,10 @@ use ratchet_oracle::eval::tree_walk::{MemoNetMode, MemoNetOptions, TreeWalkOptio
 use super::NixJitTier1Engine;
 use crate::native::memo_net;
 
+mod stats;
+
+use stats::CompiledBodyCacheStats;
+
 const MAGIC: &[u8; 8] = b"AOSJIT2\0";
 const SCHEMA_VERSION: u32 = 2;
 const HEADER_LEN: usize = 68;
@@ -39,10 +42,7 @@ const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
 pub(in crate::jit::engine) struct CompiledBodyCache {
     locations: PersistCacheLocations,
     net: Option<MemoNetOptions>,
-    #[cfg(test)]
-    chain_hits: Cell<u64>,
-    #[cfg(test)]
-    network_hits: Cell<u64>,
+    stats: Cell<CompiledBodyCacheStats>,
 }
 
 impl CompiledBodyCache {
@@ -65,10 +65,7 @@ impl CompiledBodyCache {
             Ok(locations) => Some(Self {
                 locations,
                 net: net.cloned(),
-                #[cfg(test)]
-                chain_hits: Cell::new(0),
-                #[cfg(test)]
-                network_hits: Cell::new(0),
+                stats: Cell::new(CompiledBodyCacheStats::default()),
             }),
             Err(error) => {
                 tracing::debug!(
@@ -91,25 +88,7 @@ impl CompiledBodyCache {
     ) -> Option<JitTier2LambdaLowering> {
         let fingerprint = lowered_ir_fingerprint(ir).ok()?;
         let key = record_key(fingerprint, pattern, body, budget);
-        for (location, cache) in self.locations.iter() {
-            let Some(bytes) = read_indexed_record(cache, key, location) else {
-                continue;
-            };
-            let Ok(lowering) = read_record(&bytes, fingerprint, pattern, body, budget) else {
-                continue;
-            };
-            if location != PersistLocationHit::Primary
-                && !write_indexed_record(self.locations.primary(), key, &bytes)
-            {
-                tracing::debug!(
-                    target: "aos_nix::cache",
-                    ?location,
-                    "compiled-body secondary hit promotion failed"
-                );
-            }
-            return Some(lowering);
-        }
-        self.load_network_record(key, |bytes| {
+        self.load_record(key, |bytes| {
             read_record(bytes, fingerprint, pattern, body, budget)
         })
     }
@@ -125,13 +104,7 @@ impl CompiledBodyCache {
         let Some((key, record)) = encode_record(ir, pattern, body, budget, lowering) else {
             return;
         };
-        if !write_indexed_record(self.locations.primary(), key, &record) {
-            tracing::debug!(
-                target: "aos_nix::cache",
-                "compiled-body indexed write failed"
-            );
-        }
-        self.publish_network_record(key, &record);
+        self.store_record(key, &record, "compiled-body indexed write failed");
     }
 
     /// Loads and verifies one fused-chain lowering from the ordered L2 set.
@@ -147,38 +120,9 @@ impl CompiledBodyCache {
         let fingerprint = lowered_ir_fingerprint(ir).ok()?;
         let record_hash = chain_record_hash(fingerprint, semantic_identity, budget);
         let key = PersistFileArtifactKey::for_compiled_body(record_hash);
-        for (location, cache) in self.locations.iter() {
-            let Some(bytes) = read_indexed_record(cache, key, location) else {
-                continue;
-            };
-            let Ok(lowering) = read_chain_record(
-                &bytes,
-                record_hash,
-                source,
-                arity,
-                self_upval,
-            ) else {
-                continue;
-            };
-            if location != PersistLocationHit::Primary
-                && !write_indexed_record(self.locations.primary(), key, &bytes)
-            {
-                tracing::debug!(
-                    target: "aos_nix::cache",
-                    ?location,
-                    "fused-chain compiled-body secondary hit promotion failed"
-                );
-            }
-            #[cfg(test)]
-            self.chain_hits.set(self.chain_hits.get().saturating_add(1));
-            return Some(lowering);
-        }
-        let lowering = self.load_network_record(key, |bytes| {
+        self.load_record(key, |bytes| {
             read_chain_record(bytes, record_hash, source, arity, self_upval)
-        })?;
-        #[cfg(test)]
-        self.chain_hits.set(self.chain_hits.get().saturating_add(1));
-        Some(lowering)
+        })
     }
 
     /// Stores one fused-chain lowering under its complete semantic identity.
@@ -197,40 +141,84 @@ impl CompiledBodyCache {
             return;
         };
         let key = PersistFileArtifactKey::for_compiled_body(record_hash);
-        if !write_indexed_record(self.locations.primary(), key, &record) {
-            tracing::debug!(
-                target: "aos_nix::cache",
-                "fused-chain compiled-body indexed write failed"
-            );
-        }
-        self.publish_network_record(key, &record);
+        self.store_record(
+            key,
+            &record,
+            "fused-chain compiled-body indexed write failed",
+        );
     }
 
-    /// Returns successful chain reloads observed by this test cache instance.
-    #[cfg(test)]
-    pub(in crate::jit::engine) fn chain_hits(&self) -> u64 {
-        self.chain_hits.get()
+    /// Returns the production cache-event snapshot for this engine.
+    pub(in crate::jit::engine) fn stats(&self) -> CompiledBodyCacheStats {
+        self.stats.get()
     }
 
-    #[cfg(test)]
-    fn network_hits(&self) -> u64 {
-        self.network_hits.get()
-    }
-
-    fn load_network_record<T>(
+    fn load_record<T>(
         &self,
         key: PersistFileArtifactKey,
-        decode: impl FnOnce(&[u8]) -> Result<T, ReadRecordError>,
+        decode: impl Fn(&[u8]) -> Result<T, ReadRecordError>,
     ) -> Option<T> {
+        self.update_stats(|stats| stats.lookups = stats.lookups.saturating_add(1));
+        let mut saw_secondary = false;
+        for (location, cache) in self.locations.iter() {
+            saw_secondary |= location != PersistLocationHit::Primary;
+            let Some(bytes) = read_indexed_record(cache, key, location) else {
+                if location == PersistLocationHit::Primary {
+                    self.update_stats(|stats| {
+                        stats.primary_misses = stats.primary_misses.saturating_add(1);
+                    });
+                }
+                continue;
+            };
+            let Ok(decoded) = decode(&bytes) else {
+                self.update_stats(|stats| {
+                    stats.validation_failures = stats.validation_failures.saturating_add(1);
+                    if location == PersistLocationHit::Primary {
+                        stats.primary_misses = stats.primary_misses.saturating_add(1);
+                    }
+                });
+                continue;
+            };
+            self.update_stats(|stats| {
+                if location == PersistLocationHit::Primary {
+                    stats.primary_hits = stats.primary_hits.saturating_add(1);
+                } else {
+                    stats.secondary_hits = stats.secondary_hits.saturating_add(1);
+                }
+                stats.observe_hit_bytes(bytes.len());
+            });
+            if location != PersistLocationHit::Primary {
+                self.promote_record(key, &bytes, "compiled-body secondary hit promotion failed");
+            }
+            return Some(decoded);
+        }
+        self.update_stats(|stats| {
+            if saw_secondary {
+                stats.secondary_misses = stats.secondary_misses.saturating_add(1);
+            }
+        });
         let net = self.net.as_ref()?;
         let bytes = match memo_net::fetch_compiled_body_record(net, key) {
             memo_net::CompiledBodyFetchOutcome::Hit(bytes) => bytes,
-            memo_net::CompiledBodyFetchOutcome::Miss
-            | memo_net::CompiledBodyFetchOutcome::Error => return None,
+            memo_net::CompiledBodyFetchOutcome::Miss => {
+                self.update_stats(|stats| {
+                    stats.network_misses = stats.network_misses.saturating_add(1);
+                });
+                return None;
+            }
+            memo_net::CompiledBodyFetchOutcome::Error => {
+                self.update_stats(|stats| {
+                    stats.network_errors = stats.network_errors.saturating_add(1);
+                });
+                return None;
+            }
         };
         let decoded = match decode(&bytes) {
             Ok(decoded) => decoded,
             Err(_) => {
+                self.update_stats(|stats| {
+                    stats.validation_failures = stats.validation_failures.saturating_add(1);
+                });
                 tracing::debug!(
                     target: "aos_nix::cache",
                     "compiled-body network record failed semantic or CLIF validation"
@@ -238,24 +226,56 @@ impl CompiledBodyCache {
                 return None;
             }
         };
-        if !write_indexed_record(self.locations.primary(), key, &bytes) {
-            tracing::debug!(
-                target: "aos_nix::cache",
-                "compiled-body network hit promotion failed"
-            );
-        }
-        #[cfg(test)]
-        self.network_hits
-            .set(self.network_hits.get().saturating_add(1));
+        self.update_stats(|stats| {
+            stats.network_hits = stats.network_hits.saturating_add(1);
+            stats.observe_hit_bytes(bytes.len());
+        });
+        self.promote_record(key, &bytes, "compiled-body network hit promotion failed");
         Some(decoded)
+    }
+
+    fn store_record(&self, key: PersistFileArtifactKey, record: &[u8], failure: &'static str) {
+        if write_indexed_record(self.locations.primary(), key, record) {
+            self.update_stats(|stats| {
+                stats.writes = stats.writes.saturating_add(1);
+                stats.observe_written_bytes(record.len());
+            });
+        } else {
+            self.update_stats(|stats| stats.write_failures = stats.write_failures.saturating_add(1));
+            tracing::debug!(target: "aos_nix::cache", message = failure);
+        }
+        self.publish_network_record(key, record);
+    }
+
+    fn promote_record(&self, key: PersistFileArtifactKey, record: &[u8], failure: &'static str) {
+        if write_indexed_record(self.locations.primary(), key, record) {
+            self.update_stats(|stats| stats.promotions = stats.promotions.saturating_add(1));
+        } else {
+            self.update_stats(|stats| {
+                stats.promotion_failures = stats.promotion_failures.saturating_add(1);
+            });
+            tracing::debug!(target: "aos_nix::cache", message = failure);
+        }
     }
 
     fn publish_network_record(&self, key: PersistFileArtifactKey, record: &[u8]) {
         if let Some(net) = self.net.as_ref()
             && net.mode == MemoNetMode::ReadWrite
         {
-            let _ = memo_net::publish_compiled_body_record(net, key, record);
+            if memo_net::publish_compiled_body_record(net, key, record) {
+                self.update_stats(|stats| stats.publishes = stats.publishes.saturating_add(1));
+            } else {
+                self.update_stats(|stats| {
+                    stats.publish_failures = stats.publish_failures.saturating_add(1);
+                });
+            }
         }
+    }
+
+    fn update_stats(&self, update: impl FnOnce(&mut CompiledBodyCacheStats)) {
+        let mut stats = self.stats.get();
+        update(&mut stats);
+        self.stats.set(stats);
     }
 }
 
@@ -564,6 +584,9 @@ mod tests {
             .load(&ir, pattern, body, TIER2_NATIVE_DEPTH_BUDGET)
             .expect("valid secondary body loads");
         assert_eq!(decoded.source(), body);
+        assert_eq!(layered.stats().secondary_hits, 1);
+        assert_eq!(layered.stats().promotions, 1);
+        assert_eq!(layered.stats().validation_failures, 1);
         let promoted_primary = PersistCache::open(&primary).expect("promoted primary reopens");
         let promoted = read_indexed_record(&promoted_primary, key, PersistLocationHit::Primary)
             .expect("promoted primary has record");
@@ -626,7 +649,8 @@ mod tests {
             .expect("valid secondary chain loads");
         assert_eq!(decoded.source(), lowering.source());
         assert_eq!(decoded.arity(), 2);
-        assert_eq!(layered.chain_hits(), 1);
+        assert_eq!(layered.stats().secondary_hits, 1);
+        assert_eq!(layered.stats().promotions, 1);
         let promoted_primary = PersistCache::open(&primary).expect("promoted primary reopens");
         let promoted = read_indexed_record(&promoted_primary, key, PersistLocationHit::Primary)
             .expect("promoted primary has chain record");
@@ -680,6 +704,9 @@ mod tests {
         let (chain_ir, chain) = add_chain_lowering();
         let identity = b"test:network:add-chain:operator-env:v1";
         publisher.store_chain(&chain_ir, identity, TIER2_NATIVE_DEPTH_BUDGET, &chain);
+        assert_eq!(publisher.stats().writes, 2);
+        assert_eq!(publisher.stats().publishes, 2);
+        assert!(publisher.stats().written_bytes > 0);
         assert_eq!(
             server.record_count_with_prefix("/v1/compiled-body/"),
             2,
@@ -723,8 +750,10 @@ mod tests {
             )
             .expect("chain body reloads from L3");
         assert_eq!(decoded_chain.source(), chain.source());
-        assert_eq!(reader.network_hits(), 2);
-        assert_eq!(reader.chain_hits(), 1);
+        assert_eq!(reader.stats().network_hits, 2);
+        assert_eq!(reader.stats().primary_misses, 2);
+        assert_eq!(reader.stats().promotions, 2);
+        assert!(reader.stats().hit_bytes > 0);
         assert!(reader_root.join("files/pack.blob").is_file());
 
         let local = CompiledBodyCache::open(&reader_root, false, &[])
@@ -807,7 +836,8 @@ mod tests {
                 .is_none(),
             "the swapped chain bundle must miss"
         );
-        assert_eq!(reader.network_hits(), 0);
+        assert_eq!(reader.stats().network_hits, 0);
+        assert_eq!(reader.stats().network_errors, 2);
 
         server.mutate_records(|records| {
             for (key, bytes) in records.iter_mut() {
@@ -831,7 +861,8 @@ mod tests {
                 .is_none(),
             "content-hash corruption must miss"
         );
-        assert_eq!(corrupt_reader.network_hits(), 0);
+        assert_eq!(corrupt_reader.stats().network_hits, 0);
+        assert_eq!(corrupt_reader.stats().network_errors, 1);
 
         fs::remove_dir_all(root).expect("cache roots remove");
     }

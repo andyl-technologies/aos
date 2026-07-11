@@ -636,7 +636,11 @@ mod tests {
 
         let state = fresh_engine.tier2.borrow();
         let cache = state.compiled_cache.as_ref().expect("cache configured");
-        assert_eq!(cache.chain_hits(), 1, "fresh engine must load one chain");
+        assert_eq!(
+            cache.stats().primary_hits,
+            1,
+            "fresh engine must load one chain"
+        );
         assert!(cache_root.join("files/pack.blob").is_file());
         assert!(!cache_root.join("compiled-bodies").exists());
 
@@ -695,7 +699,7 @@ mod tests {
             let state = fresh_engine.tier2.borrow();
             let cache = state.compiled_cache.as_ref().expect("cache configured");
             assert_eq!(
-                cache.chain_hits(),
+                cache.stats().primary_hits,
                 1,
                 "fresh engine must reload the collection chain"
             );
