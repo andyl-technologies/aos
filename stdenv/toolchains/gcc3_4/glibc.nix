@@ -66,7 +66,12 @@ in
           libc_cv_forced_unwind=yes \
           libc_cv_c_cleanup=yes
 
-        make -j"$NIX_BUILD_CORES"
+        # glibc 2.3.4's generated subdirectory and rtld stamp rules are not
+        # parallel-safe: concurrent recipes race on mkdir/stamp.os and can
+        # emit an incomplete elf/librtld.mk (observed as rtld-Rules "missing
+        # separator"). Keep this historical bootstrap stage serial; later
+        # glibc tiers use the requested build-wide parallelism.
+        make -j1
         make install
 
         # Copy linux headers into glibc output for downstream use
