@@ -1,14 +1,18 @@
 --- a/elf/Makefile
 +++ b/elf/Makefile
-@@ -247,4 +247,8 @@
+@@ -247,4 +247,12 @@
 -	    LC_ALL=C fgrep -l /$$file \
 -		  $(common-objpfx)stamp.os $(common-objpfx)*/stamp.os | \
 -	    LC_ALL=C \
 -	    sed 's@^$(common-objpfx)\([^/]*\)/stamp\.os$$@rtld-\1'" +=$$file@"\
-+	    static_file=`echo "$$file" | sed 's/\.os$$/.o/'`; \
-+	    LC_ALL=C fgrep -l /$$static_file \
-+		  $(common-objpfx)stamp.o $(common-objpfx)*/stamp.o | \
-+	    LC_ALL=C sed 's@^$(common-objpfx)\([^/]*\)/stamp\.o$$@rtld-\1'" +=$$file@"; \
++	    static_file=$${file%.os}.o; \
++	    for stamp in $(common-objpfx)stamp.o $(common-objpfx)*/stamp.o; do \
++	      test -f "$$stamp" || continue; \
++	      case " `cat "$$stamp"` " in \
++	      *"/$$static_file "*) relative=$${stamp#$(common-objpfx)}; \
++	        echo rtld-$${relative%%/*} += $$file ;; \
++	      esac; \
++	    done; \
 +	    case $$file in \
 +	    divdi3.os) echo rtld-csu += $$file ;; \
 +	    forward.os) echo rtld-nptl += $$file ;; \

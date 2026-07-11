@@ -42,9 +42,9 @@ in
         SRC="$TMPDIR/glibc-2.3.4"
 
         # GNU make 3.79.1 removes the per-subdirectory stamp.os files after
-        # archiving PIC objects. Resolve the linker map through surviving
-        # static stamps; the patch names the two verified shared-only members
-        # whose source subdirectories have no static-stamp entry.
+        # archiving PIC objects. Resolve the linker map in the bootstrap shell
+        # through surviving static stamps; the patch names the two verified
+        # shared-only members whose source directories lack a static entry.
         patch -d "$SRC" -p1 < ${./patches/glibc-2.3.4-reconstruct-pic-stamps.patch}
 
         # glibc 2.3.4 configure hardcodes /bin/pwd which doesn't exist in sandbox
