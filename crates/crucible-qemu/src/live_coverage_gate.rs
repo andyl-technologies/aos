@@ -57,6 +57,10 @@ const GUEST_POST_IO_PC: u64 = 0x0010_0800;
 const DEFAULT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 
+fn wait_for_poll_interval() {
+    thread::sleep(POLL_INTERVAL);
+}
+
 /// Inputs for a production loaded-QEMU coverage equivalence run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadedQemuCoverageGateConfig {
