@@ -1697,10 +1697,18 @@ value word (Candidates B and C) remains open and separately gated:**
       language 38. The differential gate was byte-green across all 16 package
       legs, compute x9 under JIT, wide serial/K=4/JIT/sweep-zero, zlib/wide
       cache validation, and all 648 strict-JSON expressions in those four
-      modes. Three interleaved changed-tree pairs against the frozen
-      `995ee3f71`-equivalent binary preserved every cache and forced-work
-      counter; settled candidate medians across all nine scenarios moved from
-      -7.1% to +4.4%. No throughput win is claimed for an inactive seam.
+      modes. Five alternating native-only K=4 wide pairs against exact parent
+      `995ee3f71` moved medians 2.572 -> 2.569 s cold (-0.1%) and
+      2.561 -> 2.511 s warm (-2.0%); peak and retained RSS medians stayed
+      within 0.5%. The requested three-sample changed-tree suite matched all
+      nine scenario outputs, but its synthetic warm fixture currently favors
+      stock C++ Nix: first post-mutation aos/C++ median ratios were
+      2.238-2.588 and settled ratios were 2.550-2.872 on the loaded local host.
+      The heuristic counters separate locality as intended: scattered
+      leaf-value changes forced 16,550 thunks initially and retained 88 settled
+      cutoffs, versus 150 forced thunks and 96 settled cutoffs for the unchanged
+      control. No throughput win is claimed for an inactive seam or for the
+      changed-tree heuristic campaign.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,

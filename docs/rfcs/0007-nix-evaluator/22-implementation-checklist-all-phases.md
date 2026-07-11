@@ -11947,11 +11947,18 @@ it ships).**
       6-test integrations, cache 112, aos-nix 336, and language 38. The
       differential battery was byte-green over all 16 package legs, compute x9
       under JIT, wide serial/K=4/JIT/sweep-zero, zlib/wide cache validation,
-      and 648 strict-JSON expressions in all four modes. Three interleaved
-      changed-tree pairs against the frozen `995ee3f71`-equivalent binary kept
-      every cache/admission/materialization/forced-work counter identical; all
-      nine settled candidate medians were within -7.1% to +4.4% of baseline.
-      No throughput win is claimed for this inactive seam.
+      and 648 strict-JSON expressions in all four modes. Five alternating
+      native-only K=4 wide pairs against exact parent `995ee3f71` moved medians
+      2.572 -> 2.569 s cold (-0.1%) and 2.561 -> 2.511 s warm (-2.0%); peak and
+      retained RSS medians stayed within 0.5%. The requested three-sample
+      changed-tree suite matched outputs in all nine scenarios. On this loaded
+      host its synthetic warm fixture currently favors stock C++ Nix: first
+      post-mutation aos/C++ median ratios ranged 2.238-2.588 and settled ratios
+      2.550-2.872. The counters still distinguish invalidation locality:
+      scattered leaf-value changes forced 16,550 thunks initially and retained
+      88 settled cutoffs, versus 150 forced thunks and 96 settled cutoffs for
+      the unchanged control. No throughput win is claimed for this inactive
+      seam or for the changed-tree heuristic campaign.
 - [x] Current `value/small.rs` precursor: `ratchet-value` exposes the safe
       small-constructor layout contract. Zero-, one-, and two-slot lists or
       attrsets classify as inline candidates; larger constructors stay
