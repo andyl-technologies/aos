@@ -43,6 +43,11 @@ pub mod interp;
 mod lambda_chain;
 mod lambda_rec;
 mod stack_maps;
+pub use stack_maps::{
+    AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
+    clif_external_name_for_aos_jit_stack_map_enter,
+    clif_external_name_for_aos_jit_stack_map_exit,
+};
 
 pub use error::JitLowerError;
 pub use lambda_chain::{
@@ -2104,8 +2109,16 @@ fn lower_forced_env_get_slot_thunk_body_with_name(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
+    let stack_map_runtime = stack_maps::import_runtime(&mut function)?;
     let entry_block = append_entry_block_params(&mut function);
-    emit_forced_env_get_return(&mut function, entry_block, env_get, force, slot)?;
+    stack_maps::emit_forced_env_get_return(
+        &mut function,
+        entry_block,
+        env_get,
+        force,
+        stack_map_runtime,
+        slot,
+    )?;
     verify_clif_function(&function)?;
     Ok(function)
 }
@@ -2137,8 +2150,17 @@ fn lower_forced_upval_get_slot_thunk_body_with_name(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
+    let stack_map_runtime = stack_maps::import_runtime(&mut function)?;
     let entry_block = append_entry_block_params(&mut function);
-    emit_forced_upval_get_return(&mut function, entry_block, upval_get, force, depth, slot)?;
+    emit_forced_upval_get_return(
+        &mut function,
+        entry_block,
+        upval_get,
+        force,
+        stack_map_runtime,
+        depth,
+        slot,
+    )?;
     verify_clif_function(&function)?;
     Ok(function)
 }
@@ -2170,6 +2192,7 @@ fn lower_string_length_inline_thunk_body_with_name(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
+    let stack_map_runtime = stack_maps::import_runtime(&mut function)?;
     let string_length = import_string_length_function(&mut function)?;
     let entry_block = append_entry_block_params(&mut function);
     emit_string_length_inline_return(
@@ -2178,6 +2201,7 @@ fn lower_string_length_inline_thunk_body_with_name(
         env_get,
         upval_get,
         force,
+        stack_map_runtime,
         string_length,
         operand,
     )?;
@@ -2231,6 +2255,7 @@ fn lower_update_local_slots_thunk_body_with_name(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
+    let stack_map_runtime = stack_maps::import_runtime(&mut function)?;
     let update = import_runtime_helper_function(
         &mut function,
         AOS_UPDATE_SYMBOL,
@@ -2243,6 +2268,7 @@ fn lower_update_local_slots_thunk_body_with_name(
         env_get,
         upval_get,
         force,
+        stack_map_runtime,
         update,
         left_operand,
         right_operand,
@@ -2265,6 +2291,7 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
         AOS_FORCE_SYMBOL,
         clif_external_name_for_aos_force(),
     )?;
+    let stack_map_runtime = stack_maps::import_runtime(&mut function)?;
     let entry_block = append_entry_block_params(&mut function);
     if lowering == AttrLookupLowering::SelectIc {
         if let Some(default_value) = lookup.default {
@@ -2284,6 +2311,7 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
                 env_get,
                 upval_get,
                 force,
+                stack_map_runtime,
                 has_attr,
                 select_ic,
                 lookup,
@@ -2301,6 +2329,7 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
                 env_get,
                 upval_get,
                 force,
+                stack_map_runtime,
                 select_ic,
                 lookup,
                 lowering,
@@ -2318,6 +2347,7 @@ fn lower_attr_lookup_local_slot_thunk_body_with_name(
             env_get,
             upval_get,
             force,
+            stack_map_runtime,
             attr_helper,
             lookup,
             lowering,
@@ -2469,57 +2499,6 @@ fn emit_env_get_return(
     Ok(())
 }
 
-fn emit_forced_env_get_return(
-    function: &mut Function,
-    entry_block: cranelift_codegen::ir::Block,
-    env_get: cranelift_codegen::ir::FuncRef,
-    force: cranelift_codegen::ir::FuncRef,
-    slot: u32,
-) -> Result<(), JitLowerError> {
-    let mut cursor = FuncCursor::new(function).at_first_insertion_point(entry_block);
-    let entry_params = cursor.func.dfg.block_params(entry_block);
-    let rt = entry_params
-        .first()
-        .copied()
-        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 0 })?;
-    let env = entry_params
-        .get(1)
-        .copied()
-        .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
-    let slot = cursor.ins().iconst(types::I32, i64::from(slot));
-    let env_get_call = cursor.ins().call(env_get, &[env, slot]);
-    let env_get_results = cursor.func.dfg.inst_results(env_get_call).to_vec();
-
-    if env_get_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_ENV_GET_SYMBOL,
-            expected: 2,
-            actual: env_get_results.len(),
-        });
-    }
-
-    let force_input_slot = stack_maps::spill_value(
-        &mut cursor,
-        [env_get_results[0], env_get_results[1]],
-    );
-    let force_call = cursor
-        .ins()
-        .call(force, &[rt, env_get_results[0], env_get_results[1]]);
-    stack_maps::attach(&mut cursor, force_call, force_input_slot);
-    let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
-
-    if force_results.len() != 2 {
-        return Err(JitLowerError::InvalidRuntimeCallResultArity {
-            symbol_name: AOS_FORCE_SYMBOL,
-            expected: 2,
-            actual: force_results.len(),
-        });
-    }
-
-    cursor.ins().return_(&force_results);
-    Ok(())
-}
-
 fn emit_upval_get_return(
     function: &mut Function,
     entry_block: cranelift_codegen::ir::Block,
@@ -2555,6 +2534,7 @@ fn emit_forced_upval_get_return(
     entry_block: cranelift_codegen::ir::Block,
     upval_get: cranelift_codegen::ir::FuncRef,
     force: cranelift_codegen::ir::FuncRef,
+    stack_map_runtime: stack_maps::Runtime,
     depth: u32,
     slot: u32,
 ) -> Result<(), JitLowerError> {
@@ -2582,12 +2562,14 @@ fn emit_forced_upval_get_return(
     }
 
     let force_input_slot =
-        stack_maps::spill_value(&mut cursor, [upval_get_results[0], upval_get_results[1]]);
+        stack_maps::spill_values(&mut cursor, &[[upval_get_results[0], upval_get_results[1]]]);
+    stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
     let force_call = cursor
         .ins()
         .call(force, &[rt, upval_get_results[0], upval_get_results[1]]);
     stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+    stack_maps::exit(&mut cursor, stack_map_runtime, rt, force_input_slot);
 
     if force_results.len() != 2 {
         return Err(JitLowerError::InvalidRuntimeCallResultArity {
@@ -2641,6 +2623,7 @@ fn emit_string_length_inline_return(
     env_get: cranelift_codegen::ir::FuncRef,
     upval_get: Option<cranelift_codegen::ir::FuncRef>,
     force: cranelift_codegen::ir::FuncRef,
+    stack_map_runtime: stack_maps::Runtime,
     string_length: cranelift_codegen::ir::FuncRef,
     operand: Tier1SlotOperand,
 ) -> Result<(), JitLowerError> {
@@ -2656,10 +2639,12 @@ fn emit_string_length_inline_return(
         .ok_or(JitLowerError::MissingEntryBlockParameter { index: 1 })?;
     let argument = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, operand)?;
 
-    let force_input_slot = stack_maps::spill_value(&mut cursor, argument);
+    let force_input_slot = stack_maps::spill_values(&mut cursor, &[argument]);
+    stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
     let force_call = cursor.ins().call(force, &[rt, argument[0], argument[1]]);
     stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+    stack_maps::exit(&mut cursor, stack_map_runtime, rt, force_input_slot);
 
     if force_results.len() != 2 {
         return Err(JitLowerError::InvalidRuntimeCallResultArity {
@@ -2824,6 +2809,7 @@ fn emit_update_local_slots_return(
     env_get: cranelift_codegen::ir::FuncRef,
     upval_get: Option<cranelift_codegen::ir::FuncRef>,
     force: cranelift_codegen::ir::FuncRef,
+    stack_map_runtime: stack_maps::Runtime,
     update: cranelift_codegen::ir::FuncRef,
     left_operand: Tier1SlotOperand,
     right_operand: Tier1SlotOperand,
@@ -2841,12 +2827,14 @@ fn emit_update_local_slots_return(
 
     let left_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, left_operand)?;
 
-    let left_input_slot = stack_maps::spill_value(&mut cursor, left_value);
+    let left_input_slot = stack_maps::spill_values(&mut cursor, &[left_value]);
+    stack_maps::enter(&mut cursor, stack_map_runtime, rt, left_input_slot, 0);
     let left_force_call = cursor
         .ins()
         .call(force, &[rt, left_value[0], left_value[1]]);
     stack_maps::attach(&mut cursor, left_force_call, left_input_slot);
     let left_force_results = cursor.func.dfg.inst_results(left_force_call).to_vec();
+    stack_maps::exit(&mut cursor, stack_map_runtime, rt, left_input_slot);
 
     if left_force_results.len() != 2 {
         return Err(JitLowerError::InvalidRuntimeCallResultArity {
@@ -2858,17 +2846,20 @@ fn emit_update_local_slots_return(
 
     let right_value = emit_slot_operand_load(&mut cursor, env, env_get, upval_get, right_operand)?;
 
-    let live_left_slot = stack_maps::spill_value(
+    let right_force_binding = stack_maps::spill_values(
         &mut cursor,
-        [left_force_results[0], left_force_results[1]],
+        &[
+            [left_force_results[0], left_force_results[1]],
+            right_value,
+        ],
     );
-    let right_input_slot = stack_maps::spill_value(&mut cursor, right_value);
+    stack_maps::enter(&mut cursor, stack_map_runtime, rt, right_force_binding, 1);
     let right_force_call = cursor
         .ins()
         .call(force, &[rt, right_value[0], right_value[1]]);
-    stack_maps::attach(&mut cursor, right_force_call, live_left_slot);
-    stack_maps::attach(&mut cursor, right_force_call, right_input_slot);
+    stack_maps::attach(&mut cursor, right_force_call, right_force_binding);
     let right_force_results = cursor.func.dfg.inst_results(right_force_call).to_vec();
+    stack_maps::exit(&mut cursor, stack_map_runtime, rt, right_force_binding);
 
     if right_force_results.len() != 2 {
         return Err(JitLowerError::InvalidRuntimeCallResultArity {
@@ -2878,7 +2869,7 @@ fn emit_update_local_slots_return(
         });
     }
 
-    let left_force_results = stack_maps::reload(&mut cursor, live_left_slot);
+    let left_force_results = stack_maps::reload(&mut cursor, right_force_binding, 0);
     let update_call = cursor.ins().call(
         update,
         &[
@@ -2909,6 +2900,7 @@ fn emit_attr_lookup_local_slot_return(
     env_get: cranelift_codegen::ir::FuncRef,
     upval_get: Option<cranelift_codegen::ir::FuncRef>,
     force: cranelift_codegen::ir::FuncRef,
+    stack_map_runtime: stack_maps::Runtime,
     attr_helper: cranelift_codegen::ir::FuncRef,
     lookup: AttrLookup,
     lowering: AttrLookupLowering,
@@ -2926,12 +2918,14 @@ fn emit_attr_lookup_local_slot_return(
     let receiver_value =
         emit_slot_operand_load(&mut cursor, env, env_get, upval_get, lookup.receiver)?;
 
-    let force_input_slot = stack_maps::spill_value(&mut cursor, receiver_value);
+    let force_input_slot = stack_maps::spill_values(&mut cursor, &[receiver_value]);
+    stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
     let force_call = cursor
         .ins()
         .call(force, &[rt, receiver_value[0], receiver_value[1]]);
     stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+    stack_maps::exit(&mut cursor, stack_map_runtime, rt, force_input_slot);
 
     if force_results.len() != 2 {
         return Err(JitLowerError::InvalidRuntimeCallResultArity {
@@ -2971,6 +2965,7 @@ fn emit_attr_select_default_local_slot_return(
     env_get: cranelift_codegen::ir::FuncRef,
     upval_get: Option<cranelift_codegen::ir::FuncRef>,
     force: cranelift_codegen::ir::FuncRef,
+    stack_map_runtime: stack_maps::Runtime,
     has_attr: cranelift_codegen::ir::FuncRef,
     select_ic: cranelift_codegen::ir::FuncRef,
     lookup: AttrLookup,
@@ -2992,12 +2987,14 @@ fn emit_attr_select_default_local_slot_return(
     let receiver_value =
         emit_slot_operand_load(&mut cursor, env, env_get, upval_get, lookup.receiver)?;
 
-    let force_input_slot = stack_maps::spill_value(&mut cursor, receiver_value);
+    let force_input_slot = stack_maps::spill_values(&mut cursor, &[receiver_value]);
+    stack_maps::enter(&mut cursor, stack_map_runtime, rt, force_input_slot, 0);
     let force_call = cursor
         .ins()
         .call(force, &[rt, receiver_value[0], receiver_value[1]]);
     stack_maps::attach(&mut cursor, force_call, force_input_slot);
     let force_results = cursor.func.dfg.inst_results(force_call).to_vec();
+    stack_maps::exit(&mut cursor, stack_map_runtime, rt, force_input_slot);
 
     if force_results.len() != 2 {
         return Err(JitLowerError::InvalidRuntimeCallResultArity {

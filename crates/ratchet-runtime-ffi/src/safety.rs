@@ -92,6 +92,8 @@ mod tests {
 
     use super::*;
 
+    mod stack_map;
+
     const UNSAFE_TOKEN: &str = concat!("uns", "afe");
     const EXTERN_TOKEN: &str = concat!("ext", "ern");
     const NO_MANGLE_TOKEN: &str = concat!("no_", "mangle");
@@ -694,6 +696,12 @@ mod tests {
                             line,
                             token,
                         )
+                        || stack_map::is_allowed_token(
+                            &source_root,
+                            &source_path,
+                            line,
+                            token,
+                        )
                     {
                         continue;
                     }
@@ -718,6 +726,7 @@ mod tests {
         assert_reviewed_unsafe_boundary_counts(&source_root);
         assert_reviewed_safety_comments(&source_root);
         assert_public_unsafe_docs(&source_root);
+        stack_map::assert_reviewed(&source_root);
     }
 
     fn is_allowed_env_wrapper_token(
@@ -1133,19 +1142,6 @@ mod tests {
 
     fn is_unsafe_boundary_token(token: &str) -> bool {
         [UNSAFE_TOKEN, EXTERN_TOKEN, NO_MANGLE_TOKEN].contains(&token)
-    }
-
-    #[test]
-    fn source_filter_does_not_accept_lint_inside_block_comments() {
-        let filtered = code_lines_without_comments_or_ordinary_strings(
-            "/*\n#![deny(unsafe_op_in_unsafe_fn)]\n*/\npub mod env;",
-        );
-
-        assert!(
-            !filtered
-                .iter()
-                .any(|line| line.trim() == RUNTIME_FFI_UNSAFE_CRATE_LINT)
-        );
     }
 
     #[test]

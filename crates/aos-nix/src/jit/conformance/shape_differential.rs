@@ -188,7 +188,13 @@ pub fn nix_jit_static_select_native_differential(
 
     let artifact = lower_select_local_slot_ir_root_thunk_body_artifact(&shape_ir)
         .map_err(ShapeDifferentialError::LowerArtifact)?;
-    let candidates = candidates_for(&["aos_env_get", "aos_force", "aos_select_ic"])?;
+    let candidates = candidates_for(&[
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_select_ic",
+    ])?;
     let mut native_eval = TreeWalk::new(&source_ir);
     let attrs = eval_attrs(&mut native_eval, attr)?;
     let native = run_and_force_scalar(&mut native_eval, id, span, &[attrs], artifact, &candidates)?;
@@ -225,7 +231,13 @@ pub fn nix_jit_static_has_attr_native_differential(
 
     let artifact = lower_has_attr_local_slot_ir_root_thunk_body_artifact(&shape_ir)
         .map_err(ShapeDifferentialError::LowerArtifact)?;
-    let candidates = candidates_for(&["aos_env_get", "aos_force", "aos_has_attr"])?;
+    let candidates = candidates_for(&[
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_has_attr",
+    ])?;
     let mut native_eval = TreeWalk::new(&source_ir);
     let attrs = eval_attrs(&mut native_eval, attr)?;
     let native = run_and_force_scalar(&mut native_eval, id, span, &[attrs], artifact, &candidates)?;
@@ -313,7 +325,13 @@ pub fn nix_jit_update_native_differential(
 
     let artifact = lower_update_local_slots_ir_root_thunk_body_artifact(&shape_ir)
         .map_err(ShapeDifferentialError::LowerArtifact)?;
-    let candidates = candidates_for(&["aos_env_get", "aos_force", "aos_update"])?;
+    let candidates = candidates_for(&[
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_update",
+    ])?;
     let mut native_eval = TreeWalk::new(&source_ir);
     let (native_left, native_right) =
         capture_binding_pair(&mut native_eval, left_symbol, right_symbol)?;
@@ -384,7 +402,13 @@ pub fn nix_jit_arith_native_differential(
 
     let artifact = lower_force_aware_tier1_ir_thunk_body_artifact(&shape_ir.arena, shape_ir.root)
         .map_err(ShapeDifferentialError::LowerArtifact)?;
-    let candidates = candidates_for(&["aos_env_get", "aos_force", "aos_deopt"])?;
+    let candidates = candidates_for(&[
+        "aos_env_get",
+        "aos_force",
+        "aos_jit_stack_map_enter",
+        "aos_jit_stack_map_exit",
+        "aos_deopt",
+    ])?;
     let mut native_eval = TreeWalk::new(&source_ir);
     let (left, right) = capture_binding_pair(&mut native_eval, left_symbol, right_symbol)?;
     let native = run_and_force_scalar(

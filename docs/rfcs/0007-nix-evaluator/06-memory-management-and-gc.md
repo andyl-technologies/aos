@@ -3195,8 +3195,22 @@ GC must be observationally invisible (§8): every item is gated by the different
       retains return-address offsets and stack-pointer-relative anchors for
       later frame binding. The checkpoint is byte-green across the four-package
       JIT matrix, compute x8, the wide root, and all 648 JIT strict-JSON seeds.
-      Allocation-helper maps, physical stack walking, live-frame mutation, and
-      automatic collector dispatch remain open.
+      Allocation-helper maps, collector joining/writeback, and automatic
+      collector dispatch remain open.
+- [x] Current compiled-frame stack-map binding slice:
+      every mapped tier-1 force now reserves a 24-byte intrusive binding header
+      immediately before its spilled `Value` slots and calls
+      `aos_jit_stack_map_enter` / `aos_jit_stack_map_exit` around `aos_force`.
+      The pinned `RuntimeJitContext` owns an allocation-free LIFO head, nested
+      compiled calls link caller-owned frame storage without stack walking, and
+      `active_stack_map_roots` snapshots innermost-to-outermost typed roots with
+      frame and safepoint identity. Strict LIFO mismatch and malformed native
+      pointers fail closed. Executable differentials cover forced locals,
+      upvalues, select/has-attr/update paths, trap transfer, publish-dispatch,
+      and balanced return; exact unsafe operations remain pinned by the runtime
+      FFI source audit. Joining bound values to finalized physical offsets,
+      applying relocation writebacks to the live slots, automatic collector
+      dispatch, and allocation-helper safepoints remain open.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now closes the

@@ -1166,7 +1166,7 @@ mod tests {
             .install_plan()
             .promoted_preflight()
             .expect("readiness owns promoted preflight");
-        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 4);
         assert!(
             promoted
                 .finalization()
@@ -1249,7 +1249,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             artifact_runtime_imports,
-            ["aos_env_get", "aos_force", "aos_update"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
         );
         assert!(
             promoted
@@ -1323,7 +1323,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             artifact_runtime_imports,
-            ["aos_env_get", "aos_force", "aos_update"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
         );
         assert!(
             promoted
@@ -1397,7 +1397,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             artifact_runtime_imports,
-            ["aos_env_get", "aos_force", "aos_select_ic"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
         );
         assert!(
             promoted
@@ -1471,7 +1471,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             artifact_runtime_imports,
-            ["aos_env_get", "aos_force", "aos_has_attr"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
         );
         assert!(
             promoted
@@ -1545,7 +1545,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             artifact_runtime_imports,
-            ["aos_env_get", "aos_force", "aos_select_ic"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
         );
         assert!(
             promoted
@@ -1619,7 +1619,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             artifact_runtime_imports,
-            ["aos_env_get", "aos_force", "aos_has_attr"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
         );
         assert!(
             promoted

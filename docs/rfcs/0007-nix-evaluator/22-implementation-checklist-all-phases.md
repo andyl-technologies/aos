@@ -8286,8 +8286,25 @@ and helps the oracle directly.
       paths. The checkpoint passed 253 `ratchet-jit` tests, 322 `aos-nix`
       tests, the four-package JIT matrix, compute x8, the wide root, and all 648
       strict-JSON seeds under JIT with byte parity. Allocation-helper
-      safepoints, physical stack walking/live-frame binding, and automatic
-      collector dispatch remain open.
+      safepoints, collector joining/writeback, and automatic collector dispatch
+      remain open.
+- [x] Current compiled-frame stack-map binding slice: tier-1 force lowerers
+      place a 24-byte intrusive header before complete spilled `Value`s and
+      bracket `aos_force` with standalone runtime-FFI enter/exit helpers. The
+      pinned runtime context maintains an allocation-free LIFO chain of live
+      caller-owned binding regions; nested frames snapshot as precise typed
+      `StackMap` roots with frame/safepoint identity, without scanning the
+      native stack. Runtime symbol registration, finalized executable calls,
+      trap transfer, and publish-dispatch differentials exercise the real
+      helpers. The landing battery passed 354 `ratchet-core`, 253
+      `ratchet-jit`, 78 active `ratchet-runtime-ffi`, and 322 `aos-nix` library
+      tests; the pinned language aggregate; both cache-validation witnesses;
+      and all 648 strict-JSON seeds in serial, K=4, JIT, and sweep-zero modes.
+      The release A/B kept zlib and wide cold time within the 10% noise gate,
+      held their evaluator arena peaks at 7.5 MiB and 71.5 MiB, and measured the
+      current JIT `fib` witness at 0.035x C++ Nix time with a 0.5 MiB arena
+      peak. Finalized-offset joining, live relocation writeback, automatic
+      collector dispatch, and allocation-helper safepoints remain open.
 - [x] Current atomic environment-cell relocation repair:
       active and suspended lexical frame slots were already explicit mutable
       safepoint roots; `eval/heap/environment_writeback.rs` now validates and

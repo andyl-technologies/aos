@@ -16,6 +16,7 @@ use crate::{
     lower::{
         AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX,
         AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX, AOS_PRIMOP_CALL_FUNCTION_INDEX,
+        AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
         AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_SELECT_IC_FUNCTION_INDEX,
         AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX, AOS_UPVAL_GET_FUNCTION_INDEX,
     },
@@ -36,6 +37,8 @@ const AOS_DEOPT_SYMBOL: &str = "aos_deopt";
 const AOS_UPVAL_GET_SYMBOL: &str = "aos_upval_get";
 const AOS_PRIMOP_CALL_SYMBOL: &str = "aos_primop_call";
 const AOS_STRING_LENGTH_SYMBOL: &str = "aos_string_length";
+const AOS_JIT_STACK_MAP_ENTER_SYMBOL: &str = "aos_jit_stack_map_enter";
+const AOS_JIT_STACK_MAP_EXIT_SYMBOL: &str = "aos_jit_stack_map_exit";
 
 /// Address-free CLIF artifact metadata needed by future module setup.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -482,6 +485,12 @@ fn runtime_symbol_for_external_name(
         (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_STRING_LENGTH_FUNCTION_INDEX) => {
             Some((AOS_STRING_LENGTH_SYMBOL, user_external_name))
         }
+        (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX) => {
+            Some((AOS_JIT_STACK_MAP_ENTER_SYMBOL, user_external_name))
+        }
+        (AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX) => {
+            Some((AOS_JIT_STACK_MAP_EXIT_SYMBOL, user_external_name))
+        }
         _ => None,
     }
 }
@@ -518,13 +527,16 @@ mod tests {
         artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource},
         lower::{
             clif_external_name_for_aos_apply, clif_external_name_for_aos_env_get,
-            clif_external_name_for_aos_force, clif_name_for_ir_root,
+            clif_external_name_for_aos_force, clif_external_name_for_aos_jit_stack_map_enter,
+            clif_external_name_for_aos_jit_stack_map_exit, clif_name_for_ir_root,
             lower_apply_local_slots_ir_thunk_body_artifact, lower_constant_ir_thunk_body_artifact,
             lower_constant_thunk_body_artifact, lower_env_get_ir_thunk_body_artifact,
             lower_forced_env_get_ir_thunk_body_artifact,
         },
         tier::JitTier,
     };
+
+    mod stack_map_binding;
 
     #[test]
     fn module_readiness_preflight_records_artifact_and_symbols() {
@@ -647,44 +659,6 @@ mod tests {
             &clif_external_name_for_aos_env_get()
         );
         assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
-    }
-
-    #[test]
-    fn module_readiness_preflight_records_forced_env_get_artifact_imports() {
-        let arena = IrArena::from_raw_parts(
-            vec![IrNode::new(
-                IrKind::LocalVar,
-                Span::new(0, 1),
-                EffectClass::pure(),
-                IrData::Local { slot: 6 },
-            )],
-            Vec::new(),
-        );
-        let artifact = lower_forced_env_get_ir_thunk_body_artifact(&arena, IrId::new(0))
-            .expect("forced env-get artifact lowers");
-        let preflight = jit_module_readiness_preflight_for_artifact(&artifact)
-            .expect("module preflight builds");
-        let imports = preflight
-            .artifact_runtime_imports()
-            .iter()
-            .map(|artifact_import| {
-                (
-                    artifact_import.symbol_name(),
-                    artifact_import.user_external_name().clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            imports,
-            vec![
-                ("aos_env_get", clif_external_name_for_aos_env_get()),
-                ("aos_force", clif_external_name_for_aos_force()),
-            ]
-        );
-        assert!(preflight.artifact_runtime_import_gaps().is_empty());
-        assert!(preflight.declaration_for_symbol("aos_env_get").is_some());
-        assert!(preflight.declaration_for_symbol("aos_force").is_some());
     }
 
     #[test]

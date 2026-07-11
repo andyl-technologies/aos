@@ -368,7 +368,7 @@ fn force_aware_thunk_install_readiness_reports_future_publish_gaps_for_update_ro
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_update"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
     );
     assert!(
         promoted
@@ -448,7 +448,7 @@ fn thunk_install_readiness_reports_future_publish_gaps_for_update_root() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_update"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
     );
     assert!(
         promoted
@@ -764,7 +764,7 @@ fn force_aware_thunk_install_readiness_reports_future_publish_gaps_for_forced_en
         readiness.install_plan().tier1_code_ptr(),
         Some(promoted.finalized_function().compiled_code_ptr())
     );
-    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 4);
     assert!(
         promoted
             .finalization()
@@ -826,7 +826,7 @@ fn force_aware_full_ir_thunk_install_readiness_reports_future_publish_gaps_for_s
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
     );
     assert!(
         promoted
@@ -879,7 +879,7 @@ fn force_aware_full_ir_thunk_install_readiness_reports_future_publish_gaps_for_s
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
     );
     assert!(
         promoted
@@ -931,7 +931,7 @@ fn full_ir_thunk_install_readiness_reports_future_publish_gaps_for_static_select
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
     );
     assert!(
         promoted
@@ -983,7 +983,7 @@ fn full_ir_thunk_install_readiness_reports_future_publish_gaps_for_static_has_at
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
     );
     assert!(
         promoted

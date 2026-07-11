@@ -53,7 +53,12 @@ use crate::jit::{
 /// The `aos_env_get` wrapper reads the captured slot and the `aos_force` wrapper
 /// forces the loaded value. Both must be registered with their real wrapper
 /// addresses before the compiled body can call them.
-pub(super) const FORCED_ENV_SLOT_IMPORTS: [&str; 2] = ["aos_env_get", "aos_force"];
+pub(super) const FORCED_ENV_SLOT_IMPORTS: [&str; 4] = [
+    "aos_env_get",
+    "aos_force",
+    "aos_jit_stack_map_enter",
+    "aos_jit_stack_map_exit",
+];
 
 /// The reconciled result of one forced environment-slot native differential.
 ///
@@ -376,6 +381,16 @@ fn forced_upval_slot_candidates()
             symbol_name: "aos_force",
         },
     )?;
+    let stack_map_enter = preflight
+        .address_candidate_for("aos_jit_stack_map_enter")
+        .ok_or(NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate {
+            symbol_name: "aos_jit_stack_map_enter",
+        })?;
+    let stack_map_exit = preflight
+        .address_candidate_for("aos_jit_stack_map_exit")
+        .ok_or(NixJitForcedEnvSlotNativeDifferentialError::MissingCandidate {
+            symbol_name: "aos_jit_stack_map_exit",
+        })?;
     Ok(vec![
         JitRuntimeSymbolAddressCandidate::new(
             upval_get.symbol_name().to_owned(),
@@ -386,6 +401,16 @@ fn forced_upval_slot_candidates()
             force.symbol_name().to_owned(),
             force.kind(),
             force.address(),
+        ),
+        JitRuntimeSymbolAddressCandidate::new(
+            stack_map_enter.symbol_name().to_owned(),
+            stack_map_enter.kind(),
+            stack_map_enter.address(),
+        ),
+        JitRuntimeSymbolAddressCandidate::new(
+            stack_map_exit.symbol_name().to_owned(),
+            stack_map_exit.kind(),
+            stack_map_exit.address(),
         ),
     ])
 }
@@ -694,17 +719,24 @@ mod tests {
             let provenance = preflight
                 .address_provenance_for_symbol(symbol_name)
                 .expect("forced env-slot import has address provenance");
-            assert!(
-                provenance.is_runtime_ffi_native_wrapper(),
-                "{symbol_name} must resolve to a runtime-FFI native wrapper"
-            );
-            let blockers = provenance
-                .runtime_ffi_remaining_export_blockers()
-                .expect("runtime-FFI wrapper provenance carries blockers");
-            assert!(
-                blockers.is_empty(),
-                "{symbol_name} runtime-FFI wrapper must have no remaining blockers"
-            );
+            if provenance.is_standalone_runtime_ffi_wrapper() {
+                assert!(
+                    provenance.runtime_ffi_remaining_export_blockers().is_none(),
+                    "{symbol_name} standalone wrapper has no oracle family blockers"
+                );
+            } else {
+                assert!(
+                    provenance.is_runtime_ffi_native_wrapper(),
+                    "{symbol_name} must resolve to a runtime-FFI native wrapper"
+                );
+                let blockers = provenance
+                    .runtime_ffi_remaining_export_blockers()
+                    .expect("unified runtime-FFI wrapper provenance carries blockers");
+                assert!(
+                    blockers.is_empty(),
+                    "{symbol_name} runtime-FFI wrapper must have no remaining blockers"
+                );
+            }
         }
     }
 }

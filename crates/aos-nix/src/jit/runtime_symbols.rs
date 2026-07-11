@@ -20,6 +20,13 @@ use ratchet_runtime_ffi::wrappers::{
 };
 use thiserror::Error;
 
+mod standalone;
+
+pub use standalone::{
+    nix_jit_deopt_address_candidate, nix_jit_primop_call_address_candidate,
+    nix_jit_upval_get_address_candidate,
+};
+
 /// A failure while building Nix JIT runtime-symbol address candidates.
 #[derive(Debug, Error)]
 pub enum NixJitRuntimeSymbolAddressCandidateError {
@@ -140,6 +147,14 @@ pub enum NixJitRuntimeSymbolAddressProvenance {
         /// Family-specific blockers that still prevent final native export.
         remaining_export_blockers: RuntimeNativeWrapperBlockers,
     },
+    /// The candidate points at a standalone runtime-FFI wrapper with no oracle
+    /// helper-family binding.
+    StandaloneRuntimeFfiWrapper {
+        /// The stable runtime symbol name.
+        symbol_name: String,
+        /// The runtime symbol family served by the address candidate.
+        kind: RuntimeSymbolKind,
+    },
 }
 
 impl NixJitRuntimeSymbolAddressProvenance {
@@ -161,20 +176,28 @@ impl NixJitRuntimeSymbolAddressProvenance {
         }
     }
 
+    fn standalone_runtime_ffi_wrapper(candidate: &JitRuntimeSymbolAddressCandidate) -> Self {
+        Self::StandaloneRuntimeFfiWrapper {
+            symbol_name: candidate.symbol_name().to_owned(),
+            kind: candidate.kind(),
+        }
+    }
+
     /// Returns the stable runtime symbol name for this address provenance.
     pub fn symbol_name(&self) -> &str {
         match self {
             Self::RustCallableHelper { symbol_name, .. }
-            | Self::RuntimeFfiNativeWrapper { symbol_name, .. } => symbol_name,
+            | Self::RuntimeFfiNativeWrapper { symbol_name, .. }
+            | Self::StandaloneRuntimeFfiWrapper { symbol_name, .. } => symbol_name,
         }
     }
 
     /// Returns the runtime symbol family served by this address provenance.
     pub const fn kind(&self) -> RuntimeSymbolKind {
         match self {
-            Self::RustCallableHelper { kind, .. } | Self::RuntimeFfiNativeWrapper { kind, .. } => {
-                *kind
-            }
+            Self::RustCallableHelper { kind, .. }
+            | Self::RuntimeFfiNativeWrapper { kind, .. }
+            | Self::StandaloneRuntimeFfiWrapper { kind, .. } => *kind,
         }
     }
 
@@ -188,6 +211,11 @@ impl NixJitRuntimeSymbolAddressProvenance {
         matches!(self, Self::RuntimeFfiNativeWrapper { .. })
     }
 
+    /// Returns true when the candidate uses a standalone runtime-FFI wrapper.
+    pub const fn is_standalone_runtime_ffi_wrapper(&self) -> bool {
+        matches!(self, Self::StandaloneRuntimeFfiWrapper { .. })
+    }
+
     /// Returns runtime-FFI wrapper blockers that still prevent final native export.
     pub const fn runtime_ffi_remaining_export_blockers(
         &self,
@@ -197,7 +225,7 @@ impl NixJitRuntimeSymbolAddressProvenance {
                 remaining_export_blockers,
                 ..
             } => Some(*remaining_export_blockers),
-            Self::RustCallableHelper { .. } => None,
+            Self::RustCallableHelper { .. } | Self::StandaloneRuntimeFfiWrapper { .. } => None,
         }
     }
 }
@@ -224,6 +252,7 @@ impl NixJitRuntimeSymbolAddressProvenanceGap {
                 })
             }
             NixJitRuntimeSymbolAddressProvenance::RuntimeFfiNativeWrapper { .. } => None,
+            NixJitRuntimeSymbolAddressProvenance::StandaloneRuntimeFfiWrapper { .. } => None,
         }
     }
 
@@ -560,97 +589,20 @@ pub fn nix_jit_runtime_symbol_address_candidate_preflight() -> NixJitPreflightRe
         address_provenance.push(provenance);
     }
 
+    for candidate in [
+        nix_jit_stack_map_enter_address_candidate()?,
+        nix_jit_stack_map_exit_address_candidate()?,
+    ] {
+        address_provenance.push(
+            NixJitRuntimeSymbolAddressProvenance::standalone_runtime_ffi_wrapper(&candidate),
+        );
+        address_candidates.push(candidate);
+    }
+
     Ok(NixJitRuntimeSymbolAddressCandidatePreflight::new(
         address_candidates,
         address_provenance,
         oracle_preflight.missing_bindings().to_vec(),
-    ))
-}
-
-/// Builds the JIT address candidate for the `aos_deopt` deopt trampoline.
-///
-/// Unlike the forcing, environment, apply, and attrset helpers, `aos_deopt` is
-/// not an oracle evaluator helper: it is a JIT-internal deoptimization
-/// trampoline owned entirely by `ratchet-runtime-ffi`. It therefore does not
-/// flow through the oracle rust-callable preflight that drives
-/// [`nix_jit_runtime_symbol_address_candidate_preflight`], and is registered
-/// directly from its process-local wrapper address so a compiled body importing
-/// `aos_deopt` can be finalized.
-///
-/// # Errors
-///
-/// Returns [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
-/// if the `aos_deopt` wrapper reports a null process-local address.
-pub fn nix_jit_deopt_address_candidate()
--> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
-    let address = ratchet_runtime_ffi::aos_deopt_native_wrapper_address();
-    let raw = NonZeroUsize::new(address as usize).ok_or(
-        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
-            symbol_name: "aos_deopt",
-        },
-    )?;
-    Ok(JitRuntimeSymbolAddressCandidate::new(
-        "aos_deopt".to_owned(),
-        RuntimeSymbolKind::Helper(RuntimeHelperRole::Deoptimization),
-        JitRuntimeSymbolAddress::new(raw),
-    ))
-}
-
-/// Builds the JIT address candidate for the `aos_upval_get` upvalue-read wrapper.
-///
-/// `aos_upval_get` reads a captured lexical slot from a frame above the innermost
-/// one. Like [`nix_jit_deopt_address_candidate`], it is a standalone
-/// `ratchet-runtime-ffi` wrapper rather than an oracle-modeled env-access helper,
-/// so it does not flow through the oracle rust-callable preflight that drives
-/// [`nix_jit_runtime_symbol_address_candidate_preflight`]. It is registered
-/// directly from its process-local wrapper address so a compiled body importing
-/// `aos_upval_get` can be finalized.
-///
-/// # Errors
-///
-/// Returns [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
-/// if the `aos_upval_get` wrapper reports a null process-local address.
-pub fn nix_jit_upval_get_address_candidate()
--> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
-    let address = ratchet_runtime_ffi::aos_upval_get_native_wrapper_address();
-    let raw = NonZeroUsize::new(address as usize).ok_or(
-        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
-            symbol_name: "aos_upval_get",
-        },
-    )?;
-    Ok(JitRuntimeSymbolAddressCandidate::new(
-        "aos_upval_get".to_owned(),
-        RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
-        JitRuntimeSymbolAddress::new(raw),
-    ))
-}
-
-/// Builds the JIT address candidate for the `aos_primop_call` dispatch trampoline.
-///
-/// `aos_primop_call` re-enters the tree walk to force a lowered `IrKind::PrimOp`
-/// body. Like [`nix_jit_deopt_address_candidate`], it is a standalone
-/// `ratchet-runtime-ffi` trampoline rather than an oracle-modeled evaluator
-/// helper, so it does not flow through the oracle rust-callable preflight that
-/// drives [`nix_jit_runtime_symbol_address_candidate_preflight`]. It is
-/// registered directly from its process-local wrapper address so a compiled body
-/// importing `aos_primop_call` can be finalized.
-///
-/// # Errors
-///
-/// Returns [`NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress`]
-/// if the `aos_primop_call` wrapper reports a null process-local address.
-pub fn nix_jit_primop_call_address_candidate()
--> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
-    let address = ratchet_runtime_ffi::aos_primop_call_native_wrapper_address();
-    let raw = NonZeroUsize::new(address as usize).ok_or(
-        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
-            symbol_name: "aos_primop_call",
-        },
-    )?;
-    Ok(JitRuntimeSymbolAddressCandidate::new(
-        "aos_primop_call".to_owned(),
-        RuntimeSymbolKind::Helper(RuntimeHelperRole::PrimopDispatch),
-        JitRuntimeSymbolAddress::new(raw),
     ))
 }
 
@@ -680,6 +632,51 @@ pub fn nix_jit_string_length_address_candidate()
     Ok(JitRuntimeSymbolAddressCandidate::new(
         "aos_string_length".to_owned(),
         RuntimeSymbolKind::Helper(RuntimeHelperRole::PrimopDispatch),
+        JitRuntimeSymbolAddress::new(raw),
+    ))
+}
+
+/// Builds the JIT address candidate for compiled stack-map entry.
+///
+/// # Errors
+///
+/// Returns an error if the wrapper address is null.
+pub fn nix_jit_stack_map_enter_address_candidate()
+-> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
+    standalone_runtime_ffi_candidate(
+        "aos_jit_stack_map_enter",
+        RuntimeHelperRole::SafepointControl,
+        ratchet_runtime_ffi::aos_jit_stack_map_enter_native_wrapper_address(),
+    )
+}
+
+/// Builds the JIT address candidate for compiled stack-map exit.
+///
+/// # Errors
+///
+/// Returns an error if the wrapper address is null.
+pub fn nix_jit_stack_map_exit_address_candidate()
+-> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
+    standalone_runtime_ffi_candidate(
+        "aos_jit_stack_map_exit",
+        RuntimeHelperRole::SafepointControl,
+        ratchet_runtime_ffi::aos_jit_stack_map_exit_native_wrapper_address(),
+    )
+}
+
+fn standalone_runtime_ffi_candidate(
+    symbol_name: &'static str,
+    role: RuntimeHelperRole,
+    address: *mut std::ffi::c_void,
+) -> Result<JitRuntimeSymbolAddressCandidate, NixJitRuntimeSymbolAddressCandidateError> {
+    let raw = NonZeroUsize::new(address as usize).ok_or(
+        NixJitRuntimeSymbolAddressCandidateError::NullRuntimeFfiNativeWrapperAddress {
+            symbol_name,
+        },
+    )?;
+    Ok(JitRuntimeSymbolAddressCandidate::new(
+        symbol_name.to_owned(),
+        RuntimeSymbolKind::Helper(role),
         JitRuntimeSymbolAddress::new(raw),
     ))
 }

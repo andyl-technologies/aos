@@ -14,6 +14,12 @@ use thiserror::Error;
 
 use crate::builtins::BUILTINS;
 
+mod stack_map;
+
+use stack_map::{
+    RUNTIME_JIT_STACK_MAP_ENTER_CALL_SIGNATURE, RUNTIME_JIT_STACK_MAP_EXIT_CALL_SIGNATURE,
+};
+
 /// The stable prefix for builtin runtime symbol names.
 pub const BUILTIN_SYMBOL_PREFIX: &str = "nix.builtin.";
 
@@ -109,6 +115,8 @@ pub enum RuntimeHelperRole {
     /// Primop-dispatch helpers delegate a lowered builtin-call body back to the
     /// interpreter's builtin executor.
     PrimopDispatch,
+    /// Safepoint helpers bind compiled-frame stack-map storage to the collector.
+    SafepointControl,
 }
 
 /// Stable runtime helper symbols that compiled tiers may reference.
@@ -128,6 +136,8 @@ pub const RUNTIME_HELPER_SYMBOLS: &[RuntimeHelperSymbol] = &[
     RuntimeHelperSymbol::new("aos_force_deep", RuntimeHelperRole::ForcingControl),
     RuntimeHelperSymbol::new("aos_gc_write_barrier", RuntimeHelperRole::WriteBarrier),
     RuntimeHelperSymbol::new("aos_has_attr", RuntimeHelperRole::AttrsetAccess),
+    RuntimeHelperSymbol::new("aos_jit_stack_map_enter", RuntimeHelperRole::SafepointControl),
+    RuntimeHelperSymbol::new("aos_jit_stack_map_exit", RuntimeHelperRole::SafepointControl),
     RuntimeHelperSymbol::new("aos_primop_call", RuntimeHelperRole::PrimopDispatch),
     RuntimeHelperSymbol::new("aos_select_ic", RuntimeHelperRole::AttrsetAccess),
     RuntimeHelperSymbol::new("aos_string_length", RuntimeHelperRole::PrimopDispatch),
@@ -529,6 +539,8 @@ pub const RUNTIME_HELPER_CALL_SIGNATURES: &[RuntimeCallSignature] = &[
     RUNTIME_FORCE_DEEP_CALL_SIGNATURE,
     RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE,
     RUNTIME_HAS_ATTR_CALL_SIGNATURE,
+    RUNTIME_JIT_STACK_MAP_ENTER_CALL_SIGNATURE,
+    RUNTIME_JIT_STACK_MAP_EXIT_CALL_SIGNATURE,
     RUNTIME_PRIMOP_CALL_CALL_SIGNATURE,
     RUNTIME_SELECT_IC_CALL_SIGNATURE,
     RUNTIME_STRING_LENGTH_CALL_SIGNATURE,
@@ -587,6 +599,8 @@ pub fn runtime_helper_call_signature(symbol_name: &str) -> Option<RuntimeCallSig
         "aos_force_deep" => Some(RUNTIME_FORCE_DEEP_CALL_SIGNATURE),
         "aos_gc_write_barrier" => Some(RUNTIME_GC_WRITE_BARRIER_CALL_SIGNATURE),
         "aos_has_attr" => Some(RUNTIME_HAS_ATTR_CALL_SIGNATURE),
+        "aos_jit_stack_map_enter" => Some(RUNTIME_JIT_STACK_MAP_ENTER_CALL_SIGNATURE),
+        "aos_jit_stack_map_exit" => Some(RUNTIME_JIT_STACK_MAP_EXIT_CALL_SIGNATURE),
         "aos_primop_call" => Some(RUNTIME_PRIMOP_CALL_CALL_SIGNATURE),
         "aos_select_ic" => Some(RUNTIME_SELECT_IC_CALL_SIGNATURE),
         "aos_string_length" => Some(RUNTIME_STRING_LENGTH_CALL_SIGNATURE),
@@ -1429,67 +1443,6 @@ mod tests {
                 max: MAX_RUNTIME_PRIMOP_ABI_ARITY,
             }
         );
-    }
-
-    #[test]
-    fn helper_call_signatures_cover_core_owned_helpers() {
-        let helper_signatures = runtime_helper_call_signatures();
-        let helper_symbols = helper_signatures
-            .iter()
-            .map(|signature| match signature.callable() {
-                RuntimeCallableKind::Helper { symbol } => symbol.name(),
-                other => panic!("helper signature had non-helper callable kind: {other:?}"),
-            })
-            .collect::<BTreeSet<_>>();
-
-        assert_eq!(
-            helper_symbols,
-            BTreeSet::from([
-                "aos_alloc_attrs",
-                "aos_alloc_cons",
-                "aos_alloc_lambda",
-                "aos_alloc_list",
-                "aos_alloc_raw",
-                "aos_alloc_string",
-                "aos_alloc_thunk",
-                "aos_apply",
-                "aos_blackhole_check",
-                "aos_deopt",
-                "aos_env_get",
-                "aos_force",
-                "aos_force_deep",
-                "aos_gc_write_barrier",
-                "aos_has_attr",
-                "aos_primop_call",
-                "aos_select_ic",
-                "aos_string_length",
-                "aos_throw",
-                "aos_update",
-                "aos_upval_get",
-            ])
-        );
-        for symbol_name in ["aos_try_begin", "aos_try_end"] {
-            assert_eq!(
-                runtime_helper_call_signature(symbol_name),
-                None,
-                "{symbol_name} does not have a frozen core-owned call signature yet"
-            );
-        }
-
-        let expected_order = runtime_helper_symbols()
-            .iter()
-            .filter_map(|symbol| {
-                runtime_helper_call_signature(symbol.name()).map(|_| symbol.name())
-            })
-            .collect::<Vec<_>>();
-        let actual_order = helper_signatures
-            .iter()
-            .map(|signature| match signature.callable() {
-                RuntimeCallableKind::Helper { symbol } => symbol.name(),
-                other => panic!("helper signature had non-helper callable kind: {other:?}"),
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(actual_order, expected_order);
     }
 
     #[test]

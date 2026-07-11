@@ -704,7 +704,7 @@ fn nix_jit_force_aware_registered_tier1_promotion_preflight_installs_forced_env_
         promotion.slot().tier1_code_ptr(),
         Some(promoted.finalized_function().compiled_code_ptr())
     );
-    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 4);
     assert!(
         promoted
             .finalization()
@@ -798,9 +798,9 @@ fn nix_jit_registered_full_ir_promotion_installs_static_select() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_select_ic"] {
+    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"] {
         assert!(
             promoted
                 .finalization()
@@ -847,9 +847,9 @@ fn nix_jit_registered_full_ir_promotion_installs_static_select_scalar_default() 
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr", "aos_select_ic"]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"] {
+    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr", "aos_select_ic"] {
         assert!(
             promoted
                 .finalization()
@@ -896,9 +896,9 @@ fn nix_jit_registered_full_ir_promotion_installs_static_has_attr() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_has_attr"] {
+    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"] {
         assert!(
             promoted
                 .finalization()
@@ -945,9 +945,9 @@ fn nix_jit_registered_promotion_installs_update() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_update"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_update"] {
+    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"] {
         assert!(
             promoted
                 .finalization()
@@ -995,7 +995,7 @@ fn nix_jit_registered_full_ir_install_plan_carries_static_select_pointer_and_mod
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
     );
     assert!(
         promoted
@@ -1042,7 +1042,7 @@ fn nix_jit_force_aware_full_ir_install_plan_carries_static_has_attr_pointer_and_
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_has_attr"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr"]
     );
     assert!(
         promoted
@@ -1089,7 +1089,7 @@ fn nix_jit_force_aware_full_ir_install_plan_carries_static_select_pointer_and_mo
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_select_ic"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
     );
     assert!(
         promoted
@@ -1136,9 +1136,9 @@ fn nix_jit_force_aware_full_ir_install_plan_carries_static_select_default_pointe
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr", "aos_select_ic"]
     );
-    for symbol_name in ["aos_env_get", "aos_force", "aos_has_attr", "aos_select_ic"] {
+    for symbol_name in ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_has_attr", "aos_select_ic"] {
         assert!(
             promoted
                 .finalization()
@@ -1186,7 +1186,7 @@ fn nix_jit_force_aware_install_plan_carries_update_pointer_and_module_owner() {
     );
     assert_eq!(
         artifact_runtime_import_names(promoted),
-        ["aos_env_get", "aos_force", "aos_update"]
+        ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
     );
     assert!(
         promoted
@@ -1246,7 +1246,7 @@ fn nix_jit_force_aware_promotion_installs_wrapped_forced_env_slot() {
         promotion.slot().tier1_code_ptr(),
         Some(promoted.finalized_function().compiled_code_ptr())
     );
-    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 4);
     assert!(
         promoted
             .finalization()
@@ -1448,7 +1448,7 @@ fn nix_jit_force_aware_registered_tier1_install_plan_carries_forced_env_slot_and
         plan.tier1_code_ptr(),
         Some(promoted.finalized_function().compiled_code_ptr())
     );
-    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+    assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 4);
     assert!(
         promoted
             .finalization()

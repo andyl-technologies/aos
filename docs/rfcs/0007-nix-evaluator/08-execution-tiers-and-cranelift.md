@@ -2030,14 +2030,16 @@ harness, never cut for scope.
       native execution is implemented by these selector entrypoints.
 - [ ] `JITBuilder`/`JITModule` construction + external-symbol resolution for the runtime ABI ([§5.1](#51-cranelift-the-chosen-backend)) — P6.
 - [ ] Safepoints + user stack maps emitted **unconditionally** from tier 1 (frontend obligation; daemon GC root-finding) ([§2.2](#22-tier-1--the-cranelift-baseline-jit), [§6](#6-cranelift-the-gc-and-stack-maps)) — P6; gate: loom/miri once daemon GC lands.
-- [x] Current compiled-tier safepoint policy precursor:
+- [x] Current compiled-tier safepoint policy and force-call implementation:
       `ratchet-jit::safepoints::jit_safepoint_policy()` records the frontend
       obligation for compiled tiers: tier 1 and tier 2 require unconditional
       user stack maps, with safepoints at allocation sites and `aos_force` calls.
-      Tests pin both compiled tiers and the exact required placement set. This is
-      policy metadata only: no Cranelift user-stack-map emission, live-reference
-      annotation, collector root consumption, executable buffer, or `JITModule`
-      integration is implemented.
+      Tier-1 force sites now spill complete values, attach Cranelift user stack
+      maps, retain finalized return/SP metadata, and bracket the native call with
+      allocation-free intrusive runtime bindings. Executable JIT paths exercise
+      nested LIFO binding and typed root snapshots. Allocation-site maps,
+      finalized-offset-to-live-slot joining, relocation writeback, and automatic
+      collector consumption remain open.
 - [ ] Counter-based tier-0 → tier-1 promotion (invocation counter beside `code_ptr`) ([§3.4](#34-promotion-policy)) — P6.
 - [ ] Pin a Cranelift git revision for user-stack-map API stability once
       safepoint/stack-map lowering lands ([§10](#10-open-questions)) — P6,

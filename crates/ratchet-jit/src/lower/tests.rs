@@ -13,6 +13,8 @@ use ratchet_value::value::ValueTag;
 use super::*;
 use crate::abi::clif_signature_for_runtime_call;
 
+mod stack_map_binding;
+
 #[test]
 fn constant_thunk_body_uses_frozen_thunk_signature() {
     let function =
@@ -1002,73 +1004,6 @@ fn forced_env_get_ir_thunk_body_imports_env_get_and_force_signatures() {
 }
 
 #[test]
-fn forced_env_get_ir_thunk_body_calls_env_get_then_force_with_entry_rt() {
-    let arena = IrArena::from_raw_parts(vec![local_var_node(13)], Vec::new());
-
-    let function = lower_forced_env_get_ir_thunk_body(&arena, IrId::new(0))
-        .expect("forced local var root lowers");
-    let (env_get, _) =
-        imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
-    let (force, _) =
-        imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
-    let calls = call_insts(&function);
-    assert_eq!(calls.len(), 2);
-    let env_get_call = calls[0];
-    let force_call = calls[1];
-    let InstructionData::Call { func_ref, .. } = function.dfg.insts[env_get_call] else {
-        panic!("forced env-get function emits env-get call first");
-    };
-    assert_eq!(func_ref, env_get);
-    let InstructionData::Call { func_ref, .. } = function.dfg.insts[force_call] else {
-        panic!("forced env-get function emits force call second");
-    };
-    assert_eq!(func_ref, force);
-
-    assert_eq!(
-        opcodes(&function),
-        vec![
-            Opcode::Iconst,
-            Opcode::Call,
-            Opcode::StackStore,
-            Opcode::StackStore,
-            Opcode::Call,
-            Opcode::Return,
-        ]
-    );
-    let stack_map = function
-        .dfg
-        .user_stack_map_entries(force_call)
-        .expect("force call carries the spilled input value");
-    assert_eq!(stack_map.len(), 1);
-    assert_eq!(stack_map[0].offset, 0);
-    assert_eq!(function.sized_stack_slots[stack_map[0].slot].size, 16);
-    assert_eq!(
-        function.dfg.inst_args(env_get_call)[0],
-        entry_block_values(&function)[1]
-    );
-    assert_eq!(
-        function
-            .dfg
-            .value_type(function.dfg.inst_args(env_get_call)[1]),
-        types::I32
-    );
-    assert_eq!(iconst_words(&function), vec![13]);
-    assert_eq!(
-        function.dfg.inst_args(force_call),
-        &[
-            entry_block_values(&function)[0],
-            function.dfg.inst_results(env_get_call)[0],
-            function.dfg.inst_results(env_get_call)[1],
-        ]
-    );
-    assert_eq!(
-        return_operands(&function),
-        function.dfg.inst_results(force_call)
-    );
-    verify_clif_function(&function).expect("forced env-get function verifies independently");
-}
-
-#[test]
 fn forced_env_get_ir_thunk_body_lowers_direct_local_thunk_alloc_root() {
     let arena = IrArena::from_raw_parts(
         vec![
@@ -1098,8 +1033,8 @@ fn forced_env_get_ir_thunk_body_lowers_direct_local_thunk_alloc_root() {
     );
     assert_eq!(
         artifact.function().dfg.ext_funcs.len(),
-        2,
-        "forced env-get artifacts import env-get and force"
+        4,
+        "forced env-get artifacts import env-get, force, and stack-map brackets"
     );
 }
 
@@ -1556,7 +1491,7 @@ fn force_aware_tier1_ir_thunk_body_artifact_preserves_literals_and_forces_local_
     let local_artifact = lower_force_aware_tier1_ir_thunk_body_artifact(&local_arena, IrId::new(0))
         .expect("force-aware selector lowers local root through env-get and force");
 
-    assert_eq!(local_artifact.function().dfg.ext_funcs.len(), 2);
+    assert_eq!(local_artifact.function().dfg.ext_funcs.len(), 4);
     imported_function_by_user_external_name(
         local_artifact.function(),
         clif_external_name_for_aos_env_get(),
@@ -1565,7 +1500,15 @@ fn force_aware_tier1_ir_thunk_body_artifact_preserves_literals_and_forces_local_
         local_artifact.function(),
         clif_external_name_for_aos_force(),
     );
-    assert_eq!(iconst_words(local_artifact.function()), vec![31]);
+    imported_function_by_user_external_name(
+        local_artifact.function(),
+        clif_external_name_for_aos_jit_stack_map_enter(),
+    );
+    imported_function_by_user_external_name(
+        local_artifact.function(),
+        clif_external_name_for_aos_jit_stack_map_exit(),
+    );
+    assert_eq!(iconst_words(local_artifact.function()), vec![31, 0, 1]);
 }
 
 #[test]
@@ -1629,7 +1572,7 @@ fn full_ir_tier1_selectors_accept_static_select_roots() {
 
     let artifact = lower_tier1_ir_thunk_body_artifact_for_ir(&ir, ir.root)
         .expect("full-IR selector lowers static select root");
-    assert_eq!(artifact.function().dfg.ext_funcs.len(), 3);
+    assert_eq!(artifact.function().dfg.ext_funcs.len(), 5);
     imported_function_by_user_external_name(
         artifact.function(),
         clif_external_name_for_aos_env_get(),
@@ -1661,7 +1604,7 @@ fn full_ir_tier1_selectors_accept_static_select_literal_defaults() {
 
     let artifact = lower_tier1_ir_thunk_body_artifact_for_ir(&ir, ir.root)
         .expect("full-IR selector lowers static select root with literal default");
-    assert_eq!(artifact.function().dfg.ext_funcs.len(), 4);
+    assert_eq!(artifact.function().dfg.ext_funcs.len(), 6);
     imported_function_by_user_external_name(
         artifact.function(),
         clif_external_name_for_aos_env_get(),
@@ -1699,7 +1642,7 @@ fn full_ir_tier1_selectors_accept_static_select_literal_defaults() {
         wrapped_default_ir.root,
     )
     .expect("force-aware full-IR selector lowers select with wrapped literal default");
-    assert_eq!(force_aware_artifact.function().dfg.ext_funcs.len(), 4);
+    assert_eq!(force_aware_artifact.function().dfg.ext_funcs.len(), 6);
     imported_function_by_user_external_name(
         force_aware_artifact.function(),
         clif_external_name_for_aos_has_attr(),
@@ -1746,7 +1689,7 @@ fn full_ir_tier1_selectors_accept_static_has_attr_roots() {
 
     let artifact = lower_tier1_ir_thunk_body_artifact_for_ir(&ir, ir.root)
         .expect("full-IR selector lowers static hasAttr root");
-    assert_eq!(artifact.function().dfg.ext_funcs.len(), 3);
+    assert_eq!(artifact.function().dfg.ext_funcs.len(), 5);
     imported_function_by_user_external_name(
         artifact.function(),
         clif_external_name_for_aos_env_get(),
@@ -1782,7 +1725,7 @@ fn full_ir_tier1_selectors_accept_wrapped_static_select_roots() {
         artifact.function_name(),
         &clif_name_for_ir_root(IrId::new(2))
     );
-    assert_eq!(artifact.function().dfg.ext_funcs.len(), 3);
+    assert_eq!(artifact.function().dfg.ext_funcs.len(), 5);
     imported_function_by_user_external_name(
         artifact.function(),
         clif_external_name_for_aos_env_get(),
@@ -1807,7 +1750,7 @@ fn full_ir_tier1_selectors_accept_wrapped_static_has_attr_roots() {
         artifact.function_name(),
         &clif_name_for_ir_root(IrId::new(2))
     );
-    assert_eq!(artifact.function().dfg.ext_funcs.len(), 3);
+    assert_eq!(artifact.function().dfg.ext_funcs.len(), 5);
     imported_function_by_user_external_name(
         artifact.function(),
         clif_external_name_for_aos_env_get(),
@@ -1841,10 +1784,18 @@ fn force_aware_tier1_ir_thunk_body_lowers_wrapped_local_body() {
         .expect("force-aware selector lowers wrapped local root");
 
     assert_eq!(function.name, clif_name_for_ir_root(IrId::new(1)));
-    assert_eq!(function.dfg.ext_funcs.len(), 2);
+    assert_eq!(function.dfg.ext_funcs.len(), 4);
     imported_function_by_user_external_name(&function, clif_external_name_for_aos_env_get());
     imported_function_by_user_external_name(&function, clif_external_name_for_aos_force());
-    assert_eq!(iconst_words(&function), vec![37]);
+    imported_function_by_user_external_name(
+        &function,
+        clif_external_name_for_aos_jit_stack_map_enter(),
+    );
+    imported_function_by_user_external_name(
+        &function,
+        clif_external_name_for_aos_jit_stack_map_exit(),
+    );
+    assert_eq!(iconst_words(&function), vec![37, 0, 1]);
 }
 
 #[test]

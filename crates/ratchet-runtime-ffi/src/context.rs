@@ -20,6 +20,8 @@ use ratchet_oracle::{
     syntax::Span,
 };
 
+use crate::stack_map::RuntimeJitStackMapBindingHeader;
+
 /// Scoped tree-walk evaluator context decoded by native runtime helpers.
 ///
 /// Native runtime helpers receive an opaque runtime pointer in their frozen C
@@ -32,6 +34,7 @@ use ratchet_oracle::{
 pub struct RuntimeJitContext<'eval> {
     eval: NonNull<TreeWalk>,
     env: Option<NonNull<EvalEnv>>,
+    stack_map_head: Option<NonNull<RuntimeJitStackMapBindingHeader>>,
     id: IrId,
     span: Span,
     _marker: PhantomData<&'eval mut TreeWalk>,
@@ -44,6 +47,7 @@ impl<'eval> RuntimeJitContext<'eval> {
         Self {
             eval: NonNull::from(eval),
             env: None,
+            stack_map_head: None,
             id,
             span,
             _marker: PhantomData,
@@ -61,6 +65,7 @@ impl<'eval> RuntimeJitContext<'eval> {
         Self {
             eval: NonNull::from(eval),
             env: Some(NonNull::from(env)),
+            stack_map_head: None,
             id,
             span,
             _marker: PhantomData,
@@ -77,6 +82,32 @@ impl<'eval> RuntimeJitContext<'eval> {
     pub fn as_mut_ptr(self: Pin<&mut Self>) -> *mut c_void {
         self.as_ref().get_ref() as *const Self as *mut c_void
     }
+
+    pub(crate) const fn stack_map_head(
+        &self,
+    ) -> Option<NonNull<RuntimeJitStackMapBindingHeader>> {
+        self.stack_map_head
+    }
+
+    pub(crate) fn set_stack_map_head(
+        &mut self,
+        head: Option<NonNull<RuntimeJitStackMapBindingHeader>>,
+    ) {
+        self.stack_map_head = head;
+    }
+}
+
+// SAFETY: Callers must pass a live pinned RuntimeJitContext pointer and keep
+// exclusive access to it for the callback.
+pub(crate) unsafe fn with_native_jit_context<R>(
+    rt: *mut c_void,
+    call: impl FnOnce(&mut RuntimeJitContext<'static>) -> R,
+) -> R {
+    let Some(rt) = NonNull::new(rt) else {
+        process::abort();
+    };
+    // SAFETY: The caller provides the live pinned context described above.
+    call(unsafe { rt.cast::<RuntimeJitContext<'static>>().as_mut() })
 }
 
 // SAFETY: Callers must pass a live pinned RuntimeJitContext carrying an env and

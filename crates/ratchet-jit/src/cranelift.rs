@@ -3320,6 +3320,14 @@ fn runtime_symbol_name_for_user_external_name(
             crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
             crate::lower::AOS_STRING_LENGTH_FUNCTION_INDEX,
         ) => Some("aos_string_length"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX,
+        ) => Some("aos_jit_stack_map_enter"),
+        (
+            crate::lower::AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
+            crate::lower::AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
+        ) => Some("aos_jit_stack_map_exit"),
         _ => None,
     }
 }
@@ -3495,6 +3503,8 @@ mod tests {
         tier::{DEFAULT_TIER1_INVOCATION_THRESHOLD, JitTier, TierUpCounter, TierUpReasons},
     };
 
+    mod stack_map_registration;
+
     fn synthetic_address(raw: usize) -> JitRuntimeSymbolAddress {
         JitRuntimeSymbolAddress::new(NonZeroUsize::new(raw).expect("test address is non-zero"))
     }
@@ -3505,6 +3515,23 @@ mod tests {
         raw: usize,
     ) -> JitRuntimeSymbolAddressCandidate {
         JitRuntimeSymbolAddressCandidate::new(symbol_name.to_owned(), kind, synthetic_address(raw))
+    }
+
+    fn with_stack_map_candidates<const N: usize>(
+        candidates: [JitRuntimeSymbolAddressCandidate; N],
+    ) -> Vec<JitRuntimeSymbolAddressCandidate> {
+        let mut candidates = Vec::from(candidates);
+        candidates.push(synthetic_address_candidate(
+            "aos_jit_stack_map_enter",
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::SafepointControl),
+            101,
+        ));
+        candidates.push(synthetic_address_candidate(
+            "aos_jit_stack_map_exit",
+            RuntimeSymbolKind::Helper(RuntimeHelperRole::SafepointControl),
+            103,
+        ));
+        candidates
     }
 
     fn synthetic_runtime_import_target() {}
@@ -3987,70 +4014,6 @@ mod tests {
     }
 
     #[test]
-    fn registered_artifact_definition_defines_forced_env_get_artifact_with_candidates() {
-        let candidates = [
-            synthetic_address_candidate(
-                "aos_env_get",
-                RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
-                3,
-            ),
-            synthetic_address_candidate(
-                "aos_force",
-                RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
-                5,
-            ),
-        ];
-
-        let preflight = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
-            forced_env_get_artifact(4),
-            &candidates,
-        )
-        .expect("registered forced env-get artifact definition preflight builds");
-
-        assert_eq!(
-            preflight.defined_function().symbol_name(),
-            "aos.jit.ir_root.0.thunk_body"
-        );
-        assert_eq!(preflight.defined_function().linkage(), Linkage::Export);
-        assert_eq!(
-            preflight
-                .artifact_runtime_imports()
-                .iter()
-                .map(|runtime_import| runtime_import.symbol_name())
-                .collect::<Vec<_>>(),
-            ["aos_env_get", "aos_force"]
-        );
-        assert!(preflight.imported_symbol_for("aos_env_get").is_some());
-        assert!(preflight.imported_symbol_for("aos_force").is_some());
-        assert_eq!(
-            preflight
-                .registered_symbol_for("aos_env_get")
-                .expect("env helper is registered")
-                .address()
-                .as_nonzero_usize()
-                .get(),
-            3
-        );
-        assert_eq!(
-            preflight
-                .registered_symbol_for("aos_force")
-                .expect("force helper is registered")
-                .address()
-                .as_nonzero_usize()
-                .get(),
-            5
-        );
-        assert!(
-            preflight
-                .registration_gap_for_symbol("aos_env_get")
-                .is_none()
-        );
-        assert!(preflight.registration_gap_for_symbol("aos_force").is_none());
-        assert!(!preflight.is_complete());
-        assert!(preflight.owns_encapsulated_module());
-    }
-
-    #[test]
     fn registered_artifact_definition_defines_apply_artifact_with_candidates() {
         let candidates = [
             synthetic_address_candidate(
@@ -4116,7 +4079,7 @@ mod tests {
 
     #[test]
     fn registered_artifact_definition_defines_update_artifact_with_candidates() {
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -4132,7 +4095,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 7,
             ),
-        ];
+        ]);
 
         let preflight = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
             update_artifact(4, 6),
@@ -4147,7 +4110,7 @@ mod tests {
         assert_eq!(preflight.defined_function().linkage(), Linkage::Export);
         assert_eq!(
             artifact_runtime_import_names(preflight.artifact_runtime_imports()),
-            ["aos_env_get", "aos_force", "aos_update"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
         );
         assert!(preflight.imported_symbol_for("aos_env_get").is_some());
         assert!(preflight.imported_symbol_for("aos_force").is_some());
@@ -4191,11 +4154,11 @@ mod tests {
 
     #[test]
     fn registered_artifact_definition_requires_force_candidate_for_forced_artifacts() {
-        let candidates = [synthetic_address_candidate(
+        let candidates = with_stack_map_candidates([synthetic_address_candidate(
             "aos_env_get",
             RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
             3,
-        )];
+        )]);
 
         let Err(error) = jit_cranelift_registered_artifact_definition_preflight_with_candidates(
             forced_env_get_artifact(4),
@@ -4406,7 +4369,7 @@ mod tests {
 
     #[test]
     fn registered_artifact_finalization_finalizes_forced_env_get_artifact_with_candidates() {
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -4417,7 +4380,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
                 5,
             ),
-        ];
+        ]);
 
         let preflight = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
             forced_env_get_artifact(4),
@@ -4455,7 +4418,10 @@ mod tests {
             .iter()
             .map(JitModuleArtifactRuntimeImport::symbol_name)
             .collect::<Vec<_>>();
-        assert_eq!(artifact_import_names, ["aos_env_get", "aos_force"]);
+        assert_eq!(
+            artifact_import_names,
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit"]
+        );
         assert!(preflight.imported_symbol_for("aos_env_get").is_some());
         assert!(preflight.imported_symbol_for("aos_force").is_some());
         assert_eq!(
@@ -4488,7 +4454,7 @@ mod tests {
 
     #[test]
     fn registered_artifact_finalization_finalizes_update_artifact_with_candidates() {
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -4504,7 +4470,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 7,
             ),
-        ];
+        ]);
 
         let preflight = jit_cranelift_registered_artifact_finalization_preflight_with_candidates(
             update_artifact(4, 6),
@@ -4529,7 +4495,7 @@ mod tests {
         );
         assert_eq!(
             artifact_runtime_import_names(preflight.artifact_runtime_imports()),
-            ["aos_env_get", "aos_force", "aos_update"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
         );
         assert!(preflight.imported_symbol_for("aos_env_get").is_some());
         assert!(preflight.imported_symbol_for("aos_force").is_some());
@@ -5111,7 +5077,7 @@ mod tests {
 
     #[test]
     fn registered_tier1_slot_preflight_installs_forced_env_get_artifact_with_candidates() {
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -5122,7 +5088,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
                 5,
             ),
-        ];
+        ]);
 
         let preflight = jit_cranelift_registered_tier1_slot_preflight_with_candidates(
             forced_env_get_artifact(7),
@@ -5140,7 +5106,7 @@ mod tests {
             preflight.slot().tier1_code_ptr(),
             Some(preflight.finalized_function().compiled_code_ptr())
         );
-        assert_eq!(preflight.finalization().artifact_runtime_imports().len(), 2);
+        assert_eq!(preflight.finalization().artifact_runtime_imports().len(), 4);
         assert!(
             preflight
                 .finalization()
@@ -5170,7 +5136,7 @@ mod tests {
 
     #[test]
     fn registered_tier1_slot_preflight_installs_update_artifact_with_candidates() {
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -5186,7 +5152,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 7,
             ),
-        ];
+        ]);
 
         let preflight = jit_cranelift_registered_tier1_slot_preflight_with_candidates(
             update_artifact(7, 9),
@@ -5206,7 +5172,7 @@ mod tests {
         );
         assert_eq!(
             artifact_runtime_import_names(preflight.finalization().artifact_runtime_imports()),
-            ["aos_env_get", "aos_force", "aos_update"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
         );
         assert!(
             preflight
@@ -5708,7 +5674,7 @@ mod tests {
     #[test]
     fn registered_promotion_preflight_compiles_update_root_with_candidates() {
         let arena = update_arena(4, 6);
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -5724,7 +5690,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 7,
             ),
-        ];
+        ]);
 
         let result =
             jit_cranelift_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
@@ -5758,7 +5724,7 @@ mod tests {
         );
         assert_eq!(
             artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
-            ["aos_env_get", "aos_force", "aos_update"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
         );
         assert!(
             promoted
@@ -5963,7 +5929,7 @@ mod tests {
     #[test]
     fn registered_lowered_ir_promotion_preflight_installs_static_select_root() {
         let ir = static_select_ir(9);
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -5979,7 +5945,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 7,
             ),
-        ];
+        ]);
 
         let result =
             jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
@@ -6004,7 +5970,7 @@ mod tests {
                 .iter()
                 .map(JitModuleArtifactRuntimeImport::symbol_name)
                 .collect::<Vec<_>>(),
-            ["aos_env_get", "aos_force", "aos_select_ic"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
         );
         assert!(
             promoted
@@ -6021,7 +5987,7 @@ mod tests {
     #[test]
     fn registered_lowered_ir_promotion_preflight_installs_update_root() {
         let ir = update_ir(9, 11);
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -6037,7 +6003,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 7,
             ),
-        ];
+        ]);
 
         let result =
             jit_cranelift_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
@@ -6057,7 +6023,7 @@ mod tests {
             .expect("promotion owns registered tier-1 preflight");
         assert_eq!(
             artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
-            ["aos_env_get", "aos_force", "aos_update"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
         );
         assert!(
             promoted
@@ -6151,7 +6117,7 @@ mod tests {
     #[test]
     fn force_aware_registered_lowered_ir_promotion_preflight_installs_static_select_root() {
         let ir = static_select_ir(13);
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -6167,7 +6133,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 17,
             ),
-        ];
+        ]);
 
         let result =
             jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
@@ -6201,7 +6167,7 @@ mod tests {
                 .iter()
                 .map(JitModuleArtifactRuntimeImport::symbol_name)
                 .collect::<Vec<_>>(),
-            ["aos_env_get", "aos_force", "aos_select_ic"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_select_ic"]
         );
         assert!(
             promoted
@@ -6237,7 +6203,7 @@ mod tests {
     #[test]
     fn force_aware_registered_lowered_ir_promotion_preflight_installs_update_root() {
         let ir = update_ir(13, 15);
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -6253,7 +6219,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::AttrsetAccess),
                 17,
             ),
-        ];
+        ]);
 
         let result =
             jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_lowered_ir_root_with_candidates(
@@ -6282,7 +6248,7 @@ mod tests {
             .expect("promotion owns registered tier-1 preflight");
         assert_eq!(
             artifact_runtime_import_names(promoted.finalization().artifact_runtime_imports()),
-            ["aos_env_get", "aos_force", "aos_update"]
+            ["aos_env_get", "aos_force", "aos_jit_stack_map_enter", "aos_jit_stack_map_exit", "aos_update"]
         );
         assert!(
             promoted
@@ -6308,7 +6274,7 @@ mod tests {
             )],
             Vec::new(),
         );
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -6319,7 +6285,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
                 5,
             ),
-        ];
+        ]);
 
         let result =
             jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
@@ -6351,7 +6317,7 @@ mod tests {
             result.slot().tier1_code_ptr(),
             Some(promoted.finalized_function().compiled_code_ptr())
         );
-        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 4);
         assert!(
             promoted
                 .finalization()
@@ -6497,11 +6463,11 @@ mod tests {
             )],
             Vec::new(),
         );
-        let candidates = [synthetic_address_candidate(
+        let candidates = with_stack_map_candidates([synthetic_address_candidate(
             "aos_env_get",
             RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
             3,
-        )];
+        )]);
 
         let result =
             jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
@@ -6556,7 +6522,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let candidates = [
+        let candidates = with_stack_map_candidates([
             synthetic_address_candidate(
                 "aos_env_get",
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::EnvironmentAccess),
@@ -6567,7 +6533,7 @@ mod tests {
                 RuntimeSymbolKind::Helper(RuntimeHelperRole::ForcingControl),
                 5,
             ),
-        ];
+        ]);
 
         let result =
             jit_cranelift_force_aware_registered_tier1_promotion_preflight_for_ir_root_with_candidates(
@@ -6593,7 +6559,7 @@ mod tests {
             result.slot().tier1_code_ptr(),
             Some(promoted.finalized_function().compiled_code_ptr())
         );
-        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 2);
+        assert_eq!(promoted.finalization().artifact_runtime_imports().len(), 4);
         assert!(
             promoted
                 .finalization()

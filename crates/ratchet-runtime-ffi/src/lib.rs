@@ -63,6 +63,7 @@ pub mod native_call;
 pub mod primop;
 pub mod safety;
 pub mod string_length;
+pub mod stack_map;
 pub mod trap;
 pub mod wrappers;
 
@@ -81,6 +82,11 @@ pub use primop::{
 };
 pub use string_length::{
     RuntimeStringLengthNativeFn, aos_string_length, aos_string_length_native_wrapper_address,
+};
+pub use stack_map::{
+    RuntimeJitStackMapEnterNativeFn, RuntimeJitStackMapExitNativeFn,
+    aos_jit_stack_map_enter, aos_jit_stack_map_enter_native_wrapper_address,
+    aos_jit_stack_map_exit, aos_jit_stack_map_exit_native_wrapper_address,
 };
 pub use safety::{
     RUNTIME_FFI_SAFETY_COMMENT_PREFIX, RUNTIME_FFI_UNSAFE_CRATE_LINT,

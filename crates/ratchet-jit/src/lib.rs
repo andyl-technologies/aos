@@ -115,6 +115,7 @@ pub use lower::{
 pub use lower::{
     AOS_APPLY_FUNCTION_INDEX, AOS_DEOPT_FUNCTION_INDEX, AOS_ENV_GET_FUNCTION_INDEX,
     AOS_FORCE_FUNCTION_INDEX, AOS_HAS_ATTR_FUNCTION_INDEX, AOS_IR_ROOT_FUNCTION_NAMESPACE,
+    AOS_JIT_STACK_MAP_ENTER_FUNCTION_INDEX, AOS_JIT_STACK_MAP_EXIT_FUNCTION_INDEX,
     AOS_PRIMOP_CALL_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
     AOS_SELECT_IC_FUNCTION_INDEX, AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX,
     AOS_UPVAL_GET_FUNCTION_INDEX,
@@ -122,6 +123,8 @@ pub use lower::{
     clif_external_name_for_aos_apply, clif_external_name_for_aos_deopt,
     clif_external_name_for_aos_env_get, clif_external_name_for_aos_force,
     clif_external_name_for_aos_has_attr, clif_external_name_for_aos_primop_call,
+    clif_external_name_for_aos_jit_stack_map_enter,
+    clif_external_name_for_aos_jit_stack_map_exit,
     clif_external_name_for_aos_select_ic, clif_external_name_for_aos_string_length,
     clif_external_name_for_aos_update, clif_external_name_for_aos_upval_get, clif_name_for_ir_root,
     jit_tier1_thunk_fact_decision_for_facts, jit_tier1_thunk_fact_plan,
