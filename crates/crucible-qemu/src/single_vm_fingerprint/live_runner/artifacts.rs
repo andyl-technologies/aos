@@ -64,13 +64,14 @@ impl LiveRunnerArtifactRoot {
                 }
             }
         })?;
-        LiveRunnerArtifacts::from_fresh_directory(directory)
+        LiveRunnerArtifacts::from_fresh_directory(attempt, directory)
     }
 }
 
 /// Stable paths owned by one fresh fingerprint attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveRunnerArtifacts {
+    attempt: u32,
     directory: PathBuf,
     qmp_socket: PathBuf,
     trace: PathBuf,
@@ -81,12 +82,16 @@ pub struct LiveRunnerArtifacts {
 }
 
 impl LiveRunnerArtifacts {
-    fn from_fresh_directory(directory: PathBuf) -> Result<Self, LiveRunnerArtifactsError> {
+    fn from_fresh_directory(
+        attempt: u32,
+        directory: PathBuf,
+    ) -> Result<Self, LiveRunnerArtifactsError> {
         let qmp_socket = directory.join("qmp.sock");
         if qmp_socket.as_os_str().as_encoded_bytes().len() >= 108 {
             return Err(LiveRunnerArtifactsError::QmpSocketPathTooLong { path: qmp_socket });
         }
         Ok(Self {
+            attempt,
             qmp_socket,
             trace: directory.join("trace.jsonl"),
             preflight_trace: directory.join("preflight.jsonl"),
@@ -95,6 +100,12 @@ impl LiveRunnerArtifacts {
             stderr_log: directory.join("qemu.stderr.log"),
             directory,
         })
+    }
+
+    /// Returns the exclusive attempt sequence number.
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        self.attempt
     }
 
     /// Returns the exclusive attempt directory.
@@ -193,6 +204,7 @@ mod tests {
         let root = LiveRunnerArtifactRoot::new(&root_path)?;
         let attempt = root.create_attempt(7)?;
         assert_eq!(attempt.directory(), root_path.join("attempt-00000007"));
+        assert_eq!(attempt.attempt(), 7);
         assert_eq!(attempt.trace(), attempt.directory().join("trace.jsonl"));
         assert_eq!(
             attempt.preflight_trace(),
