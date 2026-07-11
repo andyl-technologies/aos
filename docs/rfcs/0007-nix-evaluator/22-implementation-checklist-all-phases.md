@@ -11350,13 +11350,23 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       Tests cover codec/source rejection and a real `fib` write/reload across
       engines; the full `ratchet-jit` suite is 257/257 and `aos-nix` is 329/329.
       The locked Cargo vendor hash is updated for the codec dependency. After
-      removing an unnecessary advisory-record `fsync`, fifteen alternating
-      release-process rounds were warm-neutral at the command's 10 ms timing
-      resolution (140/140 ms) and showed a one-tick cold write cost (150 vs
-      140 ms) against pristine `afa7cf6c7`; this is therefore a functional
-      substrate, not yet a performance-win claim. Fused-chain and collection
-      entries, packed/indexed records, multi-location placement, counters, and a
-      measured admission/default policy remain open.
+      removing an unnecessary advisory-record `fsync`, the final balanced
+      seven-pair release A/B was 210 vs 220 ms cold and 220/220 ms warm against
+      pristine `afa7cf6c7`; candidate median maximum RSS was 71.03 vs 71.31 MiB
+      cold and 71.09 vs 71.44 MiB warm. Root-cutoff-disabled `nix-bench`
+      independently measured native `fib` at 20.7/18.4 ms cold/warm versus C++
+      Nix at 269/289 ms, with a 0.5 MiB arena peak. This is a functional
+      substrate and a no-regression result, not yet a CLIF-reload performance
+      win. The post-push full gate passed 3,033 active oracle tests (34 ignored;
+      serial rerun after the documented parallel counter flake), 80 active
+      runtime-FFI tests (26 ignored), 257 JIT tests, 329 `aos-nix` tests, 38
+      language tests, all 16 package byte-parity legs, compute x9,
+      `bench.wide-eval` in serial/K=4/JIT/sweep-zero, zlib and wide cache
+      validation, and all 645 generated strict-JSON seeds in those four modes.
+      The source-size gate remains pre-existing red; every touched offender is
+      unchanged and both new modules stay below 200 lines. Fused-chain and
+      collection entries, packed/indexed records, multi-location placement,
+      counters, and a measured admission/default policy remain open.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling

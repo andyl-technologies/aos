@@ -90,11 +90,15 @@ envelope, capped at 32 MiB, written by temporary-file rename, and treated as an
 advisory miss on I/O, header, source, codec, or CLIF-verifier failure. A fresh
 engine decodes and verifies CLIF, then recompiles it into its own
 `JitModuleContext`; executable pages and addresses are never serialized. The
-canonical `fib` record is 5.7 KiB. Fifteen alternating release-process rounds
-on the noisy Darwin host were resolution-flat warm (140 ms vs 140 ms for
-pristine `afa7cf6c7`) and showed a one-tick cold write cost (150 ms vs 140 ms)
-for the combined C++-oracle/native command, so this landing is a functional
-cache substrate, not a claimed wall-time win. Fused chains, fold/filter/genList
+canonical `fib` record is 5.7 KiB. The final balanced seven-pair release A/B on
+the noisy Darwin host measured the combined C++-oracle/native command at 210 ms
+cold versus 220 ms for pristine `afa7cf6c7`, and 220 ms warm for both. Median
+maximum RSS was slightly lower in the candidate (71.03 vs 71.31 MiB cold;
+71.09 vs 71.44 MiB warm). Root-cutoff-disabled `nix-bench` independently
+measured native `fib` at 20.7/18.4 ms cold/warm versus C++ Nix at 269/289 ms,
+with a 0.5 MiB arena peak. The cache is therefore neutral at this workload's
+whole-command resolution; this landing claims a functional substrate, not a
+CLIF-reload wall-time win. Fused chains, fold/filter/genList
 and `all`/`any` entries, a packed/indexed multi-record layout, secondary/L3
 placement, cache counters, and a measured default admission heuristic remain
 open.
