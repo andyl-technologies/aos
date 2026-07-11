@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -10,11 +11,14 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    DeterministicLaunchProfile, QemuPreSpawnLaunchValidationError,
-    validate_pre_spawn_qemu_launch_args,
+    DeterministicLaunchProfile, DiskImageMode, GuestBackingStateMode,
+    QemuPreSpawnLaunchValidationError, validate_pre_spawn_qemu_launch_args,
 };
 
-use super::LiveRunnerArtifacts;
+use super::{
+    LiveRunnerArtifacts, VerifiedGuestImageDigests, VerifiedLiveRunInputs,
+    VerifiedLiveRunInputsError,
+};
 
 /// Observation-only launch kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,9 +71,10 @@ pub struct LiveRunnerConfig {
     profile: DeterministicLaunchProfile,
     cadence_icount: u64,
     horizon_icount: u64,
-    launch_definition_digest: String,
-    qemu_build_digest: String,
-    trace_plugin_build_digest: String,
+    base_launch_digest: [u8; 32],
+    qemu_build_digest: [u8; 32],
+    trace_plugin_build_digest: [u8; 32],
+    verified_run_inputs: VerifiedLiveRunInputs,
 }
 
 impl LiveRunnerConfig {
@@ -82,14 +87,16 @@ impl LiveRunnerConfig {
     /// # Errors
     ///
     /// Returns [`LiveRunnerConfigError`] when an input is not a normalized Nix
-    /// store file, QEMU is not executable, a file cannot be read, the seed bytes
-    /// differ, or sampling bounds are zero or inconsistent.
+    /// store file, QEMU is not executable, a file cannot be read, the profile is
+    /// not explicitly diskless, the seed bytes differ, verified run-input
+    /// derivation fails, or sampling bounds are zero or inconsistent.
     pub fn new(
         immutable: LiveRunnerImmutableInputs,
         profile: DeterministicLaunchProfile,
         launch: LiveRunnerLaunchFields,
     ) -> Result<Self, LiveRunnerConfigError> {
         validate_sampling(launch)?;
+        validate_diskless_profile(&profile)?;
         for (field, path) in [
             ("qemu", &immutable.qemu),
             ("firmware", &immutable.firmware),
@@ -121,11 +128,10 @@ impl LiveRunnerConfig {
             return Err(LiveRunnerConfigError::SeedMismatch);
         }
 
-        let launch_definition_digest = launch_definition_digest(
+        let base_launch_digest = base_launch_digest(
             &profile,
-            launch,
             &immutable,
-            LaunchDefinitionDigests {
+            BaseLaunchDigests {
                 firmware: &firmware_digest,
                 kernel: &kernel_digest,
                 initrd: &initrd_digest,
@@ -133,16 +139,23 @@ impl LiveRunnerConfig {
                 qemu: &qemu_build_digest,
                 plugin: &trace_plugin_build_digest,
             },
-        );
+        )?;
+        let verified_run_inputs = VerifiedLiveRunInputs::new(
+            VerifiedGuestImageDigests::diskless(firmware_digest, kernel_digest, initrd_digest),
+            profile.kernel_cmdline(),
+            &seed_bytes,
+            base_launch_digest,
+        )?;
 
         Ok(Self {
             immutable,
             profile,
             cadence_icount: launch.cadence_icount,
             horizon_icount: launch.horizon_icount,
-            launch_definition_digest,
+            base_launch_digest,
             qemu_build_digest,
             trace_plugin_build_digest,
+            verified_run_inputs,
         })
     }
 
@@ -158,10 +171,20 @@ impl LiveRunnerConfig {
         self.profile.smp_vcpus()
     }
 
-    /// Returns the digest computed from the complete launch definition.
+    /// Returns the stable diskless base-launch digest.
+    ///
+    /// The base identity excludes per-attempt QMP paths, trace paths, sampling
+    /// cadence, and stop targets. Those observation-control values require a
+    /// separate attempt identity before exact probes can be admitted.
     #[must_use]
-    pub fn launch_definition_digest(&self) -> &str {
-        &self.launch_definition_digest
+    pub const fn base_launch_digest(&self) -> [u8; 32] {
+        self.base_launch_digest
+    }
+
+    /// Returns run inputs derived from the verified immutable launch files.
+    #[must_use]
+    pub const fn verified_run_inputs(&self) -> &VerifiedLiveRunInputs {
+        &self.verified_run_inputs
     }
 
     /// Builds and validates the canonical executable and argv for one attempt.
@@ -176,8 +199,9 @@ impl LiveRunnerConfig {
     /// # Errors
     ///
     /// Returns [`LiveRunnerConfigError`] when an artifact path is not stable
-    /// UTF-8, a canonical option is unexpectedly absent, or the completed argv
-    /// fails the crate's pre-spawn determinism validator.
+    /// UTF-8, a canonical option is unexpectedly absent, the completed argv
+    /// exposes block storage despite the diskless profile, or the crate's
+    /// pre-spawn determinism validator rejects it.
     pub fn launch_spec(
         &self,
         kind: LiveRunnerLaunchKind,
@@ -218,6 +242,7 @@ impl LiveRunnerConfig {
             "-no-shutdown".to_owned(),
             "-no-reboot".to_owned(),
         ]);
+        validate_diskless_argv(&argv)?;
         validate_pre_spawn_qemu_launch_args(&argv)
             .map_err(LiveRunnerConfigError::PreSpawnValidation)?;
 
@@ -242,9 +267,9 @@ impl LiveRunnerConfig {
         format!(
             "{},{mode},launch_digest={},qemu_build_digest={},plugin_build_digest={}",
             self.immutable.trace_plugin.display(),
-            self.launch_definition_digest,
-            self.qemu_build_digest,
-            self.trace_plugin_build_digest
+            lower_hex(&self.verified_run_inputs.launch_definition_digest()),
+            lower_hex(&self.qemu_build_digest),
+            lower_hex(&self.trace_plugin_build_digest)
         )
     }
 
@@ -255,15 +280,23 @@ impl LiveRunnerConfig {
         launch: LiveRunnerLaunchFields,
     ) -> Result<Self, LiveRunnerConfigError> {
         validate_sampling(launch)?;
-        let launch_definition_digest = "1".repeat(64);
+        validate_diskless_profile(&profile)?;
+        let base_launch_digest = [1; 32];
+        let verified_run_inputs = VerifiedLiveRunInputs::new(
+            VerifiedGuestImageDigests::diskless([3; 32], [4; 32], [5; 32]),
+            profile.kernel_cmdline(),
+            b"verified-test-seed",
+            base_launch_digest,
+        )?;
         Ok(Self {
             immutable,
             profile,
             cadence_icount: launch.cadence_icount,
             horizon_icount: launch.horizon_icount,
-            launch_definition_digest,
-            qemu_build_digest: "2".repeat(64),
-            trace_plugin_build_digest: "a".repeat(64),
+            base_launch_digest,
+            qemu_build_digest: [2; 32],
+            trace_plugin_build_digest: [10; 32],
+            verified_run_inputs,
         })
     }
 }
@@ -292,6 +325,22 @@ impl LiveRunnerLaunchSpec {
 /// Invalid immutable or deterministic launch configuration.
 #[derive(Debug, Error)]
 pub enum LiveRunnerConfigError {
+    /// The live runner currently supports only an explicit zero-block-device profile.
+    #[error(
+        "live runner requires diskless storage, got disk mode `{disk}` and backing mode `{backing}`"
+    )]
+    StorageProfileNotDiskless {
+        /// Rejected disk policy.
+        disk: DiskImageMode,
+        /// Rejected backing-state policy.
+        backing: GuestBackingStateMode,
+    },
+    /// A supposedly diskless argv exposed a block backend or device.
+    #[error("diskless live-run argv contains block-storage argument `{argument}`")]
+    DisklessArgvContainsBlockStorage {
+        /// Rejected option or device descriptor.
+        argument: String,
+    },
     /// Immutable path is not a normalized Nix store entry descendant.
     #[error("{field} is not a normalized immutable Nix store path: {path}", path = path.display())]
     InvalidStorePath {
@@ -327,6 +376,9 @@ pub enum LiveRunnerConfigError {
     /// Seed bytes differed from the canonical launch profile.
     #[error("seed file bytes differ from the deterministic launch profile")]
     SeedMismatch,
+    /// Verified immutable files could not form a canonical run-input contract.
+    #[error("verified live run inputs are invalid: {0}")]
+    VerifiedRunInputs(#[from] VerifiedLiveRunInputsError),
     /// Store path cannot be embedded unambiguously in a comma-delimited option.
     #[error("{field} path contains a comma, newline, carriage return, or NUL: {path}", path = path.display())]
     InvalidEmbeddedOptionPath {
@@ -376,6 +428,45 @@ fn validate_sampling(launch: LiveRunnerLaunchFields) -> Result<(), LiveRunnerCon
     }
     if launch.horizon_icount < launch.cadence_icount {
         return Err(LiveRunnerConfigError::HorizonBeforeCadence);
+    }
+    Ok(())
+}
+
+fn validate_diskless_profile(
+    profile: &DeterministicLaunchProfile,
+) -> Result<(), LiveRunnerConfigError> {
+    if profile.disk_image_mode() == DiskImageMode::NoBlockDevice
+        && profile.guest_backing_state() == GuestBackingStateMode::NoBlockDevice
+    {
+        Ok(())
+    } else {
+        Err(LiveRunnerConfigError::StorageProfileNotDiskless {
+            disk: profile.disk_image_mode(),
+            backing: profile.guest_backing_state(),
+        })
+    }
+}
+
+fn validate_diskless_argv(argv: &[String]) -> Result<(), LiveRunnerConfigError> {
+    for (index, argument) in argv.iter().enumerate() {
+        if matches!(
+            argument.as_str(),
+            "-drive" | "-blockdev" | "-snapshot" | "-cdrom" | "-hda" | "-hdb" | "-hdc" | "-hdd"
+        ) {
+            return Err(LiveRunnerConfigError::DisklessArgvContainsBlockStorage {
+                argument: argument.clone(),
+            });
+        }
+        if index > 0
+            && argv[index - 1] == "-device"
+            && ["virtio-blk", "ide-hd", "scsi-hd", "nvme"]
+                .iter()
+                .any(|model| argument.contains(model))
+        {
+            return Err(LiveRunnerConfigError::DisklessArgvContainsBlockStorage {
+                argument: argument.clone(),
+            });
+        }
     }
     Ok(())
 }
@@ -464,7 +555,7 @@ fn hash_store_file(
     field: &'static str,
     path: &Path,
     executable: bool,
-) -> Result<String, LiveRunnerConfigError> {
+) -> Result<[u8; 32], LiveRunnerConfigError> {
     validate_store_path(field, path)?;
     let resolved = fs::canonicalize(path).map_err(|source| LiveRunnerConfigError::FileIo {
         field,
@@ -508,25 +599,24 @@ fn hash_store_file(
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(lower_hex(&hasher.finalize()))
+    Ok(hasher.finalize().into())
 }
 
-struct LaunchDefinitionDigests<'a> {
-    firmware: &'a str,
-    kernel: &'a str,
-    initrd: &'a str,
-    seed: &'a str,
-    qemu: &'a str,
-    plugin: &'a str,
+struct BaseLaunchDigests<'a> {
+    firmware: &'a [u8; 32],
+    kernel: &'a [u8; 32],
+    initrd: &'a [u8; 32],
+    seed: &'a [u8; 32],
+    qemu: &'a [u8; 32],
+    plugin: &'a [u8; 32],
 }
 
-fn launch_definition_digest(
+fn base_launch_digest(
     profile: &DeterministicLaunchProfile,
-    launch: LiveRunnerLaunchFields,
     immutable: &LiveRunnerImmutableInputs,
-    digests: LaunchDefinitionDigests<'_>,
-) -> String {
-    let LaunchDefinitionDigests {
+    digests: BaseLaunchDigests<'_>,
+) -> Result<[u8; 32], LiveRunnerConfigError> {
+    let BaseLaunchDigests {
         firmware,
         kernel,
         initrd,
@@ -534,19 +624,58 @@ fn launch_definition_digest(
         qemu,
         plugin,
     } = digests;
-    let material = format!(
-        "crucible.qemu.live-fingerprint-launch.v1\n{}\nqemu_path={}\nqemu_sha256={qemu}\nfirmware_path={}\nfirmware_sha256={firmware}\nkernel_path={}\nkernel_sha256={kernel}\ninitrd_path={}\ninitrd_sha256={initrd}\nseed_path={}\nseed_sha256={seed}\ntrace_plugin_path={}\ntrace_plugin_sha256={plugin}\nplugin_cadence={}\nplugin_stop_at={}\nplugin_extended=on\nplugin_mem_events=on\nplugin_rr_switch_events=on\nserial_backend=none\nqmp=unix-server-wait-off\nno_shutdown=true\nno_reboot=true",
-        profile.scenario_hash_material(),
-        immutable.qemu.display(),
-        immutable.firmware.display(),
-        immutable.kernel.display(),
-        immutable.initrd.display(),
-        immutable.seed_file.display(),
-        immutable.trace_plugin.display(),
-        launch.cadence_icount,
-        launch.horizon_icount
-    );
-    lower_hex(&Sha256::digest(material.as_bytes()))
+    let mut argv = profile.canonical_qemu_args();
+    replace_unique_option_value(
+        &mut argv,
+        "-fw_cfg",
+        format!(
+            "name=opt/crucible/seed,file={}",
+            immutable.seed_file.display()
+        ),
+    )?;
+    argv.extend([
+        "-bios".to_owned(),
+        path_text("firmware", &immutable.firmware)?.to_owned(),
+        "-kernel".to_owned(),
+        path_text("kernel", &immutable.kernel)?.to_owned(),
+        "-initrd".to_owned(),
+        path_text("initrd", &immutable.initrd)?.to_owned(),
+        "-no-shutdown".to_owned(),
+        "-no-reboot".to_owned(),
+    ]);
+    validate_diskless_argv(&argv)?;
+
+    let mut hasher = Sha256::new();
+    hash_framed(&mut hasher, b"crucible.qemu.live-base-launch.v2");
+    hash_framed(&mut hasher, b"storage=diskless");
+    hash_framed(&mut hasher, b"block-devices=0");
+    for (label, path, digest) in [
+        ("qemu", &immutable.qemu, qemu),
+        ("firmware", &immutable.firmware, firmware),
+        ("kernel", &immutable.kernel, kernel),
+        ("initrd", &immutable.initrd, initrd),
+        ("seed", &immutable.seed_file, seed),
+        ("trace-plugin", &immutable.trace_plugin, plugin),
+    ] {
+        hash_framed(&mut hasher, label.as_bytes());
+        hash_framed(&mut hasher, path.as_os_str().as_bytes());
+        hash_framed(&mut hasher, digest);
+    }
+    hash_u64(&mut hasher, argv.len() as u64);
+    for (index, argument) in argv.iter().enumerate() {
+        hash_u64(&mut hasher, index as u64);
+        hash_framed(&mut hasher, argument.as_bytes());
+    }
+    Ok(hasher.finalize().into())
+}
+
+fn hash_framed(hasher: &mut Sha256, bytes: &[u8]) {
+    hash_u64(hasher, bytes.len() as u64);
+    hasher.update(bytes);
+}
+
+fn hash_u64(hasher: &mut Sha256, value: u64) {
+    hasher.update(value.to_be_bytes());
 }
 
 fn lower_hex(bytes: &[u8]) -> String {
@@ -621,6 +750,8 @@ mod tests {
             .with_smp_vcpus(4)
             .with_icount_shift(IcountShiftSetting::Fixed(0))
             .with_scenario_seed(0x0010_c016)
+            .with_disk_image_mode(DiskImageMode::NoBlockDevice)
+            .with_guest_backing_state(GuestBackingStateMode::NoBlockDevice)
             .try_into_deterministic()
     }
 
@@ -671,7 +802,20 @@ mod tests {
             argv.windows(2)
                 .any(|pair| { pair[0] == OsStr::new("-serial") && pair[1] == OsStr::new("none") })
         );
+        assert!(argv.windows(2).any(|pair| {
+            pair[0] == OsStr::new("-append")
+                && pair[1] == OsStr::new(config.verified_run_inputs().kernel_cmdline())
+        }));
         assert!(!argv.iter().any(|arg| arg == OsStr::new("-chardev")));
+        assert!(
+            validate_diskless_argv(
+                &argv
+                    .iter()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            )
+            .is_ok()
+        );
         assert!(argv.windows(2).any(|pair| {
             pair[0] == OsStr::new("-qmp")
                 && pair[1] == OsStr::new("unix:qmp.sock,server=on,wait=off")
@@ -687,6 +831,10 @@ mod tests {
             .ok_or("missing plugin argument")?;
         assert!(plugin.contains("cadence=100000,stop_at=1000000"));
         assert!(plugin.contains("extended=on,mem_events=on,rr_switch_events=on,vcpus=4"));
+        assert!(plugin.contains(&format!(
+            "launch_digest={}",
+            lower_hex(&config.verified_run_inputs().launch_definition_digest())
+        )));
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }
@@ -769,56 +917,114 @@ mod tests {
     }
 
     #[test]
-    fn launch_identity_changes_with_immutable_path_or_digest() -> Result<(), Box<dyn Error>> {
+    fn live_runner_rejects_overlay_profile_without_a_disk() -> Result<(), Box<dyn Error>> {
+        let overlay_profile = LaunchProfileCandidate::default()
+            .with_memory_mib(128)
+            .with_smp_vcpus(4)
+            .with_icount_shift(IcountShiftSetting::Fixed(0))
+            .try_into_deterministic()?;
+        let immutable = config()?.immutable;
+        assert!(matches!(
+            LiveRunnerConfig::from_verified_test_inputs(
+                immutable,
+                overlay_profile,
+                LiveRunnerLaunchFields {
+                    cadence_icount: 10,
+                    horizon_icount: 20,
+                },
+            ),
+            Err(LiveRunnerConfigError::StorageProfileNotDiskless {
+                disk: DiskImageMode::CopyOnWriteOverlay,
+                backing: GuestBackingStateMode::ByteIdenticalGenesis,
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn diskless_argv_validator_rejects_block_backends_and_devices() {
+        for argv in [
+            vec!["-drive".to_owned(), "file=root.raw".to_owned()],
+            vec!["-blockdev".to_owned(), "driver=raw".to_owned()],
+            vec!["-device".to_owned(), "virtio-blk-pci".to_owned()],
+        ] {
+            assert!(matches!(
+                validate_diskless_argv(&argv),
+                Err(LiveRunnerConfigError::DisklessArgvContainsBlockStorage { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn base_identity_changes_with_immutable_path_or_digest() -> Result<(), Box<dyn Error>> {
         let config = config()?;
-        let launch = LiveRunnerLaunchFields {
-            cadence_icount: 100_000,
-            horizon_icount: 1_000_000,
-        };
-        let baseline = launch_definition_digest(
+        let baseline = base_launch_digest(
             &config.profile,
-            launch,
             &config.immutable,
-            LaunchDefinitionDigests {
-                firmware: "1",
-                kernel: "2",
-                initrd: "3",
-                seed: "4",
-                qemu: "5",
-                plugin: "6",
+            BaseLaunchDigests {
+                firmware: &[1; 32],
+                kernel: &[2; 32],
+                initrd: &[3; 32],
+                seed: &[4; 32],
+                qemu: &[5; 32],
+                plugin: &[6; 32],
             },
-        );
-        let changed_digest = launch_definition_digest(
+        )?;
+        let changed_digest = base_launch_digest(
             &config.profile,
-            launch,
             &config.immutable,
-            LaunchDefinitionDigests {
-                firmware: "1",
-                kernel: "2",
-                initrd: "3",
-                seed: "4",
-                qemu: "different",
-                plugin: "6",
+            BaseLaunchDigests {
+                firmware: &[1; 32],
+                kernel: &[2; 32],
+                initrd: &[3; 32],
+                seed: &[4; 32],
+                qemu: &[7; 32],
+                plugin: &[6; 32],
             },
-        );
+        )?;
         let mut changed_inputs = config.immutable.clone();
         changed_inputs.qemu =
             "/nix/store/99999999999999999999999999999999-qemu/bin/qemu-system-x86_64".into();
-        let changed_path = launch_definition_digest(
+        let changed_path = base_launch_digest(
             &config.profile,
-            launch,
             &changed_inputs,
-            LaunchDefinitionDigests {
-                firmware: "1",
-                kernel: "2",
-                initrd: "3",
-                seed: "4",
-                qemu: "5",
-                plugin: "6",
+            BaseLaunchDigests {
+                firmware: &[1; 32],
+                kernel: &[2; 32],
+                initrd: &[3; 32],
+                seed: &[4; 32],
+                qemu: &[5; 32],
+                plugin: &[6; 32],
             },
-        );
+        )?;
         assert_ne!(baseline, changed_digest);
         assert_ne!(baseline, changed_path);
+        Ok(())
+    }
+
+    #[test]
+    fn base_identity_excludes_observation_cadence_and_horizon() -> Result<(), Box<dyn Error>> {
+        let first = LiveRunnerConfig::from_verified_test_inputs(
+            config()?.immutable,
+            profile()?,
+            LiveRunnerLaunchFields {
+                cadence_icount: 10,
+                horizon_icount: 20,
+            },
+        )?;
+        let second = LiveRunnerConfig::from_verified_test_inputs(
+            first.immutable.clone(),
+            profile()?,
+            LiveRunnerLaunchFields {
+                cadence_icount: 17,
+                horizon_icount: 31,
+            },
+        )?;
+        assert_eq!(first.base_launch_digest(), second.base_launch_digest());
+        assert_eq!(
+            first.verified_run_inputs().to_run_inputs()?,
+            second.verified_run_inputs().to_run_inputs()?
+        );
         Ok(())
     }
 }

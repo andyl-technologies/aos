@@ -113,16 +113,24 @@ pub enum LaunchProfileError {
         mode: MachineResetMode,
     },
     /// Guest writes could mutate the backing image.
-    #[error("disk image mode must be copy-on-write, got `{mode}`")]
+    #[error("disk image mode must be copy-on-write or diskless, got `{mode}`")]
     DiskImageMutatesBacking {
         /// The rejected disk mode.
         mode: DiskImageMode,
     },
     /// Genesis backing state would not be byte-identical across runs.
-    #[error("guest backing state must be byte-identical genesis state, got `{mode}`")]
+    #[error("guest backing state must be byte-identical or absent, got `{mode}`")]
     GuestBackingStateNotByteIdentical {
         /// The rejected guest backing-state mode.
         mode: GuestBackingStateMode,
+    },
+    /// Disk and backing-state policies described different storage surfaces.
+    #[error("disk image mode `{disk}` is incompatible with backing-state mode `{backing}`")]
+    StorageModeMismatch {
+        /// Disk device/write policy.
+        disk: DiskImageMode,
+        /// Backing-state identity policy.
+        backing: GuestBackingStateMode,
     },
     /// Core operation would require Crucible content inside the guest.
     #[error("core operation must remain host-side only, got `{mode}`")]

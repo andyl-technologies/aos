@@ -286,15 +286,25 @@ impl LaunchProfileCandidate {
                 mode: self.machine_reset,
             });
         }
-        if self.disk_image_mode != DiskImageMode::CopyOnWriteOverlay {
-            return Err(LaunchProfileError::DiskImageMutatesBacking {
-                mode: self.disk_image_mode,
-            });
-        }
-        if self.guest_backing_state != GuestBackingStateMode::ByteIdenticalGenesis {
-            return Err(LaunchProfileError::GuestBackingStateNotByteIdentical {
-                mode: self.guest_backing_state,
-            });
+        match (self.disk_image_mode, self.guest_backing_state) {
+            (DiskImageMode::CopyOnWriteOverlay, GuestBackingStateMode::ByteIdenticalGenesis)
+            | (DiskImageMode::NoBlockDevice, GuestBackingStateMode::NoBlockDevice) => {}
+            (DiskImageMode::WritableBacking, _) => {
+                return Err(LaunchProfileError::DiskImageMutatesBacking {
+                    mode: self.disk_image_mode,
+                });
+            }
+            (_, GuestBackingStateMode::HostMutableGenesis) => {
+                return Err(LaunchProfileError::GuestBackingStateNotByteIdentical {
+                    mode: self.guest_backing_state,
+                });
+            }
+            _ => {
+                return Err(LaunchProfileError::StorageModeMismatch {
+                    disk: self.disk_image_mode,
+                    backing: self.guest_backing_state,
+                });
+            }
         }
         if self.guest_core_content != GuestCoreContentMode::HostSideOnly {
             return Err(LaunchProfileError::GuestCoreContentRequired {
@@ -1146,6 +1156,24 @@ impl DeterministicLaunchProfile {
         }
     }
 
+    /// Returns the exact guest kernel command line emitted through `-append`.
+    #[must_use]
+    pub fn kernel_cmdline(&self) -> &str {
+        &self.kernel_cmdline
+    }
+
+    /// Returns the validated guest block-storage policy.
+    #[must_use]
+    pub const fn disk_image_mode(&self) -> DiskImageMode {
+        self.disk_image_mode
+    }
+
+    /// Returns the validated guest backing-state policy.
+    #[must_use]
+    pub const fn guest_backing_state(&self) -> GuestBackingStateMode {
+        self.guest_backing_state
+    }
+
     /// Returns the fixed `-icount shift=N` value pinned by this launch profile.
     #[must_use]
     pub fn icount_shift(&self) -> u8 {
@@ -1381,6 +1409,8 @@ pub enum MachineResetMode {
 /// The backing-image write policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiskImageMode {
+    /// The guest is launched without a block device.
+    NoBlockDevice,
     /// Guest writes land in a copy-on-write overlay.
     CopyOnWriteOverlay,
     /// Guest writes may mutate the backing image.
@@ -1390,6 +1420,8 @@ pub enum DiskImageMode {
 /// The identity policy for guest backing state at genesis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GuestBackingStateMode {
+    /// No guest block backing exists.
+    NoBlockDevice,
     /// Each run starts from byte-identical read-only genesis backing state.
     ByteIdenticalGenesis,
     /// The genesis backing state may be host-provided or mutable across runs.
@@ -1426,6 +1458,7 @@ impl fmt::Display for MachineResetMode {
 impl fmt::Display for DiskImageMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NoBlockDevice => f.write_str("no-block-device"),
             Self::CopyOnWriteOverlay => f.write_str("copy-on-write-overlay"),
             Self::WritableBacking => f.write_str("writable-backing"),
         }
@@ -1435,6 +1468,7 @@ impl fmt::Display for DiskImageMode {
 impl fmt::Display for GuestBackingStateMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NoBlockDevice => f.write_str("no-block-device"),
             Self::ByteIdenticalGenesis => f.write_str("byte-identical-genesis"),
             Self::HostMutableGenesis => f.write_str("host-mutable-genesis"),
         }

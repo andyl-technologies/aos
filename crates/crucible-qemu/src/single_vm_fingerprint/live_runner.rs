@@ -9,6 +9,7 @@ mod artifacts;
 mod config;
 mod process;
 mod qmp_poll;
+mod verified_inputs;
 
 pub use artifacts::{LiveRunnerArtifactRoot, LiveRunnerArtifacts, LiveRunnerArtifactsError};
 pub use config::{
@@ -23,4 +24,7 @@ pub use qmp_poll::{
     LiveRunnerQmpConnector, LiveRunnerQmpObservation, LiveRunnerQmpPollError,
     LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession, LiveRunnerSleeper,
     ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector,
+};
+pub use verified_inputs::{
+    VerifiedGuestImageDigests, VerifiedLiveRunInputs, VerifiedLiveRunInputsError,
 };

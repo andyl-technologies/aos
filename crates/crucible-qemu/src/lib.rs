@@ -186,7 +186,8 @@ pub use single_vm_fingerprint::{
     LiveRunnerImmutableInputs, LiveRunnerLaunchFields, LiveRunnerLaunchKind, LiveRunnerLaunchSpec,
     LiveRunnerQmpConnector, LiveRunnerQmpObservation, LiveRunnerQmpPollError,
     LiveRunnerQmpPollPolicy, LiveRunnerQmpPoller, LiveRunnerQmpSession, LiveRunnerSleeper,
-    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, spawn_live_observation_process,
+    ThreadLiveRunnerSleeper, TypedLiveRunnerQmpConnector, VerifiedGuestImageDigests,
+    VerifiedLiveRunInputs, VerifiedLiveRunInputsError, spawn_live_observation_process,
 };
 pub use single_vm_fingerprint::{
     QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition,
