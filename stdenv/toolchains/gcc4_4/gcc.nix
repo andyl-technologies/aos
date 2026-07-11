@@ -87,6 +87,23 @@ in
         gcc/Makefile.in
     '';
     preConfigure = ''
+      # GCC discovers non-C frontends with gcc/*/config-lang.in. Reset shell
+      # glob filters inherited from the early bootstrap environment so the
+      # in-tree g++ component is visible to configure.
+      set +f
+      unset GLOBIGNORE || true
+      export SHELLOPTS
+      foundCxx=
+      for langFragment in "$TMPDIR"/gcc-4.4.7/gcc/*/config-lang.in; do
+        case "$langFragment" in
+          */gcc/cp/config-lang.in) foundCxx=1 ;;
+        esac
+      done
+      test -n "$foundCxx" || {
+        echo "GCC 4.4.7 C++ frontend source is missing" >&2
+        exit 1
+      }
+
       mkdir -p "$TMPDIR/ccwrap"
       cat > "$TMPDIR/ccwrap/gcc" <<'AOS_GCC_CC'
       #!${prev.bash}/bin/bash

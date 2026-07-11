@@ -354,6 +354,11 @@ Build the native glibc 2.5 tier with its in-tree NPTL add-on and a Linux 2.6
 kernel floor. RHEL 5 compatibility includes the NPTL `libpthread` ABI, and
 glibc 2.5 intentionally rejects a Linux build that silently omits that add-on.
 
+Before configuring GCC 4.4, clear inherited shell glob filters and assert that
+the unpacked `gcc/cp/config-lang.in` is visible. GCC 4.4 is the first C++ rung;
+if its language-fragment glob is suppressed, configure misleadingly reports
+that only C is supported even though the g++ source component was unpacked.
+
 ## Expected outcome
 
 The ~22,400 toolchain LOC should drop by well over half: the POSIX-tools
