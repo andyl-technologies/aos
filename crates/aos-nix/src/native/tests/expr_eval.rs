@@ -424,7 +424,7 @@ fn native_expression_eval_persists_refreshed_analysis_facts_without_source_path(
 
 #[test]
 fn native_expression_eval_hydrates_persistent_parse_cache_without_source_path() -> Result<()> {
-    use crate::cache::{MaterializationDecision, ParseCacheMeta, PersistCache};
+    use crate::cache::{MaterializationDecision, PersistCache};
 
     let root = unique_temp_dir("native-expression-persist-parse-hit");
     fs::create_dir_all(&root)?;
@@ -454,8 +454,7 @@ fn native_expression_eval_hydrates_persistent_parse_cache_without_source_path() 
         hydrated_entry.is_complete(),
         "persistent raw expression hit should hydrate the fresh parse-cache entry"
     );
-    let meta = fs::read_to_string(hydrated_entry.meta_path())?;
-    let meta = ParseCacheMeta::from_toml(&meta)?;
+    let meta = hydrated_entry.read_artifact_bundle()?.decode_meta()?;
     assert_eq!(meta.source_hint.as_deref(), Some(marker));
 
     fs::remove_dir_all(root)?;

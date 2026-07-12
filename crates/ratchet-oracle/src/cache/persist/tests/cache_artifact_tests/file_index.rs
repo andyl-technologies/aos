@@ -529,11 +529,14 @@ fn cache_file_artifact_hydration_from_index_reports_lookup_errors() {
         .hydrate_file_artifact_bundle_from_index(&file_key, parse_key, &target)
         .expect_err("lookup errors");
 
+    // A directory at the index path surfaces as a lookup failure. The specific
+    // index-error variant is implementation-dependent now that the redundant
+    // per-op index ensure/create-open was hoisted to cache open (the scan opens
+    // the corrupt path directly and fails at open or length validation), so this
+    // asserts the lookup-error class rather than the exact open variant.
     assert!(matches!(
         error,
-        PersistFileArtifactIndexedHydrationError::Lookup {
-            source: PersistFileArtifactIndexError::Open { .. },
-        }
+        PersistFileArtifactIndexedHydrationError::Lookup { .. }
     ));
     assert!(!target.dir().exists());
 

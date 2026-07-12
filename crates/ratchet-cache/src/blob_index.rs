@@ -222,7 +222,6 @@ impl BlobIndex {
     /// Returns [`BlobIndexError`] if the index cannot be opened, validated,
     /// written, or flushed.
     pub fn append_entry(&self, entry: BlobIndexEntry) -> Result<(), BlobIndexError> {
-        ensure_blob_index_file(&self.path)?;
         let mut file = fs::OpenOptions::new()
             .append(true)
             .open(&self.path)
@@ -299,7 +298,6 @@ impl BlobIndex {
     /// Returns [`BlobIndexError`] if the index cannot be created, opened,
     /// inspected, written, flushed, or renamed into place.
     pub fn replace_entries(&self, entries: &[BlobIndexEntry]) -> Result<usize, BlobIndexError> {
-        ensure_blob_index_file(&self.path)?;
         let rewrite_id = BLOB_INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
         let tmp_path = self
             .path
@@ -358,7 +356,6 @@ impl BlobIndex {
         &self,
         offset: u64,
     ) -> Result<(Vec<BlobIndexEntry>, u64), BlobIndexError> {
-        ensure_blob_index_file(&self.path)?;
         let mut file = fs::OpenOptions::new()
             .read(true)
             .open(&self.path)
@@ -403,7 +400,6 @@ impl BlobIndex {
     }
 
     fn scan_entries(&self, mut visit: impl FnMut(BlobIndexEntry)) -> Result<(), BlobIndexError> {
-        ensure_blob_index_file(&self.path)?;
         let mut file = fs::OpenOptions::new()
             .read(true)
             .open(&self.path)

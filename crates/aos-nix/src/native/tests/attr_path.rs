@@ -533,7 +533,7 @@ fn native_file_instantiation_disabled_cache_bypasses_persistent_force_sidecar_ef
 #[test]
 fn native_file_instantiation_hydrates_persistent_root_parse_cache() -> Result<()> {
     use crate::cache::{
-        MaterializationDecision, ParseCache, ParseCacheMeta, ParseFileKey, PersistCache,
+        MaterializationDecision, ParseCache, ParseFileKey, PersistCache,
     };
 
     let root = unique_temp_dir("aos-nix-native-instantiate-persist-root-hit");
@@ -582,8 +582,7 @@ fn native_file_instantiation_hydrates_persistent_root_parse_cache() -> Result<()
         hydrated_entry.is_complete(),
         "persistent native root hit should hydrate the fresh parse-cache entry"
     );
-    let meta = fs::read_to_string(hydrated_entry.meta_path())?;
-    let meta = ParseCacheMeta::from_toml(&meta)?;
+    let meta = hydrated_entry.read_artifact_bundle()?.decode_meta()?;
     assert_eq!(meta.source_hint.as_deref(), Some(marker));
 
     fs::remove_dir_all(root)?;

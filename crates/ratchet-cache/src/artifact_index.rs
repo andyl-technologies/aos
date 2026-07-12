@@ -247,7 +247,6 @@ impl ArtifactIndex {
     /// Returns [`ArtifactIndexError`] if the index cannot be opened, validated,
     /// written, or flushed.
     pub fn append_entry(&self, entry: ArtifactIndexEntry) -> Result<(), ArtifactIndexError> {
-        ensure_artifact_index_file(&self.path)?;
         let mut file = fs::OpenOptions::new()
             .append(true)
             .open(&self.path)
@@ -344,7 +343,6 @@ impl ArtifactIndex {
         &self,
         entries: &[ArtifactIndexEntry],
     ) -> Result<usize, ArtifactIndexError> {
-        ensure_artifact_index_file(&self.path)?;
         let rewrite_id = ARTIFACT_INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
         let tmp_path = self
             .path
@@ -368,7 +366,6 @@ impl ArtifactIndex {
         &self,
         mut visit: impl FnMut(ArtifactIndexEntry),
     ) -> Result<(), ArtifactIndexError> {
-        ensure_artifact_index_file(&self.path)?;
         let mut file = fs::OpenOptions::new()
             .read(true)
             .open(&self.path)

@@ -214,7 +214,6 @@ impl NodeMetadataIndex {
     /// Returns [`NodeMetadataIndexError`] if the index cannot be opened,
     /// validated, written, or flushed.
     pub fn append_entry(&self, entry: NodeMetadataEntry) -> Result<(), NodeMetadataIndexError> {
-        ensure_node_metadata_index_file(&self.path)?;
         let mut file = fs::OpenOptions::new()
             .append(true)
             .open(&self.path)
@@ -316,7 +315,6 @@ impl NodeMetadataIndex {
         &self,
         offset: u64,
     ) -> Result<(Vec<NodeMetadataEntry>, u64), NodeMetadataIndexError> {
-        ensure_node_metadata_index_file(&self.path)?;
         let mut file = fs::OpenOptions::new()
             .read(true)
             .open(&self.path)
@@ -395,7 +393,6 @@ impl NodeMetadataIndex {
         &self,
         entries: &[NodeMetadataEntry],
     ) -> Result<usize, NodeMetadataIndexError> {
-        ensure_node_metadata_index_file(&self.path)?;
         let rewrite_id = NODE_METADATA_INDEX_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
         let tmp_path = self
             .path
@@ -442,7 +439,6 @@ impl NodeMetadataIndex {
         &self,
         mut visit: impl FnMut(NodeMetadataEntry),
     ) -> Result<(), NodeMetadataIndexError> {
-        ensure_node_metadata_index_file(&self.path)?;
         let mut file = fs::OpenOptions::new()
             .read(true)
             .open(&self.path)

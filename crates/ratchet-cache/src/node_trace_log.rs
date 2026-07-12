@@ -212,7 +212,6 @@ impl NodeTraceLog {
     /// Returns [`NodeTraceLogError`] if the log cannot be opened, validated,
     /// written, or flushed, or if the encoded record cannot be allocated.
     pub fn append_entry(&self, entry: NodeTraceLogEntry) -> Result<(), NodeTraceLogError> {
-        ensure_node_trace_log_file(&self.path)?;
         let record = encode_node_trace_log_entry(&entry)?;
         let mut file = fs::OpenOptions::new()
             .append(true)
@@ -301,7 +300,6 @@ impl NodeTraceLog {
         &self,
         offset: u64,
     ) -> Result<(Vec<NodeTraceLogEntry>, u64), NodeTraceLogError> {
-        ensure_node_trace_log_file(&self.path)?;
         let mut entries = Vec::new();
         let end = scan_node_trace_log_entries_from(&self.path, offset, |entry| {
             entries.push(entry);
@@ -360,7 +358,6 @@ impl NodeTraceLog {
         &self,
         entries: &[NodeTraceLogEntry],
     ) -> Result<usize, NodeTraceLogError> {
-        ensure_node_trace_log_file(&self.path)?;
         let rewrite_id = NODE_TRACE_LOG_REWRITE_ID.fetch_add(1, Ordering::Relaxed);
         let tmp_path = self
             .path
@@ -403,7 +400,6 @@ impl NodeTraceLog {
     }
 
     fn scan_entries(&self, visit: impl FnMut(NodeTraceLogEntry)) -> Result<(), NodeTraceLogError> {
-        ensure_node_trace_log_file(&self.path)?;
         scan_node_trace_log_entries_from(&self.path, 0, visit)?;
         Ok(())
     }

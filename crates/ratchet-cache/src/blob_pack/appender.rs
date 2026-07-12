@@ -86,7 +86,6 @@ impl BlobPackAppender {
         expected_hash: BlobPackHash,
         payload: &[u8],
     ) -> Result<BlobPackLocation, BlobPackAppendError> {
-        ensure_blob_pack_file(&self.path)?;
         let actual = BlobPackHash::for_bytes(payload);
         if actual != expected_hash {
             return Err(BlobPackAppendError::PayloadHashMismatch {
