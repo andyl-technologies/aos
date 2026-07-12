@@ -1,0 +1,109 @@
+//! Runs the production loaded-QEMU Rust-plugin install lifecycle gate.
+//!
+//! Boots the patched QEMU binary once with the real Rust control plugin loaded
+//! through the fixed inherited descriptors and drives the full install
+//! lifecycle: handshake, `SCM_RIGHTS` handover, shared-memory map, `SetupAck`,
+//! boot-barrier release, one exact-icount quantum, run-control silence, control
+//! `Quit` teardown, and natural child exit. Prints machine-checkable evidence
+//! the phase2 gate asserts.
+
+#[cfg(target_os = "linux")]
+use std::env;
+#[cfg(target_os = "linux")]
+use std::error::Error;
+#[cfg(target_os = "linux")]
+use std::process::ExitCode;
+
+#[cfg(target_os = "linux")]
+use crucible_qemu::{LivePluginInstallGateConfig, run_live_plugin_install_gate};
+
+#[cfg(target_os = "linux")]
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("crucible-qemu-live-plugin-install: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run() -> Result<(), String> {
+    let mut args = env::args_os();
+    let program = args
+        .next()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("crucible-qemu-live-plugin-install"));
+    let qemu = required_arg(&mut args, &program)?;
+    let plugin = required_arg(&mut args, &program)?;
+    let kernel = required_arg(&mut args, &program)?;
+    let root_image = required_arg(&mut args, &program)?;
+    let run_directory = required_arg(&mut args, &program)?;
+    if args.next().is_some() {
+        return Err(usage(&program));
+    }
+
+    let config = LivePluginInstallGateConfig::new(qemu, plugin, kernel, root_image, run_directory);
+    let report = run_live_plugin_install_gate(&config).map_err(|error| error_chain(&error))?;
+    println!("PASS");
+    println!("gate=gate:plugin-install-lifecycle");
+    println!("plugin_loaded=rust-control-cdylib");
+    println!("time_authority=rust-plugin");
+    println!(
+        "handshake_proto_version={}",
+        report.negotiated_proto_version
+    );
+    println!("handshake_abi_version={}", report.negotiated_abi_version);
+    println!("handshake_slot={}", report.negotiated_slot);
+    println!("handshake_node_count={}", report.negotiated_node_count);
+    println!("setup_ack_ready={}", report.setup_ack_ready);
+    println!("shmem_region_len={}", report.shmem_region_len);
+    println!(
+        "boot_barrier_ceiling_enforced={}",
+        report.boot_barrier_ceiling_enforced
+    );
+    println!("completed_icount={}", report.completed_icount);
+    println!(
+        "execution_fingerprint={}",
+        report.execution_fingerprint.hash.to_hex()
+    );
+    println!("run_control_silent={}", report.run_control_silent);
+    println!("plugin_quit_consumed={}", report.plugin_quit_consumed);
+    println!("orderly_child_exit={}", report.orderly_child_exit);
+    println!(
+        "time_authority_is_rust_plugin={}",
+        report.time_authority_is_rust_plugin
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn error_chain(error: &(dyn Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(current) = source {
+        message.push_str(": ");
+        message.push_str(&current.to_string());
+        source = current.source();
+    }
+    message
+}
+
+#[cfg(target_os = "linux")]
+fn required_arg(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+    program: &str,
+) -> Result<std::ffi::OsString, String> {
+    args.next().ok_or_else(|| usage(program))
+}
+
+#[cfg(target_os = "linux")]
+fn usage(program: &str) -> String {
+    format!("usage: {program} QEMU PLUGIN KERNEL ROOT_IMAGE RUN_DIRECTORY")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("crucible-qemu-live-plugin-install requires Linux");
+}
