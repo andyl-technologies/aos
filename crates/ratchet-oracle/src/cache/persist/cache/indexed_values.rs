@@ -237,6 +237,63 @@ impl PersistCache {
         self.append_blob_indexed_unlocked(key, payload)
     }
 
+    /// Ensures many blobs are present in `store`'s pack and sidecar in one
+    /// open/lock/flush cycle, returning each record's resolved location by key.
+    ///
+    /// This is the synchronous batched sibling of [`Self::ensure_blob_indexed`]:
+    /// records already durable (an on-disk content match) reuse their location,
+    /// and the remainder are appended with one batched pack write and one batched
+    /// index write while the store write lock is held. Duplicate keys within the
+    /// batch dedup to a single append. Used for the `store_root_instantiation`
+    /// closure-blob loop, whose per-blob writes are otherwise a cold storm.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexedWriteError`] if the store write lock cannot be
+    /// acquired or is poisoned, or if the batched pack append or index write
+    /// fails.
+    pub(super) fn ensure_blobs_indexed_batch(
+        &self,
+        store: PersistBlobStore,
+        records: &[(PersistBlobKey, &[u8])],
+    ) -> Result<BTreeMap<PersistBlobKey, PersistBlobLocation>, PersistBlobIndexedWriteError> {
+        let (_advisory_guard, _write_guard) = self.lock_indexed_blob_write(store)?;
+        let mut resolved: BTreeMap<PersistBlobKey, PersistBlobLocation> = BTreeMap::new();
+        let mut to_append: Vec<(PersistBlobKey, &[u8])> = Vec::new();
+        let pack = self.blob_pack(store);
+        for (key, payload) in records {
+            if resolved.contains_key(key) || to_append.iter().any(|(k, _)| k == key) {
+                continue; // within-batch dedup: content-addressed, one append suffices
+            }
+            if let Ok(Some(location)) = self.lookup_blob_location(*key) {
+                if matches!(pack.payload_matches(location, key.hash(), payload), Ok(true)) {
+                    resolved.insert(*key, location);
+                    continue;
+                }
+            }
+            to_append.push((*key, payload));
+        }
+        let pack_records: Vec<(DurableBlake3Hash, &[u8])> = to_append
+            .iter()
+            .map(|(key, payload)| (key.hash(), *payload))
+            .collect();
+        let locations = pack
+            .append_blobs_batch(&pack_records)
+            .map_err(|source| PersistBlobIndexedWriteError::Append { source })?;
+        let new_entries: Vec<PersistBlobIndexEntry> = to_append
+            .iter()
+            .zip(locations)
+            .map(|((key, _), location)| {
+                resolved.insert(*key, location);
+                PersistBlobIndexEntry::new(*key, location)
+            })
+            .collect();
+        self.blob_index(store)
+            .append_entries_batch(&new_entries)
+            .map_err(|source| PersistBlobIndexedWriteError::Index { source })?;
+        Ok(resolved)
+    }
+
     /// Materializes a cached expression payload into the indexed `values/` pack.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns

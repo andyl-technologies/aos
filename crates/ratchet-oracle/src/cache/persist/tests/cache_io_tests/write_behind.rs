@@ -216,6 +216,36 @@ fn buffered_and_synchronous_writers_on_one_root_coexist() {
 }
 
 #[test]
+fn write_behind_batches_root_instantiation_closure_blobs() {
+    // store_root_instantiation batches its closure-blob loop when write-behind is
+    // on; the record still round-trips (blobs durable before the root record).
+    let root = temp_root();
+    let cache = PersistCache::open(&root)
+        .expect("cache opens")
+        .with_write_behind_values(true);
+    let key = PersistRootRecordKey::from_digest([42; 32]);
+    let mut closure = BTreeMap::new();
+    closure.insert(
+        PathBuf::from("/nix/store/root.drv"),
+        b"Derive([],[],[],\"\",[],[])root".to_vec(),
+    );
+    closure.insert(
+        PathBuf::from("/nix/store/dep.drv"),
+        b"Derive([],[],[],\"\",[],[])dep".to_vec(),
+    );
+    cache
+        .store_root_instantiation(key, b"/nix/store/root.drv", &closure, &[], 7)
+        .expect("root instantiation stores");
+    let loaded = cache
+        .load_root_instantiation(key)
+        .expect("root loads")
+        .expect("root present");
+    assert_eq!(loaded.root(), Path::new("/nix/store/root.drv"));
+    assert_eq!(loaded.closure(), &closure);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn write_behind_off_by_default_writes_through() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");

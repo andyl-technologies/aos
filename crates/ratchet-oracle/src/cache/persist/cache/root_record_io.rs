@@ -81,12 +81,30 @@ impl PersistCache {
             source,
         })?;
 
+        // Hash every closure blob first (no I/O), keying the record entries and
+        // the pack keys. The record references blobs by HASH, so closure-blob
+        // locations are never consumed — only the record blob's is.
         let mut entries = Vec::with_capacity(closure.len());
-        for (drv_path, bytes) in closure {
-            let blob_hash = PersistFileBlobHash::for_payload(bytes);
-            self.ensure_blob_indexed(PersistBlobKey::for_file(blob_hash), bytes)
+        let closure_records: Vec<(PersistBlobKey, &[u8])> = closure
+            .iter()
+            .map(|(drv_path, bytes)| {
+                let blob_hash = PersistFileBlobHash::for_payload(bytes);
+                entries.push((drv_path.as_os_str().as_bytes().to_vec(), blob_hash));
+                (PersistBlobKey::for_file(blob_hash), bytes.as_slice())
+            })
+            .collect();
+
+        // Ensure the closure blobs durable: batched into one open/lock/flush when
+        // write-behind is enabled (the cold storm this loop is otherwise), else
+        // the per-blob path. Either way the blobs land before the record blob.
+        if self.write_behind_values_enabled() {
+            self.ensure_blobs_indexed_batch(PersistBlobStore::Files, &closure_records)
                 .map_err(|source| PersistRootRecordError::Blob { source })?;
-            entries.push((drv_path.as_os_str().as_bytes().to_vec(), blob_hash));
+        } else {
+            for (blob_key, bytes) in &closure_records {
+                self.ensure_blob_indexed(*blob_key, bytes)
+                    .map_err(|source| PersistRootRecordError::Blob { source })?;
+            }
         }
 
         let record = RootInstantiationRecord::new(root_drv, entries, inputs.to_vec(), run_id);
@@ -94,6 +112,8 @@ impl PersistCache {
             .encode()
             .map_err(|source| PersistRootRecordError::Format { source })?;
         let record_hash = PersistFileBlobHash::for_payload(&record_bytes);
+        // The record blob is a single write whose location the root index needs,
+        // so it stays a synchronous ensure (FILES store — never buffered).
         let record_entry = self
             .ensure_blob_indexed(PersistBlobKey::for_file(record_hash), &record_bytes)
             .map_err(|source| PersistRootRecordError::Blob { source })?;
