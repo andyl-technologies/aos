@@ -1261,3 +1261,16 @@ design above with the code as ground truth:
       (`memo_net_hits=1`, 0 errors), and is byte-parity green in both directions.
       The full primary/secondary-loss/poisoned matrix and a cross-host replay
       remain open.
+- [x] Node-record secondary tiering: **decided against, by design** (not a
+      pending gap). Per-node force-cache records (node metadata / trace /
+      materialized-value-hash) tier only in memory (L0/L1) and, at most, the
+      single primary disk location — they are **not** probed or promoted across
+      disk secondaries. §5.7's own placement economics rule them out: a disk tier
+      requires `eval_cost > hash + serialize + IO` per record, which tiny
+      per-node records fail on the slower `ssd`/`hdd` classes, and adding a
+      primary→secondaries probe to the per-node force path reintroduces exactly
+      the per-record µs-harness tax the JIT rounds proved never pays on tiny
+      bodies. The cross-location tier therefore carries only the large,
+      source-fingerprint-stable records that clear the bar — root-instantiation
+      closures and compiled bodies (both already tiered). No configuration knob
+      is offered: a dead knob nobody measures is worse than a recorded decision.

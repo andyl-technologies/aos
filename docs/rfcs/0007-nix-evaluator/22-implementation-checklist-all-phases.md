@@ -11515,6 +11515,26 @@ hot loops), not the dominant one-shot case (`M-5`/`R8`).
       and identical 0.5 MiB arena peaks. Production counters and the measured
       default are therefore closed; executable-code reuse and MEMO-2's
       cross-machine/repeat-heavy final acceptance remain open.
+- [x] MEMO-2 durable-tier tail: size-pressure demotion engine, L3 serve
+      endpoint, and the node-record tiering disposition (doc 29 §5.4/§5.5/§5.6;
+      full detail in the doc 29 checklist). The demotion unit is confirmed to be
+      the root-instantiation record (the only cross-location tier unit; unrooted
+      blob-pack records are repack garbage, never demoted): policy +
+      `select_demotion_victims` (largest+coldest first) + primary planning +
+      `PersistCacheLocations::demote_under_size_pressure` (copy-down → verify →
+      unroot as single-location-locked steps; a demoted root re-promotes on its
+      next hit), with a two-location integration test. `aos serve` grows the
+      content-addressed L3 memo endpoint (`GET/PUT /v1/root/{key}`,
+      `/v1/compiled-body/{key}`; opaque validation-catalog store, ro default / rw
+      via `[memo] writable`); a real client-to-server loopback demo publishes a
+      `pkgs.zlib` root record `rw` and consumes it on a fresh-cache `ro`
+      evaluator (`memo_net_hits=1`, byte-parity green both ways). **Node-record
+      secondary tiering is decided against by design** — §5.7 placement economics
+      (`eval_cost > hash + serialize + IO`) exclude tiny per-node records from
+      slow disk classes, and a per-node secondary probe reintroduces the
+      µs-harness tax the JIT rounds proved never pays; no knob. Persist/oracle
+      suites green (428) and zlib+openssl byte-parity green serial+JIT with the
+      cache on. The full loss/poisoned matrix remains the open MEMO-2 acceptance.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling
