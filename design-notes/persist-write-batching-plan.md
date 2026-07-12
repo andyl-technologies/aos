@@ -468,9 +468,21 @@ pkgs.openssl       80.7 ms           1150 ms                1171 ms
 
 The memo shaves ~2-4% off cold cache-population — inside run-to-run noise
 (±5%, outliers to 2.2s). Cache-on cold stays **~14-15x cache-off** with or
-without the memo. Warm did not reach the 23-35 ms root-cutoff on this HEAD in
-either arm (warm ≈ cold ≈ 1.15 s; a harness/root-cutoff regression to chase
-separately — memoON and memoOFF track together, so it is not the memo).
+without the memo.
+
+**Warm is PRESERVED — 22-26 ms root-cutoff, memo-neutral.** nix-bench emits
+separate `benchmarks[]` entries per temperature (`explicit:cold:*` /
+`explicit:warm:*`, distinguished by the `temperature` field); the warm entry
+reads **23.4 / 23.6 / 26.3 ms** (zlib) — the flagship root-cutoff number,
+unchanged, both `memoON` and `memoOFF` (22-26 ms each). The warm path returns
+`EvalStats::for_root_cutoff` *without constructing an evaluator*
+(`aos-nix native/mod.rs:568-584`), so the observe memo structurally cannot run
+on it — warm is memo-independent by construction. (An earlier draft of this
+section wrongly reported "warm ≈ cold ≈ 1.15 s / regression"; that was a JSON
+extraction bug — reading `benchmarks[0]`, always the *cold* entry, for both
+arms. Direct repro confirms the product: two `nix-diff` instantiates sharing one
+`AOS_NIX_CACHE` give `root_cutoffs:1` and ~0.25 s total (incl. the ~0.18 s C++
+oracle) on the second. No regression.)
 
 **Why so small — decisive.** Finding 2 identified the observe *encode* tax
 (BLAKE3 + recursive preimage). This memo removes only the *repeated* encodes of
@@ -480,6 +492,13 @@ overhead is the **synchronous persist write-through** (value/artifact pack
 serialization + open/flock/fsync), which the memo does not touch. **§3.2
 write-behind batching is the real lever to reach ~1.2x**, exactly as framed:
 amortization of the intended writes, not repair.
+
+**Profiling caveat (method).** The increment-0 profile (Finding 2) was
+*on-CPU* sampling, which sees the BLAKE3/encode work but NOT the `flock`/`fsync`
+off-CPU blocked time of the write-through. The write-through's dominance is
+inferred from the wall A/B (cache-on cold vs cache-off cold), not from the
+on-CPU profile. The next profiler pass on §3.2 must run **off-CPU** (blocked-time
+/ wall-clock sampling) to attribute the open/flock/fsync stalls directly.
 
 **Disposition.** Default-OFF behind `AOS_NIX_OBSERVE_MEMO` (mirrors the
 simplifier passes' default-off discipline: a neutral optimization stays off with
