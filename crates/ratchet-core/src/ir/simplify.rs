@@ -39,7 +39,7 @@
 
 use thiserror::Error;
 
-use super::{CaseOfKnown, ConstFold, InlineSingleUse, Ir, IrError};
+use super::{CaseOfKnown, ConstFold, DeadBindingElim, InlineSingleUse, Ir, IrError};
 
 /// The version of the registered simplifier pass set.
 ///
@@ -153,7 +153,7 @@ pub trait SimplifyPass {
 /// observable result even though it is no longer the identity on IR that
 /// contains foldable literals or statically-known conditionals.
 pub const REGISTERED_PASSES: &[&dyn SimplifyPass] =
-    &[&ConstFold, &CaseOfKnown, &InlineSingleUse];
+    &[&ConstFold, &CaseOfKnown, &InlineSingleUse, &DeadBindingElim];
 
 /// Runs the registered simplifier passes over `ir` to a per-phase fixpoint.
 ///
