@@ -39,7 +39,7 @@
 
 use thiserror::Error;
 
-use super::{Ir, IrError};
+use super::{ConstFold, Ir, IrError};
 
 /// The version of the registered simplifier pass set.
 ///
@@ -145,10 +145,13 @@ pub trait SimplifyPass {
 
 /// The registered simplifier pass set.
 ///
-/// Empty in the stage-1 skeleton, so [`simplify_ir`] is the identity. Passes are
-/// registered here as they land (each behind its own byte-parity gate), and
-/// [`PASS_SET_VERSION`] is bumped alongside.
-pub const REGISTERED_PASSES: &[&dyn SimplifyPass] = &[];
+/// Passes are registered here as they land, each behind the off-by-default
+/// `AOS_NIX_SIMPLIFY` gate and its own byte-parity check; [`PASS_SET_VERSION`] is
+/// bumped when a pass is promoted to run by default. [`ConstFold`] (doc 26 §2.2)
+/// is the first registered pass; it is sound (observationally invisible), so the
+/// registered set preserves every observable result even though it is no longer
+/// the identity on IR that contains foldable literals.
+pub const REGISTERED_PASSES: &[&dyn SimplifyPass] = &[&ConstFold];
 
 /// Runs the registered simplifier passes over `ir` to a per-phase fixpoint.
 ///
@@ -241,7 +244,7 @@ mod tests {
     fn empty_pass_set_is_the_identity() {
         let before = lower_source("let x = 1; in x + 2");
         let mut after = before.clone();
-        simplify_ir(&mut after).expect("empty simplify succeeds");
+        simplify_with_passes(&mut after, &[]).expect("empty simplify succeeds");
         assert_eq!(before.arena.nodes(), after.arena.nodes());
         assert_eq!(before.arena.child_pool(), after.arena.child_pool());
         assert_eq!(before.root, after.root);

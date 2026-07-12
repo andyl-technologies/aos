@@ -49,7 +49,7 @@ pub fn render_ir(ir: &Ir) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{lower, simplify_ir};
+    use crate::ir::{lower, simplify_with_passes};
     use crate::scope::resolve;
     use crate::syntax::parse_str;
 
@@ -87,7 +87,7 @@ mod tests {
         for source in ["1 + 2", "let x = 1; in x + x", "if true then 1 else 2"] {
             let mut ir = lower_source(source);
             let before = render_ir(&ir);
-            simplify_ir(&mut ir).expect("empty simplify succeeds");
+            simplify_with_passes(&mut ir, &[]).expect("empty simplify succeeds");
             assert_eq!(
                 before,
                 render_ir(&ir),

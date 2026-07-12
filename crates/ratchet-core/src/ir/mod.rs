@@ -19,6 +19,7 @@ use crate::syntax::{
 };
 
 mod annotate;
+mod const_fold;
 mod facts;
 mod render;
 mod simplify;
@@ -27,6 +28,7 @@ pub use annotate::{
     IR_ANALYSIS_VERSION, IrAnalysisError, IrAnalysisReport, IrDependencyFootprint,
     IrFrameCaptureFootprint, annotate_import_ir, annotate_ir,
 };
+pub use const_fold::ConstFold;
 pub use render::render_ir;
 pub use simplify::{
     PASS_SET_VERSION, PassOutcome, SIMPLIFY_MAX_ITERS, SimplifyError, SimplifyPass, SimplifyPhase,

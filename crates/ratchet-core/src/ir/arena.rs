@@ -82,9 +82,6 @@ impl IrArena {
     ///
     /// This is `pub(super)`: only the `ir` module — where the simplifier driver
     /// and passes live — may mutate a lowered node, per RFC-0007 doc 30 §8 D4.
-    // Arena-stable rewrite primitive for simplifier passes; the first caller is
-    // the constant-folding pass (staged increment 4), until which it is unused.
-    #[allow(dead_code)]
     #[must_use]
     pub(super) fn set_node(
         &mut self,

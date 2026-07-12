@@ -8,7 +8,7 @@
 //! disabled; here it proves the driver itself is a faithful identity.
 
 use crate::cache::parse::lowered_ir_fingerprint;
-use crate::compile::{Ir, resolve, simplify_ir};
+use crate::compile::{Ir, resolve, simplify_with_passes};
 use crate::syntax::parse_str;
 use aos_nix_dialect::nix_lower;
 
@@ -47,7 +47,7 @@ fn empty_pass_set_preserves_lowered_ir_fingerprint_across_corpus() {
     for source in CORPUS {
         let mut ir = lower_nix(source);
         let before = lowered_ir_fingerprint(&ir).expect("fingerprint before simplify");
-        simplify_ir(&mut ir).expect("empty stage-1 simplify succeeds");
+        simplify_with_passes(&mut ir, &[]).expect("empty simplify succeeds");
         let after = lowered_ir_fingerprint(&ir).expect("fingerprint after simplify");
         assert_eq!(
             before, after,
@@ -62,7 +62,7 @@ fn empty_pass_set_preserves_arena_and_side_tables() {
     for source in CORPUS {
         let mut simplified = lower_nix(source);
         let original = simplified.clone();
-        simplify_ir(&mut simplified).expect("empty stage-1 simplify succeeds");
+        simplify_with_passes(&mut simplified, &[]).expect("empty simplify succeeds");
         assert_eq!(
             original.arena.nodes(),
             simplified.arena.nodes(),

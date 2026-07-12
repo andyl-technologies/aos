@@ -640,7 +640,7 @@ The simplifier is the GHC-style Core-to-Core optimizer (decision `C-21`), a memo
 ### The 14 passes (§2.1–§2.14)
 
 - [ ] 2.1 Inlining / beta-reduction — the keystone, re-thunking substituted args to preserve call-by-need (§2.1) — **P4**, committed `C-21`; size threshold / used-once policy `M-24`.
-- [ ] 2.2 Constant folding — total, `Pure` operations only; a fold that would raise declines (§2.2) — **P4**, `C-21`.
+- [x] 2.2 Constant folding — total, `Pure` operations only; a fold that would raise declines (§2.2) — **P4**, `C-21`. First cut landed as `ir::ConstFold`, registered behind the off-by-default `AOS_NIX_SIMPLIFY` gate: it folds integer `+ - *` (declining on overflow), integer comparisons, boolean `&& || ->` and `== !=`, unary `!`/`-`, all over literal operands only, via the arena-stable `set_node`; it declines division/modulo, string/path concat (context), float, list/attrset operators, and every non-literal operand. Byte-parity green default + engaged (folding on), JIT and serial. nix-bench A/B (zlib/openssl) measured neutral-to-slight-loss — the fold fires ~0 times on nixpkgs derivations (literal arithmetic is rare), so the sweep is pure overhead — therefore it stays **off by default** per `M-24`. Division/modulo, float, string-context-aware concat, and constant-propagation of builtins remain open.
 - [ ] 2.3 Case-of-known — `select`/`if`/has-attr on a statically-known value, no dynamic keys (§2.3) — **P4**, `C-21`.
 - [ ] 2.4 Dead-binding elimination — cardinality `Absent`, `Pure` bindings only (§2.4) — **P4**, `C-21`.
 - [ ] 2.5 Common-subexpression elimination — licensed by immutability/hash-consing, cheap on the arena (§2.5) — **P4**, `C-21`.
