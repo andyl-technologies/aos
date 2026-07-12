@@ -38,7 +38,7 @@ in
     configureEnv = [
       ''CC="${prev.gcc}/bin/gcc"''
       ''CFLAGS="-O2 -static -DSSIZE_MAX=0x7fffffff"''
-      ''LDFLAGS="-static"''
+      ''LDFLAGS="-B${prev.glibc}/lib -static"''
     ];
     configureFlags = [
       "--enable-languages=c"
@@ -70,7 +70,10 @@ in
     makeFlags = [
       ''BOOT_CFLAGS="-O2 -static"''
       ''CFLAGS_FOR_TARGET="-O2 -I${prev.glibc}/include"''
-      ''LDFLAGS_FOR_TARGET="-L${prev.glibc}/lib -static"''
+      # -L locates libc.a, but GCC start files are resolved through compiler
+      # prefixes. Keep -B here so target-library configure can find crt1.o,
+      # crti.o, and crtn.o before the new compiler is installed.
+      ''LDFLAGS_FOR_TARGET="-B${prev.glibc}/lib -L${prev.glibc}/lib -static"''
     ];
     postInstall = ''
       "${prev.binutils}/bin/ar" crs "$out/lib/gcc/${targetPlatform.config}/3.4.6/libgcc_eh.a"
