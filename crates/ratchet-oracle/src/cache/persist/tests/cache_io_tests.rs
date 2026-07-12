@@ -24,6 +24,7 @@ mod blob_reachability;
 mod blob_sidecars;
 mod blob_tail_trim;
 mod cached_expression_materialization;
+mod demotion;
 mod direct_artifact_reads;
 mod file_blob_repack;
 mod metadata_sidecars;

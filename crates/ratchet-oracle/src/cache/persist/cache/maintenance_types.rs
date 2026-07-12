@@ -19,12 +19,14 @@ const DEFAULT_STORAGE_REPACK_RECLAIMABLE_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PersistStorageMaintenancePolicy {
     min_repack_reclaimable_bytes: u64,
+    primary_size_pressure_bytes: Option<u64>,
 }
 
 impl Default for PersistStorageMaintenancePolicy {
     fn default() -> Self {
         Self {
             min_repack_reclaimable_bytes: DEFAULT_STORAGE_REPACK_RECLAIMABLE_BYTES,
+            primary_size_pressure_bytes: None,
         }
     }
 }
@@ -43,6 +45,117 @@ impl PersistStorageMaintenancePolicy {
     pub const fn min_repack_reclaimable_bytes(self) -> u64 {
         self.min_repack_reclaimable_bytes
     }
+
+    /// Returns a policy that demotes primary root records once the primary's
+    /// resident footprint exceeds `bound` bytes.
+    ///
+    /// Demotion (doc 29 §5.4/§5.6) is disabled by default. Setting a bound opts
+    /// the primary location into cold-root-record demotion under size pressure:
+    /// when the primary's resident bytes exceed `bound`, maintenance moves the
+    /// largest, coldest root-instantiation records down to the next slower
+    /// latency class (a demoted root re-promotes on its next hit).
+    pub const fn with_primary_size_pressure_bytes(mut self, bound: u64) -> Self {
+        self.primary_size_pressure_bytes = Some(bound);
+        self
+    }
+
+    /// Returns the primary resident-byte bound above which root records demote,
+    /// or `None` when demotion is disabled.
+    pub const fn primary_size_pressure_bytes(self) -> Option<u64> {
+        self.primary_size_pressure_bytes
+    }
+
+    /// Returns the bytes demotion should free given the primary's resident total.
+    ///
+    /// This is `primary_used_bytes` saturating-minus the configured size-pressure
+    /// bound, or `0` when demotion is disabled or the primary is within its
+    /// bound. A non-zero result is the [`select_demotion_victims`] target.
+    pub const fn demotion_bytes_to_free(self, primary_used_bytes: u64) -> u64 {
+        match self.primary_size_pressure_bytes {
+            Some(bound) => primary_used_bytes.saturating_sub(bound),
+            None => 0,
+        }
+    }
+}
+
+/// One primary root-instantiation record eligible for demotion under size
+/// pressure (doc 29 §5.4/§5.6).
+///
+/// Candidates are enumerated read-only from the primary root-record index. The
+/// `mtime_unix_secs` field carries a monotonic recency proxy — smaller means
+/// older/colder — for which callers pass the record blob's files-pack append
+/// offset, because packed blobs share one packfile and carry no independent
+/// filesystem mtime. `resident_bytes` is the cheap files-blob proxy (the record
+/// blob plus its closure blobs), which may over-count blobs shared by identical
+/// closures; the §5.7-faithful exclusive-byte accounting is a follow-up.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PersistDemotionCandidate {
+    key: PersistRootRecordKey,
+    resident_bytes: u64,
+    mtime_unix_secs: u64,
+}
+
+impl PersistDemotionCandidate {
+    /// Creates a demotion candidate from its root-record key, resident-byte
+    /// estimate, and recency proxy (smaller = older/colder).
+    pub const fn new(key: PersistRootRecordKey, resident_bytes: u64, mtime_unix_secs: u64) -> Self {
+        Self {
+            key,
+            resident_bytes,
+            mtime_unix_secs,
+        }
+    }
+
+    /// Returns the root-record index key of this candidate.
+    pub const fn key(self) -> PersistRootRecordKey {
+        self.key
+    }
+
+    /// Returns the estimated resident bytes this record holds in the primary.
+    pub const fn resident_bytes(self) -> u64 {
+        self.resident_bytes
+    }
+
+    /// Returns the recency proxy (smaller is older/colder).
+    pub const fn mtime_unix_secs(self) -> u64 {
+        self.mtime_unix_secs
+    }
+}
+
+/// Orders unrooted candidates largest-and-oldest first and returns the prefix
+/// relieving `bytes_to_free`.
+///
+/// Implements the interim placement policy of doc 29 §5.7's demotion half:
+/// value density (`est_recompute / entry_bytes`) is not persisted yet, so this
+/// approximates "lowest value density first" by demoting the largest records
+/// (maximum pressure relief per record moved), breaking byte ties toward the
+/// coldest (smallest recency proxy) and then by key for a total order. Sorts
+/// `candidates` in place and returns the minimal prefix whose cumulative
+/// `resident_bytes` reaches `bytes_to_free`; the prefix is empty when
+/// `bytes_to_free` is `0` and the whole slice when the target exceeds the
+/// available bytes.
+pub fn select_demotion_victims(
+    candidates: &mut [PersistDemotionCandidate],
+    bytes_to_free: u64,
+) -> &[PersistDemotionCandidate] {
+    candidates.sort_unstable_by(|l, r| {
+        r.resident_bytes
+            .cmp(&l.resident_bytes)
+            .then(l.mtime_unix_secs.cmp(&r.mtime_unix_secs))
+            .then(l.key.cmp(&r.key))
+    });
+    if bytes_to_free == 0 {
+        return &candidates[..0];
+    }
+    let (mut freed, mut count) = (0u64, 0usize);
+    for c in candidates.iter() {
+        if freed >= bytes_to_free {
+            break;
+        }
+        freed = freed.saturating_add(c.resident_bytes);
+        count += 1;
+    }
+    &candidates[..count]
 }
 
 /// The action selected by automatic persistent storage maintenance.

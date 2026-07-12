@@ -132,10 +132,11 @@ pub use cache::{
     PersistBlobIndexStaleEntry, PersistBlobLiveRoot, PersistBlobLiveRootSource,
     PersistBlobPackLivenessPlan, PersistBlobPackRepackPlan, PersistBlobPackTrim,
     PersistBlobPacksRepack, PersistBlobRecordRelocation, PersistCache, PersistCompaction,
-    PersistFileBlobReachabilityPlan, PersistMissingNodeValueRoot, PersistNodeValueRoot,
-    PersistNodeValueRootPlan, PersistStorageMaintenance, PersistStorageMaintenanceAction,
-    PersistStorageMaintenanceOutcome, PersistStorageMaintenancePlan,
+    PersistDemotionCandidate, PersistFileBlobReachabilityPlan, PersistMissingNodeValueRoot,
+    PersistNodeValueRoot, PersistNodeValueRootPlan, PersistStorageMaintenance,
+    PersistStorageMaintenanceAction, PersistStorageMaintenanceOutcome, PersistStorageMaintenancePlan,
     PersistStorageMaintenancePolicy, PersistStorageRepack, PersistValueBlobReachabilityPlan,
+    select_demotion_victims,
 };
 pub use error::{
     PersistBlobIndexError, PersistBlobIndexRebuildError, PersistBlobIndexRebuildPlanError,

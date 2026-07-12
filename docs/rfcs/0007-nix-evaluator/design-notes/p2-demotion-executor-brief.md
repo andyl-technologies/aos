@@ -7,9 +7,27 @@
 > why the "planning half" turned out to need new read-path machinery this brief
 > specifies. Author: the front-end/speculation agent, after closing task #3.
 >
-> Load-bearing rule (lead ruling 2026-07-12): **rooted records are NEVER demoted**
-> — they back the root-cutoff warm path (the 20-35 ms warm repeats); slowing those
-> to relieve disk pressure inverts the economics. Only unrooted records move down.
+> **Resolved (lead ruling 2026-07-12, §6 closed).** The demotion unit is the
+> **root-instantiation record** (`PersistRootRecordKey`), not a blob-pack record.
+> The multi-location tier machinery (`locations.rs`) moves *only* root records:
+> `load_root_instantiation` probes primary→secondaries and `promote_root_instantiation`
+> copies one UP; demotion is the exact mirror, copying one DOWN via
+> `secondary.store_root_instantiation`. No blob-pack record is ever probed or moved
+> across locations, and **unrooted blob-pack records are garbage for repack to
+> reclaim — never demotion candidates** (demoting one to a secondary is strictly
+> worse than deleting it: nothing roots it there, so it is never probed).
+>
+> The earlier "rooted records are NEVER demoted / only unrooted records move down"
+> rule is **RETRACTED**: it conflated blob-reachability rootedness with the tiered
+> root-record entity, and read literally it gives L2 demotion zero victims (root
+> records are the only demotable population) and nullifies the doc 29 §5.4/§5.6
+> feature. Confirmed semantics (doc 29 §5.4/§5.6): under size pressure, demote the
+> **coldest** root records (`resident_bytes` DESC, recency ASC — largest+oldest
+> first); demotion is a **move**, not a delete; a demoted root **re-promotes on its
+> next hit** via `promote_root_instantiation`. The warm path degrades gracefully — a
+> demoted root's next hit pays one slower-class probe (still a cache hit), then
+> promotes back — rather than being lost, which is the concern the retracted rule
+> was protecting.
 
 ## 1. Confirmed victim-selection model
 
@@ -144,7 +162,15 @@ only, released before the next location is touched. This makes the two-location
 operation a sequence of single-location locked steps — no nested cross-location
 holds, so no cross-location cycle.
 
-## 6. OPEN QUESTION — the victim entity (resolve before coding §4/§5)
+## 6. RESOLVED — the victim entity is the root-instantiation record
+
+> Closed 2026-07-12 (see the header amendment): the demotion unit is the
+> root-instantiation record; unrooted blob-pack records are repack garbage, never
+> demotion candidates. §4 enumerates the primary root-record index (not a new
+> blob-pack walk); `resident_bytes` is the record blob + its closure blobs (cheap
+> files-blob proxy); recency is the files-pack append offset (packed blobs carry no
+> independent fs mtime). The original open-question text is retained below for
+> history.
 
 Is a **root-instantiation record** (`PersistRootRecordKey`, the root-cutoff warm
 record) ever "unrooted"? The lead's rule says rooted records are never demoted and

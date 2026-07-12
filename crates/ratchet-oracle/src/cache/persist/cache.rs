@@ -27,11 +27,12 @@ pub use maintenance_types::{
     PersistBlobIndexRebuild, PersistBlobIndexRebuildPlan, PersistBlobIndexStaleEntry,
     PersistBlobLiveRoot, PersistBlobLiveRootSource, PersistBlobPackLivenessPlan,
     PersistBlobPackRepackPlan, PersistBlobPackTrim, PersistBlobPacksRepack,
-    PersistBlobRecordRelocation, PersistCompaction, PersistFileBlobReachabilityPlan,
-    PersistMissingNodeValueRoot, PersistNodeValueRoot, PersistNodeValueRootPlan,
-    PersistStorageMaintenance, PersistStorageMaintenanceAction, PersistStorageMaintenanceOutcome,
-    PersistStorageMaintenancePlan, PersistStorageMaintenancePolicy, PersistStorageRepack,
-    PersistValueBlobReachabilityPlan,
+    PersistBlobRecordRelocation, PersistCompaction, PersistDemotionCandidate,
+    PersistFileBlobReachabilityPlan, PersistMissingNodeValueRoot, PersistNodeValueRoot,
+    PersistNodeValueRootPlan, PersistStorageMaintenance, PersistStorageMaintenanceAction,
+    PersistStorageMaintenanceOutcome, PersistStorageMaintenancePlan,
+    PersistStorageMaintenancePolicy, PersistStorageRepack, PersistValueBlobReachabilityPlan,
+    select_demotion_victims,
 };
 
 use ratchet_cache::file_lock::{AdvisoryFileLock, AdvisoryFileLockMode};
