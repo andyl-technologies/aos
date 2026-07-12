@@ -1001,3 +1001,36 @@ store + consult + producer are in place behind the flag; the honest yield on thi
 corpus does not justify default-on, and the numbers point at S6 (readDir prefetch)
 as the real lever, not more static-edge aggressiveness. S1's helper is the durable
 win of this program (it made the pooled front-end a clean, reusable unit).
+
+### C.4 S6 — readDir-driven prefetch (commit 759002038, DESIGN B, default-off)
+
+Implemented the readDir feed that §2/C.3 named as the only lever reaching the AOS
+corpus. A shared `SpeculationFrontier` (Mutex+Condvar) on `SharedEvalContext` is
+fed by the evaluating threads — the root's static edges at spawn, and every
+`readDir`ed directory's `.nix` entries (seeded in `eval_read_dir_primop` *after*
+the impure fingerprint is recorded, trace-silent) — and drained by the single
+pool-only producer (which canonicalizes/filters off the eval threads). Byte-parity
+green (zlib/openjdk × K=1/K=4/spec-on).
+
+**Measured:** the feed works — coverage jumps (speculated 72→611; openjdk hits
+5→55, ~19% of imports). But the cold A/B stays a **wash-to-slight-regression**
+(zlib +2.5%, openjdk +3.4%), for two structural reasons:
+
+1. **Inherent over-speculation.** The producer parses every `.nix` in each
+   `readDir`ed directory (611), but a given target forces only its dependency
+   closure (~55 for openjdk) — 91% of speculated parses are packages outside the
+   closure, undecidable ahead of demand.
+2. **Design B always steals a core.** The dedicated producer thread runs whether
+   or not the demand pool has idle capacity; on these evals the K=4 pool is not
+   core-starved, so a speculation core is taken from useful demand work, cancelling
+   the ~3 ms the hits save.
+
+**Decision: default-off, program closed.** readDir prefetch reaches the graph
+(hits are real), but design B's core-steal plus inherent over-speculation net to a
+wash on our evals. The only thing that could flip it is **design A** (worker-loop
+integration so speculation runs *strictly* on otherwise-idle workers, never
+stealing a busy core) — recorded as the future refinement, gated on whether the
+payoff ever justifies the hot-`pop_or_park`-path risk. **Net program verdict: S0
+(instrumentation) and S1 (the reusable isolated-parse helper) are the durable
+wins; speculative parse-ahead — static (S2) and readDir-driven (S6) alike — is a
+measured wash on the AOS corpus under design B.**
