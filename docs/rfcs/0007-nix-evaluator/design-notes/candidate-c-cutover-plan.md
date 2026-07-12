@@ -1,0 +1,421 @@
+# RFC-0007 — Candidate-C value-ABI cutover plan (design note)
+
+> Design-only prep for task #12: activate the Candidate-C 8-byte
+> compressed-index value representation across the evaluator core, `ratchet-runtime-ffi`,
+> and `ratchet-jit`, replacing the active 16-byte pointer-pair `Value`. This note
+> enumerates every ABI touchpoint with verified `file:line`, states the
+> activation mechanism, gives a staged-vs-big-bang verdict, inventories the tests
+> that pin the old ABI, builds a silent-breakage risk register, and proposes a
+> smallest-first parity-gated landing order. It is a plan, not an implementation;
+> no code was changed and no build was run to produce it (Phase 1 is read-only —
+> the build lane is queued fv5 → candidate-b → frontend-par).
+>
+> Companion specs: [30 — flat-value architecture](../30-flat-value-architecture.md)
+> §3 (the Candidate-C candidate, §3.5/§3.6) and §12 FV-4 (the landed prerequisite
+> subset), [05](../05-value-representation.md) (the value-word trajectory),
+> [08](../08-execution-tiers-and-cranelift.md) (the JIT tiers), and the sibling
+> note [heap-snapshot-implementation-plan.md](./heap-snapshot-implementation-plan.md)
+> §9 (task #6 is `blockedBy` this cutover — it makes snapshot images address-free
+> by construction).
+
+## 0. Executive summary
+
+- **Verdict: the peripheral machinery is mostly built and stages cleanly; the
+  core carrier flip is an irreducible big-bang.** The Candidate-C word codec,
+  the 4 GiB reservation, both serial and shared boxed-scalar stores, the
+  reservation-domain identity, the inactive `EvalHeap` encode/decode bridge, the
+  JIT dual-layout CLIF adapter, and the FFI tri-width *return* path all landed
+  (doc 30 §12 FV-4). Serialization/memo/`.drv` rendering is already
+  representation-neutral. What is **not** stageable is the carrier itself: the
+  active `Value` is a concrete 16-byte `struct` (`ratchet-value/src/value.rs:116`)
+  used by value at ~4,900 sites across ~189 files in `ratchet-oracle/src/eval`,
+  behind no flag. **No runtime flag can resize a struct**, so activating the
+  8-byte word is a compile-time type change plus a mechanical sweep — a big-bang
+  commit at the core. The staging shrinks that commit to a small, reviewable
+  diff by landing all peripheral Candidate-C machinery active-first under the
+  16-byte carrier (§5).
+
+- **The single biggest new work is reworking the just-landed two-word
+  stack-map/relocation roots.** `ratchet-jit/src/lower/stack_maps.rs` and the
+  finalized SP-offset join in `cranelift.rs` hardcode `[Value; 2]`, 16-byte root
+  slots, an 8-byte payload offset, and an explicit "collector updates/reloads
+  both words" contract. The recently-landed relocation work assumed the two-word
+  representation; a one-word compressed value invalidates its spill geometry,
+  slot width, and payload-word writeback contract. This is called out to the
+  lead as the item that most directly contradicts a recent landing (§1.3, §6).
+
+- **Three big de-risks are already banked:** (1) scalar construction/decode is
+  funneled behind one seam (`active_values.rs`), so most of the tree walk
+  compiles through a carrier change unchanged; (2) serialization/memo/`.drv` is
+  representation-neutral (canonical `i64`/`f64`-bits/`bool`/`null`), so the cache
+  and store layers need **no** change; (3) the FFI return path and the JIT CLIF
+  signature are already width-parameterized. The residual hard surface is
+  narrow: the `payload_bits`/`*_identity_bits` contract, `AtomicValueCell`, the
+  FFI helper-*import* signatures, and the JIT stack-map geometry.
+
+- **Recommended first increment:** flip scalar boxing at `active_values.rs`
+  (float-first — every float must box under an 8-byte word) to route through the
+  already-built Candidate-C scalar store, carrier unchanged. It exercises the
+  boxing + reservation-membership + domain-guard paths under the full parity
+  battery with zero type change (§5 S0).
+
+## 1. ABI touchpoints that assume the 16-byte pointer-pair `Value`
+
+### 1.0 The two representations
+
+- **Active** (`ratchet-value/src/value.rs:113-119`): `struct Value { tag:
+  ValueTag, payload: u64 }` — 16 bytes, two 8-byte words; heap payload is a raw
+  native `HeapObject` pointer (`value.rs:241-252` `Value::heap`; read back by
+  `relocation_sensitive_identity_bits` `:322-325`). 12 tags (`ValueTag`,
+  `value.rs:44-69`).
+- **Candidate-C** (`ratchet-value/src/value/compressed.rs:119`):
+  `struct CompressedValueWord { raw: u64 }` — 8 bytes. High 32 bits =
+  `kind(8) | domain(23) | forced(bit31)`; low 32 = payload (inline `i32`, or a
+  `u32` `ArenaIndex` offset into the reservation). Kinds map 1:1 to `ValueTag`
+  (`compressed.rs:94-109` `semantic_tag`). Wide `i64`/all `f64` box into the
+  reservation via the scalar stores (`compressed.rs:314`, `:549`).
+- **Core layout descriptors** (`ratchet-core/src/runtime_abi/value_layout.rs:7-9`):
+  `ACTIVE_VALUE_LAYOUT = (16, 2, 8)`, `CANDIDATE_C_VALUE_LAYOUT = (8, 1, 8)`;
+  `runtime_abi_value_layout()` returns the active one (`:12-14`).
+
+### 1.1 Evaluator core (`ratchet-oracle`)
+
+- **Scalar construction/decode is FUNNELED (the cutover seam).**
+  `ratchet-oracle/src/eval/heap/flat_values/active_values.rs` is explicitly
+  documented (`:3-7, 33-37`) as the seam Candidate-C can replace "without
+  changing evaluator call sites": `alloc_int_value` (`:45`), `alloc_float_value`
+  (`:56`), `decode_int_value` (`:68`), `decode_float_value` (`:80`),
+  `alloc_cached_scalar_value` (`:21`). Caller counts are small (5-7 each);
+  tree-walk scalar traffic routes through `tree_walk/runtime_values.rs:31-79`.
+- **The inactive `EvalHeap` bridge already exists.**
+  `flat_values/compressed_values.rs`: `candidate_c_encode_value` (`:26`,
+  `Value → CompressedValueWord`, boxing scalars + resolving heap pointers to
+  `(ArenaDomainId, ArenaIndex)` via `candidate_c_heap_location` `:93`) and
+  `candidate_c_decode_value` (`:59`, the inverse). It **rejects forced-thunk
+  words** (`ForcedThunkUnsupported`, `:72`) because the 16-byte `Value` has no
+  carrier for the shortcut bit — a boundary that disappears once the carrier is
+  Candidate-C. Scalar stores: serial `EvalHeap.compressed_scalars`
+  (`heap/mod.rs:319`), shared `SharedHeapArena.compressed_scalars`
+  (`heap/shared_arena.rs:678`). Candidate-B parallels in `tagged_values.rs`.
+- **The non-funneled hard surface:** `Value::heap` (23 sites) is direct;
+  identity-bit consumers assume a `u64` payload — `payload_bits` (60 sites),
+  `relocation_sensitive_identity_bits` (18), `address_identity_bits` (5),
+  `transient_identity_bits`. These are what the FV-0 identity audit
+  (`eval/heap/tests/payload_identity.rs`) already classifies and pins.
+- **`AtomicValueCell` is two words** (`eval/env.rs:474-477`:
+  `{ tag: AtomicU64, payload: AtomicU64 }`); `store` publishes payload-relaxed
+  then tag-release (`:497-502`), `load` reads tag-acquire then payload
+  (`:518-524`) and rebuilds via `decode_value` (`:529-554`). Reused as
+  `EvalThunk.result` (`eval/thunk.rs:189`) and mirrored by the CAS thunk state
+  (`eval/thunk_cas.rs:322`, `:1167-1168`). Under a one-word value this collapses
+  to a **single `AtomicU64`** — the two-word tearing/"mixed pair" protocol
+  (`env.rs:469-472`) disappears (a simplification), but every field access and
+  `decode_value` must be rewritten.
+- **The accessor surface to re-point** (`ratchet-value/src/value.rs`):
+  constructors `int`/`float`/`bool`/`null`/`string`/`path`/`list`/`attrs`/`lambda`/`primop`/`external`/`thunk`/`heap`
+  (`:123-241`); accessors `tag` (`:259`), `payload_bits` (`:275`),
+  `address_identity_bits` (`:291`), `relocation_sensitive_identity_bits`
+  (`:322`), `as_int`/`as_float`/`as_bool`/`as_*_ptr` (`:401-541`). Preserving
+  this exact surface lets most call sites compile through; the `payload_bits`/
+  `*_identity_bits` `u64` contract is the part that genuinely breaks.
+
+### 1.2 Runtime FFI (`ratchet-runtime-ffi`) — return path tri-width, import path two-word
+
+- **Return path is already tri-width and Candidate-C is proven.**
+  `run_context_finalized_native_thunk_call` branches on
+  `body.artifact().value_abi()` into `Active` (two-word `Value`), `CandidateB`,
+  `CandidateC` (one-word `u64`) — `native_call.rs:205-227` — with decoders in
+  `native_call/value_abi.rs:10-59` that validate the word came from the
+  receiving heap. A Candidate-C finalize+dispatch test passes today
+  (`native_call/tests/candidate_c.rs:14-36`).
+- **Helper-import surface is ALL two-word `-> Value`** and must gain one-word
+  siblings: env `aos_env_get` (`env.rs:76`) / `aos_upval_get` (`:152`), force
+  `aos_force` (`force.rs:148`) + `aos_force_deep`/`aos_blackhole_check`, apply
+  `aos_apply` (safety.rs:291-297), attr `aos_has_attr`/`aos_select_ic`/`aos_update`
+  (safety.rs:362-375), write-barrier `aos_gc_write_barrier` (safety.rs:441-447),
+  primop `aos_primop_call` (`primop.rs:66`), string-length `aos_string_length`
+  (`string_length.rs`, safety.rs:603-609), `aos_alloc_cons` (cons head is a
+  `Value`, safety.rs:198-225).
+- **The one-word env pinning:** both widths are declared side-by-side —
+  active `RuntimeEnvGetNativeFn = ...fn(*mut c_void, u32) -> Value` (`env.rs:38`)
+  and Candidate-B `RuntimeCandidateBEnvGetNativeFn = ...-> u64` (`env.rs:50`),
+  with `aos_candidate_b_env_get` (`env.rs:98`) reachable only via
+  `..._native_wrapper_address()` (`env.rs:117`), **unregistered** — the process
+  manifest returns only `aos_env_get` (`env.rs:213`). **There is no Candidate-C
+  env helper anywhere in the crate.** The wrapper-local export blockers are now
+  empty (`ENV_ACCESS_REMAINING_EXPORT_BLOCKERS = &[]`, `env.rs:56`), but the
+  oracle native-export gate still tracks `MissingFinalExportedWrapper` /
+  `TrapTransferUnimplemented` (test `env.rs:322-339`). The width-rejection guard
+  is `require_artifact_value_abi` → `UnsupportedArtifactValueAbi { expected,
+  actual }` (`cranelift/native_error.rs:36-42, 148-152`) — an entry-type
+  mismatch, not a finalize block.
+- **The FFI crate does not deref a `Value` payload as a raw pointer** — value
+  decoding is delegated to the oracle heap; the only raw-pointer casts are the
+  `*mut c_void` context/env handles (`context.rs:36-39, 106-108, 145-215`),
+  which are unaffected by value width. So the cutover work here is the `-> Value`
+  **signatures** and their safety-manifest pins, not pointer arithmetic.
+
+### 1.3 JIT (`ratchet-jit`) — dual-layout aware; stack maps hardcoded two-word
+
+- **The CLIF signature is width-parameterized.**
+  `clif_signature_for_runtime_call_with_layout(sig, value_layout)` (`abi.rs:197`)
+  expands each `Value` param/return into `layout.register_words()` `i64` words
+  (`abi.rs:362-366`); `validate_observed_value_layout` accepts 1..=2 words
+  (`abi.rs:392-410`). The active public path selects the two-word layout
+  (`clif_signature_for_runtime_call`, `abi.rs:161-165`); Candidate-C selects the
+  one-word layout (`clif_signature_for_candidate_c_runtime_call`, `abi.rs:188-195`)
+  and has an adapter witness (`abi.rs:807-820`). `JitValueAbi { Active,
+  CandidateB, CandidateC }` (`artifact.rs:15-21`) defaults to `Active`
+  (`artifact.rs:73-86`).
+- **Constant emission is two-word today.** `emit_value_return` (`lower.rs:2462-2473`)
+  emits **two** `iconst.i64` (tag + `relocation_sensitive_identity_bits`); the
+  Candidate-C lowerer emits **one** (`lower/candidate_c.rs:59-60`, `word.raw()`).
+  Heap-backed constants are rejected before emission
+  (`lower/error.rs:507-513` `UnsupportedHeapConstant`, called at `lower.rs:415`).
+  Candidate-C lowering + native boundary (`lower/candidate_c.rs`,
+  `cranelift/candidate_c.rs`) are built but reachable only via their own
+  entrypoints, not the active IR-root dispatch.
+- **STACK MAPS + RELOCATION assume two-word (the load-bearing invalidation).**
+  `lower/stack_maps.rs` is built end-to-end on `[Value; 2]`: module header
+  "update both words / reload both" (`:1-7`); slot geometry
+  `VALUE_STACK_SLOT_BYTES = 16`, `VALUE_PAYLOAD_OFFSET = 8` (`:175-179`);
+  `spill_values(&[[Value; 2]])` writes both words (`:189, 199-205`); `attach`
+  anchors one map entry per value at a `32 + index*16` stride with the payload
+  implicit at +8 (`:213-232`); `force`/`reload` are arity-2 (`:76-83, 235-243`);
+  geometry pinned by test (`:306-342`). The finalized SP-offset join
+  (`cranelift.rs:3119-3150`) records one root per value at the tag-word offset,
+  payload implicit at +8. **The recent relocation/stack-map landing assumed the
+  two-word representation.** A one-word value changes the spill geometry
+  (`VALUE_STACK_SLOT_BYTES` 16→8, second `stack_store` gone, stride
+  `32+index*8`), the slot width, the collector's payload-word writeback
+  contract, and every `[Value; 2]` signature. Because JIT is dual-layout-aware,
+  this can be built as a second (one-word) geometry selected by `JitValueAbi`,
+  but it must exist before the carrier flips.
+- **Safety manifest** (`safety.rs:342-529`) pins native-entry/code-pointer
+  families by **exact trimmed source line** (e.g. `JitThunkFn`,
+  `JitCandidateCThunkFn`, the `transmute::<*mut u8, JitThunkFn>`). Renaming the
+  active thunk/lambda return type from `Value` to a one-word carrier breaks the
+  exact-string assertions even where counts hold.
+
+### 1.4 Serialization / memo / `.drv` — ALREADY representation-neutral (no change)
+
+Verified: none of these hold a live `Value` word. Cache scalar payloads are
+canonical data — `InlineValuePayload::{Int(i64), Float(u64 /*bits*/), Bool,
+Null}` (`cache/runtime/inline_value_payload.rs:11-15`), `CachedScalarValue`
+likewise (`cache/runtime/expression_value.rs:37-42`), converted to/from `Value`
+only at the `active_values.rs:21` boundary. Memo entries carry
+`Arc<CachedExpressionValue>` plain data with no heap handles
+(`tree_walk/memo.rs:114-115`). `.drv` rendering holds ATerm/hash bytes
+(`cache/runtime/derivation_payload.rs`), and cutoff hashing is `blake3` over
+canonical bytes (`cache/cutoff.rs:30-51, 328`). **The serializer, memo cache,
+`.drv` rendering, and eval-cache key/hash layers need no change** — a major
+de-risk that keeps `.drv` byte-parity structurally independent of the carrier.
+
+## 2. Activation mechanism
+
+**There is no runtime flag, and there cannot be one for the carrier.** No
+`AOS_NIX_VALUE_ABI` / `ACTIVE_VALUE` / repr `cfg` / cargo feature gates the
+active representation in `ratchet-value` or `ratchet-oracle`
+(`ratchet-oracle/Cargo.toml` `default = []`; the only value-width `cfg`s are
+`debug_assertions`/`target_os` on the reservation). The sole existing selector,
+`AOS_NIX_JIT_VALUE_ABI` (`aos-nix/src/jit/engine/value_abi.rs:11-17`), governs
+only JIT tier-1 *literal-thunk* lowering (`JitValueAbi::{Active,CandidateB,
+CandidateC}`), not the tree-walk carrier.
+
+A struct's size is fixed at compile time, so the carrier cannot be a runtime
+switch. Two ways to stage it are available:
+
+1. **Compile-time variant (recommended for the flip itself).** Introduce a
+   `candidate_c_value` cargo feature that selects the `Value` representation (and
+   the ~dozen genuinely two-word-assuming sites) at build time, producing a
+   Candidate-C binary that runs the full parity battery as a P8 "build-the-variant-
+   and-keep-the-winner" candidate (doc 30 §3.6), then is promoted to default.
+   This keeps a bisectable A/B and a fallback, matching how Candidate-B/C landed
+   their prerequisites.
+2. **Direct flip.** Change the `Value` type in place once all peripheral
+   machinery is active-capable. Simpler diff, no dual-build, but no A/B safety
+   net.
+
+**Per-value-kind staging is NOT possible for the carrier** (all `Value`s are one
+type; you cannot have some 8-byte and some 16-byte). What *is* per-kind
+stageable is everything *around* the carrier: scalar boxing (§5 S0), the bridge
+(S1), FFI import helpers (S2), and the JIT stack-map geometry (S3) all land
+active-first under the 16-byte carrier, so the final flip (S4) is minimal.
+
+## 3. Test strategy
+
+**Suites that pin the old ABI (coherent lock-step update required):**
+- `ratchet-value/src/value.rs:668, :822` — the 16-byte `Value` ABI-contract
+  asserts (size/layout). Update to the 8-byte contract at the flip.
+- `ratchet-core/src/runtime_abi/value_layout.rs:63-81` — asserts active = 16/2/8
+  distinct from Candidate-C 8/1/8. At the flip, `runtime_abi_value_layout()`
+  returns the 8/1/8 layout; this test inverts.
+- `ratchet-runtime-ffi/src/safety.rs` (env `:1409-1444`, and every `-> Value`
+  family `:729-1141`) — **exact-line** ABI-string pins + per-family counts. New
+  one-word helper lines get new entries per the documented safety-manifest
+  update process (`heap/safety.rs` "count N→M" precedent).
+- `ratchet-jit/src/safety.rs:342-529` — exact-string native-entry pins; the
+  active thunk/lambda alias return-type change touches these.
+- `ratchet-jit/src/lower/stack_maps.rs:306-342` — the two-word slot geometry
+  test; rewritten for the one-word geometry (or gated by `JitValueAbi`).
+- The FV-0 identity audit `eval/heap/tests/payload_identity.rs` — any
+  reclassified `payload_bits` consumer fails until reviewed; this is the
+  intended tripwire.
+
+**New differential coverage the cutover needs:**
+- JIT shape differential across **all 6 lowerable shapes** under Candidate-C
+  (the existing tier-1/tier-2 differential broadened, per doc 30 §2.4's
+  "all 6 lowerable shapes" battery), plus the candidate-b/c conformance suites.
+- FFI: the tri-width *return* round-trip (exists) **plus** the new one-word
+  *import* helpers (env/force/apply/attr/primop/string-length), each with a
+  foreign-heap/wrong-domain rejection witness (mirroring
+  `native_call/value_abi.rs:41-58`).
+- The two-live-heaps same-offset regression witness (already exists per doc 30
+  FV-4 reservation-domain row) must stay green under the active carrier.
+- Boxed-scalar coverage: every `f64` and every out-of-`i32`-range `i64` boxes;
+  inline `i32` never boxes — a targeted corpus at the immediate-range boundary
+  (`±2^31`).
+
+**Parity battery modes (all byte-green, per doc 30 §9.2):** byte-parity ×
+{16 package legs} in serial / `AOS_NIX_JIT=1` / `K=4` / `AOS_NIX_GC=sweep`
+(threshold-0); compute ×9; `bench.wide` / `bench.wide-eval`; the strict-JSON
+seed corpus in the four modes; the memory columns A/B (the compression is
+supposed to *reduce* value mass — the win must show). **GC-stress + sweep-zero
+is mandatory** for the S3 stack-map rework.
+
+## 4. Risk register — top 5 silent-breakage modes
+
+1. **A `payload_bits` consumer truncates a 64-bit payload to `u32`.** 60
+   `payload_bits` sites assume a `u64` payload; a Candidate-C payload is a 32-bit
+   half. A consumer that reads the full word where it should read the low half
+   (or vice-versa) silently corrupts an index or a scalar.
+   *Detection:* the FV-0 identity audit (`payload_identity.rs`) forces review of
+   every reclassified site; a compile-time width assertion on the codec; parity
+   `.drv` diff on any value that flows to a derivation attribute.
+2. **An FFI caller invokes a two-word `-> Value` helper through a one-word
+   signature (or vice-versa).** ABI mismatch = the second register is garbage =
+   silently wrong value, no crash. Worst in the helper-import surface (env/force),
+   which is entirely two-word today.
+   *Detection:* the `require_artifact_value_abi` guard
+   (`cranelift/native_error.rs:36-42`); the safety-manifest exact-line pins that
+   fail the build on a signature-string change; the per-helper foreign-heap
+   rejection witnesses; differential under `AOS_NIX_JIT=1`.
+3. **Stack-map root enumeration reads/writes the wrong word width under GC.** If
+   a root slot stays 16-byte (`VALUE_STACK_SLOT_BYTES = 16`) while the value is
+   8-byte, the collector's relocation writeback rewrites/reloads the adjacent
+   word → torn heap references, observable only under a moving/stress collector.
+   This is the recently-landed two-word code (`lower/stack_maps.rs`,
+   `cranelift.rs:3119-3150`) directly.
+   *Detection:* GC-stress + `AOS_NIX_GC=sweep` threshold-0 parity; the
+   `stack_maps.rs` geometry test reworked to the one-word stride; the relocation
+   writeback tests.
+4. **Boxed-scalar reservation-domain aliasing / inline-vs-indexed misclassification.**
+   Two live heaps allocating the same `u32` offset, or an inline `i32`
+   mis-decoded as an indexed word (or an indexed word missing its domain),
+   dereferences a foreign or wrong cell.
+   *Detection:* `CompressedValueWord::from_raw` validation
+   (`compressed.rs:192-216`: missing-domain, domain-on-inline, forced-on-non-thunk,
+   bad bool/null payload); the two-live-heaps regression witness; `ArenaDomainMismatch`
+   guards in the scalar stores (`compressed.rs:523, 801`).
+5. **The forced-thunk shortcut bit (`COMPRESSED_FORCED_BIT`, bit 31) is silently
+   lost.** The 16-byte `Value` cannot carry it (the bridge rejects with
+   `ForcedThunkUnsupported`, `bridge.rs:52-54`). If, mid-cutover, a forced
+   Candidate-C thunk word round-trips through the still-active 16-byte bridge, the
+   shortcut is dropped → redundant re-forcing or, worse, a laziness/observability
+   divergence.
+   *Detection:* thunk claim/park parity (`K=4` + sweep-zero); a forced-bit
+   fast-path round-trip test; the `is_forced_thunk` / `with_forced_bit`
+   invariants (`compressed.rs:269-288`). **Ordering rule:** the carrier flip and
+   the removal of the `ForcedThunkUnsupported` bridge path must land together —
+   never a state where a forced Candidate-C word can reach the lossy bridge.
+
+## 5. Staged landing order (smallest-first, each parity-gated)
+
+Every stage keeps the full parity battery (§3) byte-green. S0-S3 land under the
+**16-byte carrier**; S4 is the flip; S5 is the follow-on win.
+
+- **S0 — Scalar boxing via the Candidate-C store, float-first.** Route
+  `alloc_float_value` then `alloc_int_value` (`active_values.rs:56, 45`) through
+  `EvalHeap.compressed_scalars` so every `f64` and out-of-range `i64` allocates a
+  boxed reservation cell, carrier unchanged. Exercises boxing + reservation
+  membership + domain guards under parity. Gate: standing battery + the
+  boxed-scalar domain regression + the immediate-range corpus (risk 4).
+- **S1 — Activate the `EvalHeap` Candidate-C bridge on an internal path.** Turn
+  on `candidate_c_encode_value`/`decode_value` (`compressed_values.rs:26, 59`)
+  round-trips at a chosen internal seam (e.g. a debug shadow that encodes then
+  decodes every produced value and asserts equality), still 16-byte carrier, to
+  flush encode/decode + heap-location + membership bugs before they matter.
+  Gate: standing battery with the shadow assert on.
+- **S2 — FFI dual-width import helpers.** Add one-word Candidate-C siblings for
+  every `-> Value` helper (env/force/apply/attr/write-barrier/primop/string-length),
+  mirroring `aos_candidate_b_env_get`; register them behind `JitValueAbi`
+  selection; the return path is already tri-width. New safety-manifest entries
+  per the update process. Gate: standing battery + the per-helper rejection
+  witnesses (risk 2); JIT still selects Active for the tree walk.
+- **S3 — JIT one-word stack-map + relocation rework (the load-bearing item).**
+  Build a one-word slot geometry in `lower/stack_maps.rs` (single `stack_store`,
+  8-byte slot, `32 + index*8` stride) and the matching finalized SP-offset join
+  (`cranelift.rs:3119-3150`), selected by `JitValueAbi::CandidateC`, alongside
+  the existing two-word geometry. Gate: **GC-stress + sweep-zero** + the reworked
+  geometry test + the relocation writeback tests (risk 3). Also flip
+  `emit_value_return` to the one-word path under the Candidate-C layout.
+- **S4 — The carrier flip.** Change `Value` to the 8-byte representation (via the
+  `candidate_c_value` cargo-feature variant, §2 option 1, or in place), re-point
+  the `value.rs` accessor surface (`payload_bits`/`*_identity_bits` → the 32-bit
+  halves), collapse `AtomicValueCell` to one `AtomicU64` (`env.rs:474-554`),
+  switch `active_values.rs` + the bridge to native Candidate-C, select the
+  one-word layout from `runtime_abi_value_layout()`, and remove the
+  `ForcedThunkUnsupported` lossy path (risk 5, atomic with the flip). Gate: the
+  **entire** parity battery in all four modes + the full differential corpus +
+  all pinned-ABI test updates in lock-step (§3) + the memory-column A/B showing
+  the value-mass reduction. This is the big-bang commit, minimized by S0-S3.
+- **S5 — Container narrowing (follow-on).** Narrow list spines and post-shape
+  attr slots to 4-byte where they hold only heap references (doc 30 §3.5), the
+  additional memory win. Separately gated; not required to declare S4 done.
+
+## 6. Open questions and doc-vs-code divergences (for the lead)
+
+- **Q1 — Variant flip vs. in-place flip (§2).** Recommend the `candidate_c_value`
+  compile-time **variant** for S4 (P8 build-and-select, bisectable, keeps a
+  fallback), accepting the dual-build cost. Confirm this vs. an in-place flip
+  (simpler diff, no A/B). Either way the flip is big-bang; the question is
+  whether we keep a parallel Active build during bring-up.
+- **Q2 — Does S4 need the JIT active *at all* during bring-up?** JIT is disabled
+  under `AOS_NIX_PARALLEL` (worker-affine), and the S3 stack-map rework is the
+  riskiest piece. Option: land S4's carrier flip with JIT **off** (tree-walk
+  Candidate-C only, parity-green serial + K=4), then re-enable JIT Candidate-C as
+  S4b once S3's one-word stack maps are stress-proven. Recommend yes — it
+  decouples the two hardest risks (carrier flip, stack-map rework).
+- **D1 — The recent stack-map/relocation landing assumed two-word.**
+  `lower/stack_maps.rs` and `cranelift.rs:3119-3150` are recently-landed code
+  (the FV-0 "compiled-root prerequisite" / relocation work) built explicitly on
+  `[Value; 2]` and "update/reload both words." The cutover **reworks** this
+  landing (S3). Flagged because it is the one place the cutover directly
+  contradicts a just-shipped mechanism — the lead should expect that diff to
+  touch code another agent recently authored.
+- **D2 — No `AOS_NIX_VALUE_ABI` exists; doc 30 language implies flaggability.**
+  Doc 30 §12 speaks of "selecting the one-word active ABI" as if a selection
+  point exists; in code the only selector is JIT-tier-1-scoped
+  (`AOS_NIX_JIT_VALUE_ABI`). The active carrier is a hard type with no switch
+  (§2). The plan supplies the missing mechanism (the `candidate_c_value`
+  variant), which is new work, not a flip of an existing flag.
+- **D3 — `ForcedThunkUnsupported` is a mid-cutover hazard, not just a bridge
+  detail.** The lossy 16-byte bridge path (`bridge.rs:52-54`) must be removed
+  atomically with the carrier flip (risk 5); a staged state where a forced
+  Candidate-C word can reach it is a silent laziness bug. Called out so the S4
+  commit boundary is drawn to include it.
+
+---
+
+**Bottom line.** The cutover is **big-bang at the carrier, staged everywhere
+else.** Serialization is already neutral, scalar construction is funneled, and
+the JIT/FFI return path is width-parameterized — so S0-S3 land the boxing, the
+bridge, the dual-width FFI import helpers, and (the hardest new work) the
+one-word JIT stack-map/relocation geometry under the unchanged 16-byte carrier,
+each parity-gated. S4 then flips the `Value` type in one reviewable commit —
+minimized to the accessor contract, `AtomicValueCell`, the layout selector, and
+the forced-bit bridge removal — behind the full parity battery in all four modes.
+The single item most worth the lead's attention is that S3 reworks the recently
+-landed two-word stack-map/relocation roots (`lower/stack_maps.rs`,
+`cranelift.rs:3119-3150`): that code assumed the two-word representation and the
+cutover cannot avoid rebuilding it.
