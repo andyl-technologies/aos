@@ -55,6 +55,7 @@ pub(super) mod closures;
 mod compressed_values;
 mod lists;
 mod scalars;
+mod tagged_values;
 
 /// Byte-length ceiling for inlining string/path bytes into the flat
 /// allocation (doc 30 FV-1b).

@@ -316,7 +316,7 @@ pub struct EvalHeap {
     /// test geometry and unsupported mappings retain the chunked fallback.
     /// Worker closures grow downward, so pops never cross permanent allocations.
     flat_arena: SharedFlatStoreArena,
-    compressed_scalars: Option<crate::value::compressed::CandidateCScalarStore>,
+    compressed_scalars: crate::value::compressed::CandidateCScalarStore,
     /// Flat worker-domain closure objects (doc 30 FV-3, serial mode).
     ///
     /// Thunks, lambdas, and partially applied builtins — the mutable,

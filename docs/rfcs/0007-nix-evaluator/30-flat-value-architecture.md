@@ -1726,9 +1726,10 @@ value word (Candidates B and C) remains open and separately gated:**
       native bodies, reject mismatched metadata before code-pointer casts, prove
       engine publication and output parity, and pin active fallback. Heap/header
       decoding, boxed Candidate-B scalar cells, helpers, tier 2, containers, and
-      the default evaluator ABI remain active two-word paths; this makes B and C
-      executable competitors without claiming the head-to-head or active
-      cutover complete. The exact combined release passed 380 value, 355 core,
+      the default evaluator ABI remained active two-word paths at that landing;
+      the context-owned bridge row below closes the first two without claiming
+      the head-to-head or active cutover complete. The exact combined release
+      passed 380 value, 355 core,
       271 JIT plus both 19-test integrations, 3,051 active oracle tests (34
       ignored), runtime-FFI 82 active/26 ignored plus its 2- and 6-test
       integrations, cache 112 plus its integration, aos-nix 340, and language
@@ -1769,6 +1770,40 @@ value word (Candidates B and C) remains open and separately gated:**
       locality counters (16,550 initial forces/88 settled cutoffs for scattered
       leaf changes versus 150/96 unchanged), while its aos/C++ ratios remained
       slower at 2.072-3.339 first-run and 2.266-3.301 settled.
+- [x] **Candidate-B context-owned heap/scalar bridge prerequisite:** the
+      evaluator now converts between active 16-byte `Value`s and inactive
+      tagged Candidate-B words under the receiving heap's ownership. Signed
+      61-bit integers and boolean/null singletons remain immediate; wider
+      integers and exact float bit patterns use hash-consed typed scalar cells.
+      Candidate B reuses Candidate C's scalar-cell population, but addresses
+      cells directly, so serial chunk fallback and shared boxed-level fallback
+      work without a reservation while Candidate C continues to reject missing
+      reservation domains. Heap decode reconstructs provenance only at the
+      evaluator boundary and then validates typed scalar or flat-object
+      membership before any payload access; another live heap, the wrong scalar
+      population, and forced-thunk words that active `Value` cannot preserve
+      fail explicitly. Repeated scalars reuse one address, and a parallel worker
+      decodes sibling-worker scalar and heap words. The active evaluator, FFI,
+      JIT, and containers remain 16-byte paths; no unsafe operation was added.
+      Focused Candidate-B tests passed all seven serial/chunk/shared/adversarial
+      cases, while all ten Candidate-C scalar tests and all six Candidate-C
+      active-value bridge tests remained green with their original domain/index
+      error fidelity. Full suites passed 380 value, 355 core, 271 JIT plus both
+      19-test integrations, 3,061 active oracle tests (34 ignored), runtime-FFI
+      82 active/26 ignored plus its 2- and 6-test integrations, cache 112 plus
+      its doctest, aos-nix 340, and language 38. The frozen source-size gate
+      retained exactly its prior offender set; every touched file is below
+      1,000 lines. The differential battery was byte-green across all 16
+      package legs, compute x9, wide serial/K=4/JIT/sweep-zero, zlib/wide cache
+      validation, and all 648 strict-JSON expressions in those four modes.
+      Three balanced exact-parent release pairs (`B,C,C,B,B,C`) moved native
+      wide medians 487.08 -> 469.05 ms cold (-3.7%) and 469.96 -> 465.85 ms
+      warm (-0.9%); retained-RSS medians moved +0.6% cold and +2.8% warm. A
+      one-sample changed-tree confirmation matched all nine scenarios and kept
+      the locality signal: scattered leaf values forced 16,550 thunks initially
+      and retained 88 settled cutoffs, versus 150/96 for unchanged. Its loaded
+      host aos/C++ ratios were 1.497-3.713 first-run and 2.881-4.086 settled, so
+      no changed-tree throughput win is claimed.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
@@ -1779,8 +1814,9 @@ value word (Candidates B and C) remains open and separately gated:**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
       contract, same seams, built for the head-to-head. **The checked word
       codec, one-word ABI metadata, literal lowerer, native dispatch, runtime
-      scalar adapter, and tier-1 selector are landed. Context-owned heap/header
-      decoding, boxed wide integers/floats, container narrowing, and the full
+      scalar adapter, tier-1 selector, context-owned heap/header bridge, and
+      boxed wide-integer/exact-float populations are landed. Helper/tier-2
+      conversion, container narrowing, active ABI selection, and the full
       head-to-head remain.**
 - [ ] The B-vs-C selection: full benchmark matrix (packages + compute +
       wide + memory columns) per the P8 build-and-select mandate;

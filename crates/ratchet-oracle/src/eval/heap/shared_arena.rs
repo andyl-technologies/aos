@@ -674,8 +674,8 @@ fn payload_size_estimate(object: &HeapObjectValue) -> usize {
 pub struct SharedHeapArena {
     /// One allocation shard per worker.
     shards: Vec<Arc<SharedHeapShard>>,
-    /// Boxed scalars shared by every worker in the flat reservation.
-    compressed_scalars: Option<SharedCandidateCScalarStore>,
+    /// Boxed scalars shared by every worker in the flat arena backend.
+    compressed_scalars: SharedCandidateCScalarStore,
     /// Candidate-C address space used by every production flat shard store.
     flat_reservation: Option<Arc<ReservedArena>>,
 }
@@ -690,9 +690,10 @@ impl SharedHeapArena {
         let shard_count = worker_count.max(1);
         let flat_reservation = ReservedArena::new().ok().map(Arc::new);
         let scalar_capacity = capacity_per_shard.saturating_mul(shard_count).max(1);
-        let compressed_scalars = flat_reservation
-            .as_ref()
-            .map(|arena| SharedCandidateCScalarStore::new(Arc::clone(arena), scalar_capacity));
+        let compressed_scalars = match &flat_reservation {
+            Some(arena) => SharedCandidateCScalarStore::new(Arc::clone(arena), scalar_capacity),
+            None => SharedCandidateCScalarStore::with_capacity(scalar_capacity),
+        };
         let shards = (0..shard_count)
             .map(|shard_id| {
                 Arc::new(SharedHeapShard::new(
@@ -744,11 +745,7 @@ impl SharedHeapArena {
             .iter()
             .map(|shard| shard.published_len())
             .sum::<usize>()
-            .saturating_add(
-                self.compressed_scalars
-                    .as_ref()
-                    .map_or(0, SharedCandidateCScalarStore::len),
-            )
+            .saturating_add(self.compressed_scalars.len())
     }
 
     /// Approximate payload bytes published across every shard and scalar store.
@@ -760,11 +757,7 @@ impl SharedHeapArena {
             .iter()
             .map(|shard| shard.published_payload_bytes())
             .fold(0usize, usize::saturating_add)
-            .saturating_add(
-                self.compressed_scalars
-                    .as_ref()
-                    .map_or(0, SharedCandidateCScalarStore::payload_bytes),
-            )
+            .saturating_add(self.compressed_scalars.payload_bytes())
     }
 
     /// Resolves `ptr` as a flat string/path of `kind`, across all shards.

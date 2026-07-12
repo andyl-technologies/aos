@@ -11760,9 +11760,10 @@ it ships).**
       Separate core/JIT ABI metadata, literal lowering, reviewed native entry,
       runtime scalar adapter, and `AOS_NIX_JIT_VALUE_ABI=candidate-b` engine
       selection execute allocation-free literal bodies as one word and fall
-      back to the active ABI for boxed scalars. Heap-header decoding, boxed
-      Candidate-B scalars, helper/tier-2/container conversion, the B-vs-C
-      benchmark selection, and the default evaluator cutover remain open.
+      back to the active ABI for boxed scalars. The later context-owned bridge
+      precursor closes heap-header decoding and boxed Candidate-B scalars;
+      helper/tier-2/container conversion, the B-vs-C benchmark selection, and
+      the default evaluator cutover remain open.
 - [x] Current representation-neutral cached-scalar boundary precursor:
       force-cache payloads retain canonical `i64`, exact `f64` bits, boolean,
       or null data instead of persisting an active runtime word. Production
@@ -11784,6 +11785,31 @@ it ships).**
       three-sample changed-tree matrix matched all nine scenario outputs; its
       synthetic aos/C++ ratios were 2.072-3.339 first-run and 2.266-3.301
       settled, so no changed-tree throughput win is claimed.
+- [x] Current Candidate-B context-owned heap/scalar bridge precursor:
+      `EvalHeap` now owns safe active-`Value` conversion for the tagged word.
+      Signed 61-bit integers and boolean/null singletons remain immediate;
+      wider integers and exact floats use hash-consed typed cells shared with
+      Candidate C's scalar substrate. Candidate B addresses those cells
+      directly, including serial chunk and shared boxed-level compatibility
+      backends, while Candidate C still requires a reservation domain. Decode
+      reconstructs provenance only inside the receiving evaluator and validates
+      scalar or flat-object membership before payload access. Serial, chunked,
+      and cross-worker round trips are covered along with foreign-heap,
+      wrong-scalar-population, and forced-thunk rejection. The active evaluator,
+      containers, FFI, and JIT remain 16-byte paths and no unsafe operation was
+      added. Full suites passed 380 value, 355 core, 271 JIT plus both 19-test
+      integrations, 3,061 active oracle tests (34 ignored), runtime-FFI 82
+      active/26 ignored plus its two integrations, cache 112 plus its doctest,
+      aos-nix 340, and language 38. The known frozen source-size gate retained
+      its exact offender set and no touched file exceeds 1,000 lines. All 16
+      package byte legs, compute x9, wide serial/K=4/JIT/sweep-zero, zlib/wide
+      cache validation, and all 648 strict-JSON expressions in those four modes
+      were green. Three balanced exact-parent release pairs moved native wide
+      medians 487.08 -> 469.05 ms cold and 469.96 -> 465.85 ms warm; retained
+      RSS moved +0.6%/+2.8%. The nine-scenario changed-tree confirmation matched
+      throughout and preserved the 16,550/88 scattered-change versus 150/96
+      unchanged force/cutoff signal; no throughput claim is made for the
+      inactive bridge.
 - [x] Current `value/nanbox.rs` precursor: `ratchet-value` exposes the safe
       NaN-box layout contract for the measured value-size variant. It reserves a
       negative quiet-NaN prefix, three tag bits, and a 48-bit payload; normalizes
@@ -12192,9 +12218,10 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       entries execute B and C integer/boolean/null literal bodies, and the
       evaluator now owns scalar construction/decoding through `EvalHeap`.
       Three wide samples showed only a noise-sized B edge (1.4% cold, 0.9%
-      warm). Context-owned heap/header decoding, boxed B scalars, helpers,
-      tier 2, container narrowing, the full matrix, and active-ABI selection
-      remain, so FV-4 is intentionally unchecked.*
+      warm). Candidate B now also has context-owned heap/header decoding and
+      boxed scalar populations. Helpers, tier 2, container narrowing, the full
+      matrix, and active-ABI selection remain, so FV-4 is intentionally
+      unchecked.*
 - [x] FV-5 — hybrid closures: flat inline free-var capture
       (`|FV| <= K`) + linked persistent frame chains; persistent
       `with`/scoped-global lists; delete the generation-keyed capture

@@ -6,7 +6,7 @@
 //! indices as the permanent flat-object stores. This module owns the evaluator
 //! seam for exercising that storage before the value/FFI/JIT ABI switches.
 
-use crate::value::compressed::{CandidateCScalarError, CandidateCScalarStore, CompressedValueWord};
+use crate::value::compressed::{CandidateCScalarError, CompressedValueWord};
 
 use super::*;
 
@@ -25,7 +25,7 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.arena().candidate_c_encode_int(value);
         }
-        candidate_c_scalars_mut(&mut self.compressed_scalars)?.encode_int(value)
+        self.compressed_scalars.encode_int(value)
     }
 
     /// Encodes a float through the Candidate-C scalar store.
@@ -42,7 +42,7 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.arena().candidate_c_encode_float(value);
         }
-        candidate_c_scalars_mut(&mut self.compressed_scalars)?.encode_float(value)
+        self.compressed_scalars.encode_float(value)
     }
 
     /// Decodes an integer from the Candidate-C scalar store.
@@ -58,7 +58,7 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.arena().candidate_c_decode_int(word);
         }
-        candidate_c_scalars(&self.compressed_scalars)?.decode_int(word)
+        self.compressed_scalars.decode_int(word)
     }
 
     /// Decodes a float from the Candidate-C scalar store.
@@ -74,24 +74,8 @@ impl EvalHeap {
         if let Some(shared) = &self.shared {
             return shared.arena().candidate_c_decode_float(word);
         }
-        candidate_c_scalars(&self.compressed_scalars)?.decode_float(word)
+        self.compressed_scalars.decode_float(word)
     }
-}
-
-fn candidate_c_scalars(
-    store: &Option<CandidateCScalarStore>,
-) -> Result<&CandidateCScalarStore, CandidateCScalarError> {
-    store
-        .as_ref()
-        .ok_or(CandidateCScalarError::ReservationUnavailable)
-}
-
-fn candidate_c_scalars_mut(
-    store: &mut Option<CandidateCScalarStore>,
-) -> Result<&mut CandidateCScalarStore, CandidateCScalarError> {
-    store
-        .as_mut()
-        .ok_or(CandidateCScalarError::ReservationUnavailable)
 }
 
 #[cfg(test)]

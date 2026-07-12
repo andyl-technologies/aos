@@ -17,6 +17,10 @@ use thiserror::Error;
 
 use super::HeapObject;
 
+mod bridge;
+
+pub use bridge::CandidateBValueError;
+
 /// Required heap-object pointer alignment in bytes.
 pub const HEAP_POINTER_ALIGNMENT: usize = 8;
 /// Number of low pointer bits reserved for pointer tags.
@@ -119,7 +123,7 @@ impl TaggedHeapAddress {
         ptr: NonNull<HeapObject>,
         tag: PointerTag,
     ) -> Result<Self, PointerTagError> {
-        let address = ptr.as_ptr() as usize;
+        let address = ptr.as_ptr().expose_provenance();
         validate_aligned_address(address)?;
         Ok(Self {
             raw: address | tag.bits as usize,
@@ -180,7 +184,7 @@ impl TaggedHeapAddress {
 
     /// Returns whether `ptr` has the same address bits as this tagged word.
     pub fn address_matches(self, ptr: NonNull<HeapObject>) -> bool {
-        self.address_bits() == ptr.as_ptr() as usize
+        self.address_bits() == ptr.as_ptr().expose_provenance()
     }
 }
 
