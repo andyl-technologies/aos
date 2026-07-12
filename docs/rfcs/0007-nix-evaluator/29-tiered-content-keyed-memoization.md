@@ -1242,6 +1242,34 @@ design above with the code as ground truth:
 - [ ] MEMO-2 final acceptance: primary/secondary-loss/poisoned-L3 matrix,
       root-cutoff latency non-regression, repeat-heavy package/CI hit-mass
       demonstration, and the required cross-machine L3 replay.
+      - Loss/poisoned/publish-gate matrix: DONE (§7.7).
+      - Root-cutoff latency non-regression: CONFIRMED. The warm root-cutoff hit
+        is 23-26 ms (nix-bench warm entry), unchanged and memo-neutral after the
+        #18 demotion + L3-client additions (the earlier "warm≈cold≈1.15 s" alarm
+        was a harness JSON-extraction bug reading the cold benchmark for both
+        arms, not a regression — resolved as task #21, fix a197ae193). This is
+        architectural, not incidental: the warm primary-hit path
+        (`root_cutoff.rs` returns at the `PersistLocationHit::Primary` arm) never
+        reaches the L3 client (only consulted after every local probe misses) and
+        never touches demotion (whose sole caller is
+        `PersistCacheLocations::demote_under_size_pressure`, invoked by explicit
+        maintenance, never by instantiate). A darwin `nix-diff`-inclusive
+        cross-check measured warm ≈ 48-61 ms over the C++ oracle across
+        zlib/openssl/bash/jq (root_cutoffs=1 each), consistent with a ~23-26 ms
+        native core once `aos` startup (~7.6 ms) and drv-diff overhead are
+        removed.
+      - Repeat-heavy hit-mass demonstration: DONE. Four attrs
+        (zlib/openssl/bash/jq) instantiated over 5 rounds against one shared
+        durable `AOS_NIX_CACHE`. Round 1 (cold populate) = 6.15 s wall, 0
+        root-cutoff hits; rounds 2-5 (warm) each land 4 root-cutoff hits (16
+        total) and the wall drops to a near-flat ~1.0 s per round
+        (warm/cold ratio 0.18 — an 82% drop that stays flat, spread 0.4 s). The
+        residual ~1.0 s warm floor is the four C++ nix-instantiate oracle
+        subprocesses `nix-diff` runs per round (~0.18 s each), not native work:
+        the native side is the flat ~23-26 ms/attr root-cutoff hit. Memo hit mass
+        thus grows one full-corpus cutoff set per round with a flat warm wall,
+        the CI-shaped acceptance.
+      - Cross-host L3 replay remains environment-blocked (above).
 - [x] Unary tier-2 compiled-body records with versioned target and
       lowering identity, decode validation, and miss-safe recompilation.
 - [x] Fold unary compiled-body records into the packed multi-location L2
