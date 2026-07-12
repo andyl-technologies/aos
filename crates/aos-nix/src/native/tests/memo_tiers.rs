@@ -530,6 +530,30 @@ fn truncated_network_bundle_is_rejected() -> Result<()> {
 }
 
 #[test]
+fn network_timeout_is_an_advisory_miss_and_latches_backoff() -> Result<()> {
+    let _net = net_lock();
+    let fx = fixture("aos-nix-memo-net-timeout")?;
+    write_derivation(&fx.file, r#""memo-net-timeout""#)?;
+    // The server accepts the connection but never replies; a short client
+    // timeout fires. A transport timeout is an advisory miss and latches the
+    // process backoff (like an offline endpoint), so the eval still succeeds.
+    let server = MemoTestServer::spawn()?;
+    server.set_hang(true);
+    let mut options = tier_options(&fx, &fx.root.join("persist-a"))?;
+    options.set_memo_net(Some(MemoNetOptions {
+        endpoint: server.endpoint(),
+        mode: MemoNetMode::ReadOnly,
+        timeout_ms: 150,
+    }));
+    let native = NixNative::with_options(0, options)?;
+    let (_, stats) = native.instantiate_closure_with_stats(&fx.file, "pkg")?;
+    assert_eq!(stats.root_cutoffs(), 0, "a timed-out fetch must miss");
+    assert_eq!(stats.memo_net_errors(), 1);
+    crate::native::memo_net::reset_backoff_for_tests();
+    Ok(())
+}
+
+#[test]
 fn read_only_mode_never_publishes() -> Result<()> {
     let _net = net_lock();
     let fx = fixture("aos-nix-memo-net-ro-suppress")?;

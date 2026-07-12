@@ -6,6 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use anyhow::Result;
 
@@ -20,6 +21,7 @@ pub(crate) struct MemoTestServer {
     addr: SocketAddr,
     records: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     forced_status: Arc<AtomicU16>,
+    hang: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -36,9 +38,11 @@ impl MemoTestServer {
         let addr = listener.local_addr()?;
         let records: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::new()));
         let forced_status = Arc::new(AtomicU16::new(0));
+        let hang = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
         let thread_records = Arc::clone(&records);
         let thread_forced = Arc::clone(&forced_status);
+        let thread_hang = Arc::clone(&hang);
         let thread_shutdown = Arc::clone(&shutdown);
         let handle = std::thread::spawn(move || {
             for stream in listener.incoming() {
@@ -46,16 +50,24 @@ impl MemoTestServer {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                let _ = serve_one(stream, &thread_records, &thread_forced);
+                let _ = serve_one(stream, &thread_records, &thread_forced, &thread_hang);
             }
         });
         Ok(Self {
             addr,
             records,
             forced_status,
+            hang,
             shutdown,
             handle: Some(handle),
         })
+    }
+
+    /// Makes the server hold each connection open without replying, so a client
+    /// with a short `timeout_ms` hits a request timeout. Used to drive the
+    /// transport-timeout backoff path.
+    pub(crate) fn set_hang(&self, on: bool) {
+        self.hang.store(on, Ordering::Relaxed);
     }
 
     /// Forces every subsequent response to `status` with an empty body.
@@ -109,6 +121,7 @@ fn serve_one(
     mut stream: TcpStream,
     records: &Arc<Mutex<HashMap<String, Vec<u8>>>>,
     forced_status: &Arc<AtomicU16>,
+    hang: &Arc<AtomicBool>,
 ) -> std::io::Result<()> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -144,6 +157,13 @@ fn serve_one(
             break;
         }
         body.extend_from_slice(&chunk[..read]);
+    }
+
+    if hang.load(Ordering::Relaxed) {
+        // Hold the connection open without replying so a short-timeout client
+        // hits a request timeout; then drop it.
+        std::thread::sleep(Duration::from_millis(600));
+        return Ok(());
     }
 
     let forced = forced_status.load(Ordering::Relaxed);

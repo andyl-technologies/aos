@@ -863,7 +863,7 @@ is transparent to correctness. Each cell has a test.
 | Cell | Behavior | Test |
 | --- | --- | --- |
 | Offline / connection refused | error + process backoff latch, correct eval | `offline_endpoint_degrades_to_a_miss` |
-| Network timeout (connect/read) | same transport-failure path (bounded by `timeout_ms`) → error + backoff | shares the offline path (one `NET_BACKOFF` latch); no separate flaky hang test |
+| Network timeout (connect/read) | transport failure bounded by `timeout_ms` → error + backoff latch | `network_timeout_is_an_advisory_miss_and_latches_backoff` |
 | Reachable server, record absent (404) | clean miss, **no** backoff | `reachable_endpoint_missing_record_is_a_clean_miss` |
 | Server 5xx | error, **no** backoff (a received response), correct eval | `server_error_status_is_an_advisory_miss` |
 | Truncated / short bundle | codec reject → error, correct eval | `truncated_network_bundle_is_rejected` |
