@@ -588,3 +588,43 @@ decision text below supersedes the question.
 skeleton is built: all passes off, `simplify(ir) == ir` asserted by a test over
 the whole-corpus parse (twice-run `LoweredIrFingerprint` equality), zero
 fingerprint movement proven before/after, and the full byte-parity battery green.
+
+## 9. Campaign progress and refinements (2026-07-12)
+
+Landed increments (all off-by-default behind `AOS_NIX_SIMPLIFY`, each byte-parity
+green default + engaged on zlib/openssl/stdenv.bash/stdenv.coreutils):
+
+- `e1f32a1ae` — arena-stable `IrArena::set_node` rewrite primitive.
+- `189eec641` — CLI/system-sensitive builtin classification (D5, see below).
+- `ea85640fa` — `render_ir` golden-IR renderer.
+- `d75960594` — `ConstFold` (§2.2). nix-bench A/B neutral → off by default.
+- `03e1cf85c` — `CaseOfKnown` (§2.3, `if`-on-known-`Bool`). A/B neutral → off.
+
+**D5 refinement (lead ruling 2026-07-12).** The CLI/system-sensitive guard is a
+dialect *predicate* (`nix_builtin_is_cli_sensitive`) plus the non-speculable
+`NIX_EFFECT_CLI_SENSITIVE` member — it is **not** stamped onto `BuiltinAttr`
+nodes at lowering, because `builtins.currentSystem` is a value that lowers to a
+`Pure` `BuiltinAttr` the effect hook cannot see, and stamping it now buys nothing
+(none of §2.2–§2.4 propagate builtin values) while costing a fingerprint
+cold-miss and a possible native-fallback shift. When builtin-value propagation
+eventually lands, whoever builds it revisits with the `PASS_SET_VERSION`-bump
+machinery, and **folding passes MUST consult both `is_speculable()` and
+`nix_builtin_is_cli_sensitive`** before propagating a builtin's value.
+
+**Remaining increment sequencing (lead ruling 2026-07-12).**
+
+- **Increment 6 = inlining option (a):** arena-stable, same-frame, single-use
+  `let`-inline. Replace the one same-frame `LocalVar` use with a copy of the
+  binding value; keep the binding (slot retained) so **frame layouts (slot
+  counts) are unchanged** — elision without compaction — and JIT frame
+  assumptions cannot shift. Gated engaged-serial + engaged-JIT. Slot compaction
+  rides with increment 8.
+- **Increment 7 = dead-binding value-elision (§2.4):** `Absent` bindings have
+  their value replaced by `null` via `set_node`; slot retained (frame layout
+  unchanged). Reuses the vetted `dead_binding_elimination_plan`.
+- **Increment 8 = full beta-reduction (§2.1):** `(x: body) arg`. Needs the
+  compacting rebuild/remap machinery + de-Bruijn renumbering, and is explicitly
+  sequenced **after snapshot-design's S4b lands** (JIT re-enabled on the new
+  carrier + one-word stack maps proven) so IR is not renumbered under a moving
+  JIT ABI. Single-use inline (increment 6a) is a special case of this
+  substitution and its frame-aware reference machinery is shared.

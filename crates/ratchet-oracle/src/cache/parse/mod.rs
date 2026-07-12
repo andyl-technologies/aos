@@ -197,6 +197,11 @@ fn simplify_enabled() -> bool {
 pub(super) fn simplify_lowered_ir(ir: &mut Ir) -> Result<(), ParseCacheError> {
     if simplify_enabled() {
         simplify_ir(ir).map_err(|source| ParseCacheError::Simplify { source })?;
+        // Some passes (e.g. inlining, dead-binding) refresh analysis facts in
+        // place to make their decisions. Reset them to the conservative baseline
+        // so the persisted `facts.bin` keeps its version-0 (analysis-not-run)
+        // contract; the analysis pipeline recomputes facts on warm load and eval.
+        ir.facts = IrFacts::conservative(ir.arena.nodes().len());
     }
     Ok(())
 }

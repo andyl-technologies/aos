@@ -22,6 +22,7 @@ mod annotate;
 mod case_of_known;
 mod const_fold;
 mod facts;
+mod inline;
 mod render;
 mod simplify;
 
@@ -31,6 +32,7 @@ pub use annotate::{
 };
 pub use case_of_known::CaseOfKnown;
 pub use const_fold::ConstFold;
+pub use inline::InlineSingleUse;
 pub use render::render_ir;
 pub use simplify::{
     PASS_SET_VERSION, PassOutcome, SIMPLIFY_MAX_ITERS, SimplifyError, SimplifyPass, SimplifyPhase,
