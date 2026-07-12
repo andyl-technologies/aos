@@ -365,6 +365,10 @@ mod tests {
         assert!(actual.raw_eq(expected));
     }
 
+    // Exercises the Candidate-B env-get FFI wrapper + `candidate_b_decode_int`
+    // bridge; both are cfg-gated out under the Candidate-C carrier (the value IS
+    // the word, JIT off — cutover plan 6.1), so this runs on the baseline only.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn candidate_b_env_wrapper_boxes_wide_integer_in_receiving_heap() {
         let frame = EvalFrame::new(1).expect("frame allocates");

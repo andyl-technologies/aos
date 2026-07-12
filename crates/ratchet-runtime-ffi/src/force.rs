@@ -335,18 +335,21 @@ mod tests {
     use super::*;
     use ratchet_oracle::{compile::resolve, eval::ForceClaim, syntax::parse_str, value::ValueTag};
 
+    #[cfg(not(feature = "candidate_c_value"))]
     const MALFORMED_PAYLOAD_ABORT_CHILD: &str =
         "force::tests::aos_force_native_wrapper_aborts_malformed_payload_child";
     const FORCE_NULL_CONTEXT_ABORT_CHILD: &str =
         "force::tests::aos_force_native_wrapper_aborts_on_null_context_child";
     const FORCE_TREE_WALK_ERROR_ABORT_CHILD: &str =
         "force::tests::aos_force_native_wrapper_aborts_on_tree_walk_error_child";
+    #[cfg(not(feature = "candidate_c_value"))]
     const FORCE_DEEP_MALFORMED_PAYLOAD_ABORT_CHILD: &str =
         "force::tests::aos_force_deep_native_wrapper_aborts_malformed_payload_child";
     const FORCE_DEEP_NULL_CONTEXT_ABORT_CHILD: &str =
         "force::tests::aos_force_deep_native_wrapper_aborts_on_null_context_child";
     const FORCE_DEEP_TREE_WALK_ERROR_ABORT_CHILD: &str =
         "force::tests::aos_force_deep_native_wrapper_aborts_on_tree_walk_error_child";
+    #[cfg(not(feature = "candidate_c_value"))]
     const BLACKHOLE_MALFORMED_PAYLOAD_ABORT_CHILD: &str =
         "force::tests::aos_blackhole_check_native_wrapper_aborts_malformed_payload_child";
     const BLACKHOLE_NULL_CONTEXT_ABORT_CHILD: &str =
@@ -354,6 +357,10 @@ mod tests {
     const BLACKHOLE_BLACKHOLED_THUNK_ABORT_CHILD: &str =
         "force::tests::aos_blackhole_check_native_wrapper_aborts_blackholed_thunk_child";
 
+    // Mirrors the baseline 16-byte `Value` tag/payload layout so a malformed
+    // value can be transmuted for the abort tests; unexpressible under the
+    // Candidate-C 8-byte carrier (see the malformed-payload cluster gate above).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[repr(C)]
     struct RawValueForTest {
         tag: ValueTag,
@@ -776,6 +783,13 @@ mod tests {
         unsafe { function(rt, value) };
     }
 
+    // The malformed-payload abort cluster (parent spawner + `#[ignore]` child +
+    // `malformed_bool_value` helper) constructs a `Value` by transmuting the
+    // baseline 16-byte tag/payload layout; under the Candidate-C carrier `Value`
+    // is one 8-byte word so that construction is not expressible, and the FFI
+    // native wrappers are unreachable with the JIT off (cutover plan 6.1). The
+    // non-malformed abort paths keep running on both carriers.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn aos_force_native_wrapper_aborts_malformed_payloads() {
         assert_child_process_aborts(MALFORMED_PAYLOAD_ABORT_CHILD);
@@ -791,6 +805,7 @@ mod tests {
         assert_child_process_aborts(FORCE_TREE_WALK_ERROR_ABORT_CHILD);
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn aos_force_deep_native_wrapper_aborts_malformed_payloads() {
         assert_child_process_aborts(FORCE_DEEP_MALFORMED_PAYLOAD_ABORT_CHILD);
@@ -806,6 +821,7 @@ mod tests {
         assert_child_process_aborts(FORCE_DEEP_TREE_WALK_ERROR_ABORT_CHILD);
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn aos_blackhole_check_native_wrapper_aborts_malformed_payloads() {
         assert_child_process_aborts(BLACKHOLE_MALFORMED_PAYLOAD_ABORT_CHILD);
@@ -821,6 +837,7 @@ mod tests {
         assert_child_process_aborts(BLACKHOLE_BLACKHOLED_THUNK_ABORT_CHILD);
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     #[ignore = "subprocess target for abort behavior"]
     fn aos_force_native_wrapper_aborts_malformed_payload_child() {
@@ -874,6 +891,7 @@ mod tests {
         let _ = unsafe { aos_force(rt, thunk) };
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     #[ignore = "subprocess target for abort behavior"]
     fn aos_force_deep_native_wrapper_aborts_malformed_payload_child() {
@@ -919,6 +937,7 @@ mod tests {
         let _ = unsafe { aos_force_deep(rt, root) };
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     #[ignore = "subprocess target for abort behavior"]
     fn aos_blackhole_check_native_wrapper_aborts_malformed_payload_child() {
@@ -983,6 +1002,7 @@ mod tests {
         unsafe { aos_blackhole_check(rt, blackholed) };
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     fn malformed_bool_value() -> Value {
         let raw = RawValueForTest {
             tag: ValueTag::Bool,

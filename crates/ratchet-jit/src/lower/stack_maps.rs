@@ -296,7 +296,8 @@ fn value_offset(index: usize) -> i32 {
     BINDING_HEADER_BYTES as i32 + (index as i32) * VALUE_STACK_SLOT_BYTES as i32
 }
 
-#[cfg(test)]
+// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use cranelift_codegen::cursor::Cursor;
     use cranelift_codegen::ir::{AbiParam, Function, Signature, UserFuncName};

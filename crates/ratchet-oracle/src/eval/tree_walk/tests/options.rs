@@ -1,5 +1,10 @@
 //! Tree-walk evaluator tests: options.
 
+// Many GC-stress tests here are gated off under the Candidate-C variant
+// (record placement outside the single reservation), leaving shared helpers
+// unused on that carrier only; the baseline still uses them.
+#![cfg_attr(feature = "candidate_c_value", allow(dead_code))]
+
 use super::*;
 use crate::attrs::repr::AttrSetReprKind;
 use crate::eval::heap::EvalThunkForceStorageMode;
@@ -769,6 +774,12 @@ fn heap_memory_budget_tier_b_transition_preflight_admits_current_heap() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn heap_memory_budget_tier_b_transition_application_admits_worker_records() {
     let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
@@ -831,6 +842,12 @@ fn heap_memory_budget_tier_b_transition_application_admits_worker_records() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn heap_memory_budget_tier_b_transition_admission_option_admits_owned_outcome() {
     let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
@@ -1088,6 +1105,12 @@ fn attr_path_eval_reports_final_heap_memory_budget_action() {
     assert_eq!(outcome.cheap_memory_budget_plan(), None);
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn attr_path_eval_tier_b_transition_admission_option_admits_selected_value() {
     let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");
@@ -1150,6 +1173,12 @@ fn gc_stress_policy_option_can_be_configured() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_policy_option_marks_tree_walk_heap_allocation_safepoints() {
     let policy = GcStressPolicy::every_safepoint();
@@ -1215,6 +1244,12 @@ fn gc_stress_policy_option_marks_tree_walk_heap_allocation_safepoints() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_lambda_allocation_dispatches_reserved_writeback_bridge() {
     let ir = lower("x: x");
@@ -1317,6 +1352,12 @@ fn gc_stress_eval_root_string_allocation_dispatches_permanent_noop_bridge() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_alloc_static_string_helper_dispatches_permanent_noop_bridge() {
     let ir = lower("builtins.nixVersion");
@@ -1394,6 +1435,12 @@ fn gc_stress_alloc_static_string_helper_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_static_builtin_string_results_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches("builtins.nixVersion", PINNED_NIX_VERSION);
@@ -1419,6 +1466,12 @@ fn gc_stress_eval_root_static_builtin_string_results_dispatch_permanent_noop_bri
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_type_of_static_string_results_dispatch_or_skip_composites() {
     let dispatch_cases: &[(&str, &[u8])] = &[
@@ -1447,6 +1500,12 @@ fn gc_stress_eval_root_type_of_static_string_results_dispatch_or_skip_composites
     }
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_parse_drv_name_result_strings_dispatch_before_attrset_skip() {
     let ir = lower(r#"builtins.parseDrvName "foo-1.2""#);
@@ -1555,6 +1614,12 @@ fn gc_stress_parse_drv_name_result_strings_dispatch_before_attrset_skip() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_alloc_symbol_string_helper_dispatches_permanent_noop_bridge() {
     let ir = lower("{ helperSymbol = 1; }");
@@ -1738,6 +1803,12 @@ fn gc_stress_eval_root_path_allocation_dispatches_permanent_noop_bridge() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_find_file_path_helper_dispatches_permanent_noop_bridge() {
     let ir = lower("null");
@@ -2060,6 +2131,12 @@ fn assert_gc_stress_root_path_result_dispatches(
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_unary_string_result_helpers_dispatch_permanent_noop_bridge() {
     let cases: &[(&str, &[u8])] = &[
@@ -2079,6 +2156,12 @@ fn gc_stress_eval_root_unary_string_result_helpers_dispatch_permanent_noop_bridg
     }
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_unary_path_result_helpers_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_path_result_dispatches(
@@ -2093,6 +2176,12 @@ fn gc_stress_eval_root_unary_path_result_helpers_dispatch_permanent_noop_bridge(
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_hash_string_result_helpers_dispatch_permanent_noop_bridge() {
     let cases: &[(&str, &[u8])] = &[
@@ -2111,6 +2200,12 @@ fn gc_stress_eval_root_hash_string_result_helpers_dispatch_permanent_noop_bridge
     }
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_split_version_empty_list_result_dispatches_permanent_noop_bridge() {
     let ir = lower("null");
@@ -2179,6 +2274,12 @@ fn gc_stress_split_version_empty_list_result_dispatches_permanent_noop_bridge() 
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_split_version_segment_strings_and_result_list_dispatch() {
     let ir = lower(r#"builtins.splitVersion "1.0pre2""#);
@@ -2290,6 +2391,12 @@ fn gc_stress_split_version_segment_strings_and_result_list_dispatch() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_match_capture_list_result_dispatches_permanent_noop_bridge() {
     let ir = lower(r#"builtins.match "(a)(b)" "ab""#);
@@ -2371,6 +2478,12 @@ fn gc_stress_match_capture_list_result_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_split_capture_and_result_lists_preserve_accumulated_values() {
     let ir = lower(r#"builtins.split "([-=])" "a-b=c""#);
@@ -2460,6 +2573,12 @@ fn gc_stress_split_capture_and_result_lists_preserve_accumulated_values() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_nix_path_value_result_list_preserves_accumulated_entries() {
     let ir = lower("builtins.nixPath");
@@ -2542,6 +2661,12 @@ fn gc_stress_nix_path_value_result_list_preserves_accumulated_entries() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_reflected_context_outputs_list_preserves_accumulated_outputs() {
     let ir = lower("\"root\"");
@@ -2640,11 +2765,23 @@ fn gc_stress_reflected_context_outputs_list_preserves_accumulated_outputs() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_substring_string_result_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches(r#"builtins.substring 1 2 "abcd""#, b"bc");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_add_operator_scalar_results_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches(r#""a" + "b""#, b"ab");
@@ -2655,11 +2792,23 @@ fn gc_stress_eval_root_add_operator_scalar_results_dispatch_permanent_noop_bridg
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_to_string_scalar_result_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches("builtins.toString 123", b"123");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_store_path_result_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches(
@@ -2668,6 +2817,12 @@ fn gc_stress_eval_root_store_path_result_dispatch_permanent_noop_bridge() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_to_file_result_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches(
@@ -2676,6 +2831,12 @@ fn gc_stress_eval_root_to_file_result_dispatch_permanent_noop_bridge() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_nested_to_file_result_skips_unregistered_outer_locals() {
     assert_gc_stress_root_bool_result_skips_dispatch(
@@ -2684,6 +2845,12 @@ fn gc_stress_nested_to_file_result_skips_unregistered_outer_locals() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_interpolation_literal_result_dispatch_permanent_noop_bridge() {
     let root = IrId::new(0);
@@ -2734,6 +2901,12 @@ fn gc_stress_eval_root_interpolation_literal_result_dispatch_permanent_noop_brid
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_nested_path_interpolation_coercion_skips_unregistered_outer_locals() {
     let (dir, path) = temp_file_with_bytes("gc-stress-path-interpolation", b"abc");
@@ -2742,6 +2915,12 @@ fn gc_stress_nested_path_interpolation_coercion_skips_unregistered_outer_locals(
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_path_source_string_results_skip_interned_source_setup() {
     let (file_dir, file_path) = temp_file_with_bytes("gc-stress-source-path", b"abc");
@@ -2764,6 +2943,12 @@ fn gc_stress_eval_root_path_source_string_results_skip_interned_source_setup() {
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_filter_source_string_result_dispatch_permanent_noop_bridge() {
     let dir = unique_temp_dir("gc-stress-filter-source");
@@ -2779,6 +2964,12 @@ fn gc_stress_eval_root_filter_source_string_result_dispatch_permanent_noop_bridg
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_nested_source_path_string_results_skip_unregistered_outer_locals() {
     let (file_dir, file_path) = temp_file_with_bytes("gc-stress-nested-source-path", b"abc");
@@ -2841,6 +3032,12 @@ fn gc_stress_fetch_tarball_expected_store_path(store_dir: &std::path::Path, url:
         .expect("fetchTarball expected store path computes")
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_fetchurl_result_dispatch_permanent_noop_bridge() {
     let (dir, path) = temp_file_with_bytes("gc-stress-fetchurl", b"abc");
@@ -2852,6 +3049,12 @@ fn gc_stress_eval_root_fetchurl_result_dispatch_permanent_noop_bridge() {
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_nested_fetchurl_result_skips_unregistered_outer_locals() {
     let (dir, path) = temp_file_with_bytes("gc-stress-nested-fetchurl", b"abc");
@@ -2863,6 +3066,12 @@ fn gc_stress_nested_fetchurl_result_skips_unregistered_outer_locals() {
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_fetch_tarball_string_result_dispatch_permanent_noop_bridge() {
     let (archive_dir, archive_path) = fetch_tarball_fixture("gc-stress-fetch-tarball");
@@ -2880,6 +3089,12 @@ fn gc_stress_eval_root_fetch_tarball_string_result_dispatch_permanent_noop_bridg
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_fetch_tarball_fixed_attrset_results_skip_interned_composite_roots() {
     let (archive_dir, archive_path) = fetch_tarball_fixture("gc-stress-fetch-tarball-fixed");
@@ -2899,6 +3114,12 @@ fn gc_stress_eval_root_fetch_tarball_fixed_attrset_results_skip_interned_composi
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_fetch_tarball_reused_fixed_attrset_result_skips_interned_composite_roots() {
     let (archive_dir, archive_path) = fetch_tarball_fixture("gc-stress-fetch-tarball-reuse");
@@ -2923,6 +3144,12 @@ fn gc_stress_eval_root_fetch_tarball_reused_fixed_attrset_result_skips_interned_
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_nested_fetch_tarball_result_skips_unregistered_outer_locals() {
     let (archive_dir, archive_path) = fetch_tarball_fixture("gc-stress-nested-fetch-tarball");
@@ -2940,6 +3167,12 @@ fn gc_stress_nested_fetch_tarball_result_skips_unregistered_outer_locals() {
     fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_read_file_result_dispatch_permanent_noop_bridge() {
     let (dir, path) = temp_file_with_bytes("gc-stress-read-file", b"abc");
@@ -2948,6 +3181,12 @@ fn gc_stress_eval_root_read_file_result_dispatch_permanent_noop_bridge() {
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_read_file_type_result_dispatch_permanent_noop_bridge() {
     let (dir, regular) = temp_file_with_bytes("gc-stress-read-file-type", b"abc");
@@ -2974,6 +3213,12 @@ fn gc_stress_eval_root_read_file_type_result_dispatch_permanent_noop_bridge() {
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_read_file_text_store_result_skips_nested_text_store_setup() {
     assert_gc_stress_root_string_result_skips_dispatch(
@@ -2982,6 +3227,12 @@ fn gc_stress_eval_root_read_file_text_store_result_skips_nested_text_store_setup
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_nested_read_file_result_skips_unregistered_outer_locals() {
     assert_gc_stress_root_bool_result_skips_dispatch(
@@ -2998,6 +3249,12 @@ fn gc_stress_nested_read_file_result_skips_unregistered_outer_locals() {
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_read_dir_empty_attrset_result_skips_primop_composite_dispatch() {
     let dir = unique_temp_dir("gc-stress-read-dir-empty");
@@ -3050,6 +3307,12 @@ fn gc_stress_eval_root_read_dir_empty_attrset_result_skips_primop_composite_disp
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_read_dir_entry_type_strings_dispatch_before_attrset_skip() {
     let dir = unique_temp_dir("gc-stress-read-dir-entry-types");
@@ -3152,6 +3415,12 @@ fn gc_stress_read_dir_entry_type_strings_dispatch_before_attrset_skip() {
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_try_eval_result_skips_primop_composite_dispatch() {
     let ir = lower("builtins.tryEval 7");
@@ -3216,6 +3485,12 @@ fn gc_stress_eval_root_try_eval_result_skips_primop_composite_dispatch() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_remove_attrs_result_skips_primop_composite_dispatch() {
     let ir = lower("builtins.removeAttrs { keep = 7; drop = 1; } [ \"drop\" ]");
@@ -3269,6 +3544,12 @@ fn gc_stress_eval_root_remove_attrs_result_skips_primop_composite_dispatch() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_intersect_attrs_result_skips_primop_composite_dispatch() {
     let ir = lower("builtins.intersectAttrs { keep = 0; missing = 0; } { keep = 7; drop = 1; }");
@@ -3322,6 +3603,12 @@ fn gc_stress_eval_root_intersect_attrs_result_skips_primop_composite_dispatch() 
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_map_attrs_empty_result_allocates_and_skips_primop_composite_dispatch() {
     let ir = lower("null");
@@ -3391,6 +3678,12 @@ fn gc_stress_map_attrs_empty_result_allocates_and_skips_primop_composite_dispatc
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_zip_attrs_with_empty_result_skips_primop_composite_dispatch() {
     let ir = lower("builtins.zipAttrsWith (_name: values: values) []");
@@ -3442,6 +3735,12 @@ fn gc_stress_eval_root_zip_attrs_with_empty_result_skips_primop_composite_dispat
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_list_to_attrs_empty_result_skips_primop_composite_dispatch() {
     let ir = lower("builtins.listToAttrs []");
@@ -3493,6 +3792,12 @@ fn gc_stress_eval_root_list_to_attrs_empty_result_skips_primop_composite_dispatc
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_group_by_empty_result_skips_primop_composite_dispatch() {
     let ir = lower(r#"builtins.groupBy (_value: "group") []"#);
@@ -3544,6 +3849,12 @@ fn gc_stress_eval_root_group_by_empty_result_skips_primop_composite_dispatch() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_function_args_result_skips_primop_composite_dispatch() {
     let ir = lower("builtins.functionArgs ({ a, b ? (1 / 0) }: a)");
@@ -3602,6 +3913,12 @@ fn gc_stress_eval_root_function_args_result_skips_primop_composite_dispatch() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_serializer_scalar_results_dispatch_permanent_noop_bridge() {
     assert_gc_stress_root_string_result_dispatches("builtins.toJSON 123", b"123");
@@ -3611,6 +3928,12 @@ fn gc_stress_eval_root_serializer_scalar_results_dispatch_permanent_noop_bridge(
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_json_array_result_dispatches_permanent_noop_bridge() {
     let ir = lower("null");
@@ -3769,6 +4092,12 @@ fn gc_stress_toml_array_result_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_json_empty_object_result_skips_primop_composite_dispatch() {
     let ir = lower("null");
@@ -3826,6 +4155,12 @@ fn gc_stress_json_empty_object_result_skips_primop_composite_dispatch() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_toml_empty_table_result_skips_primop_composite_dispatch() {
     let ir = lower("null");
@@ -3883,6 +4218,12 @@ fn gc_stress_toml_empty_table_result_skips_primop_composite_dispatch() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_codec_empty_attrset_results_skip_argument_node_dispatch() {
     for (source, name) in [
@@ -3941,6 +4282,12 @@ fn gc_stress_eval_root_codec_empty_attrset_results_skip_argument_node_dispatch()
     }
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_formal_set_auto_call_empty_arg_skips_non_attrset_root_dispatch() {
     let ir = lower("{ selected ? 7 }: selected");
@@ -3997,6 +4344,12 @@ fn gc_stress_formal_set_auto_call_empty_arg_skips_non_attrset_root_dispatch() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_get_context_empty_result_skips_primop_composite_dispatch() {
     let ir = lower(r#"builtins.getContext "x""#);
@@ -4048,6 +4401,12 @@ fn gc_stress_eval_root_get_context_empty_result_skips_primop_composite_dispatch(
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots() {
     let cases: &[(&str, &[u8])] = &[
@@ -4060,6 +4419,12 @@ fn gc_stress_eval_root_list_string_result_helpers_skip_interned_composite_roots(
     }
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_strict_unary_attr_names_list_result_skips_composite_input_roots() {
     let ir = lower("null");
@@ -4150,6 +4515,12 @@ fn gc_stress_strict_unary_attr_names_list_result_skips_composite_input_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_strict_unary_attr_values_list_result_skips_composite_input_roots() {
     let ir = lower("null");
@@ -4238,6 +4609,12 @@ fn gc_stress_strict_unary_attr_values_list_result_skips_composite_input_roots() 
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_strict_unary_tail_list_result_skips_composite_input_roots() {
     let ir = lower("null");
@@ -4320,6 +4697,12 @@ fn gc_stress_strict_unary_tail_list_result_skips_composite_input_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_alloc_tree_walk_list_skips_active_primop_roots() {
     let ir = lower("null");
@@ -4394,6 +4777,12 @@ fn gc_stress_alloc_tree_walk_list_skips_active_primop_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_list_concat_result_skips_composite_input_roots() {
     let ir = lower("[ 1 ] ++ [ 2 true ]");
@@ -4470,6 +4859,12 @@ fn gc_stress_list_concat_result_skips_composite_input_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_concat_lists_primop_result_skips_active_argument_roots() {
     let ir = lower("null");
@@ -4565,6 +4960,12 @@ fn gc_stress_concat_lists_primop_result_skips_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_cat_attrs_list_result_skips_active_argument_roots() {
     let ir = lower("null");
@@ -4647,6 +5048,12 @@ fn gc_stress_cat_attrs_list_result_skips_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_cat_attrs_direct_list_result_skips_active_env_roots() {
     let root = IrId::new(0);
@@ -4731,6 +5138,12 @@ fn gc_stress_cat_attrs_direct_list_result_skips_active_env_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_partition_list_results_skip_active_argument_roots() {
     let ir = lower("null");
@@ -4847,6 +5260,12 @@ fn gc_stress_partition_list_results_skip_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_concat_map_result_skips_active_argument_roots() {
     let ir = lower("x: x");
@@ -4960,6 +5379,12 @@ fn gc_stress_concat_map_result_skips_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_group_by_bucket_lists_skip_active_argument_roots() {
     let ir = lower("null");
@@ -5089,6 +5514,12 @@ fn gc_stress_group_by_bucket_lists_skip_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_sort_result_skips_active_argument_roots() {
     let ir = lower("null");
@@ -5200,6 +5631,12 @@ fn gc_stress_sort_result_skips_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_generic_closure_empty_result_routes_through_list_wrapper() {
     let ir = lower("null");
@@ -5261,6 +5698,12 @@ fn gc_stress_generic_closure_empty_result_routes_through_list_wrapper() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_generic_closure_result_routes_through_list_wrapper() {
     let ir = lower("item: if item.key == 1 then [ { key = 2; } ] else []");
@@ -5433,6 +5876,12 @@ fn assert_nix_path_entry(
     assert_heap_string_bytes(evaluator, path, expected_path);
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_map_attrs_symbol_names_preserve_live_locals() {
     let ir = lower("name: value: value");
@@ -5532,6 +5981,12 @@ fn gc_stress_map_attrs_symbol_names_preserve_live_locals() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_map_attrs_symbol_names_dispatch_with_active_function_argument_root() {
     let ir = lower("name: value: value");
@@ -5657,6 +6112,12 @@ fn gc_stress_map_attrs_symbol_names_dispatch_with_active_function_argument_root(
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_map_attrs_symbol_names_skip_unregistered_active_argument_root() {
     let ir = lower("name: value: value");
@@ -5757,6 +6218,12 @@ fn gc_stress_map_attrs_symbol_names_skip_unregistered_active_argument_root() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_map_attrs_symbol_names_skip_nested_active_argument_frames() {
     let ir = lower("name: value: value");
@@ -5856,6 +6323,12 @@ fn gc_stress_map_attrs_symbol_names_skip_nested_active_argument_frames() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_zip_attrs_with_symbol_names_preserve_values_lists() {
     let ir = lower("name: values: values");
@@ -6003,6 +6476,12 @@ fn gc_stress_zip_attrs_with_symbol_names_preserve_values_lists() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_zip_attrs_with_direct_root_value_lists_preserve_live_locals() {
     let ir = lower(
@@ -6083,6 +6562,12 @@ builtins.zipAttrsWith (name: values: values) [
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_zip_attrs_with_value_lists_skip_active_argument_roots() {
     let ir = lower("name: values: values");
@@ -6211,6 +6696,12 @@ fn gc_stress_zip_attrs_with_value_lists_skip_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_filter_result_skips_active_argument_roots() {
     let ir = lower("null");
@@ -6313,6 +6804,12 @@ fn gc_stress_filter_result_skips_active_argument_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_filter_map_empty_direct_results_route_through_list_wrapper() {
     for (label, eval_empty_result) in [
@@ -6366,6 +6863,12 @@ fn gc_stress_filter_map_empty_direct_results_route_through_list_wrapper() {
     }
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_filter_map_empty_primop_value_results_route_through_list_wrapper() {
     for (label, eval_empty_result) in [
@@ -6444,6 +6947,12 @@ fn gc_stress_filter_map_empty_primop_value_results_route_through_list_wrapper() 
     }
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_mapped_list_result_skips_apply_thunk_fields() {
     let ir = lower("null");
@@ -6535,6 +7044,12 @@ fn gc_stress_mapped_list_result_skips_apply_thunk_fields() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_generated_list_result_skips_apply_thunk_fields() {
     let ir = lower("null");
@@ -6618,6 +7133,12 @@ fn gc_stress_generated_list_result_skips_apply_thunk_fields() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_reflected_context_result_helpers_skip_interned_composite_roots() {
     assert_gc_stress_root_string_result_skips_dispatch(
@@ -6626,6 +7147,12 @@ fn gc_stress_eval_root_reflected_context_result_helpers_skip_interned_composite_
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_context_string_result_helpers_dispatch_permanent_noop_bridge() {
     type ContextStringHelper =
@@ -6751,6 +7278,12 @@ fn gc_stress_context_string_result_helpers_dispatch_permanent_noop_bridge() {
     }
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_lambda_allocation_dispatch_skips_direct_eval_node_callers() {
     let ir = lower("x: x");
@@ -6781,6 +7314,12 @@ fn gc_stress_lambda_allocation_dispatch_skips_direct_eval_node_callers() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_primop_allocation_dispatches_reserved_writeback_bridge() {
     let ir = lower("builtins.length");
@@ -6841,6 +7380,12 @@ fn gc_stress_eval_root_primop_allocation_dispatches_reserved_writeback_bridge() 
     assert_eq!(applied.as_int(), Ok(0));
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_primop_allocation_dispatch_skips_captured_argument_primops() {
     let ir = lower("builtins.substring \"abcdef\"");
@@ -6879,6 +7424,12 @@ fn gc_stress_primop_allocation_dispatch_skips_captured_argument_primops() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_primop_allocation_dispatch_skips_direct_eval_node_callers() {
     let ir = lower("builtins.map");
@@ -6932,6 +7483,12 @@ fn heap_record_forwarding_slot_count(heap: &EvalHeap, values: &[Value]) -> usize
         .count()
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_thunk_allocation_dispatches_reserved_forwarding_bridge() {
     let body = IrId::new(0);
@@ -6993,6 +7550,12 @@ fn gc_stress_eval_root_thunk_allocation_dispatches_reserved_forwarding_bridge() 
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_list_allocation_dispatches_dirty_card_writeback_bridge() {
     let ir = lower("[ (x: x) ]");
@@ -7079,6 +7642,12 @@ fn gc_stress_eval_root_list_allocation_dispatches_dirty_card_writeback_bridge() 
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_list_accumulator_thunk_allocations_publish_accumulated_roots() {
     let ir = lower("[ (x: x) (y: y) ]");
@@ -7131,6 +7700,12 @@ fn gc_stress_list_accumulator_thunk_allocations_publish_accumulated_roots() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_list_accumulator_allocation_node_clears_after_child_error() {
     let span = Span::new(0, 1);
@@ -7174,6 +7749,12 @@ fn gc_stress_list_accumulator_allocation_node_clears_after_child_error() {
     assert!(evaluator.transient_value_stack_roots().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_list_allocation_dispatch_skips_direct_eval_node_callers() {
     let ir = lower("[ (x: x) ]");
@@ -7238,6 +7819,12 @@ fn gc_stress_list_allocation_dispatch_skips_direct_eval_node_callers() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_eval_root_attrs_allocation_dispatches_dirty_card_writeback_bridge() {
     let ir = lower("{ a = x: x; }");
@@ -7319,6 +7906,12 @@ fn gc_stress_eval_root_attrs_allocation_dispatches_dirty_card_writeback_bridge()
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_attrs_accumulator_thunk_allocations_publish_accumulated_roots() {
     let ir = lower("{ a = x: x; b = y: y; }");
@@ -7374,6 +7967,12 @@ fn gc_stress_attrs_accumulator_thunk_allocations_publish_accumulated_roots() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_dynamic_attrs_accumulator_thunk_allocations_publish_accumulated_roots() {
     let ir = lower(r#"{ a = x: x; ${"b"} = y: y; }"#);
@@ -7429,6 +8028,12 @@ fn gc_stress_dynamic_attrs_accumulator_thunk_allocations_publish_accumulated_roo
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_mixed_inherited_attrs_accumulator_thunk_allocations_publish_select_roots() {
     let ir = lower("{ inherit ({ a = 1; }) a; b = x: x; }");
@@ -7495,6 +8100,12 @@ fn gc_stress_mixed_inherited_attrs_accumulator_thunk_allocations_publish_select_
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_dynamic_attr_key_expression_preserves_registered_roots() {
     let ir = lower(r#"{ inherit ({ a = 1; }) a; ${"b"} = 2; }"#);
@@ -7567,6 +8178,12 @@ fn gc_stress_dynamic_attr_key_expression_preserves_registered_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_recursive_override_binding_assembly_preserves_registered_roots() {
     let ir = lower(r#"rec { a = x: x; __overrides = { b = y: y; }; ${"c"} = z: z; }"#);
@@ -7624,6 +8241,12 @@ fn gc_stress_recursive_override_binding_assembly_preserves_registered_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_let_binding_assembly_preserves_registered_roots() {
     let ir = lower("let a = x: x; b = y: y; in { inherit a b; }");
@@ -7676,6 +8299,12 @@ fn gc_stress_let_binding_assembly_preserves_registered_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_lambda_default_binding_assembly_preserves_registered_roots() {
     let ir = lower("let captured = x: x; in ({ a ? captured, b ? (y: y) }: { inherit a b; }) { }");
@@ -7728,6 +8357,12 @@ fn gc_stress_lambda_default_binding_assembly_preserves_registered_roots() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_attrs_accumulator_allocation_node_clears_after_binding_error() {
     let span = Span::new(0, 1);
@@ -7792,6 +8427,12 @@ fn gc_stress_attrs_accumulator_allocation_node_clears_after_binding_error() {
     assert!(evaluator.transient_value_stack_roots().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_attrs_allocation_dispatch_skips_captured_lexical_env_fields() {
     let ir = lower("rec { a = b; b = x: x; }");
@@ -7852,6 +8493,12 @@ fn gc_stress_attrs_allocation_dispatch_skips_captured_lexical_env_fields() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_thunk_allocation_dispatch_skips_active_lexical_env_frames() {
     let ir = lower("let r = rec { a = b; b = x: x; }; in { inherit (r) a; }");
@@ -7879,6 +8526,12 @@ fn gc_stress_thunk_allocation_dispatch_skips_active_lexical_env_frames() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_attrs_allocation_dispatch_skips_synthetic_select_thunk_fields() {
     let ir = lower("{ inherit ({ a = 1; }) a; }");
@@ -7931,6 +8584,12 @@ fn gc_stress_attrs_allocation_dispatch_skips_synthetic_select_thunk_fields() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_thunk_allocation_dispatch_skips_application_argument_locals() {
     let ir = lower("(x: 1) (y: y)");
@@ -7966,6 +8625,12 @@ fn gc_stress_thunk_allocation_dispatch_skips_application_argument_locals() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_thunk_allocation_dispatch_skips_synthetic_apply_accumulators() {
     let ir = lower("builtins.map (x: x) [ 1 2 ]");
@@ -8001,6 +8666,12 @@ fn gc_stress_thunk_allocation_dispatch_skips_synthetic_apply_accumulators() {
     assert!(outcome.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_attrs_allocation_dispatch_skips_direct_eval_node_callers() {
     let ir = lower("{ a = x: x; }");

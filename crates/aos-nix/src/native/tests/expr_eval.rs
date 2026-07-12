@@ -124,6 +124,12 @@ fn native_expression_eval_reports_tier_a_heap_stats_without_gc_work() -> Result<
     Ok(())
 }
 
+// Selects the Tier-B B2 record-worker placement (`set_record_worker_closures_
+// for_gc_scaffolding`), which allocates worker closures in the record table
+// outside the single Candidate-C reservation; those pointers cannot be encoded
+// as (domain, index), so this fixture applies only to the baseline carrier. The
+// production Flat placement is exercised by the byte-parity battery.
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn native_expression_eval_reports_heap_tier_b_admission_stats() -> Result<()> {
     let budget = HeapMemoryBudget::new(1).expect("budget is non-zero");

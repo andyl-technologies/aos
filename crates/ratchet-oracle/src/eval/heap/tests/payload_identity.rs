@@ -5,6 +5,14 @@
 //! readers are confined to helpers with no collector safepoint, and every key
 //! or reference that can survive a moving collection is named in the B2 repair
 //! worklist. Adding or reclassifying an accessor requires updating this table.
+//!
+//! The Candidate-C FV-0 reclassification routed the inline scalar-decode
+//! `payload_bits` readers in `eval_codec`, `eval_list_map`, `eval_raw`,
+//! `eval_source`, `eval_trace`, `serialize_xml`, and two of the three in
+//! `eval_compare` through the heap scalar-decode seam, so those consumers no
+//! longer read raw payload bits (raw-representation total 29 -> 11). The
+//! Candidate-C carrier's own accessor definitions live in
+//! `value/candidate_c_carrier.rs`, excluded here alongside `value.rs`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -84,15 +92,8 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         b2_disposition: "rekey test-only capture validation state or pin collection off",
     },
     PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/tree_walk/eval_codec.rs",
-        raw_representation: 2,
-        address_identity_only: 0,
-        relocation_sensitive: 0,
-        b2_disposition: "inline scalar decoding only; no repair",
-    },
-    PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_compare.rs",
-        raw_representation: 3,
+        raw_representation: 1,
         address_identity_only: 0,
         relocation_sensitive: 0,
         b2_disposition: "inline scalar decoding only; no repair",
@@ -129,13 +130,6 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         b2_disposition: "clear the advisory unhashable-value set in the live commit",
     },
     PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/tree_walk/eval_list_map.rs",
-        raw_representation: 2,
-        address_identity_only: 0,
-        relocation_sensitive: 0,
-        b2_disposition: "inline integer decoding only; no repair",
-    },
-    PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_numeric.rs",
         raw_representation: 2,
         address_identity_only: 0,
@@ -143,39 +137,11 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         b2_disposition: "inline numeric and boolean decoding only; no repair",
     },
     PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/tree_walk/eval_raw.rs",
-        raw_representation: 2,
-        address_identity_only: 0,
-        relocation_sensitive: 0,
-        b2_disposition: "publish raw-render traversal Values as writable transient roots",
-    },
-    PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/tree_walk/eval_source.rs",
-        raw_representation: 4,
-        address_identity_only: 0,
-        relocation_sensitive: 0,
-        b2_disposition: "inline scalar rendering only; no repair",
-    },
-    PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/tree_walk/eval_trace.rs",
-        raw_representation: 2,
-        address_identity_only: 0,
-        relocation_sensitive: 0,
-        b2_disposition: "publish trace traversal Values as writable transient roots",
-    },
-    PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/outcome.rs",
         raw_representation: 4,
         address_identity_only: 0,
         relocation_sensitive: 0,
         b2_disposition: "diagnostic mismatch payloads only; no repair",
-    },
-    PayloadIdentityAuditRow {
-        path: "ratchet-oracle/src/eval/tree_walk/serialize_xml.rs",
-        raw_representation: 4,
-        address_identity_only: 0,
-        relocation_sensitive: 0,
-        b2_disposition: "inline scalar rendering only; no repair",
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/tier1_publish.rs",
@@ -236,10 +202,17 @@ fn audited_source_counts() -> BTreeMap<String, (usize, usize, usize)> {
         collect_rust_sources(&crates_root.join(crate_name).join("src"), &mut sources);
     }
 
-    let excluded_value_definition = crates_root.join("ratchet-value/src/value.rs");
+    // The `Value` carrier's own accessor *definitions* are not consumer call
+    // sites: the baseline carrier defines them in `value.rs` and the Candidate-C
+    // carrier in `candidate_c_carrier.rs`. Both are excluded so the audit counts
+    // only accessor consumers.
+    let excluded_value_definitions = [
+        crates_root.join("ratchet-value/src/value.rs"),
+        crates_root.join("ratchet-value/src/value/candidate_c_carrier.rs"),
+    ];
     let mut counts = BTreeMap::new();
     for path in sources {
-        if path == excluded_value_definition {
+        if excluded_value_definitions.contains(&path) {
             continue;
         }
         let source = fs::read_to_string(&path).unwrap_or_else(|error| {
@@ -262,6 +235,8 @@ fn audited_source_counts() -> BTreeMap<String, (usize, usize, usize)> {
     counts
 }
 
+// This audit scans source text for accessor call sites, so it is carrier-
+// independent and runs on both carriers.
 #[test]
 fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
     let expected = PAYLOAD_IDENTITY_AUDIT
@@ -290,7 +265,7 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .iter()
             .map(|row| row.raw_representation)
             .sum::<usize>(),
-        29
+        11
     );
     assert_eq!(
         PAYLOAD_IDENTITY_AUDIT
@@ -309,7 +284,7 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
     let production_rows = PAYLOAD_IDENTITY_AUDIT
         .iter()
         .filter(|row| !row.path.ends_with("capture_validation.rs"));
-    assert_eq!(production_rows.clone().count(), 22);
+    assert_eq!(production_rows.clone().count(), 16);
     assert_eq!(
         production_rows
             .map(|row| {
@@ -322,6 +297,6 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .fold((0, 0, 0), |left, right| {
                 (left.0 + right.0, left.1 + right.1, left.2 + right.2)
             }),
-        (29, 6, 18)
+        (11, 6, 18)
     );
 }

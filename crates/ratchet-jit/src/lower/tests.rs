@@ -380,6 +380,9 @@ fn constant_thunk_body_returns_bool_and_null_value_words() {
     );
 }
 
+// Builds `Value::float`, which the Candidate-C carrier boxes (no inline
+// constructor); the JIT is off by construction under the variant, so this
+// lowering test is moot until S4b re-enables it. See cutover plan section 6.1.
 #[test]
 fn constant_thunk_body_is_verified_clif_without_jit_module() {
     let function =
@@ -394,6 +397,9 @@ fn constant_thunk_body_is_verified_clif_without_jit_module() {
     verify_clif_function(&function).expect("lowered function verifies independently");
 }
 
+// A literal-root case is `Value::float`, which the Candidate-C carrier boxes
+// (no inline constructor); the JIT is off by construction under the variant, so
+// this lowering test is moot until S4b re-enables it. See cutover plan 6.1.
 #[test]
 fn constant_ir_thunk_body_lowers_supported_literal_roots() {
     let cases = [
@@ -669,6 +675,9 @@ fn constant_ir_thunk_body_rejects_malformed_thunk_alloc_payload() {
     ));
 }
 
+// A literal-root case is `Value::float`, which the Candidate-C carrier boxes
+// (no inline constructor); the JIT is off by construction under the variant, so
+// this lowering test is moot until S4b re-enables it. See cutover plan 6.1.
 #[test]
 fn constant_ir_root_thunk_body_lowers_real_literal_ir_artifacts() {
     let cases = [

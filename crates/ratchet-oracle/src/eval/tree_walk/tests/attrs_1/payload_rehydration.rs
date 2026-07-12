@@ -1,5 +1,10 @@
 //! Force-cache payload rehydration tests for lists, attrsets, paths, and strings.
 
+// Some tests here are gated off under the Candidate-C variant (non-reservation
+// heap geometry / fake pointers), leaving shared helpers unused on that carrier
+// only; the baseline still uses them.
+#![cfg_attr(feature = "candidate_c_value", allow(dead_code))]
+
 use super::*;
 use crate::heap::HeapGeneration;
 use crate::runtime::alloc::{AllocationGcPollReason, GcStressPolicy, RuntimeAllocationEntryPoint};
@@ -44,6 +49,12 @@ fn assert_replay_permanent_allocation_shape(
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_context_free_payload_replay_string_dispatches_permanent_noop_bridge() {
     let ir = lower("null");
@@ -119,6 +130,12 @@ fn gc_stress_context_free_payload_replay_string_dispatches_permanent_noop_bridge
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_context_payload_replay_string_dispatches_permanent_noop_bridge() {
     let ir = lower("null");
@@ -201,6 +218,12 @@ fn gc_stress_context_payload_replay_string_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_context_free_payload_replay_path_dispatches_permanent_noop_bridge() {
     let ir = lower("null");
@@ -276,6 +299,12 @@ fn gc_stress_context_free_payload_replay_path_dispatches_permanent_noop_bridge()
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_context_payload_replay_path_dispatches_permanent_noop_bridge() {
     let ir = lower("null");
@@ -358,6 +387,12 @@ fn gc_stress_context_payload_replay_path_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_empty_payload_replay_list_dispatches_permanent_noop_bridge() {
     let ir = lower("[ ]");
@@ -432,6 +467,12 @@ fn gc_stress_empty_payload_replay_list_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_strict_payload_replay_list_dispatches_permanent_noop_bridge() {
     let ir = lower("[ 1 ]");
@@ -517,6 +558,12 @@ fn gc_stress_strict_payload_replay_list_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_empty_payload_replay_attrs_dispatches_permanent_noop_bridge() {
     let ir = lower("{ }");
@@ -591,6 +638,12 @@ fn gc_stress_empty_payload_replay_attrs_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_strict_payload_replay_attrs_dispatches_permanent_noop_bridge() {
     let ir = lower("{ a = 1; b = 2; }");
@@ -678,6 +731,12 @@ fn gc_stress_strict_payload_replay_attrs_dispatches_permanent_noop_bridge() {
     assert!(evaluator.thunk_resolve_card_table().is_empty());
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_payload_replay_attrs_skip_non_attrset_origin_dispatch() {
     let ir = lower("[ ]");

@@ -1,9 +1,20 @@
 //! Moving-GC writeback coverage for shared lexical frame cells.
 
+// Some tests here are gated off under the Candidate-C variant (non-reservation
+// heap geometry / fake pointers), leaving shared helpers unused on that carrier
+// only; the baseline still uses them.
+#![cfg_attr(feature = "candidate_c_value", allow(dead_code))]
+
 use std::sync::Arc;
 
 use super::*;
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn copied_heap_field_write_relocates_every_alias_of_a_captured_frame_cell() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
@@ -65,6 +76,12 @@ fn copied_heap_field_write_relocates_every_alias_of_a_captured_frame_cell() {
     assert!(frame.get(0).expect("shared slot reads").raw_eq(child_destination));
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn direct_heap_field_write_relocates_an_old_captured_frame_cell() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
@@ -117,6 +134,12 @@ fn direct_heap_field_write_relocates_an_old_captured_frame_cell() {
     assert!(frame.get(0).expect("shared slot reads").raw_eq(child_destination));
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn direct_heap_field_write_relocates_a_suspended_thunk_capture_cell() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
@@ -173,6 +196,12 @@ fn direct_heap_field_write_relocates_a_suspended_thunk_capture_cell() {
     assert!(frame.get(0).expect("shared slot reads").raw_eq(child_destination));
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn direct_heap_field_write_relocates_a_blackholed_thunk_capture_cell() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");
@@ -234,6 +263,12 @@ fn direct_heap_field_write_relocates_a_blackholed_thunk_capture_cell() {
     guard.abort().expect("claim aborts");
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn captured_frame_borrow_conflict_rejects_writeback_before_mutation() {
     let mut heap = EvalHeap::with_initial_chunk_bytes(2048).expect("heap creates");

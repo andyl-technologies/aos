@@ -338,6 +338,12 @@ fn derivation_strict_aterm_observation_skips_with_scope() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn derivation_strict_gc_stress_and_tier_b_admission_report_default_drv_surfaces() {
     fn evaluate(source: &str, options: TreeWalkOptions) -> EvalOutcome {

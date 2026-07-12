@@ -465,7 +465,8 @@ const fn gated() -> Tier2ApplyHook {
     continued_hook(false, false, true)
 }
 
-#[cfg(test)]
+// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use std::fs;
     use std::path::PathBuf;

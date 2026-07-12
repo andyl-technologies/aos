@@ -920,6 +920,12 @@ mod tests {
         assert_eq!(report.region_plan_decisions(), 0);
     }
 
+    // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+    // reservation heap geometry (GC-stress record placement / chunked / fake
+    // pointer) or reads a boxed wide scalar context-free — both unavailable under
+    // the single-reservation Candidate-C carrier. Real eval is covered by the
+    // byte-parity battery (cutover plan sections 2, 3.6).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn heap_gc_measurement_m14_region_vs_generational_smoke() {
         let report = run_heap_gc_measurement_m14_region_vs_generational_smoke()
@@ -936,6 +942,12 @@ mod tests {
         assert!(report.tier_b_generation_rewrites() > 0);
     }
 
+    // Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+    // reservation heap geometry (GC-stress record placement / chunked / fake
+    // pointer) or reads a boxed wide scalar context-free — both unavailable under
+    // the single-reservation Candidate-C carrier. Real eval is covered by the
+    // byte-parity battery (cutover plan sections 2, 3.6).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn heap_gc_measurement_qg_per_invocation_budget_smoke() {
         let report = run_heap_gc_measurement_qg_per_invocation_budget_smoke()

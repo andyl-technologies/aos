@@ -197,6 +197,12 @@ mod tests {
         assert_eq!(int_values(&elements), vec![8, 13]);
     }
 
+    // Builds thunk values from hand-picked fake pointers (8, 16); under the
+    // Candidate-C carrier `Value::thunk` resolves the pointer through the
+    // reservation registry, so a pointer outside any live reservation is
+    // rejected. The list ordering/handle semantics under test are exercised on
+    // the variant by the parity battery over real heap lists.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn concat_preserves_order_without_forcing_elements() {
         let left_ptr = std::ptr::NonNull::new(8usize as *mut HeapObject).expect("non-null pointer");
@@ -216,6 +222,9 @@ mod tests {
         assert_eq!(concat.get(3).expect("fourth").as_int(), Ok(4));
     }
 
+    // Same fake-pointer construction as the concat test above; gated for the
+    // same reason (Candidate-C rejects pointers outside a live reservation).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn raw_equality_compares_element_handles_without_forcing() {
         let shared_ptr =

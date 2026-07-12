@@ -75,7 +75,14 @@ fn candidate_c_value(
     Ok(Value::from_word(word))
 }
 
-#[cfg(test)]
+// These adapters bridge the Candidate-B/-C one-word return ABIs back to the
+// active two-word `Value`. Under the `candidate_c_value` carrier the value IS
+// the word (the `candidate_*_encode_value` heap bridges and `Value::float` /
+// `as_float` do not exist) and the tier-1 JIT is off by construction, so the
+// adapters are exercised only on the baseline carrier here; the variant's
+// identity `candidate_c_value` is covered by the parity battery. See cutover
+// plan section 6.1 (S4b re-enables the JIT under the variant).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use super::*;
     use ratchet_oracle::{

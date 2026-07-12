@@ -1310,8 +1310,18 @@ mod tests {
     fn runtime_call_metadata_pins_value_layout_and_convention() {
         let value_layout = runtime_abi_value_layout();
 
-        assert_eq!(value_layout.size_bytes(), 16);
-        assert_eq!(value_layout.register_words(), 2);
+        // The by-value layout tracks the selected carrier (two-word on the
+        // baseline, one-word under the `candidate_c_value` variant).
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            assert_eq!(value_layout.size_bytes(), 16);
+            assert_eq!(value_layout.register_words(), 2);
+        }
+        #[cfg(feature = "candidate_c_value")]
+        {
+            assert_eq!(value_layout.size_bytes(), 8);
+            assert_eq!(value_layout.register_words(), 1);
+        }
         assert_eq!(value_layout.register_word_bytes(), 8);
 
         let mut signatures = vec![

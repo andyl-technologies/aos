@@ -268,6 +268,7 @@ impl NixJitTier1Engine {
     /// [`gated_cost_histogram`](Self::gated_cost_histogram), so a unit test can
     /// exercise the profit-distribution measurement deterministically.
     #[cfg(test)]
+    #[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
     #[must_use]
     fn record_gated_cost(mut self) -> Self {
         self.record_gated_cost = true;
@@ -976,7 +977,8 @@ fn def_site_key(body: EvalNodeRef) -> u64 {
     ((body.module().index() as u64) << 32) | u64::from(body.id().as_u32())
 }
 
-#[cfg(test)]
+// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use super::*;
 

@@ -164,7 +164,8 @@ fn allocation_free_word(value: Value) -> Result<TaggedValueWord, JitCandidateBCo
     }
 }
 
-#[cfg(test)]
+// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use cranelift_codegen::ir::{InstructionData, Opcode, types};
     use ratchet_core::{EffectClass, IrData, IrKind, IrNode, syntax::Span};

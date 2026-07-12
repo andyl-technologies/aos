@@ -624,6 +624,18 @@ half-flipped):**
   `ForcedThunkUnsupported` bridge path (`value/compressed/bridge.rs:52-54`)
   atomically with the flip. Gate: full 4-attr battery serial + K=4 + sweep on
   the variant (JIT off), both carriers green, RSS scoreboard line.
+  - **DONE (WIP 761e81fc5) + test-suite reconciled.** The flip compiles both
+    carriers and is byte-parity-correct (variant 12/12 serial+K4+sweep, default
+    8/8 serial+JIT). The 791 variant test failures were reconciled per the SI-3
+    brief's three classes + the razor (fake-pointer A / GC-stress-record-
+    placement B / baseline-assertion C, plus the JIT-off module gates and one
+    dual-carrier ABI-rejection assertion); the FV-0-stale payload-identity
+    accessor census was reconciled on both carriers. RSS scoreboard (§5.4):
+    bench.wide resident 134.2 MiB vs default 152.0 MiB = **0.88x**, peak-RSS-
+    delta 6.1 vs 23.2 MiB = 0.26x (the 16->8B memory prize). Deref-cost rider:
+    the variant is ~4% slower on wide compute (index->base+offset resolve not
+    offset by cache density on cache-resident workloads) — a hot-site deref
+    audit is an S4 follow-up, not a blocker.
 - **S4b** — re-enable JIT under the variant after S3's one-word stack-map
   geometry lands (§6.1 condition 2).
 
@@ -637,3 +649,46 @@ merge note. S4 owns `AtomicValueCell`'s internal representation (`env.rs`,
 cfg-gated); L4 owns `ThunkCell` placement (`thunk.rs` + the arena) and the
 force-path re-entrant-borrow / stable-`*const ThunkCell` solution — S4 does not
 touch that borrow.
+
+## 8. Carrier-selection criteria (P8 build-and-select)
+
+The SI-3 flip landed as a compile-time **variant** (`candidate_c_value`,
+off-by-default). Merging it banks the capability without changing any default
+binary — the shipped carrier stays the 16-byte Active pair. Which carrier
+becomes the *default* is the P8 build-and-select decision (§6.1 Q1), made later
+with explicit criteria recorded here.
+
+**Measured at the flip (2026-07-12, both release binaries, system store, byte-
+parity green):**
+
+- **Memory — Candidate-C wins.** `bench.wide` resident RSS **134.2 MiB** vs the
+  Active carrier's **152.0 MiB** = **0.88x**; per-eval peak-RSS-delta **6.1 MiB**
+  vs **23.2 MiB** = **0.26x**. The 16->8-byte `Value` is the single biggest
+  memory step toward the wide-eval RSS target.
+- **Compute — Candidate-C loses ~4%.** Load-canceled interleaved `bench.wide`
+  warm `native_mean` median (n=6): **0.4206s** vs **0.4033s** = **+4.3%**; the
+  four small package attrs are +0.9-3.3%. The original rider assumed cache
+  density would pay for the compressed word's `index -> base+offset` resolve;
+  the measurement says it does not on cache-resident workloads. This is a
+  genuine memory-vs-compute tradeoff, not a defect — the rider is amended
+  accordingly (it is not a landing blocker for the off-by-default variant).
+
+**The selection weighs the ~4% compute cost against:**
+
+1. the memory win above (0.88x resident / 0.26x per-eval delta), and
+2. what **only** Candidate-C enables — address-free heap-image snapshots (the
+   biggest queued cold-start lever: a snapshot maps anywhere and re-registers
+   `domain -> new base`, which a raw-pointer carrier cannot do) and the S4b
+   one-word JIT stack-map geometry.
+
+**Decision point:** make the default-carrier call once the **S4b** one-word JIT
+numbers and the **heap-snapshot prototype** numbers exist, so the memory win and
+the Candidate-C-only capabilities can be weighed against the measured compute
+cost with real data on both sides.
+
+**Recorded follow-up (may claw back part of the 4%):** a hot-site deref audit —
+route the remaining hot arena-internal `Value` accesses through the arena's
+cached base (`arena.pointer_for_index`) instead of the global reservation-base
+registry, per the §6.1 two-layer rider. The registry stays the correctness
+mechanism for context-free callers (Debug, FFI decode, snapshot rebase); only
+the hot path needs the self-field base load.

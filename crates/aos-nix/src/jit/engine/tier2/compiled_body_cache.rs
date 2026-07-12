@@ -47,6 +47,7 @@ pub(in crate::jit::engine) struct CompiledBodyCache {
 
 impl CompiledBodyCache {
     #[cfg(test)]
+    #[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
     fn open(
         persist_root: &Path,
         verify: bool,
@@ -307,6 +308,7 @@ impl NixJitTier1Engine {
 
     /// Configures compiled-body persistence from active evaluator options.
     #[must_use]
+    #[cfg_attr(feature = "candidate_c_value", allow(dead_code))]
     pub(crate) fn with_compiled_body_cache_options(self, options: &TreeWalkOptions) -> Self {
         self.with_compiled_body_cache_locations(
             options.persist_cache_root(),
@@ -533,7 +535,8 @@ fn read_i64(bytes: &[u8], offset: usize) -> Option<i64> {
     ))
 }
 
-#[cfg(test)]
+// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use std::{
         fs,

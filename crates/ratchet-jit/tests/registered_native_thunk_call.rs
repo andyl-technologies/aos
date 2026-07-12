@@ -1,3 +1,6 @@
+// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
+#![cfg(not(feature = "candidate_c_value"))]
+
 use std::{ffi::c_void, num::NonZeroUsize, ptr};
 
 use ratchet_core::{

@@ -77,9 +77,23 @@ mod tests {
         let candidate_b = candidate_b_runtime_abi_value_layout();
         let candidate = candidate_c_runtime_abi_value_layout();
 
-        assert_eq!(active.size_bytes(), 16);
-        assert_eq!(active.register_words(), 2);
-        assert_eq!(active.register_word_bytes(), 8);
+        // The active layout tracks the selected carrier: two-word (16/2/8) on the
+        // baseline, one-word (8/1/8) under the `candidate_c_value` variant — where
+        // it intentionally coincides with the Candidate-C descriptor.
+        #[cfg(not(feature = "candidate_c_value"))]
+        {
+            assert_eq!(active.size_bytes(), 16);
+            assert_eq!(active.register_words(), 2);
+            assert_eq!(active.register_word_bytes(), 8);
+            assert_ne!(active.size_bytes(), candidate.size_bytes());
+        }
+        #[cfg(feature = "candidate_c_value")]
+        {
+            assert_eq!(active.size_bytes(), 8);
+            assert_eq!(active.register_words(), 1);
+            assert_eq!(active.register_word_bytes(), 8);
+            assert_eq!(active.size_bytes(), candidate.size_bytes());
+        }
         assert_eq!(candidate_b.size_bytes(), 8);
         assert_eq!(candidate_b.register_words(), 1);
         assert_eq!(candidate_b.register_word_bytes(), 8);

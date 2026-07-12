@@ -1,5 +1,10 @@
 //! Thunk and strictness tests for tree-walk attr evaluation.
 
+// Some tests here are gated off under the Candidate-C variant (non-reservation
+// heap geometry / fake pointers), leaving shared helpers unused on that carrier
+// only; the baseline still uses them.
+#![cfg_attr(feature = "candidate_c_value", allow(dead_code))]
+
 use super::*;
 use crate::attrs::repr::AttrSetReprKind;
 use crate::attrs::telemetry::{HistogramBucket, ShapeMultiplicityBucket};
@@ -172,6 +177,12 @@ fn conservative_thunk_alloc_facts_keep_lazy_thunks() {
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn gc_stress_list_element_thunk_allocation_dispatches_reserved_forwarding_bridge() {
     let ir = lower("[ (1 + 6) ]");
@@ -360,6 +371,12 @@ fn analyzer_produced_consumed_position_let_thunk_uses_single_entry_storage() {
     assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn single_entry_thunk_force_errors_leave_compatibility_cell_suspended() {
     let mut ir = lower("[ (1 / 0) ]");

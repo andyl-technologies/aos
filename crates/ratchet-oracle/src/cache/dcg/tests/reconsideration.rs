@@ -155,6 +155,12 @@ fn changed_derivation_aterm_dirties_direct_dependents() {
     );
 }
 
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
 #[test]
 fn unsupported_inline_value_reconsideration_does_not_mutate_node() {
     let mut graph = DemandGraph::new();

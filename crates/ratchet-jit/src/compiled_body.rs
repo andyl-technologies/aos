@@ -221,7 +221,8 @@ fn verify(
     })
 }
 
-#[cfg(test)]
+// JIT is off by construction under the Candidate-C variant; these tier-1 lowering/codegen tests re-enable at S4b (cutover plan section 6.1).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use ratchet_core::{lower, resolve};
 

@@ -524,7 +524,8 @@ pub(super) fn chain_guard_argv(
     Some(argv)
 }
 
-#[cfg(test)]
+// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use std::{
         fs,

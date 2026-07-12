@@ -877,6 +877,10 @@ mod tests {
     }
 
     #[test]
+    // Lowers a tier-2 force through the two-word stack-map geometry; under the
+    // Candidate-C carrier the value is one word (entry-block param index shifts)
+    // and the JIT is off by construction. Re-enabled at S4b (cutover plan 6.1).
+    #[cfg(not(feature = "candidate_c_value"))]
     fn tier2_inner_force_dispatches_sweep_through_retained_stack_map() {
         let lowering_arena = IrArena::from_raw_parts(
             vec![

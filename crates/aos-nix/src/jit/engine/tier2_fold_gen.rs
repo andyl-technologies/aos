@@ -290,7 +290,8 @@ const fn fold_gen_continued(promoted: bool, blacklisted: bool) -> Tier2FoldHook 
     }
 }
 
-#[cfg(test)]
+// JIT is off by construction under the Candidate-C variant; re-enabled at S4b (cutover plan section 6.1).
+#[cfg(all(test, not(feature = "candidate_c_value")))]
 mod tests {
     use std::rc::Rc;
 

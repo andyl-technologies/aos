@@ -202,8 +202,10 @@ mod tests {
         value::ValueTag,
     };
 
+    #[cfg(not(feature = "candidate_c_value"))]
     const APPLY_MALFORMED_FUNCTION_ABORT_CHILD: &str =
         "apply::tests::aos_apply_native_wrapper_aborts_malformed_function_child";
+    #[cfg(not(feature = "candidate_c_value"))]
     const APPLY_MALFORMED_ARGUMENT_ABORT_CHILD: &str =
         "apply::tests::aos_apply_native_wrapper_aborts_malformed_argument_child";
     const APPLY_NULL_CONTEXT_ABORT_CHILD: &str =
@@ -211,6 +213,9 @@ mod tests {
     const APPLY_TREE_WALK_ERROR_ABORT_CHILD: &str =
         "apply::tests::aos_apply_native_wrapper_aborts_on_tree_walk_error_child";
 
+    // Mirrors the baseline 16-byte `Value` layout for the malformed-abort
+    // transmute; unexpressible under the Candidate-C 8-byte carrier.
+    #[cfg(not(feature = "candidate_c_value"))]
     #[repr(C)]
     struct RawValueForTest {
         tag: ValueTag,
@@ -354,11 +359,17 @@ mod tests {
         assert_eq!(forced.as_int(), Ok(42));
     }
 
+    // The malformed-value abort cluster (parent spawner + `#[ignore]` child +
+    // `malformed_bool_value` helper) transmutes the baseline 16-byte tag/payload
+    // layout, which is unexpressible under the Candidate-C 8-byte carrier, and
+    // the FFI native wrappers are unreachable with the JIT off (cutover 6.1).
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn aos_apply_native_wrapper_aborts_malformed_function() {
         assert_child_process_aborts(APPLY_MALFORMED_FUNCTION_ABORT_CHILD);
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     #[test]
     fn aos_apply_native_wrapper_aborts_malformed_argument() {
         assert_child_process_aborts(APPLY_MALFORMED_ARGUMENT_ABORT_CHILD);
@@ -376,6 +387,7 @@ mod tests {
 
     #[test]
     #[ignore = "subprocess target for abort behavior"]
+    #[cfg(not(feature = "candidate_c_value"))]
     fn aos_apply_native_wrapper_aborts_malformed_function_child() {
         let source = "x: x";
         let span = Span::new(0, source.len() as u32);
@@ -394,6 +406,7 @@ mod tests {
 
     #[test]
     #[ignore = "subprocess target for abort behavior"]
+    #[cfg(not(feature = "candidate_c_value"))]
     fn aos_apply_native_wrapper_aborts_malformed_argument_child() {
         let source = "x: x";
         let span = Span::new(0, source.len() as u32);
@@ -439,6 +452,7 @@ mod tests {
         let _ = unsafe { aos_apply(rt, function, Value::int(2)) };
     }
 
+    #[cfg(not(feature = "candidate_c_value"))]
     fn malformed_bool_value() -> Value {
         let raw = RawValueForTest {
             tag: ValueTag::Bool,
