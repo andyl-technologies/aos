@@ -16,6 +16,7 @@
 //! artifact, typed-QMP, and bounded process-lifecycle primitives.
 
 mod compare;
+mod plugin_sample;
 #[cfg(target_os = "linux")]
 mod live_runner;
 mod probe;
@@ -51,6 +52,7 @@ pub use probe::{
     SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest, SingleVmFingerprintProbeRunner,
     SingleVmFingerprintStateDumpProbe, bisect_single_vm_fingerprint_with_probes,
 };
+pub use plugin_sample::nvcpu_material_from_shmem_sample;
 pub use run::run_single_vm_fingerprint_gate;
 pub use state_dump::{
     SINGLE_VM_FINGERPRINT_STATE_DUMP_EVENT_LIMIT, SingleVmFingerprintCanonicalEvent,
