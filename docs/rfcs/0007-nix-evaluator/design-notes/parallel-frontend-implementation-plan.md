@@ -473,9 +473,20 @@ never be a *loss at K=1* or a *divergence anywhere*.
 Each stage is independently revertible and gated on byte-identical `.drv` output
 with speculation off.
 
-- **S0 — Measurement.** Land the parse/lower timers (option 2 above) or record a
-  sampling profile. Re-confirm the 25% at HEAD. Parity-neutral. *Gate: no
-  behavior change.*
+- **S0 — Measurement.** Land the parse/lower timers (Appendix A §A.1) **and** the
+  prelude-force-share counters (Appendix A §A.3, task #13) in one commit, run the
+  parity battery, then run the measurement itself (one instrumented cold eval,
+  `AOS_NIX_EVAL_STATS=1`, release, `pkgs.zlib` + one heavier attr) and record the
+  two gate numbers — (1) parse/lower share of cold wall, (2) prelude-force count
+  ratio plus the nanos proxy — on tasks #3 and #13. Re-confirm the 25% at HEAD.
+  Parity-neutral. *Gate: no behavior change.*
+
+> **SESSION HANDOFF BOUNDARY.** This session implements **S0 only** (above), then
+> stops for handoff to another engineer (Codex). **S1 through S6 below are the
+> handoff spec** — they are designed here in full but not implemented in this
+> session. An implementer picking up S1+ should treat this note (and Appendix A)
+> as authoritative and proceed stage-by-stage under the same parity gate.
+
 - **S1 — Decouple serial parse from the live symbol table.** Make the
   isolated-parse+remap path (`load_and_eval_import_bytes_shared`'s parse half) the
   serial default too, replacing the `mem::take` fast path
