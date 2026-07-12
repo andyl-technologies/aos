@@ -364,7 +364,10 @@ stdenv` plus the existing eval/VM checks.
   cross-glibc and glibc 2.5 bootstrap tiers already are. Its consumers link
   with `-static`; building the unconsumed dynamic loader enters glibc's
   `rtld-Rules` path before the old make graph has produced every subdirectory
-  stamp and does not expand the compiler ABI this tier promises.
+  stamp and does not expand the compiler ABI this tier promises. Remove the
+  versioned i386 `vm86` routine from that static build, because glibc only
+  generates its object rule when shared libraries are enabled; retaining the
+  routine leaves `misc/stamp.o` with an impossible `vm86.o` prerequisite.
 - **Cross-tier sequencing.** The multi-stage cross dance stays explicit;
   only its building blocks are shared.
 
