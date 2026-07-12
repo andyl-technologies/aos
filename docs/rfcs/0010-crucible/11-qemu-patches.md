@@ -1322,9 +1322,26 @@ time-control primitives the whole design rests on.
     `qemu_plugin_advance_time_ns`, and completion registration. The focused
     fixture proves exclusive ownership, overlap/backwards failure, queued CPU
     work, the two-stage timer-BH ordering barrier, and absence of recursive
-    main-loop/AIO polling. The task remains open until the Rust plugin registers
-    the completion callback and drives its idle state machine only after that
-    completion in a real QEMU run.
+    main-loop/AIO polling.
+  - The queued advance is now icount-correct. Under `-accel sim` the virtual
+    clock is icount-derived and the qtest-only `qemu_clock_advance_virtual_time`
+    never converged (its `while (clock < dest)` loop spun the vCPU thread while
+    holding the BQL, so completions never ran); `0010` now advances through
+    `icount_advance_virtual_time_to_ns`, which moves `qemu_icount_bias` to the
+    exact target under the vm_clock seqlock. The Rust plugin's
+    completion-callback-driven idle state machine ([PATCH-18]) and the
+    advance-barrier handoff ([PATCH-19]) are **live-proven** by
+    `checks.crucible.phase2.qemuLivePluginQuantum`: the idle guest idle-jumps
+    (15,856,696 → 55,671,478 → 59,671,478), completion-first, and stops exactly
+    at the ceiling — 43.8M icount in ~2.1 ms (≈300× the boot rate), deterministic
+    run-twice under host load. `checks.crucible.phase1.pluginTimeAdvance` models
+    the icount clock and asserts the qtest set-based advance cannot converge
+    while the bias-bump reaches the target (the regression guard for this class).
+  - Remains open on the `crucible-plugin-device-wake` handoff ([PATCH-20]): the
+    live proof above uses a diskless timer-idle guest, so the
+    device-completion → wake-fd → normal-main-loop resume path is not yet
+    exercised live. That requires live device I/O and is proven under M4's I/O
+    sub-nodes ([`15-io-subnodes.md`](15-io-subnodes.md)).
 - [x] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
   `QEMU_CLOCK_VIRTUAL` deadline, REQUIRED) and ban the overshoot-and-correct
   fallback; fail loudly if the capability is unavailable. — satisfies [PATCH-21],
