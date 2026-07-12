@@ -262,6 +262,44 @@ impl ArtifactIndex {
             })
     }
 
+    /// Appends many artifact mapping entries in one open/write/flush cycle.
+    ///
+    /// The write-behind flush (RFC-0007 §3.2(b)) pairs this with the batched
+    /// `files/` blob append so the whole run's file/parse-artifact mappings pay
+    /// one open + `write_all` + flush instead of one per entry. Every entry is
+    /// concatenated into a single buffer written with one `write_all`, and the
+    /// descriptor is flushed once. An empty batch is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArtifactIndexError`] if the index cannot be opened, written, or
+    /// flushed.
+    pub fn append_entries_batch(
+        &self,
+        entries: &[ArtifactIndexEntry],
+    ) -> Result<(), ArtifactIndexError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| ArtifactIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut buffer = Vec::with_capacity(entries.len() * ARTIFACT_INDEX_ENTRY_LEN);
+        for entry in entries {
+            buffer.extend_from_slice(&entry.encode());
+        }
+        file.write_all(&buffer)
+            .and_then(|()| file.flush())
+            .map_err(|source| ArtifactIndexError::Write {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
     /// Looks up the newest value for `key`.
     ///
     /// # Errors

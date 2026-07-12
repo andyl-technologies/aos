@@ -148,7 +148,7 @@ pub use error::{
     PersistCachedExpressionNodeValueIndexedWriteError,
     PersistCachedExpressionNodeValueTraceLoadError, PersistCachedExpressionValueIndexedLoadError,
     PersistCachedExpressionValueIndexedWriteError, PersistCompactionError, PersistError,
-    PersistFileArtifactHydrationError, PersistFileArtifactIndexError,
+    PersistFileArtifactFlushError, PersistFileArtifactHydrationError, PersistFileArtifactIndexError,
     PersistFileArtifactIndexedHydrationError, PersistFileArtifactIndexedWriteError,
     PersistFileBlobPackRepackError, PersistFileBlobReachabilityPlanError,
     PersistNodeMetadataIndexError, PersistNodeTraceLogError, PersistNodeTraceLogFormatError,

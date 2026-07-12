@@ -214,6 +214,39 @@ pub enum PersistFileArtifactIndexedWriteError {
         /// The underlying file-artifact index error.
         source: PersistFileArtifactIndexError,
     },
+    /// A cap-triggered flush of the file-artifact write-behind buffer failed.
+    #[error("failed to flush the file-artifact write-behind buffer")]
+    Flush {
+        /// The underlying write-behind flush error.
+        source: PersistFileArtifactFlushError,
+    },
+}
+
+/// A run-boundary flush of the FILES-store file/parse-artifact write-behind
+/// buffer failed (RFC-0007 §3.2(b)).
+#[derive(Debug, Error)]
+pub enum PersistFileArtifactFlushError {
+    /// The file-artifact write-behind buffer mutex was poisoned by a prior panic.
+    #[error("persistent file-artifact write-behind buffer is poisoned")]
+    BufferPoisoned,
+    /// The buffered `files/` blobs could not be appended or blob-indexed.
+    #[error("failed to flush indexed file-artifact blobs")]
+    Blob {
+        /// The underlying indexed blob write error.
+        source: PersistBlobIndexedWriteError,
+    },
+    /// The buffered file-artifact mappings could not be recorded.
+    #[error("failed to flush persistent file-artifact mappings")]
+    FileIndex {
+        /// The underlying file-artifact index error.
+        source: PersistFileArtifactIndexError,
+    },
+    /// The buffered parse-artifact mappings could not be recorded.
+    #[error("failed to flush persistent parse-artifact mappings")]
+    ParseIndex {
+        /// The underlying parse-artifact index error.
+        source: PersistParseArtifactIndexError,
+    },
 }
 
 /// Indexed parse-artifact materialization failed.
@@ -231,6 +264,12 @@ pub enum PersistParseArtifactIndexedWriteError {
     Index {
         /// The underlying parse-artifact index error.
         source: PersistParseArtifactIndexError,
+    },
+    /// A cap-triggered flush of the file-artifact write-behind buffer failed.
+    #[error("failed to flush the file-artifact write-behind buffer")]
+    Flush {
+        /// The underlying write-behind flush error.
+        source: PersistFileArtifactFlushError,
     },
 }
 

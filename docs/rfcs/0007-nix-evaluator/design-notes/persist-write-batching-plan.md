@@ -909,3 +909,75 @@ times out >120 s), so building the write-behind binary there triggers the
 hours-long bootstrap. The darwin A/B + parity + split stand as the signal; the
 canonical Linux syscall histogram (write/flock drop) and the 13x→4.9x→final ratio
 update await a warm builder toolchain.
+
+## 18. §3.2(b) files-store as-built: FILES write-behind LANDED (default-off)
+
+Landed (task #25, persist-exec, contract (i)): the FILES-store follow-up, in two
+increments.
+
+**(a) Closure-blob batch.** `store_root_instantiation`'s per-blob loop over the
+root closure's `.drv` records now hashes every blob first, then does one batched
+`ensure_blobs_indexed_batch(Files, …)` (dedup on-disk + within-batch, one pack
+append + one blob-index write under the held `files/` store lock) when
+write-behind is on, falling back to the per-blob `ensure_blob_indexed` loop when
+off. The record blob stays a synchronous ensure because its location feeds the
+root index. Gated at `PersistCache::store_root_instantiation`.
+
+**(b) File/parse-artifact write-behind buffer** (`cache/file_write_behind.rs`).
+The frontend's cold promotion path (`materialize_file_artifact_indexed` /
+`materialize_parse_artifact_indexed`, reached from the L2-secondary-hit and
+fresh-import seams in `eval_import.rs` / `import_persist_locations.rs`, both of
+which discard the returned location) is intercepted when the single
+`AOS_NIX_CACHE_WRITE_BEHIND` knob is on. `buffer_file_artifact` /
+`buffer_parse_artifact` push `(blob payload, mapping)` into an in-memory
+`PendingFileArtifactBatch` — **no pack append, no blob-index write, no pending
+GC root, no eval-path lock or I/O beyond the buffer mutex** (dedup blob bytes by
+hash, dedup mappings by encoded artifact key with a buffered-miss-recompute
+counter). `flush_buffered_file_artifacts` (run boundary + final-handle `Drop`)
+drains the batch, appends every blob and writes its `files/` blob-index entry
+together under the held store lock via `ensure_blobs_indexed_batch`, then writes
+the file- and parse-artifact mappings with the resolved locations through new
+batched `append_entries_batch` primitives on `ArtifactIndex` and both persist
+artifact-index wrappers.
+
+**No pending root, and why every crash window is benign.** The synchronous
+indexed path anchored a fresh `files/` blob's liveness with its blob-index entry
+(the `BlobIndex` root source in `snapshot_blob_live_roots`); the legacy
+non-indexed path used an in-process pending file-artifact root. The buffer takes
+neither: nothing durable exists until flush, and the flush writes each blob and
+its blob-index entry *before* the mapping, so the blob is rooted the instant it
+reaches disk and no `append→index` window opens for a concurrent repack
+(maintenance-only, never on the eval path). Crash windows: (1) before flush =
+memory-only, clean miss; (2) mid-flush torn pack tail = per-record integrity
+header rejects it, no index points at it, clean miss; (3) **the new window —
+after the blob append but before the blob-index/mapping writes** = an orphan blob
+with no blob-index entry, which liveness planning classifies as unrooted
+reclaimable garbage; reaping it is benign because no mapping ever referenced it;
+(4) after the blob-index write but before the mapping = a durable, blob-index-
+rooted blob with no mapping, a clean miss that dedups a later identical
+promotion. All four are covered by unit kill-tests.
+
+Both increments write the same durable bytes as the synchronous path, only
+batched and deferred — the mapping/blob-index/pack shapes are byte-identical, so
+this is a pure write-side change.
+
+Gates GREEN (darwin, at the files-store HEAD): byte-parity with
+`AOS_NIX_CACHE_WRITE_BEHIND=1` on zlib+openssl, serial AND JIT, cold-populate and
+warm re-diff; persist suite 441, ratchet-cache 113/lib, 13 write-behind tests (7
+values + 6 files: buffer→flush→read-back, within-buffer dedup, crash-before-flush
+clean miss, torn-tail never-wrong-bytes, unindexed-orphan-is-benign-garbage,
+off-by-default write-through). Darwin cold-populate A/B at the closure-batch state
+(total nix-diff wall incl. the constant ~180 ms oracle, median of 3): pkgs.zlib
+−10.0% (814→732 ms), pkgs.openssl −17.0% (977→811 ms).
+
+**Default-on decision: LEFT OFF (`AOS_NIX_CACHE_WRITE_BEHIND` default false).**
+The A/B is a clear cold-populate win and parity is green, but the knob gates a
+cache that is itself default-*off* in production (`AOS_NIX_CACHE` unset — §17's
+decision package), so there is no production surface to flip on yet; and the
+authoritative signal the default-on flip is supposed to record — the Linux
+syscall histogram (write/flock drop) and the 13x→4.9x→final cache-enabled cold
+ratio — is **still blocked** on the builder (now on Tailscale SSH re-auth, on top
+of the GC'd from-source toolchain). Flipping default-on is therefore deferred to
+the same landing that turns the durable cache on by default, when the Linux ratio
+can gate both together. The darwin A/B + parity + kill-tests stand as the signal
+that the buffer is correct and a cold win.

@@ -21,6 +21,7 @@ mod repack_helpers;
 mod root_record_io;
 mod run_scope;
 mod store_io;
+mod file_write_behind;
 mod value_write_behind;
 
 pub use demotion::{
@@ -91,6 +92,8 @@ pub struct PersistCache {
     write_behind_values: bool,
     /// VALUES-store blob records buffered in memory until the run-boundary flush.
     pending_value_blobs: Arc<Mutex<value_write_behind::PendingValueBatch>>,
+    /// FILES-store file/parse-artifact records buffered until the run-boundary flush.
+    pending_file_artifacts: Arc<Mutex<file_write_behind::PendingFileArtifactBatch>>,
 }
 
 impl Drop for PersistCache {
@@ -118,6 +121,7 @@ impl Drop for PersistCache {
                 );
             }
         }
+        self.flush_file_artifacts_on_final_drop();
         if let Err(error) = self.flush_buffered_node_demands() {
             tracing::warn!(
                 target: "aos_nix::cache",
@@ -412,6 +416,9 @@ impl PersistCache {
             write_behind_values: value_write_behind::write_behind_values_from_env(),
             pending_value_blobs: Arc::new(Mutex::new(
                 value_write_behind::PendingValueBatch::default(),
+            )),
+            pending_file_artifacts: Arc::new(Mutex::new(
+                file_write_behind::PendingFileArtifactBatch::default(),
             )),
         })
     }

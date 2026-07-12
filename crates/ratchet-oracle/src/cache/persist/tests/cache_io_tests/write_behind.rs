@@ -266,3 +266,305 @@ fn write_behind_off_by_default_writes_through() {
     assert!(cache.write_behind_buffer_is_empty());
     let _ = fs::remove_dir_all(root);
 }
+
+// -- FILES-store file/parse-artifact write-behind (RFC-0007 §3.2(b) files) --
+
+#[test]
+fn write_behind_buffers_file_artifacts_then_flushes_and_reads_back() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root)
+        .expect("cache opens")
+        .with_write_behind_values(true);
+
+    let file_source = b"let file = 1; in file";
+    let parse_source = b"let parse = 2; in parse";
+    let file_key = ParseFileKey::for_source("/src/file.nix", file_source);
+    let file_parse_key = test_parse_key(file_source);
+    let parse_key = test_parse_key(parse_source);
+    let file_artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, file_parse_key);
+    let parse_artifact_key = PersistParseArtifactKey::from_parse_cache_key(parse_key);
+    let file_payload: &[u8] = b"file artifact bundle bytes";
+    let parse_payload: &[u8] = b"parse artifact bundle bytes";
+
+    cache
+        .materialize_file_artifact_indexed(
+            &file_key,
+            file_parse_key,
+            file_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact buffers");
+    cache
+        .materialize_parse_artifact_indexed(
+            parse_key,
+            parse_payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("parse artifact buffers");
+    // Buffered promotions are not durable yet: both mapping lookups miss.
+    assert!(
+        cache
+            .lookup_file_artifact(file_artifact_key)
+            .expect("file lookup")
+            .is_none(),
+        "a buffered file-artifact must not be on disk before flush"
+    );
+    assert!(
+        cache
+            .lookup_parse_artifact(parse_artifact_key)
+            .expect("parse lookup")
+            .is_none()
+    );
+    assert!(!cache.write_behind_file_buffer_is_empty());
+
+    cache
+        .flush_buffered_file_artifacts()
+        .expect("file-artifact buffer flushes");
+    assert!(cache.write_behind_file_buffer_is_empty());
+
+    // After flush every mapping resolves and its `files/` blob reads back.
+    let file_value = cache
+        .lookup_file_artifact(file_artifact_key)
+        .expect("file lookup")
+        .expect("file mapping present");
+    assert_eq!(
+        cache
+            .read_blob(file_value.blob_key(), file_value.location())
+            .expect("file blob reads"),
+        file_payload
+    );
+    let parse_value = cache
+        .lookup_parse_artifact(parse_artifact_key)
+        .expect("parse lookup")
+        .expect("parse mapping present");
+    assert_eq!(
+        cache
+            .read_blob(parse_value.blob_key(), parse_value.location())
+            .expect("parse blob reads"),
+        parse_payload
+    );
+    assert_eq!(cache.write_behind_file_buffered_miss_recompute(), 0);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn write_behind_dedups_file_artifact_within_the_buffer() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root)
+        .expect("cache opens")
+        .with_write_behind_values(true);
+    let source = b"let repeated = 1; in repeated";
+    let file_key = ParseFileKey::for_source("/src/repeated.nix", source);
+    let parse_key = test_parse_key(source);
+    let payload: &[u8] = b"a repeatedly promoted file artifact";
+
+    cache
+        .materialize_file_artifact_indexed(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("first buffers");
+    cache
+        .materialize_file_artifact_indexed(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("second dedups");
+    assert_eq!(cache.write_behind_file_buffered_miss_recompute(), 1);
+
+    cache
+        .flush_buffered_file_artifacts()
+        .expect("file-artifact buffer flushes");
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let value = cache
+        .lookup_file_artifact(artifact_key)
+        .expect("file lookup")
+        .expect("mapping present");
+    assert_eq!(
+        cache
+            .read_blob(value.blob_key(), value.location())
+            .expect("blob reads"),
+        payload
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn crash_before_file_flush_loses_the_buffer_as_a_clean_miss() {
+    // Kill-test window 1 (files): a crash after buffering but before the flush.
+    // `mem::forget` skips the Drop safety-net flush. A fresh open sees no mapping
+    // and no blob — a clean miss (re-promote), never a corrupt record.
+    let root = temp_root();
+    let source = b"let lost = 1; in lost";
+    let file_key = ParseFileKey::for_source("/src/lost.nix", source);
+    let parse_key = test_parse_key(source);
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let payload: &[u8] = b"file artifact buffered then lost to a crash";
+    {
+        let cache = PersistCache::open(&root)
+            .expect("cache opens")
+            .with_write_behind_values(true);
+        cache
+            .materialize_file_artifact_indexed(
+                &file_key,
+                parse_key,
+                payload,
+                MaterializationDecision::Materialize,
+            )
+            .expect("file artifact buffers");
+        assert!(!cache.write_behind_file_buffer_is_empty());
+        std::mem::forget(cache);
+    }
+    let reopened = PersistCache::open(&root).expect("cache reopens");
+    assert!(
+        reopened
+            .lookup_file_artifact(artifact_key)
+            .expect("file lookup")
+            .is_none(),
+        "an unflushed buffered file-artifact must be absent after a crash"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn torn_file_flush_tail_is_never_wrong_bytes() {
+    // Kill-test window 2 (files): a crash mid-flush leaves a torn `files/` tail.
+    // The intact earlier blob still reads; the torn one is rejected, never wrong
+    // bytes.
+    let root = temp_root();
+    let first_source = b"let first = 1; in first";
+    let torn_source = b"let torn = 2; in torn";
+    let first_key = ParseFileKey::for_source("/src/first.nix", first_source);
+    let torn_key = ParseFileKey::for_source("/src/torn.nix", torn_source);
+    let first_parse = test_parse_key(first_source);
+    let torn_parse = test_parse_key(torn_source);
+    let first_payload: &[u8] = b"first intact file artifact in the flush batch";
+    let torn_payload: &[u8] = b"second file artifact whose tail a crash truncates";
+    let (first_artifact, torn_artifact, pack_path) = {
+        let cache = PersistCache::open(&root)
+            .expect("cache opens")
+            .with_write_behind_values(true);
+        cache
+            .materialize_file_artifact_indexed(
+                &first_key,
+                first_parse,
+                first_payload,
+                MaterializationDecision::Materialize,
+            )
+            .expect("first buffers");
+        cache
+            .materialize_file_artifact_indexed(
+                &torn_key,
+                torn_parse,
+                torn_payload,
+                MaterializationDecision::Materialize,
+            )
+            .expect("torn buffers");
+        cache
+            .flush_buffered_file_artifacts()
+            .expect("file-artifact buffer flushes");
+        (
+            PersistFileArtifactKey::from_parse_file_key(&first_key, first_parse),
+            PersistFileArtifactKey::from_parse_file_key(&torn_key, torn_parse),
+            cache.layout().file_packfile_path(),
+        )
+    };
+    let len = fs::metadata(&pack_path).expect("pack exists").len();
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(&pack_path)
+        .expect("pack opens for truncate");
+    file.set_len(len - 5).expect("pack truncates");
+    drop(file);
+
+    let reopened = PersistCache::open(&root).expect("cache reopens");
+    let first_value = reopened
+        .lookup_file_artifact(first_artifact)
+        .expect("first lookup")
+        .expect("first mapping present");
+    assert_eq!(
+        reopened
+            .read_blob(first_value.blob_key(), first_value.location())
+            .expect("first blob reads"),
+        first_payload
+    );
+    // The torn blob never yields wrong bytes: a clean miss or a read error.
+    if let Some(value) = reopened
+        .lookup_file_artifact(torn_artifact)
+        .expect("torn lookup")
+    {
+        match reopened.read_blob(value.blob_key(), value.location()) {
+            Ok(bytes) => assert_eq!(bytes, torn_payload, "a torn record must never return wrong bytes"),
+            Err(_) => {}
+        }
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn unindexed_orphan_file_blob_is_benign_reclaimable_garbage() {
+    // Kill-test window 3 (files, the design's new window): a crash AFTER the blob
+    // append but BEFORE its blob-index and mapping writes leaves an orphan blob in
+    // the `files/` pack with no index entry. This models it by a raw append with
+    // no index. No mapping ever referenced it, so every lookup was always a miss;
+    // and liveness planning classifies it as unrooted, so a later repack reaps it
+    // as benign garbage rather than tearing a live record.
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let orphan: &[u8] = b"orphan files blob with no index entry";
+    let orphan_hash = PersistFileBlobHash::for_payload(orphan);
+    let orphan_key = PersistBlobKey::for_file(orphan_hash);
+    cache
+        .append_blob(orphan_key, orphan)
+        .expect("orphan blob appends to the files pack");
+    // No blob-index entry, so the orphan is not rooted: a lookup misses.
+    assert!(
+        cache
+            .lookup_blob_location(orphan_key)
+            .expect("lookup succeeds")
+            .is_none(),
+        "an unindexed orphan blob has no blob-index root"
+    );
+    let plan = cache
+        .plan_blob_pack_liveness(PersistBlobStore::Files)
+        .expect("liveness plans");
+    assert!(
+        plan.unrooted_record_bytes() > 0,
+        "the unindexed orphan must be classified as reclaimable (unrooted) garbage"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn file_write_behind_off_by_default_writes_through() {
+    let root = temp_root();
+    let cache = PersistCache::open(&root).expect("cache opens");
+    let source = b"let sync = 1; in sync";
+    let file_key = ParseFileKey::for_source("/src/sync.nix", source);
+    let parse_key = test_parse_key(source);
+    let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+    let payload: &[u8] = b"synchronous file artifact";
+
+    cache
+        .materialize_file_artifact_indexed(
+            &file_key,
+            parse_key,
+            payload,
+            MaterializationDecision::Materialize,
+        )
+        .expect("file artifact writes through");
+    // With write-behind off the mapping is durable immediately (no flush needed).
+    assert!(
+        cache
+            .lookup_file_artifact(artifact_key)
+            .expect("file lookup")
+            .is_some(),
+        "a synchronous file-artifact must be on disk immediately"
+    );
+    assert!(cache.write_behind_file_buffer_is_empty());
+    let _ = fs::remove_dir_all(root);
+}

@@ -185,6 +185,12 @@ impl PersistCache {
                 Ok(PersistFileArtifactMaterialization::Skipped { artifact_key })
             }
             MaterializationDecision::Materialize => {
+                // Write-behind (RFC-0007 §3.2(b)) buffers the whole promotion —
+                // blob, blob-index, and mapping — and flushes it batched at the
+                // run boundary; see `file_write_behind`.
+                if self.write_behind_files_enabled() {
+                    return self.buffer_file_artifact(artifact_key, payload);
+                }
                 let blob_hash = PersistFileBlobHash::for_payload(payload);
                 let blob_entry = self
                     .ensure_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
@@ -277,6 +283,12 @@ impl PersistCache {
                 Ok(PersistParseArtifactMaterialization::Skipped { artifact_key })
             }
             MaterializationDecision::Materialize => {
+                // Write-behind (RFC-0007 §3.2(b)) buffers the whole promotion —
+                // blob, blob-index, and mapping — and flushes it batched at the
+                // run boundary; see `file_write_behind`.
+                if self.write_behind_files_enabled() {
+                    return self.buffer_parse_artifact(artifact_key, payload);
+                }
                 let blob_hash = PersistFileBlobHash::for_payload(payload);
                 let blob_entry = self
                     .ensure_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)

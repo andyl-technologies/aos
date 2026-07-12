@@ -336,6 +336,31 @@ impl PersistFileArtifactIndex {
             .map_err(engine_file_artifact_index_error)
     }
 
+    /// Appends many file-artifact index entries in one open/write/flush cycle.
+    ///
+    /// This is the batched sibling of [`Self::append_entry`] used by the
+    /// write-behind flush (RFC-0007 §3.2(b)): the whole run's file-artifact
+    /// mappings are written with a single open + `write_all` + flush. An empty
+    /// batch is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the index cannot be opened,
+    /// validated, written, or flushed.
+    pub fn append_entries_batch(
+        &self,
+        entries: &[PersistFileArtifactIndexEntry],
+    ) -> Result<(), PersistFileArtifactIndexError> {
+        let engine_entries: Vec<_> = entries
+            .iter()
+            .copied()
+            .map(persist_file_artifact_entry_to_engine)
+            .collect();
+        self.engine
+            .append_entries_batch(&engine_entries)
+            .map_err(engine_file_artifact_index_error)
+    }
+
     /// Looks up the newest file-artifact value for `key`.
     ///
     /// # Errors
