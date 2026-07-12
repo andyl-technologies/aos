@@ -291,6 +291,114 @@ impl PersistCacheLocations {
             }
         }
     }
+
+    /// Demotes cold primary root records to the next slower latency class under
+    /// size pressure (doc 29 §5.4/§5.6).
+    ///
+    /// Demotion is the mirror of [`Self::promote_root_instantiation`]: it plans
+    /// on the primary (measure resident bytes, enumerate root records, select
+    /// the largest and coldest victims for the policy's `bytes_to_free`), then
+    /// moves each victim to the fastest opened secondary — always a class slower
+    /// than the primary — and unroots it from the primary. A demoted record is
+    /// not lost: its next probe hits the secondary and re-promotes upward.
+    ///
+    /// The move is a sequence of **single-location-locked steps**, never holding
+    /// two locations' locks at once, so the two-location operation cannot form a
+    /// cross-location lock cycle: (a) read the record from the primary, (b) copy
+    /// it down under the secondary's own write path, (c) verify it is durable at
+    /// the secondary, and only then (d) unroot it from the primary under the
+    /// primary's exclusive root-record lock. A crash between (c) and (d) leaves
+    /// the record rooted in both locations — a benign duplicate, since lookups
+    /// probe primary-then-secondary and either answers correctly.
+    ///
+    /// Demotion is advisory: a per-victim copy-down or verify failure is logged
+    /// and drops that victim from the moved set, never failing the sweep. When
+    /// no secondary is opened the sweep is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistDemotionError`] only when primary planning or the final
+    /// primary unroot fails; per-victim secondary failures are swallowed.
+    pub fn demote_under_size_pressure(
+        &self,
+        policy: PersistStorageMaintenancePolicy,
+    ) -> Result<PersistDemotionOutcome, PersistDemotionError> {
+        let plan = self.primary.plan_demotion(policy)?;
+        if plan.victims().is_empty() {
+            let reason = if plan.bytes_to_free() == 0 {
+                PersistDemotionSkip::NoSizePressure
+            } else {
+                PersistDemotionSkip::NoCandidates
+            };
+            return Ok(PersistDemotionOutcome::Skipped { reason });
+        }
+        let Some((target_class, secondary)) = self.secondaries.first() else {
+            return Ok(PersistDemotionOutcome::Skipped {
+                reason: PersistDemotionSkip::NoSecondaryLocation,
+            });
+        };
+
+        let mut demoted_keys = Vec::new();
+        let mut estimated_bytes_freed = 0u64;
+        for victim in plan.victims() {
+            let key = victim.key();
+            let record = match self.primary.load_root_instantiation(key) {
+                Ok(Some(record)) => record,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::debug!(
+                        target: "aos_nix::cache",
+                        error = %error,
+                        "demotion could not load a victim from the primary; skipping it"
+                    );
+                    continue;
+                }
+            };
+            let root_bytes = record.root().as_os_str().as_bytes();
+            if let Err(error) = secondary.store_root_instantiation(
+                key,
+                root_bytes,
+                record.closure(),
+                record.inputs(),
+                record.run_id(),
+            ) {
+                tracing::debug!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    class = %target_class,
+                    "demotion copy-down to a secondary failed; keeping the primary root"
+                );
+                continue;
+            }
+            // Never unroot from the primary until the down-copy is durable.
+            match secondary.load_root_instantiation(key) {
+                Ok(Some(_)) => {}
+                _ => {
+                    tracing::debug!(
+                        target: "aos_nix::cache",
+                        class = %target_class,
+                        "demoted record did not verify at the secondary; keeping the primary root"
+                    );
+                    continue;
+                }
+            }
+            demoted_keys.push(key);
+            estimated_bytes_freed = estimated_bytes_freed.saturating_add(victim.resident_bytes());
+        }
+
+        if demoted_keys.is_empty() {
+            return Ok(PersistDemotionOutcome::Skipped {
+                reason: PersistDemotionSkip::NoCandidates,
+            });
+        }
+        let key_set: std::collections::BTreeSet<_> = demoted_keys.iter().copied().collect();
+        self.primary.unroot_root_records(&key_set)?;
+        Ok(PersistDemotionOutcome::Demoted {
+            demoted_keys,
+            estimated_bytes_freed,
+            target_class: *target_class,
+        })
+    }
 }
 
 /// Opens every openable secondary location in probe order.

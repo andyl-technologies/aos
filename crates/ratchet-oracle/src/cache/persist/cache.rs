@@ -11,6 +11,7 @@ mod artifact_materialization;
 mod blob_index_rebuild;
 mod blob_liveness;
 mod blob_repack;
+mod demotion;
 mod indexed_values;
 mod maintenance_types;
 mod node_demand;
@@ -21,6 +22,9 @@ mod root_record_io;
 mod run_scope;
 mod store_io;
 
+pub use demotion::{
+    PersistDemotionError, PersistDemotionOutcome, PersistDemotionPlan, PersistDemotionSkip,
+};
 pub use root_record_io::HydratedRootInstantiation;
 
 pub use maintenance_types::{

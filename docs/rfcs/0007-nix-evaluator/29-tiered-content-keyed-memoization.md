@@ -1233,3 +1233,19 @@ design above with the code as ground truth:
       The seven-pair stats-off release A/B is timing- and memory-neutral against
       pristine `426a122bd`; executable-page reuse and MEMO-2's two-machine
       acceptance demonstration remain open.
+- [x] MEMO-2 size-pressure demotion engine (§5.4/§5.6): the demotion unit is the
+      root-instantiation record (the only cross-location tier unit; unrooted
+      blob-pack records are repack garbage, never demoted). Size-pressure policy
+      (`with_primary_size_pressure_bytes`/`demotion_bytes_to_free`), victim
+      selection (`select_demotion_victims`: largest+coldest first, minimal prefix
+      relieving the target — the §5.7 interim proxy while `est_recompute` value
+      density is not persisted), read-only primary planning
+      (`PersistCache::plan_demotion`: files-pack resident measure + root-record
+      enumeration sized by the cheap files-blob proxy, recency by files-pack
+      append offset), and the two-location executor
+      (`PersistCacheLocations::demote_under_size_pressure`: copy-down → verify →
+      unroot as single-location-locked steps, never two locations' locks at once;
+      a demoted root re-promotes on its next hit). A two-location integration test
+      moves the largest+coldest records to a secondary, keeps small records
+      resident, and probes every record back. Auto-triggering from a maintenance
+      schedule and the §5.7-faithful value-density accounting remain follow-ups.
