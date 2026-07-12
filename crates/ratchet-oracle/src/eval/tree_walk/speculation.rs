@@ -1,53 +1,59 @@
-//! Speculative parse-ahead producer for the parallel front-end (RFC-0007 S2/S3).
+//! Speculative parse-ahead producer for the parallel front-end (RFC-0007 S2/S6).
 //!
 //! A single dedicated thread — spawned only when a parallel demand pool exists
-//! (`K >= 2`), never at `K == 1` — walks the import graph breadth-first along
-//! *statically knowable* path-literal edges and parses the files it reaches into
-//! the shared [`SpeculativeParseStore`](super::parallel_demand::SpeculativeParseStore)
-//! ahead of the demand that will force them. A demanding worker then adopts a
-//! stored IR instead of parsing on the critical path.
+//! (`K >= 2`), never at `K == 1` — drains the shared
+//! [`SpeculationFrontier`](super::parallel_demand::SpeculationFrontier) of
+//! candidate files and parses each into the shared
+//! [`SpeculativeParseStore`](super::parallel_demand::SpeculativeParseStore) ahead
+//! of the demand that will force it. A demanding worker then adopts a stored IR
+//! instead of parsing on the critical path.
 //!
-//! This is the **design-B** producer (a dedicated thread, not worker-loop
-//! integration): it is far simpler and touches none of the hot `DemandQueue`
-//! parking path, at the cost of not being strictly "idle-only". The pool-only /
-//! `K == 1`-never guard recovers most of C-19's intent (it never races the sole
-//! evaluating thread). Worker-loop-integrated "idle-only" speculation (design A)
-//! remains a possible future refinement if measurement ever justifies the
-//! hot-path risk; its real seam is `DemandQueue::pop_or_park`, not the safe
-//! precursor scheduler in `parallel.rs` (an anchor corrected during S2 recon).
+//! # Candidate sources
+//!
+//! - **Static path-literal edges** (S2): a file's literal `import ./x` /
+//!   `callPackage ./x` targets, seeded from the root module and re-seeded from
+//!   every file the producer parses.
+//! - **`readDir` entries** (S6): the `.nix` entries of every directory the eval
+//!   `readDir`s, fed by the evaluating threads *after* the directory's
+//!   impure-input fingerprint is recorded. This is the load-bearing source on the
+//!   AOS corpus, whose package graph is `readDir` + `callPackage (dir + name)`
+//!   driven — computed edges that static speculation alone cannot see.
+//!
+//! Candidates enter the frontier as *raw, unresolved* paths; this producer does
+//! the `canonicalize` + directory-to-`default.nix` + `.nix` filtering, keeping
+//! that filesystem work off the evaluating threads.
 //!
 //! # Soundness
 //!
-//! Speculation is side-effect-free by construction: it reads candidate files and
-//! parses/lowers them, but records no impure input, publishes no module, forces
-//! no value, and raises no error. **Only successful parses are stored; failures
-//! are dropped**, so the demand path stays the sole source of import parse errors
-//! (the error-quarantine invariant). Store keys are `(realpath, content hash)`,
-//! so a file edited between speculation and demand is a harmless miss.
+//! Side-effect-free by construction: reads and parses candidate files only —
+//! records no impure input, publishes no module, forces no value, raises no
+//! error. **Only successful parses are stored; failures are dropped**, so the
+//! demand path stays the sole source of import parse errors. Store keys are
+//! `(realpath, content hash)`, so a file edited between speculation and demand is
+//! a harmless miss. The `readDir` feed rides the listing the eval actually
+//! obtained (after its fingerprint is recorded), so it observes nothing the eval
+//! did not already observe.
+//!
+//! Design B (a dedicated thread, not worker-loop integration) is deliberately
+//! simpler than "idle-only" integration into `DemandQueue::pop_or_park`; the
+//! `K == 1`-never guard keeps it from racing the sole evaluating thread.
 //!
 //! # Budget (M-23)
 //!
-//! Read from the environment, all disabled unless `AOS_NIX_SPECULATE` is set to a
-//! non-`off` value:
-//!
 //! ```text
-//! AOS_NIX_SPECULATE=parse         enable (anything but unset/off/0)
-//! AOS_NIX_SPECULATE_DEPTH=2       BFS hops from the root file
-//! AOS_NIX_SPECULATE_MAX_FILES=4096 cap on files parsed per evaluation
+//! AOS_NIX_SPECULATE=parse          enable (anything but unset/off/0)
+//! AOS_NIX_SPECULATE_MAX_FILES=8192 cap on files parsed per evaluation
 //! ```
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::parallel_demand::SharedEvalContext;
+use super::parallel_demand::{SharedEvalContext, SpeculationFrontier};
 use super::*;
 
 /// Speculation aggressiveness knobs (M-23), read from the environment.
 pub(super) struct SpeculationBudget {
-    /// Maximum BFS hops from the root file.
-    depth: usize,
     /// Maximum files parsed per evaluation.
     max_files: usize,
 }
@@ -63,8 +69,7 @@ impl SpeculationBudget {
             return None;
         }
         Some(Self {
-            depth: env_usize("AOS_NIX_SPECULATE_DEPTH", 2),
-            max_files: env_usize("AOS_NIX_SPECULATE_MAX_FILES", 4096),
+            max_files: env_usize("AOS_NIX_SPECULATE_MAX_FILES", 8192),
         })
     }
 }
@@ -76,27 +81,57 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-/// Runs the breadth-first speculation producer until the frontier drains, the
-/// budget is exhausted, or `shutdown` is set.
+/// Seeds the frontier with a module's static path-literal edges.
 ///
-/// Each reached file is parsed into an isolated symbol table and, on success,
-/// inserted into `shared.speculation`; parse failures are dropped. The frontier
-/// is seeded from the root module's path-literal edges.
-pub(super) fn run_speculation_producer(
-    root_ir: Ir,
-    root_base: Vec<u8>,
-    shared: Arc<SharedEvalContext>,
-    budget: SpeculationBudget,
-    shutdown: Arc<AtomicBool>,
-) {
-    let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
-    let mut frontier: VecDeque<(PathBuf, usize)> = VecDeque::new();
-    enqueue_edges(&root_ir, &root_base, 1, &budget, &mut visited, &mut frontier);
+/// Called at pool spawn with the root module. Candidates are raw `base`-relative
+/// joins; resolution happens when the producer pops them.
+pub(super) fn seed_static_edges(ir: &Ir, base: &[u8], shared: &Arc<SharedEvalContext>) {
+    if let Some(frontier) = shared.speculation_frontier.as_ref() {
+        push_static_edges(ir, base, frontier);
+    }
+}
 
+/// Pushes a `readDir`ed directory's `.nix` entries onto the frontier (S6).
+///
+/// `dir` is the directory realpath and `entry_names` its raw entry names; only
+/// `.nix`-suffixed names are enqueued, as raw `dir`-relative joins.
+pub(super) fn seed_read_dir_entries(
+    dir: &[u8],
+    entry_names: &[Vec<u8>],
+    shared: &Arc<SharedEvalContext>,
+) {
+    let Some(frontier) = shared.speculation_frontier.as_ref() else {
+        return;
+    };
+    let dir_path = Path::new(OsStr::from_bytes(dir));
+    for name in entry_names {
+        if !name.ends_with(b".nix") {
+            continue;
+        }
+        frontier.push(dir_path.join(OsStr::from_bytes(name.as_slice())));
+    }
+}
+
+/// Drains the shared frontier, parsing each candidate into the store.
+///
+/// Runs until the frontier closes (pool teardown) or the file budget is hit.
+/// Failures — unresolvable candidates, unreadable files, parse errors — are
+/// dropped. Each parsed file's own static edges are fed back into the frontier.
+pub(super) fn run_speculation_producer(shared: Arc<SharedEvalContext>, budget: SpeculationBudget) {
+    let Some(frontier) = shared.speculation_frontier.as_ref() else {
+        return;
+    };
+    let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
     let mut parsed = 0usize;
-    while let Some((realpath, depth)) = frontier.pop_front() {
-        if parsed >= budget.max_files || shutdown.load(Ordering::Relaxed) {
-            return;
+    while let Some(candidate) = frontier.pop_or_park() {
+        if parsed >= budget.max_files {
+            break;
+        }
+        let Some(realpath) = resolve_candidate(&candidate) else {
+            continue;
+        };
+        if !visited.insert(realpath.clone()) {
+            continue;
         }
         let Ok(bytes) = std::fs::read(&realpath) else {
             continue;
@@ -104,14 +139,12 @@ pub(super) fn run_speculation_producer(
         let Some(ir) = parse_isolated(&bytes) else {
             continue;
         };
-        parsed += 1;
-        // Enqueue this file's edges (resolved against its own directory) before
-        // publishing, so the BFS keeps advancing while consumers drain the store.
         let base = realpath
             .parent()
             .map(|parent| parent.as_os_str().as_bytes().to_vec())
             .unwrap_or_default();
-        enqueue_edges(&ir, &base, depth + 1, &budget, &mut visited, &mut frontier);
+        push_static_edges(&ir, &base, frontier);
+        parsed += 1;
         let key = ParseFileKey::for_source(realpath, &bytes);
         shared.speculation.insert(key, ir);
     }
@@ -126,21 +159,10 @@ fn parse_isolated(bytes: &[u8]) -> Option<Ir> {
     Some(ir)
 }
 
-/// Enqueues the unvisited path-literal edges of `ir`, resolved against `base`.
-///
-/// `edge_depth` is the BFS depth assigned to the discovered candidates; nothing
-/// is enqueued once it exceeds the budget depth.
-fn enqueue_edges(
-    ir: &Ir,
-    base: &[u8],
-    edge_depth: usize,
-    budget: &SpeculationBudget,
-    visited: &mut BTreeSet<PathBuf>,
-    frontier: &mut VecDeque<(PathBuf, usize)>,
-) {
-    if edge_depth > budget.depth {
-        return;
-    }
+/// Pushes a module's path-literal edges onto the frontier as raw `base`-relative
+/// candidates. Home (`~`) and search-path (`<...>`) literals are skipped as
+/// impure/config-dependent.
+fn push_static_edges(ir: &Ir, base: &[u8], frontier: &SpeculationFrontier) {
     for node in ir.arena.nodes() {
         if node.kind != IrKind::Path {
             continue;
@@ -151,32 +173,28 @@ fn enqueue_edges(
         let Some(literal) = ir.symbols.resolve(symbol) else {
             continue;
         };
-        if let Some(candidate) = resolve_candidate(base, literal) {
-            if visited.insert(candidate.clone()) {
-                frontier.push_back((candidate, edge_depth));
-            }
+        if matches!(literal.first(), Some(b'~') | Some(b'<')) {
+            continue;
         }
+        let literal_path = Path::new(OsStr::from_bytes(literal));
+        let candidate = if literal_path.is_absolute() {
+            literal_path.to_path_buf()
+        } else {
+            Path::new(OsStr::from_bytes(base)).join(literal_path)
+        };
+        frontier.push(candidate);
     }
 }
 
-/// Resolves a path literal to a canonical `.nix` module realpath, or `None`.
+/// Resolves a raw candidate path to a canonical `.nix` module realpath, or
+/// `None`.
 ///
-/// Mirrors the demand path's resolution (relative-to-base join, directory to
-/// `default.nix`, canonicalization) so the produced [`ParseFileKey`] matches the
-/// demand-side key. Home (`~`) and search-path (`<...>`) literals are skipped as
-/// impure/config-dependent, and non-`.nix` targets (source files that merely
-/// appear as path literals) are skipped to avoid wasted parses.
-fn resolve_candidate(base: &[u8], literal: &[u8]) -> Option<PathBuf> {
-    if matches!(literal.first(), Some(b'~') | Some(b'<')) {
-        return None;
-    }
-    let literal_path = Path::new(OsStr::from_bytes(literal));
-    let joined = if literal_path.is_absolute() {
-        literal_path.to_path_buf()
-    } else {
-        Path::new(OsStr::from_bytes(base)).join(literal_path)
-    };
-    let canonical = std::fs::canonicalize(&joined).ok()?;
+/// Mirrors the demand path's resolution (canonicalize, directory to
+/// `default.nix`) so the produced [`ParseFileKey`] matches the demand-side key.
+/// Non-`.nix` targets (source files that merely appear as path literals) are
+/// skipped to avoid wasted parses.
+fn resolve_candidate(candidate: &Path) -> Option<PathBuf> {
+    let canonical = std::fs::canonicalize(candidate).ok()?;
     let target = if canonical.is_dir() {
         canonical.join("default.nix")
     } else {

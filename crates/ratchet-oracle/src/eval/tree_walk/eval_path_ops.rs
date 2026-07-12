@@ -269,6 +269,14 @@ impl TreeWalk {
         let mut attrs = Vec::new();
         let mut trace_entries = Vec::new();
         let mut trace_entries_complete = self.impure_input_trace_complete;
+        // RFC-0007 S6: when the speculation producer is running, collect this
+        // directory's `.nix` entry names so its importable modules can be
+        // speculatively parsed. Seeded only after the impure fingerprint below.
+        let collect_speculation = self
+            .shared
+            .as_ref()
+            .is_some_and(|shared| shared.speculation_frontier.is_some());
+        let mut speculation_seeds: Vec<Vec<u8>> = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|source| {
                 TreeWalkError::new(
@@ -282,6 +290,9 @@ impl TreeWalk {
             })?;
             let file_name = entry.file_name();
             let name = file_name.as_bytes();
+            if collect_speculation && name.ends_with(b".nix") {
+                speculation_seeds.push(name.to_vec());
+            }
             let trace_name = if trace_entries_complete {
                 let mut trace_name = Vec::new();
                 if trace_name.try_reserve_exact(name.len()).is_ok() {
@@ -343,6 +354,13 @@ impl TreeWalk {
             ));
         } else {
             self.mark_impure_input_trace_incomplete();
+        }
+        // Seed speculation only after the impure fingerprint is recorded, so the
+        // prefetch rides the listing the eval actually obtained (RFC-0007 S6).
+        if collect_speculation {
+            if let Some(shared) = self.shared.as_ref() {
+                super::speculation::seed_read_dir_entries(&path, &speculation_seeds, shared);
+            }
         }
         self.alloc_dynamic_attrs_result_with_order_telemetry(id, span, attrs)
     }

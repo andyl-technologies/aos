@@ -452,6 +452,55 @@ impl SpeculativeParseStore {
     }
 }
 
+/// The shared work frontier of candidate files to speculatively parse.
+///
+/// Fed by evaluating threads — root/module static path-literal edges and, more
+/// importantly on the AOS corpus, the `.nix` entries of every directory the eval
+/// `readDir`s (the `readDir`-prefetch stage, RFC-0007 S6) — and drained by the
+/// single speculation producer. Candidates are *raw, unresolved* paths; the
+/// producer canonicalizes and filters them, keeping that filesystem work off the
+/// evaluating threads. `close` wakes the parked producer at pool teardown.
+#[derive(Debug, Default)]
+pub(crate) struct SpeculationFrontier {
+    queue: Mutex<VecDeque<PathBuf>>,
+    available: Condvar,
+    closed: AtomicBool,
+}
+
+impl SpeculationFrontier {
+    /// Enqueues a raw candidate path and wakes the producer.
+    pub(super) fn push(&self, candidate: PathBuf) {
+        {
+            let mut queue = recover(self.queue.lock());
+            if self.closed.load(Ordering::Relaxed) {
+                return;
+            }
+            queue.push_back(candidate);
+        }
+        self.available.notify_one();
+    }
+
+    /// Pops the next candidate, parking until one arrives or the frontier closes.
+    pub(super) fn pop_or_park(&self) -> Option<PathBuf> {
+        let mut queue = recover(self.queue.lock());
+        loop {
+            if let Some(candidate) = queue.pop_front() {
+                return Some(candidate);
+            }
+            if self.closed.load(Ordering::Relaxed) {
+                return None;
+            }
+            queue = recover(self.available.wait(queue));
+        }
+    }
+
+    /// Marks the frontier closed and wakes the parked producer.
+    pub(super) fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+        self.available.notify_all();
+    }
+}
+
 /// Cross-worker shared state for one parallel evaluation.
 #[derive(Debug)]
 pub(crate) struct SharedEvalContext {
@@ -476,6 +525,9 @@ pub(crate) struct SharedEvalContext {
     pub(super) imports: parallel_import::SharedImportLog,
     /// The shared store of speculatively parsed module IRs (RFC-0007 S2/S3).
     pub(super) speculation: SpeculativeParseStore,
+    /// The shared candidate frontier the speculation producer drains, present
+    /// only when `AOS_NIX_SPECULATE` enabled it (RFC-0007 S2/S6).
+    pub(super) speculation_frontier: Option<SpeculationFrontier>,
     /// The in-process shared content-memo tier (MEMO-1 L1).
     ///
     /// `Some` exactly when the L1 tier is active for this evaluation. This is
@@ -525,10 +577,10 @@ struct ParallelWorkerOutcome {
 pub(crate) struct ParallelDemandPool {
     shared: Arc<SharedEvalContext>,
     handles: Vec<std::thread::JoinHandle<ParallelWorkerOutcome>>,
-    /// The pool-only speculative parse-ahead producer (RFC-0007 S2/S3), present
-    /// only when `AOS_NIX_SPECULATE` enabled it. Its shutdown flag is set and the
-    /// thread joined in [`Self::finish`].
-    speculation: Option<(std::thread::JoinHandle<()>, Arc<AtomicBool>)>,
+    /// The pool-only speculative parse-ahead producer (RFC-0007 S2/S6), present
+    /// only when `AOS_NIX_SPECULATE` enabled it. Stopped by closing the shared
+    /// frontier and joined in [`Self::finish`].
+    speculation: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ParallelDemandPool {
@@ -543,6 +595,9 @@ impl ParallelDemandPool {
         if workers < 2 {
             return None;
         }
+        // Speculative parse-ahead is pool-only: read the budget here so the shared
+        // frontier is created (and the producer spawned) only under a pool.
+        let speculation_budget = super::speculation::SpeculationBudget::from_env();
         let root_ir = main.modules.first().map(|module| module.ir.clone())?;
         let arena = main.heap.shared_arena()?.clone();
         let attrs_hash_cons_enabled = main.heap.attrs_hash_cons_enabled();
@@ -576,6 +631,9 @@ impl ParallelDemandPool {
             shapes,
             imports: parallel_import::SharedImportLog::default(),
             speculation: SpeculativeParseStore::default(),
+            speculation_frontier: speculation_budget
+                .as_ref()
+                .map(|_| SpeculationFrontier::default()),
             memo: main.options.memo_l1_active().then(|| {
                 Arc::new(super::memo::SharedMemoTable::new(
                     main.options.memo_options().l1_bytes,
@@ -673,10 +731,11 @@ impl ParallelDemandPool {
         if handles.is_empty() {
             return None;
         }
-        // Pool-only speculative parse-ahead producer (RFC-0007 S2/S3, design B):
-        // a single thread parsing files along static path-literal edges into the
-        // shared store ahead of demand. Reached only here, so never at K == 1;
-        // present only when `AOS_NIX_SPECULATE` enabled it.
+        // Pool-only speculative parse-ahead producer (RFC-0007 S2/S6, design B):
+        // a single thread draining the shared candidate frontier (root static
+        // path-literal edges seeded now, plus every `readDir`ed directory's `.nix`
+        // entries fed by the evaluating threads) into the shared store ahead of
+        // demand. Reached only here, so never at K == 1.
         let root_base = main
             .modules
             .first()
@@ -689,25 +748,16 @@ impl ParallelDemandPool {
                 })
             })
             .unwrap_or_default();
-        let speculation = super::speculation::SpeculationBudget::from_env().and_then(|budget| {
-            let shutdown = Arc::new(AtomicBool::new(false));
+        let speculation = speculation_budget.and_then(|budget| {
+            super::speculation::seed_static_edges(&root_ir, &root_base, &shared);
             let producer_shared = Arc::clone(&shared);
-            let producer_shutdown = Arc::clone(&shutdown);
-            let producer_ir = root_ir.clone();
             std::thread::Builder::new()
                 .name("aos-nix-speculate".to_string())
                 .stack_size(HELPER_STACK_SIZE)
                 .spawn(move || {
-                    super::speculation::run_speculation_producer(
-                        producer_ir,
-                        root_base,
-                        producer_shared,
-                        budget,
-                        producer_shutdown,
-                    );
+                    super::speculation::run_speculation_producer(producer_shared, budget);
                 })
                 .ok()
-                .map(|handle| (handle, shutdown))
         });
         main.shared = Some(shared.clone());
         Some(Self {
@@ -731,11 +781,13 @@ impl ParallelDemandPool {
     /// Resumes the panic of any helper worker that panicked.
     pub(crate) fn finish(self, main: &mut TreeWalk) {
         self.shared.queue.shutdown();
-        // Signal and join the speculation producer before draining helpers, so a
-        // still-parsing producer stops promptly rather than speculating past the
-        // evaluation it was serving.
-        if let Some((handle, shutdown)) = self.speculation {
-            shutdown.store(true, Ordering::Relaxed);
+        // Close the frontier and join the speculation producer before draining
+        // helpers, so a still-parsing producer stops promptly rather than
+        // speculating past the evaluation it was serving.
+        if let Some(frontier) = self.shared.speculation_frontier.as_ref() {
+            frontier.close();
+        }
+        if let Some(handle) = self.speculation {
             let _ = handle.join();
         }
         let mut panic: Option<Box<dyn std::any::Any + Send>> = None;
