@@ -190,20 +190,24 @@ fn simplify_enabled() -> bool {
 /// encoded, fingerprinted, persisted, or returned, so all downstream consumers
 /// observe the same (simplified) IR (RFC-0007 doc 30 §8 decision D1/A).
 ///
+/// Returns the analysis-fact version now stored in `ir.facts`: when a fact-reading
+/// pass ran, the simplifier leaves facts current at
+/// [`IR_ANALYSIS_VERSION`](crate::compile::IR_ANALYSIS_VERSION) (so warm loads
+/// reuse them instead of re-analyzing); otherwise `0` (the conservative,
+/// analysis-not-run baseline, as when the simplifier is disabled).
+///
 /// # Errors
 ///
 /// Returns [`ParseCacheError::Simplify`] if a registered pass fails to rewrite
 /// the IR. With the empty stage-1 pass set this cannot fail.
-pub(super) fn simplify_lowered_ir(ir: &mut Ir) -> Result<(), ParseCacheError> {
+pub(super) fn simplify_lowered_ir(ir: &mut Ir) -> Result<u32, ParseCacheError> {
     if simplify_enabled() {
-        simplify_ir(ir).map_err(|source| ParseCacheError::Simplify { source })?;
-        // Some passes (e.g. inlining, dead-binding) refresh analysis facts in
-        // place to make their decisions. Reset them to the conservative baseline
-        // so the persisted `facts.bin` keeps its version-0 (analysis-not-run)
-        // contract; the analysis pipeline recomputes facts on warm load and eval.
-        ir.facts = IrFacts::conservative(ir.arena.nodes().len());
+        let refreshed = simplify_ir(ir).map_err(|source| ParseCacheError::Simplify { source })?;
+        if refreshed {
+            return Ok(IR_ANALYSIS_VERSION);
+        }
     }
-    Ok(())
+    Ok(0)
 }
 
 fn update_fingerprint_chunk(hasher: &mut blake3::Hasher, chunk: &[u8]) {
@@ -466,7 +470,7 @@ impl ParseCache {
         let cached_resolved = file_local_resolved(&resolved)?;
         let mut ir = nix_lower(cached_resolved.clone())
             .map_err(|source| ParseCacheError::LowerIr { source })?;
-        simplify_lowered_ir(&mut ir)?;
+        let facts_version = simplify_lowered_ir(&mut ir)?;
         let meta = ParseCacheMeta::new(self.schema_version, source_hint, 0, 0);
         let stored = entry.write_resolved(&resolved, &meta).is_ok();
         Ok(CachedParse {
@@ -476,7 +480,9 @@ impl ParseCache {
             ir,
             hit: false,
             stored,
-            facts_current: false,
+            // The simplifier leaves refreshed facts current at the analysis
+            // version, so eval need not re-analyze this freshly parsed module.
+            facts_current: facts_version == IR_ANALYSIS_VERSION,
         })
     }
 

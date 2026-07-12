@@ -17,7 +17,7 @@
 //! is observationally invisible even when the original value was effectful or
 //! divergent.
 
-use crate::analysis::{annotate_cardinality, dead_binding_elimination_plan};
+use crate::analysis::dead_binding_elimination_plan;
 
 use super::{
     EffectClass, Ir, IrData, IrId, IrKind, PassOutcome, SimplifyError, SimplifyPass, SimplifyPhase,
@@ -39,13 +39,14 @@ impl SimplifyPass for DeadBindingElim {
         matches!(phase, SimplifyPhase::Main | SimplifyPhase::Final)
     }
 
+    fn needs_facts(&self) -> bool {
+        true
+    }
+
     fn run(&self, ir: &mut Ir) -> Result<PassOutcome, SimplifyError> {
-        // Refresh cardinality facts so `Absent` bindings can be proven;
-        // conservative facts (many-use, not-demanded strictness) prove nothing.
-        // Analysis or plan failure declines the pass.
-        if annotate_cardinality(ir).is_err() {
-            return Ok(PassOutcome::Unchanged);
-        }
+        // Cardinality facts are refreshed by the driver before this sweep (the
+        // pass declares `needs_facts`); the plan reads `Absent`/strictness facts.
+        // Plan failure (e.g. malformed fact table) declines the pass.
         let Ok(plan) = dead_binding_elimination_plan(ir) else {
             return Ok(PassOutcome::Unchanged);
         };

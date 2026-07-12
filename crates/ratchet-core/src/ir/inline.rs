@@ -20,8 +20,6 @@
 //! slot references remain valid at the use site with no renumbering. A use that
 //! lives inside a nested frame (an `Upval`) is declined.
 
-use crate::analysis::annotate_cardinality;
-
 use super::{
     Cardinality, Ir, IrAttrPathSegment, IrData, IrId, IrNode, PassOutcome, SimplifyError,
     SimplifyPass, SimplifyPhase,
@@ -43,12 +41,13 @@ impl SimplifyPass for InlineSingleUse {
         matches!(phase, SimplifyPhase::Main)
     }
 
+    fn needs_facts(&self) -> bool {
+        true
+    }
+
     fn run(&self, ir: &mut Ir) -> Result<PassOutcome, SimplifyError> {
-        // Refresh cardinality facts so `Once` bindings can be proven; conservative
-        // facts prove nothing. Analysis failure declines the pass.
-        if annotate_cardinality(ir).is_err() {
-            return Ok(PassOutcome::Unchanged);
-        }
+        // Cardinality facts are refreshed by the driver before this sweep (the
+        // pass declares `needs_facts`); `is_once` reads them.
         let mut changed = false;
         let node_count = ir.arena.nodes().len();
         for index in 0..node_count {

@@ -101,7 +101,7 @@ impl ParseCacheEntry {
         let resolved = file_local_resolved(resolved)?;
         let mut ir =
             nix_lower(resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
-        simplify_lowered_ir(&mut ir)?;
+        let facts_version = simplify_lowered_ir(&mut ir)?;
         let meta = ParseCacheMeta::for_serialized_resolved(
             meta.schema_version,
             meta.source_hint.clone(),
@@ -117,9 +117,11 @@ impl ParseCacheEntry {
         let ir_bytes = encode_lowered_ir(&ir)?;
         let symbols_bytes = encode_symbols(&resolved.symbols)?;
         let ir_fingerprint = lowered_ir_artifact_fingerprint(&ir_bytes, &symbols_bytes);
-        // The freshly-lowered fact table is conservative: record analysis
-        // version 0 so warm loads know the analysis pipeline has not run.
-        let facts_bytes = encode_ir_facts(&ir.facts, ir_fingerprint, 0)?;
+        // Persist the facts under the version the simplifier left them at: a
+        // freshly-lowered table is conservative (version 0, analysis-not-run), but
+        // a fact-reading simplifier pass leaves them current at the real analysis
+        // version, so a warm load can reuse them instead of re-analyzing.
+        let facts_bytes = encode_ir_facts(&ir.facts, ir_fingerprint, facts_version)?;
         let meta_toml = meta.to_toml();
 
         let _ = fs::remove_file(&meta_path);

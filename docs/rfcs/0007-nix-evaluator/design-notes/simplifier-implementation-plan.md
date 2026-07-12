@@ -628,3 +628,28 @@ machinery, and **folding passes MUST consult both `is_speculable()` and
   carrier + one-word stack maps proven) so IR is not renumbered under a moving
   JIT ABI. Single-use inline (increment 6a) is a special case of this
   substitution and its frame-aware reference machinery is shared.
+
+**Fact-refresh substrate (landed, lead ruling "option 1", 2026-07-12).** The
+driver refreshes analysis facts inside the fixpoint: a pass declares
+`SimplifyPass::needs_facts()`, and the driver runs `annotate_ir` before each
+sweep of any phase that contains a fact-reading pass, then once more at the end,
+so `ir.facts` is left current for the fully-simplified IR. The parse seam then
+persists those refreshed facts under their **real** `IR_ANALYSIS_VERSION` (the
+old wart persisted real facts mislabeled version-0); `write_resolved` threads the
+version through `encode_ir_facts`, and `load_or_parse_bytes` reports
+`facts_current` when the simplifier left them refreshed, so eval and warm loads
+reuse them instead of re-analyzing. `InlineSingleUse` (`Once`) and
+`DeadBindingElim` (`Absent`) now read these driver-refreshed facts rather than
+self-annotating. This does not shift the lowered-IR fingerprint (facts are a
+sidecar, not part of `encode_lowered_ir`), so no cold miss; the facts-sidecar
+version field is already part of its own validation.
+
+**Measured neutrality (honest, do not re-litigate).** With the substrate landed,
+the engaged **cold** re-annotate cost and the **warm** annotate-savings are both
+sub-noise (±~1ms) against the ~75ms per-package eval on zlib/openssl —
+`annotate_ir` over one package's IR is cheap relative to eval, and the passes
+fire rarely. Every buildable-now pass (folding, case-of-known, single-use inline,
+dead-binding) is byte-parity-green default + engaged (JIT + serial) and measures
+neutral, so all stay off by default. **The framework is correct and complete for
+the pre-JIT-stable surface; the perf win is beta-reduction (increment 8), gated
+on S4b.** See doc 26's "MEASURED STATUS" note.

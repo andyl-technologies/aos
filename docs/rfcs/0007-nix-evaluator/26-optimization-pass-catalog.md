@@ -632,6 +632,24 @@ Per-feature tracker for the optimization pass catalog (the simplifier driver and
 
 The simplifier is the GHC-style Core-to-Core optimizer (decision `C-21`), a memoized pure compile-node landing in **P4** (it consumes the strictness/cardinality/escape analyses of [07](07-laziness-and-whole-program-analyses.md) and annotates the IR the tier-0 oracle walks, before any JIT exists). Every rewrite is validated end-to-end by the byte-identical `.drv` gate ([15](15-differential-testing-and-benchmarking.md)), anchored at the `DerivationStrict` nodes.
 
+> **MEASURED STATUS (2026-07-12) — do not re-litigate.** The fixpoint driver, the
+> fact-refresh substrate (`annotate_ir` in the driver; refreshed facts persist
+> under their real analysis version so warm loads reuse them), and the four
+> *buildable-before-a-stable-JIT* passes — constant folding (§2.2), case-of-known
+> `if` (§2.3), single-use same-frame `let`-inline (§2.1 cut a), and dead-binding
+> value-elision (§2.4) — are **landed, byte-parity-green (default and engaged,
+> JIT and serial), and OFF BY DEFAULT.** Every one measures **neutral** on the
+> nixpkgs corpus (zlib/openssl/stdenv): literal arithmetic, literal conditionals,
+> single-use bindings, and dead bindings all fire rarely enough on real Nix that
+> the per-parse fact refresh offsets any win, and the warm-load annotate savings
+> are sub-noise against eval. **The perf lever is NOT literal/structural
+> simplification — it is beta-reduction of lambda applications (§2.1 full),**
+> which needs compacting rebuild/remap + de-Bruijn renumbering and is sequenced
+> **after the JIT ABI stabilizes (snapshot-design S4b)** so IR is not renumbered
+> under a moving JIT. `Select`/`HasAttr` case-of-known, CSE, eta, let-floating,
+> and the rest mostly fire only after beta-reduction exposes constructors at use
+> sites. See `design-notes/simplifier-implementation-plan.md` §9.
+
 ### The driver (§1, §3)
 
 - [ ] Memoized fixpoint driver: phased `Gentle → Main → Final`, repeat-to-local-fixpoint per phase, analyses interleaved (`refresh_facts` on the smaller IR), capped at `MAX_ITERS`, the whole pipeline one compile-node keyed by input-IR hash (§1) — **P4**, `C-21`; iteration count / aggressiveness `M-24`. Current precursor: `ir::annotate_ir` refreshes facts from a conservative baseline and runs the current strictness/cardinality/escape producers once; memoization, phased rewrites, and fixpoint iteration remain open.

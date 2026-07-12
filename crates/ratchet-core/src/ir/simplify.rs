@@ -39,7 +39,9 @@
 
 use thiserror::Error;
 
-use super::{CaseOfKnown, ConstFold, DeadBindingElim, InlineSingleUse, Ir, IrError};
+use super::{
+    CaseOfKnown, ConstFold, DeadBindingElim, InlineSingleUse, Ir, IrError, annotate_ir,
+};
 
 /// The version of the registered simplifier pass set.
 ///
@@ -132,6 +134,17 @@ pub trait SimplifyPass {
     /// Whether this pass participates in `phase`.
     fn runs_in(&self, phase: SimplifyPhase) -> bool;
 
+    /// Whether this pass reads analysis facts (`ir.facts`) to make its decisions.
+    ///
+    /// When any pass in a phase returns `true`, the driver refreshes facts
+    /// (`annotate_ir`) before each sweep of that phase, so a pass reads facts
+    /// current for the IR it is about to rewrite. Structural passes that inspect
+    /// only node shapes (e.g. constant folding) leave this `false` and pay no
+    /// analysis cost. Defaults to `false`.
+    fn needs_facts(&self) -> bool {
+        false
+    }
+
     /// Applies the pass once, rewriting `ir` in place.
     ///
     /// Returns whether the IR changed, so the driver can detect a fixpoint.
@@ -159,10 +172,17 @@ pub const REGISTERED_PASSES: &[&dyn SimplifyPass] =
 ///
 /// With the empty stage-1 pass set this is the identity: `ir` is left unchanged.
 ///
+/// # Returns
+///
+/// `true` when the driver refreshed analysis facts (`annotate_ir`) and left
+/// `ir.facts` current at [`IR_ANALYSIS_VERSION`](super::IR_ANALYSIS_VERSION) for
+/// the final IR, so a caller may persist them under that version instead of
+/// recomputing on warm load; `false` when no fact-reading pass ran.
+///
 /// # Errors
 ///
 /// Returns [`SimplifyError`] if a registered pass fails to rewrite the IR.
-pub fn simplify_ir(ir: &mut Ir) -> Result<(), SimplifyError> {
+pub fn simplify_ir(ir: &mut Ir) -> Result<bool, SimplifyError> {
     simplify_with_passes(ir, REGISTERED_PASSES)
 }
 
@@ -172,8 +192,18 @@ pub fn simplify_ir(ir: &mut Ir) -> Result<(), SimplifyError> {
 /// phase are swept repeatedly until a sweep reports no change (a local fixpoint)
 /// or the sweep count reaches [`SIMPLIFY_MAX_ITERS`]. A phase with no
 /// participating pass is skipped entirely, so an empty pass set performs no work
-/// and allocates nothing. Non-convergence is logged at warn level and degrades
-/// to "stop rewriting this phase"; it is never an error.
+/// and allocates nothing. Non-convergence degrades to "stop rewriting this
+/// phase"; it is never an error.
+///
+/// When a phase contains a fact-reading pass ([`SimplifyPass::needs_facts`]),
+/// the driver refreshes facts (`annotate_ir`) before each sweep so the pass
+/// reads facts current for the IR it rewrites, and performs one final refresh so
+/// the facts left in `ir.facts` are current for the fully simplified IR (see the
+/// return value).
+///
+/// # Returns
+///
+/// Whether analysis facts were refreshed and left current (see [`simplify_ir`]).
 ///
 /// # Errors
 ///
@@ -181,17 +211,23 @@ pub fn simplify_ir(ir: &mut Ir) -> Result<(), SimplifyError> {
 pub fn simplify_with_passes(
     ir: &mut Ir,
     passes: &[&dyn SimplifyPass],
-) -> Result<(), SimplifyError> {
+) -> Result<bool, SimplifyError> {
+    let mut refreshed_facts = false;
     for phase in SimplifyPhase::ORDER {
         if !passes.iter().any(|pass| pass.runs_in(phase)) {
             continue;
         }
+        let phase_needs_facts = passes
+            .iter()
+            .any(|pass| pass.runs_in(phase) && pass.needs_facts());
         // Non-convergence degrades to "stop rewriting this phase": the loop
         // exits once it has run `SIMPLIFY_MAX_ITERS` sweeps, never erroring and
         // never spinning unbounded. Surfacing a non-convergence signal (an
-        // eval-stats counter) is deferred to the first pass that can actually
-        // reach the cap; see the design note (§4, §8).
+        // eval-stats counter) is deferred (design note §4, §8).
         for _ in 0..SIMPLIFY_MAX_ITERS {
+            if phase_needs_facts && annotate_ir(ir).is_ok() {
+                refreshed_facts = true;
+            }
             let mut rewrote = false;
             for pass in passes.iter().filter(|pass| pass.runs_in(phase)) {
                 if pass.run(ir)? == PassOutcome::Rewritten {
@@ -203,7 +239,13 @@ pub fn simplify_with_passes(
             }
         }
     }
-    Ok(())
+    // Leave `ir.facts` current at `IR_ANALYSIS_VERSION` for the final IR: a
+    // fixpoint break already leaves them current, but a `MAX_ITERS` cutoff after
+    // a rewrite would not, so refresh once more when any pass read facts.
+    if refreshed_facts {
+        refreshed_facts = annotate_ir(ir).is_ok();
+    }
+    Ok(refreshed_facts)
 }
 
 #[cfg(test)]
