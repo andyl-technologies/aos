@@ -341,10 +341,11 @@ stdenv` plus the existing eval/VM checks.
   verify executable `bin/find` and `bin/xargs` before publishing its output;
   every later GCC tier puts that output on `PATH`, and admitting a partial
   object turns the missing utility into misleading `GCC_NO_EXECUTABLES`
-  failures deep inside fixincludes and target-library configure scripts. Build
-  findutils 4.1 with GNU feature visibility because its `-iname`/`-ipath`
-  implementation uses glibc's `FNM_CASEFOLD`; its legacy recursive Makefile can
-  otherwise mask the failed `find` subdirectory behind later successful
+  failures deep inside fixincludes and target-library configure scripts.
+  Expose glibc's stable `FNM_CASEFOLD` flag bit directly for findutils 4.1's
+  `-iname`/`-ipath` implementation; enabling all GNU declarations instead
+  conflicts with the package's legacy `basename` declaration. Its recursive
+  Makefile can mask the failed `find` subdirectory behind later successful
   subdirectories, which is why the executable validation remains mandatory.
 - **`mkGcc`/`mkGlibc` internals.** Shared builders, but the
   version-specific quirks (in-tree GMP, sysroot, specs scrubbing,
