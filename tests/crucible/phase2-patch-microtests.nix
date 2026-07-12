@@ -28,6 +28,10 @@
     inherit pkgs lib qemuPackage;
     attrPath = "${attrPath}.prefixAttribution";
   };
+  qemuPatchDropOne = import ./phase2-qemu-patch-drop-one.nix {
+    inherit pkgs lib qemuPackage;
+    attrPath = "${attrPath}.dropOne";
+  };
   qemuDoorbellNoPatch = import ./phase1-qemu-doorbell-no-patch.nix {inherit pkgs lib qemuPackage;};
   qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix {inherit pkgs lib qemuPackage;};
   patchFiles =
@@ -432,6 +436,13 @@ in
             grep -q '^interface_patches_strictly_attributed=true$' "$out/patch-prefix-attribution.result"
             grep -q '^recorded_patches_source_tree_attributed=true$' "$out/patch-prefix-attribution.result"
             grep -q '^sim_off_inertness_surface_is_opt_in_and_monotonic=true$' "$out/patch-prefix-attribution.result"
+            cp "${qemuPatchDropOne}/result" "$out/patch-drop-one.result"
+            cp -r "${qemuPatchDropOne}/per-patch" "$out/drop-one-per-patch"
+            cp "${qemuPatchDropOne}/methods.tsv" "$out/drop-one-methods.tsv"
+            grep -q '^PASS$' "$out/patch-drop-one.result"
+            grep -q '^gate=gate:patch-microtests$' "$out/patch-drop-one.result"
+            grep -q '^every_patch_has_exactly_one_drop_one_method=true$' "$out/patch-drop-one.result"
+            grep -q '^clean_conflict_split_recomputed_live=true$' "$out/patch-drop-one.result"
             cp "${qemuPatchRegeneration}/result" "$out/patch-regeneration.result"
             grep -q '^PASS$' "$out/patch-regeneration.result"
             grep -q '^gate=gate:patch-microtests$' "$out/patch-regeneration.result"
@@ -534,6 +545,10 @@ in
             per_patch_effect_attributed_to_its_own_prefix=true
             per_patch_effect_appears_at_prefix_n_not_n_minus_1=true
             per_patch_sim_off_inertness_surface_opt_in_and_monotonic=true
+            patch_drop_one_gate_passed=true
+            every_patch_has_exactly_one_drop_one_grade_attribution=true
+            drop_one_clean_conflict_split_recomputed_live=true
+            drop_one_methods_manifest=drop-one-methods.tsv
             interface_patches_strictly_attributed_by_symbol_first_appearance=true
             recorded_patches_source_attributed_by_unique_prefix_tree=true
             per_prefix_runtime_sim_mode_boot_infeasible_before_full_sim_loop=recorded-bound
