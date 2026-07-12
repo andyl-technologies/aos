@@ -13,8 +13,7 @@ use std::rc::Rc;
 use ratchet_core::{IrData, IrId, IrKind, syntax::Span};
 use ratchet_jit::{
     JitClifArtifact, JitModuleContext, JitModuleContextFinalizedBody, JitModuleContextKeepAlive,
-    JitRuntimeSymbolAddressCandidate, classify_interp_thunk_body,
-    lower_candidate_c_constant_ir_thunk_body_artifact,
+    JitRuntimeSymbolAddressCandidate, JitValueAbi, classify_interp_thunk_body,
     lower_force_aware_tier1_ir_thunk_body_artifact_for_ir_in_module,
     lower_string_length_inline_ir_thunk_body_artifact,
 };
@@ -73,8 +72,8 @@ pub struct NixJitTier1Engine {
     /// [`NixJitTier1Engine::force_promote`] (used by the dispatch differential
     /// tests, which must still promote and dispatch a body).
     force_promote: bool,
-    /// Whether arena-independent literals use Candidate C's one-word boundary.
-    candidate_c_value_abi: bool,
+    /// The selected one-word literal boundary, or the active two-word ABI.
+    literal_value_abi: JitValueAbi,
     /// The shared JIT module every promoted body is finalized into.
     ///
     /// Built lazily on the first promotion (from [`candidates`](Self::candidates))
@@ -111,6 +110,7 @@ mod tier2_chain;
 mod tier2_filter;
 mod tier2_fold;
 mod tier2_fold_gen;
+mod value_abi;
 
 /// Mutable per-run promotion bookkeeping guarded by the engine's [`RefCell`].
 #[derive(Default)]
@@ -238,8 +238,7 @@ impl NixJitTier1Engine {
             record_gated_cost: std::env::var("AOS_NIX_EVAL_STATS").as_deref() == Ok("1"),
             force_promote: std::env::var("AOS_NIX_JIT_FORCE_PROMOTE").as_deref()
                 == Ok("1"),
-            candidate_c_value_abi: std::env::var("AOS_NIX_JIT_VALUE_ABI").as_deref()
-                == Ok("candidate-c"),
+            literal_value_abi: value_abi::configured_literal_value_abi(),
             context: RefCell::new(None),
             state: RefCell::new(EngineState::default()),
             tier2_enabled: std::env::var("AOS_NIX_JIT_TIER2").as_deref() != Ok("0"),
@@ -260,17 +259,6 @@ impl NixJitTier1Engine {
     #[must_use]
     pub fn force_promote(mut self) -> Self {
         self.force_promote = true;
-        self
-    }
-
-    /// Enables Candidate C's one-word ABI for arena-independent literal thunks.
-    ///
-    /// Other bodies, wide integers, and floats retain the active two-word ABI.
-    /// This is the deterministic builder counterpart of setting
-    /// `AOS_NIX_JIT_VALUE_ABI=candidate-c`.
-    #[must_use]
-    pub fn candidate_c_value_abi(mut self) -> Self {
-        self.candidate_c_value_abi = true;
         self
     }
 
@@ -310,7 +298,7 @@ impl NixJitTier1Engine {
         }
         let env = match dispatch_env(eval, thunk) {
             Some(env) => env,
-            None if finalized_body.artifact().value_abi() == ratchet_jit::JitValueAbi::CandidateC => {
+            None if finalized_body.artifact().value_abi() != JitValueAbi::Active => {
                 EvalEnv::default()
             }
             None => return Some(Tier1ForceHook::Deopted),
@@ -452,12 +440,9 @@ impl NixJitTier1Engine {
         let inline_builtin = primop_symbol_name(eval, body)
             .is_some_and(|name| dispatch_policy::primop_has_native_inline(name.as_bytes()));
         eval.tier1_module_ir(body.module()).and_then(|ir| {
-            if self.candidate_c_value_abi
-                && let Ok(artifact) = lower_candidate_c_constant_ir_thunk_body_artifact(
-                    &ir.arena,
-                    body.id(),
-                )
-            {
+            let one_word_literal =
+                value_abi::lower_literal(self.literal_value_abi, &ir.arena, body.id());
+            if let Some(artifact) = one_word_literal {
                 Some(artifact)
             } else if inline_builtin {
                 lower_string_length_inline_ir_thunk_body_artifact(&ir.arena, body.id()).ok()
@@ -1002,6 +987,7 @@ mod tests {
     use ratchet_oracle::eval::tree_walk::{TreeWalkError, TreeWalkOptions};
     use ratchet_oracle::syntax::parse_str;
 
+    mod candidate_b;
     mod candidate_c;
 
     /// Parses, resolves, and lowers a source program into Core IR.

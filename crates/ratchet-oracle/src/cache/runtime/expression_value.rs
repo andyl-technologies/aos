@@ -35,6 +35,24 @@ pub struct CachedExpressionValue {
 pub type CachedAttrEntryWithPosition = (Vec<u8>, Option<AttrPosition>, CachedExpressionValue);
 
 impl CachedExpressionValue {
+    /// Creates a cached signed integer without constructing an active value.
+    ///
+    /// Keeping the canonical `i64` in the cache payload lets a future
+    /// Candidate-C replay allocate a boxed scalar in the receiving evaluator's
+    /// reservation instead of persisting an arena-qualified runtime word.
+    pub fn int(value: i64) -> Self {
+        Self::from_payload(InlineValuePayload::Int(value))
+    }
+
+    /// Creates a cached exact floating-point payload without constructing an
+    /// active value.
+    ///
+    /// The bit pattern is retained verbatim, including signed zero and NaN
+    /// payloads, until the receiving evaluator rehydrates its active value.
+    pub fn float(value: f64) -> Self {
+        Self::from_payload(InlineValuePayload::Float(value.to_bits()))
+    }
+
     /// Creates a cached immediate scalar value.
     ///
     /// # Errors
@@ -693,5 +711,27 @@ impl CachedExpressionValue {
         ValueHash::from_cached_expression_payload_hash(
             CachedExpressionPayloadValueHash::from_hasher(hasher),
         )
+    }
+}
+
+#[cfg(test)]
+mod scalar_constructor_tests {
+    use super::CachedExpressionValue;
+
+    #[test]
+    fn canonical_scalar_constructors_preserve_full_width_payloads() {
+        let integer = CachedExpressionValue::int(i64::MIN);
+        let integer_value = integer
+            .immediate_value()
+            .expect("integer payload rehydrates");
+        assert_eq!(integer_value.as_int().expect("integer value"), i64::MIN);
+
+        let float_bits = 0xfff8_0000_0000_0042;
+        let float = CachedExpressionValue::float(f64::from_bits(float_bits));
+        let float_value = float.immediate_value().expect("float payload rehydrates");
+        assert_eq!(
+            float_value.as_float().expect("float value").to_bits(),
+            float_bits
+        );
     }
 }

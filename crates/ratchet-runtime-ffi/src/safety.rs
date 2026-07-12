@@ -554,6 +554,7 @@ mod tests {
         "afe { jit_cranelift_call_finalized_thunk_entry(finalization, rt, env) };"
     );
     const CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE: &str = concat!("let context_dispatched = ", "uns", "afe { jit_cranelift_call_context_finalized_thunk_entry(body, rt, env) };");
+    const CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE: &str = concat!("let candidate_b_dispatched = ", "uns", "afe { jit_cranelift_call_context_finalized_candidate_b_thunk_entry(body, rt, env) };");
     const CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE: &str = concat!("let candidate_c_dispatched = ", "uns", "afe { jit_cranelift_call_context_finalized_candidate_c_thunk_entry(body, rt, env) };");
     const CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE: &str = concat!(
         "let lambda_dispatched = ",
@@ -1027,6 +1028,7 @@ mod tests {
         if token == UNSAFE_TOKEN {
             trimmed == FINALIZED_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE
+                || trimmed == CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE
                 || trimmed == CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE
@@ -1393,6 +1395,7 @@ mod unchecked_cfg;
         for (line, boundary) in [
             (FINALIZED_CALL_JIT_BOUNDARY_LINE, "thunk call"),
             (CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE, "context thunk call"),
+            (CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE, "Candidate-B thunk call"),
             (CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE, "Candidate-C thunk call"),
             (CONTEXT_FINALIZED_LAMBDA_CALL_JIT_BOUNDARY_LINE, "lambda call"),
             (CONTEXT_FINALIZED_CHAIN_CALL_JIT_BOUNDARY_LINE, "chain call"),
@@ -1949,16 +1952,9 @@ mod unchecked_cfg;
         let force_lines = force.lines().collect::<Vec<_>>();
         let native_call_lines = native_call.lines().collect::<Vec<_>>();
 
-        assert_has_safety_comment_before(
-            &native_call_lines,
-            FINALIZED_CALL_JIT_BOUNDARY_LINE,
-            "finalized native thunk-call jit boundary must keep a SAFETY comment",
-        );
-        assert_has_safety_comment_before(
-            &native_call_lines,
-            CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE,
-            "shared-context finalized native thunk-call jit boundary must keep a SAFETY comment",
-        );
+        assert_has_safety_comment_before(&native_call_lines, FINALIZED_CALL_JIT_BOUNDARY_LINE, "finalized native thunk-call jit boundary must keep a SAFETY comment");
+        assert_has_safety_comment_before(&native_call_lines, CONTEXT_FINALIZED_CALL_JIT_BOUNDARY_LINE, "shared-context finalized native thunk-call jit boundary must keep a SAFETY comment");
+        assert_has_safety_comment_before(&native_call_lines, CONTEXT_FINALIZED_CANDIDATE_B_CALL_JIT_BOUNDARY_LINE, "shared-context Candidate-B thunk-call jit boundary must keep a SAFETY comment");
         assert_has_safety_comment_before(&native_call_lines, CONTEXT_FINALIZED_CANDIDATE_C_CALL_JIT_BOUNDARY_LINE, "shared-context Candidate-C thunk-call jit boundary must keep a SAFETY comment");
         assert_has_safety_comment_before(
             &native_call_lines,

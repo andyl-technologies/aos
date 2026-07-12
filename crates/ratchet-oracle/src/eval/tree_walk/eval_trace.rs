@@ -519,7 +519,7 @@ impl TreeWalk {
     }
 
     pub(super) fn eval_float_to_int_primop(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         argument: IrId,
@@ -550,7 +550,7 @@ impl TreeWalk {
                 }
             }
         };
-        Ok(Value::int(value))
+        self.runtime_int_value(id, span, value)
     }
 
     pub(super) fn eval_seq_primop(

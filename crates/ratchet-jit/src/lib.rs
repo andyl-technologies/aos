@@ -54,9 +54,9 @@ pub mod tier;
 pub mod warmup;
 
 pub use abi::{
-    JitCandidateCThunkFn, JitClifSignatureError, JitEnvFramePtr, JitLambdaFn,
-    JitRuntimeAbiInventory, JitRuntimeContextPtr, JitThunkFn,
-    clif_signature_for_candidate_c_runtime_call,
+    JitCandidateBThunkFn, JitCandidateCThunkFn, JitClifSignatureError, JitEnvFramePtr,
+    JitLambdaFn, JitRuntimeAbiInventory, JitRuntimeContextPtr, JitThunkFn,
+    clif_signature_for_candidate_b_runtime_call, clif_signature_for_candidate_c_runtime_call,
     clif_signature_for_runtime_call, jit_runtime_abi_inventory,
 };
 pub use artifact::{JitClifArtifact, JitClifArtifactKind, JitClifArtifactSource, JitValueAbi};
@@ -88,6 +88,7 @@ pub use cranelift::{
     PINNED_CRANELIFT_MODULE_VERSION, PINNED_CRANELIFT_NATIVE_VERSION,
     jit_cranelift_artifact_definition_preflight_for_artifact,
     jit_cranelift_artifact_finalization_preflight_for_artifact,
+    jit_cranelift_call_context_finalized_candidate_b_thunk_entry,
     jit_cranelift_call_context_finalized_candidate_c_thunk_entry,
     jit_cranelift_call_context_finalized_lambda_argv_entry,
     jit_cranelift_call_context_finalized_lambda_entry,
@@ -128,8 +129,8 @@ pub use lower::{
     AOS_PRIMOP_CALL_FUNCTION_INDEX, AOS_RUNTIME_HELPER_FUNCTION_NAMESPACE,
     AOS_SELECT_IC_FUNCTION_INDEX, AOS_STRING_LENGTH_FUNCTION_INDEX, AOS_UPDATE_FUNCTION_INDEX,
     AOS_UPVAL_GET_FUNCTION_INDEX,
-    JitCandidateCConstantError, JitLowerError, JitTier1ThunkFactDecision,
-    JitTier1ThunkFactPlan,
+    JitCandidateBConstantError, JitCandidateCConstantError, JitLowerError,
+    JitTier1ThunkFactDecision, JitTier1ThunkFactPlan,
     clif_external_name_for_aos_alloc_cons, clif_external_name_for_aos_apply,
     clif_external_name_for_aos_deopt,
     clif_external_name_for_aos_env_get, clif_external_name_for_aos_force,
@@ -142,6 +143,7 @@ pub use lower::{
     lower_apply_local_slots_ir_root_thunk_body,
     lower_apply_local_slots_ir_root_thunk_body_artifact, lower_apply_local_slots_ir_thunk_body,
     lower_apply_local_slots_ir_thunk_body_artifact,
+    lower_candidate_b_constant_ir_thunk_body_artifact,
     lower_candidate_c_constant_ir_thunk_body_artifact, lower_constant_ir_root_thunk_body,
     lower_constant_ir_root_thunk_body_artifact, lower_constant_ir_thunk_body,
     lower_constant_ir_thunk_body_artifact, lower_constant_thunk_body,

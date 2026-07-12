@@ -591,8 +591,10 @@ impl TreeWalk {
             )
         })?;
         entries.push(AttrEntry::new(file_key, file_value));
-        entries.push(AttrEntry::new(line_key, Value::int(line)));
-        entries.push(AttrEntry::new(column_key, Value::int(column)));
+        let line = self.runtime_int_value(id, span, line)?;
+        entries.push(AttrEntry::new(line_key, line));
+        let column = self.runtime_int_value(id, span, column)?;
+        entries.push(AttrEntry::new(column_key, column));
         let attrs = FlatAttrs::new(entries, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
         self.alloc_dynamic_attrs_result_with_order_telemetry(id, span, attrs)

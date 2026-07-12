@@ -15,11 +15,15 @@ impl TreeWalk {
         operand: IrId,
     ) -> Result<Value, TreeWalkError> {
         match self.eval_number_node(operand)? {
-            Number::Int(value) => Ok(Value::int(value.wrapping_neg())),
+            Number::Int(value) => {
+                self.runtime_int_value(operand, self.node(operand)?.span, value.wrapping_neg())
+            }
             // C++ Nix parses `-e` as `__sub 0 e`, so float negation is a
             // subtraction from positive zero: `-0.0` evaluates to `0.0`
             // (IEEE `0.0 - 0.0` is positive zero), never to negative zero.
-            Number::Float(value) => Ok(Value::float(0.0 - value)),
+            Number::Float(value) => {
+                self.runtime_float_value(operand, self.node(operand)?.span, 0.0 - value)
+            }
         }
     }
 
@@ -55,11 +59,11 @@ impl TreeWalk {
         let left = self.eval_int_node(lhs)?;
         let right = self.eval_int_node(rhs)?;
 
-        Ok(Value::int(op.apply(left, right)))
+        self.runtime_int_value(lhs, self.node(lhs)?.span, op.apply(left, right))
     }
 
     pub(in crate::eval::tree_walk) fn eval_numeric_values(
-        &self,
+        &mut self,
         id: IrId,
         node: &IrNode,
         op: BinaryArithmeticOp,

@@ -13,7 +13,6 @@
 //! bounded paths before Cranelift module setup. These bodies use the same
 //! two-word `Value` ABI as [`crate::abi`], but they are not placed in a
 //! `JITModule`, finalized, or called.
-
 use cranelift_codegen::{
     cursor::{Cursor, FuncCursor},
     ir::{
@@ -37,6 +36,7 @@ use crate::{
 };
 mod arith_tree;
 mod alloc_cons;
+mod candidate_b;
 mod candidate_c;
 mod error;
 pub mod interp;
@@ -51,6 +51,9 @@ pub use stack_maps::{
 pub use alloc_cons::{
     AOS_ALLOC_CONS_FUNCTION_INDEX, clif_external_name_for_aos_alloc_cons,
     lower_singleton_list_ir_thunk_body_artifact,
+};
+pub use candidate_b::{
+    JitCandidateBConstantError, lower_candidate_b_constant_ir_thunk_body_artifact,
 };
 pub use candidate_c::{
     JitCandidateCConstantError, lower_candidate_c_constant_ir_thunk_body_artifact,
@@ -90,16 +93,13 @@ pub const AOS_APPLY_FUNCTION_INDEX: u32 = 2;
 pub const AOS_HAS_ATTR_FUNCTION_INDEX: u32 = 3;
 /// User-external function index reserved for the `aos_select_ic` helper.
 pub const AOS_SELECT_IC_FUNCTION_INDEX: u32 = 4;
-
 /// User-external function index reserved for the `aos_update` helper.
 pub const AOS_UPDATE_FUNCTION_INDEX: u32 = 5;
-
 /// User-external function index reserved for the `aos_deopt` helper.
 pub const AOS_DEOPT_FUNCTION_INDEX: u32 = 6;
 
 /// User-external function index reserved for the `aos_upval_get` helper.
 pub const AOS_UPVAL_GET_FUNCTION_INDEX: u32 = 7;
-
 /// User-external function index reserved for the `aos_primop_call` helper.
 pub const AOS_PRIMOP_CALL_FUNCTION_INDEX: u32 = 8;
 

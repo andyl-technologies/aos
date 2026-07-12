@@ -711,14 +711,14 @@ impl TreeWalk {
         let value = match node.kind {
             IrKind::Int => {
                 if let IrData::Int(value) = node.data {
-                    Ok(Value::int(value))
+                    self.runtime_int_value(id, node.span, value)
                 } else {
                     Err(self.invalid_payload(id, &node, "integer payload"))
                 }
             }
             IrKind::Float => {
                 if let IrData::Float(value) = node.data {
-                    Ok(Value::float(value))
+                    self.runtime_float_value(id, node.span, value)
                 } else {
                     Err(self.invalid_payload(id, &node, "float payload"))
                 }

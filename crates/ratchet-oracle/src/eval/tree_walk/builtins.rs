@@ -115,7 +115,7 @@ impl BuiltinExecutor for TreeWalk {
                     return unsupported_builtin_attr(id, span, symbol);
                 };
                 eval.record_impure_input(ImpureInputFingerprint::current_time());
-                Ok(Value::int(current_time))
+                eval.runtime_int_value(id, span, current_time)
             }
             BuiltinExecution::StoreDirValue => {
                 let store_dir = eval.options.store_dir().to_vec();
@@ -124,7 +124,9 @@ impl BuiltinExecutor for TreeWalk {
             BuiltinExecution::NixVersionValue => {
                 eval.alloc_static_string(id, span, PINNED_NIX_VERSION)
             }
-            BuiltinExecution::LangVersionValue => Ok(Value::int(PINNED_NIX_LANG_VERSION)),
+            BuiltinExecution::LangVersionValue => {
+                eval.runtime_int_value(id, span, PINNED_NIX_LANG_VERSION)
+            }
             BuiltinExecution::NixPathValue => eval.eval_nix_path_value(id, span),
             BuiltinExecution::Derivation => eval.eval_derivation_wrapper_lambda(id, span),
             _ if builtin.first_class_arity().is_some() => {

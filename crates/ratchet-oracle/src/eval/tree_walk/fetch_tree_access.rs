@@ -437,9 +437,10 @@ impl TreeWalk {
         entries.push(AttrEntry::new(out_path_symbol, out_path));
 
         if let Some(last_modified) = result.last_modified {
+            let last_modified = self.runtime_int_value(id, span, last_modified)?;
             entries.push(AttrEntry::new(
                 last_modified_symbol,
-                Value::int(last_modified),
+                last_modified,
             ));
         }
         if let Some(last_modified_date) = result.last_modified_date {
@@ -492,7 +493,8 @@ impl TreeWalk {
                     span,
                 )
             })?;
-            entries.push(AttrEntry::new(rev_count_symbol, Value::int(rev_count)));
+            let rev_count = self.runtime_int_value(id, span, rev_count)?;
+            entries.push(AttrEntry::new(rev_count_symbol, rev_count));
         }
         if let Some(submodules) = result.submodules {
             entries.push(AttrEntry::new(submodules_symbol, Value::bool(submodules)));

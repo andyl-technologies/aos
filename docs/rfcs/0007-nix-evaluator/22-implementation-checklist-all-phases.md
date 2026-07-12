@@ -11752,6 +11752,17 @@ it ships).**
       8-byte-aligned heap pointers, and names the thunk `FORCED` shortcut bit.
       Raw decoded words do not prove pointer provenance or liveness; the active
       `Value` representation and force path are unchanged.
+- [x] Current Candidate-B tagged-word/executable-boundary precursor:
+      `value/tag.rs` now also owns a checked 8-byte Candidate-B value codec with
+      signed 61-bit integer immediates, canonical boolean/null singletons,
+      aligned heap addresses, and the forced-thunk shortcut. Raw validation
+      rejects null pointers, payload-bearing singletons, and reserved tags.
+      Separate core/JIT ABI metadata, literal lowering, reviewed native entry,
+      runtime scalar adapter, and `AOS_NIX_JIT_VALUE_ABI=candidate-b` engine
+      selection execute allocation-free literal bodies as one word and fall
+      back to the active ABI for boxed scalars. Heap-header decoding, boxed
+      Candidate-B scalars, helper/tier-2/container conversion, the B-vs-C
+      benchmark selection, and the default evaluator cutover remain open.
 - [x] Current `value/nanbox.rs` precursor: `ratchet-value` exposes the safe
       NaN-box layout contract for the measured value-size variant. It reserves a
       negative quiet-NaN prefix, three tag bits, and a 48-bit payload; normalizes
@@ -12137,7 +12148,7 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       reproduce the allocation/deref columns; analysis version 7 persists
       capture plans and Chunk-D facts; the executable identity audit discovers
       the three representation-owning crates and rejects any drift from its
-      reviewed 40/5/20 raw/address-only/relocation-sensitive inventory.
+      reviewed 29/5/20 raw/address-only/relocation-sensitive inventory.
 - [x] FV-1 — flat strings/paths/lists: header + inline payload in the
       Tier-A arena; hash-cons key migration; `heap/safety.rs` audit-table
       extension ([30](30-flat-value-architecture.md) §2).
@@ -12153,13 +12164,16 @@ perf + memory A/B, no size-gate offender growth) — see doc 30 §9.2.
       tagged 61-bit-immediate word (fallback), built head-to-head per the
       P8 mandate — this executes the P8 pointer-tagging row and
       `M-4`/`Q-E` ([30](30-flat-value-architecture.md) §3).
-      *The Candidate-C substrate is now landed: a real 4 GiB contiguous
-      reservation, checked byte-offset index space, sealed 64-bit codec, and
-      reservation-backed shared publication, both serial flat-store lanes, and
-      typed hash-consed boxed scalar cells. Arena-domain identity, active
-      evaluator/FFI/JIT ABI conversion, container narrowing,
-      Candidate-B construction, and the measured head-to-head remain, so FV-4
-      is intentionally unchecked.*
+      *Both one-word candidates now have executable opt-in literal paths:
+      Candidate C supplies the 4 GiB reservation, compressed-index codec,
+      shared/serial flat-store lanes, and typed boxed scalar cells; Candidate B
+      supplies the checked tagged 61-bit-immediate codec. Separate JIT/FFI
+      entries execute B and C integer/boolean/null literal bodies, and the
+      evaluator now owns scalar construction/decoding through `EvalHeap`.
+      Three wide samples showed only a noise-sized B edge (1.4% cold, 0.9%
+      warm). Context-owned heap/header decoding, boxed B scalars, helpers,
+      tier 2, container narrowing, the full matrix, and active-ABI selection
+      remain, so FV-4 is intentionally unchecked.*
 - [x] FV-5 — hybrid closures: flat inline free-var capture
       (`|FV| <= K`) + linked persistent frame chains; persistent
       `with`/scoped-global lists; delete the generation-keyed capture

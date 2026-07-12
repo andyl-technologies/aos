@@ -786,10 +786,8 @@ impl TreeWalk {
             )
         })?;
         let mut entries = Vec::new();
-        entries.push(AttrEntry::new(
-            last_modified_symbol,
-            Value::int(result.last_modified),
-        ));
+        let last_modified = self.runtime_int_value(id, span, result.last_modified)?;
+        entries.push(AttrEntry::new(last_modified_symbol, last_modified));
         let last_modified_date = self.alloc_static_string_with_attr_entry_roots(
             id,
             span,
@@ -817,7 +815,8 @@ impl TreeWalk {
             result.rev.as_bytes(),
         )?;
         entries.push(AttrEntry::new(rev_symbol, rev));
-        entries.push(AttrEntry::new(rev_count_symbol, Value::int(rev_count)));
+        let rev_count = self.runtime_int_value(id, span, rev_count)?;
+        entries.push(AttrEntry::new(rev_count_symbol, rev_count));
         let short_rev_len = result.rev.len().min(7);
         let short_rev = self.alloc_static_string_with_attr_entry_roots(
             id,

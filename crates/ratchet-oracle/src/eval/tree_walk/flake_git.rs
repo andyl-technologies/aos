@@ -658,7 +658,7 @@ impl TreeWalk {
                             "flake reference integer does not fit in Nix int",
                         )
                     })?;
-                    Value::int(value)
+                    self.runtime_int_value(id, span, value)?
                 }
                 FlakeRefAttrValue::Bool(value) => Value::bool(value),
             };

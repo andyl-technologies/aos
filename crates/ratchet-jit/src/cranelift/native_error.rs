@@ -5,6 +5,7 @@ use std::{error::Error, fmt};
 use ratchet_value::value::{
     Value, ValueError,
     compressed::{CompressedValueError, CompressedValueKind},
+    tag::{TaggedValueKind, TaggedValueWordError},
 };
 
 use super::JitCraneliftModuleSetupError;
@@ -37,6 +38,20 @@ pub enum JitCraneliftNativeCallError {
         expected: JitValueAbi,
         /// The representation recorded when the artifact was lowered.
         actual: JitValueAbi,
+    },
+    /// A Candidate-B call returned a malformed tagged word.
+    InvalidCandidateBReturnValue {
+        /// The stable module symbol that was called.
+        symbol_name: String,
+        /// The malformed raw one-word return.
+        word: u64,
+        /// The underlying tagged-value layout error.
+        source: TaggedValueWordError,
+    },
+    /// A Candidate-B adapter received a context-owned word it cannot decode.
+    UnsupportedCandidateBReturnKind {
+        /// The tagged kind requiring evaluator-owned decoding state.
+        kind: TaggedValueKind,
     },
     /// The native call returned valid-tag bits that violate the runtime value payload layout.
     InvalidReturnValue {
@@ -76,6 +91,18 @@ impl fmt::Display for JitCraneliftNativeCallError {
                 formatter,
                 "artifact value ABI {actual:?} is not callable through the {expected:?} boundary"
             ),
+            Self::InvalidCandidateBReturnValue {
+                symbol_name,
+                source,
+                ..
+            } => write!(
+                formatter,
+                "native Candidate-B thunk {symbol_name:?} returned an invalid tagged value: {source}"
+            ),
+            Self::UnsupportedCandidateBReturnKind { kind } => write!(
+                formatter,
+                "Candidate-B return kind {kind:?} requires evaluator-owned decoding state"
+            ),
             Self::InvalidReturnValue {
                 symbol_name,
                 source,
@@ -106,8 +133,10 @@ impl Error for JitCraneliftNativeCallError {
             Self::UnsupportedNativeValueAbi { .. }
             | Self::UnsupportedArtifactKind { .. }
             | Self::UnsupportedArtifactValueAbi { .. }
+            | Self::UnsupportedCandidateBReturnKind { .. }
             | Self::UnsupportedCandidateCReturnKind { .. } => None,
             Self::FinalizeArtifact { source } => Some(source),
+            Self::InvalidCandidateBReturnValue { source, .. } => Some(source),
             Self::InvalidReturnValue { source, .. } => Some(source),
             Self::InvalidCandidateCReturnValue { source, .. } => Some(source),
         }

@@ -211,11 +211,11 @@ begins.
 ### 2.4 The parity-critical identity audit (`payload_bits`)
 
 The record side table is not only overhead — it is where **address
-identity** is currently anchored. The executable audit now classifies 65
-accessor sites across 22 source files: 40 raw scalar/diagnostic reads,
+identity** is currently anchored. The executable audit now classifies 54
+accessor sites across 23 source files: 29 raw scalar/diagnostic reads,
 five address-only reads confined to collector-free recursive walks, and 20
-relocation-sensitive identities. The production subset is 63 sites across 21
-files (40/5/18); the two additional relocation-sensitive sites are the
+relocation-sensitive identities. The production subset is 52 sites across 22
+files (29/5/18); the two additional relocation-sensitive sites are the
 `cfg(test)` capture-plan validator, retained in the B2 worklist so moving-GC
 tests cannot silently use stale identities. The families (the B2 repair
 worklist, enumerated):
@@ -1141,11 +1141,11 @@ list only their *additional* gates.
       B2's rehash-hook worklist derivable from it.
       *Landed: the sealed `Value` API distinguishes raw scalar/diagnostic
       bits, address-only identities, and relocation-sensitive identities.
-      The executable audit pins 40/5/20 sites respectively across 22 source
+      The executable audit pins 29/5/20 sites respectively across 23 source
       files and records the required root writeback, side-table rekey,
       structural-hash rebuild, compiled-constant patch/reject, or no-repair
-      disposition for every family. The production subset is 40/5/18 across
-      21 files; two `cfg(test)` capture-validator sites remain deliberately in
+      disposition for every family. The production subset is 29/5/18 across
+      22 files; two `cfg(test)` capture-validator sites remain deliberately in
       the worklist. Test directories and `tests.rs` modules are excluded;
       UFCS and method-call spellings are both counted.*
 - [x] Compiled-root prerequisite for B2 relocation and Tier-B reclamation:
@@ -1709,6 +1709,45 @@ value word (Candidates B and C) remains open and separately gated:**
       cutoffs, versus 150 forced thunks and 96 settled cutoffs for the unchanged
       control. No throughput win is claimed for an inactive seam or for the
       changed-tree heuristic campaign.
+- [x] **Candidate-B codec plus executable B/C literal-boundary precursor:**
+      `value/tag.rs` now seals the Candidate-B 64-bit word itself, not only its
+      pointer-tag prerequisite: signed 61-bit integers, canonical boolean/null
+      singletons, aligned heap addresses, and the forced-thunk bit have checked
+      construction and raw decoding, while boxed-range integers, malformed
+      singleton payloads, null pointers, and reserved tags fail explicitly.
+      Core ABI metadata names separate one-word Candidate-B and Candidate-C
+      layouts, and JIT artifacts retain `Active`/`CandidateB`/`CandidateC`
+      identity through module finalization. Dedicated lowerers emit one-`i64`
+      bodies for allocation-free B literals and arena-independent C literals;
+      separate reviewed native entry casts validate the returned word before
+      runtime FFI reconstructs the active scalar. The tier-1 engine selects
+      either path with `AOS_NIX_JIT_VALUE_ABI=candidate-b|candidate-c` and falls
+      back to the active ABI for boxed/arena-owned scalars. Tests execute both
+      native bodies, reject mismatched metadata before code-pointer casts, prove
+      engine publication and output parity, and pin active fallback. Heap/header
+      decoding, boxed Candidate-B scalar cells, helpers, tier 2, containers, and
+      the default evaluator ABI remain active two-word paths; this makes B and C
+      executable competitors without claiming the head-to-head or active
+      cutover complete. The exact combined release passed 380 value, 355 core,
+      271 JIT plus both 19-test integrations, 3,051 active oracle tests (34
+      ignored), runtime-FFI 82 active/26 ignored plus its 2- and 6-test
+      integrations, cache 112 plus its integration, aos-nix 340, and language
+      38. Candidate B, Candidate C, and default mode were byte-green on the
+      representative/wide closure gates, and both candidates were byte-green
+      on the compute witness. On the contended local host, three native-only
+      wide samples put B at 2.442 s cold / 2.398 s warm and C at 2.478 s cold /
+      2.420 s warm; B's 1.4%/0.9% timing edge and small RSS edge are within
+      noise, so this literal-only diagnostic does not select a winner.
+- [x] **Heap-owned active scalar boundary prerequisite:** production integer
+      and floating-point construction and decoding now route through
+      `EvalHeap`, with tree-walk wrappers attaching source context and cache
+      constructors retaining full `i64` values and exact `f64` bits. The
+      active implementation delegates to the current 16-byte `Value`; a later
+      Candidate-B or Candidate-C cutover can allocate/decode boxed scalars at
+      this one ownership seam instead of rewriting numeric evaluation again.
+      The migration reduced direct raw representation reads from 40 to 29 and
+      is covered by scalar-boundary, cache-bit-pattern, and executable identity
+      audit tests.
 - [ ] Candidate C: compressed 32-bit index `Value` behind the sealed
       codec module; container slots narrowed where profitable. Boxed
       hash-consed `i64` cell for out-of-range ints. **The reservation, codec,
@@ -1717,8 +1756,11 @@ value word (Candidates B and C) remains open and separately gated:**
       inactive checked `Value` conversion bridge are landed; selecting the
       one-word active ABI and narrowing containers remain.**
 - [ ] Candidate B: tagged 61-bit-immediate word to the `value/tag.rs`
-      contract, same seams, built for the head-to-head. **Deferred
-      with C (same re-entry conditions).**
+      contract, same seams, built for the head-to-head. **The checked word
+      codec, one-word ABI metadata, literal lowerer, native dispatch, runtime
+      scalar adapter, and tier-1 selector are landed. Context-owned heap/header
+      decoding, boxed wide integers/floats, container narrowing, and the full
+      head-to-head remain.**
 - [ ] The B-vs-C selection: full benchmark matrix (packages + compute +
       wide + memory columns) per the P8 build-and-select mandate;
       closes doc 22's P8 pointer-tagging row and feeds `M-4`/`Q-E`.

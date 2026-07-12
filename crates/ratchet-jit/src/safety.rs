@@ -178,6 +178,24 @@ mod tests {
 
     fn is_allowed_native_thunk_call_token(source_path: &Path, code: &str, token: &str) -> bool {
         let file_name = source_path.file_name().and_then(|name| name.to_str());
+        if file_name == Some("candidate_b.rs") {
+            let trimmed = code.trim_start();
+            return match token {
+                "unsafe" => trimmed.starts_with(
+                    "pub unsafe fn jit_cranelift_call_context_finalized_candidate_b_thunk_entry(",
+                ) || trimmed
+                        == "let entry = unsafe { mem::transmute::<*mut u8, JitCandidateBThunkFn>(code_ptr.as_ptr()) };"
+                    || trimmed == "let word = unsafe { entry(rt, env) };"
+                    || trimmed == "let word = unsafe {"
+                    || trimmed == "let active_error = unsafe {"
+                    || trimmed == "let candidate_error = unsafe {",
+                "transmute" => {
+                    trimmed
+                        == "let entry = unsafe { mem::transmute::<*mut u8, JitCandidateBThunkFn>(code_ptr.as_ptr()) };"
+                }
+                _ => false,
+            };
+        }
         if file_name == Some("candidate_c.rs") {
             let trimmed = code.trim_start();
             return match token {
@@ -409,6 +427,30 @@ mod tests {
             ),
             1,
             "native thunk code-pointer transmute must stay singly reviewed"
+        );
+
+        let candidate_b = fs::read_to_string(source_root.join("cranelift").join("candidate_b.rs"))
+            .expect("Candidate-B Cranelift source file is readable");
+        assert_eq!(
+            trimmed_line_occurrences(
+                &candidate_b,
+                "pub unsafe fn jit_cranelift_call_context_finalized_candidate_b_thunk_entry(",
+            ),
+            1,
+            "Candidate-B thunk dispatch entrypoint must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(&candidate_b, "let word = unsafe { entry(rt, env) };"),
+            1,
+            "Candidate-B native thunk call must stay singly reviewed"
+        );
+        assert_eq!(
+            trimmed_line_occurrences(
+                &candidate_b,
+                "let entry = unsafe { mem::transmute::<*mut u8, JitCandidateBThunkFn>(code_ptr.as_ptr()) };",
+            ),
+            1,
+            "Candidate-B code-pointer transmute must stay singly reviewed"
         );
 
         let candidate_c = fs::read_to_string(source_root.join("cranelift").join("candidate_c.rs"))

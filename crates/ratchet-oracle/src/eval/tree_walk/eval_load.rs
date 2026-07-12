@@ -1083,7 +1083,7 @@ impl TreeWalk {
                 argument_span,
             )
         })?;
-        Ok(Value::int(string.len() as i64))
+        self.runtime_int_value(argument, argument_span, string.len() as i64)
     }
 
     /// Returns the byte length of an already-forced string `value` as an integer.
@@ -1102,7 +1102,7 @@ impl TreeWalk {
     /// Returns [`TreeWalkError`] with a [`TreeWalkErrorKind::Heap`] source when
     /// `value` is not a string handle owned by this evaluator's heap.
     pub fn rust_callable_aos_string_length(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         value: Value,
@@ -1111,6 +1111,6 @@ impl TreeWalk {
             .heap
             .get_string(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        Ok(Value::int(string.len() as i64))
+        self.runtime_int_value(id, span, string.len() as i64)
     }
 }

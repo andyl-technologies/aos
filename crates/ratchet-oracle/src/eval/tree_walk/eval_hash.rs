@@ -337,7 +337,7 @@ impl TreeWalk {
         let right = self.eval_node(right_id)?;
         let right =
             self.context_free_string_bytes(right_id, right_span, right, "compareVersions")?;
-        Ok(Value::int(compare_version_bytes(&left, &right)))
+        self.runtime_int_value(left_id, left_span, compare_version_bytes(&left, &right))
     }
 
     pub(super) fn eval_hash_string_primop(

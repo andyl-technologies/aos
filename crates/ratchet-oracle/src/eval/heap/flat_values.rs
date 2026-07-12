@@ -50,6 +50,7 @@ use super::record_table::AddressHasher;
 use super::*;
 
 pub(super) mod attrs;
+mod active_values;
 pub(super) mod closures;
 mod compressed_values;
 mod lists;

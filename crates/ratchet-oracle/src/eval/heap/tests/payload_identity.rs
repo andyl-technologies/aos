@@ -42,6 +42,13 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
         b2_disposition: "reject heap constants before singleton-list head emission",
     },
     PayloadIdentityAuditRow {
+        path: "ratchet-jit/src/lower/candidate_c.rs",
+        raw_representation: 2,
+        address_identity_only: 0,
+        relocation_sensitive: 0,
+        b2_disposition: "encode only arena-independent scalar literals into reusable code",
+    },
+    PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/env.rs",
         raw_representation: 0,
         address_identity_only: 0,
@@ -85,7 +92,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_compare.rs",
-        raw_representation: 6,
+        raw_representation: 3,
         address_identity_only: 0,
         relocation_sensitive: 0,
         b2_disposition: "inline scalar decoding only; no repair",
@@ -127,7 +134,7 @@ const PAYLOAD_IDENTITY_AUDIT: &[PayloadIdentityAuditRow] = &[
     },
     PayloadIdentityAuditRow {
         path: "ratchet-oracle/src/eval/tree_walk/eval_numeric.rs",
-        raw_representation: 12,
+        raw_representation: 2,
         address_identity_only: 0,
         relocation_sensitive: 0,
         b2_disposition: "inline numeric and boolean decoding only; no repair",
@@ -280,7 +287,7 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .iter()
             .map(|row| row.raw_representation)
             .sum::<usize>(),
-        40
+        29
     );
     assert_eq!(
         PAYLOAD_IDENTITY_AUDIT
@@ -299,7 +306,7 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
     let production_rows = PAYLOAD_IDENTITY_AUDIT
         .iter()
         .filter(|row| !row.path.ends_with("capture_validation.rs"));
-    assert_eq!(production_rows.clone().count(), 21);
+    assert_eq!(production_rows.clone().count(), 22);
     assert_eq!(
         production_rows
             .map(|row| {
@@ -312,6 +319,6 @@ fn payload_identity_accessors_match_the_reviewed_b2_worklist() {
             .fold((0, 0, 0), |left, right| {
                 (left.0 + right.0, left.1 + right.1, left.2 + right.2)
             }),
-        (40, 5, 18)
+        (29, 5, 18)
     );
 }

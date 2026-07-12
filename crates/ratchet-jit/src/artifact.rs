@@ -15,6 +15,8 @@ use crate::tier::JitTier;
 pub enum JitValueAbi {
     /// The active two-word [`ratchet_value::value::Value`] ABI.
     Active,
+    /// The Candidate-B one-word tagged-value ABI.
+    CandidateB,
     /// The Candidate-C one-word compressed-value ABI.
     CandidateC,
 }

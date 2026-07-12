@@ -1299,20 +1299,25 @@ harness, never cut for scope.
       exported-symbol admission in `aos-nix`, trap/error transfer, evaluator
       thunk publication, thunk-state CAS, remaining helper-family coverage, and
       `.drv` parity remain open.
-- [x] Current Candidate-C one-word thunk-call slice: `JitClifArtifact` and
-      `JitModuleArtifactMetadata` retain an explicit value ABI, the Candidate-C
-      literal lowerer emits a verified single-`i64` thunk return, and active and
-      Candidate-C dispatch entrypoints reject mismatched metadata before their
-      separately reviewed code-pointer casts. Runtime FFI converts validated
-      inline compressed results back to the active evaluator `Value`, and the
-      tier-1 engine selects this publication path with
-      `AOS_NIX_JIT_VALUE_ABI=candidate-c`. Reusable code admits only signed
-      `i32`, boolean, and null literals; floats and wide integers require
-      context-owned scalar-arena entries and therefore retain the active ABI.
-      Cranelift, runtime-FFI, and engine tests cover native execution, mismatch
-      rejection, publication metadata, output parity, and active fallback.
-      Helper-call ABIs, tier-2 bodies, interpreter slots, and containers remain
-      two-word, and Candidate C is not the default.
+- [x] Current Candidate-B/C one-word thunk-call slice: `JitClifArtifact` and
+      `JitModuleArtifactMetadata` retain an explicit active/B/C value ABI.
+      Dedicated literal lowerers emit verified single-`i64` thunk returns, and
+      all three dispatch entry types reject mismatched metadata before their
+      separately reviewed code-pointer casts. Runtime FFI validates and converts
+      inline tagged/compressed results back to the active evaluator `Value`, and
+      the tier-1 engine selects either publication path with
+      `AOS_NIX_JIT_VALUE_ABI=candidate-b|candidate-c`. Candidate B admits signed
+      61-bit integers while Candidate C admits signed `i32`; both admit boolean
+      and null, while floats and other scalars needing evaluator-owned storage
+      retain the active ABI. Cranelift, runtime-FFI, and engine tests cover both
+      native executions, mismatch rejection, publication metadata, output
+      parity, and active fallback. Helper-call ABIs, tier-2 bodies, interpreter
+      slots, and containers remain two-word, and neither candidate is default.
+      The combined release gate was byte-green for B/C representative, wide,
+      and compute witnesses (plus default wide); three native-only wide samples
+      measured B at 2.442 s cold / 2.398 s warm and C at 2.478 s cold / 2.420 s
+      warm. That noise-sized difference is recorded as non-selecting evidence,
+      not the required full B-vs-C matrix.
 - [x] Current `aos-nix` native-call exported-symbol gate:
       `aos_nix::jit::nix_jit_force_aware_registered_tier1_native_call_preflight_for_ir_root()`
       and its full-IR sibling

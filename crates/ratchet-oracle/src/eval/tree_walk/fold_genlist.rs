@@ -280,6 +280,7 @@ impl TreeWalk {
                 list_span,
             )
         })?;
+        let element_index = self.runtime_int_value(length_id, list_span, element_index)?;
         self.alloc_apply_thunk(
             list_id,
             list_span,
@@ -287,7 +288,7 @@ impl TreeWalk {
             generator_span,
             generator,
             length_id,
-            Value::int(element_index),
+            element_index,
         )
     }
 }

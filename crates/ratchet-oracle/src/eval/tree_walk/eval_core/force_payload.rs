@@ -87,13 +87,13 @@ impl TreeWalk {
                 let IrData::Int(value) = node.data else {
                     return None;
                 };
-                CachedExpressionValue::immediate(Value::int(value)).ok()
+                Some(CachedExpressionValue::int(value))
             }
             IrKind::Float => {
                 let IrData::Float(value) = node.data else {
                     return None;
                 };
-                CachedExpressionValue::immediate(Value::float(value)).ok()
+                Some(CachedExpressionValue::float(value))
             }
             IrKind::Bool => {
                 let IrData::Bool(value) = node.data else {

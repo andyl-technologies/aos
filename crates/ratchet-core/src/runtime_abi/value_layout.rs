@@ -1,15 +1,21 @@
 //! By-value runtime `Value` layouts shared by interpreter and native tiers.
 //!
-//! The active evaluator still uses the 16-byte tag/payload pair. Candidate C
-//! is described separately so JIT and FFI adapters can prove their one-word
-//! lowering before the active representation changes.
+//! The active evaluator still uses the 16-byte tag/payload pair. Candidates B
+//! and C are described separately so JIT and FFI adapters can prove their
+//! one-word lowering before the active representation changes.
 
 const ACTIVE_VALUE_LAYOUT: RuntimeAbiValueLayout = RuntimeAbiValueLayout::new(16, 2, 8);
+const CANDIDATE_B_VALUE_LAYOUT: RuntimeAbiValueLayout = RuntimeAbiValueLayout::new(8, 1, 8);
 const CANDIDATE_C_VALUE_LAYOUT: RuntimeAbiValueLayout = RuntimeAbiValueLayout::new(8, 1, 8);
 
 /// Returns the by-value runtime layout currently used at native call boundaries.
 pub const fn runtime_abi_value_layout() -> RuntimeAbiValueLayout {
     ACTIVE_VALUE_LAYOUT
+}
+
+/// Returns the inactive Candidate-B tagged-word runtime layout.
+pub const fn candidate_b_runtime_abi_value_layout() -> RuntimeAbiValueLayout {
+    CANDIDATE_B_VALUE_LAYOUT
 }
 
 /// Returns the inactive Candidate-C compressed-word runtime layout.
@@ -55,17 +61,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn active_and_candidate_c_layouts_are_distinct_and_self_consistent() {
+    fn active_and_candidate_layouts_are_distinct_and_self_consistent() {
         let active = runtime_abi_value_layout();
+        let candidate_b = candidate_b_runtime_abi_value_layout();
         let candidate = candidate_c_runtime_abi_value_layout();
 
         assert_eq!(active.size_bytes(), 16);
         assert_eq!(active.register_words(), 2);
         assert_eq!(active.register_word_bytes(), 8);
+        assert_eq!(candidate_b.size_bytes(), 8);
+        assert_eq!(candidate_b.register_words(), 1);
+        assert_eq!(candidate_b.register_word_bytes(), 8);
         assert_eq!(candidate.size_bytes(), 8);
         assert_eq!(candidate.register_words(), 1);
         assert_eq!(candidate.register_word_bytes(), 8);
         assert_eq!(active.size_bytes(), active.register_words() * 8);
+        assert_eq!(candidate_b.size_bytes(), candidate_b.register_words() * 8);
         assert_eq!(candidate.size_bytes(), candidate.register_words() * 8);
     }
 }

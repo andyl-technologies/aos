@@ -449,22 +449,22 @@ impl TreeWalk {
     }
 
     pub(super) fn eval_integer_binary(
-        &self,
+        &mut self,
         id: IrId,
         node: &IrNode,
         op: BinaryArithmeticOp,
         left: i64,
         right: i64,
     ) -> Result<Value, TreeWalkError> {
-        match op {
-            BinaryArithmeticOp::Add => Ok(Value::int(left.wrapping_add(right))),
-            BinaryArithmeticOp::Sub => Ok(Value::int(left.wrapping_sub(right))),
-            BinaryArithmeticOp::Mul => Ok(Value::int(left.wrapping_mul(right))),
+        let value = match op {
+            BinaryArithmeticOp::Add => left.wrapping_add(right),
+            BinaryArithmeticOp::Sub => left.wrapping_sub(right),
+            BinaryArithmeticOp::Mul => left.wrapping_mul(right),
             BinaryArithmeticOp::Div => {
                 if right == 0 {
                     return Err(self.division_by_zero(id, node));
                 }
-                left.checked_div(right).map(Value::int).ok_or_else(|| {
+                left.checked_div(right).ok_or_else(|| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::ArithmeticOverflow {
                             id,
@@ -472,13 +472,14 @@ impl TreeWalk {
                         },
                         node.span,
                     )
-                })
+                })?
             }
-        }
+        };
+        self.runtime_int_value(id, node.span, value)
     }
 
     pub(super) fn eval_float_binary(
-        &self,
+        &mut self,
         id: IrId,
         node: &IrNode,
         op: BinaryArithmeticOp,
@@ -496,7 +497,7 @@ impl TreeWalk {
                 left / right
             }
         };
-        Ok(Value::float(value))
+        self.runtime_float_value(id, node.span, value)
     }
 
     pub(super) fn division_by_zero(&self, id: IrId, node: &IrNode) -> TreeWalkError {
@@ -555,8 +556,10 @@ impl TreeWalk {
         span: Span,
     ) -> Result<Number, TreeWalkError> {
         match value.tag() {
-            ValueTag::Int => Ok(Number::Int(value.payload_bits() as i64)),
-            ValueTag::Float => Ok(Number::Float(f64::from_bits(value.payload_bits()))),
+            ValueTag::Int => self.runtime_int_payload(id, span, value).map(Number::Int),
+            ValueTag::Float => self
+                .runtime_float_payload(id, span, value)
+                .map(Number::Float),
             actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id,
@@ -595,6 +598,6 @@ impl TreeWalk {
                 span,
             ));
         }
-        Ok(value.payload_bits() as i64)
+        self.runtime_int_payload(id, span, value)
     }
 }

@@ -16,12 +16,12 @@ use crate::builtins::BUILTINS;
 
 mod stack_map;
 mod value_layout;
-
 use stack_map::{
     RUNTIME_JIT_STACK_MAP_ENTER_CALL_SIGNATURE, RUNTIME_JIT_STACK_MAP_EXIT_CALL_SIGNATURE,
 };
 pub use value_layout::{
-    RuntimeAbiValueLayout, candidate_c_runtime_abi_value_layout, runtime_abi_value_layout,
+    RuntimeAbiValueLayout, candidate_b_runtime_abi_value_layout,
+    candidate_c_runtime_abi_value_layout, runtime_abi_value_layout,
 };
 
 /// The stable prefix for builtin runtime symbol names.

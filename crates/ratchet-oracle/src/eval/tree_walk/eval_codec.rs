@@ -342,11 +342,11 @@ impl TreeWalk {
             JsonValue::Bool(value) => Ok(Value::bool(value)),
             JsonValue::Number(value) => {
                 if let Some(value) = value.as_i64() {
-                    Ok(Value::int(value))
+                    self.runtime_int_value(id, span, value)
                 } else if let Some(value) = value.as_u64() {
-                    Ok(Value::int(value as i64))
+                    self.runtime_int_value(id, span, value as i64)
                 } else if let Some(value) = value.as_f64() {
-                    Ok(Value::float(value))
+                    self.runtime_float_value(id, span, value)
                 } else {
                     Err(TreeWalkError::new(
                         TreeWalkErrorKind::JsonNumberUnsupported { id },
@@ -413,8 +413,8 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         match value {
             TomlValue::String(value) => self.alloc_static_string(id, span, value.as_bytes()),
-            TomlValue::Integer(value) => Ok(Value::int(value)),
-            TomlValue::Float(value) => Ok(Value::float(value)),
+            TomlValue::Integer(value) => self.runtime_int_value(id, span, value),
+            TomlValue::Float(value) => self.runtime_float_value(id, span, value),
             TomlValue::Boolean(value) => Ok(Value::bool(value)),
             TomlValue::Datetime(value) => {
                 if self.options.parse_toml_timestamps() {

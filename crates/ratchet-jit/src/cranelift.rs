@@ -13,7 +13,6 @@
 //! thunk-call scaffold casts and calls finalized no-import thunk artifacts, and
 //! can also call registered runtime-importing artifacts behind an explicit
 //! unsafe boundary when the caller supplies host-ABI-matched native candidates.
-
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -22,7 +21,6 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
 };
-
 use cranelift_codegen::{
     CodegenError, Context,
     ir::{ExternalName, Function, UserExternalName},
@@ -57,10 +55,12 @@ use crate::{
         JitTieredCodeSlot, JitTieredCodeSlotError, TierUpDecision, TierUpDemandHint, TierUpPolicy,
     },
 };
+mod candidate_b;
 mod candidate_c;
 mod finalized;
 mod native_error;
 mod tier2;
+pub use candidate_b::jit_cranelift_call_context_finalized_candidate_b_thunk_entry;
 pub use candidate_c::jit_cranelift_call_context_finalized_candidate_c_thunk_entry;
 pub use finalized::JitCraneliftFinalizedFunction;
 pub use native_error::JitCraneliftNativeCallError;

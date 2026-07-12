@@ -513,18 +513,18 @@ impl TreeWalk {
         equality_guard: &mut EqualityPairGuard,
     ) -> Result<bool, TreeWalkError> {
         match (left.tag(), right.tag()) {
-            (ValueTag::Int, ValueTag::Int) => {
-                Ok((left.payload_bits() as i64) == (right.payload_bits() as i64))
-            }
-            (ValueTag::Float, ValueTag::Float) => {
-                Ok(f64::from_bits(left.payload_bits()) == f64::from_bits(right.payload_bits()))
-            }
-            (ValueTag::Int, ValueTag::Float) => {
-                Ok((left.payload_bits() as i64) as f64 == f64::from_bits(right.payload_bits()))
-            }
-            (ValueTag::Float, ValueTag::Int) => {
-                Ok(f64::from_bits(left.payload_bits()) == (right.payload_bits() as i64) as f64)
-            }
+            (ValueTag::Int, ValueTag::Int) => Ok(self
+                .runtime_int_payload(id, node.span, left)?
+                == self.runtime_int_payload(id, node.span, right)?),
+            (ValueTag::Float, ValueTag::Float) => Ok(self
+                .runtime_float_payload(id, node.span, left)?
+                == self.runtime_float_payload(id, node.span, right)?),
+            (ValueTag::Int, ValueTag::Float) => Ok((self
+                .runtime_int_payload(id, node.span, left)? as f64)
+                == self.runtime_float_payload(id, node.span, right)?),
+            (ValueTag::Float, ValueTag::Int) => Ok(self
+                .runtime_float_payload(id, node.span, left)?
+                == self.runtime_int_payload(id, node.span, right)? as f64),
             (ValueTag::Bool, ValueTag::Bool) => Ok(left.payload_bits() == right.payload_bits()),
             (ValueTag::Null, ValueTag::Null) => Ok(true),
             (ValueTag::String, ValueTag::String) => self.strings_equal(id, node, left, right),
@@ -605,8 +605,8 @@ impl TreeWalk {
         if shared_heap_identity
             && left.tag() == ValueTag::Float
             && right.tag() == ValueTag::Float
-            && f64::from_bits(left.payload_bits()).is_nan()
-            && f64::from_bits(right.payload_bits()).is_nan()
+            && self.runtime_float_payload(id, node.span, left)?.is_nan()
+            && self.runtime_float_payload(id, node.span, right)?.is_nan()
         {
             return Ok(true);
         }

@@ -4,8 +4,9 @@
 //! tagged word pair. The tag word carries the Nix value form and the payload word
 //! carries either an inline scalar (`i64`, `f64`, `bool`) or a [`NonNull`]
 //! pointer to an evaluator heap object. No alternate representation is active;
-//! [`compressed`], [`tag`], and [`nanbox`] capture checked layout contracts for
-//! later measured variants. (The former
+//! [`compressed`] and [`tag`] now carry checked Candidate-C and Candidate-B
+//! one-word codecs respectively, while [`nanbox`] captures the third measured
+//! layout contract. None is selected by the active evaluator yet. (The former
 //! `small` module's 0/1/2-element inline-constructor contract was retired by
 //! doc 30 stage FV-2: no allocation, resolution, or dispatch path ever
 //! consulted it, and its inline-payload role is subsumed by the flat heap

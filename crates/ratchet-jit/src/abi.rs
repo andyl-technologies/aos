@@ -18,8 +18,9 @@ use cranelift_codegen::{
 use ratchet_core::{
     RuntimeAbiCallingConvention, RuntimeAbiParameter, RuntimeAbiParameterKind,
     RuntimeAbiReturnKind, RuntimeAbiValueLayout, RuntimeCallSignature,
-    candidate_c_runtime_abi_value_layout, runtime_abi_value_layout, runtime_helper_call_signatures,
-    runtime_lambda_call_signature, runtime_primop_call_signatures, runtime_thunk_call_signature,
+    candidate_b_runtime_abi_value_layout, candidate_c_runtime_abi_value_layout,
+    runtime_abi_value_layout, runtime_helper_call_signatures, runtime_lambda_call_signature,
+    runtime_primop_call_signatures, runtime_thunk_call_signature,
 };
 use ratchet_value::value::Value;
 use target_lexicon::{CallingConvention, Triple};
@@ -50,6 +51,14 @@ pub type JitEnvFramePtr = *mut c_void;
 /// compiled code with raw pointers and evaluator-owned state. This alias does
 /// not create, cast, register, or call any function pointer.
 pub type JitThunkFn = unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> Value;
+
+/// Native entry type for a Candidate-B one-word compiled thunk body.
+///
+/// Calling this type is unsafe for the same raw-pointer and executable-code
+/// lifetime reasons as [`JitThunkFn`]. The returned integer is validated as a
+/// tagged word after the call.
+pub type JitCandidateBThunkFn =
+    unsafe extern "C" fn(JitRuntimeContextPtr, JitEnvFramePtr) -> u64;
 
 /// Native entry type for a Candidate-C one-word compiled thunk body.
 ///
@@ -153,6 +162,21 @@ pub fn clif_signature_for_runtime_call(
     signature: RuntimeCallSignature,
 ) -> Result<Signature, JitClifSignatureError> {
     clif_signature_for_runtime_call_with_layout(signature, runtime_abi_value_layout())
+}
+
+/// Converts a frozen runtime-call signature using Candidate B's one-word values.
+///
+/// # Errors
+///
+/// Returns the same target and layout errors as
+/// [`clif_signature_for_runtime_call`].
+pub fn clif_signature_for_candidate_b_runtime_call(
+    signature: RuntimeCallSignature,
+) -> Result<Signature, JitClifSignatureError> {
+    clif_signature_for_runtime_call_with_layout(
+        signature,
+        candidate_b_runtime_abi_value_layout(),
+    )
 }
 
 /// Converts a frozen runtime-call signature using Candidate C's one-word values.
@@ -735,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_value_layout_guard_accepts_baseline_and_candidate_c_words() {
+    fn runtime_value_layout_guard_accepts_baseline_and_candidate_words() {
         let layout = runtime_abi_value_layout();
 
         assert_eq!(layout.size_bytes(), 16);
@@ -743,8 +767,11 @@ mod tests {
         assert_eq!(layout.register_word_bytes(), RUNTIME_VALUE_CLIF_WORD_BYTES);
         validate_runtime_value_layout(layout).expect("current runtime value layout is supported");
 
-        let candidate = candidate_c_runtime_abi_value_layout();
-        validate_runtime_value_layout(candidate)
+        let candidate_b = candidate_b_runtime_abi_value_layout();
+        validate_runtime_value_layout(candidate_b)
+            .expect("Candidate-B one-word runtime value layout is supported");
+        let candidate_c = candidate_c_runtime_abi_value_layout();
+        validate_runtime_value_layout(candidate_c)
             .expect("Candidate-C one-word runtime value layout is supported");
 
         let error = validate_observed_value_layout(ObservedRuntimeValueLayout {
@@ -761,6 +788,20 @@ mod tests {
                 register_word_bytes: 8,
             }
         );
+    }
+
+    #[test]
+    fn candidate_b_layout_lowers_value_parameters_and_results_to_one_i64() {
+        let pointer_type = host_pointer_type().expect("test target has a supported pointer width");
+        let signature =
+            clif_signature_for_candidate_b_runtime_call(runtime_lambda_call_signature())
+                .expect("Candidate-B lambda signature lowers");
+
+        assert_eq!(
+            param_types(&signature),
+            vec![pointer_type, pointer_type, types::I64]
+        );
+        assert_eq!(return_types(&signature), vec![types::I64]);
     }
 
     #[test]

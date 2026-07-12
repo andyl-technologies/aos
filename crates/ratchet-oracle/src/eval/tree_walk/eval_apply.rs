@@ -330,7 +330,7 @@ impl TreeWalk {
                         argument_span,
                     )
                 })?;
-                Ok(Value::int(len))
+                self.runtime_int_value(argument, argument_span, len)
             }
             StrictUnaryPrimOp::AttrNames => {
                 let value = self.force_lazy_foldl_initial_value(argument, argument_span, value)?;

@@ -359,7 +359,7 @@ impl TreeWalk {
                     right,
                     "compareVersions",
                 )?;
-                Ok(Value::int(compare_version_bytes(&left, &right)))
+                self.runtime_int_value(id, span, compare_version_bytes(&left, &right))
             }
             StrictBinaryPrimOp::Add
             | StrictBinaryPrimOp::Sub
@@ -370,7 +370,7 @@ impl TreeWalk {
                     self.force_demanded_value(second.id(), second.span(), second.value())?;
                 let left = self.expect_number(first.id(), left, first.span())?;
                 let right = self.expect_number(second.id(), right, second.span())?;
-                let node = self.node(id)?;
+                let node = *self.node(id)?;
                 let op = match primop {
                     StrictBinaryPrimOp::Add => BinaryArithmeticOp::Add,
                     StrictBinaryPrimOp::Sub => BinaryArithmeticOp::Sub,
@@ -383,7 +383,7 @@ impl TreeWalk {
                         ));
                     }
                 };
-                self.eval_numeric_values(id, node, op, left, right)
+                self.eval_numeric_values(id, &node, op, left, right)
             }
             StrictBinaryPrimOp::BitAnd | StrictBinaryPrimOp::BitOr | StrictBinaryPrimOp::BitXor => {
                 let left = self.force_value(first.id(), first.span(), first.value())?;
@@ -401,7 +401,7 @@ impl TreeWalk {
                         ));
                     }
                 };
-                Ok(Value::int(op.apply(left, right)))
+                self.runtime_int_value(id, span, op.apply(left, right))
             }
             StrictBinaryPrimOp::LessThan => {
                 let left = self.force_value(first.id(), first.span(), first.value())?;
