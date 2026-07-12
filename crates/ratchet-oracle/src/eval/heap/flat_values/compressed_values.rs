@@ -108,6 +108,17 @@ impl EvalHeap {
                 address: ptr.as_ptr() as usize,
             },
         )?;
+        // SI-2 registry cross-check (cutover plan §7): the process-global
+        // `domain -> base` table must resolve the exact native pointer the arena
+        // did, so the context-free SI-3 accessor path
+        // (`reservation_base(domain) + index`) is proven byte-for-byte against
+        // the arena's own base+offset across the bridge corpus before the flip
+        // depends on it. Debug-only; zero release cost and parity-neutral.
+        debug_assert_eq!(
+            crate::heap::reservation_base(domain).map(|base| base + index.raw() as usize),
+            Some(ptr.as_ptr() as usize),
+            "candidate-c registry base+index disagrees with the arena pointer",
+        );
         Ok((domain, index))
     }
 

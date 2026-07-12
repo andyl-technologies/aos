@@ -14,6 +14,7 @@ pub mod gauges;
 pub mod gc;
 pub mod region;
 pub mod reservation;
+pub mod reservation_registry;
 pub mod resident;
 pub mod safety;
 
@@ -69,6 +70,10 @@ pub use reservation::{
     ArenaDomainId, ArenaIndex, CANDIDATE_C_ADDRESS_SPACE_BYTES, CANDIDATE_C_ARENA_DOMAIN_MAX,
     ReservedArena, ReservedArenaAllocation, ReservedArenaError, ReservedArenaHighMark,
     ReservedArenaMark, ReservedArenaStats,
+};
+pub use reservation_registry::{
+    ReservationRegistryError, register_reservation_base, reservation_base,
+    unregister_reservation_base,
 };
 pub use resident::{
     PeakResidentMemoryScope, ProcessResidentMemoryError, ProcessResidentMemorySample,

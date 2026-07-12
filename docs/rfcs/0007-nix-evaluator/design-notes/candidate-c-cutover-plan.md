@@ -566,10 +566,57 @@ half-flipped):**
   correctly until the mechanism is chosen. Per §6.1 / the "stop and report if a
   §7 seam is wrong" rule, the carrier flip is **held here pending a ruling**;
   improvising either mechanism risks a half-flipped or unsound carrier.
+
+  **RULING (2026-07-12, team lead): Option 1 (domain→base registry) with a
+  two-layer performance rider.** The registry is the correctness mechanism
+  (coexisting heaps via distinct domains, cross-worker decode, accessor surface
+  preserved, small SI-3 diff) and doubles as the rebase indirection heap-image
+  snapshots (task #6) need — map an image anywhere, register domain→new base,
+  done. **Rider — per-deref cost is sacred** (the whole flat-value campaign
+  existed to kill deref indirection): implement BOTH layers —
+  1. the **registry backs the self-contained accessor** (`Value::as_heap_ptr`,
+     Debug, FFI decode, future JIT helpers, snapshot rebase — correctness
+     everywhere); and
+  2. **arena-internal hot paths resolve via the heap's own cached base** (a
+     self-field load, no global) — the accessor internals take an optional
+     heap-context fast path, or the ~83 hot sites use the existing bridge-style
+     `arena.pointer_for_index` where `&heap` is in hand.
+
+  Registry lookup stays as cheap as the domain space allows (fixed-slot lock-free
+  table; live domains per process are few). Registry `unsafe` lives in the
+  sanctioned zone with the token manifest + drop-ordering SAFETY comments: a
+  domain must be unregistered before its mapping dies, and values must not
+  outlive their heap (the existing invariant, now enforced at the registry seam).
+  **Deref-cost gate at SI-3:** the variant battery `native_mean` must not be
+  slower than the default carrier on the 4-attr suite — the 8-byte carrier should
+  *win* via cache density; if it loses, the hot path isn't hot enough yet and
+  that is fixed before SI-3 is called done.
+- **SI-2 — registry substrate — DONE.** Landed the process-global
+  `domain → base` table (`ratchet-value/src/heap/reservation_registry.rs`): a
+  fixed-slot (2048), lock-free, `unsafe`-free table (it stores and returns
+  addresses, never dereferencing them). `ReservedArena` registers `domain → base`
+  in its constructor before the reservation escapes and withdraws it in `Drop`
+  **before** the mapping is unmapped (the register-before-escape /
+  unregister-before-unmap ordering that upholds values-must-not-outlive-their-heap
+  at the registry seam; domains never repeat, so a post-unmap lookup returns
+  `None`, never a stale/aliased base). Heap safety manifest updated coherently
+  (reservation.rs unsafe count 7 → 8 for the added construction-failure unmap;
+  the registry module itself adds zero `unsafe`). A **debug-only registry
+  cross-check** in the bridge's `candidate_c_heap_location` asserts
+  `reservation_base(domain) + index == arena pointer` for every heap value, so
+  the context-free SI-3 accessor math is proven byte-for-byte against the arena's
+  own base+offset across the S1 bridge corpus before the flip depends on it.
+  Runs on BOTH carriers (registration is not cfg-gated — it is per-reservation,
+  not per-value, so it is parity-neutral and also serves snapshot rebase, task
+  #6). The accessor re-point itself is inseparable from the repr flip and lands
+  in SI-3 (a 16-byte `Value` still carries its own pointer, so there is nothing
+  for the accessor to resolve through the registry until the carrier is 8 bytes).
 - **SI-3 — the flip** (one reviewable step, variant only): cfg-swap `Value`
   (`ratchet-value/src/value.rs:113-119`) to the 8-byte `CompressedValueWord`
-  representation, re-point the accessor surface to the 32-bit halves (heap-pointer
-  resolution per the mechanism chosen above), collapse
+  representation; re-point the accessor surface to the 32-bit halves with heap
+  values resolved by the SI-2 registry (`Value::as_heap_ptr` =
+  `reservation_base(domain)? + index`) for context-free callers, and hot
+  arena-internal sites via the arena's cached base (`pointer_for_index`); collapse
   `AtomicValueCell` (`eval/env.rs:474-554`) to one `AtomicU64`, switch
   `active_values.rs` + the bridge to native Candidate-C, select the one-word
   layout from `runtime_abi_value_layout()`

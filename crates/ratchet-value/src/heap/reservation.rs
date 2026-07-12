@@ -17,6 +17,9 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use thiserror::Error;
 
+use super::reservation_registry::{
+    ReservationRegistryError, register_reservation_base, unregister_reservation_base,
+};
 use crate::value::HeapObject;
 
 /// The virtual address-space size required by a full unsigned 32-bit offset.
@@ -217,6 +220,17 @@ impl ReservedArena {
             let _ = unsafe { libc::munmap(mapped, capacity) };
             return Err(ReservedArenaError::NullMapping { capacity });
         };
+        // Publish `domain_id -> base` so a context-free holder of a compressed
+        // `(domain, index)` word can reconstruct a native pointer without a heap
+        // handle (see `reservation_registry`). This happens before the
+        // reservation escapes and is withdrawn in `Drop` before the mapping is
+        // released, so a published entry always names live memory.
+        if let Err(error) = register_reservation_base(domain_id, base.as_ptr() as usize) {
+            // SAFETY: `mapped`/`capacity` denote the mapping created above and no
+            // reference into it exists yet, so releasing it here is sound.
+            let _ = unsafe { libc::munmap(mapped, capacity) };
+            return Err(ReservedArenaError::from(error));
+        }
         Ok(Self {
             base,
             domain_id,
@@ -580,6 +594,12 @@ impl ReservedArena {
 #[cfg(unix)]
 impl Drop for ReservedArena {
     fn drop(&mut self) {
+        // Withdraw this reservation's base BEFORE unmapping, so the registry
+        // never hands out a base that names freed memory. Domain ids never
+        // repeat, so a later lookup for this domain returns `None` rather than a
+        // stale or aliased base. This ordering upholds the values-must-not-
+        // outlive-their-heap invariant at the registry seam.
+        unregister_reservation_base(self.domain_id);
         // SAFETY: `base..base+capacity` is the exact still-owned mapping
         // returned by `mmap`; this type never splits or transfers that range.
         let _ = unsafe { libc::munmap(self.base.as_ptr().cast(), self.capacity) };
@@ -688,6 +708,10 @@ pub enum ReservedArenaError {
     /// A rewind marker did not belong to the current live allocation lane.
     #[error("reservation marker does not belong to the current live allocation lane")]
     InvalidMark,
+    /// The process-global reservation base table had no free slot for this
+    /// reservation's domain.
+    #[error(transparent)]
+    DomainRegistry(#[from] ReservationRegistryError),
 }
 
 #[cfg(all(test, unix, target_pointer_width = "64"))]

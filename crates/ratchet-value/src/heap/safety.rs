@@ -337,12 +337,17 @@ mod tests {
         // header length, and reservation extent validate the initialized run,
         // and one exclusive object/tail block behind `&mut self`, all under
         // `FlatObjectPayloadAccess`.
-        // reservation.rs count 0 -> 7 (doc 30 Candidate-C substrate): one
-        // anonymous 4-GiB mapping, one defensive unmap for a null successful
-        // mapping, two checked in-range address derivations (allocation and
+        // reservation.rs count 0 -> 8 (doc 30 Candidate-C substrate): one
+        // anonymous 4-GiB mapping, two defensive unmaps for a construction
+        // failure after a successful mapping (a null base and a full domain-base
+        // registry), two checked in-range address derivations (allocation and
         // compressed-index decode), the exact-range drop unmap, and the
         // mapping owner's Send/Sync contracts, all under the reviewed
-        // `ContiguousAddressReservation` operation.
+        // `ContiguousAddressReservation` operation. The `domain -> base` table
+        // (`reservation_registry.rs`) is itself `unsafe`-free — it stores and
+        // returns addresses without dereferencing them; the reservation's
+        // constructor and `Drop` uphold the register-before-escape /
+        // unregister-before-unmap ordering.
         // flat/shared.rs count 0 -> 3 (doc 30 Candidate-C shared adoption):
         // object placement, exact-slot typed resolution, and payload
         // destruction before unmapping are one reviewed lifecycle operation,
@@ -359,7 +364,7 @@ mod tests {
             ("flat/shared.rs", 3usize),
             ("flat/value_tail.rs", 3usize),
             ("resident.rs", 6usize),
-            ("reservation.rs", 7usize),
+            ("reservation.rs", 8usize),
         ] {
             let source_path = heap_root.join(file_name);
             let source = fs::read_to_string(&source_path).expect("source file is readable");
