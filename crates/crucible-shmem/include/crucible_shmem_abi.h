@@ -14,7 +14,7 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 2u
+#define CRUCIBLE_SHMEM_ABI_VERSION 3u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
@@ -95,6 +95,15 @@
 #define CRUCIBLE_SHMEM_COVERAGE_ENTRY_BLOCK_LEN_OFFSET 28u
 #define CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_OFFSET 32u
 #define CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_LEN 32u
+
+#define CRUCIBLE_SHMEM_FINGERPRINT_DIGEST_BYTES 32u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_MAX_VCPUS 8u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS 68u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE 640u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_ALIGN 128u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET 0u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET 4u
+#define CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET 8u
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_region_header {
     _Atomic uint64_t magic;
@@ -205,5 +214,17 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, map_index) 
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, vcpu_index) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_VCPU_INDEX_OFFSET, "crucible_shmem_coverage_entry.vcpu_index offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, block_len) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_BLOCK_LEN_OFFSET, "crucible_shmem_coverage_entry.block_len offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_coverage_entry, reserved) == CRUCIBLE_SHMEM_COVERAGE_ENTRY_RESERVED_OFFSET, "crucible_shmem_coverage_entry.reserved offset");
+
+typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_fingerprint_sample_slot {
+    _Atomic uint32_t sample_gen;
+    uint32_t reserved;
+    _Atomic uint64_t words[CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS];
+} crucible_shmem_fingerprint_sample_slot;
+
+CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_fingerprint_sample_slot) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE, "crucible_shmem_fingerprint_sample_slot size");
+CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_fingerprint_sample_slot) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_ALIGN, "crucible_shmem_fingerprint_sample_slot alignment");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, sample_gen) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET, "crucible_shmem_fingerprint_sample_slot.sample_gen offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, reserved) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET, "crucible_shmem_fingerprint_sample_slot.reserved offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_fingerprint_sample_slot, words) == CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET, "crucible_shmem_fingerprint_sample_slot.words offset");
 
 #endif /* CRUCIBLE_SHMEM_ABI_H */

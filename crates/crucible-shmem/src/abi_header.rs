@@ -1,6 +1,11 @@
 //! Generated C header support for the shared-memory ABI.
 
 use crate::{
+    FINGERPRINT_DIGEST_BYTES, FINGERPRINT_SAMPLE_MAX_VCPUS, FINGERPRINT_SAMPLE_SLOT_ALIGN,
+    FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET, FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET,
+    FINGERPRINT_SAMPLE_SLOT_SIZE, FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET, FINGERPRINT_SAMPLE_WORDS,
+};
+use crate::{
     ABI_VERSION, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
     COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
     COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_RESERVED_OFFSET, COVERAGE_ENTRY_SIZE,
@@ -41,6 +46,7 @@ pub fn generated_c_header() -> String {
     emit_ring_header(&mut out);
     emit_frame_entry(&mut out);
     emit_coverage_entry(&mut out);
+    emit_fingerprint_sample_slot(&mut out);
     emit_footer(&mut out);
     out
 }
@@ -220,6 +226,34 @@ fn emit_constants(out: &mut String) {
         COVERAGE_ENTRY_SIZE - COVERAGE_ENTRY_RESERVED_OFFSET,
     );
     out.push('\n');
+
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_FINGERPRINT_DIGEST_BYTES",
+        FINGERPRINT_DIGEST_BYTES,
+    );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_MAX_VCPUS",
+        FINGERPRINT_SAMPLE_MAX_VCPUS,
+    );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS",
+        FINGERPRINT_SAMPLE_WORDS,
+    );
+    emit_layout_constant_group(
+        out,
+        "FINGERPRINT_SAMPLE_SLOT",
+        FINGERPRINT_SAMPLE_SLOT_SIZE,
+        FINGERPRINT_SAMPLE_SLOT_ALIGN,
+        &[
+            ("GEN", FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET),
+            ("RESERVED", FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET),
+            ("WORDS", FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET),
+        ],
+    );
+    out.push('\n');
 }
 
 fn emit_region_header(out: &mut String) {
@@ -338,6 +372,27 @@ fn emit_frame_entry(out: &mut String) {
             ("len", "LEN"),
             ("pad", "PAD"),
             ("data", "DATA"),
+        ],
+    );
+}
+
+fn emit_fingerprint_sample_slot(out: &mut String) {
+    out.push_str(&format!(
+        "typedef struct CRUCIBLE_SHMEM_ALIGNED({FINGERPRINT_SAMPLE_SLOT_ALIGN}) crucible_shmem_fingerprint_sample_slot {{\n"
+    ));
+    out.push_str("    _Atomic uint32_t sample_gen;\n");
+    out.push_str("    uint32_t reserved;\n");
+    out.push_str("    _Atomic uint64_t words[CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_WORDS];\n");
+    out.push_str("} crucible_shmem_fingerprint_sample_slot;\n\n");
+
+    emit_static_asserts(
+        out,
+        "crucible_shmem_fingerprint_sample_slot",
+        "FINGERPRINT_SAMPLE_SLOT",
+        &[
+            ("sample_gen", "GEN"),
+            ("reserved", "RESERVED"),
+            ("words", "WORDS"),
         ],
     );
 }

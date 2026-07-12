@@ -343,8 +343,8 @@ in
             printf 'qemu_crucible_patches_applied=true\n'
             printf 'qemu_sim_capability=qemu-crucible\n'
             printf 'qemu_patch_series_hash=sha256-test-qemu-patch-series\n'
-            printf 'qemu_shmem_abi_version=2\n'
-            printf 'qemu_shmem_abi=crucible-shmem-abi-v2\n'
+            printf 'qemu_shmem_abi_version=3\n'
+            printf 'qemu_shmem_abi=crucible-shmem-abi-v3\n'
             printf 'qemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\n'
             printf 'qemu_shmem_header_hash=sha256-test-shmem-header\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
@@ -353,10 +353,10 @@ in
             printf 'package=crucible-qemu-plugin\n'
             printf 'qemu_package=qemu-crucible\n'
             printf 'qemu_build_id=gate-aos-qemu-build\n'
-            printf 'shmem_abi_version=2\n'
-            printf 'shmem_abi=crucible-shmem-abi-v2\n'
+            printf 'shmem_abi_version=3\n'
+            printf 'shmem_abi=crucible-shmem-abi-v3\n'
             printf 'shmem_generated_header_hash=sha256-test-shmem-header\n'
-            printf 'plugin_abi=crucible-shmem-abi-v2\n'
+            printf 'plugin_abi=crucible-shmem-abi-v3\n'
           } > "$plugin_fixture/nix-support/crucible-qemu-plugin-build-info"
           export CRUCIBLE_AOS_QEMU="$qemu_fixture/bin/qemu-system-x86_64"
           export CRUCIBLE_AOS_PLUGIN="$plugin_fixture/lib/libcrucible_qemu_plugin.so"

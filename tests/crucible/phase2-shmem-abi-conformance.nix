@@ -340,7 +340,7 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=2";
+        needle = "abi_version=3";
       }
       {
         label = "total serialized length";
