@@ -857,3 +857,55 @@ cache-off the one-shot default until §3.2(b) lands and the cold ratio is
 re-measured.**
 
 Cross-referenced from doc 15 §5.4 (canonical scoreboard) and task #25.
+
+## 17. §3.2(b) as-built: VALUES-store write-behind LANDED (default-off) + write split
+
+Landed (task #25, persist-exec): a write-behind buffer for the high-volume
+per-node VALUE materialize path, scoped to the **VALUES store only** per the
+increment-0 contract. The FILES store — the only store with pending
+file-artifact GC roots (`append_pending_file_artifact_blob`) and the deferred
+`record_file_artifact` window — stays synchronous, so the buffer never interacts
+with the pending-root/liveness machinery. Maintenance (compact/repack) runs only
+via the explicit `maintain_storage` entry, never on the eval path, so it never
+observes buffered records; the flush appends payloads and writes their blob-index
+root entries together under the held values-store write lock, so the append→root
+window never opens; a crash before flush is a re-eval (advisory, no per-record
+`fsync`).
+
+Pieces: `BlobPackAppender::append_payloads_batch` + `BlobIndex::append_entries_batch`
+(open+flock+stat+write+flush ONCE per flush, one concatenated `write_all`);
+`PersistBlobPack`/`PersistBlobIndex` wrappers; `cache/value_write_behind.rs`
+(`PendingValueBatch`, `ensure_value_blob_buffered`, `flush_buffered_value_blobs`,
+buffered-bytes + buffered-miss-recompute counters, `AOS_NIX_CACHE_WRITE_BEHIND`
+knob, default off); `ensure_blob_indexed` intercepts the VALUES store; flush at
+`advance_persist_eval_cache_run_boundary` (strictly before `store_root_cutoff`)
+plus a final-handle `Drop` safety net.
+
+Gates GREEN: byte-parity with `AOS_NIX_CACHE_WRITE_BEHIND=1` on zlib+openssl,
+serial AND JIT, cache-on, cold-populate and warm re-diff (the buffer changes only
+*when* value bytes reach disk, never the bytes); persist suite 431, ratchet-cache
+113, 6 write-behind tests incl. both kill-tests (crash-before-flush = clean miss;
+torn-tail = never wrong bytes) + a cross-writer interleave. Darwin cold-populate
+A/B (total nix-diff wall incl. the constant ~180 ms oracle): pkgs.zlib −8.0%
+(897→826 ms), pkgs.openssl −31.4% (1271→872 ms); the native write-path delta is
+larger since the oracle is constant.
+
+**Write split (cold openssl, blob-index record counts = index bytes / 49):**
+values ~522 (now buffered), files ~503 (closure `.drv` blobs from
+`store_root_instantiation` + indexed file artifacts — synchronous), file-artifact
+mappings 396 (pending-root path — synchronous), node-metadata 8102 (already
+handled by Increments A+B). The blob-store storm is split ~evenly between values
+and files, so the FILES-store follow-up is **measure-justified**: buffer the
+file-artifact record without appending or registering a pending root, and at
+flush append + write blob-index AND file-artifact index together under held locks
+(roots never precede durable data — contract (i)), deferring `record_file_artifact`
+to flush, plus batching the `store_root_instantiation` closure-blob loop. It
+touches the pending-root machinery kept synchronous this round, so it deserves
+its own focused unit + kill-tests.
+
+**Builder re-strace / final cold ratio: PENDING** — the builder's from-source
+Rust toolchain (mrustc→rustc-1.74) is GC'd (`nix develop -c cargo --version`
+times out >120 s), so building the write-behind binary there triggers the
+hours-long bootstrap. The darwin A/B + parity + split stand as the signal; the
+canonical Linux syscall histogram (write/flock drop) and the 13x→4.9x→final ratio
+update await a warm builder toolchain.
