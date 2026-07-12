@@ -1259,8 +1259,15 @@ design above with the code as ground truth:
       client-to-server loopback demo publishes a `pkgs.zlib` root record from an
       `rw` evaluator, consumes it on a fresh-cache `ro` evaluator
       (`memo_net_hits=1`, 0 errors), and is byte-parity green in both directions.
-      The full primary/secondary-loss/poisoned matrix and a cross-host replay
-      remain open.
+      A bounded cross-host attempt (server on the darwin host bound to `0.0.0.0`,
+      builder as client over Tailscale) confirmed the tailnet route works
+      (`tailscale ping` pong 21 ms) and the server listens on `*:8791`, but
+      inbound TCP to the server process was blocked by the darwin host's macOS
+      Application Firewall (`curl` connect timeout) — an environment/host-policy
+      block, not the code and not tailnet topology; enabling it needs a host
+      firewall allow-rule outside this change's scope. The loopback e2e is
+      therefore the acceptance. The full primary/secondary-loss/poisoned matrix
+      remains open.
 - [x] Node-record secondary tiering: **decided against, by design** (not a
       pending gap). Per-node force-cache records (node metadata / trace /
       materialized-value-hash) tier only in memory (L0/L1) and, at most, the
