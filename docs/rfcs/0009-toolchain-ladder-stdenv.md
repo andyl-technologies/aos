@@ -330,9 +330,11 @@ stdenv` plus the existing eval/VM checks.
   verify and install `libc.a`, `crt1.o`, `crti.o`, and `crtn.o` before it
   succeeds. Honor `NIX_BUILD_CORES` for the build because glibc is the longest
   bootstrap frontier and its make graph is parallel-safe after the generated
-  ordering inputs are pinned. Do not defer ABI validation to the downstream
-  GCC build because it hides the actual glibc failure and admits an unusable
-  libc store path.
+  ordering inputs are pinned. Mark the derivation `big-parallel` so schedulers
+  reserve a whole compatible builder and size `NIX_BUILD_CORES` from that
+  builder instead of the single-core fallback. Do not defer ABI validation to
+  the downstream GCC build because it hides the actual glibc failure and
+  admits an unusable libc store path.
 - **`mkGcc`/`mkGlibc` internals.** Shared builders, but the
   version-specific quirks (in-tree GMP, sysroot, specs scrubbing,
   `limits.h` chain, glibc install workarounds) remain — stock autotools
