@@ -89,6 +89,133 @@ fn write_behind_dedups_within_the_buffer() {
 }
 
 #[test]
+fn crash_before_flush_loses_the_buffer_as_a_clean_miss() {
+    // Kill-test window 1: a crash after buffering but before the run-boundary
+    // flush. `mem::forget` skips the Drop safety-net flush, standing in for a
+    // process killed with records still buffered. A fresh open sees nothing on
+    // disk — a clean miss (re-eval), never a corrupt or partial record.
+    let root = temp_root();
+    let payload: &[u8] = b"value buffered then lost to a crash";
+    let key = value_key(payload);
+    {
+        let cache = PersistCache::open(&root)
+            .expect("cache opens")
+            .with_write_behind_values(true);
+        cache.ensure_blob_indexed(key, payload).expect("value buffers");
+        assert!(!cache.write_behind_buffer_is_empty());
+        // Simulate a crash: drop the handle without running its flush.
+        std::mem::forget(cache);
+    }
+    let reopened = PersistCache::open(&root).expect("cache reopens");
+    assert!(
+        reopened
+            .lookup_blob_location(key)
+            .expect("lookup succeeds")
+            .is_none(),
+        "an unflushed buffered value must be absent after a crash (a clean miss)"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn torn_tail_from_a_mid_flush_crash_is_never_wrong_bytes() {
+    // Kill-test window 2: a crash mid-flush leaves a torn tail. Truncating into
+    // the last flushed record models the partial write. The reader must reject
+    // the torn record (hash/length verification) rather than return wrong bytes;
+    // earlier intact records still read.
+    let root = temp_root();
+    let first: &[u8] = b"first intact value in the flush batch";
+    let torn: &[u8] = b"second value whose tail a crash truncates";
+    let first_key = value_key(first);
+    let torn_key = value_key(torn);
+    let pack_path = {
+        let cache = PersistCache::open(&root)
+            .expect("cache opens")
+            .with_write_behind_values(true);
+        cache.ensure_blob_indexed(first_key, first).expect("first buffers");
+        cache.ensure_blob_indexed(torn_key, torn).expect("torn buffers");
+        cache
+            .flush_buffered_value_blobs()
+            .expect("value buffer flushes");
+        cache.layout().value_packfile_path()
+    };
+    // Truncate a few bytes off the tail: the last record's payload window now
+    // overruns the file.
+    let len = fs::metadata(&pack_path).expect("pack exists").len();
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(&pack_path)
+        .expect("pack opens for truncate");
+    file.set_len(len - 5).expect("pack truncates");
+    drop(file);
+
+    let reopened = PersistCache::open(&root).expect("cache reopens");
+    // The intact earlier record still reads back byte-for-byte.
+    assert_eq!(
+        reopened
+            .read_blob_indexed(first_key)
+            .expect("first read succeeds")
+            .expect("first present"),
+        first
+    );
+    // The torn record never yields wrong bytes: it is either a clean miss or a
+    // read error, never a payload that mishashes.
+    match reopened.read_blob_indexed(torn_key) {
+        Ok(None) | Err(_) => {}
+        Ok(Some(bytes)) => assert_eq!(bytes, torn, "a torn record must never return wrong bytes"),
+    }
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn buffered_and_synchronous_writers_on_one_root_coexist() {
+    // Interleave: two handles on the same cache root — one write-behind, one
+    // synchronous — write distinct values that both reach disk. The flush takes
+    // the same values-store write lock every synchronous write and repack take,
+    // so concurrent writers are serialized by the existing (cross-process)
+    // flock; this checks the two paths coexist without dropping either record.
+    let root = temp_root();
+    let buffered_payload: &[u8] = b"a value written through the buffer";
+    let sync_payload: &[u8] = b"a value written synchronously";
+    let buffered_key = value_key(buffered_payload);
+    let sync_key = value_key(sync_payload);
+
+    let buffering = PersistCache::open(&root)
+        .expect("buffering handle opens")
+        .with_write_behind_values(true);
+    let synchronous = PersistCache::open(&root).expect("synchronous handle opens");
+
+    buffering
+        .ensure_blob_indexed(buffered_key, buffered_payload)
+        .expect("buffered value buffers");
+    // The synchronous handle writes to disk immediately, interleaved with the
+    // still-buffered record.
+    synchronous
+        .ensure_blob_indexed(sync_key, sync_payload)
+        .expect("synchronous value writes");
+    buffering
+        .flush_buffered_value_blobs()
+        .expect("buffered value flushes");
+
+    let reader = PersistCache::open(&root).expect("reader opens");
+    assert_eq!(
+        reader
+            .read_blob_indexed(buffered_key)
+            .expect("buffered read succeeds")
+            .expect("buffered present"),
+        buffered_payload
+    );
+    assert_eq!(
+        reader
+            .read_blob_indexed(sync_key)
+            .expect("synchronous read succeeds")
+            .expect("synchronous present"),
+        sync_payload
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn write_behind_off_by_default_writes_through() {
     let root = temp_root();
     let cache = PersistCache::open(&root).expect("cache opens");
