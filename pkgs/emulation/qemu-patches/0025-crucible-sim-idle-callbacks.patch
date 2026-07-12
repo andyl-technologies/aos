@@ -65,7 +65,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  static inline int64_t rr_next_kick_time(void)
  {
      return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
-@@ -154,9 +211,28 @@ static void rr_stop_kick_timer(void)
+@@ -154,9 +211,42 @@ static void rr_stop_kick_timer(void)
  static void rr_wait_io_event(void)
  {
      CPUState *cpu;
@@ -89,13 +89,27 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 +            first_cpu, idle_callback_fired,
 +            crucible_sim_idle_advance_waiting);
 +        if (qemu_plugin_time_advance_is_pending()) {
++            /*
++             * A parked-pending vCPU must stay responsive to queued work. The
++             * advance completion is dispatched from the main loop; a main-thread
++             * run_on_cpu (e.g. a machine reset's device callback) that arrives
++             * while we wait blocks the main loop until this vCPU drains it. Re-
++             * parking without draining deadlocks: the main thread waits on this
++             * vCPU while this vCPU waits on the main-loop-dispatched completion.
++             * Drain any queued work first. It runs at the current post-advance
++             * icount, which is deterministic under the single-vCPU sim scheduler
++             * (one FIFO work queue, one park point).
++             */
++            if (!cpu_work_list_empty(first_cpu)) {
++                qemu_wait_io_event_common(first_cpu);
++            }
 +            qemu_cond_wait_bql(first_cpu->halt_cond);
 +            continue;
 +        }
          if (icount_enabled()) {
              /*
               * Advancing the virtual clock from the host main-loop poll can make
-@@ -166,10 +242,16 @@ static void rr_wait_io_event(void)
+@@ -166,10 +256,16 @@ static void rr_wait_io_event(void)
               */
              icount_start_warp_timer();
              icount_handle_deadline();

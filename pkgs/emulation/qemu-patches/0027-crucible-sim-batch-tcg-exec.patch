@@ -136,7 +136,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  static bool rr_crucible_sim_maybe_fire_idle_callback(
      CPUState *cpu, bool *idle_reported, bool *idle_advance_waiting)
  {
-@@ -414,30 +528,7 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -428,30 +542,7 @@ static void *rr_cpu_thread_fn(void *arg)
              }
  
              if (cpu_can_run(cpu)) {

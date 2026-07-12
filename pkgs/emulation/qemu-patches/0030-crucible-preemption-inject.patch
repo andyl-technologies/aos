@@ -235,7 +235,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
          runs++;
  
          if (r == EXCP_DEBUG) {
-@@ -522,15 +536,20 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -536,15 +550,20 @@ static void *rr_cpu_thread_fn(void *arg)
  
                  cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
                                                                   cpu_budget);
