@@ -360,6 +360,11 @@ stdenv` plus the existing eval/VM checks.
   also enters `libstdc++`, Boehm GC, and libffi despite
   `--enable-languages=c`, exposing target runtimes that this tier does not
   promise and that are incompatible with its bootstrap kernel headers.
+  Keep the matching native glibc 2.3.4 static-only, as the neighboring
+  cross-glibc and glibc 2.5 bootstrap tiers already are. Its consumers link
+  with `-static`; building the unconsumed dynamic loader enters glibc's
+  `rtld-Rules` path before the old make graph has produced every subdirectory
+  stamp and does not expand the compiler ABI this tier promises.
 - **Cross-tier sequencing.** The multi-stage cross dance stays explicit;
   only its building blocks are shared.
 
