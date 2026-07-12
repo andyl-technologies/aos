@@ -6,9 +6,17 @@ edition = "2024"
 [features]
 default = []
 # RFC-0007 Candidate-C value-ABI cutover variant (task #12): forwards the
-# representation feature to ratchet-value and gates the tier-1 JIT engine off by
-# construction under the variant (see native/mod.rs `tier1_engine_for`).
-candidate_c_value = ["ratchet-value/candidate_c_value"]
+# one-word carrier + layout descriptor coherently through the whole ratchet
+# stack and gates the tier-1 JIT engine off by construction under the variant
+# (see native/mod.rs `tier1_engine_for`). Enabling every layer keeps the carrier
+# (`ratchet-value`) and the ABI layout descriptor (`ratchet-core`) in lock-step.
+candidate_c_value = [
+  "ratchet-value/candidate_c_value",
+  "ratchet-core/candidate_c_value",
+  "ratchet-oracle/candidate_c_value",
+  "ratchet-jit/candidate_c_value",
+  "ratchet-runtime-ffi/candidate_c_value",
+]
 
 [dependencies]
 anyhow = { workspace = true }

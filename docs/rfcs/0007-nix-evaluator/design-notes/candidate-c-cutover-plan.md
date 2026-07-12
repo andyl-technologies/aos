@@ -500,13 +500,27 @@ must never land — stop at the last green sub-increment** if you wall.
 **Remaining S4 (the carrier flip — hand off from here, staged, never
 half-flipped):**
 
-- **SI-1 completion** — sweep the variant test suite
-  (`cargo test --features native-eval,candidate_c_value`) and `#[cfg(not(feature
-  = "candidate_c_value"))]`-gate the JIT-ABI tests that assert engine engagement
-  (e.g. `aos-nix/src/native/tests/expr_eval.rs:61`
-  `native_jit_enabled_eval_gates_and_matches_tree_walk`), each with a loud
-  `// S4b re-enables; see cutover plan §6.1` comment. JIT tests that exercise the
-  engine directly (not via the eval-config gate) still pass and need no gating.
+- **SI-1 completion — DONE (feature plumbing); test-gating deferred to SI-3.**
+  Landed a coherent `candidate_c_value` pass-through across the whole ratchet
+  stack so both carriers build and the per-crate variant gate is runnable:
+  `ratchet-core` (owns the `runtime_abi::value_layout` 8/1/8 descriptor) and
+  `ratchet-value` (owns the carrier) each define the feature; `ratchet-oracle` /
+  `ratchet-jit` / `ratchet-runtime-ffi` forward to **both** so the runtime can
+  never see an 8-byte `Value` under a 16-byte layout descriptor (or vice-versa);
+  `aos-nix` forwards through every layer. **Empirical finding:** at SI-1 *no test
+  needs gating yet* — the variant crate suites
+  (`ratchet-value`/`-core`/`-oracle`/`-jit`/`-runtime-ffi` + `aos-nix`) are green
+  because the representation has not flipped, so the two-word JIT still runs
+  against a two-word runtime. `native_jit_enabled_eval_gates_and_matches_tree_walk`
+  in particular asserts `tier1_promoted()==0 && tier1_dispatched()==0`, which the
+  variant's JIT-off-by-construction path *satisfies*, so it passes unchanged. The
+  `#[cfg(not(feature = "candidate_c_value"))]` gating of the JIT engine-direct
+  tests (candidate_c/candidate_b/conformance suites) lands **with the SI-3 repr
+  flip**, when those tests actually break, each with a loud
+  `// S4b re-enables; see cutover plan §6.1` comment — gating them now while they
+  pass would silently drop coverage on a guess. Gate this increment: default
+  serial+JIT byte-parity 8/8; variant serial+K4+sweep 12/12; both carriers' crate
+  suites green (only the pre-existing `no_source_file_exceeds_line_cap` gate red).
 - **SI-2 — accessor-contract mechanicals** (compile-through on both carriers):
   ensure every `Value` access goes through the `value.rs` accessor surface
   (constructors `:123-241`, accessors `tag`/`payload_bits`/`*_identity_bits`/
@@ -514,9 +528,48 @@ half-flipped):**
   consumer (the 60 `payload_bits` + 18 `relocation_sensitive_identity_bits`
   sites, tracked by `eval/heap/tests/payload_identity.rs`) so the representation
   can swap under them. No-op on the default carrier.
+- **SI-3 seam correction — `as_heap_ptr` is NOT self-contained under Candidate-C
+  (needs a lead ruling before the flip).** The §7 SI-3 line "re-point the accessor
+  surface to the 32-bit halves" is correct for scalars but **incomplete for heap
+  values**, and the gap is load-bearing. Verified facts:
+  - A Candidate-C heap `Value` carries a **32-bit `ArenaIndex` offset**, not a
+    pointer (`value/compressed.rs`). Resolving it to a `NonNull<HeapObject>`
+    requires the reservation **base**.
+  - The reservation base is a **dynamic per-eval `mmap`** with a `null_mut()`
+    hint and no `MAP_FIXED` (`heap/reservation.rs:198-207`) — there is no fixed
+    process VA, so `base + index` cannot be computed from the word alone.
+  - There is exactly **one reservation per evaluation** (serial: `EvalHeap`'s
+    `flat_arena`; parallel: the *one common* `ReservedArena` shared by all shards,
+    `shared_arena.rs:12,56`), but **multiple `EvalHeap`s can be live at once** (the
+    two-live-heaps regression, doc 30 FV-4) — so a single process-global base is
+    unsound.
+  - All ~83 `as_*_ptr` consumers live in `ratchet-oracle` heap-context code (22 in
+    `heap/arena.rs`); **zero** in `aos-nix`/`ratchet-jit`/`ratchet-runtime-ffi`.
+  - There is **no ambient/thread-local base mechanism today**.
+
+  Because the reservation base is dynamic and multiple heaps coexist, `Value`
+  cannot keep a self-contained `as_heap_ptr()` accessor without one of two new
+  mechanisms — a **design fork the plan did not specify**:
+  1. **Global domain→base registry.** The word already carries the 23-bit
+     reservation domain; a small global map (domain → base, populated on
+     `ReservedArena::new`, dropped on unmap) lets `as_heap_ptr()` resolve
+     `registry[domain].base + index` self-containedly and handles coexisting
+     heaps. *Preserves the accessor signature → SI-2 is near-zero call-site work*,
+     but adds a lock-free global with real `unsafe`/drop-ordering weight.
+  2. **Thread heap/arena context into resolution.** Replace `value.as_heap_ptr()`
+     with `heap.resolve_heap_ptr(value)` at the ~83 sites (all already hold
+     `&self` heap). *No global*, matches the existing bridge
+     (`candidate_c_pointer_for_index`), but is an 83-site refactor and changes the
+     "preserve the accessor surface" contract.
+
+  These two paths imply **opposite SI-2 refactors**, so SI-2 cannot proceed
+  correctly until the mechanism is chosen. Per §6.1 / the "stop and report if a
+  §7 seam is wrong" rule, the carrier flip is **held here pending a ruling**;
+  improvising either mechanism risks a half-flipped or unsound carrier.
 - **SI-3 — the flip** (one reviewable step, variant only): cfg-swap `Value`
   (`ratchet-value/src/value.rs:113-119`) to the 8-byte `CompressedValueWord`
-  representation, re-point the accessor surface to the 32-bit halves, collapse
+  representation, re-point the accessor surface to the 32-bit halves (heap-pointer
+  resolution per the mechanism chosen above), collapse
   `AtomicValueCell` (`eval/env.rs:474-554`) to one `AtomicU64`, switch
   `active_values.rs` + the bridge to native Candidate-C, select the one-word
   layout from `runtime_abi_value_layout()`
