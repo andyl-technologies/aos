@@ -638,6 +638,16 @@ to the host-load spikes that skew the mean on a contended machine.
    goal and under the ≤38 MiB wide-eval target, for ~5% native wall cost
    (0.346 -> 0.362 s cold; against being ~30x faster than C++ on this eval).
 
+   The win is not wide-eval-specific: the same `MIMALLOC_PURGE_DELAY=0` A/B over
+   the **17-attr leaf/toolchain suite** moves the median per-package native RSS
+   from ~71 MiB (0.91x of the C++ child) to **~30.4 MiB (0.44x median, per-attr
+   0.36-0.52x)** — so the 0.5x memory goal holds on **both** wide and
+   per-package scopes. The measured native-time cost of the flag on the leaf
+   suite is ~+5% median (per-attr noise -20%..+15%, no outlier regression),
+   i.e. a `cold_geomean` of ~0.54 vs the ~0.515 baseline; the authoritative
+   clean-oracle `cold_geomean`-under-purge0 is captured with the PGO baseline
+   run (§31 substrate work), since the leaf A/B's oracle leg was contended.
+
 **Scoreboard line every landing pastes into its report/commit body:**
 ```text
 scoreboard: cold_geomean=<x> (goal <=0.10; v4 baseline 0.515)

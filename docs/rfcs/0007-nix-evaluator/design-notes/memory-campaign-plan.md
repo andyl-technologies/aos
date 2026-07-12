@@ -1,9 +1,23 @@
 # Memory campaign — implementation plan (design-only)
 
-Owner: fv5. Status: DESIGN-ONLY (implementation of the top lever when a lane
-frees). Task #15. **Target: wide-eval post-run RSS ≤38 MiB — half of C++ Nix's
-~77 MiB.** Today: 140-190 MiB (FV-6 measured 140.6 cold / 156.9 warm, *before*
-mimalloc; mimalloc default now pushes warm-wide to ~189).
+Owner: fv5. Task #15. **Target: wide-eval post-run RSS ≤38 MiB — half of C++
+Nix's RSS.**
+
+> **STATUS 2026-07-12 — GOAL MET, on both scopes, by the config lever alone.**
+> The Linux `MIMALLOC_PURGE_DELAY=0` lever (landed `6f978ed7d` in the `aos`
+> wrapper) took **wide-eval** native RSS to **37.7 MiB cold / 34.8 MiB warm =
+> 0.205x / 0.189x** of the C++ `nix-instantiate` child, and the **17-attr leaf
+> suite** to a **0.44x median (30.4 MiB)** — both under the 0.5x goal and the
+> 38 MiB target, byte-parity green, for ~5% native wall cost (see doc 15 §5.4).
+> The heavier arena/`Arc`-killing levers below (L1-L7) are therefore **headroom
+> below a met goal**, not required to hit it. **L4 is deferred** with a hard
+> soundness requirement recorded in §4; the remaining levers stay as future
+> headroom. The paragraphs below are the pre-purge attribution analysis, kept
+> for the record and for whoever banks the headroom later.
+
+The pre-purge picture: 140-190 MiB (FV-6 measured 140.6 cold / 156.9 warm,
+*before* mimalloc; mimalloc default pushed warm-wide to ~189 — the retained-free
+pages the purge lever now returns).
 
 This note **consolidates + verifies + sequences** the levers whose designs
 already live across the RFC (docs 06/29/30), anchored to **today's tree** with
@@ -185,12 +199,47 @@ of the peak, so the peak itself is lower (not just reclaimed after). Depends on
 Chunk-D facts (landed). Expected **~5-15 MiB peak reduction** (estimate; the
 env-capture share of the 54% is unmeasured — L0 sizes it). *Depends on L0.*
 
-**L4. Thunk-state sidecar `Arc` → arena-owned.** Kill the 691,617
-`Arc<ThunkCell>` (~26 MiB est malloc) by moving the thunk state into the arena
-object (the FV-6 follow-up the doc names: "the payload `Arc` dies in FV-6 …
-thunk force state is the only independently live portion" `30-...:1917-1926`).
-Expected **~15-26 MiB malloc reduction** (est; L0 measures the live retained
-bytes). *Independent; sequence after L2 so the arena is the reclamation owner.*
+**L4. Thunk-state sidecar `Arc` → arena-owned. DEFERRED (2026-07-12).** Kill the
+691,617 `Arc<ThunkCell>` (~26 MiB est malloc) by moving the thunk state into the
+arena object. Expected **~15-26 MiB malloc reduction** (est).
+
+**Why deferred, and the hard design requirement for the next attempt.** The
+purge lever below already carried the wide *and* leaf memory scopes under 0.5x
+(§0/§1 updated), so L4 is now headroom below a met goal — while it carries real
+`unsafe` and a three-way soundness hazard that the earlier "inline the
+`ThunkCell` into the arena object" framing did not survive. The `Arc<ThunkCell>`
+is load-bearing against **three** independent hazards simultaneously, and any
+naive move breaks at least one:
+
+1. **Clone-out publication identity.** Forcing a thunk calls
+   `EvalHeap::clone_thunk` (`eval/heap/arena.rs:2567`) to clone the `EvalThunk`
+   *out* of the arena, releasing the `&heap` borrow before the force re-enters
+   the evaluator (which needs `&mut heap`). The cloned-out copy must publish its
+   WHNF result into the **same** cell the arena-resident record reads — that
+   shared identity is exactly what `Arc` provides. An inlined cell gives the
+   clone its own copy and the publish is lost.
+2. **Serial record-table reallocation.** Default serial mode (`shared = None`)
+   stores records in a `Vec<HeapRecord>` (`eval/heap/record_table.rs:140`) that
+   **reallocates on growth**, so a raw pointer to an inlined cell dangles after
+   the next `push`. (Only parallel mode uses the stable per-shard chunk store.)
+3. **Worker-region pop.** Thunks are `Worker`-domain
+   (`eval/heap/shared_backend.rs:606`); `pop_worker_region` truncates thunk
+   records mid-eval. A cell parked in a permanent, never-popped slab would
+   **leak** one entry per popped thunk — a memory *regression*.
+
+**Design requirement (record before the next attempt): a reclamation-aware cell
+store, NEVER an inline slot.** The cell must live at a stable address (survives
+serial `Vec` realloc), be shared by all `EvalThunk` clones (identity), and be
+reclaimed when its thunk drops or its worker region pops (no leak) — e.g. a
+free-listed cell slab keyed to thunk drop/region-pop, or a retained-edge
+coupling like the flat list/attrs spine. It also needs an `unsafe Send + Sync`
+handle newtype whose `// SAFETY:` cites the Tier-A arena-stability proof + the
+release/acquire single-writer publication invariant, and it must be added to the
+FV-2.4 identity audit list as a **B2 relocation-sensitive root**. **Revisit
+alongside the B2 / snapshot relocation work post-S4**, where the relocation
+machinery makes the reclamation ownership natural. Gate battery when attempted:
+parity ×4 serial+JIT+K=4 **and** loom coverage of the `Suspended -> Forced`
+publication path. *Stays on task #15 as unmet-headroom-below-a-met-goal.*
 
 **L5. Eviction ladder (doc 29 §5 / doc 30 §7.2 rungs 3-4).** Under budget
 pressure: evict memo L0/L1 records, then cold module IR (parse cache
