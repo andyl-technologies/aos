@@ -772,3 +772,175 @@ compare `prelude_thunks_forced` share against the snapshot's load cost, using th
 front-end timers (§A.1) to separate prelude *parse* savings (already available via
 the parse cache) from prelude *force* savings (the snapshot's unique contribution).
 
+
+## Appendix B — S1–S3 implementation diff-plan (rotation-ready)
+
+The parse-ahead implementation increments, at Appendix-A precision. **S0 is
+landed** (commit c3a02187d, §A verified). This appendix specs **S1 (decouple
+serial parse), S2 (parse-ahead scheduler), S3 (error quarantine)** — the work this
+worktree rotates onto after candidate-b's stable milestone. Budget knobs (S4) are
+folded into §B.4. All anchors are verified against HEAD b5ccba75a.
+
+### B.0 Anchor volatility — re-verify before editing
+
+candidate-b's simplifier campaign is actively changing `ratchet-oracle` including
+the parse cache (`cache/parse/*`) and the lowering pipeline, and the S1/S3 seams
+sit exactly there. **Re-run the anchor greps in §B.1–B.3 at rotation** and reconcile
+any drift before touching code. The most drift-prone anchors: `cache/parse/mod.rs`
+`load_or_parse_bytes` (currently :448) and its no-write-on-parse-fail branch
+(:459); `eval_load.rs` line numbers (S0 already shifted the shared path to :215,
+remap to :328). Function *names* are stable; line numbers are not. The IR-side
+anchors (`IrKind::Path`, `ir.arena.nodes()`) are in `ratchet-core` and less exposed
+to the oracle campaign, but the simplifier may rewrite path nodes — confirm
+`IrKind::Path` still carries a literal symbol payload (§B.2) before trusting the
+enumeration.
+
+### B.1 S1 — decouple serial parse from the live symbol table
+
+**Goal.** Make the isolated-parse+remap path the serial default so a parse can run
+off the live symbol table (the enabling refactor for parallel/speculative parse).
+
+**Files/anchors.**
+- `eval/tree_walk/eval_load.rs`: `load_and_eval_import_bytes` (:102) is the serial
+  `mem::take(&mut self.symbols)` fast path (the take at :130). `load_and_eval_import_bytes_shared`
+  (:215) is the isolated-parse+remap path already used under a pool; `remap_cached_import_ir`
+  (:328) interns the file-local symbols into the live table via
+  `intern_symbol_for_eval` (`parallel_demand.rs:754`).
+
+**Edit.** Route the serial case (`self.shared.is_none()`) through the isolated
+parse + `remap_cached_import_ir` used at `:215`, deleting the `mem::take` superset
+adoption. Concretely: extract the parse/resolve/lower/annotate half of `:215` into
+a helper both callers share (it already carries the S0 front-end timers — keep them
+in the shared helper so both paths stay instrumented), then have
+`load_and_eval_import_bytes` call it + `remap_cached_import_ir` instead of the
+`mem::take` block.
+
+**Hard parity subtlety (the whole risk of S1).** The `mem::take` path grows the
+live table in *parser-encounter order*; `remap_cached_import_ir` interns in
+`ir.symbols.symbols()` order. Symbol ids are internal and not `.drv`-observable
+(attribute order is lexicographic-by-bytes via `FlatAttrs`, not by symbol id), so
+parity should hold — but this reordering IS the risk. Gate: byte-identical `.drv`
+on zlib/openssl/openjdk (the S0 gate binary + commands) **and** watch the
+serial-cold benchmark for the "clone dominated cold eval" regression the `mem::take`
+avoided (comment at `eval_load.rs:125-129`). **Fallback if it regresses:** keep
+`mem::take` for the no-pool case, gate the decouple on `self.shared.is_some()`, and
+carry the isolated path only where a pool (and thus speculation) exists — S2 needs
+the isolated path only under a pool anyway.
+
+**Increment size.** One commit, nothing else in it. Parity-gated.
+
+### B.2 S2 — parse-ahead scheduler (static path-literal edges)
+
+**Goal.** On otherwise-idle workers, speculatively parse+lower files reachable
+along statically-known path-literal edges, ahead of demand, storing the artifact
+for adoption.
+
+**Path-literal enumeration (the edge source).**
+- Path literals lower to `IrKind::Path` nodes (`ratchet-core/src/ir/mod.rs:497`)
+  carrying `IrData::Symbol(path_text)` (`ir/lowering.rs:100-105`,
+  `lower_symbol_node`). `IrKind::SearchPath` (:499) is the `<...>` form — skip it
+  (search-path resolution is impure/config-dependent, not a static file edge).
+- Enumerate via `ir.arena.nodes()` (`ratchet-core/src/ir/arena.rs:20`) filtering
+  `node.kind == IrKind::Path` — the same `arena.nodes()` walk `remap_cached_import_ir`
+  (`eval_load.rs:328`) already does. This catches `import ./x`, `callPackage ./x`,
+  and any literal path passed anywhere (the approved "any path-literal node, not
+  just import args" ruling, §2).
+- Resolve each to a candidate realpath by reusing `path_literal_bytes_for_module_node`
+  (`eval_load.rs:729`) + `module_path_literal_base` (`eval_core/module_env.rs:105`),
+  then the directory→`default.nix` rule from `import_target_path`
+  (`eval_import.rs`, the `metadata.is_dir()` branch). A candidate that does not
+  resolve to an existing `.nix` file is dropped (no speculation).
+
+**Where the work runs — a Speculate lane on the existing pool.**
+- `DemandTaskKind` (`parallel_demand.rs:298`) has `Force`/`Coerce`. Add a third
+  variant `Speculate { path: PathBuf }` (or a parallel low-priority queue — see the
+  §8 open question; a distinct deque per worker is the cleaner shape). `DemandTask`
+  (:308), `demand_task_chunk` (:93, return 1 for Speculate), and the
+  `DEMAND_QUEUE_CAP` drop policy (:109) extend to it.
+- **Strictly lower priority:** speculation runs only when a worker's Force/Coerce
+  deque and the shared queue are empty. The hook is the park-preflight
+  (`parallel.rs:457` `run_next_or_park_preflight`, and its non-Chase-Lev twin at
+  :571): drain one Speculate task in the pre-park window instead of parking.
+- A Speculate task does exactly the isolated-parse half of `:215` (parse into
+  `SymbolTable::new()`, resolve, lower, `annotate_import_ir`) then **stores the
+  artifact** (§B.3) and stops — no remap, no `record_impure_input_result`
+  (`eval_import.rs`), no eval. Under serial mode (`K==1`) the scheduler is inert by
+  construction (no idle worker); do not seed it.
+
+**Trigger.** Seed the frontier (a) at eval start from the root module's path
+literals, and (b) cheaply at each genuine import adoption inside `eval_import_primop`
+(`eval_import.rs:654`) / `load_cached_import` (:564) — the adopted module's path
+literals become the next BFS layer, bounded by the depth knob (§B.4).
+
+**Store location.** A new field on `SharedEvalContext` (`parallel_demand.rs:412`,
+peer to `imports`/`memo`), keyed by `ParseFileKey` (`cache/parse/mod.rs`, realpath +
+content hash) — see §B.3.
+
+### B.3 S3 — error quarantine + parse-cache negative-result interaction
+
+**The stash.** Add to `SharedEvalContext` (`parallel_demand.rs:412`):
+
+```text
+speculation: SpeculativeParseStore   // DashMap<ParseFileKey, SpeculativeOutcome>
+enum SpeculativeOutcome { Ready(Box<CachedParse>), Failed(StashedParseError) }
+```
+
+First-write-wins on insert (confluent, matching `SharedImportLog::sync_into`,
+`parallel_import.rs:60-84`). `ParseFileKey` already carries `(realpath, content_hash)`
+(`cache/parse/mod.rs`), so a file edited between speculation and demand is a key
+miss on demand — the content hash guards staleness.
+
+**Consult on demand.** `load_parse_cached_import` (`eval_import.rs:922`) gains a
+first step: look up `ParseFileKey::for_source(realpath, source)` in the store.
+`Ready(cached)` → adopt as a cache hit (remap + eval), count a speculation hit.
+`Failed(err)` → re-raise through the identical `parse_cache_import_error(argument,
+argument_span, path, source, err)` mapping (`eval_load.rs:6`), reproducing the exact
+`ImportParse`/`ImportScope`/`ImportLower` diagnostic + span the demand path would
+produce. Miss → today's behavior.
+
+**Parse-cache negative-result interaction (the load-bearing constraint).** The
+durable parse cache has **no** negative results: `load_or_parse_bytes`
+(`cache/parse/mod.rs:448`) returns `Err(ParseCacheError)` and writes nothing on a
+parse failure (`:459`, `parse_bytes(...).map_err(...)?` before any `write_resolved`).
+Therefore a speculative *failure* MUST live only in the in-memory
+`SpeculativeParseStore::Failed`, never the durable cache — persisting it would be a
+schema change and a parity hazard (a later run surfacing a stored error for a file
+it never imports). A speculative *success* MAY be written to the durable cache (it
+is pure, content-addressed, byte-identical to a demand-path write) — a free
+warm-cache win; failures stay ephemeral. **Staging:** S2 lands with failures simply
+dropped (not stored) so there is nothing to surface incorrectly; S3 adds the
+`Failed` arm + re-raise wiring and its targeted test (speculate a syntactically
+broken file the root eval never imports → must stay silent; one it does import →
+must reproduce the identical demand-path error/span).
+
+### B.4 Budget knobs + mis-speculation counters (S4 defaults, wired in S2/S3)
+
+Env-gated via the `TreeWalkOptions` bool pattern (`eval/tree_walk/options.rs:479`,
+the `eval_stats_dump` field is the template): `AOS_NIX_SPECULATE` (off/parse/compile,
+default off; parse after S5), `AOS_NIX_SPECULATE_DEPTH` (BFS depth, default 2),
+`AOS_NIX_SPECULATE_INFLIGHT` (max queued+running, default `2×(K-1)`),
+`AOS_NIX_SPECULATE_MAX_BYTES` (skip larger candidates, default ~512 KiB). Counters
+(`speculated`, `speculation_hits`, `speculation_wasted`, `speculation_bytes_read`)
+extend `EvalStats` through the **exact S0 pattern** — struct field + exhaustive
+`merge_from` destructure/add (`outcome.rs`), `stats_snapshot` literal + accessors
+(`eval_stats.rs`/`outcome.rs`), JSON dump (`aos-nix/src/native/eval_stats_dump.rs`)
+— and land in the `ParallelDemandPool::finish` telemetry (`parallel_demand.rs`, the
+`eval_stats_dump()` JSON block). M-23 tuning = watch `speculation_wasted /
+speculated` against helper idle time.
+
+### B.5 Staging + gates (per increment)
+
+1. **S1** — one commit, decouple serial parse; gate = byte-identical `.drv` on
+   zlib/openssl/openjdk + no serial-cold regression (fallback: gate on
+   `self.shared.is_some()`).
+2. **S2** — path-literal frontier + Speculate lane + store `Ready`, failures
+   dropped, `AOS_NIX_SPECULATE=parse` default-off; gate = parity unchanged, K≥4
+   shows hits, no divergence.
+3. **S3** — `Failed` arm + re-raise + the quarantine test; gate = the two-case
+   quarantine test + parity unchanged.
+4. **S4** (folded) — counters + knobs; parity-neutral.
+
+Semantics stay byte-identical throughout: speculation is side-effect-free by
+construction (§7) — no impure-input recording, no module publication, no value, no
+error unless genuinely demanded. The only real side effect is the candidate file
+read, gated by the same access policy the demand path enforces (§7).
