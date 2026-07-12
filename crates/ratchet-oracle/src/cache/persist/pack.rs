@@ -498,6 +498,38 @@ impl PersistBlobPack {
             .map_err(engine_append_error_to_persist)
     }
 
+    /// Appends many content-addressed blobs in one open/lock/flush cycle.
+    ///
+    /// This is the write-behind flush primitive: it opens the packfile once,
+    /// exclusively locks it once, and writes every record with a single buffered
+    /// `write_all`, amortizing the per-record open/flock/flush of
+    /// [`Self::append_blob`]. Each payload is verified against its hash before any
+    /// bytes are written, and the returned [`PersistBlobLocation`] values record
+    /// the offsets in input order. An empty batch is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the packfile cannot be opened,
+    /// exclusively locked, stat'd, or written, or if any `hash` does not match
+    /// its payload.
+    pub fn append_blobs_batch(
+        &self,
+        records: &[(DurableBlake3Hash, &[u8])],
+    ) -> Result<Vec<PersistBlobLocation>, PersistBlobPackError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        let engine_records: Vec<_> = records
+            .iter()
+            .map(|(hash, payload)| (durable_hash_to_engine(*hash), *payload))
+            .collect();
+        let appender = open_engine_blob_pack_appender(&self.path)?;
+        appender
+            .append_payloads_batch(&engine_records)
+            .map(|locations| locations.into_iter().map(engine_location_to_persist).collect())
+            .map_err(engine_append_error_to_persist)
+    }
+
     /// Validates record metadata for `location` and returns its payload window.
     ///
     /// The record header's hash and length must match `expected_hash` and

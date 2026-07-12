@@ -1115,6 +1115,16 @@ impl TreeWalk {
         let Some(persist_cache) = &self.persist_cache else {
             return;
         };
+        // Flush the write-behind value buffer (RFC-0007 §3.2(b)) at the run
+        // boundary, strictly before the synchronous root-cutoff record is written
+        // (native/mod.rs) so that record never references unflushed value blobs.
+        if let Err(error) = persist_cache.flush_buffered_value_blobs() {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "tree-walk evaluator value write-behind flush failed"
+            );
+        }
         // Flush coalesced current-run demand before advancing runs, which carries
         // current-run demand into the cross-run history.
         if let Err(error) = persist_cache.flush_buffered_node_demands() {

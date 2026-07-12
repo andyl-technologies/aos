@@ -466,6 +466,29 @@ impl PersistBlobIndex {
             .map_err(engine_blob_index_error)
     }
 
+    /// Appends many hash-to-offset entries in one open/write/flush cycle.
+    ///
+    /// The write-behind flush pairs this with the batched pack append so the
+    /// value sidecar is opened and flushed once per flush instead of once per
+    /// record. An empty batch is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the index cannot be opened, written,
+    /// or flushed.
+    pub fn append_entries_batch(
+        &self,
+        entries: &[PersistBlobIndexEntry],
+    ) -> Result<(), PersistBlobIndexError> {
+        let engine_entries: Vec<_> = entries
+            .iter()
+            .map(|entry| persist_blob_index_entry_to_engine(*entry))
+            .collect();
+        self.engine
+            .append_entries_batch(&engine_entries)
+            .map_err(engine_blob_index_error)
+    }
+
     /// Refreshes the in-memory index from the file, decoding only new records.
     ///
     /// Malformed records surface here as the tail reload decodes them, which is

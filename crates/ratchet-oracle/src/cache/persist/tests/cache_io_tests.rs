@@ -33,6 +33,7 @@ mod metadata_sidecars;
 mod node_metadata_io;
 mod node_metadata_reuse;
 mod storage_maintenance;
+mod write_behind;
 mod value_blob_repack;
 
 #[derive(Clone, Debug)]

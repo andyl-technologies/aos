@@ -237,6 +237,42 @@ impl BlobIndex {
             })
     }
 
+    /// Appends many hash-to-offset index entries in one open/write/flush cycle.
+    ///
+    /// The write-behind flush pairs this with
+    /// [`BlobPackAppender::append_payloads_batch`](super::blob_pack::BlobPackAppender::append_payloads_batch):
+    /// the index file is opened once, every entry is concatenated into a single
+    /// buffer written with one `write_all`, and the descriptor is flushed once,
+    /// amortizing the per-entry open/flush of [`Self::append_entry`]. An empty
+    /// batch is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobIndexError`] if the index cannot be opened, written, or
+    /// flushed.
+    pub fn append_entries_batch(&self, entries: &[BlobIndexEntry]) -> Result<(), BlobIndexError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| BlobIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let mut buffer = Vec::with_capacity(entries.len() * BLOB_INDEX_ENTRY_LEN);
+        for entry in entries {
+            buffer.extend_from_slice(&entry.encode());
+        }
+        file.write_all(&buffer)
+            .and_then(|()| file.flush())
+            .map_err(|source| BlobIndexError::Write {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
     /// Looks up the newest location for `key`.
     ///
     /// # Errors

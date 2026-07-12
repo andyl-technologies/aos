@@ -11,6 +11,9 @@ pub enum PersistBlobIndexedWriteError {
         /// The blob namespace whose lock could not be acquired.
         store: PersistBlobStore,
     },
+    /// The VALUES-store write-behind buffer mutex was poisoned by a prior panic.
+    #[error("persistent value write-behind buffer is poisoned")]
+    PendingValueBufferPoisoned,
     /// The advisory materialization lock could not be acquired.
     #[error(
         "failed to acquire persistent indexed blob write advisory lock for {store:?} at {path}"

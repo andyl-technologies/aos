@@ -218,6 +218,12 @@ impl PersistCache {
         key: PersistBlobKey,
         payload: &[u8],
     ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
+        // Write-behind (RFC-0007 §3.2(b)) buffers VALUES-store records and flushes
+        // them once at the run boundary. Scope is the VALUES store only — the
+        // FILES store (file/parse artifacts, pending GC roots) stays synchronous.
+        if key.store() == PersistBlobStore::Values && self.write_behind_values_enabled() {
+            return self.ensure_value_blob_buffered(key, payload);
+        }
         let (_advisory_guard, _write_guard) = self.lock_indexed_blob_write(key.store())?;
         if let Ok(Some(location)) = self.lookup_blob_location(key) {
             let pack = self.blob_pack(key.store());

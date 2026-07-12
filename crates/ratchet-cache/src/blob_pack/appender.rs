@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use super::locking::{BlobPackFileLockMode, lock_blob_pack_file};
 use super::{
-    BLOB_PACK_HEADER_LEN, BlobPackAppendError, BlobPackHash, BlobPackHeader, BlobPackLocation,
-    BlobPackTrimError, BlobRecordHeader,
+    BLOB_PACK_HEADER_LEN, BLOB_RECORD_HEADER_LEN, BlobPackAppendError, BlobPackHash, BlobPackHeader,
+    BlobPackLocation, BlobPackTrimError, BlobRecordHeader,
 };
 
 /// A writer for one blob packfile.
@@ -132,6 +132,99 @@ impl BlobPackAppender {
                 source,
             })?;
         Ok(BlobPackLocation::new(record_offset, payload_len))
+    }
+
+    /// Appends many payloads in one open/lock/stat/write/flush cycle.
+    ///
+    /// This is the write-behind flush primitive: it amortizes the per-record
+    /// open, exclusive flock, base-length `stat`, and `flush` of
+    /// [`Self::append_payload`] across the whole batch. The packfile is opened
+    /// and exclusively locked once, its base length is read once, every record's
+    /// header and payload are concatenated into a single buffer written with one
+    /// `write_all`, and the descriptor is flushed once. Each returned
+    /// [`BlobPackLocation`] records the offset its record landed at, in input
+    /// order. An empty batch is a no-op.
+    ///
+    /// Like [`Self::append_payload`] there is no `fsync`: the pack is advisory,
+    /// and a torn tail from a crash mid-flush is a hash-invalid record the reader
+    /// discards as a miss. Hashes are verified for every record before any bytes
+    /// are written, so a mismatch leaves the packfile untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobPackAppendError`] if any payload does not hash to its
+    /// expected hash, a payload length overflows `u64`, or the packfile cannot be
+    /// opened, exclusively locked, stat'd, or written.
+    pub fn append_payloads_batch(
+        &self,
+        records: &[(BlobPackHash, &[u8])],
+    ) -> Result<Vec<BlobPackLocation>, BlobPackAppendError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Verify every hash and size the buffer before touching the file, so a
+        // bad record aborts the whole batch without a partial write.
+        let mut total = 0usize;
+        for (expected_hash, payload) in records {
+            let actual = BlobPackHash::for_bytes(payload);
+            if actual != *expected_hash {
+                return Err(BlobPackAppendError::PayloadHashMismatch {
+                    expected: *expected_hash,
+                    actual,
+                });
+            }
+            u64::try_from(payload.len()).map_err(|_| BlobPackAppendError::PayloadTooLarge {
+                payload_len: payload.len() as u128,
+            })?;
+            total = total
+                .saturating_add(BLOB_RECORD_HEADER_LEN)
+                .saturating_add(payload.len());
+        }
+
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| BlobPackAppendError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        lock_blob_pack_file(&file, BlobPackFileLockMode::Exclusive).map_err(|source| {
+            BlobPackAppendError::Lock {
+                path: self.path.clone(),
+                source,
+            }
+        })?;
+        let base = file
+            .metadata()
+            .map_err(|source| BlobPackAppendError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        if base < BLOB_PACK_HEADER_LEN as u64 {
+            return Err(BlobPackAppendError::InvalidRecordOffset { record_offset: base });
+        }
+
+        let mut buffer = Vec::with_capacity(total);
+        let mut locations = Vec::with_capacity(records.len());
+        let mut offset = base;
+        for (expected_hash, payload) in records {
+            let payload_len = payload.len() as u64;
+            buffer.extend_from_slice(&BlobRecordHeader::new(*expected_hash, payload_len).encode());
+            buffer.extend_from_slice(payload);
+            locations.push(BlobPackLocation::new(offset, payload_len));
+            offset = offset
+                .saturating_add(BLOB_RECORD_HEADER_LEN as u64)
+                .saturating_add(payload_len);
+        }
+        file.write_all(&buffer)
+            .and_then(|()| file.flush())
+            .map_err(|source| BlobPackAppendError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(locations)
     }
 
     /// Truncates unneeded bytes after `end_offset`.

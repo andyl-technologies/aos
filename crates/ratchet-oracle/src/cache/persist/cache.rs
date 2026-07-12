@@ -21,6 +21,7 @@ mod repack_helpers;
 mod root_record_io;
 mod run_scope;
 mod store_io;
+mod value_write_behind;
 
 pub use demotion::{
     PersistDemotionError, PersistDemotionOutcome, PersistDemotionPlan, PersistDemotionSkip,
@@ -85,6 +86,11 @@ pub struct PersistCache {
     verified_node_traces: Arc<Mutex<BTreeMap<PersistNodeMetadataKey, ValueHash>>>,
     /// Run-scoped coalesced current-run demand counts awaiting write-back.
     pending_node_demands: Arc<Mutex<BTreeMap<PersistNodeMetadataKey, u64>>>,
+    /// Whether the VALUES-store write-behind buffer is active (RFC-0007 §3.2(b));
+    /// off by default, enabled through the `AOS_NIX_CACHE_WRITE_BEHIND` knob.
+    write_behind_values: bool,
+    /// VALUES-store blob records buffered in memory until the run-boundary flush.
+    pending_value_blobs: Arc<Mutex<value_write_behind::PendingValueBatch>>,
 }
 
 impl Drop for PersistCache {
@@ -100,6 +106,18 @@ impl Drop for PersistCache {
         if Arc::strong_count(&self.pending_node_demands) != 1 {
             return;
         }
+        // The run boundary is the normal flush point for the write-behind value
+        // buffer; the final-handle drop is the safety net for callers that drive
+        // the cache without advancing a run, mirroring the demand buffer.
+        if Arc::strong_count(&self.pending_value_blobs) == 1 {
+            if let Err(error) = self.flush_buffered_value_blobs() {
+                tracing::warn!(
+                    target: "aos_nix::cache",
+                    error = %error,
+                    "persistent eval cache value write-behind flush on drop failed"
+                );
+            }
+        }
         if let Err(error) = self.flush_buffered_node_demands() {
             tracing::warn!(
                 target: "aos_nix::cache",
@@ -109,6 +127,7 @@ impl Drop for PersistCache {
         }
     }
 }
+
 
 /// Compaction fires when a node sidecar's physical record count exceeds this
 /// multiple of its live keys. A warm re-run appends about one record per live
@@ -390,6 +409,10 @@ impl PersistCache {
             value_decode_verification: false,
             verified_node_traces: Arc::new(Mutex::new(BTreeMap::new())),
             pending_node_demands: Arc::new(Mutex::new(BTreeMap::new())),
+            write_behind_values: value_write_behind::write_behind_values_from_env(),
+            pending_value_blobs: Arc::new(Mutex::new(
+                value_write_behind::PendingValueBatch::default(),
+            )),
         })
     }
 
