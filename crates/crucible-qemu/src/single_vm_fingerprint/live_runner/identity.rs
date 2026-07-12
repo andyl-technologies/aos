@@ -84,7 +84,7 @@ impl LiveObservationMode {
             Self::ExactTarget { .. } => LiveObservationModeFlags {
                 version: MODE_FLAGS_VERSION,
                 definition_only: false,
-                periodic_sampling: true,
+                periodic_sampling: false,
                 stop_at_target: true,
                 exact_target: true,
             },
@@ -158,7 +158,7 @@ pub struct LiveObservationModeFlags {
     pub periodic_sampling: bool,
     /// Whether QEMU must stop at the control target.
     pub stop_at_target: bool,
-    /// Whether the target represents an exact refinement point.
+    /// Whether the mode selects an explicit exact target rather than a horizon.
     pub exact_target: bool,
 }
 
@@ -808,6 +808,21 @@ mod tests {
                 definition_only: true,
                 periodic_sampling: false,
                 stop_at_target: false,
+                exact_target: true,
+            }
+        );
+        assert_eq!(
+            LiveObservationMode::ExactTarget {
+                cadence_icount: 100,
+                target_icount: 500,
+                ordinal: SingleVmFingerprintRunOrdinal::First,
+            }
+            .flags(),
+            LiveObservationModeFlags {
+                version: MODE_FLAGS_VERSION,
+                definition_only: false,
+                periodic_sampling: false,
+                stop_at_target: true,
                 exact_target: true,
             }
         );

@@ -158,38 +158,45 @@ impl QemuTerminalHorizonTraceImport {
         reader
             .read_to_end(&mut bytes)
             .map_err(|source| QemuTraceFingerprintImportError::Io { line: 0, source })?;
-        let records = parse_complete_records(&bytes)?;
-        let terminal = terminal_records(&records, true)?;
-        let state = terminal
-            .state
-            .ok_or(QemuTraceFingerprintImportError::IncompleteTrace {
-                reason: "terminal state record is absent",
-            })?;
-        let final_record =
-            terminal
-                .final_record
-                .ok_or(QemuTraceFingerprintImportError::IncompleteTrace {
-                    reason: "terminal final record is absent",
-                })?;
-        self.validate_state(state, record_line(&records, state))?;
-        self.validate_final(final_record, state, record_line(&records, final_record))?;
-        self.import_canonical_state(state)
+        if bytes.is_empty() || bytes.last() != Some(&b'\n') {
+            return Err(QemuTraceFingerprintImportError::IncompleteTrace {
+                reason: "terminal trace ends in a partial JSON-lines record",
+            });
+        }
+        self.published_terminal_stream(&bytes)?.ok_or(
+            QemuTraceFingerprintImportError::IncompleteTrace {
+                reason: "terminal trace requires exactly one state and one final record",
+            },
+        )
     }
 
-    pub(crate) fn complete_trace_is_published(
+    /// Imports the terminal stream if a complete published trace is present.
+    ///
+    /// Unlike [`Self::import`], this tolerates a partially written trailing
+    /// JSON-lines record: the incomplete tail is ignored so a live publication
+    /// can be polled until the terminal state and final metadata records both
+    /// appear. It returns `Ok(None)` while either record is still absent, and
+    /// `Ok(Some(stream))` once the complete, canonical terminal state has been
+    /// imported.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuTraceFingerprintImportError`] when a fully published record
+    /// is malformed or duplicated, carries invalid terminal status or evidence,
+    /// drifts from the expected provenance, or exports incomplete raw state.
+    pub(crate) fn published_terminal_stream(
         &self,
         bytes: &[u8],
-    ) -> Result<bool, QemuTraceFingerprintImportError> {
+    ) -> Result<Option<SingleVmFingerprintStream>, QemuTraceFingerprintImportError> {
         let records = parse_published_records(bytes)?;
         let terminal = terminal_records(&records, false)?;
         let (state, final_record) = match (terminal.state, terminal.final_record) {
             (Some(state), Some(final_record)) => (state, final_record),
-            _ => return Ok(false),
+            _ => return Ok(None),
         };
         self.validate_state(state, record_line(&records, state))?;
         self.validate_final(final_record, state, record_line(&records, final_record))?;
-        self.import_canonical_state(state)?;
-        Ok(true)
+        self.import_canonical_state(state).map(Some)
     }
 
     fn validate_state(
@@ -520,17 +527,6 @@ fn terminal_records(
         state,
         final_record,
     })
-}
-
-fn parse_complete_records(
-    bytes: &[u8],
-) -> Result<Vec<Map<String, Value>>, QemuTraceFingerprintImportError> {
-    if bytes.is_empty() || bytes.last() != Some(&b'\n') {
-        return Err(QemuTraceFingerprintImportError::IncompleteTrace {
-            reason: "terminal trace ends in a partial JSON-lines record",
-        });
-    }
-    parse_lines(bytes)
 }
 
 fn parse_published_records(

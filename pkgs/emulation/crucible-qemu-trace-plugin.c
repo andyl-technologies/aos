@@ -143,6 +143,9 @@ on_sim_observer_max_advance_icount(void *userdata)
 {
   (void)userdata;
 
+  if (terminal_horizon) {
+    return stop_at;
+  }
   if (stop_at != 0 && !horizon_emitted && stop_at < next_sample) {
     return stop_at;
   }
@@ -1821,17 +1824,15 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
 {
   (void)userdata;
 
-  const bool periodic_due = current_icount >= next_sample;
   const bool horizon_due =
       stop_at != 0 && !horizon_emitted && current_icount >= stop_at;
-
-  if (!periodic_due && !horizon_due) {
-    return;
-  }
 
   if (terminal_horizon) {
     int status;
 
+    if (!horizon_due) {
+      return;
+    }
     stop_requested = true;
     horizon_emitted = true;
     next_sample = UINT64_MAX;
@@ -1855,6 +1856,11 @@ on_sim_observe_icount(uint64_t current_icount, void *userdata)
       qemu_plugin_crucible_pause_vm();
       on_terminal_paused(status, NULL);
     }
+    return;
+  }
+
+  const bool periodic_due = current_icount >= next_sample;
+  if (!periodic_due && !horizon_due) {
     return;
   }
 
@@ -2109,10 +2115,9 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
 
   if (terminal_horizon &&
       (!extended_fingerprint || !capture_memory_events || stop_at == 0 ||
-       cadence != stop_at || definition_only || post_boundary_samples ||
-       det_ipi_probe)) {
+       definition_only || post_boundary_samples || det_ipi_probe)) {
     qemu_plugin_outs(
-        "crucible-qemu-trace-plugin: terminal horizon requires dedicated extended memory-event capture with equal nonzero cadence/stop_at\n");
+        "crucible-qemu-trace-plugin: terminal horizon requires dedicated extended memory-event capture with nonzero stop_at\n");
     return -1;
   }
 

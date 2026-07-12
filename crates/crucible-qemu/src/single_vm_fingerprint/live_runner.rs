@@ -12,7 +12,9 @@ mod identity;
 mod prepared;
 mod process;
 mod qmp_poll;
+mod terminal_common;
 mod terminal_horizon;
+mod terminal_target;
 mod verified_inputs;
 
 pub use artifacts::{LiveRunnerArtifactRoot, LiveRunnerArtifacts, LiveRunnerArtifactsError};
@@ -41,6 +43,10 @@ pub use qmp_poll::{
 };
 pub use terminal_horizon::{
     LiveTerminalHorizonExecutor, LiveTerminalHorizonExecutorError, LiveTerminalHorizonReport,
+};
+pub use terminal_target::{
+    LiveTerminalTargetExecutor, LiveTerminalTargetExecutorError, LiveTerminalTargetObservation,
+    LiveTerminalTargetReport,
 };
 pub use verified_inputs::{
     VerifiedGuestImageDigests, VerifiedLiveRunInputs, VerifiedLiveRunInputsError,
