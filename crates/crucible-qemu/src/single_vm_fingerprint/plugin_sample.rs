@@ -11,8 +11,9 @@
 use crucible_shmem::{FINGERPRINT_SAMPLE_MAX_VCPUS, FingerprintSample};
 
 use super::{
-    SingleVmFingerprintGateError, SingleVmNvcpuFingerprintMaterial, SingleVmRoundRobinCursor,
-    SingleVmVcpuRegisterDigest,
+    SingleVmFingerprintGateError, SingleVmFingerprintSample, SingleVmFingerprintSampleMaterial,
+    SingleVmFingerprintStream, SingleVmFingerprintTrigger, SingleVmNvcpuFingerprintMaterial,
+    SingleVmRoundRobinCursor, SingleVmVcpuRegisterDigest, initial_single_vm_rolling_fingerprint,
 };
 
 /// Converts a plugin-published shared-memory sample into canonical N-vCPU material.
@@ -72,8 +73,66 @@ pub fn nvcpu_material_from_shmem_sample(
     )
 }
 
+/// One captured single-VM fingerprint boundary drained from the plugin slot.
+#[derive(Clone, Copy, Debug)]
+pub struct PluginFingerprintBoundary<'a> {
+    /// Aggregate node icount at which the sample was captured.
+    pub icount: u64,
+    /// The deterministic reason the sample was taken.
+    pub trigger: SingleVmFingerprintTrigger,
+    /// The plugin-published shared-memory sample for this boundary.
+    pub sample: &'a FingerprintSample,
+}
+
+/// Assembles a validated single-VM fingerprint stream from plugin boundaries.
+///
+/// Each boundary is mapped to canonical N-vCPU material, folded into the rolling
+/// fingerprint chain seeded from `definition_digest`, and validated as a stream
+/// against `run_horizon_icount`. Boundaries must be ordered by ascending icount
+/// with the final boundary at exactly the run horizon, matching the caller's
+/// scheduler cadence.
+///
+/// # Errors
+///
+/// Returns [`SingleVmFingerprintGateError`] when a boundary sample cannot be
+/// mapped, the seed or a sample digest is malformed, or the resulting stream
+/// fails canonical validation.
+pub fn build_plugin_fingerprint_stream(
+    definition_digest: impl Into<Vec<u8>>,
+    node: &str,
+    run_horizon_icount: u64,
+    boundaries: &[PluginFingerprintBoundary<'_>],
+) -> Result<SingleVmFingerprintStream, SingleVmFingerprintGateError> {
+    let definition_digest = definition_digest.into();
+    let mut rolling = initial_single_vm_rolling_fingerprint(&definition_digest)?;
+    let mut samples = Vec::with_capacity(boundaries.len());
+    for (seq, boundary) in boundaries.iter().enumerate() {
+        let nvcpu = nvcpu_material_from_shmem_sample(boundary.sample)?;
+        let material = SingleVmFingerprintSampleMaterial::new(
+            seq as u64,
+            node,
+            boundary.icount,
+            boundary.trigger,
+            nvcpu,
+        )?;
+        let sample =
+            SingleVmFingerprintSample::from_material(&definition_digest, &rolling, material)?;
+        rolling.clone_from(&sample.rolling_fingerprint);
+        samples.push(sample);
+    }
+    let final_icount = samples.last().map_or(0, |sample| sample.icount);
+    SingleVmFingerprintStream::new(
+        definition_digest,
+        samples,
+        final_icount,
+        rolling,
+        run_horizon_icount,
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::SingleVmFingerprintEventBoundary;
     use super::*;
 
     use crucible_shmem::{FINGERPRINT_DIGEST_BYTES, FingerprintSampleVcpu};
@@ -138,5 +197,58 @@ mod tests {
             nvcpu_material_from_shmem_sample(&failed),
             Err(SingleVmFingerprintGateError::InvalidNvcpuFingerprintMaterial { .. })
         ));
+    }
+
+    #[test]
+    fn builds_a_deterministic_stream_from_boundaries() {
+        let definition = digest(0x77).to_vec();
+        let mid = sample();
+        let terminal = sample();
+        let boundaries = [
+            PluginFingerprintBoundary {
+                icount: 50_000,
+                trigger: SingleVmFingerprintTrigger::Periodic,
+                sample: &mid,
+            },
+            PluginFingerprintBoundary {
+                icount: 100_000,
+                trigger: SingleVmFingerprintTrigger::Event(
+                    SingleVmFingerprintEventBoundary::HorizonAdvance,
+                ),
+                sample: &terminal,
+            },
+        ];
+
+        let stream = match build_plugin_fingerprint_stream(
+            definition.clone(),
+            "plugin-fingerprint-vm",
+            100_000,
+            &boundaries,
+        ) {
+            Ok(stream) => stream,
+            Err(error) => panic!("boundaries should assemble a stream: {error}"),
+        };
+        assert_eq!(stream.samples.len(), 2);
+        assert_eq!(stream.samples[0].seq, 0);
+        assert_eq!(stream.samples[1].icount, 100_000);
+        assert_eq!(stream.final_icount, 100_000);
+        assert_eq!(
+            stream.final_fingerprint,
+            stream.samples[1].rolling_fingerprint
+        );
+
+        let again = match build_plugin_fingerprint_stream(
+            definition,
+            "plugin-fingerprint-vm",
+            100_000,
+            &boundaries,
+        ) {
+            Ok(stream) => stream,
+            Err(error) => panic!("rebuild should assemble a stream: {error}"),
+        };
+        assert_eq!(
+            stream, again,
+            "identical boundaries must yield an identical stream"
+        );
     }
 }
