@@ -85,8 +85,18 @@ in
         -e 's@\./fixinc\.sh@-c true@' \
         -e 's|then sleep 1; else exit 1; fi;|then sleep 1; else sleep 1; fi;|' \
         gcc/Makefile.in
+
+      # This tier intentionally contains only the core C frontend and the g++
+      # component. Enumerate cp directly so configure does not depend on glob
+      # state inherited from an early bootstrap shell.
+      ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.4.7-explicit-cxx-frontend.patch}
     '';
     preConfigure = ''
+      test -f "$TMPDIR/gcc-4.4.7/gcc/cp/config-lang.in" || {
+        echo "GCC 4.4.7 C++ frontend source is missing" >&2
+        exit 1
+      }
+
       mkdir -p "$TMPDIR/ccwrap"
       cat > "$TMPDIR/ccwrap/gcc" <<'AOS_GCC_CC'
       #!${prev.bash}/bin/bash
