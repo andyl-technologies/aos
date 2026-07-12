@@ -371,10 +371,12 @@ stdenv` plus the existing eval/VM checks.
   Likewise, only add the ELF shared-object test modules to `extra-objs` when
   shared libraries are enabled; otherwise `make all` tries to compile
   `tst-dlmopen1mod` without the shared build's generated `gnu/lib-names.h`.
-  Enable static NSS and verify that `libc.a` defines
-  `_nss_files_getpwnam_r` before publishing; the static consumers otherwise
-  fail later with unresolved `_nss_files_*` references even though the libc
-  build itself reports success.
+  Enable static NSS and verify that `libnss_files.a` defines
+  `_nss_files_getpwnam_r` before publishing. Route the GCC 3.4 manifest tools
+  through `staticNssWrapper`, as later static tiers already do, so executable
+  links include the separate NSS and resolver archives in a linker group;
+  raw `gcc -static` otherwise fails later with unresolved `_nss_files_*`
+  references even though the libc build itself reports success.
 - **Cross-tier sequencing.** The multi-stage cross dance stays explicit;
   only its building blocks are shared.
 

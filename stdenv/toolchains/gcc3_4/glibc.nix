@@ -77,9 +77,13 @@ in
         make -j"$NIX_BUILD_CORES"
         make install
 
-        "${this.binutils}/bin/nm" "$out/lib/libc.a" | \
+        test -f "$out/lib/libnss_files.a" || {
+          echo "FATAL: static NSS archive not installed" >&2
+          exit 1
+        }
+        "${this.binutils}/bin/nm" "$out/lib/libnss_files.a" | \
           grep -Eq ' [Tt] _nss_files_getpwnam_r$' || {
-          echo "FATAL: static NSS implementations not installed in libc.a" >&2
+          echo "FATAL: static NSS implementations missing from libnss_files.a" >&2
           exit 1
         }
 
