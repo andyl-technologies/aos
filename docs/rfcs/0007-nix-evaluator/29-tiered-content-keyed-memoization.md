@@ -1249,3 +1249,15 @@ design above with the code as ground truth:
       moves the largest+coldest records to a secondary, keeps small records
       resident, and probes every record back. Auto-triggering from a maintenance
       schedule and the §5.7-faithful value-density accounting remain follow-ups.
+- [x] L3 serve endpoint (§5.5, server side): `aos serve` grows content-addressed
+      `GET/PUT /v1/root/{key}` and `/v1/compiled-body/{key}` routes backed by a
+      filesystem bundle store (`aos-server/src/memo.rs`). Bundles are stored
+      opaquely — the server is a validation catalog, never an authority — with
+      64-hex key validation as the path-safety gate and atomic writes. Reads are
+      open; `PUT` is gated by a `[memo] writable` config (default false), matching
+      the no-auth publish client (a public read mirror returns 403). A real
+      client-to-server loopback demo publishes a `pkgs.zlib` root record from an
+      `rw` evaluator, consumes it on a fresh-cache `ro` evaluator
+      (`memo_net_hits=1`, 0 errors), and is byte-parity green in both directions.
+      The full primary/secondary-loss/poisoned matrix and a cross-host replay
+      remain open.
