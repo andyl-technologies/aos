@@ -648,6 +648,28 @@ to the host-load spikes that skew the mean on a contended machine.
    clean-oracle `cold_geomean`-under-purge0 is captured with the PGO baseline
    run (§31 substrate work), since the leaf A/B's oracle leg was contended.
 
+**Flagship warm number — the durable-cache repeat-instantiate win.** The two
+scoreboard numbers above are the *default cache-less* config. The persist-write
+campaign's headline is the **`AOS_NIX_CACHE`-enabled warm repeat**, answered from
+the durable root-cutoff record without re-deriving the closure. Measured on the
+Linux builder (builder-hil1-87eb5b00, HEAD c36b5189d, native `nix-bench`, median
+of 3, byte-parity green):
+
+```text
+zlib, AOS_NIX_CACHE set:  cold 312 ms  /  warm 6.6 ms
+  warm vs cache-less cold (63.9 ms):  ~10x faster
+  warm vs C++ nix-instantiate (~185 ms):  ~28x faster
+```
+
+This is the number a repeat `aos` eval on a warm durable cache actually pays, and
+the strongest single stat in the campaign. It gates the **default-cache-root
+product decision**: warm is decisively worth a default cache root; the open item
+is the first-eval **cold** cache-populate tax (312 ms ≈ 4.9x cache-less, down
+from the ~13x-class before the persist-storm campaign — see
+`design-notes/persist-write-batching-plan.md` §16.1), which the remaining
+measure-gated increments (write-behind, statx-kill, pack-index hold-fd) drive
+toward the ≤1.2x gate.
+
 **Scoreboard line every landing pastes into its report/commit body:**
 ```text
 scoreboard: cold_geomean=<x> (goal <=0.10; v4 baseline 0.515)
