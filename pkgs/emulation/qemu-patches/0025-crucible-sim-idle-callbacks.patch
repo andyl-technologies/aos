@@ -224,7 +224,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  static void qemu_plugin_time_advance_barrier_bh(void *opaque);
  static void qemu_plugin_time_advance_complete_bh(void *opaque);
-@@ -394,6 +397,35 @@ void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu)
+@@ -393,6 +396,35 @@ void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu)
      }
  }
  

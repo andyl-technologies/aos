@@ -73,8 +73,22 @@
         needle = "async_run_on_cpu(first_cpu, qemu_plugin_advance_time__async";
       }
       {
-        label = "queued virtual clock advance";
-        needle = "qemu_clock_advance_virtual_time(new_time)";
+        # The queued advance MUST use the icount-aware primitive, not the
+        # qtest-only qemu_clock_advance_virtual_time: under -accel sim the virtual
+        # clock is icount-derived and cpus_set_virtual_clock is unset, so that
+        # helper's while (clock < dest) loop never terminates and spins the vCPU
+        # thread holding the BQL. icount_advance_virtual_time_to_ns advances by the
+        # icount bias instead.
+        label = "queued icount virtual-time advance";
+        needle = "icount_advance_virtual_time_to_ns(new_time)";
+      }
+      {
+        label = "icount virtual-time advance helper";
+        needle = "void icount_advance_virtual_time_to_ns(int64_t dest)";
+      }
+      {
+        label = "advance moves the icount bias to the target";
+        needle = "timers_state.qemu_icount_bias + (dest - now)";
       }
       {
         label = "inline virtual timer run";
@@ -109,6 +123,15 @@
       || hasInfix "aio_bh_poll(qemu_get_aio_context" patchSource) [
       "pkgs/emulation/qemu-patches/${patchName}: callback path re-enters aio_bh_poll"
     ]
+    ++ lib.optionals (hasInfix "qemu_clock_advance_virtual_time(new_time)" patchSource) [
+      # Regression guard: the qtest-only qemu_clock_advance_virtual_time spins
+      # forever under -accel sim icount (set_virtual_clock is unset, so the clock
+      # never moves and the while (clock < dest) loop never terminates). The
+      # queued advance MUST go through icount_advance_virtual_time_to_ns instead.
+      # (An explanatory reference to the bare qemu_clock_advance_virtual_time() in
+      # a comment is fine; only the queued-advance call site is forbidden.)
+      "pkgs/emulation/qemu-patches/${patchName}: queued advance uses the icount-incompatible qemu_clock_advance_virtual_time"
+    ]
     ++ failuresFor "tests/crucible/phase1-plugin-time-advance.c" microtestSource [
       {
         label = "patched fixture include";
@@ -116,11 +139,19 @@
       }
       {
         label = "enqueue-only advance exercised";
-        needle = "qemu_plugin_advance_time_ns(1000)";
+        needle = "qemu_plugin_advance_time_ns(5000)";
       }
       {
         label = "normal completion BH exercised";
         needle = "run_normal_main_loop_bottom_halves()";
+      }
+      {
+        label = "icount bias-advance models the sim virtual clock";
+        needle = "icount_advance_virtual_time_to_ns(dest)";
+      }
+      {
+        label = "differential vs the qtest set-based advance under icount";
+        needle = "test_icount_bias_advance_converges_where_qtest_set_would_hang";
       }
       {
         label = "exclusive owner assertion";
@@ -482,6 +513,55 @@ in
             }
             PLUGIN_API_FIXTURE
 
+            mkdir -p accel/tcg include/system
+            # Fixture for the file 0010 now extends with the icount-aware advance
+            # primitive's declaration. The context lines match the real header so
+            # the patch hunk applies at --fuzz=0.
+            cat > include/system/cpu-timers.h <<'CPU_TIMERS_FIXTURE'
+            #ifndef SYSTEM_CPU_TIMERS_H
+            #define SYSTEM_CPU_TIMERS_H
+
+            #include <stdint.h>
+
+            int64_t icount_get(void);
+            int64_t icount_to_ns(int64_t icount);
+
+            void icount_start_warp_timer(void);
+            void icount_account_warp_timer(void);
+            void icount_notify_exit(void);
+
+            /*
+             * CPU Ticks and Clock
+             */
+
+            #endif /* SYSTEM_CPU_TIMERS_H */
+            CPU_TIMERS_FIXTURE
+
+            # Fixture for the file 0010 now extends with icount_advance_virtual_time_to_ns.
+            # icount_get models the icount-derived virtual clock (bias + retired), so
+            # the patched helper's bias bump makes icount_get() reach the target while
+            # the qtest set-based path (modeled in the C test) would never converge.
+            # The context around the insertion point matches the real source so the
+            # patch hunk applies at --fuzz=0.
+            # The C test #includes this file after defining its icount model
+            # (timers_state, crucible_fixture_retired_icount, qatomic_read) and
+            # before #including the patched api-system.c, so the helper the patch
+            # inserts here is defined before api-system.c calls it.
+            cat > accel/tcg/icount-common.c <<'ICOUNT_COMMON_FIXTURE'
+            int64_t icount_get(void)
+            {
+                int64_t icount = timers_state.qemu_icount_bias
+                    + (crucible_fixture_retired_icount()
+                       << qatomic_read(&timers_state.icount_time_shift));
+                return icount;
+            }
+
+            int64_t icount_to_ns(int64_t icount)
+            {
+                return icount << qatomic_read(&timers_state.icount_time_shift);
+            }
+            ICOUNT_COMMON_FIXTURE
+
             patch --batch --fuzz=0 -p1 < "$patchSourcePath"
             ! grep -Eq 'main_loop_wait[[:space:]]*\(|aio_poll[[:space:]]*\(|aio_bh_poll[[:space:]]*\(' plugins/api-system.c
             cp "$microtestSourcePath" phase1-plugin-time-advance.c
@@ -505,6 +585,7 @@ in
             grep -q '^negative_target_rejected_before_queue=true$' "$out/result"
             grep -q '^backward_target_reports_completion_failure=true$' "$out/result"
             grep -q '^queued_worker_runs_virtual_timers=true$' "$out/result"
+            grep -q '^icount_bias_advance_converges_where_qtest_set_hangs=true$' "$out/result"
             grep -q '^completion_uses_normal_main_loop_bh=true$' "$out/result"
             grep -q '^completion_uses_two_stage_bh_barrier=true$' "$out/result"
             grep -q '^timer_bh_precedes_plugin_completion=true$' "$out/result"

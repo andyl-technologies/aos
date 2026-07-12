@@ -71,7 +71,8 @@ fn run() -> Result<(), String> {
                 "CRUCIBLE_QUANTUM_TIMEOUT_SECS",
                 240,
             )?))
-            .with_second_run_host_load(env_flag("CRUCIBLE_QUANTUM_SECOND_RUN_LOAD", true)?);
+            .with_second_run_host_load(env_flag("CRUCIBLE_QUANTUM_SECOND_RUN_LOAD", true)?)
+            .with_prove_idle_jump(env_flag("CRUCIBLE_QUANTUM_PROVE_IDLE_JUMP", false)?);
     if let Some(initrd) = initrd {
         config = config.with_initrd(initrd);
     }
