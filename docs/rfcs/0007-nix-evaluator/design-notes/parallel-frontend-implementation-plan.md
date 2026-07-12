@@ -56,9 +56,13 @@
   *computed*. `callPackage` itself does `import path` (`pkgs/default.nix:332`), so
   the literal-path edges that speculation can see are the ones passed to
   `callPackage`/`import` **as literals** — which requires speculating on
-  path-literal IR nodes generally, not just `import`-argument nodes. Even then,
-  the top-level `readDir`-driven fan-out is invisible to static speculation. This
-  is the single most important scoping fact in this note (§2, §4).
+  path-literal IR nodes generally, not just `import`-argument nodes (**approved
+  ruling**, §2). Even then, the top-level `readDir`-driven fan-out is invisible to
+  *static* speculation, so a **`readDir`-driven prefetch is planned as its own
+  first-class stage** (§3e, §6 S6), framed as a C-19 extension — doc 01 scopes the
+  target corpus to AOS's own package set, so covering our actual `readDir` wiring
+  is within the RFC's letter. This is the single most important scoping fact in
+  this note (§2, §3e, §4).
 - **No parse/lower wall timer exists today.** The eval-stats surface counts
   `imports_evaluated` and `import_parse_cache_hits/misses` (`eval_stats.rs:50-55,
   85-89`) but has no parse/resolve/lower/annotate duration counters. The "~25% of
@@ -215,17 +219,21 @@ sub-file imports.
 Two consequences:
 
 - To capture even the hand-wired-and-`callPackage`-literal edges, speculation must
-  key on **path-literal IR nodes wherever they appear**, not only on nodes that
-  are syntactically the argument of `import` — because `callPackage ./foo.nix`
+  key on **path-literal IR nodes wherever they appear** (**approved ruling** —
+  mandatory on our corpus), not only on nodes that are syntactically the argument
+  of `import` — because `callPackage ./foo.nix`
   hides the `import` inside `callPackage`'s body (`pkgs/default.nix:332`). A
   literal Path node that resolves to an existing `.nix` file (or a directory with
   `default.nix`) is a speculation candidate regardless of its syntactic parent.
-- Even with that generalization, the AOS corpus caps static-speculation reach at
-  the hand-wired + literal-`callPackage` subset; the `readDir`-driven bulk is out
-  of scope for *static* speculation (a `readDir`-driven prefetch is a separate,
-  effect-traced idea, explicitly **not** in C-19 — §4). nixpkgs is more favorable:
-  `all-packages.nix` is a very large file of literal `callPackage ./…` edges, so
-  the same path-literal scan there reaches most of the tree.
+- Even with that generalization, the AOS corpus caps *static* speculation reach at
+  the hand-wired + literal-`callPackage` subset; the `readDir`-driven bulk is
+  reached by a separate, effect-traced **`readDir`-prefetch stage** (§3e, §6 S6),
+  now a **planned C-19 extension** rather than a maybe-follow-on — doc 01 scopes the
+  target corpus to AOS's own package set, so a mechanism covering our actual
+  `readDir` wiring is within the RFC's letter. nixpkgs is additionally favorable
+  for the *static* path: `all-packages.nix` is a very large file of literal
+  `callPackage ./…` edges, so the same path-literal scan there reaches most of the
+  tree without needing the `readDir` stage.
 
 ## 3. Design
 
@@ -357,17 +365,64 @@ and the `AOS_NIX_EVAL_STATS` JSON dump: `speculated`, `speculation_hits`,
 `speculation_wasted`, `speculation_bytes_read`. M-23 is tuned by watching
 `speculation_wasted / speculated` against helper idle time.
 
+### 3e. `readDir`-driven prefetch (approved C-19 extension)
+
+§2 establishes that the AOS package set is discovered by `builtins.readDir` +
+`callPackage (dir + "/${name}")` (`pkgs/default.nix:354-383`), which static
+path-literal speculation cannot see. Because doc 01 scopes the evaluator's target
+corpus to AOS's own package set (general nixpkgs is a non-goal), a prefetch
+mechanism that covers *our* wiring is squarely in scope. This is a **planned,
+first-class stage** (§6 S6), framed as a **C-19 extension** with its own
+decision-register entry candidate (§8) — the letter of C-19 speaks of "statically
+known import edges," and a directory listing is a dynamically-obtained edge set,
+so it wants its own decision, not a silent reinterpretation of C-19.
+
+**Mechanism.** When evaluation performs `builtins.readDir dir` (a traced impure
+input in the effect lattice, S-23), the returned entry set names a bounded family
+of candidate files: the `regular` `.nix` entries and the `directory` entries'
+`default.nix`, filtered by the same rules `discoverPackages` applies
+(`pkgs/default.nix:358-375`: skip `default.nix`, skip `_`-prefixed). Those
+candidates are seeded into the *same* speculation frontier the static scanner
+feeds (§3a), producing `Speculate { path }` tasks on the same low-priority lane.
+The prefetch fires on the `readDir` result the evaluator *actually* obtained, so
+it introduces no new filesystem observation the eval was not already going to make
+at the directory level.
+
+**Error quarantine is identical.** A `readDir`-seeded speculative parse/lower
+failure is stashed in the same `SpeculativeParseStore` (§3b) and surfaced only if
+that file is genuinely `import`/`callPackage`-ed later — a package file with a
+syntax error that the selected system variant never instantiates must stay silent,
+exactly as under static speculation. Nothing about the seeding source changes the
+quarantine discipline: the outcome is keyed by `ParseFileKey` (realpath + content
+hash) regardless of how the candidate was discovered.
+
+**Soundness boundary.** The seeding *reads* `readDir`'s result but must not alter
+the eval's impure-input trace beyond the `readDir` observation the demand path
+already records — i.e. seeding happens *after* the real `readDir` impure-input
+fingerprint is recorded, consumes its already-materialized entry list, and adds no
+further trace entries (the per-file speculative reads are trace-silent, §7). It
+speculates only files *named by that listing*, never a guessed sibling, so it
+never reads a path the directory did not actually contain. Access policy gates
+each candidate read exactly as in §3b/§7.
+
+**Why it is separated from the static stage.** Static path-literal prefetch (S2)
+is pure and needs no effect to fire; `readDir` prefetch (S6) rides an effectful
+node and therefore lands only after the static machinery, quarantine, and
+telemetry are proven, reusing all three. Keeping them distinct stages keeps the
+parity story clean: S2 can be validated with zero effectful surface before S6
+introduces the `readDir` seam.
+
 ## 4. What this does not cover (explicitly)
 
-- **Computed imports.** `import (fetchGit …)`, `import someExpr`, and — critically
-  for AOS — the `readDir`-driven `callPackage (dir + "/${name}")` package
-  discovery (`pkgs/default.nix:377-383`) are **out of scope**. Their targets are
-  not knowable without evaluation. A `readDir`-directory-listing-driven prefetch
-  (speculating every `.nix` file in a directory the evaluator just `readDir`'d)
-  would reach them, but that speculates on an **effectful** node (`readDir` is a
-  traced impure input) and is therefore a different, more delicate mechanism than
-  C-19's static-AST speculation; it is deliberately not proposed here. It is the
-  obvious follow-on if static speculation proves its plumbing (§8).
+- **Computed imports via arbitrary expressions.** `import (fetchGit …)`,
+  `import someExpr`, and any path built from a value the evaluator has not yet
+  produced are **out of scope** for *both* speculation stages — their targets are
+  not knowable without evaluation, and no directory listing names them. Note the
+  **`readDir`-driven `callPackage (dir + "/${name}")` package discovery**
+  (`pkgs/default.nix:377-383`) is **no longer in this list**: it is covered by the
+  `readDir`-prefetch stage (§3e, §6 S6). What remains uncovered is the residue of
+  genuinely value-dependent import targets, which is small on the AOS corpus (§2:
+  the 4 `import (…)` sites are generated-file imports).
 - **Import-from-derivation (IFD).** IFD targets are store paths produced by a build
   that has not run at speculation time; nothing static points at them. IFD is an
   effectful node (S-23 effect lattice) and is never speculated.
@@ -391,7 +446,9 @@ counters, `:50-55,85-89`). Two options, in preference order:
    nanos across the four front-end calls into new stats fields
    (`front_end_parse_nanos`, `_resolve_`, `_lower_`, `_annotate_`), dumped in the
    existing JSON block. Parity-neutral (timing only), and it makes the acceptance
-   metric self-measuring. Preferred if the sampling profile is ambiguous.
+   metric self-measuring. Preferred if the sampling profile is ambiguous. The
+   precise file/function/field-level diff for this is pre-written in **Appendix A**
+   so S0 is mechanical when the build lane opens.
 
 **Acceptance metric.** Cold wall-clock delta on the two established shapes:
 
@@ -451,9 +508,20 @@ with speculation off.
 - **S4 — M-23 telemetry + tuning.** Add the mis-speculation counters and the
   budget knobs (§3d); tune depth/inflight against `wasted/idle`. *Gate:
   parity-neutral.*
-- **S5 — Default-on.** Flip `AOS_NIX_SPECULATE` default to `parse` once S2–S4 show
-  a wide-eval win at K≥4 with zero parity divergence and no K=1 regression.
-  *(`compile`/pre-lower speculation stays off, pending JIT-under-parallel, §3d.)*
+- **S5 — Default-on (static).** Flip `AOS_NIX_SPECULATE` default to `parse` once
+  S2–S4 show a wide-eval win at K≥4 with zero parity divergence and no K=1
+  regression. *(`compile`/pre-lower speculation stays off, pending
+  JIT-under-parallel, §3d.)*
+- **S6 — `readDir`-driven prefetch (C-19 extension).** Add the effectful seam
+  (§3e): after a `readDir` records its impure-input fingerprint, seed the filtered
+  candidate set into the existing speculation frontier. Reuses S2's frontier/lane,
+  S3's quarantine, and S4's telemetry unchanged. Lands its own decision-register
+  entry (§8). *Gate: parity-neutral with the seam off; with it on, no divergence on
+  the full package-set instantiation (the shape that actually exercises
+  `discoverPackages`) and a measurable helper-idle reduction. Add a targeted test:
+  a directory containing a syntactically-broken `.nix` that the selected variant
+  never instantiates must stay silent, and one that is instantiated must reproduce
+  the identical demand-path error.*
 
 ## 7. Why speculation is side-effect-free — and the one place it isn't
 
@@ -483,31 +551,41 @@ files ahead of demand. Two obligations follow, and both are load-bearing:
    Speculate task must apply the identical access check and skip disallowed paths.
    In `Restricted`/`Pure` eval modes (`eval_import.rs:282-305` shows the pattern
    for `fetchurl`) speculation must honor the same allow-list.
-2. **No speculation of `readDir`/effect-derived paths.** Covered by §4 — static
-   speculation only follows literal Path nodes, which are content on disk, not
-   effect outputs.
+2. **Only real, named candidates — never a guessed path.** The static stage
+   follows only literal Path nodes (content on disk, not effect outputs). The
+   `readDir` stage (§3e) follows only files *named by a listing the evaluator
+   actually obtained*, seeded after that `readDir`'s impure-input fingerprint is
+   recorded, and adds no further trace entries. Neither stage ever speculates a
+   store path that is a build output (IFD, §4) or a guessed sibling the source did
+   not name.
 
 With those two guards, the *only* externally observable output of speculation is a
 warm cache entry and a timing change — the C-19 invariant.
 
 ## 8. Open questions and doc-vs-code divergences
 
-1. **"rayon pool" (doc 04 §9.6, doc 13) vs the real pool.** The docs describe the
-   parallel substrate as "the rayon work-stealing pool." The implementation is a
-   hand-rolled `std::thread` helper pool with Chase-Lev deques and a bespoke demand
-   queue (`parallel_demand.rs:480,572`, `parallel_chase_lev.rs`); there is no
-   `rayon` dependency. This note schedules speculation on the **actual** pool. The
-   docs should be corrected to say "the L2 Chase-Lev helper pool," or the divergence
-   noted; no behavior rides on the word "rayon."
-2. **AOS corpus vs C-19's static-edge assumption.** doc 04 §9.6 leans on
-   "`import ./foo.nix` with a literal path is a static edge." True, but on the AOS
-   corpus the load-bearing edges are `readDir` + `callPackage (dir + "/${name}")`
-   (§2), which are *computed*. The static-speculation win on AOS is therefore
-   bounded to hand-wired + literal-`callPackage` edges; the doc's framing implies a
-   larger reach than this corpus offers. Recommend either (a) documenting the
-   bound, or (b) scoping a follow-on `readDir`-driven prefetch (out of C-19's
-   letter but within its spirit) as the mechanism that actually covers a package
-   set. Which of (a)/(b) to pursue is the main open product question.
+1. **"rayon pool" (doc 04 §9.6, doc 13 §5.5.1) vs the real pool — RESOLVED
+   (ruling 3).** The docs describe the parallel substrate as "the rayon
+   work-stealing pool" (doc 13 §5.5.1 table row, `13-parallel-evaluation.md:573`).
+   The implementation is a hand-rolled `std::thread` helper pool with Chase-Lev
+   deques and a bespoke demand queue (`parallel_demand.rs:480,572`,
+   `parallel_chase_lev.rs`); there is no `rayon` dependency. **Ruling: keep the
+   shipped-and-tested hand-rolled substrate; do not adopt rayon.** The doc-13 §5.5.1
+   wording fix ("rayon work-stealing" → "hand-rolled `std::thread` + crossbeam
+   Chase-Lev work-stealing") is deferred to a batched doc-corrections pass rather
+   than churning doc 13 now. Speculation schedules on the actual pool; no behavior
+   rides on the word "rayon."
+2. **AOS corpus vs C-19's static-edge assumption — RESOLVED (ruling 2).** doc 04
+   §9.6 leans on "`import ./foo.nix` with a literal path is a static edge." True,
+   but on the AOS corpus the load-bearing edges are `readDir` +
+   `callPackage (dir + "/${name}")` (§2), which are *computed*. **Ruling: pursue
+   the `readDir`-driven prefetch as a first-class stage (§3e, §6 S6)**, not a
+   maybe-follow-on — doc 01 scopes the target corpus to AOS's own package set, so a
+   mechanism covering our actual wiring is within the RFC's letter. Remaining open
+   item: this wants **its own decision-register entry** (a `readDir` listing is a
+   dynamically-obtained edge set, so it should be a named C-19 extension, e.g. a
+   new `C-2x`, rather than a silent reinterpretation of C-19). Drafting that entry
+   is a doc task to batch with the doc-13 §5.5.1 fix.
 3. **S1 symbol-id reordering.** Whether making remap-on-adoption the serial default
    is truly `.drv`-invariant needs the full Linux parity corpus to confirm, not
    just the darwin gate — symbol-id order is internal but the proof that nothing
@@ -519,3 +597,90 @@ warm cache entry and a timing change — the C-19 invariant.
    third lane cleanly, or wants a dedicated low-priority Chase-Lev deque per worker,
    is an implementation choice to settle in S2 — it does not affect the design's
    soundness, only its scheduling efficiency.
+
+## Appendix A — S0 parse/lower timer diff-plan (mechanical when the lane opens)
+
+The first implementation increment. Adds four monotonic front-end timers to the
+existing eval-stats surface so the "~25% of cold" claim is self-measuring, and no
+later stage claims a `%` win without timer evidence. **Timing is taken only when
+`AOS_NIX_EVAL_STATS` is enabled**, so the default hot path pays nothing and the
+K=1/speculate-off parity+performance gate is untouched. Timing-only: no value,
+error, or `.drv` changes.
+
+### A.1 Files and exact edits
+
+1. **`crates/ratchet-oracle/src/eval/tree_walk/outcome.rs` — the `EvalStats`
+   struct (`:13347`).** Add four `u64` nanosecond accumulators immediately after
+   `imports_evaluated: u64` (`:13408`), matching the surrounding `pub(crate)`
+   field convention:
+
+   ```text
+   pub(crate) front_end_parse_nanos: u64,      // parse_bytes_with_symbols
+   pub(crate) front_end_resolve_nanos: u64,    // resolve / ScopeResolver
+   pub(crate) front_end_lower_nanos: u64,      // nix_lower[_with_options]
+   pub(crate) front_end_annotate_nanos: u64,   // annotate_import_ir
+   ```
+
+   `EvalStats` is merged across workers by `EvalStats::merge_from`
+   (`outcome.rs:13720`), which destructures `other` (`imports_evaluated` at
+   `:13775`) and `saturating_add`s each field (`:13900`); add the four new fields to
+   both the destructure and the add list there, mirroring `imports_evaluated`
+   exactly. A `pub const fn` accessor per field (like `imports_evaluated()` at
+   `:14066`) is optional but matches the surrounding convention.
+
+2. **`crates/ratchet-oracle/src/eval/tree_walk/eval_stats.rs` — increment
+   helpers.** Add four helpers mirroring `increment_imports_evaluated`
+   (`:888-890`), each taking a `u64` nanos and `saturating_add`-ing into the
+   matching field. Also add the four fields to the outcome-snapshot copy near
+   `:85` (where `imports_evaluated: self.stats.imports_evaluated` is copied into
+   the public snapshot), if that snapshot enumerates fields explicitly.
+
+3. **`crates/ratchet-oracle/src/eval/tree_walk/eval_load.rs` — the timed call
+   sites.** Wrap the four front-end calls in *both* import parse paths. Guard each
+   with `self.options.eval_stats_dump()` so no `Instant::now()` is taken when
+   stats are off:
+
+   - serial `load_and_eval_import_bytes` (`:131` parse, `:144-147` resolve,
+     `:160-164` lower, `:181` annotate);
+   - parallel `load_and_eval_import_bytes_shared` (`:210` parse, `:222-226`
+     resolve, `:239-243` lower, `:256` annotate).
+
+   Shape (illustrative, per call):
+
+   ```text
+   let __t = self.options.eval_stats_dump().then(std::time::Instant::now);
+   let parsed = parse_bytes_with_symbols(source, live_symbols)?;
+   if let Some(t) = __t { self.add_front_end_parse_nanos(t.elapsed().as_nanos() as u64); }
+   ```
+
+   The cache-path parse inside `ParseCache::load_or_parse_bytes`
+   (`cache/parse/mod.rs:407-411`) is intentionally **not** timed here: it lives in
+   a crate with no `TreeWalk` handle, and the "~25% of cold" target is the
+   no-cache cold path these two `eval_load.rs` functions own. If cache-path timing
+   is later wanted, thread a `&mut u64` out of `load_parse_cached_import`
+   (`eval_import.rs:922`) rather than reaching into the cache crate.
+
+4. **`crates/aos-nix/src/native/eval_stats_dump.rs` — JSON emission.** Add the
+   four keys to the `eprintln!` block (after `imports_evaluated`, `:75+`) and to
+   the module-doc `text`-fenced example (`:11-51`), keeping key order stable for
+   the `NIX_SHOW_STATS`-style diff consumers:
+
+   ```text
+   "front_end_parse_nanos":{},"front_end_resolve_nanos":{},
+   "front_end_lower_nanos":{},"front_end_annotate_nanos":{},
+   ```
+
+### A.2 Verification (when the lane opens)
+
+- `nix develop -c cargo build --manifest-path crates/Cargo.toml --bin aos`, then
+  run the AOS package-set instantiation with `AOS_NIX_EVAL_STATS=1` and confirm the
+  four keys sum to ≈25% of the measured cold wall (re-confirming the claim at
+  `HEAD`).
+- Parity/no-regression gate: with `AOS_NIX_EVAL_STATS` **unset**, the `nix-diff` /
+  `nix-bench` darwin gate must be byte-identical and within noise of the
+  pre-change baseline (the `.then(Instant::now)` guard means zero calls on the hot
+  path).
+- File-size gate (`tests/source_file_size.rs`): `outcome.rs` is already the
+  largest oracle file (14,420 lines) — four field lines do not cross a cap, but
+  re-run the gate since it is pre-existing-red on some files (task #9).
+
