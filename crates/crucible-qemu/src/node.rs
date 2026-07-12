@@ -624,6 +624,15 @@ impl QemuNode {
 
     /// Advances the child to an instruction-count ceiling through shared memory.
     ///
+    /// This drives a single bounded quantum (one publish/await/finish). It is
+    /// therefore not, on its own, an idle driver: when the guest parks idle
+    /// before the ceiling it returns [`AdvanceOutcome::Paused`], and a caller that
+    /// needs to advance an idle guest to a later boundary must re-issue the
+    /// advance in a loop (raising the ceiling and re-waking the plugin) — the same
+    /// caller-side re-issue loop the raw shared-memory hot path requires. The
+    /// async driver's yields are no-ops for a standalone gate, so wrapping this
+    /// call does not by itself advance an idle guest.
+    ///
     /// # Errors
     ///
     /// Returns [`QemuNodeError`] when the bounded async driver, shared-memory hot

@@ -592,7 +592,8 @@ impl QemuLaunchArtifact {
 pub struct QemuVmLaunchConfig {
     node_id: String,
     kernel: QemuLaunchArtifact,
-    root_image: QemuLaunchArtifact,
+    root_image: Option<QemuLaunchArtifact>,
+    firmware: Option<QemuLaunchArtifact>,
     initrd: Option<QemuLaunchArtifact>,
     root_overlay_file_name: String,
 }
@@ -608,7 +609,29 @@ impl QemuVmLaunchConfig {
         Self {
             node_id: node_id.into(),
             kernel,
-            root_image,
+            root_image: Some(root_image),
+            firmware: None,
+            initrd: None,
+            root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
+        }
+    }
+
+    /// Builds a diskless VM launch config that boots firmware, kernel, and initrd.
+    ///
+    /// A diskless launch attaches no block device, so a guest that would probe a
+    /// virtio-blk root disk during boot never issues block I/O that a runner
+    /// without a host block-I/O runtime cannot service.
+    #[must_use]
+    pub fn new_diskless(
+        node_id: impl Into<String>,
+        kernel: QemuLaunchArtifact,
+        firmware: QemuLaunchArtifact,
+    ) -> Self {
+        Self {
+            node_id: node_id.into(),
+            kernel,
+            root_image: None,
+            firmware: Some(firmware),
             initrd: None,
             root_overlay_file_name: DEFAULT_ROOT_OVERLAY_FILE_NAME.to_owned(),
         }
@@ -618,6 +641,13 @@ impl QemuVmLaunchConfig {
     #[must_use]
     pub fn with_initrd(mut self, initrd: QemuLaunchArtifact) -> Self {
         self.initrd = Some(initrd);
+        self
+    }
+
+    /// Returns a config with a pinned content-addressed guest firmware image.
+    #[must_use]
+    pub fn with_firmware(mut self, firmware: QemuLaunchArtifact) -> Self {
+        self.firmware = Some(firmware);
         self
     }
 
@@ -640,10 +670,16 @@ impl QemuVmLaunchConfig {
         &self.kernel
     }
 
-    /// Returns the content-addressed root-image artifact.
+    /// Returns the content-addressed root-image artifact, if the launch has a disk.
     #[must_use]
-    pub const fn root_image(&self) -> &QemuLaunchArtifact {
-        &self.root_image
+    pub const fn root_image(&self) -> Option<&QemuLaunchArtifact> {
+        self.root_image.as_ref()
+    }
+
+    /// Returns the pinned content-addressed firmware artifact, if any.
+    #[must_use]
+    pub const fn firmware(&self) -> Option<&QemuLaunchArtifact> {
+        self.firmware.as_ref()
     }
 
     /// Returns the optional content-addressed initrd artifact.
@@ -660,17 +696,29 @@ impl QemuVmLaunchConfig {
             format!("node_id={}", self.node_id),
             format!("kernel_hash={}", content_hash_hex(self.kernel.content_hash)),
             format!("kernel_path={}", self.kernel.path),
-            format!(
-                "root_image_hash={}",
-                content_hash_hex(self.root_image.content_hash)
-            ),
-            format!("root_image_path={}", self.root_image.path),
-            "root_disk_policy=copy-on-write-overlay".to_owned(),
-            format!("root_overlay_file={}", self.root_overlay_file_name),
-            format!("root_drive_id={ROOT_DRIVE_ID}"),
-            format!("root_device_id={ROOT_DEVICE_ID}"),
-            "root_device_model=virtio-blk-pci".to_owned(),
         ];
+        if let Some(firmware) = &self.firmware {
+            lines.push(format!(
+                "firmware_hash={}",
+                content_hash_hex(firmware.content_hash)
+            ));
+            lines.push(format!("firmware_path={}", firmware.path));
+        }
+        match &self.root_image {
+            Some(root_image) => {
+                lines.push(format!(
+                    "root_image_hash={}",
+                    content_hash_hex(root_image.content_hash)
+                ));
+                lines.push(format!("root_image_path={}", root_image.path));
+                lines.push("root_disk_policy=copy-on-write-overlay".to_owned());
+                lines.push(format!("root_overlay_file={}", self.root_overlay_file_name));
+                lines.push(format!("root_drive_id={ROOT_DRIVE_ID}"));
+                lines.push(format!("root_device_id={ROOT_DEVICE_ID}"));
+                lines.push("root_device_model=virtio-blk-pci".to_owned());
+            }
+            None => lines.push("root_disk_policy=diskless".to_owned()),
+        }
         if let Some(initrd) = &self.initrd {
             lines.push(format!(
                 "initrd_hash={}",
@@ -684,17 +732,22 @@ impl QemuVmLaunchConfig {
     }
 
     fn qemu_args(&self) -> Vec<String> {
-        let mut args = vec![
-            "-kernel".to_owned(),
-            self.kernel.path.clone(),
-            "-drive".to_owned(),
-            format!(
-                "id={ROOT_DRIVE_ID},file={},backing.driver=qcow2,backing.file.driver=file,backing.file.filename={},if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
-                self.root_overlay_file_name, self.root_image.path
-            ),
-            "-device".to_owned(),
-            format!("virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID}"),
-        ];
+        let mut args = Vec::new();
+        if let Some(firmware) = &self.firmware {
+            args.extend(["-bios".to_owned(), firmware.path.clone()]);
+        }
+        args.extend(["-kernel".to_owned(), self.kernel.path.clone()]);
+        if let Some(root_image) = &self.root_image {
+            args.extend([
+                "-drive".to_owned(),
+                format!(
+                    "id={ROOT_DRIVE_ID},file={},backing.driver=qcow2,backing.file.driver=file,backing.file.filename={},if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
+                    self.root_overlay_file_name, root_image.path
+                ),
+                "-device".to_owned(),
+                format!("virtio-blk-pci,drive={ROOT_DRIVE_ID},id={ROOT_DEVICE_ID}"),
+            ]);
+        }
         if let Some(initrd) = &self.initrd {
             args.extend(["-initrd".to_owned(), initrd.path.clone()]);
         }
@@ -704,11 +757,17 @@ impl QemuVmLaunchConfig {
     fn validate(&self) -> Result<(), QemuLaunchCommandError> {
         validate_launch_text("node_id", &self.node_id)?;
         self.kernel.validate("kernel_path")?;
-        self.root_image.validate("root_image_path")?;
+        if let Some(firmware) = &self.firmware {
+            firmware.validate("firmware_path")?;
+        }
+        if let Some(root_image) = &self.root_image {
+            root_image.validate("root_image_path")?;
+            validate_overlay_file_name(&self.root_overlay_file_name)?;
+        }
         if let Some(initrd) = &self.initrd {
             initrd.validate("initrd_path")?;
         }
-        validate_overlay_file_name(&self.root_overlay_file_name)
+        Ok(())
     }
 }
 
