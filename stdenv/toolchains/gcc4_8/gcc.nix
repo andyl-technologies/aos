@@ -99,8 +99,10 @@ in
         -e 's|then sleep 1; else exit 1; fi;|then sleep 1; else sleep 1; fi;|' \
         gcc/Makefile.in
 
-      # Enumerate the requested C++ and LTO frontends directly because the
-      # early bootstrap shell does not expand gcc/*/config-lang.in reliably.
+      # Enumerate every shipped language descriptor directly because the early
+      # bootstrap shell does not expand gcc/*/config-lang.in reliably. The
+      # second configure scan needs disabled languages too so it can remove
+      # their target libraries from the build.
       ${prev.patch}/bin/patch -p1 < ${./patches/gcc-4.8.5-explicit-cxx-lto-frontends.patch}
 
       # Disable split-stack support in libgcc: this glibc lacks NPTL pthread.h.
@@ -171,7 +173,7 @@ in
       ''} "$TMPDIR/header-overlay/linux/types.h"
     '';
     preConfigure = ''
-      for frontend in cp lto; do
+      for frontend in ada c cp fortran go java lto objc objcp; do
         test -f "$TMPDIR/gcc-4.8.5/gcc/$frontend/config-lang.in" || {
           echo "GCC 4.8.5 $frontend frontend source is missing" >&2
           exit 1
