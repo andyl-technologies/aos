@@ -212,14 +212,15 @@ pub use single_vm_fingerprint::{
     VerifiedLiveRunInputs, VerifiedLiveRunInputsError, spawn_live_observation_process,
 };
 pub use single_vm_fingerprint::{
-    QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTerminalHorizonTraceImport, QemuTraceDefinitionPreflight,
-    QemuTraceFingerprintDefinition, QemuTraceFingerprintImport, QemuTraceFingerprintImportError,
-    QemuTraceGenesisFingerprintImport, QemuTraceIdentityContract, QemuTraceObservationContract,
-    QemuTraceProcessArgvContract, QemuTraceVcpuContract, SINGLE_VM_FINGERPRINT_DIGEST_BYTES,
-    SINGLE_VM_FINGERPRINT_STATE_DUMP_EVENT_LIMIT, SingleVmFingerprintBisectionError,
-    SingleVmFingerprintBisectionReport, SingleVmFingerprintBisectionRequest,
-    SingleVmFingerprintCanonicalEvent, SingleVmFingerprintDivergenceStateDump,
-    SingleVmFingerprintEventBoundary, SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
+    PluginFingerprintBoundary, QEMU_TRACE_FINGERPRINT_SCHEMA, QemuTerminalHorizonTraceImport,
+    QemuTraceDefinitionPreflight, QemuTraceFingerprintDefinition, QemuTraceFingerprintImport,
+    QemuTraceFingerprintImportError, QemuTraceGenesisFingerprintImport, QemuTraceIdentityContract,
+    QemuTraceObservationContract, QemuTraceProcessArgvContract, QemuTraceVcpuContract,
+    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SINGLE_VM_FINGERPRINT_STATE_DUMP_EVENT_LIMIT,
+    SingleVmFingerprintBisectionError, SingleVmFingerprintBisectionReport,
+    SingleVmFingerprintBisectionRequest, SingleVmFingerprintCanonicalEvent,
+    SingleVmFingerprintDivergenceStateDump, SingleVmFingerprintEventBoundary,
+    SingleVmFingerprintGateError, SingleVmFingerprintGateReport,
     SingleVmFingerprintMemoryRegionState, SingleVmFingerprintMismatch,
     SingleVmFingerprintMismatchKind, SingleVmFingerprintProbe, SingleVmFingerprintProbeRequest,
     SingleVmFingerprintProbeRunner, SingleVmFingerprintRunError, SingleVmFingerprintRunInputs,
@@ -230,9 +231,9 @@ pub use single_vm_fingerprint::{
     SingleVmFingerprintVcpuState, SingleVmHostProfile, SingleVmNvcpuFingerprintContract,
     SingleVmNvcpuFingerprintMaterial, SingleVmQmpVcpuTopology, SingleVmRoundRobinCursor,
     SingleVmVcpuRegisterDigest, bisect_single_vm_fingerprint_with_probes,
-    compare_single_vm_fingerprint_streams, compute_single_vm_sample_rolling_fingerprint,
-    initial_single_vm_rolling_fingerprint, nvcpu_material_from_shmem_sample,
-    run_single_vm_fingerprint_gate,
+    build_plugin_fingerprint_stream, compare_single_vm_fingerprint_streams,
+    compute_single_vm_sample_rolling_fingerprint, initial_single_vm_rolling_fingerprint,
+    nvcpu_material_from_shmem_sample, run_single_vm_fingerprint_gate,
 };
 #[cfg(target_os = "linux")]
 pub use spawn::{
