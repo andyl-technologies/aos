@@ -316,54 +316,17 @@ must not fight either:
 
 ### 5.1 Canonical target measurements — the 0.5x/10x scoreboard
 
-*(Added as bench-methodology owner: every RFC-0007 campaign landing — memory
-ladder, JIT, parallel, this one — reports the same two numbers so progress
-toward the 0.5x-memory / 10x-perf goals is comparable across campaigns. Define
-once, here.)*
-
-Both come from `aos nix-bench --json` (fields already emitted; no schema change),
-run in the standard config (default cache-less, `AOS_NIX_JIT=1`, quiet machine,
-interleaved A/B, median over ≥3 samples):
-
-1. **Wide-eval memory ratio (the 0.5x-of-C++ number).** On `-A bench.wide`,
-   the ratio of native post-run RSS to the C++ oracle's child peak RSS, reported
-   for **cold and warm** separately:
-   ```text
-   mem_ratio(temp) = median(native_summary.memory.rss_after_bytes_max) [temp]
-                     / median(summary.child_peak_rss_bytes_max)          [temp]
-   ```
-   (`rss_after_bytes_max` and `child_peak_rss_bytes_max` are the existing v3
-   memory fields in `crates/aos/src/commands/nix_bench/record.rs`.) **Goal:
-   mem_ratio ≤ 0.5** cold and warm. Today wide-eval native is ~140-190 MiB vs
-   C++ ~77 MiB (~1.8-2.5x); the target is ≤38 MiB (0.5x). Also report the raw
-   MiB and the native arena peak (`arena_peak_live_mapped_bytes_max`) so a
-   regression is attributable to arena vs non-arena traffic.
-2. **Cold-latency geomean (the 10x number).** Over the canonical 17-attr suite
-   (9 leaf + 8 toolchain, doc 15), the geometric mean of the per-attr cold
-   `native/oracle` medians:
-   ```text
-   cold_geomean = geomean over 17 attrs of
-       ( median(native_summary.median_seconds)[cold]
-         / median(summary.mean_seconds)[cold] )
-   ```
-   **Goal: cold_geomean ≤ 0.1** (10x faster than C++). v4 honest baseline is
-   **0.515** (~1.9x). Report warm geomean alongside for context, but the cold
-   geomean is the headline (warm rides the cache/cutoff and is a different
-   signal).
-
-**Scoreboard line every landing pastes into its report/commit body:**
+The two canonical scoreboard numbers (`cold_geomean` for the 10x-perf goal,
+`wide_mem_ratio` for the 0.5x-memory goal) now live in
+[doc 15 §5.4](../docs/rfcs/0007-nix-evaluator/15-differential-testing-and-benchmarking.md)
+as the standalone canonical definition every RFC-0007 campaign cites. This
+campaign additionally reports one **local** number in its scoreboard line —
+cache-enabled cold vs cache-less cold (goal ≤1.2, from 6-8x today) — since it is
+specific to the persist-cache path:
 ```text
 scoreboard: cold_geomean=<x> (goal <=0.10; v4 baseline 0.515)
             wide_mem_ratio cold=<x> warm=<x> (goal <=0.50; native <MiB> vs C++ <MiB>)
-            [+ this-campaign local: cache-enabled cold vs cache-less <x> (goal <=1.2)]
-```
-Use `median_seconds` (v4) not `mean_seconds` for the native leg — it is robust
-to the host-load spikes that skew the mean on a contended machine (the reason
-the raw ratio was discarded in the v4 methodology). The exact wide-eval command:
-```text
-env AOS_NIX_ORACLE=.../nix-instantiate AOS_NIX_NATIVE=1 AOS_NIX_JIT=1 \
-    crates/target/release/aos --eval-system x86_64-linux nix-bench \
-    --file ./default.nix -A bench.wide --samples 5 --no-record
+            persist-local: cache-enabled cold vs cache-less <x> (goal <=1.2)
 ```
 
 ---

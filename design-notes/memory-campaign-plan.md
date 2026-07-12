@@ -11,7 +11,8 @@ file:line, with honest per-lever MiB and a credible path to 38. It is not new
 design where the campaign log already has it; it is the executable ordering.
 
 Measurement per landing is the **scoreboard** defined in
-`persist-write-batching-plan.md` §5.1: `wide_mem_ratio` = median native
+[doc 15 §5.4](../docs/rfcs/0007-nix-evaluator/15-differential-testing-and-benchmarking.md):
+`wide_mem_ratio` = median native
 `rss_after_bytes_max` / oracle `child_peak_rss_bytes_max` on `bench.wide`, cold
 and warm (goal ≤0.5), plus `arena_peak_live_mapped_bytes_max` for
 arena-vs-non-arena attribution.
@@ -75,6 +76,7 @@ Two facts sharpen the target immediately:
 | Symbols + retained module IR | unmeasured | **Estimated** | whole-eval, never evicted (`aos-nix-syntax/src/ast.rs:108-122`; IR-eviction unimplemented `30-...:706-709`) | `SymbolTable::len()` only; bytes MISSING |
 | mimalloc retained-free pages | ~34 MiB warm est (task #5 measured `MADV_FREE` residency) | **Estimated** | OS pressure / `MIMALLOC_PURGE_DELAY` (Linux) | none (allocator-internal) |
 | Eval-cache DCG | **~0 in default cache-less run** (enum defaults `Disabled` `cache/runtime/eval_cache_runtime.rs:6-13`, `aos-nix/src/native/mod.rs:142`) | **Measured-by-gating** | end (cache-on only) | MISSING (cache-on only) |
+| Cache-on transient churn (per-force payload build + write-behind buffer) | ~0 default; cache-on only | **est** | per-force alloc discarded immediately; buffer flushed at run boundary | see `persist-write-batching-plan.md` §3.1/§3.2 |
 | Env-capture frame retention | part of "54% dead-at-end" | **Measured share** | end (no default sweep) | traffic (`env_frame_slot_bytes`) |
 | Allocator overhead / fragmentation / stacks | residual | **Estimated** | — | none |
 
@@ -242,8 +244,9 @@ to a named holder** (the doc-30 §9.3 "≤2x or decompose the residual" discipli
    campaign exits when `wide_mem_ratio ≤ 0.5` cold+warm, or the residual is
    decomposed and attributed.
 
-**Every landing pastes the scoreboard line** (`persist-write-batching-plan.md`
-§5.1): `wide_mem_ratio cold=<x> warm=<x> (goal <=0.50; native <MiB> vs C++
+**Every landing pastes the scoreboard line** ([doc 15
+§5.4](../docs/rfcs/0007-nix-evaluator/15-differential-testing-and-benchmarking.md)):
+`wide_mem_ratio cold=<x> warm=<x> (goal <=0.50; native <MiB> vs C++
 <MiB>)` + `arena_peak=<MiB>`, so the ladder's progress is one comparable number.
 
 ## 7. Gate on the product decision

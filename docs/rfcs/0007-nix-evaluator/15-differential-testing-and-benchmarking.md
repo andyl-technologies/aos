@@ -593,6 +593,54 @@ project itself disclaims its real-world relevance). The measure-first baseline
 (§6) sets the target from the actual `nix-instantiate` numbers on the AOS
 closure.
 
+### 5.4 The canonical scoreboard (every campaign reports the same two numbers)
+
+The program-level goals are **10x C++ performance** and **half of C++'s RSS**.
+To keep progress comparable across every RFC-0007 campaign — memory ladder, JIT
+tiers, parallel eval, persist-write batching — each campaign landing reports the
+**same two numbers**, defined once here. Both come from `aos nix-bench --json`
+(fields already emitted; no schema change), in the standard config (default
+cache-less, `AOS_NIX_JIT=1`, quiet machine, interleaved A/B, median over ≥3
+samples), using the **paired-cycle** cold/warm semantics (§5.2, schema v4). Use
+`native_summary.median_seconds` (not the mean) for the native leg — it is robust
+to the host-load spikes that skew the mean on a contended machine.
+
+1. **Cold-latency geomean — the 10x number.** Over the canonical **17-attr
+   suite** (9 leaf: `pkgs.{zlib,xz,bzip2,openssl,curl,sqlite,jq,socat,git}` + 8
+   toolchain: `stdenv.{stdenv,bash,coreutils}`, `pkgs.{gcc,glibc,binutils,rust,openjdk}`),
+   the geometric mean of the per-attr **cold** `native/oracle` medians:
+   ```text
+   cold_geomean = geomean over 17 attrs of
+       ( median(native_summary.median_seconds)[cold]
+         / median(summary.mean_seconds)[cold] )
+   ```
+   **Goal: cold_geomean ≤ 0.10** (10x faster than C++). Honest v4 baseline
+   (2026-07-12): **0.515** (~1.9x). Report the warm geomean alongside for
+   context; the cold geomean is the headline.
+2. **Wide-eval memory ratio — the 0.5x number.** On `-A bench.wide`, native
+   post-run RSS over the C++ oracle child peak, **cold and warm** separately:
+   ```text
+   mem_ratio(temp) = median(native_summary.memory.rss_after_bytes_max)[temp]
+                     / median(summary.child_peak_rss_bytes_max)[temp]
+   ```
+   **Goal: mem_ratio ≤ 0.50** cold and warm (C++ wide ≈ 77 MiB ⇒ target
+   ≤38 MiB; today's native ~140-190 MiB ≈ 1.8-2.5x). Also report the raw MiB and
+   the native arena peak (`arena_peak_live_mapped_bytes_max`) so a regression is
+   attributable to arena vs non-arena traffic. Measure on **Linux** so the
+   `MIMALLOC_PURGE_DELAY` reclaim (a no-op under darwin `MADV_FREE`) is reflected.
+
+**Scoreboard line every landing pastes into its report/commit body:**
+```text
+scoreboard: cold_geomean=<x> (goal <=0.10; v4 baseline 0.515)
+            wide_mem_ratio cold=<x> warm=<x> (goal <=0.50; native <MiB> vs C++ <MiB>)
+```
+The exact wide-eval command:
+```text
+env AOS_NIX_ORACLE=.../nix-instantiate AOS_NIX_NATIVE=1 AOS_NIX_JIT=1 \
+    crates/target/release/aos --eval-system x86_64-linux nix-bench \
+    --file ./default.nix -A bench.wide --samples 5 --no-record
+```
+
 ---
 
 ## 6. The measure-first principle in practice
