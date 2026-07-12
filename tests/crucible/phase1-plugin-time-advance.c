@@ -70,6 +70,61 @@ enum {
   TIMER_IRQ_BIT = 1u << 0,
 };
 
+/*
+ * icount model. Under -accel sim the virtual clock is icount-derived:
+ * icount_get() == qemu_icount_bias + (retired << icount_time_shift), and
+ * cpus_set_virtual_clock is unset so it can only be advanced by moving the
+ * bias. The patched icount-common.c fixture defines icount_get() from this
+ * state; the plugin's icount_advance_virtual_time_to_ns advances by the bias.
+ */
+typedef struct QemuSeqLock {
+  int unused;
+} QemuSeqLock;
+typedef struct QemuSpin {
+  int unused;
+} QemuSpin;
+typedef struct TimersState {
+  int64_t qemu_icount_bias;
+  int icount_time_shift;
+  QemuSeqLock vm_clock_seqlock;
+  QemuSpin vm_clock_lock;
+} TimersState;
+TimersState timers_state;
+static int64_t retired_icount;
+static unsigned int notify_calls;
+
+#define qatomic_set_i64(ptr, value) (*(ptr) = (value))
+#define qatomic_read_i64(ptr) (*(ptr))
+
+static void
+seqlock_write_lock(QemuSeqLock *sl, QemuSpin *lock)
+{
+  (void)sl;
+  (void)lock;
+}
+
+static void
+seqlock_write_unlock(QemuSeqLock *sl, QemuSpin *lock)
+{
+  (void)sl;
+  (void)lock;
+}
+
+static int64_t
+crucible_fixture_retired_icount(void)
+{
+  return retired_icount;
+}
+
+int64_t icount_get(void);
+
+void
+qemu_clock_notify(int clock)
+{
+  (void)clock;
+  notify_calls++;
+}
+
 static void
 async_run_on_cpu(CPUState *cpu, void (*fn)(CPUState *, run_on_cpu_data),
                  run_on_cpu_data data)
@@ -117,7 +172,7 @@ run_normal_main_loop_bottom_halves(void)
     timer_bh_pending = false;
     timer_bh_visible = true;
     fake_cpu.interrupt_request |= TIMER_IRQ_BIT;
-    bh_callback_icount = current_icount;
+    bh_callback_icount = icount_get();
   }
 }
 
@@ -141,9 +196,9 @@ qemu_clock_run_timers(int clock)
 {
   (void)clock;
   run_timers_calls++;
-  if (timer_armed && timer_deadline_ns <= virtual_now_ns) {
+  if (timer_armed && timer_deadline_ns <= icount_get()) {
     timer_armed = false;
-    timer_callback_icount = current_icount;
+    timer_callback_icount = icount_get();
     timer_bh_pending = true;
     return true;
   }
@@ -162,7 +217,7 @@ int64_t
 qemu_clock_get_ns(int clock)
 {
   (void)clock;
-  return virtual_now_ns;
+  return icount_get();
 }
 
 AioContext *
@@ -250,6 +305,7 @@ qemu_net_queue_flush(NetQueue *queue)
   return true;
 }
 
+#include "accel/tcg/icount-common.c"
 #include "plugins/api-system.c"
 
 static void
@@ -266,6 +322,10 @@ reset_observable_state(void)
   current_icount = 0;
   timer_callback_icount = 0;
   bh_callback_icount = 0;
+  timers_state.qemu_icount_bias = 0;
+  timers_state.icount_time_shift = 0;
+  retired_icount = 0;
+  notify_calls = 0;
   async_queue_calls = 0;
   clock_advance_calls = 0;
   run_timers_calls = 0;
@@ -318,28 +378,34 @@ test_callback_safe_handoff_and_normal_bh_completion(void)
   unsigned int callbacks = 0;
 
   reset_observable_state();
-  current_icount = 4096;
-  arm_virtual_timer(1000);
+  /* Guest retired 100 instructions then idled with a timer armed at 5000. */
+  retired_icount = 100;
+  arm_virtual_timer(5000);
   if (qemu_plugin_register_time_advance_cb(record_completion, &callbacks) != 0 ||
-      qemu_plugin_advance_time_ns(1000) != 0) {
+      qemu_plugin_advance_time_ns(5000) != 0) {
     return false;
   }
 
-  if (virtual_now_ns != 0 || clock_advance_calls != 0 ||
-      run_timers_calls != 0 || callbacks != 0 || async_queue_calls != 1 ||
-      queued_cpu_work == NULL || !qemu_plugin_time_advance_is_pending()) {
+  /* Enqueue-only: the clock has not moved and no timer has run yet. */
+  if (icount_get() != 100 || clock_advance_calls != 0 ||
+      run_timers_calls != 0 || notify_calls != 0 || callbacks != 0 ||
+      async_queue_calls != 1 || queued_cpu_work == NULL ||
+      !qemu_plugin_time_advance_is_pending()) {
     return false;
   }
-  if (qemu_plugin_advance_time_ns(1001) != -EBUSY ||
+  if (qemu_plugin_advance_time_ns(5001) != -EBUSY ||
       qemu_plugin_register_time_advance_cb(NULL, NULL) != -EBUSY) {
     return false;
   }
 
   run_queued_cpu_work();
-  if (virtual_now_ns != 1000 || clock_advance_calls != 1 ||
-      run_timers_calls != 1 || timer_callback_icount != 4096 ||
-      !timer_bh_pending || timer_bh_visible || callbacks != 0 ||
-      completion_bh_schedules != 1 || queued_completion_bh == NULL) {
+  /* The bias-bump advance moved the icount-derived clock to the target and ran
+   * the due virtual timer; it never used the qtest set-based advance. */
+  if (icount_get() != 5000 || clock_advance_calls != 0 ||
+      run_timers_calls != 1 || notify_calls != 1 ||
+      timer_callback_icount != 5000 || !timer_bh_pending || timer_bh_visible ||
+      callbacks != 0 || completion_bh_schedules != 1 ||
+      queued_completion_bh == NULL) {
     return false;
   }
 
@@ -350,8 +416,8 @@ test_callback_safe_handoff_and_normal_bh_completion(void)
   }
   run_normal_main_loop_bottom_halves();
   return callbacks == 1 && completion_calls == 1 && completion_status == 0 &&
-         completion_target == 1000 && completion_observed_timer_bh &&
-         bh_callback_icount == 4096 &&
+         completion_target == 5000 && completion_observed_timer_bh &&
+         bh_callback_icount == 5000 &&
          fake_cpu.interrupt_request == TIMER_IRQ_BIT && cpu_kick_calls == 1 &&
          !qemu_plugin_time_advance_is_pending();
 }
@@ -362,7 +428,9 @@ test_backward_advance_reports_completion_failure(void)
   unsigned int callbacks = 0;
 
   reset_observable_state();
-  virtual_now_ns = 2000;
+  /* icount-derived virtual clock already at 2000; advancing to 1999 is
+   * backwards and must fail closed without moving the clock or running timers. */
+  retired_icount = 2000;
   if (qemu_plugin_register_time_advance_cb(record_completion, &callbacks) != 0 ||
       qemu_plugin_advance_time_ns(1999) != 0) {
     return false;
@@ -371,8 +439,8 @@ test_backward_advance_reports_completion_failure(void)
   run_normal_main_loop_bottom_halves();
   run_normal_main_loop_bottom_halves();
   return callbacks == 1 && completion_status == -ERANGE &&
-         completion_target == 1999 && virtual_now_ns == 2000 &&
-         clock_advance_calls == 0 && run_timers_calls == 0;
+         completion_target == 1999 && icount_get() == 2000 &&
+         clock_advance_calls == 0 && run_timers_calls == 0 && notify_calls == 0;
 }
 
 static bool
@@ -385,6 +453,42 @@ test_invalid_and_unregistered_requests_fail_before_queue(void)
   return qemu_plugin_advance_time_ns(-1) == -EINVAL &&
          qemu_plugin_advance_time_ns(1) == -ENODEV &&
          queued_cpu_work == NULL && async_queue_calls == 0;
+}
+
+/*
+ * The class of bug this microtest exists to catch: under -accel sim the virtual
+ * clock is icount-derived and cpus_set_virtual_clock is unset, so a qtest-style
+ * set-based advance (qemu_clock_advance_virtual_time) can never move the clock
+ * and its while (clock < dest) loop spins forever. Model that set-as-no-op and
+ * assert it never converges, while the plugin's bias-bump primitive reaches the
+ * exact target in one step and runs due virtual timers.
+ */
+static bool
+test_icount_bias_advance_converges_where_qtest_set_would_hang(void)
+{
+  const int64_t dest = 5000;
+  int64_t clock;
+  long iterations;
+
+  reset_observable_state();
+  retired_icount = 100;
+
+  /* qtest set-based advance under icount: writing virtual_now_ns does not move
+   * the icount-derived clock (qemu_clock_get_ns == icount_get()), so the loop
+   * never progresses. Bound the iteration count to detect non-convergence. */
+  clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+  for (iterations = 0; clock < dest && iterations < 1000000; iterations++) {
+    virtual_now_ns = dest;
+    clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+  }
+  if (clock >= dest) {
+    return false; /* the qtest set-based advance would have terminated */
+  }
+
+  /* The plugin's bias-bump advance reaches the target and runs due timers. */
+  icount_advance_virtual_time_to_ns(dest);
+  return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) == dest &&
+         icount_get() == dest && run_timers_calls == 1 && notify_calls == 1;
 }
 
 int
@@ -410,6 +514,10 @@ main(void)
     fprintf(stderr, "invalid or unregistered advance was queued\n");
     return 1;
   }
+  if (!test_icount_bias_advance_converges_where_qtest_set_would_hang()) {
+    fprintf(stderr, "icount bias advance did not converge where qtest set hangs\n");
+    return 1;
+  }
 
   puts("PASS");
   puts("patched_qemu_plugin_time_advance_fixture=true");
@@ -425,6 +533,7 @@ main(void)
   puts("negative_target_rejected_before_queue=true");
   puts("backward_target_reports_completion_failure=true");
   puts("queued_worker_runs_virtual_timers=true");
+  puts("icount_bias_advance_converges_where_qtest_set_hangs=true");
   puts("completion_uses_normal_main_loop_bh=true");
   puts("completion_uses_two_stage_bh_barrier=true");
   puts("timer_bh_precedes_plugin_completion=true");

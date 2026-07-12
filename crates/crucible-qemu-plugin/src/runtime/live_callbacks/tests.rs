@@ -327,6 +327,49 @@ fn live_time_completion_commits_logical_idle_offset_before_future_raw_progress()
 }
 
 #[test]
+fn max_advance_translates_logical_ceiling_to_raw_after_idle_jump() {
+    // QEMU's sim-loop budget clamp compares max_advance_icount() against raw
+    // retired instructions (`qemu_plugin_icount_raw()`), while the scheduler
+    // ceiling is a logical icount that includes the accumulated idle-jump offset
+    // (`logical = raw + offset`). The reported limit must therefore be in raw
+    // units so the clamp stops the guest exactly at the logical authorization.
+    // A live idle jump exposed this: the clamp used the raw count against a
+    // logical ceiling, letting the guest retire instructions past the ceiling.
+    let slot = NodeSlot::new(KIND_VM);
+    let ceiling = authorize_advance_ceiling(0, 100, None)
+        .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
+    slot.publish_scheduler_ceiling(ceiling)
+        .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
+    let state = test_live_state(51, 1, 0, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .publish_current_icount(30)
+        .unwrap_or_else(|error| panic!("raw progress should publish: {error}"));
+
+    // Busy path: no idle-jump offset yet, so the raw limit is the ceiling.
+    assert_eq!(state.max_advance_icount(), 100);
+
+    let queued = crate::QueuedIdleAdvance::require(Some(test_queue_idle_advance))
+        .unwrap_or_else(|error| panic!("queued advance should build: {error}"));
+    let pending = queued
+        .enqueue(80)
+        .unwrap_or_else(|error| panic!("idle advance should queue: {error}"));
+    state
+        .arm_idle_advance(30, 80, pending)
+        .unwrap_or_else(|error| panic!("pending idle advance should arm: {error}"));
+    state
+        .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 80))
+        .unwrap_or_else(|error| panic!("matching completion should commit: {error}"));
+
+    // The jump advanced the logical clock to 80 (raw 30 + offset 50) without
+    // retiring instructions. The raw execution limit is ceiling(100) minus the
+    // offset(50) = 50, so the guest may retire only 20 more raw instructions
+    // (50 - 30) to reach logical 100 = the ceiling, and no further.
+    assert_eq!(slot.snapshot().current_icount, 80);
+    assert_eq!(state.max_advance_icount(), 50);
+}
+
+#[test]
 fn live_idle_callback_queues_then_commits_only_from_normal_loop_completion() {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 10, None)

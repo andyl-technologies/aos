@@ -1010,8 +1010,22 @@ impl LiveVcpuTimeCallbackState {
         }
     }
 
+    /// Returns the scheduler ceiling expressed in raw retired-instruction units.
+    ///
+    /// QEMU's sim-loop budget clamp compares this value against
+    /// `qemu_plugin_icount_raw()` (raw retired instructions), whereas the
+    /// scheduler ceiling published in shared memory is a *logical* icount that
+    /// includes the accumulated idle-jump offset (`logical = raw + offset`). The
+    /// clamp only stops the guest at the authorized horizon when both operands
+    /// share a space, so the logical ceiling is translated back to raw by
+    /// subtracting the current offset. On the busy path the offset is zero and
+    /// this is the ceiling unchanged; after an idle jump advanced virtual time
+    /// without retiring instructions, the offset is positive and this stops the
+    /// guest from retiring instructions past its logical authorization.
     fn max_advance_icount(&self) -> u64 {
-        PluginShmemOrdering::load_scheduler_ceiling(self.slot.get())
+        let ceiling = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        let offset = self.logical_icount_offset.load(Ordering::Acquire);
+        ceiling.saturating_sub(offset)
     }
 
     fn vcpu_flag(&self, vcpu_index: u32) -> Result<&AtomicBool, LiveVcpuTimeCallbackError> {

@@ -94,7 +94,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  static void qemu_plugin_time_advance_barrier_bh(void *opaque);
  static void qemu_plugin_time_advance_complete_bh(void *opaque);
-@@ -249,6 +257,104 @@ void qemu_plugin_force_vcpu_exit(void)
+@@ -248,6 +256,104 @@ void qemu_plugin_force_vcpu_exit(void)
      }
  }
  

@@ -1,3 +1,38 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -182,6 +182,31 @@ int64_t icount_get(void)
+     return icount;
+ }
+ 
++/*
++ * Crucible: advance the icount-derived QEMU_CLOCK_VIRTUAL to an exact target,
++ * in nanoseconds, while all vCPUs are idle. The upstream plugin time-control
++ * setter and qtest use qemu_clock_advance_virtual_time(), which only moves the
++ * virtual clock when cpus_set_virtual_clock() is wired -- i.e. in non-icount
++ * mode. Under the sim accelerator the clock is icount-derived, so advancement
++ * must add to the icount bias instead. @dest must not precede the current
++ * virtual time; earlier targets leave the clock unchanged.
++ */
++void icount_advance_virtual_time_to_ns(int64_t dest)
++{
++    int64_t now = icount_get();
++
++    if (dest > now) {
++        seqlock_write_lock(&timers_state.vm_clock_seqlock,
++                           &timers_state.vm_clock_lock);
++        qatomic_set_i64(&timers_state.qemu_icount_bias,
++                        timers_state.qemu_icount_bias + (dest - now));
++        seqlock_write_unlock(&timers_state.vm_clock_seqlock,
++                             &timers_state.vm_clock_lock);
++    }
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
++}
++
+ int64_t icount_to_ns(int64_t icount)
+ {
+     return icount << qatomic_read(&timers_state.icount_time_shift);
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
@@ -69,6 +104,23 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  /**
   * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
   * @data: Ethernet frame bytes
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -76,6 +76,13 @@ void icount_start_warp_timer(void);
+ void icount_account_warp_timer(void);
+ void icount_notify_exit(void);
+ 
++/*
++ * Crucible: advance the icount-derived QEMU_CLOCK_VIRTUAL to an exact ns
++ * target while the vCPUs are idle, by adding to the icount bias. Used by the
++ * plugin time-control advance path under the sim accelerator.
++ */
++void icount_advance_virtual_time_to_ns(int64_t dest);
++
+ /*
+  * CPU Ticks and Clock
+  */
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
@@ -87,7 +139,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  bool qemu_plugin_has_time_control(void)
  {
-@@ -133,6 +141,91 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+@@ -133,6 +141,90 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
      }
  }
  
@@ -120,8 +172,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
 +    } else if (new_time < qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
 +        status = -ERANGE;
 +    } else {
-+        qemu_clock_advance_virtual_time(new_time);
-+        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++        icount_advance_virtual_time_to_ns(new_time);
 +    }
 +
 +    qatomic_set(&qemu_plugin_time_advance_status, status);
